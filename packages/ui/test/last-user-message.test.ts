@@ -1273,6 +1273,15 @@ describe("visualFileEditSummaryForBlock", () => {
           action: "edited",
           additions: 3,
           deletions: 2,
+          raw: [
+            "*** Update File: /repo/src/App.svelte",
+            "@@",
+            "-old",
+            "-line",
+            "+new",
+            "+line",
+            "+extra",
+          ].join("\n"),
         },
       ],
     });

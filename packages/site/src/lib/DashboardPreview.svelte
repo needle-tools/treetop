@@ -1,52 +1,382 @@
 <script lang="ts">
-  // Faux sidebar + sticky-note canvas, echoing the real dashboard so the
-  // landing page shows the product, not a generic screenshot frame. Swap
-  // the inner mock for a real screenshot/<img> once one exists.
-  const sidebar = [
-    "Overview",
-    "Worktrees",
-    "Agents",
-    "Sessions",
-    "Notes",
-    "Diffs",
-    "Peers",
+  import {
+    WorkspacePreview,
+    hydrateWorkspacePreviewSession,
+    parseWorkspacePreviewJsonl,
+    type BranchStatus,
+    type FileStatus,
+    type NoteShape,
+    type WorkspacePreviewRow,
+    type WtSummary,
+  } from "@supergit/ui/components";
+  import arduinoJsonl from "../fixtures/sessions/arduino-lab.claude.jsonl?raw";
+  import pcbJsonl from "../fixtures/sessions/pcb-design.codex.jsonl?raw";
+  import spritesheetJsonl from "../fixtures/sessions/spritesheet-assets.claude.jsonl?raw";
+  import warpJsonl from "../fixtures/sessions/warp-drive.codex.jsonl?raw";
+  import websiteJsonl from "../fixtures/sessions/website-launch.claude.jsonl?raw";
+
+  const MEMORY_KEY = "site-preview-v4";
+
+  function ago(minutes: number): string {
+    return new Date(Date.now() - minutes * 60_000).toISOString();
+  }
+
+  const websitePath = "~/wt/supergit/website";
+  const hardwarePath = "~/wt/supergit/hardware-lab";
+  const experimentsPath = "~/wt/supergit/experiments";
+  const websiteAuthPath = "~/wt/supergit/auth";
+  const hardwareFirmwarePath = "~/wt/supergit/firmware";
+  const experimentsSpritesPath = "~/wt/supergit/sprites";
+  const websiteAnchor = `worktree:${websitePath}`;
+  const hardwareAnchor = `worktree:${hardwarePath}`;
+  const experimentsAnchor = `worktree:${experimentsPath}`;
+
+  const websiteTranscript = parseWorkspacePreviewJsonl(websiteJsonl);
+  const spritesheetTranscript = parseWorkspacePreviewJsonl(spritesheetJsonl);
+  const arduinoTranscript = parseWorkspacePreviewJsonl(arduinoJsonl);
+  const pcbTranscript = parseWorkspacePreviewJsonl(pcbJsonl);
+  const warpTranscript = parseWorkspacePreviewJsonl(warpJsonl);
+
+  const websiteBranchStatus: BranchStatus = {
+    branch: "feat/reuse-ui",
+    upstream: "origin/feat/reuse-ui",
+    ahead: 2,
+    behind: 0,
+    aheadOldestTime: null,
+    unpushed: null,
+  };
+  const websiteFileStatus: FileStatus = {
+    staged: 1,
+    unstaged: 2,
+    untracked: 1,
+    dirtyLines: 84,
+  };
+  const websiteSummary: WtSummary = {
+    staged: ["packages/ui/src/WorkspacePreview.svelte"],
+    unstaged: [
+      "packages/ui/src/App.svelte",
+      "packages/site/src/lib/DashboardPreview.svelte",
+    ],
+    untracked: ["packages/ui/src/WorktreePreviewRow.svelte"],
+    unpushedCommits: [
+      {
+        sha: "8f3a1d9c4b7e",
+        author: "Treetop",
+        date: ago(18),
+        subject: "Extract reusable worktree row controls",
+      },
+      {
+        sha: "41ce8822a901",
+        author: "Treetop",
+        date: ago(44),
+        subject: "Make site preview consume production UI components",
+      },
+    ],
+    unfetchedCommits: [],
+  };
+
+  const hardwareBranchStatus: BranchStatus = {
+    branch: "lab/arduino-pcb",
+    upstream: "origin/lab/arduino-pcb",
+    ahead: 0,
+    behind: 1,
+    aheadOldestTime: null,
+    unpushed: null,
+  };
+  const hardwareFileStatus: FileStatus = {
+    staged: 0,
+    unstaged: 3,
+    untracked: 0,
+    dirtyLines: 126,
+  };
+  const hardwareSummary: WtSummary = {
+    staged: [],
+    unstaged: [
+      "workshop/night_garden.ino",
+      "hardware/bringup-checklist.md",
+      "scripts/bringup.sh",
+    ],
+    untracked: [],
+    unpushedCommits: [],
+    unfetchedCommits: [
+      {
+        sha: "1bd77f0cc2aa",
+        author: "Treetop",
+        date: ago(52),
+        subject: "Add sensor board bring-up checklist",
+      },
+    ],
+  };
+
+  const experimentsBranchStatus: BranchStatus = {
+    branch: "toy/warp-and-sprites",
+    upstream: "origin/toy/warp-and-sprites",
+    ahead: 3,
+    behind: 0,
+    aheadOldestTime: ago(180),
+    unpushed: null,
+  };
+  const experimentsFileStatus: FileStatus = {
+    staged: 2,
+    unstaged: 1,
+    untracked: 2,
+    dirtyLines: 240,
+  };
+  const experimentsSummary: WtSummary = {
+    staged: ["src/sim/warp-field.ts", "art/spritesheet_spec.md"],
+    unstaged: ["tools/check_spritesheet.ts"],
+    untracked: ["art/forest_robot.png", "scripts/demo-booth.sh"],
+    unpushedCommits: [
+      {
+        sha: "9ac8302e171d",
+        author: "Treetop",
+        date: ago(92),
+        subject: "Prototype warp-field stability controls",
+      },
+      {
+        sha: "5e86df9a4a0b",
+        author: "Treetop",
+        date: ago(141),
+        subject: "Specify forest robot spritesheet pipeline",
+      },
+      {
+        sha: "78c40f74ef10",
+        author: "Treetop",
+        date: ago(180),
+        subject: "Add asset validation command",
+      },
+    ],
+    unfetchedCommits: [],
+  };
+
+  const rows: WorkspacePreviewRow[] = [
+    {
+      key: "site-preview-website",
+      repo: {
+        id: "site-preview-repo",
+        name: "website",
+        path: "~/wt/supergit",
+        color: "#60b74c",
+      },
+      worktree: {
+        path: websitePath,
+        branch: "feat/reuse-ui",
+        branchStatus: websiteBranchStatus,
+        fileStatus: websiteFileStatus,
+        branchChoices: [
+          "feat/reuse-ui",
+          "main",
+          "site/copy-polish",
+          "origin/main",
+        ],
+      },
+      repoWorktrees: [
+        { path: websitePath, branch: "feat/reuse-ui" },
+        { path: websiteAuthPath, branch: "feat/auth-flow" },
+        { path: "~/wt/supergit/billing", branch: "feat/billing-copy" },
+      ],
+      summary: websiteSummary,
+      sessions: [
+        hydrateWorkspacePreviewSession(
+          {
+            agent: "claude",
+            cwd: websitePath,
+            source: "site-preview-session-website",
+            sessionId: "mock-claude-site-launch",
+            title: "Launch the Treetop website",
+            state: "working",
+            lastActive: ago(4),
+            model: "claude-sonnet-4-5-20250929",
+            claudeModel: "sonnet",
+            claudeEffort: "high",
+            contextTokens: 142_800,
+            contextTokensExact: true,
+            contextWindow: 200_000,
+          },
+          websiteTranscript,
+        ),
+      ],
+    },
+    {
+      key: "site-preview-hardware",
+      repo: {
+        id: "site-preview-hardware-repo",
+        name: "hardware lab",
+        path: "~/wt/supergit",
+        color: "#f0b84a",
+      },
+      worktree: {
+        path: hardwarePath,
+        branch: "lab/arduino-pcb",
+        branchStatus: hardwareBranchStatus,
+        fileStatus: hardwareFileStatus,
+        branchChoices: [
+          "lab/arduino-pcb",
+          "main",
+          "lab/night-garden",
+          "origin/lab/boards",
+        ],
+      },
+      repoWorktrees: [
+        { path: hardwarePath, branch: "lab/arduino-pcb" },
+        { path: hardwareFirmwarePath, branch: "lab/firmware-bringup" },
+        { path: "~/wt/supergit/enclosure", branch: "lab/enclosure" },
+      ],
+      summary: hardwareSummary,
+      sessions: [
+        hydrateWorkspacePreviewSession(
+          {
+            agent: "claude",
+            cwd: hardwarePath,
+            source: "site-preview-session-arduino",
+            sessionId: "mock-claude-arduino-lab",
+            title: "Teach Arduino Night Garden",
+            state: "idle",
+            lastActive: ago(16),
+            model: "claude-haiku-4-5-20251001",
+            claudeModel: "haiku",
+            claudeEffort: "medium",
+            contextTokens: 52_400,
+            contextTokensExact: true,
+            contextWindow: 200_000,
+          },
+          arduinoTranscript,
+        ),
+        hydrateWorkspacePreviewSession(
+          {
+            agent: "codex",
+            cwd: hardwarePath,
+            source: "site-preview-session-pcb",
+            sessionId: "mock-codex-pcb-design",
+            title: "Design the sensor PCB",
+            state: "awaiting",
+            lastActive: ago(24),
+            model: "gpt-5.2-codex",
+            contextTokens: 118_000,
+            contextTokensExact: false,
+            contextWindow: 400_000,
+          },
+          pcbTranscript,
+        ),
+      ],
+    },
+    {
+      key: "site-preview-experiments",
+      repo: {
+        id: "site-preview-experiments-repo",
+        name: "experiments",
+        path: "~/wt/supergit",
+        color: "#a88cff",
+      },
+      worktree: {
+        path: experimentsPath,
+        branch: "toy/warp-and-sprites",
+        branchStatus: experimentsBranchStatus,
+        fileStatus: experimentsFileStatus,
+        branchChoices: [
+          "toy/warp-and-sprites",
+          "main",
+          "toy/warp-field",
+          "art/spritesheet-pipeline",
+        ],
+      },
+      repoWorktrees: [
+        { path: experimentsPath, branch: "toy/warp-and-sprites" },
+        { path: experimentsSpritesPath, branch: "art/spritesheet-pipeline" },
+        { path: "~/wt/supergit/warp-sim", branch: "toy/warp-field" },
+      ],
+      summary: experimentsSummary,
+      sessions: [
+        hydrateWorkspacePreviewSession(
+          {
+            agent: "codex",
+            cwd: experimentsPath,
+            source: "site-preview-session-warp",
+            sessionId: "mock-codex-warp-drive",
+            title: "Prototype a warp-drive toy",
+            state: "working",
+            lastActive: ago(9),
+            model: "gpt-5.2-codex",
+            contextTokens: 236_500,
+            contextTokensExact: false,
+            contextWindow: 400_000,
+          },
+          warpTranscript,
+        ),
+        hydrateWorkspacePreviewSession(
+          {
+            agent: "claude",
+            cwd: experimentsPath,
+            source: "site-preview-session-sprites",
+            sessionId: "mock-claude-spritesheet",
+            title: "Plan forest robot spritesheets",
+            state: "idle",
+            lastActive: ago(31),
+            model: "claude-sonnet-4-5-20250929",
+            claudeModel: "sonnet",
+            claudeEffort: "low",
+            contextTokens: 83_200,
+            contextTokensExact: true,
+            contextWindow: 200_000,
+          },
+          spritesheetTranscript,
+        ),
+      ],
+    },
   ];
-  const notes = [
-    { t: "Untangle nodes", b: "Group the auth + billing worktrees under one thread." },
-    { t: "Ship the canopy", b: "Land the hero, then wire the tour video." },
-    { t: "Agent: research", b: "Summarise the three competitor dashboards." },
+
+  const initialNotes: NoteShape[] = [
+    {
+      id: "site-note-1",
+      anchors: [websiteAnchor],
+      tags: [],
+      body: "Group the auth + billing worktrees under one thread.",
+      createdAt: ago(60),
+      updatedAt: ago(35),
+      kind: "note",
+    },
+    {
+      id: "site-note-2",
+      anchors: [websiteAnchor],
+      tags: [],
+      body: "Use the real row controls on the public site.",
+      createdAt: ago(42),
+      updatedAt: ago(21),
+      kind: "note",
+    },
+    {
+      id: "site-note-3",
+      anchors: [websiteAnchor],
+      tags: [],
+      body: "Zen mode should focus the row, not tint a fake canvas.",
+      createdAt: ago(28),
+      updatedAt: ago(8),
+      kind: "note",
+    },
+    {
+      id: "site-note-4",
+      anchors: [hardwareAnchor],
+      tags: [],
+      body: "Arduino handout needs friendly debugging steps.",
+      createdAt: ago(34),
+      updatedAt: ago(12),
+      kind: "note",
+    },
+    {
+      id: "site-note-5",
+      anchors: [experimentsAnchor],
+      tags: [],
+      body: "Spritesheet validator should fail before bad assets reach the game.",
+      createdAt: ago(25),
+      updatedAt: ago(10),
+      kind: "note",
+    },
   ];
 </script>
 
 <section class="preview" id="tour">
   <div class="shell">
-    <div class="window">
-      <div class="titlebar">
-        <span class="dot r"></span><span class="dot y"></span><span class="dot g"></span>
-        <span class="wintitle">Treetop</span>
-      </div>
-      <div class="body">
-        <aside class="sidebar">
-          {#each sidebar as item, i}
-            <div class="nav-item" class:active={i === 1}>{item}</div>
-          {/each}
-        </aside>
-        <div class="canvas">
-          <button class="play" aria-label="Watch the tour">
-            <svg viewBox="0 0 24 24" width="26" height="26">
-              <circle cx="12" cy="12" r="11" fill="rgba(255,255,255,0.12)" />
-              <path d="M10 8l6 4-6 4z" fill="#fff" />
-            </svg>
-          </button>
-          {#each notes as note, i}
-            <div class="note n{i}">
-              <strong>{note.t}</strong>
-              <span>{note.b}</span>
-            </div>
-          {/each}
-        </div>
-      </div>
-    </div>
+    <WorkspacePreview memoryKey={MEMORY_KEY} {rows} {initialNotes} sticky />
   </div>
 </section>
 
@@ -54,123 +384,7 @@
   .preview {
     padding: clamp(1.5rem, 5vw, 4rem) 0 clamp(3rem, 7vw, 5rem);
   }
-  .window {
-    background: var(--app-bg);
-    border-radius: var(--radius-lg);
-    box-shadow: 0 40px 90px -40px rgba(20, 36, 14, 0.7);
-    overflow: hidden;
-    border: 1px solid rgba(255, 255, 255, 0.06);
-  }
-  .titlebar {
-    display: flex;
-    align-items: center;
-    gap: 0.45rem;
-    padding: 0.7rem 1rem;
-    background: #15150f;
-  }
-  .dot {
-    width: 11px;
-    height: 11px;
-    border-radius: 50%;
-  }
-  .dot.r {
-    background: #ff5f57;
-  }
-  .dot.y {
-    background: #febc2e;
-  }
-  .dot.g {
-    background: #28c840;
-  }
-  .wintitle {
-    margin: 0 auto;
-    font-size: 0.8rem;
-    color: rgba(255, 255, 255, 0.5);
-    font-weight: 600;
-  }
-
-  .body {
-    display: grid;
-    grid-template-columns: 180px 1fr;
-    min-height: 360px;
-  }
-  .sidebar {
-    background: var(--app-surface);
-    padding: 1rem 0.6rem;
-    display: flex;
-    flex-direction: column;
-    gap: 0.15rem;
-    border-right: 1px solid rgba(255, 255, 255, 0.05);
-  }
-  .nav-item {
-    padding: 0.5rem 0.75rem;
-    border-radius: 8px;
-    font-size: 0.85rem;
-    color: rgba(255, 255, 255, 0.62);
-  }
-  .nav-item.active {
-    background: color-mix(in srgb, var(--brand) 30%, transparent);
-    color: #eafbe0;
-  }
-
-  .canvas {
+  .preview .shell {
     position: relative;
-    background:
-      radial-gradient(60% 60% at 30% 20%, rgba(96, 183, 76, 0.08), transparent),
-      #1a1a1b;
-    padding: 1.5rem;
-  }
-  .play {
-    position: absolute;
-    top: 1.2rem;
-    right: 1.2rem;
-    border: 0;
-    background: transparent;
-    color: #fff;
-  }
-
-  .note {
-    position: absolute;
-    width: 175px;
-    padding: 0.85rem 0.9rem;
-    border-radius: 4px 4px 10px 4px;
-    background: var(--note-paper, #ffec80);
-    color: #2a2516;
-    box-shadow: 0 12px 24px -10px rgba(0, 0, 0, 0.6);
-    transform: rotate(var(--rot));
-    display: flex;
-    flex-direction: column;
-    gap: 0.3rem;
-  }
-  .note strong {
-    font-size: 0.85rem;
-  }
-  .note span {
-    font-size: 0.76rem;
-    line-height: 1.35;
-    opacity: 0.8;
-  }
-  .n0 {
-    --rot: -3deg;
-    top: 2rem;
-    left: 2.5rem;
-  }
-  .n1 {
-    --rot: 2deg;
-    top: 7rem;
-    left: 13rem;
-    background: #d7e8a8;
-  }
-  .n2 {
-    --rot: -1.5deg;
-    top: 12rem;
-    left: 5rem;
-    background: #fbe7a0;
-  }
-
-  @media (max-width: 640px) {
-    .note {
-      display: none;
-    }
   }
 </style>

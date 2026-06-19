@@ -4,6 +4,10 @@
     "target": "ESNext",
     "module": "ESNext",
     "moduleResolution": "bundler",
+    "baseUrl": ".",
+    "paths": {
+      "@supergit/ui/components": ["../ui/src/components.ts"]
+    },
     "resolveJsonModule": true,
     "allowJs": true,
     "checkJs": true,

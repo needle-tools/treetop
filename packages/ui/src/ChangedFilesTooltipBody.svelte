@@ -22,26 +22,11 @@
 
   import { apiUrl } from "./api";
   import { getContext, onDestroy } from "svelte";
+  import type { NumstatEntry, WtSummary } from "./repo-types";
   import { TOOLTIP_HOVER_CTX, type TooltipHoverCtx } from "./Tooltip.svelte";
   import FileDiffTooltipBody from "./FileDiffTooltipBody.svelte";
 
-  interface NumstatEntry {
-    added: number;
-    removed: number;
-    binary: boolean;
-  }
-  interface WtSummaryLike {
-    staged: string[];
-    unstaged: string[];
-    untracked: string[];
-    stats?: Record<string, NumstatEntry>;
-    stagedStats?: Record<string, NumstatEntry>;
-    /** Per-path mtime in epoch ms. Missing entries (deleted files,
-     *  older daemon builds) sort to the bottom. */
-    mtimes?: Record<string, number>;
-  }
-
-  export let summary: WtSummaryLike | "loading" | undefined;
+  export let summary: WtSummary | "loading" | undefined;
   /** Absolute path to the worktree on disk. When provided, file rows
    *  become hover triggers for a per-file diff popup. When omitted
    *  (older callers), rows render as static text — backwards-safe. */
@@ -88,7 +73,7 @@
     });
   }
 
-  function plan(s: WtSummaryLike): {
+  function plan(s: WtSummary): {
     columns: Column[];
     hiddenCount: number;
     total: number;
@@ -304,7 +289,6 @@
               class="wt-tt-row"
               class:wt-tt-row-interactive={interactive}
               role={interactive ? "button" : undefined}
-              tabindex={interactive ? -1 : undefined}
               on:mouseenter={(e) =>
                 onRowEnter(
                   col.kind,

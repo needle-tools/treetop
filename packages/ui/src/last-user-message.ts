@@ -611,6 +611,35 @@ function changedLineCount(value: unknown): number | undefined {
     : value.split("\n").length;
 }
 
+function diffLines(value: unknown, prefix: "+" | "-"): string[] {
+  if (typeof value !== "string" || value.length === 0) return [];
+  return value
+    .replace(/\n$/, "")
+    .split("\n")
+    .map((line) => `${prefix}${line}`);
+}
+
+function rawEditDiff(
+  path: string,
+  oldValue: unknown,
+  newValue: unknown,
+): string | undefined {
+  if (typeof oldValue !== "string" && typeof newValue !== "string") {
+    return undefined;
+  }
+  return [
+    `*** Update File: ${path}`,
+    "@@",
+    ...diffLines(oldValue, "-"),
+    ...diffLines(newValue, "+"),
+  ].join("\n");
+}
+
+function rawAddDiff(path: string, content: unknown): string | undefined {
+  if (typeof content !== "string") return undefined;
+  return [`*** Add File: ${path}`, ...diffLines(content, "+")].join("\n");
+}
+
 function claudeEditSummary(
   toolName: string,
   input: Record<string, unknown>,
@@ -621,11 +650,17 @@ function claudeEditSummary(
     if (!path) return undefined;
     let additions = 0;
     let deletions = 0;
+    const raw: string[] = [];
     for (const edit of input.edits) {
       if (!edit || typeof edit !== "object") continue;
       const obj = edit as Record<string, unknown>;
       additions += changedLineCount(obj.new_string) ?? 0;
       deletions += changedLineCount(obj.old_string) ?? 0;
+      raw.push(
+        "@@",
+        ...diffLines(obj.old_string, "-"),
+        ...diffLines(obj.new_string, "+"),
+      );
     }
     return summarizeFileEdits([
       {
@@ -633,6 +668,10 @@ function claudeEditSummary(
         action: "edited",
         additions: additions > 0 ? additions : undefined,
         deletions: deletions > 0 ? deletions : undefined,
+        raw:
+          raw.length > 0
+            ? [`*** Update File: ${path}`, ...raw].join("\n")
+            : undefined,
       },
     ]);
   }
@@ -646,6 +685,7 @@ function claudeEditSummary(
         action: "edited",
         additions: changedLineCount(input.new_string),
         deletions: changedLineCount(input.old_string),
+        raw: rawEditDiff(path, input.old_string, input.new_string),
       },
     ]);
   }
@@ -658,6 +698,7 @@ function claudeEditSummary(
         path,
         action: "added",
         additions: changedLineCount(input.content),
+        raw: rawAddDiff(path, input.content),
       },
     ]);
   }

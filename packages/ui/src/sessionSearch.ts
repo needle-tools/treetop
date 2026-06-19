@@ -15,28 +15,8 @@
  * match. Score 0 means "no hit anywhere" and the row is dropped.
  */
 
-export interface AgentSession {
-  agent: "claude" | "codex" | "copilot" | "ollama" | "shell";
-  cwd: string;
-  lastActive: string;
-  source: string;
-  sessionId?: string;
-  title?: string;
-  manualTitle?: string;
-  aiTitle?: string;
-  lastUserMessage?: string;
-  firstUserMessage?: string;
-  lastUserMessages?: string[];
-  userMessageCount?: number;
-  messageCount?: number;
-  recentMessageCount?: number;
-  lastMessageTs?: string;
-  contextTokens?: number;
-  contextTokensExact?: boolean;
-  model?: string;
-  importedFrom?: string;
-  importedAt?: string;
-}
+import type { AgentSession } from "./repo-types";
+export type { AgentSession } from "./repo-types";
 
 const W_TITLE = 100;
 const W_FIRST = 50;

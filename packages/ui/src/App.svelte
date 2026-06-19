@@ -65,7 +65,6 @@
   import { fetchOllamaModels } from "./ollama-models";
   import { randomUUID } from "./random-id";
   import Tooltip from "./Tooltip.svelte";
-  import ChangedFilesTooltipBody from "./ChangedFilesTooltipBody.svelte";
   import NewSessionCol from "./NewSessionCol.svelte";
   import FileBrowser from "./FileBrowser.svelte";
   import {
@@ -74,19 +73,18 @@
   } from "./file-browser-utils";
   import GitHistory from "./GitHistory.svelte";
   import ProcessList from "./ProcessList.svelte";
-  import StatusBadge from "./StatusBadge.svelte";
-  import { aheadAged, BLINK_AHEAD_MINUTES } from "./ahead-age";
-  import { statusSummary, type FileStatus } from "./status-summary";
+  import RowStatusBadges from "./RowStatusBadges.svelte";
+  import { statusSummary } from "./status-summary";
   import { planReveal, type RevealMode } from "./reveal-session";
   import StickyNotesLayer from "./StickyNotesLayer.svelte";
-  import AttachmentIcon from "./AttachmentIcon.svelte";
-  import NoteIcon from "./NoteIcon.svelte";
   import AgentIcon from "./AgentIcon.svelte";
   import AgentUsageChip from "./AgentUsageChip.svelte";
+  import RowNoteActions from "./RowNoteActions.svelte";
+  import RowNotesListPopover from "./RowNotesListPopover.svelte";
+  import ZenToggleButton from "./ZenToggleButton.svelte";
   import { spawnNote, flyRestoreNote } from "./StickyNotesLayer.svelte";
-  import { notesCountByAnchor, notesAll, type NoteShape } from "./notes-counts";
+  import { notesCountByAnchor, notesAll } from "./notes-counts";
   import { sessionFocusRequest } from "./session-focus-store";
-  import EmojiPicker from "./EmojiPicker.svelte";
   import AnchorPicker from "./AnchorPicker.svelte";
   import OpenInButton from "./OpenInButton.svelte";
   import OpenInActions from "./OpenInActions.svelte";
@@ -186,11 +184,8 @@
     formatRelativeTime,
     repoChipFg,
     targetGlyph,
-    notesListDisplay,
     noteExcerpt,
     relTime,
-    COMMIT_SUBJECT_MAX,
-    clampSubject,
     sessionTooltip,
     pushCount,
     pushBadgeDanger,
@@ -202,149 +197,24 @@
     isTerminalRecentlyActive,
     terminalIoStatsByKey,
   } from "./terminal-write-buffer";
+  import type {
+    ActivityEvent,
+    AddRepoResponse,
+    AgentSession,
+    CustomLink,
+    EditorDescriptor,
+    RemoteRef,
+    Repo,
+    ShellRecord,
+    Worktree,
+    WtSummary,
+  } from "./repo-types";
 
   // Wire fetch + global handlers as early as possible — before the first
   // load() fires — so even the initial /api/repos failure ends up in
   // the Events popover.
   installFetchTracking();
   installGlobalErrorHandlers();
-
-  interface BranchStatus {
-    branch: string;
-    upstream: string | null;
-    ahead: number;
-    behind: number;
-    aheadOldestTime: string | null;
-    // Commits reachable from HEAD but from no remote-tracking ref.
-    // Filled by the daemon only for branches with no upstream (where
-    // `ahead` is always 0); null otherwise. See pushCount().
-    unpushed: number | null;
-  }
-  interface LastCommit {
-    sha: string;
-    shortSha: string;
-    subject: string;
-    author: string;
-    time: string;
-  }
-  interface AgentSession {
-    /** "shell" is synthetic — produced client-side from `/api/shells`
-     *  so we can render Terminal sessions in the same worktree picker
-     *  alongside Claude/Codex/Copilot. "ollama" is also synthetic —
-     *  live PTYs only, no on-disk JSONL scan. The daemon only ever
-     *  returns "claude" / "codex" / "copilot" here. */
-    agent: "claude" | "codex" | "copilot" | "ollama" | "shell";
-    cwd: string;
-    lastActive: string;
-    sessionId?: string;
-    source: string;
-    title?: string;
-    lastUserMessage?: string;
-    manualTitle?: string;
-    aiTitle?: string;
-    firstUserMessage?: string;
-    lastUserMessages?: string[];
-    userMessageCount?: number;
-    messageCount?: number;
-    recentMessageCount?: number;
-    lastMessageTs?: string;
-    contextTokens?: number;
-    contextTokensExact?: boolean;
-    contextWindow?: number;
-    model?: string;
-  }
-  interface ShellRecord {
-    termId: string;
-    wt: string;
-    spawnCwd: string;
-    currentCwd?: string;
-    createdAt: string;
-    alive: boolean;
-    /** Number of Enter-terminated command lines captured for this shell.
-     *  Drives the "hide empty saved shells" filter in the picker. */
-    cmdCount?: number;
-    /** Most recent Enter-terminated command line captured for this
-     *  shell, surfaced as a muted inline snippet on the picker row. */
-    lastCmd?: string;
-    /** Timestamp of `lastCmd` (ISO string). Used as the row's
-     *  `lastActive` so shells age by their most recent use, not by
-     *  spawn time. */
-    lastCmdTs?: string;
-    /** User-set title keyed by `shell:<termId>` in the workspace's
-     *  session-title store; takes precedence over the inline last-cmd. */
-    manualTitle?: string;
-  }
-  interface ActivityEvent {
-    agent: "claude" | "codex" | "copilot";
-    cwd: string;
-    sessionId: string;
-    summary: string;
-    timestamp: string;
-    source: string;
-  }
-  interface Worktree {
-    path: string;
-    branch: string;
-    head: string;
-    bare: boolean;
-    detached: boolean;
-    fileStatus: FileStatus;
-    branchStatus: BranchStatus | null;
-    lastCommit: LastCommit | null;
-    agents?: AgentSession[];
-    nonGit?: boolean;
-  }
-  interface RemoteRef {
-    name: string;
-    url: string;
-    webUrl: string | null;
-    provider: string | null;
-    host: string | null;
-  }
-  /** A user-defined "open in" link. URL links open in a new browser
-   *  tab; file / folder links go through `/api/open-default` which
-   *  hands the path to the platform's default app (Finder, Explorer,
-   *  xdg-open). */
-  type CommandRunMode = "internal" | "external" | "shell";
-  type CustomLink =
-    | { id: string; kind?: "url"; url: string; name?: string }
-    | { id: string; kind: "file"; path: string; name?: string }
-    | { id: string; kind: "folder"; path: string; name?: string }
-    | {
-        id: string;
-        kind: "command";
-        cmd: string;
-        cwd?: string;
-        runMode: CommandRunMode;
-        name?: string;
-      };
-  interface Repo {
-    id: string;
-    path: string;
-    name: string;
-    addedAt: string;
-    /** Owning remote daemon (undefined ⇒ local). Set during repo-list
-     *  fan-out when the repo came from a remote daemon's
-     *  `/api/daemons/<id>/repos`; threaded into row-scoped calls via
-     *  `apiUrl(path, daemonId)` so they hit the right daemon. */
-    daemonId?: string;
-    /** Optional accent colour (#rrggbb) — applied wherever the repo
-     *  name renders so the user can tell repos apart at a glance. */
-    color?: string;
-    worktrees: Worktree[];
-    /** Git remotes for this repo (empty for non-git folders). */
-    remotes?: RemoteRef[];
-    /** User-defined "open in <X>" links (Coolify dashboards, staging
-     *  URLs, anything web). Render as extra chips alongside the
-     *  editor / Fork / remote buttons in the worktree row's action
-     *  strip. */
-    customLinks?: CustomLink[];
-  }
-  type AddRepoResponse = Repo & { alreadyRegistered?: boolean };
-  interface EditorDescriptor {
-    name: string;
-    cmd: string;
-  }
 
   let repos: Repo[] = [];
   /** User-defined cross-daemon row order, as a list of `daemonRepoKey`s,
@@ -698,6 +568,30 @@
   }
   function toggleNotesHidden(key: string): void {
     notesHiddenByRow = { ...notesHiddenByRow, [key]: !notesHiddenByRow[key] };
+  }
+  function revealNotesForRow(key: string): void {
+    if (zenRowKey === key) {
+      notesShownInZen = true;
+      return;
+    }
+    if (!notesHiddenByRow[key]) return;
+    notesHiddenByRow = {
+      ...notesHiddenByRow,
+      [key]: false,
+    };
+  }
+  function handleRowNoteAction(
+    key: string,
+    anchor: string,
+    detail: { kind: "note" | "link" | "emoji"; body?: string; originRect: DOMRect },
+  ): void {
+    revealNotesForRow(key);
+    void spawnNote({
+      anchor,
+      originRect: detail.originRect,
+      kind: detail.kind,
+      body: detail.body,
+    });
   }
   /** Per-row "notes list" popover. Keyed by the same row.key the rest
    *  of the row state uses. Opens off the small count badge sitting to
@@ -6022,62 +5916,10 @@
     }
   }
 
-  // BLINK_AHEAD_MINUTES + aheadAged() live in ./ahead-age (imported
-  // above) so the threshold math is unit-testable without standing up
-  // the component.
-
-  function aheadTooltip(b: BranchStatus): string {
-    const count = pushCount(b);
-    const noun = count === 1 ? "commit" : "commits";
-    // No upstream → these commits are on no remote-tracking ref at all,
-    // so there's no "→ origin/x" target to name; say so plainly.
-    const base = b.upstream
-      ? `${count} ${noun} to push → ${b.upstream}`
-      : `${count} ${noun} on no remote`;
-    if (!b.aheadOldestTime) return base;
-    return `${base} · oldest ${relTime(b.aheadOldestTime)}`;
-  }
-
   /** Per-worktree fetched detail for the row-status / ↑N hover
    *  tooltips. Populated lazily on first hover via /api/wt-summary.
    *  Sentinel `"loading"` is set synchronously when the request goes
    *  out so a second hover during the round-trip doesn't re-fire. */
-  interface WtCommit {
-    sha: string;
-    subject: string;
-    /** Author name (`%an`). Empty string when the daemon couldn't read it
-     *  (e.g. legacy-format response from a stale prod build). */
-    author?: string;
-    /** Relative date string (`%ar`, e.g. "2 hours ago"). Empty string in
-     *  the same legacy/error case as `author`. */
-    date?: string;
-  }
-  interface NumstatEntry {
-    added: number;
-    removed: number;
-    binary: boolean;
-  }
-  interface WtSummary {
-    staged: string[];
-    unstaged: string[];
-    untracked: string[];
-    /** Local commits ahead of upstream (↑N tooltip). */
-    unpushedCommits: WtCommit[];
-    /** Upstream commits ahead of local (↓N tooltip). Capped server-side
-     *  at 20; the tooltip further caps display at the first 10. Optional
-     *  for backwards-compat with older daemon builds. */
-    unfetchedCommits?: WtCommit[];
-    /** Per-path added/removed line counts for working-tree files
-     *  (unstaged + synthesised untracked). Misses render as no count.
-     *  Optional for back-compat with older daemon builds. */
-    stats?: Record<string, NumstatEntry>;
-    /** Per-path added/removed line counts for staged files (index vs
-     *  HEAD). Optional for back-compat. */
-    stagedStats?: Record<string, NumstatEntry>;
-  }
-  /** Hard cap on commits rendered per tooltip. The daemon already caps at
-   *  20; this trims further to keep the hover overlay glanceable. */
-  const COMMIT_TOOLTIP_LIMIT = 10;
   let wtSummaryByPath: Record<string, WtSummary | "loading"> = {};
 
   async function loadWtSummary(
@@ -8422,166 +8264,21 @@
                     {/if}
                   </span>
                 {/if}
-                {#if wt && badgeAnimDebug}
-                  <span class="status-badge-debug-row">
-                    <StatusBadge
-                      ahead={1}
-                      behind={0}
-                      dirty={0}
-                      pulsate={pulsateDebug}
-                    />
-                    <StatusBadge ahead={0} behind={1} dirty={0} />
-                  </span>
-                {:else if wt && !wt.nonGit}
-                  {@const fAhead = pushCount(wt.branchStatus)}
-                  {@const fBehind = wt.branchStatus?.behind ?? 0}
-                  {@const fDirty =
-                    wt.fileStatus.staged +
-                    wt.fileStatus.unstaged +
-                    wt.fileStatus.untracked}
-                  {@const fDirtyWarn =
-                    fDirty > 3 || (wt.fileStatus.dirtyLines ?? 0) > 200}
-                  {#if fAhead > 0}
-                    <Tooltip
-                      variant="wide"
-                      onShow={() => loadWtSummary(wt.path)}
-                    >
-                      <span slot="trigger" class="status-badge-trigger">
-                        <StatusBadge
-                          ahead={fAhead}
-                          danger={pushBadgeDanger(wt.branchStatus)}
-                          pulsate={wt.branchStatus
-                            ? aheadAged(wt.branchStatus)
-                            : false}
-                          onClick={() => tryPush(repo.id, wt.path)}
-                          busy={!!pushBusy[wt.path]}
-                          title={wt.branchStatus?.upstream
-                            ? `Push ${fAhead} commit${fAhead === 1 ? "" : "s"} to ${wt.branchStatus.upstream}`
-                            : `${fAhead} commit${fAhead === 1 ? "" : "s"} on no remote — set an upstream to push`}
-                        />
-                      </span>
-                      <span slot="content" class="wt-tt-content">
-                        <div class="wt-tt-section-head">
-                          {aheadTooltip(wt.branchStatus)}
-                        </div>
-                        {#if wtSummaryByPath[wt.path] === undefined || wtSummaryByPath[wt.path] === "loading"}
-                          <span class="muted small">Loading commits…</span>
-                        {:else}
-                          {@const s = wtSummaryByPath[wt.path]}
-                          {#if s !== "loading" && s !== undefined && s.unpushedCommits.length > 0}
-                            <div class="wt-tt-commits">
-                              {#each s.unpushedCommits.slice(0, COMMIT_TOOLTIP_LIMIT) as c}
-                                <span class="wt-tt-sha"
-                                  >{c.sha.slice(0, 7)}</span
-                                >
-                                <span
-                                  class="wt-tt-author"
-                                  title={c.author ?? ""}>{c.author ?? ""}</span
-                                >
-                                <span class="wt-tt-date"
-                                  >{c.date ? relTime(c.date) : ""}</span
-                                >
-                                <span class="wt-tt-subject" title={c.subject}
-                                  >{clampSubject(c.subject)}</span
-                                >
-                              {/each}
-                            </div>
-                            {#if s.unpushedCommits.length > COMMIT_TOOLTIP_LIMIT}
-                              <div class="wt-tt-more">
-                                +{s.unpushedCommits.length -
-                                  COMMIT_TOOLTIP_LIMIT} more
-                              </div>
-                            {/if}
-                          {/if}
-                        {/if}
-                      </span>
-                    </Tooltip>
-                  {/if}
-                  {#if fBehind > 0}
-                    <Tooltip
-                      variant="wide"
-                      onShow={() => loadWtSummary(wt.path)}
-                    >
-                      <span slot="trigger" class="status-badge-trigger">
-                        <StatusBadge
-                          behind={fBehind}
-                          onClick={() => tryPull(repo.id, wt.path)}
-                          busy={!!pullBusy[wt.path]}
-                          title={`Pull ${fBehind} commit${fBehind === 1 ? "" : "s"} from ${wt.branchStatus?.upstream ?? "upstream"}`}
-                        />
-                      </span>
-                      <span slot="content" class="wt-tt-content">
-                        <div class="wt-tt-section-head">
-                          {fBehind} commit{fBehind === 1 ? "" : "s"} to pull from
-                          {wt.branchStatus?.upstream ?? "upstream"}
-                        </div>
-                        {#if wtSummaryByPath[wt.path] === undefined || wtSummaryByPath[wt.path] === "loading"}
-                          <span class="muted small">Loading commits…</span>
-                        {:else}
-                          {@const s = wtSummaryByPath[wt.path]}
-                          {#if s !== "loading" && s !== undefined && s.unfetchedCommits && s.unfetchedCommits.length > 0}
-                            <div class="wt-tt-commits">
-                              {#each s.unfetchedCommits.slice(0, COMMIT_TOOLTIP_LIMIT) as c}
-                                <span class="wt-tt-sha"
-                                  >{c.sha.slice(0, 7)}</span
-                                >
-                                <span
-                                  class="wt-tt-author"
-                                  title={c.author ?? ""}>{c.author ?? ""}</span
-                                >
-                                <span class="wt-tt-date"
-                                  >{c.date ? relTime(c.date) : ""}</span
-                                >
-                                <span class="wt-tt-subject" title={c.subject}
-                                  >{clampSubject(c.subject)}</span
-                                >
-                              {/each}
-                            </div>
-                            {#if s.unfetchedCommits.length > COMMIT_TOOLTIP_LIMIT}
-                              <div class="wt-tt-more">
-                                +{s.unfetchedCommits.length -
-                                  COMMIT_TOOLTIP_LIMIT} more
-                              </div>
-                            {/if}
-                          {/if}
-                        {/if}
-                      </span>
-                    </Tooltip>
-                  {/if}
-                  {#if fDirty > 0}
-                    <Tooltip
-                      variant="wide"
-                      onShow={() => loadWtSummary(wt.path)}
-                    >
-                      <span slot="trigger" class="status-badge-trigger">
-                        <StatusBadge dirty={fDirty} warn={fDirtyWarn} />
-                      </span>
-                      <span slot="content" class="wt-tt-content">
-                        <ChangedFilesTooltipBody
-                          summary={wtSummaryByPath[wt.path]}
-                          worktreePath={wt.path}
-                          daemonId={daemonIdForWorktreePath(repos, wt.path)}
-                        />
-                      </span>
-                    </Tooltip>
-                  {/if}
-                  {#if fAhead === 0 && fBehind === 0 && fDirty === 0 && wt.branchStatus?.upstream}
-                    <span
-                      class="status-badge status-badge-sync"
-                      title="In sync with {wt.branchStatus.upstream}"
-                    >
-                      <svg
-                        class="sync-check-icon"
-                        viewBox="0 0 16 16"
-                        fill="none"
-                        stroke="currentColor"
-                        stroke-width="2.2"
-                        stroke-linecap="round"
-                        stroke-linejoin="round"
-                        ><polyline points="3.5 8.5 6.5 11.5 12.5 5" /></svg
-                      >
-                    </span>
-                  {/if}
+                {#if wt && (badgeAnimDebug || !wt.nonGit)}
+                  <RowStatusBadges
+                    path={wt.path}
+                    branchStatus={wt.branchStatus}
+                    fileStatus={wt.fileStatus}
+                    summary={wtSummaryByPath[wt.path]}
+                    daemonId={daemonIdForWorktreePath(repos, wt.path)}
+                    debug={badgeAnimDebug}
+                    {pulsateDebug}
+                    pushBusy={!!pushBusy[wt.path]}
+                    pullBusy={!!pullBusy[wt.path]}
+                    on:loadSummary={() => loadWtSummary(wt.path)}
+                    on:push={() => tryPush(repo.id, wt.path)}
+                    on:pull={() => tryPull(repo.id, wt.path)}
+                  />
                 {/if}
                 {#if wt}
                   {@const a =
@@ -9155,7 +8852,37 @@
                  worktrees button so the row's action group reads as
                  a single family. -->
               {#if !rowFolded[row.key]}
-                <span class="note-add-stack">
+                <RowNoteActions
+                  rowKey={row.key}
+                  notesVisible={zenRowKey === row.key
+                    ? notesShownInZen
+                    : !notesHiddenByRow[row.key]}
+                  noteTitle={wt
+                    ? `Pin a sticky note to this worktree (\`${wt.branch}\`)`
+                    : `Pin a sticky note to \`${repo.name ?? repo.path}\``}
+                  linkTitle={wt
+                    ? `Pin a link to this worktree (\`${wt.branch}\`) — URL, commit SHA, session, or file path`
+                    : `Pin a link to \`${repo.name ?? repo.path}\` — URL, commit SHA, session, or file path`}
+                  emojiOpen={!!emojiPickerOpen[row.key]}
+                  on:toggleNotes={() => {
+                    if (zenRowKey === row.key)
+                      notesShownInZen = !notesShownInZen;
+                    else toggleNotesHidden(row.key);
+                  }}
+                  on:add={(e) => handleRowNoteAction(row.key, noteAnchor, e.detail)}
+                  on:toggleEmoji={() => {
+                    emojiPickerOpen = {
+                      ...emojiPickerOpen,
+                      [row.key]: !emojiPickerOpen[row.key],
+                    };
+                  }}
+                  on:closeEmoji={() => {
+                    emojiPickerOpen = {
+                      ...emojiPickerOpen,
+                      [row.key]: false,
+                    };
+                  }}
+                >
                   {#if noteCount > 0}
                     <span
                       class="row-note-count-anchor"
@@ -9175,350 +8902,21 @@
                       >
                       {#if notesListOpen[row.key]}
                         {@const anchorStr = noteAnchor}
-                        {@const rowNotes = $notesAll.filter((n) =>
-                          n.anchors.some((a) => a === anchorStr),
-                        )}
-                        {@const rowDeletes =
-                          removeNoteEventsByAnchor[anchorStr] ?? []}
-                        {@const visibleNotes = rowNotes
-                          .filter((n) => n.kind !== "emoji")
-                          .map((n) => ({ n, display: notesListDisplay(n) }))
-                          .filter((row) => row.display.text.length > 0)}
-                        {@const visibleDeletes = rowDeletes
-                          .filter((ev) => ev.inverse?.note?.kind !== "emoji")
-                          .slice(0, 20)
-                          .map((ev) => ({
-                            ev,
-                            display: notesListDisplay({
-                              body:
-                                (ev.inverse?.note?.body as
-                                  | string
-                                  | undefined) ?? "",
-                              kind: ev.inverse?.note?.kind,
-                              target: ev.inverse?.note?.target,
-                            }),
-                          }))
-                          .filter((r) => r.display.text.length > 0)}
-                        <Popover
-                          variant="agents"
-                          extraClass="notes-list-popover"
-                        >
-                          <svelte:fragment slot="head">
-                            Notes on {wt
-                              ? `${repo.name ?? repoName(repo)} · ${wt.branch ?? "?"}`
-                              : (repo.name ?? repoName(repo))}
-                          </svelte:fragment>
-                          <div class="notes-list-section">
-                            {#if visibleNotes.length === 0}
-                              <p class="muted small nopad">
-                                No notes with content.
-                              </p>
-                            {:else}
-                              <ul class="notes-list">
-                                {#each visibleNotes as row (row.n.id)}
-                                  {@const n = row.n}
-                                  <li
-                                    class="notes-list-row"
-                                    class:is-link={row.display.kind === "link"}
-                                  >
-                                    <span
-                                      class="notes-list-kind"
-                                      aria-hidden="true"
-                                    >
-                                      {#if row.display.kind === "link"}
-                                        {#if row.display.agent || row.display.provider || row.display.glyph}
-                                          <AttachmentIcon
-                                            agent={row.display.agent}
-                                            provider={row.display.provider}
-                                            glyph={row.display.glyph}
-                                            size={14}
-                                          />
-                                        {:else}
-                                          <svg
-                                            viewBox="0 0 24 24"
-                                            width="12"
-                                            height="12"
-                                            fill="none"
-                                            stroke="currentColor"
-                                            stroke-width="2.2"
-                                            stroke-linecap="round"
-                                            stroke-linejoin="round"
-                                            aria-hidden="true"
-                                          >
-                                            <path
-                                              d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"
-                                            />
-                                            <path
-                                              d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"
-                                            />
-                                          </svg>
-                                        {/if}
-                                      {:else}
-                                        <NoteIcon size={13} />
-                                      {/if}
-                                    </span>
-                                    <span
-                                      class="notes-list-body"
-                                      title={row.display.title}
-                                      >{row.display.text}</span
-                                    >
-                                    <span class="muted ev-time"
-                                      >{relTime(n.updatedAt)}</span
-                                    >
-                                  </li>
-                                {/each}
-                              </ul>
-                            {/if}
-                          </div>
-                          <div class="notes-list-section">
-                            <div class="notes-list-section-head">
-                              Recently deleted ({visibleDeletes.length})
-                            </div>
-                            {#if visibleDeletes.length === 0}
-                              <p class="muted small nopad">None.</p>
-                            {:else}
-                              <ul class="notes-list">
-                                {#each visibleDeletes as r (r.ev.id)}
-                                  <li
-                                    class="notes-list-row deleted"
-                                    class:is-link={r.display.kind === "link"}
-                                  >
-                                    <span
-                                      class="notes-list-kind"
-                                      aria-hidden="true"
-                                    >
-                                      {#if r.display.kind === "link"}
-                                        {#if r.display.agent || r.display.provider || r.display.glyph}
-                                          <AttachmentIcon
-                                            agent={r.display.agent}
-                                            provider={r.display.provider}
-                                            glyph={r.display.glyph}
-                                            size={14}
-                                          />
-                                        {:else}
-                                          <svg
-                                            viewBox="0 0 24 24"
-                                            width="12"
-                                            height="12"
-                                            fill="none"
-                                            stroke="currentColor"
-                                            stroke-width="2.2"
-                                            stroke-linecap="round"
-                                            stroke-linejoin="round"
-                                            aria-hidden="true"
-                                          >
-                                            <path
-                                              d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"
-                                            />
-                                            <path
-                                              d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"
-                                            />
-                                          </svg>
-                                        {/if}
-                                      {:else}
-                                        <NoteIcon size={13} />
-                                      {/if}
-                                    </span>
-                                    <span
-                                      class="notes-list-body"
-                                      title={r.display.title}
-                                      >{r.display.text}</span
-                                    >
-                                    <span class="muted ev-time"
-                                      >{relTime(r.ev.timestamp)}</span
-                                    >
-                                    <button
-                                      class="undo"
-                                      on:click={(e) =>
-                                        void undoNoteDelete(
-                                          r.ev,
-                                          e.currentTarget as HTMLElement,
-                                        )}
-                                      title="Restore this deleted note"
-                                      >Undo</button
-                                    >
-                                  </li>
-                                {/each}
-                              </ul>
-                            {/if}
-                          </div>
-                        </Popover>
+                        <RowNotesListPopover
+                          title={wt
+                            ? `Notes on ${repo.name ?? repoName(repo)} · ${wt.branch ?? "?"}`
+                            : `Notes on ${repo.name ?? repoName(repo)}`}
+                          notes={$notesAll.filter((n) =>
+                            n.anchors.some((a) => a === anchorStr),
+                          )}
+                          deletes={removeNoteEventsByAnchor[anchorStr] ?? []}
+                          on:undoDelete={(e) =>
+                            void undoNoteDelete(e.detail.event, e.detail.trigger)}
+                        />
                       {/if}
                     </span>
                   {/if}
-                  <button
-                    class="new-wt notes-toggle"
-                    class:active={zenRowKey === row.key
-                      ? notesShownInZen
-                      : !notesHiddenByRow[row.key]}
-                    title={(
-                      zenRowKey === row.key
-                        ? notesShownInZen
-                        : !notesHiddenByRow[row.key]
-                    )
-                      ? "Hide this row's sticky notes"
-                      : "Show this row's sticky notes"}
-                    on:click|stopPropagation={() => {
-                      if (zenRowKey === row.key)
-                        notesShownInZen = !notesShownInZen;
-                      else toggleNotesHidden(row.key);
-                    }}>notes</button
-                  >
-                  <button
-                    class="new-wt notes-add"
-                    title={wt
-                      ? `Pin a sticky note to this worktree (\`${wt.branch}\`)`
-                      : `Pin a sticky note to \`${repo.name ?? repo.path}\``}
-                    on:click|stopPropagation={(e) => {
-                      // Un-hide first so the freshly-spawned note is visible.
-                      if (zenRowKey === row.key) {
-                        notesShownInZen = true;
-                      } else if (notesHiddenByRow[row.key]) {
-                        notesHiddenByRow = {
-                          ...notesHiddenByRow,
-                          [row.key]: false,
-                        };
-                      }
-                      const btn = e.currentTarget as HTMLButtonElement;
-                      const anchor = wt
-                        ? `worktree:${wt.path}`
-                        : `repo:${repo.path}`;
-                      void spawnNote({
-                        anchor,
-                        originRect: btn.getBoundingClientRect(),
-                      });
-                    }}>+</button
-                  >
-                  <!-- Link companion — same spawn machinery, kind: "link"
-                   instead. Docked to + so the action group reads as
-                   one family (count · notes · + · ⛓); the chip vs
-                   paper-sticky render decision happens inside
-                   StickyNote based on the note.kind discriminator.
-
-                   Icon is inline SVG (not 🔗 emoji) so it inherits
-                   the surrounding `color: var(--text-muted)` via
-                   `stroke: currentColor` — same rendering hook every
-                   other muted text glyph in this toolbar uses. The
-                   emoji renders as a colour bitmap on every modern OS
-                   and ignores `color`, which is why the previous
-                   text-shadow workaround looked off-weight next to
-                   the "+". -->
-                  <button
-                    class="new-wt notes-add notes-add-link"
-                    title={wt
-                      ? `Pin a link to this worktree (\`${wt.branch}\`) — URL, commit SHA, session, or file path`
-                      : `Pin a link to \`${repo.name ?? repo.path}\` — URL, commit SHA, session, or file path`}
-                    on:click|stopPropagation={(e) => {
-                      if (zenRowKey === row.key) {
-                        notesShownInZen = true;
-                      } else if (notesHiddenByRow[row.key]) {
-                        notesHiddenByRow = {
-                          ...notesHiddenByRow,
-                          [row.key]: false,
-                        };
-                      }
-                      const btn = e.currentTarget as HTMLButtonElement;
-                      const anchor = wt
-                        ? `worktree:${wt.path}`
-                        : `repo:${repo.path}`;
-                      void spawnNote({
-                        anchor,
-                        originRect: btn.getBoundingClientRect(),
-                        kind: "link",
-                      });
-                    }}
-                    aria-label="Add link"
-                  >
-                    <svg
-                      viewBox="0 0 24 24"
-                      width="11"
-                      height="11"
-                      fill="none"
-                      stroke="currentColor"
-                      stroke-width="2.2"
-                      stroke-linecap="round"
-                      stroke-linejoin="round"
-                      aria-hidden="true"
-                    >
-                      <path
-                        d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"
-                      />
-                      <path
-                        d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"
-                      />
-                    </svg>
-                  </button>
-                  <span
-                    class="emoji-picker-anchor"
-                    data-emoji-picker-anchor={row.key}
-                  >
-                    <button
-                      class="new-wt notes-add notes-add-emoji"
-                      title="Add sticker"
-                      on:click|stopPropagation={() => {
-                        emojiPickerOpen = {
-                          ...emojiPickerOpen,
-                          [row.key]: !emojiPickerOpen[row.key],
-                        };
-                      }}
-                      aria-label="Add sticker"
-                    >
-                      <svg
-                        viewBox="0 0 24 24"
-                        width="11"
-                        height="11"
-                        fill="none"
-                        stroke="currentColor"
-                        stroke-width="2.2"
-                        stroke-linecap="round"
-                        stroke-linejoin="round"
-                        aria-hidden="true"
-                      >
-                        <circle cx="12" cy="12" r="10" />
-                        <circle cx="9" cy="9" r="1" />
-                        <circle cx="15" cy="9" r="1" />
-                        <path d="M8 14s1.5 2 4 2 4-2 4-2" />
-                      </svg>
-                    </button>
-                    {#if emojiPickerOpen[row.key]}
-                      <EmojiPicker
-                        on:pick={(e) => {
-                          // Keep the picker open so several stickers can be
-                          // added in a row; close via cancel / click-outside.
-                          if (zenRowKey === row.key) {
-                            notesShownInZen = true;
-                          } else if (notesHiddenByRow[row.key]) {
-                            notesHiddenByRow = {
-                              ...notesHiddenByRow,
-                              [row.key]: false,
-                            };
-                          }
-                          const anchor = wt
-                            ? `worktree:${wt.path}`
-                            : `repo:${repo.path}`;
-                          const btn = document.querySelector(
-                            `[data-wt-row="${CSS.escape(wt?.path ?? repo.id)}"] .notes-add-emoji`,
-                          ) as HTMLElement | null;
-                          const rect =
-                            btn?.getBoundingClientRect() ??
-                            new DOMRect(0, 0, 0, 0);
-                          void spawnNote({
-                            anchor,
-                            originRect: rect,
-                            kind: "emoji",
-                            body: e.detail,
-                          });
-                        }}
-                        on:cancel={() => {
-                          emojiPickerOpen = {
-                            ...emojiPickerOpen,
-                            [row.key]: false,
-                          };
-                        }}
-                      />
-                    {/if}
-                  </span>
-                </span>
+                </RowNoteActions>
               {/if}
               {#if !rowFolded[row.key]}
                 <span
@@ -9684,16 +9082,11 @@
                   iconOnly
                 />
               {/if}
-              <button
-                class="row-zen-btn"
-                class:open={zenRowKey === row.key}
-                title={zenRowKey === row.key
-                  ? "Exit zen — restore the rest of the dashboard (Esc)"
-                  : `Zen — make \`${repo.name}${wt ? ` · ${wt.branch}` : ""}\` fill the viewport`}
-                aria-label={zenRowKey === row.key ? "Exit zen" : "Enter zen"}
-                on:click|stopPropagation={() => toggleZenRow(row.key)}
-                >{zenRowKey === row.key ? "◱" : "▣"}</button
-              >
+              <ZenToggleButton
+                open={zenRowKey === row.key}
+                label={`${repo.name}${wt ? ` · ${wt.branch}` : ""}`}
+                on:toggle={() => toggleZenRow(row.key)}
+              />
               <button
                 class="row-remove"
                 title={wt && !wt.nonGit

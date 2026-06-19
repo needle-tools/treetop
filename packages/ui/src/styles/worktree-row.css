@@ -2043,3 +2043,187 @@ body.platform-windows .sessions-strip::-webkit-scrollbar-thumb:active {
     background: transparent;
   }
 }
+
+/* ------------------------------------------------------------------
+ * WorkspacePreview — reusable, memory-backed dashboard slice used by
+ * the public site and future in-app explainers. It composes the
+ * production row/session classes above instead of carrying a second
+ * "demo dashboard" stylesheet.
+ * ------------------------------------------------------------------ */
+.workspace-preview-shell {
+  --workspace-preview-sticky-top: clamp(0.75rem, 2vh, 1.25rem);
+  --workspace-preview-max-height: calc(
+    100vh - var(--workspace-preview-sticky-top) - clamp(1rem, 4vh, 3rem)
+  );
+}
+.workspace-preview-sticky {
+  position: sticky;
+  top: var(--workspace-preview-sticky-top);
+  z-index: 2;
+}
+.workspace-preview-shell.workspace-preview-zen {
+  z-index: 120;
+}
+.workspace-preview {
+  position: relative;
+  overflow: visible;
+  min-height: 360px;
+  padding: 1.5rem 1.5rem 1.5rem 2.8rem;
+  color: var(--text-1);
+  font-family: -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+  border: 1px solid color-mix(in srgb, var(--text-muted) 16%, transparent);
+  border-radius: var(--radius-lg);
+  background:
+    radial-gradient(
+      70% 70% at 32% 18%,
+      color-mix(in srgb, var(--brand) 10%, transparent),
+      transparent
+    ),
+    var(--bg-0, #1a1a1b);
+  box-shadow: 0 40px 90px -40px rgba(20, 36, 14, 0.7);
+}
+.workspace-preview.bounded {
+  height: var(--workspace-preview-max-height);
+  max-height: var(--workspace-preview-max-height);
+  min-height: min(36rem, var(--workspace-preview-max-height));
+  padding-left: 1rem;
+}
+.workspace-preview-frame {
+  display: grid;
+  grid-template-columns: 3.4rem minmax(0, 1fr);
+  gap: 0.45rem;
+  position: relative;
+  height: 100%;
+  min-height: 0;
+}
+.workspace-preview-layout {
+  position: relative;
+  min-width: 0;
+  min-height: 0;
+}
+.workspace-preview.bounded .workspace-preview-layout {
+  overflow-y: auto;
+  overscroll-behavior: auto;
+  padding-right: 0.25rem;
+}
+.workspace-preview .rows {
+  display: grid;
+  gap: 0.7rem;
+}
+.workspace-preview .row {
+  border-color: transparent;
+  background: color-mix(in srgb, var(--surface-1) 88%, var(--surface-0));
+}
+.workspace-preview .row-head {
+  gap: 0.55rem;
+}
+.workspace-preview .row:not(.row-zen) .row-body {
+  display: block;
+}
+.workspace-preview .sessions-strip {
+  padding-block: 0.35rem;
+}
+.workspace-preview .session-col {
+  min-width: min(76ch, calc(100vw - 8rem));
+}
+.workspace-session-preview {
+  --session-head-height: 3.25rem;
+  --session-body-min-height: 28rem;
+  --session-body-max-height: 60vh;
+  --composer-tray-max-height: min(13rem, 34vh);
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 calc(
+    var(--session-body-min-height) + var(--session-head-height)
+  );
+  height: 100%;
+  min-height: calc(var(--session-body-min-height) + var(--session-head-height));
+  max-height: calc(var(--session-body-max-height) + var(--session-head-height));
+  box-sizing: border-box;
+  border: 1px solid var(--surface-2);
+  border-radius: var(--radius-md);
+  background: var(--surface-1);
+  overflow: hidden;
+  transition: border-color 0.2s ease;
+}
+.workspace-session-preview.awaiting-input {
+  border-color: var(--status-dirty);
+}
+.workspace-session-preview.awaiting-input::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  box-shadow: inset 0 0 8px 2px
+    color-mix(in srgb, var(--status-dirty) 45%, transparent);
+  animation: session-awaiting-pulse 1.8s ease-in-out infinite;
+}
+@keyframes session-awaiting-pulse {
+  0%,
+  100% {
+    opacity: 0;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+.workspace-session-preview .session-head-stack {
+  position: relative;
+  flex: 0 0 auto;
+  z-index: 2;
+}
+.workspace-session-preview.read-mode .messages {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+.workspace-preview.zen-row .row:not(.row-zen) {
+  display: none;
+}
+.workspace-preview.bounded.zen-row {
+  height: auto;
+  max-height: none;
+  min-height: 0;
+  overflow: visible;
+}
+.workspace-preview.bounded.zen-row .workspace-preview-layout {
+  overflow: visible;
+  padding-right: 0;
+}
+.workspace-preview-shell.workspace-preview-zen
+  .workspace-preview
+  .session-dock.embedded {
+  position: fixed;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  height: 100vh;
+  width: max-content;
+  z-index: 1600;
+}
+.row.row-zen .workspace-session-preview {
+  max-height: none;
+}
+.workspace-preview.zen-row .sticky-layer.contained {
+  position: fixed;
+  inset: 0;
+  width: 100vw;
+  height: 100vh;
+  overflow: visible;
+}
+
+@media (max-width: 720px) {
+  .workspace-preview {
+    padding: 1rem;
+  }
+  .workspace-preview-frame {
+    display: block;
+  }
+  .workspace-preview .row-head {
+    flex-wrap: wrap;
+  }
+  .workspace-preview .wt-path {
+    flex-basis: 100%;
+  }
+}

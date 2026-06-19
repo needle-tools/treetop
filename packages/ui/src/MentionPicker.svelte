@@ -242,7 +242,12 @@
   });
 </script>
 
-<div class="mention-picker" role="combobox" aria-expanded="true">
+<div
+  class="mention-picker"
+  role="combobox"
+  aria-controls="mention-picker-list"
+  aria-expanded="true"
+>
   <!-- Input + inline spinner. The spinner only renders while a
        provider fetch is in flight, sits absolute over the input's
        right edge, and disappears the moment results land. This is
@@ -272,7 +277,7 @@
       {/if}
     </div>
   {/if}
-  <div class="mention-picker-list" role="listbox">
+  <div id="mention-picker-list" class="mention-picker-list" role="listbox">
     {#if visibleItems.length === 0}
       <div class="mention-picker-empty">
         {#if loading}

@@ -24,6 +24,6 @@
         transparent 55%
       ),
       var(--cream);
-    overflow-x: hidden;
+    overflow-x: clip;
   }
 </style>

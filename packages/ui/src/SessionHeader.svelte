@@ -162,7 +162,10 @@
     tokens: contextTokens,
     exact: contextTokensExact,
     model,
-    agent: agent === "shell" || agent === "ollama" ? undefined : agent,
+    agent:
+      agent === "claude" || agent === "codex" || agent === "copilot"
+        ? agent
+        : undefined,
     cap: contextWindow,
   });
 
@@ -187,6 +190,8 @@
    *  action can find its `.session` ancestor without an event target —
    *  the menu hands actions a bounding rect, not the clicked node. */
   let headerEl: HTMLElement | null = null;
+  $: void pollCount;
+  $: void lastLoadedAt;
   function toggleFullscreen() {
     const el = headerEl?.closest(".session") as HTMLElement | null;
     if (!el) return;
@@ -312,7 +317,12 @@
   $: effectiveEndSessionLabel = endSessionLabel ?? "Stop Session";
 </script>
 
-<header bind:this={headerEl} draggable="true" on:dragstart={onDragStart}>
+<header
+  bind:this={headerEl}
+  draggable="true"
+  role="presentation"
+  on:dragstart={onDragStart}
+>
   <div class="hdr-col col-agent">
     <span class="agent-pill-anchor" bind:this={pillAnchorEl}>
       {#snippet pillBody()}{#if sshConnected}<svg

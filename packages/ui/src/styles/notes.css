@@ -19,6 +19,12 @@
   pointer-events: none;
   z-index: 900;
 }
+.sticky-layer.contained {
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+}
 /* z-index host wrapper so StickyNotesLayer can stack notes without
    touching the inner .sticky transform. Marked .hidden when the
    note's anchor row is folded — `display: none` keeps the inner

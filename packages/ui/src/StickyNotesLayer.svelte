@@ -133,7 +133,11 @@
     daemonIdForWorktreePath,
     daemonIdForRepoId,
   } from "./repo-fanout";
-  import StickyNote, { type NoteShape as NoteShapeBase } from "./StickyNote.svelte";
+  import StickyNote, {
+    type AttachmentKind,
+    type LinkTarget,
+    type NoteShape as NoteShapeBase,
+  } from "./StickyNote.svelte";
   /** Layer-local extension: carries the in-memory `daemonId` tag (not
    *  persisted) so every mutation can route to the owning daemon. */
   type NoteShape = NoteShapeBase & { daemonId?: string };
@@ -221,6 +225,14 @@
     | null = null;
   export let runningCommandIds: Set<string> = new Set();
   export let commandUrls: Record<string, string[]> = {};
+  /** Optional in-memory backing store for non-daemon surfaces such as
+   *  the public site workspace preview. When set, the layer still uses
+   *  the production StickyNote / positioning / picker / undo UI, but
+   *  mutations stay local to this component instead of calling
+   *  /api/notes. */
+  export let memoryKey: string | null = null;
+  export let initialNotes: NoteShape[] = [];
+  export let contained = false;
 
   let notes: NoteShape[] = [];
   /** Per-note storage. `offsetXFrac` is the note's left edge as a
@@ -291,6 +303,7 @@
   /** Bumped by scroll/resize/MutationObserver to force a re-derive of
    *  every note's screen position from its anchor row's current rect. */
   let tick = 0;
+  let nextMemoryId = 1;
 
   const OFFSETS_KEY = "supergit:notes-offsets";
   const Z_KEY = "supergit:notes-zorder";
@@ -335,15 +348,47 @@
     return (h % 5) - 2;
   }
 
+  function offsetsKey(): string {
+    return memoryKey ? `${OFFSETS_KEY}:${memoryKey}` : OFFSETS_KEY;
+  }
+
+  function zKey(): string {
+    return memoryKey ? `${Z_KEY}:${memoryKey}` : Z_KEY;
+  }
+
+  function layerOrigin(): { left: number; top: number; width: number } {
+    if (!contained || !layerEl) {
+      return {
+        left: 0,
+        top: 0,
+        width: document.documentElement.scrollWidth,
+      };
+    }
+    const rect = layerEl.getBoundingClientRect();
+    return {
+      left: rect.left + window.scrollX,
+      top: rect.top + window.scrollY,
+      width: rect.width,
+    };
+  }
+
+  function toLayerPoint(docX: number, docY: number): { x: number; y: number } {
+    const origin = layerOrigin();
+    return {
+      x: docX - origin.left,
+      y: docY - origin.top,
+    };
+  }
+
   function loadOffsets(): void {
     try {
-      const raw = getDaemonKV().getItem(OFFSETS_KEY);
+      const raw = getDaemonKV().getItem(offsetsKey());
       if (raw) offsets = JSON.parse(raw) ?? {};
     } catch {
       offsets = {};
     }
     try {
-      const raw = getDaemonKV().getItem(Z_KEY);
+      const raw = getDaemonKV().getItem(zKey());
       if (raw) zOrder = JSON.parse(raw) ?? [];
     } catch {
       zOrder = [];
@@ -351,13 +396,78 @@
   }
   function saveOffsets(): void {
     try {
-      getDaemonKV().setItem(OFFSETS_KEY, JSON.stringify(offsets));
+      getDaemonKV().setItem(offsetsKey(), JSON.stringify(offsets));
     } catch {}
   }
   function saveZ(): void {
     try {
-      getDaemonKV().setItem(Z_KEY, JSON.stringify(zOrder));
+      getDaemonKV().setItem(zKey(), JSON.stringify(zOrder));
     } catch {}
+  }
+
+  function memoryNotesKey(): string | null {
+    return memoryKey ? `supergit:memory-notes:${memoryKey}` : null;
+  }
+
+  function loadMemoryNotes(): NoteShape[] {
+    const key = memoryNotesKey();
+    if (!key) return initialNotes;
+    try {
+      const raw = getDaemonKV().getItem(key);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed)) return parsed as NoteShape[];
+      }
+    } catch {}
+    return initialNotes.map((n) => ({ ...n }));
+  }
+
+  function saveMemoryNotes(): void {
+    const key = memoryNotesKey();
+    if (!key) return;
+    try {
+      getDaemonKV().setItem(key, JSON.stringify(notes));
+    } catch {}
+  }
+
+  function publishNotes(): void {
+    const counts: Record<string, number> = {};
+    for (const n of notes) {
+      for (const a of n.anchors) {
+        counts[a] = (counts[a] ?? 0) + 1;
+      }
+    }
+    notesCountByAnchor.set(counts);
+    notesAll.set(notes);
+  }
+
+  function freshMemoryId(): string {
+    nextMemoryId += 1;
+    return `${memoryKey ?? "memory"}-${Date.now().toString(36)}-${nextMemoryId.toString(36)}`;
+  }
+
+  function seedMemoryOffsets(): void {
+    if (!memoryKey) return;
+    const slots = [0.02, 0.4, 0.7, 0.16, 0.52, 0.78];
+    const byAnchor: Record<string, number> = {};
+    let changed = false;
+    const next = { ...offsets };
+    for (const note of notes) {
+      const anchor = note.anchors.find((a) => a.startsWith("worktree:"));
+      if (!anchor) continue;
+      if (next[note.id]?.offsetXFrac !== undefined) continue;
+      const index = byAnchor[anchor] ?? 0;
+      byAnchor[anchor] = index + 1;
+      next[note.id] = {
+        ...(next[note.id] ?? {}),
+        offsetXFrac: slots[index % slots.length],
+        offsetY: 44 + Math.floor(index / 3) * 150 + (index % 3) * 40,
+      };
+      changed = true;
+    }
+    if (!changed) return;
+    offsets = next;
+    saveOffsets();
   }
 
   function bringToFront(id: string): void {
@@ -864,19 +974,23 @@
     const st = staging[note.id];
     if (st) {
       const w = note.kind === "link" ? LINK_W : NOTE_W;
-      const viewportRight = window.scrollX + window.innerWidth - 8;
-      const maxX = Math.max(0, viewportRight - w);
-      return { x: Math.min(Math.max(0, st.docX), maxX), y: st.docY };
+      const origin = layerOrigin();
+      const viewportRight = contained
+        ? origin.left + origin.width - 8
+        : window.scrollX + window.innerWidth - 8;
+      const minX = contained ? origin.left : 0;
+      const maxX = Math.max(minX, viewportRight - w);
+      return toLayerPoint(Math.min(Math.max(minX, st.docX), maxX), st.docY);
     }
     // Mid-fly: ease-out cubic between captured from/to.
     const fly = flyingNotes[note.id];
     if (fly) {
       const t = Math.min(1, (performance.now() - fly.startMs) / fly.durationMs);
       const e = 1 - Math.pow(1 - t, 3);
-      return {
-        x: fly.fromX + (fly.toX - fly.fromX) * e,
-        y: fly.fromY + (fly.toY - fly.fromY) * e,
-      };
+      return toLayerPoint(
+        fly.fromX + (fly.toX - fly.fromX) * e,
+        fly.fromY + (fly.toY - fly.fromY) * e,
+      );
     }
     const li = anchorRowFor(rows, note.anchors);
     if (!li) return null;
@@ -907,13 +1021,20 @@
     // is viewport-relative.
     const docLeft = r.left + window.scrollX;
     const docBottom = r.bottom + window.scrollY;
-    const maxX = Math.max(0, document.documentElement.scrollWidth - NOTE_W - 4);
-    const x = Math.min(Math.max(0, docLeft + offsetX), maxX);
+    const origin = layerOrigin();
+    const minX = contained ? origin.left : 0;
+    const maxX = Math.max(
+      minX,
+      (contained ? origin.left + origin.width : document.documentElement.scrollWidth) -
+        NOTE_W -
+        4,
+    );
+    const docX = Math.min(Math.max(minX, docLeft + offsetX), maxX);
     // Default Y tucks the note's top under the row's bottom edge by
     // NOTE_OVERLAP px — that's where the "tape" pseudo-element sits.
     // offsetY adds the small per-note wiggle the user can drag.
-    const y = docBottom - NOTE_OVERLAP + offsetY;
-    return { x, y };
+    const docY = docBottom - NOTE_OVERLAP + offsetY;
+    return toLayerPoint(docX, docY);
   }
 
   /** Fraction of the row width where a brand-new (never-dragged)
@@ -966,6 +1087,18 @@
   }
 
   async function refresh(): Promise<void> {
+    if (memoryKey) {
+      notes = loadMemoryNotes();
+      const maxSeen = notes
+        .map((n) => parseInt(n.id.split("-").pop() ?? "", 36))
+        .filter((n) => Number.isFinite(n))
+        .reduce((a, b) => Math.max(a, b), 0);
+      nextMemoryId = Math.max(nextMemoryId, maxSeen);
+      seedMemoryOffsets();
+      publishNotes();
+      tick++;
+      return;
+    }
     try {
       // Fetch notes from the local daemon AND every remote daemon.
       // Each batch is tagged with its daemonId so mutations can route
@@ -1042,14 +1175,7 @@
       // Publish per-anchor counts so App.svelte can render the
       // count badge next to each row's "+ note" button without
       // duplicating the /api/notes fetch.
-      const counts: Record<string, number> = {};
-      for (const n of notes) {
-        for (const a of n.anchors) {
-          counts[a] = (counts[a] ?? 0) + 1;
-        }
-      }
-      notesCountByAnchor.set(counts);
-      notesAll.set(notes);
+      publishNotes();
       // Kick a re-derive so freshly-fetched notes pick up positions.
       tick++;
       // Now that the staged render has landed, hand the restored
@@ -1088,6 +1214,47 @@
     const kind = args.kind ?? "note";
     const hasTarget = !!args.target;
     const autoCommit = hasTarget || kind === "emoji";
+    if (memoryKey) {
+      const now = new Date().toISOString();
+      const created: NoteShape = {
+        id: freshMemoryId(),
+        body: args.body ?? "",
+        anchors: [args.anchor],
+        tags: [],
+        createdAt: now,
+        updatedAt: now,
+        ...(kind !== "note" ? { kind } : {}),
+        ...(args.target ? { target: args.target } : {}),
+      };
+      const docX =
+        args.originRect.left +
+        args.originRect.width / 2 -
+        NOTE_W / 2 +
+        window.scrollX;
+      const docY = args.originRect.bottom + 8 + window.scrollY;
+      staging = {
+        ...staging,
+        [created.id]: { docX, docY, anchor: args.anchor },
+      };
+      if (kind === "emoji") {
+        const scale = 0.85 + Math.random() * 0.3;
+        const prev = offsets[created.id] ?? {};
+        offsets = { ...offsets, [created.id]: { ...prev, emojiScale: scale } };
+        saveOffsets();
+      }
+      notes = [created, ...notes];
+      saveMemoryNotes();
+      publishNotes();
+      bringToFront(created.id);
+      editingId = autoCommit ? null : created.id;
+      tick++;
+      await svelteTick();
+      editingId = null;
+      if (autoCommit) {
+        await flyStagedToPin(created.id);
+      }
+      return;
+    }
     const createDaemonId = daemonIdForAnchors([args.anchor]);
     try {
       const res = await fetch(apiUrl("/api/notes", createDaemonId), {
@@ -1136,6 +1303,34 @@
     clientX: number,
     clientY: number,
   ): Promise<void> {
+    if (memoryKey) {
+      const now = new Date().toISOString();
+      const created: NoteShape = {
+        id: freshMemoryId(),
+        body: "",
+        anchors: [target.anchor],
+        tags: [],
+        createdAt: now,
+        updatedAt: now,
+      };
+      setDroppedOffset(created.id, target.li, clientX, clientY);
+      staging = {
+        ...staging,
+        [created.id]: {
+          docX: clientX + window.scrollX - NOTE_W / 2,
+          docY: clientY + window.scrollY - 28,
+          anchor: target.anchor,
+          keepAtOrigin: true,
+        },
+      };
+      notes = [created, ...notes];
+      saveMemoryNotes();
+      publishNotes();
+      bringToFront(created.id);
+      editingId = created.id;
+      tick++;
+      return;
+    }
     const createDaemonId = daemonIdForAnchors([target.anchor]);
     try {
       const res = await fetch(apiUrl("/api/notes", createDaemonId), {
@@ -1893,11 +2088,8 @@
     e: CustomEvent<{
       id: string;
       body: string;
-      target?: {
-        type: "url" | "commit" | "session" | "file" | "command";
-        value: string;
-      } | null;
-      kind?: "note" | "link";
+      target?: LinkTarget | null;
+      kind?: AttachmentKind;
       secret?: boolean;
     }>,
   ): Promise<void> {
@@ -1925,6 +2117,26 @@
       // one fly animation — picker pick and "save with target"
       // both look identical from this point forward.
       await flyStagedToPin(e.detail.id);
+    }
+    if (memoryKey) {
+      notes = notes.map((n) =>
+        n.id === e.detail.id
+          ? {
+              ...n,
+              body: e.detail.body,
+              updatedAt: new Date().toISOString(),
+              ...(e.detail.target !== undefined
+                ? { target: e.detail.target ?? undefined }
+                : {}),
+              ...(e.detail.kind !== undefined ? { kind: e.detail.kind } : {}),
+              ...(e.detail.secret !== undefined ? { secret: e.detail.secret } : {}),
+            }
+          : n,
+      );
+      saveMemoryNotes();
+      publishNotes();
+      bringToFront(e.detail.id);
+      return;
     }
     try {
       // PUT body shape mirrors the daemon's accepted fields. We only
@@ -1963,11 +2175,27 @@
     key: number; // stable {#each} key
     eventId: string; // /api/events/<eventId>/undo target
     body: string; // for the toast text only
+    note?: NoteShape; // memory-mode restore payload
     timeoutId: ReturnType<typeof setTimeout>;
   }
   let undoables: Undoable[] = [];
   let nextUndoKey = 1;
   const UNDO_GRACE_MS = 8000;
+
+  function queueMemoryUndo(note: NoteShape): void {
+    const key = nextUndoKey++;
+    const timeoutId = setTimeout(() => {
+      undoables = undoables.filter((u) => u.key !== key);
+    }, UNDO_GRACE_MS);
+    undoables = [
+      ...undoables,
+      { key, eventId: `memory:${note.id}`, body: note.body, note, timeoutId },
+    ];
+  }
+
+  function memoryNoteHasUndoableContent(note: NoteShape): boolean {
+    return !!note.body.trim() || note.kind === "emoji" || !!note.target;
+  }
 
   async function handleRemove(e: CustomEvent<{ id: string }>): Promise<void> {
     const id = e.detail.id;
@@ -1975,6 +2203,16 @@
     if (!note) return;
     const isStaging = !!staging[id];
     if (isStaging) {
+      if (memoryKey) {
+        notes = notes.filter((n) => n.id !== id);
+        const next = { ...staging };
+        delete next[id];
+        staging = next;
+        saveMemoryNotes();
+        publishNotes();
+        if (memoryNoteHasUndoableContent(note)) queueMemoryUndo(note);
+        return;
+      }
       try {
         await fetch(apiUrl(`/api/notes/${encodeURIComponent(id)}`, note.daemonId), {
           method: "DELETE",
@@ -1993,6 +2231,16 @@
     // animation could even begin.
     removingIds = new Set([...removingIds, id]);
     await new Promise((r) => setTimeout(r, 320));
+    if (memoryKey) {
+      notes = notes.filter((n) => n.id !== id);
+      saveMemoryNotes();
+      publishNotes();
+      const nextRemoving = new Set(removingIds);
+      nextRemoving.delete(id);
+      removingIds = nextRemoving;
+      queueMemoryUndo(note);
+      return;
+    }
     try {
       const res = await fetch(apiUrl(`/api/notes/${encodeURIComponent(id)}`, note.daemonId), {
         method: "DELETE",
@@ -2030,6 +2278,14 @@
     if (!u) return;
     clearTimeout(u.timeoutId);
     undoables = undoables.filter((x) => x.key !== key);
+    if (memoryKey && u.note) {
+      notes = [u.note, ...notes.filter((n) => n.id !== u.note!.id)];
+      saveMemoryNotes();
+      publishNotes();
+      bringToFront(u.note.id);
+      tick++;
+      return;
+    }
     try {
       // The daemon's undo handler recreates the note with the same id;
       // its offset is already sitting in localStorage from before the
@@ -2886,9 +3142,18 @@
     for (const li of marginedRows) li.style.marginBottom = "";
     marginedRows.clear();
   });
+
+  export function refreshPositions(): void {
+    scheduleTick();
+  }
 </script>
 
-<div class="sticky-layer" aria-hidden={notes.length === 0} bind:this={layerEl}>
+<div
+  class="sticky-layer"
+  class:contained
+  aria-hidden={notes.length === 0}
+  bind:this={layerEl}
+>
   {#each notes as note (note.id)}
     {@const pos = positionsByNoteId[note.id]}
     <!-- Render the host even when the row is folded (`pos === null`)

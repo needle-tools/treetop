@@ -8,45 +8,12 @@ import { isLiveCodexAppSource } from "./storage";
  * was previously closed over in App.svelte is passed as an explicit parameter.
  */
 
-// ---------------------------------------------------------------------------
-// Local type definitions
-// (mirrors the inline interfaces declared in App.svelte's <script>)
-// ---------------------------------------------------------------------------
-
-export interface AgentSession {
-  agent: "claude" | "codex" | "copilot" | "ollama" | "shell";
-  cwd: string;
-  lastActive: string;
-  sessionId?: string;
-  source: string;
-  title?: string;
-  lastUserMessage?: string;
-  manualTitle?: string;
-  aiTitle?: string;
-  firstUserMessage?: string;
-  lastUserMessages?: string[];
-  userMessageCount?: number;
-  messageCount?: number;
-  recentMessageCount?: number;
-  lastMessageTs?: string;
-  contextTokens?: number;
-  contextTokensExact?: boolean;
-  contextWindow?: number;
-  model?: string;
-}
-
-export interface ShellRecord {
-  termId: string;
-  wt: string;
-  spawnCwd: string;
-  currentCwd?: string;
-  createdAt: string;
-  alive: boolean;
-  cmdCount?: number;
-  lastCmd?: string;
-  lastCmdTs?: string;
-  manualTitle?: string;
-}
+import type {
+  AgentSession,
+  ShellRecord,
+  Worktree as DashboardWorktree,
+} from "./repo-types";
+export type { AgentSession, ShellRecord } from "./repo-types";
 
 export interface OpenSession {
   agent: AgentSession["agent"] | "shell" | "files" | "history";
@@ -64,10 +31,7 @@ export interface OpenSession {
   shellCmd?: string[];
 }
 
-export interface Worktree {
-  path: string;
-  agents?: AgentSession[];
-}
+export type Worktree = Pick<DashboardWorktree, "path" | "agents">;
 
 export interface Repo {
   worktrees?: Worktree[];

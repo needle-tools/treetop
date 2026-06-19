@@ -17,9 +17,13 @@
   import { createEventDispatcher, onDestroy, onMount, tick } from "svelte";
   import ChatPreview from "./ChatPreview.svelte";
   import DirtyGlyph from "./DirtyGlyph.svelte";
-  import RepoStatusPreview, {
-    type DockWorktreeStatus,
-  } from "./RepoStatusPreview.svelte";
+  import RepoStatusPreview from "./RepoStatusPreview.svelte";
+  import type {
+    DockEntry,
+    DockRepoStatus,
+    DockWorktreeStatus,
+    WtSummaryState,
+  } from "./repo-types";
   import StatusBadge from "./StatusBadge.svelte";
   import { splitDockEntries } from "./dock-split";
   import { GIT_AHEAD, GIT_BEHIND } from "./icons";
@@ -31,63 +35,8 @@
     type PreviewSummary,
   } from "./preview-action";
 
-  /** Minimal shape this component needs per session. The host computes
-   *  these from its open-sessions / agents / repos state and hands them
-   *  over already merged. Keeps the component dumb. */
-  export interface DockEntry {
-    source: string;
-    wtPath: string;
-    rowKey: string;
-    /** Stable repo identifier — used to detect "first dot in this
-     *  repo's group" so the dock can paint a visual gap between
-     *  groups. Repo names aren't safe (two repos can share a name);
-     *  the id is. */
-    repoId: string;
-    agent: "claude" | "codex" | "copilot" | "ollama" | "shell";
-    /** Hex (e.g. "#ff8800"). Undefined → default neutral fill. */
-    repoColor?: string;
-    repoName: string;
-    branch?: string;
-    title?: string;
-    manualTitle?: string;
-    aiTitle?: string;
-    lastUserMessage?: string;
-    /** ISO timestamp of the session's most recent activity. Drives
-     *  the "5 minutes ago" segment in the hover label. */
-    lastActive?: string;
-    /** User + assistant turns in the last ~4 hours. Drives the
-     *  "hot session" activity badge in the dock label. */
-    recentMessageCount?: number;
-    /** ISO timestamp of the actual last user/assistant message. Set
-     *  by the daemon's JSONL scan; falls back to `lastActive` (file
-     *  mtime) when missing. Preferred over `lastActive` for "when
-     *  was this last touched" since `--resume` can bump the mtime
-     *  without appending messages. */
-    lastMessageTs?: string;
-    /** JSONL path the dock fetches on hover to render the last few
-     *  user/assistant messages as a side preview. Undefined ⇒ no
-     *  preview (shells, fresh `__new__:` columns). */
-    transcriptSource?: string;
-    working: boolean;
-    awaiting: boolean;
-    /** True once the column has no live PTY transport. The row stays in
-     *  the dock (hover + click still work) and dims slightly, but it keeps
-     *  the same geometry as live rows; Visual vs Terminal is display style,
-     *  not a sidebar marker-size distinction. */
-    exited: boolean;
-    /** True while the embedded terminal has emitted input/output in
-     *  the last few seconds. This is terminal liveness, separate
-     *  from agent "working" state. */
-    terminalActive: boolean;
-    /** Timestamp (ms) of the most recent working→idle transition.
-     *  When set and recent (< PULSE_MAX_MS), the dock pulses the
-     *  dot as an "unread" reminder until the user re-focuses the
-     *  session. */
-    finishedAt?: number;
-    ioDebugLabel?: string;
-  }
-
   export let entries: DockEntry[];
+  export let embedded = false;
   /** Source of the session the user most recently focused via this
    *  dock. The matching row paints a small left-pointing triangle so
    *  the user can scan the strip and instantly see which dot maps to
@@ -95,23 +44,6 @@
    *  marked as focused. */
   export let focusedSource: string | null = null;
 
-  export interface DockRepoStatus {
-    repoId: string;
-    repoColor?: string;
-    repoName: string;
-    ahead: number;
-    aheadDanger?: boolean;
-    behind: number;
-    staged: number;
-    unstaged: number;
-    untracked: number;
-    /** Count of submodule entries (any kind — internal-dirt OR
-     *  pointer-bump) that the host already folded into the
-     *  staged/unstaged totals. Subtracted out when deciding whether
-     *  to flash the dock's dirty wave so a registered submodule
-     *  doing its own thing doesn't keep the parent's row lit up. */
-    submoduleChanges?: number;
-  }
   /** Per-repo push/pull status. Repos with ahead or behind > 0 get
    *  an animated arrow; all counts show in the hover label. */
   export let dockRepoStatuses: DockRepoStatus[] = [];
@@ -128,7 +60,7 @@
    *  (App.svelte's `wtSummaryByPath`). Threaded through here so the
    *  arrow-row preview can render commit lists + file lists without
    *  re-fetching. */
-  export let wtSummaries: Record<string, unknown> = {};
+  export let wtSummaries: Record<string, WtSummaryState> = {};
   /** Trigger function — called on arrow-row hover for each worktree
    *  in the hovered repo so the host can lazy-load the summary that
    *  feeds {wtSummaries}. No-op when omitted. */
@@ -751,9 +683,11 @@
     bind:this={dockEl}
     class="session-dock"
     class:collapsed={collapseAfterClick}
+    class:embedded
     class:show-labels={showLabels}
     role="toolbar"
     aria-label="Open sessions"
+    tabindex="-1"
     on:pointerover={(ev) => {
       // pointerover bubbles from children with pointer-events: auto
       // through the pointer-events: none shell. Only fire onDockEnter
@@ -788,10 +722,13 @@
         {#if (i === 0 || split.top[i - 1].repoId !== e.repoId) && repoStatusMap.has(e.repoId)}
           {@const rs = repoStatusMap.get(e.repoId)}
           {@const dirtyCount = rs ? dockDirtyOf(rs) : 0}
-          <span
+          <button
+            type="button"
             class="dock-dot dock-repo-arrow"
             style:--arrow-color={brightenIfDark(rs?.repoColor)}
             on:mouseenter={(ev) =>
+              onArrowEnter(ev, rs?.repoId ?? e.repoId)}
+            on:focusin={(ev) =>
               onArrowEnter(ev, rs?.repoId ?? e.repoId)}
             on:click={() =>
               dispatch("scrollToRepo", { repoId: rs?.repoId ?? e.repoId })}
@@ -826,7 +763,7 @@
                   />{/if}
               </span>
             </span>
-          </span>
+          </button>
         {/if}
         <button
           type="button"
@@ -963,10 +900,13 @@
         {#if (i === 0 || split.bottom[i - 1].repoId !== e.repoId) && repoStatusMap.has(e.repoId)}
           {@const rs = repoStatusMap.get(e.repoId)}
           {@const dirtyCount = rs ? dockDirtyOf(rs) : 0}
-          <span
+          <button
+            type="button"
             class="dock-dot dock-repo-arrow"
             style:--arrow-color={brightenIfDark(rs?.repoColor)}
             on:mouseenter={(ev) =>
+              onArrowEnter(ev, rs?.repoId ?? e.repoId)}
+            on:focusin={(ev) =>
               onArrowEnter(ev, rs?.repoId ?? e.repoId)}
             on:click={() =>
               dispatch("scrollToRepo", { repoId: rs?.repoId ?? e.repoId })}
@@ -1001,7 +941,7 @@
                   />{/if}
               </span>
             </span>
-          </span>
+          </button>
         {/if}
         <button
           type="button"
@@ -1120,10 +1060,12 @@
       <!-- Orphan arrows: repos with push/pull but no session dots. -->
       {#each orphanRepoArrows as rs (rs.repoId)}
         {@const dirtyCount = dockDirtyOf(rs)}
-        <span
+        <button
+          type="button"
           class="dock-dot dock-repo-arrow dock-repo-arrow-orphan"
           style:--arrow-color={brightenIfDark(rs.repoColor)}
           on:mouseenter={(ev) => onArrowEnter(ev, rs.repoId)}
+          on:focusin={(ev) => onArrowEnter(ev, rs.repoId)}
           on:click={() => dispatch("scrollToRepo", { repoId: rs.repoId })}
         >
           <span class="dock-dot-inner dock-arrow-inner">
@@ -1156,7 +1098,7 @@
                 />{/if}
             </span>
           </span>
-        </span>
+        </button>
       {/each}
     </div>
     {#if hoveredEntry?.transcriptSource}
@@ -1226,6 +1168,16 @@
     transition:
       background-color 160ms ease,
       border-color 160ms ease;
+  }
+  .session-dock.embedded {
+    position: sticky;
+    left: auto;
+    top: 0;
+    bottom: auto;
+    height: 100%;
+    min-height: 0;
+    width: max-content;
+    z-index: 5;
   }
   /* Each half owns its scrollbar independently. Top stacks from
      the bottom (dots hug the toggle); bottom stacks from the top. */
@@ -1647,9 +1599,6 @@
     pointer-events: auto;
     cursor: pointer;
   }
-  /* Hover state: keep the same dotted underline but no extra
-     visual change — the title is already bright at rest, the
-     underline already communicates "clickable". */
   /* All three label segments share `vertical-align: baseline` so
      they line up on the text baseline regardless of inline-block
      padding / borders. Default vertical-align varies between
@@ -1745,14 +1694,6 @@
        repo/time segments — it's the thing you're scanning for. */
     color: var(--text-1, #e8e8e8);
     font-weight: 400;
-    /* Dotted underline via text-decoration (not border) so the
-       box dimensions don't change between rest and hover — a
-       border-bottom adds 1px of height which shifts the row's
-       vertical centre. text-decoration paints inside the line box
-       and doesn't affect layout. */
-    text-decoration: underline dotted;
-    text-decoration-thickness: 1px;
-    text-underline-offset: 1px;
   }
 
   /* Side preview panel — positioned container around <ChatPreview>.

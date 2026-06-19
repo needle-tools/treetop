@@ -125,10 +125,10 @@
   <div class="fd-grid">
     {#each rows as r}
       {#if r.kind === "hunk"}
-        <span class="fd-hunk" />
-        <span class="fd-hunk" />
+        <span class="fd-hunk"></span>
+        <span class="fd-hunk"></span>
         <span class="fd-hunk">{r.text}</span>
-      {:else}
+      {:else if r.kind === "add" || r.kind === "del"}
         <!-- Use `class:` directives instead of a dynamic `fd-{kind}`
              interpolation so Svelte's scoped-CSS pass keeps the
              color rules on these elements (it can't always prove
@@ -149,6 +149,10 @@
           class:fd-del={r.kind === "del"}
           >{r.kind === "add" ? "+" : "−"}{r.text}</span
         >
+      {:else}
+        <span class="fd-muted"></span>
+        <span class="fd-muted"></span>
+        <span class="fd-muted">{r.text}</span>
       {/if}
     {/each}
   </div>

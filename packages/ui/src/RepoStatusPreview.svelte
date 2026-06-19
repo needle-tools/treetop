@@ -16,37 +16,10 @@
 
   import ChangedFilesTooltipBody from "./ChangedFilesTooltipBody.svelte";
   import { GIT_AHEAD, GIT_BEHIND, GIT_DIRTY } from "./icons";
-
-  interface WtCommit {
-    sha: string;
-    subject: string;
-    author?: string;
-    date?: string;
-  }
-  interface WtSummaryLike {
-    staged: string[];
-    unstaged: string[];
-    untracked: string[];
-    unpushedCommits?: WtCommit[];
-    unfetchedCommits?: WtCommit[];
-    stats?: Record<string, unknown>;
-    stagedStats?: Record<string, unknown>;
-    mtimes?: Record<string, number>;
-  }
-
-  export interface DockWorktreeStatus {
-    path: string;
-    branch: string;
-    ahead: number;
-    aheadDanger?: boolean;
-    behind: number;
-    dirty: number;
-    upstream: string | null;
-    daemonId: string | undefined;
-  }
+  import type { DockWorktreeStatus, WtSummary } from "./repo-types";
 
   export let worktrees: DockWorktreeStatus[] = [];
-  export let wtSummaries: Record<string, WtSummaryLike | "loading"> = {};
+  export let wtSummaries: Record<string, WtSummary | "loading"> = {};
 
   /** Same subject clamp as App.svelte's worktree-row tooltip so
    *  long commit subjects don't blow out the column. */
@@ -78,7 +51,7 @@
     return `${Math.floor(diff / (86400 * 30))}mo`;
   }
 
-  function summaryOf(path: string): WtSummaryLike | "loading" | undefined {
+  function summaryOf(path: string): WtSummary | "loading" | undefined {
     return wtSummaries[path];
   }
 </script>

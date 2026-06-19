@@ -1,15 +1,17 @@
 <script lang="ts" context="module">
-  export interface EditorDescriptor {
-    name: string;
-    cmd: string;
-  }
-  export interface RemoteRef {
-    name: string;
-    url: string;
-    webUrl: string | null;
-    provider: string | null;
-    host: string | null;
-  }
+  import type {
+    CommandRunMode,
+    CustomLink,
+    EditorDescriptor,
+    RemoteRef,
+  } from "./repo-types";
+  export type {
+    CommandRunMode,
+    CustomLink,
+    EditorDescriptor,
+    RemoteRef,
+  } from "./repo-types";
+
   /** User-defined "open in" link. Three flavours:
    *   - `kind: "url"` (or absent for legacy entries) — a web URL,
    *     opened in a new browser tab.
@@ -18,21 +20,6 @@
    *   - `kind: "folder"` — an absolute directory opened in the OS
    *     file manager (same endpoint; OS handlers route folders to
    *     Finder / Explorer / the default file-manager). */
-  export type CommandRunMode = "internal" | "external" | "shell";
-
-  export type CustomLink =
-    | { id: string; kind?: "url"; url: string; name?: string }
-    | { id: string; kind: "file"; path: string; name?: string }
-    | { id: string; kind: "folder"; path: string; name?: string }
-    | {
-        id: string;
-        kind: "command";
-        cmd: string;
-        cwd?: string;
-        runMode: CommandRunMode;
-        name?: string;
-      };
-
   export function customLinkKind(
     link: CustomLink,
   ): "url" | "file" | "folder" | "command" {

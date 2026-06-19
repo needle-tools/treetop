@@ -57,6 +57,9 @@
         title?: string;
         icon?: string;
         iconSvg?: string[];
+        iconTrackPaths?: string[];
+        iconFilled?: boolean;
+        iconColor?: string;
       }
     | {
         kind: "submenu";

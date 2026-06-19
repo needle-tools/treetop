@@ -357,6 +357,7 @@
         bind:value={query}
         placeholder={headText}
         aria-label={headText}
+        title={placeholder}
         on:click|stopPropagation
         on:keydown|stopPropagation
       />
@@ -387,6 +388,7 @@
             class:dismissed-row={item.dismissed}
             class:orphan-row={orphanSources.has(sess.source)}
             class:preview-open={hoveredSess?.source === sess.source}
+            title={tooltipFor(sess)}
             on:click={() => dispatch("pick", sess)}
             on:mouseenter={(ev) => onRowEnter(ev, sess)}
             on:mouseleave={onRowLeave}

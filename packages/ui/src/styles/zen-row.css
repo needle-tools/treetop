@@ -55,6 +55,8 @@ main.zen-row > .menubar-stack:has(.agents-popover) {
 .row.row-zen {
   position: fixed;
   inset: 0;
+  height: 100vh;
+  max-height: 100vh;
   z-index: 50;
   background: var(--bg-0, var(--surface-1));
   margin: 0;

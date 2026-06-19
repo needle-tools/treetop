@@ -3,6 +3,20 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
+  "exports": {
+    "./components": {
+      "types": "./src/components.ts",
+      "default": "./src/components.ts"
+    },
+    "./styles/tokens.css": "./src/styles/tokens.css",
+    "./styles/base.css": "./src/styles/base.css",
+    "./styles/popover.css": "./src/styles/popover.css",
+    "./styles/agent-row.css": "./src/styles/agent-row.css",
+    "./styles/worktree-row.css": "./src/styles/worktree-row.css",
+    "./styles/wt-picker.css": "./src/styles/wt-picker.css",
+    "./styles/notes.css": "./src/styles/notes.css",
+    "./styles/zen-row.css": "./src/styles/zen-row.css"
+  },
   "scripts": {
     "dev": "vite",
     "build": "vite build",

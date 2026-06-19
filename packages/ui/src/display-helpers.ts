@@ -7,7 +7,8 @@
  * Deps on imported types and small pure constants are fine.
  */
 
-import type { AgentSession } from "./sessionSearch";
+import type { AgentSession, RemoteRef } from "./repo-types";
+export type { RemoteRef } from "./repo-types";
 
 // ---------------------------------------------------------------------------
 // sortBranches  (was App.svelte ~line 1140)
@@ -144,15 +145,6 @@ export function fileManagerIcon(): string {
 // ---------------------------------------------------------------------------
 // remoteButtonLabel  (was App.svelte ~line 4839)
 // ---------------------------------------------------------------------------
-
-/** Minimal remote reference shape needed by remoteButtonLabel. */
-export interface RemoteRef {
-  name: string;
-  url: string;
-  webUrl: string | null;
-  provider: string | null;
-  host: string | null;
-}
 
 const PROVIDER_LABELS: Record<string, string> = {
   github: "GitHub",

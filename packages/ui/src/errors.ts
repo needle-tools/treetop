@@ -500,7 +500,7 @@ export function installFetchTracking(): void {
   installed = true;
   const orig = globalThis.fetch.bind(globalThis);
   originalFetch = orig;
-  globalThis.fetch = async function trackedFetch(input, init) {
+  const trackedFetch: typeof fetch = async function trackedFetch(input, init) {
     const method = methodFromFetchInput(input, init);
     const route = routeFromFetchInput(input);
     const parsed = parseApiRoute(route);
@@ -608,6 +608,10 @@ export function installFetchTracking(): void {
       activeApiFetches.delete(traceId);
     }
   };
+  if ("preconnect" in globalThis.fetch) {
+    trackedFetch.preconnect = globalThis.fetch.preconnect.bind(globalThis.fetch);
+  }
+  globalThis.fetch = trackedFetch;
 }
 
 let browserResponsivenessInstalled = false;

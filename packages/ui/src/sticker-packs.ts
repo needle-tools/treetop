@@ -11,20 +11,18 @@ import {
   type StickerPack,
 } from "./sticker-packs-core";
 
-declare global {
-  interface ImportMeta {
-    glob: (
-      pattern: string,
-      options: { eager: true; query: string; import: "default" },
-    ) => Record<string, GlobImportValue>;
-  }
-}
+type ImportMetaWithGlob = ImportMeta & {
+  glob: (
+    pattern: string,
+    options: { eager: true; query: string; import: "default" },
+  ) => Record<string, GlobImportValue>;
+};
 
 /*
  * Keep this as a direct `import.meta.glob(...)` call. Vite rewrites this exact
  * syntax into concrete asset imports; aliasing import.meta leaves packs empty.
  */
-const STICKER_MODULES = import.meta.glob(
+const STICKER_MODULES = (import.meta as ImportMetaWithGlob).glob(
   "./assets/stickers/**/*.{png,webp,svg,avif}",
   {
     eager: true,

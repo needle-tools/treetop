@@ -1001,6 +1001,11 @@
     }
   }
 
+  function onBodyKeydown(e: KeyboardEvent): void {
+    if (e.key !== "Enter" && e.key !== " ") return;
+    onBodyClick(e as unknown as MouseEvent);
+  }
+
   function textSourceFromClipboardData(cd: DataTransfer | null): {
     kind: "clipboard";
     types: string[];
@@ -3179,6 +3184,7 @@
         aria-readonly="true"
         title="Double-click to edit"
         on:click={onBodyClick}
+        on:keydown={onBodyKeydown}
       >
         {#if bodyHidden}
           <span class="secret-veil" aria-hidden="true">
@@ -3388,6 +3394,7 @@
                       tabindex="0"
                       aria-readonly="true"
                       on:click={onBodyClick}
+                      on:keydown={onBodyKeydown}
                     >
                       {@render renderedNoteBody(
                         noteParts,
