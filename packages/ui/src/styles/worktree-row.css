@@ -1531,6 +1531,7 @@ body.platform-windows .sessions-strip::-webkit-scrollbar-thumb:active {
   flex: 1 1 80ch;
   min-width: 76ch;
   max-width: 100ch;
+  align-self: stretch;
   box-sizing: border-box;
   /* Anchor the drag-drop preview pseudos (::before / ::after) so the
      dashed insertion line lines up with the column edges. */

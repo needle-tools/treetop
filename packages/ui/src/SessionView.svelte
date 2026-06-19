@@ -4493,7 +4493,7 @@
     flex: 1 1 calc(
       var(--session-body-min-height) + var(--session-head-height)
     );
-    height: auto;
+    height: 100%;
     max-height: calc(var(--session-body-max-height) + var(--session-head-height));
     min-height: calc(var(--session-body-min-height) + var(--session-head-height));
     box-sizing: border-box;
