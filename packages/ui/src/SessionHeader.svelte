@@ -112,11 +112,6 @@
   export let lastActivityFallback: string | undefined = undefined;
   /** Placeholder for the message-count slot, same idea. */
   export let messageCountFallback: string | undefined = undefined;
-  /** Current saved-transcript presentation, shown as a small indicator.
-   *  Live TUI mode still passes "terminal"; the button that actually
-   *  starts/stops that process remains separate. */
-  export let transcriptSurface: "read" | "terminal" = "read";
-
   export let menuItems: SessionMenuItem[] = [];
   /** Extra line appended to ManualTitle's rest-state tooltip. The
    *  SessionView passes the cached Ollama summary here so a hover
@@ -582,15 +577,6 @@
     {/if}
   </div>
   <div class="hdr-col col-meta">
-    <span
-      class="muted small surface-chip"
-      class:terminal={transcriptSurface === "terminal"}
-      title={transcriptSurface === "terminal"
-        ? "Terminal transcript view: same parsed session, monospace and square-edged"
-        : "Visual transcript view"}
-    >
-      {transcriptSurface === "terminal" ? "Terminal" : "Visual"}
-    </span>
     {#if lastActivityIso}
       {#if lastUserMessage && lastUserMessage.trim().length > 0}
         <Tooltip variant="wide" placement="bottom" escapeClip>
@@ -760,21 +746,6 @@
   .col-meta .placeholder {
     font-style: italic;
     color: var(--text-faint);
-  }
-  .surface-chip {
-    width: fit-content;
-    padding: 0.08rem 0.38rem;
-    border: 1px solid color-mix(in srgb, var(--text-muted) 22%, transparent);
-    border-radius: var(--radius-sm);
-    background: color-mix(in srgb, var(--surface-1) 72%, transparent);
-    font-family: ui-monospace, monospace;
-    font-size: 0.66rem;
-    line-height: 1.15;
-  }
-  .surface-chip.terminal {
-    color: var(--text-2);
-    border-radius: 0;
-    background: var(--surface-0);
   }
   .col-actions {
     /* Sits flush right because col-name grows; we don't need this

@@ -3302,7 +3302,6 @@
       {manualTitle}
       aiTitle={summaryTitle}
       {mode}
-      transcriptSurface={mode === "terminal" ? "terminal" : transcriptSurface}
       canResume={canResumeCurrentSurface()}
       canEnd={!!effectiveSessionId && (agent === "claude" || agent === "codex")}
       {disposing}
@@ -3691,7 +3690,9 @@
           >
             {#if b.mediaKind === "image" && src}
               <a href={src} target="_blank" rel="noopener noreferrer">
-                <img src={src} alt={b.alt ?? mediaLabel(b)} />
+                <span class="sticky-photo-frame media-photo-frame">
+                  <img src={src} alt={b.alt ?? mediaLabel(b)} />
+                </span>
               </a>
               <figcaption>{mediaLabel(b)}</figcaption>
             {:else}
@@ -5308,9 +5309,11 @@
     margin: 0;
     max-width: min(16rem, 100%);
   }
-  .msg.user-message .media-block.media-image img {
-    max-height: 10rem;
-    border-radius: 0.8rem;
+  .msg.user-message .media-block.media-image a {
+    width: min(12rem, 100%);
+  }
+  .msg.user-message .media-photo-frame img {
+    max-height: 7.2rem;
   }
   .msg.user-message .media-block figcaption {
     display: none;
@@ -5960,19 +5963,19 @@
     color: var(--brand);
     text-decoration: none;
   }
+  .media-block.media-image a {
+    display: block;
+    width: min(18rem, 100%);
+    color: inherit;
+  }
   .media-block a:hover {
     text-decoration: underline;
   }
-  .media-block.media-image img {
-    display: block;
-    max-width: 100%;
-    max-height: 34vh;
-    width: auto;
-    height: auto;
-    border-radius: var(--radius-sm);
-    background: var(--surface-2);
-    border: 1px solid var(--surface-3);
-    object-fit: contain;
+  .media-photo-frame {
+    box-sizing: border-box;
+  }
+  .media-photo-frame img {
+    max-height: 9rem;
   }
   .media-block figcaption {
     margin-top: 0.2rem;

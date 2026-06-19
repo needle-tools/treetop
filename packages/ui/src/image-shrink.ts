@@ -188,12 +188,32 @@ export function imageBytesHaveAlpha(
   return false;
 }
 
+async function decodedImageHasTransparentPixel(blob: Blob): Promise<boolean> {
+  if (typeof createImageBitmap !== "function") return false;
+  if (typeof OffscreenCanvas !== "function") return false;
+  const bitmap = await createImageBitmap(blob);
+  try {
+    const canvas = new OffscreenCanvas(bitmap.width, bitmap.height);
+    const ctx = canvas.getContext("2d", { willReadFrequently: true });
+    if (!ctx) return false;
+    ctx.drawImage(bitmap, 0, 0);
+    const pixels = ctx.getImageData(0, 0, bitmap.width, bitmap.height).data;
+    for (let i = 3; i < pixels.length; i += 4) {
+      if (pixels[i] < 255) return true;
+    }
+    return false;
+  } finally {
+    bitmap.close();
+  }
+}
+
 export async function imageBlobHasAlpha(blob: Blob): Promise<boolean> {
   try {
-    return imageBytesHaveAlpha(
-      new Uint8Array(await blob.arrayBuffer()),
-      blob.type,
-    );
+    const bytes = new Uint8Array(await blob.arrayBuffer());
+    if (!imageBytesHaveAlpha(bytes, blob.type)) return false;
+    const mime = blob.type.toLowerCase();
+    if (mime.includes("svg") || looksLikeSvg(bytes)) return true;
+    return await decodedImageHasTransparentPixel(blob);
   } catch {
     return false;
   }
