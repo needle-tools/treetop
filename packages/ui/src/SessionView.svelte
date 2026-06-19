@@ -3329,7 +3329,10 @@
       aiTitle={summaryTitle}
       {mode}
       canResume={canResumeCurrentSurface()}
-      canEnd={!!effectiveSessionId && (agent === "claude" || agent === "codex")}
+      canEnd={mode === "read"
+        ? codexVisualAppSurface && codexRunning
+        : !!effectiveSessionId && (agent === "claude" || agent === "codex")}
+      showEndInRead={codexVisualAppSurface && codexRunning}
       {disposing}
       {awaitingInput}
       working={mode === "terminal" ? working : codexVisualAppSurface && codexRunning}
@@ -3350,11 +3353,19 @@
       {onToggleStar}
       onTitleSaved={(next) => onManualTitleSaved(next)}
       onResume={resumeCurrentSurface}
-      onEndSession={disposeTerminal}
+      onEndSession={mode === "read" && codexVisualAppSurface
+        ? stopCodexTurn
+        : disposeTerminal}
       onCancelInflight={cancelAllInflight}
       {onClose}
       {onDragStart}
       resumeTitle={resumeTitleForAgent()}
+      endSessionTitle={mode === "read" && codexVisualAppSurface
+        ? "Interrupt the running Codex turn"
+        : undefined}
+      endSessionLabel={mode === "read" && codexVisualAppSurface
+        ? "Stop"
+        : undefined}
     />
     {#if mode === "terminal" && ((session && session.messages.length > 0) || (lastUserMessage && lastUserMessage.trim().length > 0))}
       <div

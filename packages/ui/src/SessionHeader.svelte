@@ -76,6 +76,9 @@
   export let canResume: boolean = false;
   /** Whether the column can be ended (Dispose) right now. */
   export let canEnd: boolean = true;
+  /** Read mode normally exposes Resume only. Live visual app surfaces use
+   *  the same primary slot for Stop while a turn is active. */
+  export let showEndInRead: boolean = false;
   export let disposing: boolean = false;
   export let awaitingInput: boolean = false;
   /** Whether the PTY is currently emitting output. True ⇒ a rotating
@@ -142,8 +145,9 @@
 
   /** Tooltip strings for the Stop Session / Terminal switch buttons. Default
    *  texts work for SessionView; NewSessionCol can override. */
-  export let endSessionTitle: string =
+  export let endSessionTitle: string | undefined =
     "SIGTERM the PTY and flip back to the chat view";
+  export let endSessionLabel: string | undefined = "Stop Session";
   export let resumeTitle: string =
     "Spawn a live resume PTY in this session's cwd";
   /** Tooltip for the × close button. Default reflects SessionView's
@@ -301,6 +305,11 @@
           ...menuItems,
         ] satisfies SessionMenuItem[])
       : menuItems;
+  $: showReadEnd = mode === "read" && showEndInRead && canEnd;
+  $: showReadResume = canResume && mode === "read" && !showReadEnd;
+  $: effectiveEndSessionTitle =
+    endSessionTitle ?? "SIGTERM the PTY and flip back to the chat view";
+  $: effectiveEndSessionLabel = endSessionLabel ?? "Stop Session";
 </script>
 
 <header bind:this={headerEl} draggable="true" on:dragstart={onDragStart}>
@@ -622,10 +631,27 @@
     {/if}
   </div>
   <div class="hdr-col col-actions">
-    {#if canResume && mode === "read"}
+    {#if showReadResume}
       <button class="resume-btn" on:click={onResume} title={resumeTitle}
         >Resume</button
       >
+    {/if}
+    {#if showReadEnd}
+      <button
+        class="resume-btn dispose-btn"
+        class:is-stopping={disposing}
+        on:click={onEndSession}
+        title={disposing
+          ? "Click again to cancel — the agent is still running"
+          : effectiveEndSessionTitle}
+      >
+        {#if disposing}
+          <span class="stop-spinner" aria-hidden="true"></span>
+          <span>Stopping…</span>
+        {:else}
+          {effectiveEndSessionLabel}
+        {/if}
+      </button>
     {/if}
     {#if mode === "terminal"}
       {#if awaitingInput}
@@ -667,13 +693,13 @@
           on:click={onEndSession}
           title={disposing
             ? "Click again to cancel — the agent is still running"
-            : endSessionTitle}
+            : effectiveEndSessionTitle}
         >
           {#if disposing}
             <span class="stop-spinner" aria-hidden="true"></span>
             <span>Stopping…</span>
           {:else}
-            Stop Session
+            {effectiveEndSessionLabel}
           {/if}
         </button>
       {/if}
