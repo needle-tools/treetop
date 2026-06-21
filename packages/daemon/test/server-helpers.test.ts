@@ -18,6 +18,8 @@ import {
   extractIconHrefs,
   patchWorktreeDetailsInRepos,
   summarizeRequestCounts,
+  codexThreadIdFromTitleSource,
+  applyCodexThreadTitleIndex,
 } from "../src/server-helpers";
 
 // ---------------------------------------------------------------------------
@@ -808,5 +810,99 @@ describe("patchWorktreeDetailsInRepos", () => {
       fileStatus: { dirtyLines: 4 },
     });
     expect(ok).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Codex session_index title sync
+// ---------------------------------------------------------------------------
+describe("Codex session_index title sync", () => {
+  const id = "019ed710-1a0a-7200-98ec-53f8aa8fab6b";
+  const source = `/Users/me/.codex/sessions/2026/06/17/rollout-2026-06-17T21-30-17-${id}.jsonl`;
+  const now = "2026-06-21T10:00:00.000Z";
+
+  test("extracts a Codex thread id from JSONL and live app sources", () => {
+    expect(codexThreadIdFromTitleSource(source)).toBe(id);
+    expect(codexThreadIdFromTitleSource(`__codex_app__:${id}`)).toBe(id);
+    expect(codexThreadIdFromTitleSource("/tmp/not-a-session.txt")).toBeUndefined();
+  });
+
+  test("creates exactly one title row when the app index is missing the session", () => {
+    const existing = `${JSON.stringify({ id: "other", thread_name: "Other" })}\n`;
+    const result = applyCodexThreadTitleIndex(
+      existing,
+      source,
+      "Performance Testing",
+      now,
+    );
+    expect(result.changed).toBe(true);
+    expect(result.appended).toBe(true);
+    const rows = result.raw.trim().split(/\n/).map((line) => JSON.parse(line));
+    expect(rows.filter((row) => row.id === id)).toEqual([
+      {
+        id,
+        thread_name: "Performance Testing",
+        updated_at: now,
+      },
+    ]);
+  });
+
+  test("updates an existing title row without appending another one", () => {
+    const existing = `${JSON.stringify({
+      id,
+      thread_name: "Old",
+      updated_at: "2026-06-20T00:00:00.000Z",
+    })}\n`;
+    const result = applyCodexThreadTitleIndex(
+      existing,
+      source,
+      "Performance Testing",
+      now,
+    );
+    expect(result.changed).toBe(true);
+    expect(result.appended).toBe(false);
+    const rows = result.raw.trim().split(/\n/).map((line) => JSON.parse(line));
+    expect(rows).toEqual([
+      {
+        id,
+        thread_name: "Performance Testing",
+        updated_at: now,
+      },
+    ]);
+  });
+
+  test("collapses duplicate rows for the same session while updating the title", () => {
+    const existing = [
+      JSON.stringify({ id, thread_name: "Older" }),
+      JSON.stringify({ id: "other", thread_name: "Other" }),
+      JSON.stringify({ id, thread_name: "Newer", cwd: "/repo" }),
+    ].join("\n");
+    const result = applyCodexThreadTitleIndex(
+      `${existing}\n`,
+      source,
+      "Performance Testing",
+      now,
+    );
+    const rows = result.raw.trim().split(/\n/).map((line) => JSON.parse(line));
+    expect(rows.filter((row) => row.id === id)).toEqual([
+      {
+        id,
+        thread_name: "Performance Testing",
+        cwd: "/repo",
+        updated_at: now,
+      },
+    ]);
+    expect(rows.filter((row) => row.id === "other")).toHaveLength(1);
+  });
+
+  test("clears thread_name on an existing row and leaves missing blank titles alone", () => {
+    const existing = `${JSON.stringify({ id, thread_name: "Old" })}\n`;
+    const cleared = applyCodexThreadTitleIndex(existing, source, "", now);
+    expect(cleared.changed).toBe(true);
+    expect(JSON.parse(cleared.raw).thread_name).toBeUndefined();
+
+    const missing = applyCodexThreadTitleIndex("", source, "", now);
+    expect(missing.changed).toBe(false);
+    expect(missing.raw).toBe("");
   });
 });

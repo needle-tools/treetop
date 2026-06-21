@@ -10,6 +10,7 @@
  */
 
 import { existsSync } from "node:fs";
+import { basename } from "node:path";
 import type { AttachmentKind, LinkTarget } from "./notes";
 
 /** Strip model-specific thinking artifacts from Ollama output.
@@ -291,6 +292,76 @@ export function patchWorktreeDetailsInRepos(
     }
   }
   return false;
+}
+
+export function codexThreadIdFromTitleSource(source: string): string | undefined {
+  const livePrefix = "__codex_app__:";
+  if (source.startsWith(livePrefix)) return source.slice(livePrefix.length);
+  const m = basename(source).match(
+    /([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})(?:\.jsonl)?$/i,
+  );
+  return m?.[1];
+}
+
+export function applyCodexThreadTitleIndex(
+  raw: string,
+  source: string,
+  title: string,
+  updatedAt: string,
+): { raw: string; changed: boolean; matched: number; appended: boolean } {
+  const threadId = codexThreadIdFromTitleSource(source);
+  if (!threadId) return { raw, changed: false, matched: 0, appended: false };
+
+  const trimmed = title.trim();
+  if (!trimmed && !raw.trim()) {
+    return { raw, changed: false, matched: 0, appended: false };
+  }
+
+  const lines = raw.trimEnd() ? raw.trimEnd().split(/\n/) : [];
+  const nextLines: string[] = [];
+  let insertAt: number | undefined;
+  let retained: Record<string, unknown> | undefined;
+  let matched = 0;
+
+  for (const line of lines) {
+    if (!line.trim()) {
+      nextLines.push(line);
+      continue;
+    }
+    try {
+      const obj = JSON.parse(line) as Record<string, unknown>;
+      if (obj.id !== threadId) {
+        nextLines.push(line);
+        continue;
+      }
+      matched += 1;
+      insertAt ??= nextLines.length;
+      retained = obj;
+    } catch {
+      nextLines.push(line);
+    }
+  }
+
+  if (!retained && !trimmed) {
+    return { raw, changed: false, matched, appended: false };
+  }
+
+  const row: Record<string, unknown> = retained ? { ...retained } : { id: threadId };
+  if (trimmed) row.thread_name = trimmed;
+  else delete row.thread_name;
+  row.updated_at = updatedAt;
+
+  const nextLine = JSON.stringify(row);
+  if (insertAt === undefined) nextLines.push(nextLine);
+  else nextLines.splice(insertAt, 0, nextLine);
+
+  const nextRaw = nextLines.length ? `${nextLines.join("\n")}\n` : "";
+  return {
+    raw: nextRaw,
+    changed: nextRaw !== raw,
+    matched,
+    appended: matched === 0,
+  };
 }
 
 export function extractIconHrefs(html: string): string[] {

@@ -11,6 +11,7 @@ import {
   writeFile as fsWriteFile,
   readFile,
   mkdir as fsMkdir,
+  rename as fsRename,
 } from "node:fs/promises";
 import { existsSync, mkdirSync } from "node:fs";
 import { DuplicateRepoError, Workspace } from "./workspace";
@@ -143,6 +144,7 @@ import {
   extractIconHrefs,
   patchWorktreeDetailsInRepos,
   summarizeRequestCounts,
+  applyCodexThreadTitleIndex,
 } from "./server-helpers";
 import {
   normalizeRemote,
@@ -541,6 +543,29 @@ function withSessionTitles<T extends { source: string }>(
     ...(aiTitle ? { aiTitle } : {}),
   };
 }
+
+async function syncCodexThreadTitleIndex(
+  source: string,
+  title: string,
+): Promise<void> {
+  const indexPath = join(homedir(), ".codex", "session_index.jsonl");
+  const raw = await readFile(indexPath, "utf-8").catch((err) => {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return "";
+    throw err;
+  });
+  const next = applyCodexThreadTitleIndex(
+    raw,
+    source,
+    title,
+    new Date().toISOString(),
+  );
+  if (!next.changed) return;
+  const tmp = `${indexPath}.supergit-tmp`;
+  await fsMkdir(dirname(indexPath), { recursive: true });
+  await fsWriteFile(tmp, next.raw);
+  await fsRename(tmp, indexPath);
+}
+
 /** Single-flight per `repoId` for /api/repos/:id/summarize. Joins
  *  concurrent triggers (the dashboard paints rows in parallel) so
  *  one Ollama call covers the whole burst. */
@@ -2962,6 +2987,12 @@ const server = Bun.serve<TermWsData, never>({
             },
             {
               method: "GET",
+              path: "/api/worktrees",
+              description:
+                "plain JSON inventory of registered repos and their current git worktrees. Use this from agents that only need repo/worktree paths and should not parse the dashboard's /api/repos NDJSON stream.",
+            },
+            {
+              method: "GET",
               path: "/api/agents",
               description:
                 "scan ~/.claude, ~/.codex, VSCode workspaceStorage for active AI agent sessions",
@@ -3383,6 +3414,30 @@ const server = Bun.serve<TermWsData, never>({
         );
       }
 
+      if (url.pathname === "/api/worktrees" && req.method === "GET") {
+        const repos = await workspace.listRepos();
+        const body = await Promise.all(
+          repos.map(async (repo) => {
+            const worktrees = await listWorktrees(repo.path).catch(() => []);
+            const mainPath = await mainWorktreePathFor(repo.path).catch(
+              () => repo.path,
+            );
+            return {
+              id: repo.id,
+              name: repo.name,
+              path: repo.path,
+              color: repo.color,
+              worktrees: worktrees.map((wt) => ({
+                path: wt.path,
+                branch: wt.branch,
+                main: wt.path === mainPath,
+              })),
+            };
+          }),
+        );
+        return json({ repos: body });
+      }
+
       if (url.pathname === "/api/agents" && req.method === "GET") {
         const [agents, titles] = await Promise.all([
           sharedDetectAgents(),
@@ -3545,6 +3600,11 @@ const server = Bun.serve<TermWsData, never>({
         }
         try {
           await workspace.setSessionTitle(source, title);
+          syncCodexThreadTitleIndex(source, title).catch((err) => {
+            console.warn(
+              `supergit daemon: failed to sync Codex thread title for ${source}: ${(err as Error).message}`,
+            );
+          });
           // Update the persisted terminal's title if applicable
           if (
             typeof source === "string" &&
@@ -3607,12 +3667,20 @@ const server = Bun.serve<TermWsData, never>({
         try {
           await workspace.migrateSessionTitle(oldSource, newSource);
           const titles = await workspace.listSessionTitles();
+          const migratedTitle = titles[newSource] ?? "";
+          if (migratedTitle) {
+            syncCodexThreadTitleIndex(newSource, migratedTitle).catch((err) => {
+              console.warn(
+                `supergit daemon: failed to sync migrated Codex thread title for ${newSource}: ${(err as Error).message}`,
+              );
+            });
+          }
           broadcast("change", {
             kind: "session_title_migrate",
             oldSource,
             newSource,
           });
-          return json({ oldSource, newSource, title: titles[newSource] ?? "" });
+          return json({ oldSource, newSource, title: migratedTitle });
         } catch (e) {
           return json(
             { error: String(e instanceof Error ? e.message : e) },
