@@ -18,6 +18,7 @@ export type NormalizedBlockKind =
   | "text"
   /** Assistant's extended thinking blocks (internal reasoning). */
   | "thinking"
+  | "plan"
   | "tool_use"
   | "tool_result"
   /** Image/file artifact produced by or supplied to an agent. */
@@ -47,6 +48,9 @@ export interface NormalizedBlock {
   /** tool_use only. */
   toolName?: string;
   toolInput?: unknown;
+  /** plan only. */
+  explanation?: string;
+  planItems?: NormalizedPlanItem[];
   /** Links a tool_result back to the tool_use that produced it. */
   toolUseId?: string;
   /** For ide_context / system_reminder / command: the tag name, e.g. "ide_opened_file". */
@@ -58,6 +62,17 @@ export interface NormalizedBlock {
   url?: string;
   title?: string;
   alt?: string;
+}
+
+export type NormalizedPlanStatus =
+  | "pending"
+  | "in_progress"
+  | "completed"
+  | string;
+
+export interface NormalizedPlanItem {
+  step: string;
+  status: NormalizedPlanStatus;
 }
 
 /**
@@ -423,6 +438,34 @@ function codexToolInput(input: unknown): unknown {
   }
 }
 
+function normalizePlanFromUnknown(
+  input: unknown,
+): { explanation?: string; planItems: NormalizedPlanItem[] } | null {
+  if (!input || typeof input !== "object") return null;
+  const record = input as Record<string, unknown>;
+  const rawPlan = record.plan;
+  if (!Array.isArray(rawPlan)) return null;
+  const planItems = rawPlan
+    .map((item): NormalizedPlanItem | null => {
+      if (!item || typeof item !== "object") return null;
+      const row = item as Record<string, unknown>;
+      const step = typeof row.step === "string" ? row.step.trim() : "";
+      if (!step) return null;
+      const status =
+        typeof row.status === "string" && row.status.trim()
+          ? row.status.trim()
+          : "pending";
+      return { step: clipText(step), status };
+    })
+    .filter((item): item is NormalizedPlanItem => item !== null);
+  if (planItems.length === 0) return null;
+  const explanation =
+    typeof record.explanation === "string" && record.explanation.trim()
+      ? clipText(record.explanation.trim())
+      : undefined;
+  return { explanation, planItems };
+}
+
 function codexProtocolMarkerText(name: string, rawAttrs: string): string {
   const attrs: Record<string, string> = {};
   const attrRe = /([A-Za-z_][\w-]*)="([^"]*)"/g;
@@ -506,6 +549,37 @@ function codexWebSearchText(payload: Record<string, unknown>): string {
   return text || "Web search completed";
 }
 
+const codexToolNamesBySession = new WeakMap<
+  NormalizedSession,
+  Map<string, string>
+>();
+
+function codexToolNames(out: NormalizedSession): Map<string, string> {
+  let names = codexToolNamesBySession.get(out);
+  if (!names) {
+    names = new Map();
+    codexToolNamesBySession.set(out, names);
+  }
+  return names;
+}
+
+function rememberCodexToolName(
+  out: NormalizedSession,
+  id: unknown,
+  name: string | undefined,
+): void {
+  if (typeof id !== "string" || !id || !name) return;
+  codexToolNames(out).set(id, name);
+}
+
+function codexToolNameForResult(
+  out: NormalizedSession,
+  id: unknown,
+): string | undefined {
+  if (typeof id !== "string" || !id) return undefined;
+  return codexToolNames(out).get(id);
+}
+
 /** Per-line Codex parser, used by the batch + tail variants. */
 function parseCodexJsonlLine(line: string, out: NormalizedSession): void {
   if (!line) return;
@@ -557,6 +631,29 @@ function parseCodexJsonlLine(line: string, out: NormalizedSession): void {
         p.type === "function_call"
           ? codexToolInput(p.arguments)
           : clipToolInput(p.input);
+      rememberCodexToolName(out, p.call_id, name);
+      if (name === "update_plan") {
+        const plan = normalizePlanFromUnknown(input);
+        if (plan) {
+          pushSessionMessage(
+            out,
+            "assistant",
+            [
+              {
+                type: "plan",
+                explanation: plan.explanation,
+                planItems: plan.planItems,
+                toolName: name,
+                toolInput: input,
+                toolUseId:
+                  typeof p.call_id === "string" ? p.call_id : undefined,
+              },
+            ],
+            ts,
+          );
+          return;
+        }
+      }
       pushSessionMessage(
         out,
         "assistant",
@@ -584,6 +681,7 @@ function parseCodexJsonlLine(line: string, out: NormalizedSession): void {
           {
             type: "tool_result",
             text: clipText(text),
+            toolName: codexToolNameForResult(out, p.call_id),
             toolUseId: typeof p.call_id === "string" ? p.call_id : undefined,
           },
         ],
@@ -592,6 +690,7 @@ function parseCodexJsonlLine(line: string, out: NormalizedSession): void {
       return;
     }
     if (p.type === "web_search_call") {
+      rememberCodexToolName(out, p.call_id, "web_search");
       pushSessionMessage(
         out,
         "assistant",
@@ -696,6 +795,7 @@ function parseCodexJsonlLine(line: string, out: NormalizedSession): void {
           {
             type: "tool_result",
             text: clipText(codexPatchApplyText(p)),
+            toolName: codexToolNameForResult(out, p.call_id) ?? "apply_patch",
             toolUseId: typeof p.call_id === "string" ? p.call_id : undefined,
           },
         ],
@@ -711,6 +811,8 @@ function parseCodexJsonlLine(line: string, out: NormalizedSession): void {
           {
             type: "tool_result",
             text: clipText(codexWebSearchText(p)),
+            toolName:
+              codexToolNameForResult(out, p.call_id) ?? "web_search",
             toolUseId: typeof p.call_id === "string" ? p.call_id : undefined,
           },
         ],
@@ -888,7 +990,8 @@ export async function parseSessionFile(
  *
  * Tail-append: when a file grows we read only the new bytes since
  * `cached.size`, parse them with the per-line helpers, and push them onto
- * `cached.parsed.messages`. Then we trim back to MAX_CACHED_MESSAGES.
+ * `cached.parsed.messages`. Then we trim back to the recent window, widening
+ * it enough to keep the user boundary that owns the retained work.
  * `startedAt` is set on first parse and never moved — it reflects the
  * actual session start even after we drop early messages.
  *
@@ -899,7 +1002,7 @@ export async function parseSessionFile(
  * `manualTitle` is injected per-request via string surgery on the
  * stringified body so the cache key doesn't depend on workspace title state.
  */
-const MAX_CACHED = 4;
+const MAX_CACHED = 256;
 const MAX_CACHED_MESSAGES = 100;
 /** Per-block text cap. Claude `tool_result` blocks routinely contain full
  *  file contents (~90 KB each) — they balloon the cache far beyond what
@@ -1062,6 +1165,36 @@ function trimMessages(session: NormalizedSession): void {
   session.messages = session.messages.slice(start);
 }
 
+function tailNeedsMoreHistory(session: NormalizedSession): boolean {
+  if (hasOrphanedPrefix(session)) return true;
+  const count = session.messages.length;
+  if (count <= MAX_CACHED_MESSAGES) return false;
+  const cappedStart = count - MAX_CACHED_MESSAGES;
+  for (let i = cappedStart; i >= 0; i--) {
+    if (session.messages[i]?.role === "user") return false;
+  }
+  return true;
+}
+
+function hasOrphanedPrefix(session: NormalizedSession): boolean {
+  const firstUserIndex = session.messages.findIndex((m) => m.role === "user");
+  if (firstUserIndex === 0) return false;
+  const prefix =
+    firstUserIndex === -1
+      ? session.messages
+      : session.messages.slice(0, firstUserIndex);
+  return prefix.some((m) => m.role === "assistant" || m.role === "tool");
+}
+
+function hasOrphanedTrimHead(session: NormalizedSession): boolean {
+  if (session.messages.length < MAX_CACHED_MESSAGES) return false;
+  const firstUserIndex = session.messages.findIndex((m) => m.role === "user");
+  if (firstUserIndex <= 0) return false;
+  return session.messages
+    .slice(0, firstUserIndex)
+    .some((m) => m.role === "assistant" || m.role === "tool");
+}
+
 /**
  * Read only the trailing TAIL_BYTES of a session file (enough to comfortably
  * cover MAX_CACHED_MESSAGES of typical agent JSONL lines) and parse those
@@ -1082,6 +1215,7 @@ function trimMessages(session: NormalizedSession): void {
  * still the right trade vs. full-parse on every cache-miss.
  */
 const TAIL_BYTES = 8 * 1024 * 1024; // 8 MB
+const MAX_TAIL_BYTES = 64 * 1024 * 1024; // 64 MB
 /** Head bytes we scan for the authoritative cwd / sessionId / startedAt.
  *  Claude / Codex both stamp these on every entry, but only the *first*
  *  occurrence corresponds to the project directory `~/.claude/projects/...`
@@ -1181,6 +1315,20 @@ export async function tailParseSessionFile(
   }
 }
 
+async function tailParseSessionFileForCache(
+  agent: AgentKind,
+  path: string,
+  fileSize: number,
+): Promise<NormalizedSession> {
+  let tailBytes = Math.min(TAIL_BYTES, fileSize);
+  while (true) {
+    const parsed = await tailParseSessionFile(agent, path, tailBytes);
+    if (!tailNeedsMoreHistory(parsed)) return parsed;
+    if (tailBytes >= fileSize || tailBytes >= MAX_TAIL_BYTES) return parsed;
+    tailBytes = Math.min(tailBytes * 2, fileSize, MAX_TAIL_BYTES);
+  }
+}
+
 /**
  * Return the /api/session response body as a JSON string, using a tail-based
  * parsed-session cache.
@@ -1221,7 +1369,12 @@ export async function getSessionResponseJson(
 
   // Cache hit, file unchanged: return the pre-stringified body. No
   // parse, no stringify, no Buffer alloc — the cheapest possible path.
-  if (cached && cached.mtimeMs === st.mtimeMs && cached.size === st.size) {
+  if (
+    cached &&
+    cached.mtimeMs === st.mtimeMs &&
+    cached.size === st.size &&
+    !hasOrphanedTrimHead(cached.parsed)
+  ) {
     touch(path, cached);
     return { body: injectManualTitle(cached.jsonNoTitle, manualTitle), etag };
   }
@@ -1230,7 +1383,12 @@ export async function getSessionResponseJson(
   // — size growth alone is a strong signal an active agent has written
   // more JSONL. (mtime updates as well in practice, but Bun on some FSes
   // batches mtime updates while size advances byte-by-byte.)
-  if (cached && st.size > cached.size && agent !== "copilot") {
+  if (
+    cached &&
+    st.size > cached.size &&
+    agent !== "copilot" &&
+    !hasOrphanedTrimHead(cached.parsed)
+  ) {
     const fh = await open(path, "r").catch(() => null);
     if (fh) {
       try {
@@ -1257,7 +1415,7 @@ export async function getSessionResponseJson(
 
   // Cache miss, or file shrank/got rewritten: tail-read only the last
   // TAIL_BYTES and parse those lines.
-  const parsed = await tailParseSessionFile(agent, path);
+  const parsed = await tailParseSessionFileForCache(agent, path, st.size);
   trimMessages(parsed);
   const jsonNoTitle = JSON.stringify(parsed);
   sessionCache.set(path, {

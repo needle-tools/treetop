@@ -11,6 +11,7 @@ import {
   parseSessionFile,
   getSessionResponseJson as _getSessionResponseJson,
   getSessionsBatchResults,
+  sessionCacheStats,
   tailParseSessionFile,
   clearParseCache,
 } from "../src/sessions";
@@ -697,6 +698,7 @@ describe("parseCodexJsonl", () => {
     });
     expect(s.messages[1]?.blocks[0]).toEqual({
       type: "tool_result",
+      toolName: "exec_command",
       toolUseId: "call-1",
       text: "Output:\n/Users/me/proj",
     });
@@ -708,8 +710,50 @@ describe("parseCodexJsonl", () => {
     });
     expect(s.messages[3]?.blocks[0]).toEqual({
       type: "tool_result",
+      toolName: "apply_patch",
       toolUseId: "call-2",
       text: "Success",
+    });
+  });
+
+  test("renders Codex update_plan calls as structured plan blocks", () => {
+    const text = JSON.stringify({
+      timestamp: "2026-06-19T22:24:16.000Z",
+      type: "response_item",
+      payload: {
+        type: "function_call",
+        name: "update_plan",
+        call_id: "plan-call-1",
+        arguments: JSON.stringify({
+          explanation: "Tighten the visual transcript plan surface.",
+          plan: [
+            { step: "Read the sample session", status: "completed" },
+            { step: "Add plan UI", status: "in_progress" },
+            { step: "Verify behavior", status: "pending" },
+          ],
+        }),
+      },
+    });
+    const s = parseCodexJsonl(text);
+    expect(s.messages).toHaveLength(1);
+    expect(s.messages[0]?.blocks[0]).toEqual({
+      type: "plan",
+      explanation: "Tighten the visual transcript plan surface.",
+      planItems: [
+        { step: "Read the sample session", status: "completed" },
+        { step: "Add plan UI", status: "in_progress" },
+        { step: "Verify behavior", status: "pending" },
+      ],
+      toolName: "update_plan",
+      toolInput: {
+        explanation: "Tighten the visual transcript plan surface.",
+        plan: [
+          { step: "Read the sample session", status: "completed" },
+          { step: "Add plan UI", status: "in_progress" },
+          { step: "Verify behavior", status: "pending" },
+        ],
+      },
+      toolUseId: "plan-call-1",
     });
   });
 
@@ -763,6 +807,7 @@ describe("parseCodexJsonl", () => {
     expect(s.messages[1]?.role).toBe("tool");
     expect(s.messages[1]?.blocks[0]).toEqual({
       type: "tool_result",
+      toolName: "apply_patch",
       toolUseId: "call-patch",
       text: "Success. Updated files\n",
     });
@@ -1174,6 +1219,43 @@ describe("getSessionResponseJson cache", () => {
     expect(parsed.messages.at(-1)?.blocks[0]?.text).toBe("tool-119");
   });
 
+  test("widens a too-small tail instead of returning orphan tool rows", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "supergit-session-cache-"));
+    const path = join(dir, "session.jsonl");
+
+    const hugeToolText = "x".repeat(160 * 1024);
+    const lines: string[] = [
+      claudeLine("first visible user", "2026-05-12T01:00:00Z"),
+    ];
+    for (let i = 0; i < 64; i++) {
+      lines.push(
+        claudeToolResultLine(
+          `${hugeToolText}-${i}`,
+          `2026-05-12T01:${String(i + 1).padStart(2, "0")}:00Z`,
+        ),
+      );
+    }
+    lines.push(claudeLine("current user", "2026-05-12T03:00:00Z"));
+    for (let i = 0; i < 20; i++) {
+      lines.push(
+        claudeToolResultLine(
+          `current-tool-${i}`,
+          `2026-05-12T03:${String(i + 1).padStart(2, "0")}:00Z`,
+        ),
+      );
+    }
+    await writeFile(path, lines.join("\n") + "\n");
+
+    const parsed = JSON.parse(await getSessionResponseJson("claude", path));
+    expect(parsed.messages[0]?.role).toBe("user");
+    expect(parsed.messages[0]?.blocks[0]?.text).toBe("first visible user");
+    expect(
+      parsed.messages.filter((m: { role: string }) => m.role === "user")
+        .length,
+    ).toBe(2);
+    expect(parsed.messages.at(-1)?.blocks[0]?.text).toBe("current-tool-19");
+  });
+
   test("clips oversized strings inside tool_use.toolInput (Write/Edit content)", async () => {
     const dir = await mkdtemp(join(tmpdir(), "supergit-session-cache-"));
     const path = join(dir, "session.jsonl");
@@ -1371,5 +1453,62 @@ describe("getSessionsBatchResults", () => {
     );
     const parsed = JSON.parse((r as { body: string }).body);
     expect(parsed.manualTitle).toBe("Pinned title");
+  });
+
+  test("keeps hundreds of active on-disk sessions cached across append ticks", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "supergit-batch-scale-"));
+    const count = 200;
+    const rowsPerSession = 40;
+    const sources = await Promise.all(
+      Array.from({ length: count }, async (_, sessionIndex) => {
+        const source = join(dir, `session-${sessionIndex}.jsonl`);
+        const rows = Array.from({ length: rowsPerSession }, (_, rowIndex) =>
+          claudeLine(
+            `session ${sessionIndex} row ${rowIndex} ${"x".repeat(64)}`,
+            `2026-05-12T01:${String(rowIndex).padStart(2, "0")}:00Z`,
+          ),
+        ).join("\n");
+        await writeFile(source, rows + "\n");
+        return source;
+      }),
+    );
+
+    const t0 = performance.now();
+    const first = await getSessionsBatchResults(
+      sources.map((source) => ({ source })),
+      agentClaude,
+      noTitle,
+    );
+    const firstMs = performance.now() - t0;
+    expect(first.every((result) => result.status === 200)).toBe(true);
+    expect(sessionCacheStats().entries).toBe(count);
+
+    await Promise.all(
+      sources.map((source, index) =>
+        appendFile(
+          source,
+          claudeLine(
+            `session ${index} appended ${"y".repeat(64)}`,
+            "2026-05-12T02:00:00Z",
+          ) + "\n",
+        ),
+      ),
+    );
+
+    const t1 = performance.now();
+    const second = await getSessionsBatchResults(
+      first.map((result) => ({
+        source: result.source,
+        etag: result.status === 200 ? result.etag : undefined,
+      })),
+      agentClaude,
+      noTitle,
+    );
+    const appendMs = performance.now() - t1;
+
+    expect(second.every((result) => result.status === 200)).toBe(true);
+    expect(sessionCacheStats().entries).toBe(count);
+    expect(firstMs).toBeLessThan(5_000);
+    expect(appendMs).toBeLessThan(1_500);
   });
 });
