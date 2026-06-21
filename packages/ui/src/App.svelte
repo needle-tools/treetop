@@ -7,6 +7,7 @@
     shellSourceToDismiss,
     moveSessionStateKey,
     openSessionHasLiveTerminal,
+    openSessionHasDockActivity,
     reconcileLiveAgentTerminals,
   } from "./session-source-routing";
   import {
@@ -36,6 +37,7 @@
     changeKindRequiresDaemonsReload,
     changeKindRequiresEventsReload,
     changeKindRequiresReposReload,
+    createFsChangeBatcher,
   } from "./sse-change-kinds";
   import {
     installIdleTracker,
@@ -154,6 +156,7 @@
     showVisibleWorktree,
     stampDiscoveredSessionIdWithDetail,
     toggleVisibleWorktree,
+    transientDiscoverySources,
     resolveTitleSource,
     type PersistedSession,
     type SessionSurface,
@@ -1104,6 +1107,7 @@
       const next = { ...newTermIds };
       delete next[s.source];
       newTermIds = next;
+      clearTransientDiscovery(s.source);
       if (s.agent === "shell") {
         // Command PTYs (spawned via custom-link commands) have no
         // shell header on disk — skip the transcript flip and just
@@ -1840,6 +1844,7 @@
     const next = [...existing];
     next.splice(insertAt, 0, entry);
     openSessionsByWt = { ...openSessionsByWt, [wtPath]: next };
+    markTransientDiscovery(synthetic);
     scrollNewColIntoView(wtPath, synthetic);
   }
 
@@ -2554,6 +2559,8 @@
         x.source === current.source ? replacement : x,
       ),
     };
+    clearTransientDiscovery(current.source);
+    markTransientDiscovery(replacement.source);
   }
 
   /** Per-source remount counter for Claude columns. Bumped whenever the
@@ -2646,28 +2653,63 @@
     }
   }
 
-  /** Faster poll cadence while a transient new-agent TUI is open — the
-   *  agent is in the process of writing its first JSONL line, and we
-   *  want it to surface in the worktree's agent strip within a few
-   *  seconds rather than waiting for the next manual refresh.
-   *  Stops itself as soon as no `__new__:` sessions remain.
+  /** Faster poll cadence while a freshly spawned agent TUI is discoverable.
+   *  The agent may be in the short window between PTY spawn and the first
+   *  JSONL/source showing up in `/api/repos`; polling full dashboard state
+   *  helps promote the `__new__:` column quickly.
    *
-   *  Why bound the lifetime to "has transient sessions" instead of just
-   *  always-polling: the rest of the time the SSE 'change' stream is
-   *  enough; we don't want a 3s heartbeat for no reason. */
+   *  Crucially, this is tied to a live terminal id and a bounded discovery
+   *  window. A persisted stale `__new__:` entry must not keep `/api/repos`
+   *  hammering forever after its PTY has gone idle or disappeared. */
+  const TRANSIENT_DISCOVERY_POLL_MS = 3_000;
+  const TRANSIENT_DISCOVERY_WINDOW_MS = 30_000;
   let newSessionPollTimer: ReturnType<typeof setInterval> | null = null;
+  let transientDiscoveryDeadlineMs: Record<string, number> = {};
+
+  function markTransientDiscovery(source: string): void {
+    if (!source.startsWith("__new__:")) return;
+    if (source.startsWith("__new__:shell:")) return;
+    transientDiscoveryDeadlineMs = {
+      ...transientDiscoveryDeadlineMs,
+      [source]: Date.now() + TRANSIENT_DISCOVERY_WINDOW_MS,
+    };
+  }
+
+  function clearTransientDiscovery(source: string): void {
+    if (!(source in transientDiscoveryDeadlineMs)) return;
+    const next = { ...transientDiscoveryDeadlineMs };
+    delete next[source];
+    transientDiscoveryDeadlineMs = next;
+  }
+
+  function currentTransientDiscoverySources(): string[] {
+    return transientDiscoverySources(openSessionsByWt, {
+      newTermIds,
+      liveTerminalIds,
+      discoveryDeadlineMs: transientDiscoveryDeadlineMs,
+      nowMs: Date.now(),
+    });
+  }
+
   $: hasTransientSessions = Object.values(openSessionsByWt).some((arr) =>
     arr.some((s) => s.source.startsWith("__new__:")),
   );
-  $: if (hasTransientSessions && !newSessionPollTimer) {
+  $: hasTransientDiscoverySessions =
+    currentTransientDiscoverySources().length > 0;
+  $: if (hasTransientDiscoverySessions && !newSessionPollTimer) {
     newSessionPollTimer = setInterval(() => {
+      if (currentTransientDiscoverySources().length === 0) {
+        clearInterval(newSessionPollTimer!);
+        newSessionPollTimer = null;
+        return;
+      }
       // Skip while idle/hidden — the user isn't looking and the
       // transient session will still be promoted on the next
       // wake-up load() (registered via onResume).
       if (isUiIdle()) return;
       void load();
-    }, 3_000);
-  } else if (!hasTransientSessions && newSessionPollTimer) {
+    }, TRANSIENT_DISCOVERY_POLL_MS);
+  } else if (!hasTransientDiscoverySessions && newSessionPollTimer) {
     clearInterval(newSessionPollTimer);
     newSessionPollTimer = null;
   }
@@ -2727,6 +2769,7 @@
               s.source,
               match.source,
             );
+            clearTransientDiscovery(s.source);
             void migrateSessionTitleOnServer(s.source, match.source);
             promoted = true;
           }
@@ -2980,6 +3023,7 @@
         (x) => x.source !== s.source,
       ),
     };
+    clearTransientDiscovery(s.source);
     if (focusedSource === s.source) focusedSource = null;
     if (ollamaSourcePathOverride[s.source]) {
       const next = { ...ollamaSourcePathOverride };
@@ -3263,6 +3307,33 @@
       [wtPath]: existing.map((x) => (x.source === s.source ? nextEntry : x)),
     };
     scrollNewColIntoView(wtPath, liveSource);
+  }
+
+  function stopCodexVisualSession(
+    wtPath: string,
+    s: OpenSession,
+    transcriptSource: string | undefined,
+  ): void {
+    const source = transcriptSource ?? s.transcriptSource;
+    if (s.agent !== "codex" || !source || source.startsWith("__codex_app__:")) {
+      return;
+    }
+    const nextEntry: OpenSession = {
+      ...s,
+      source,
+      transcriptSource: undefined,
+    };
+    delete nextEntry.mode;
+    rememberSessionSurface(nextEntry, "read");
+    const existing = openSessionsByWt[wtPath] ?? [];
+    openSessionsByWt = {
+      ...openSessionsByWt,
+      [wtPath]: existing.map((x) => (x.source === s.source ? nextEntry : x)),
+    };
+    transientWorking = { ...transientWorking, [s.source]: false };
+    transientAwaiting = { ...transientAwaiting, [s.source]: false };
+    clearFinishedFor(s.source);
+    scrollNewColIntoView(wtPath, source);
   }
   const visibleWorktreesPersistence = new VisibleWorktreesStore(
     getDaemonKV(),
@@ -4041,6 +4112,25 @@
       }
     }
   }));
+
+  const FS_CHANGE_BATCH_MS = 250;
+  const fsChangeBatcher = createFsChangeBatcher({
+    delayMs: FS_CHANGE_BATCH_MS,
+    onFlush(paths) {
+      const nextFsChangeKey = { ...fsChangeKey };
+      let nextWtSummaryByPath: typeof wtSummaryByPath | null = null;
+      for (const wtPath of paths) {
+        nextFsChangeKey[wtPath] = (nextFsChangeKey[wtPath] ?? 0) + 1;
+        if (wtSummaryByPath[wtPath]) {
+          nextWtSummaryByPath ??= { ...wtSummaryByPath };
+          delete nextWtSummaryByPath[wtPath];
+        }
+      }
+      fsChangeKey = nextFsChangeKey;
+      if (nextWtSummaryByPath) wtSummaryByPath = nextWtSummaryByPath;
+      void load();
+    },
+  });
 
   /** Persisted page scroll offset. Remembered like the window size so a
    *  reload lands where the user left off (rule 11: daemon prefs, not
@@ -5672,7 +5762,10 @@
       }
       // Refresh /api/repos so worktree-row counters reflect the change.
       // Gated to skip kinds that don't affect repo enrichment.
-      if (changeKindRequiresReposReload(payload.kind)) {
+      if (
+        changeKindRequiresReposReload(payload.kind) &&
+        payload.kind !== "fs_change"
+      ) {
         void load();
       }
       // A remote daemon was added/removed (registry edit, provision, or
@@ -5800,18 +5893,7 @@
       }
       if (payload.kind !== "fs_change" || typeof payload.path !== "string")
         return;
-      const wtPath = payload.path;
-      fsChangeKey = {
-        ...fsChangeKey,
-        [wtPath]: (fsChangeKey[wtPath] ?? 0) + 1,
-      };
-      // Refresh the tooltip cache in place if we have data for this
-      // worktree. Without this the row badge updates (load() refetches
-      // /api/repos) but the tooltip body keeps showing the file list
-      // from whenever the user first hovered.
-      if (wtSummaryByPath[wtPath] && wtSummaryByPath[wtPath] !== "loading") {
-        void loadWtSummary(wtPath, { force: true });
-      }
+      fsChangeBatcher.push(payload.path);
       }); // end time("sse-change", ...)
     });
     es.addEventListener("activity", (rawEvt: MessageEvent) => {
@@ -6164,9 +6246,9 @@
    *  tooltip. Pulls `working`/`awaiting` from per-source transient maps;
    *  those may come from a terminal PTY or a visual/API-backed session.
    *
-   *  `exited` means "no live terminal transport" rather than "no activity";
-   *  visual sessions can still report working/awaiting without pretending
-   *  to own a PTY. */
+   *  `exited` means "inactive for the dock" rather than "no live terminal
+   *  transport"; visual sessions can report working/awaiting without owning
+   *  a PTY and must still survive the active-only dock filter. */
   type DockAgent = "claude" | "codex" | "copilot" | "ollama" | "shell";
   $: dockEntries = time("dockEntries", (): Array<{
     source: string;
@@ -6247,6 +6329,13 @@
             s.source.startsWith("__history__:")
           )
             continue;
+          const hasDockActivity = openSessionHasDockActivity(s, {
+            liveTerminalIds,
+            newTermIds,
+            transientExited,
+            transientWorking,
+            transientAwaiting,
+          });
           // Same lookup precedence as the NewSessionCol render: once a
           // sid is stamped onto a `__new__:` column, prefer the matched
           // real-source agent's metadata so the dock shows the title
@@ -6295,11 +6384,11 @@
             working: s.agent === "shell" ? false : !!transientWorking[s.source],
             awaiting:
               s.agent === "shell" ? false : !!transientAwaiting[s.source],
-            // Inactive covers everything that isn't a live TUI right
-            // now: PTYs that exited, plus read-mode chat columns
-            // (SessionView in mode !== "terminal"). The dock dims
-            // those entries but keeps marker geometry stable.
-            exited: !isLiveTui,
+            // Inactive covers sessions with neither a live terminal
+            // transport nor live visual/API activity. A visual
+            // app-server turn can be active without a PTY, so don't
+            // dim/filter it merely because it is displayed as chat.
+            exited: !hasDockActivity,
             terminalActive:
               isLiveTui &&
               isTerminalRecentlyActive(terminalIoStats, Date.now()),
@@ -6426,8 +6515,8 @@
    *  waiting, rotating arc when working) and sets the title + meta
    *  description to a per-session breakdown (with names + agents)
    *  that the hover tooltip can show. Picks up changes via the
-   *  reactive dependency on `dockEntries`. Exited columns don't
-   *  count — they're closed PTYs, not live TUIs. */
+   *  reactive dependency on `dockEntries`. Inactive columns don't count,
+   *  but visual app-server sessions that are working/awaiting do. */
   $: updateTabIndicator(
     dockEntries
       .filter((e) => !e.exited)
@@ -7048,6 +7137,7 @@
       resetZenMenu();
       window.removeEventListener("beforeunload", handleBeforeUnload);
       unsubStream();
+      fsChangeBatcher.dispose();
       closeRemoteStreams();
       unsubErrors();
       unsubToasts();
@@ -10042,6 +10132,7 @@
                                         ...newTermIds,
                                         [s.source]: e.detail.id,
                                       };
+                                      markTransientDiscovery(s.source);
                                     }
                                     // Claude with a preassignedSessionId: by
                                     // this point claude has been exec'd with
@@ -10134,6 +10225,7 @@
                                         s.source,
                                         attachedSource,
                                       );
+                                      clearTransientDiscovery(s.source);
                                       void migrateSessionTitleOnServer(
                                         s.source,
                                         attachedSource,
@@ -10238,6 +10330,17 @@
                                 : (wt.agents ?? []).find(
                                     (a) => a.source === s.source,
                                   )}
+                              {@const effectiveSessionForView = {
+                                ...s,
+                                resumeSessionId:
+                                  s.resumeSessionId ?? agentMeta?.sessionId,
+                                transcriptSource:
+                                  s.transcriptSource ?? agentMeta?.source,
+                              }}
+                              {@const titleSource = resolveTitleSource(
+                                effectiveSessionForView,
+                                wt.agents ?? [],
+                              )}
                               {#key claudeColGen[s.source] ?? 0}
                                 <SessionView
                                   agent={s.agent as
@@ -10274,6 +10377,9 @@
                                       claudeEffort: e,
                                     })}
                                   attachTermId={s.attachTermId}
+                                  manualTitleOverride={agentMeta?.manualTitle ??
+                                    newSessionTitles[titleSource] ??
+                                    newSessionTitles[s.source]}
                                   onSpawn={(id) => {
                                     markTerminalLive(id);
                                     // Keep this session's attachTermId on the
@@ -10327,6 +10433,16 @@
                                       s.transcriptSource ?? agentMeta?.source,
                                     );
                                   }}
+                                  onStopVisualApp={(s.transcriptSource ??
+                                    agentMeta?.source)
+                                    ? () =>
+                                        stopCodexVisualSession(
+                                          wt.path,
+                                          s,
+                                          s.transcriptSource ??
+                                            agentMeta?.source,
+                                        )
+                                    : undefined}
                                   onModeChange={(m) => {
                                     if (m === "terminal") {
                                       rememberSessionSurface(
@@ -10373,6 +10489,7 @@
                                       workingStartedAt[s.source] = undefined;
                                     } else if (w && !wasWorking) {
                                       workingStartedAt[s.source] = Date.now();
+                                      markTransientDiscovery(s.source);
                                       clearFinishedFor(s.source);
                                     }
                                   }}

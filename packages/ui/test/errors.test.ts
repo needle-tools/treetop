@@ -8,6 +8,7 @@ import {
   recordBrowserDiagnostic,
   installFetchTracking,
   installBrowserResponsivenessTracking,
+  eventLoopStallDiagnostic,
   getErrors,
   __resetFetchTrackingForTests,
   __resetBrowserResponsivenessTrackingForTests,
@@ -436,6 +437,54 @@ describe("installFetchTracking — expected-client-error filter", () => {
       });
     }
   });
+
+  test("event-loop stall diagnostics include active API fetch routes", async () => {
+    let now = 1_000;
+    const savedNow = globalThis.performance.now;
+    Object.defineProperty(globalThis.performance, "now", {
+      configurable: true,
+      value: () => now,
+    });
+    let resolveFetch:
+      | ((value: Response | PromiseLike<Response>) => void)
+      | null = null;
+    globalThis.fetch = (() =>
+      new Promise<Response>((resolve) => {
+        resolveFetch = resolve;
+      })) as typeof fetch;
+    try {
+      installFetchTracking();
+      const pending = fetch("/api/events");
+      now = 3_500;
+
+      const diagnostic = eventLoopStallDiagnostic({
+        expectedAtMs: 1_000,
+        observedAtMs: 3_500,
+        lastRecordedAtMs: -Infinity,
+      });
+
+      expect(diagnostic?.extra).toMatchObject({
+        driftMs: 2500,
+        inFlightFetches: 1,
+        activeFetches: [
+          {
+            method: "GET",
+            route: "/api/events",
+            apiPath: "/api/events",
+            ageMs: 2500,
+          },
+        ],
+      });
+
+      resolveFetch?.(new Response("", { status: 200, statusText: "OK" }));
+      await pending;
+    } finally {
+      Object.defineProperty(globalThis.performance, "now", {
+        configurable: true,
+        value: savedNow,
+      });
+    }
+  });
 });
 
 describe("installBrowserResponsivenessTracking", () => {
@@ -489,5 +538,35 @@ describe("installBrowserResponsivenessTracking", () => {
       startTimeMs: 55,
       name: "self",
     });
+  });
+
+  test("builds event-loop stall diagnostics with cooldown gating", () => {
+    expect(
+      eventLoopStallDiagnostic({
+        expectedAtMs: 1_000,
+        observedAtMs: 2_500,
+        lastRecordedAtMs: -Infinity,
+      }),
+    ).toBeNull();
+
+    const first = eventLoopStallDiagnostic({
+      expectedAtMs: 1_000,
+      observedAtMs: 3_250,
+      lastRecordedAtMs: -Infinity,
+    });
+    expect(first?.message).toBe("browser-event-loop-stall driftMs=2250");
+    expect(first?.extra).toMatchObject({
+      driftMs: 2250,
+      expectedAtMs: 1000,
+      observedAtMs: 3250,
+    });
+
+    expect(
+      eventLoopStallDiagnostic({
+        expectedAtMs: 4_000,
+        observedAtMs: 7_500,
+        lastRecordedAtMs: 3_250,
+      }),
+    ).toBeNull();
   });
 });

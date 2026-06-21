@@ -10,6 +10,7 @@ import {
   buildVisualTranscriptItems,
   buildVisualWorkDisplayEntries,
   cleanVisualToolResultText,
+  latestVisualPlan,
 } from "../src/last-user-message";
 
 function jsonl(entries: object[]): string {
@@ -127,6 +128,117 @@ describe("visual transcript provider flow", () => {
         markerLabel: "Task complete",
       }),
     );
+  });
+
+  test("keeps Codex tool output visible when the matching call is outside the retained slice", () => {
+    const session = parseCodexJsonl(
+      jsonl([
+        {
+          timestamp: "2026-06-19T10:00:00.000Z",
+          type: "response_item",
+          payload: {
+            type: "message",
+            role: "user",
+            content: [{ type: "input_text", text: "check the logs" }],
+          },
+        },
+        {
+          timestamp: "2026-06-19T10:00:12.000Z",
+          type: "response_item",
+          payload: {
+            type: "function_call_output",
+            call_id: "call-from-before-the-window",
+            output:
+              "Chunk ID: abc123 Wall time: 0.2500 seconds Process exited with code 0 Original token count: 2 Output: restored prior state prefs shape for repro",
+          },
+        },
+        {
+          timestamp: "2026-06-19T10:00:30.000Z",
+          type: "response_item",
+          payload: {
+            type: "message",
+            role: "assistant",
+            content: [{ type: "output_text", text: "Found it." }],
+          },
+        },
+      ]),
+    );
+
+    const { work } = onlyWorkItem(session.messages);
+    const displayEntries = buildVisualWorkDisplayEntries(work.entries);
+
+    expect(displayEntries).toHaveLength(1);
+    expect(displayEntries[0]?.pairedResult).toBeUndefined();
+    expect(displayEntries[0]?.entry.blocks[0]).toMatchObject({
+      type: "tool_result",
+      toolUseId: "call-from-before-the-window",
+    });
+    expect(
+      cleanVisualToolResultText(displayEntries[0]?.entry.blocks[0]?.text),
+    ).toMatchObject({
+      title: "Command output",
+      body: "restored prior state prefs shape for repro",
+      wallTimeSeconds: 0.25,
+      exitCode: 0,
+    });
+  });
+
+  test("turns Codex update_plan calls into the latest visual plan", () => {
+    const session = parseCodexJsonl(
+      jsonl([
+        {
+          timestamp: "2026-06-19T22:24:16.000Z",
+          type: "response_item",
+          payload: {
+            type: "message",
+            role: "user",
+            content: [{ type: "input_text", text: "add todo UI" }],
+          },
+        },
+        {
+          timestamp: "2026-06-19T22:24:18.000Z",
+          type: "response_item",
+          payload: {
+            type: "function_call",
+            name: "update_plan",
+            call_id: "plan-call-1",
+            arguments: JSON.stringify({
+              explanation: "Implement the todo plan surface.",
+              plan: [
+                { step: "Inspect sample JSONL", status: "completed" },
+                { step: "Add composer plan pane", status: "in_progress" },
+                { step: "Verify parser/UI behavior", status: "pending" },
+              ],
+            }),
+          },
+        },
+        {
+          timestamp: "2026-06-19T22:24:20.000Z",
+          type: "response_item",
+          payload: {
+            type: "message",
+            role: "assistant",
+            content: [{ type: "output_text", text: "On it." }],
+          },
+        },
+      ]),
+    );
+
+    expect(latestVisualPlan(session.messages)).toMatchObject({
+      explanation: "Implement the todo plan surface.",
+      completed: 1,
+      inProgress: 1,
+      total: 3,
+    });
+    const { work } = onlyWorkItem(session.messages);
+    expect(work.entries[0]?.blocks[0]).toMatchObject({
+      type: "plan",
+      planItems: [
+        { step: "Inspect sample JSONL", status: "completed" },
+        { step: "Add composer plan pane", status: "in_progress" },
+        { step: "Verify parser/UI behavior", status: "pending" },
+      ],
+    });
   });
 
   test("turns Claude JSONL into paired Bash work", () => {

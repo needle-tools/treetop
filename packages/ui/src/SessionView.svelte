@@ -1,7 +1,7 @@
 <script lang="ts">
   import { apiUrl } from "./api";
   import { play } from "./sound";
-  import { onMount, onDestroy } from "svelte";
+  import { onMount, onDestroy, tick } from "svelte";
   import TerminalView from "./TerminalView.svelte";
   import VisualTranscript from "./VisualTranscript.svelte";
   import LoadingOverlay from "./LoadingOverlay.svelte";
@@ -29,12 +29,22 @@
   import { openCopy } from "./copy-session-dialog";
   import { ICONS } from "./icons";
   import {
+    applyVisualTranscriptDeltaPatches,
     buildVisualTranscriptItems,
+    hasCanonicalUserMessageMatchingOptimistic,
     lastUserMessageBurst,
     lastUserMessageWithContext as buildLastUserMessageWithContext,
+    latestVisualPlan,
+    mergeVisualSessionMessages,
+    reuseStableVisualTranscriptItems,
+    visualPlanFromPayload,
+    type VisualPlan,
+    type VisualPlanItem,
+    type VisualTranscriptDeltaPatch,
     type VisualTranscriptItem,
   } from "./last-user-message";
   import { registerSessionPoll } from "./session-poll";
+  import { canResumeVisualSurface } from "./session-source-routing";
   import {
     codexEventThreadIdForSession,
     subscribeCodexEvents,
@@ -67,6 +77,7 @@
   /** Provider transcript path for stopped/history views and file-oriented
    *  menu actions. Live Codex App rendering does not poll this path. */
   export let transcriptSource: string | undefined = undefined;
+  export let manualTitleOverride: string | undefined = undefined;
   /** Owning daemon for this session's worktree. Undefined ⇒ local daemon
    *  (byte-identical behaviour). Set for remote daemon folder rows. */
   export let daemonId: string | undefined = undefined;
@@ -91,6 +102,10 @@
    *  Resume. For Codex App, the parent swaps a stopped transcript source
    *  to the live app-server source while preserving the transcript path. */
   export let onVisualResume: (() => void) | undefined = undefined;
+  /** Called when an idle live Codex App pane should detach back to its
+   *  saved transcript. Running turns still use the app-server interrupt
+   *  path; this is only the idle live-wire stop affordance. */
+  export let onStopVisualApp: (() => void) | undefined = undefined;
   /** Optional extra menu items appended after the built-in ones in
    *  the header's burger menu. Used by Ollama to inject "Resume with
    *  context" alongside the default Resume action. */
@@ -193,6 +208,7 @@
     type:
       | "text"
       | "thinking"
+      | "plan"
       | "tool_use"
       | "tool_result"
       | "media"
@@ -204,6 +220,8 @@
     toolName?: string;
     toolInput?: unknown;
     toolUseId?: string;
+    explanation?: string;
+    planItems?: VisualPlanItem[];
     tagName?: string;
     mediaKind?: "image" | "file" | "artifact";
     mimeType?: string;
@@ -820,7 +838,7 @@
       // grace-timer cleanup and can look like the column disappeared.
       terminalId = null;
       disposing = false;
-      hasRenderedOnce = false;
+      resetVisualTailFollow();
       mode = "read";
       onModeChange(mode);
       void load();
@@ -838,7 +856,7 @@
     startedAt: string;
   }
   let inflight: InflightRec[] = [];
-  $: manualTitle = session?.manualTitle ?? "";
+  $: manualTitle = session?.manualTitle ?? manualTitleOverride ?? "";
 
   function onManualTitleSaved(next: string) {
     // Optimistic local mirror so the header reads the new title
@@ -868,18 +886,27 @@
    *  single newline-joined preview in chronological order, so a
    *  rapid-fire "5 quick messages" sequence shows the whole thread
    *  of intent rather than only the last fragment. */
-  $: lastUserMessage = lastUserMessageBurst(session?.messages ?? []);
-  $: lastUserMessageWithContext = buildLastUserMessageWithContext(
+  let codexOptimisticUserMessages: NormalizedMessage[] = [];
+  $: visualSessionMessages = mergeVisualSessionMessages(
     session?.messages ?? [],
+    codexOptimisticUserMessages,
+  );
+  $: lastUserMessage = lastUserMessageBurst(visualSessionMessages);
+  $: lastUserMessageWithContext = buildLastUserMessageWithContext(
+    visualSessionMessages,
     lastUserMessage,
   );
   let visualTranscriptItems: VisualTranscriptItem<
     NormalizedBlock,
     NormalizedMessage
   >[] = [];
-  $: visualTranscriptItems = buildVisualTranscriptItems(session?.messages ?? [], {
-    active: visualTranscriptActive,
-  });
+  $: visualTranscriptItems = reuseStableVisualTranscriptItems(
+    visualTranscriptItems,
+    buildVisualTranscriptItems(visualSessionMessages, {
+      active: visualTranscriptActive,
+    }),
+  );
+  $: codexLatestPlan = latestVisualPlan(visualSessionMessages);
 
   /** Build the shell command we'd hand to an external terminal to
    *  resume this session. Mirrors the argv the inline TerminalView
@@ -928,10 +955,12 @@
   }
 
   function canResumeInVisualSurface(): boolean {
-    return (
-      codexVisualAppSurface ||
-      (agent === "codex" && !!effectiveSessionId && !!onVisualResume)
-    );
+    return canResumeVisualSurface({
+      agent,
+      liveAppSurface: codexVisualAppSurface,
+      sessionId: effectiveSessionId,
+      hasVisualResume: !!onVisualResume,
+    });
   }
 
   function canResumeCurrentSurface(): boolean {
@@ -955,7 +984,7 @@
     transcriptSurface = "read";
     if (mode === "terminal") {
       terminalId = null;
-      hasRenderedOnce = false;
+      resetVisualTailFollow();
       mode = "read";
       void load();
     }
@@ -1273,6 +1302,104 @@
   // was already near the bottom (so polling can't snatch them away when
   // they've scrolled up to read history).
   let hasRenderedOnce = false;
+  let visualTailKey = "";
+  const TAIL_FOLLOW_NEAR_PX = 64;
+
+  function isNearScrollEnd(el: HTMLElement): boolean {
+    return (
+      el.scrollHeight - el.scrollTop - el.clientHeight <= TAIL_FOLLOW_NEAR_PX
+    );
+  }
+
+  function liveWorkBodies(): HTMLElement[] {
+    return messagesEl
+      ? Array.from(
+          messagesEl.querySelectorAll<HTMLElement>(
+            ".work-foldout-live > .work-foldout-body",
+          ),
+        )
+      : [];
+  }
+
+  function visualBlockTailKey(block: NormalizedBlock): string {
+    const planKey =
+      block.planItems
+        ?.map((item) => `${item.status}:${item.step.length}`)
+        .join(",") ?? "";
+    return [
+      block.type,
+      block.toolUseId ?? "",
+      block.toolName ?? "",
+      block.text?.length ?? 0,
+      block.path ?? block.url ?? "",
+      planKey,
+    ].join(":");
+  }
+
+  function visualMessagesTailKey(messages: readonly NormalizedMessage[]): string {
+    return messages
+      .map((message) =>
+        [
+          message.id ?? "",
+          message.role,
+          message.timestamp ?? "",
+          message.blocks.map(visualBlockTailKey).join(","),
+        ].join("#"),
+      )
+      .join("|");
+  }
+
+  function scrollToEnd(el: HTMLElement): void {
+    el.scrollTop = el.scrollHeight;
+  }
+
+  function resetVisualTailFollow(): void {
+    hasRenderedOnce = false;
+    visualTailKey = "";
+  }
+
+  function scheduleVisualTailFollow(opts: { force?: boolean } = {}): void {
+    const el = messagesEl;
+    if (!el) return;
+    const force = opts.force === true;
+    const firstRender = !hasRenderedOnce;
+    const shouldStickMessages = force || firstRender || isNearScrollEnd(el);
+    const liveBodyStates = liveWorkBodies().map((body) => ({
+      body,
+      shouldStick: force || firstRender || isNearScrollEnd(body),
+    }));
+    hasRenderedOnce = true;
+
+    void tick().then(() => {
+      requestAnimationFrame(() => {
+        const current = messagesEl;
+        if (!current) return;
+        if (shouldStickMessages) scrollToEnd(current);
+
+        for (const body of liveWorkBodies()) {
+          const previous = liveBodyStates.find((state) => state.body === body);
+          if (previous?.shouldStick ?? shouldStickMessages) {
+            scrollToEnd(body);
+          }
+        }
+
+        requestAnimationFrame(() => {
+          const settled = messagesEl;
+          if (settled && shouldStickMessages) scrollToEnd(settled);
+          for (const body of liveWorkBodies()) {
+            const previous = liveBodyStates.find((state) => state.body === body);
+            if (previous?.shouldStick ?? shouldStickMessages) {
+              scrollToEnd(body);
+            }
+          }
+        });
+      });
+    });
+  }
+
+  function forceVisualTailFollow(): void {
+    scheduleVisualTailFollow({ force: true });
+  }
   /** ETag from the last /api/session response. Sent as If-None-Match on
    *  subsequent polls so the daemon can return 304 when the session file
    *  hasn't changed — skips body transfer, JSON.parse, and all downstream
@@ -1286,6 +1413,12 @@
    *  (event-driven immediate refresh) and the shared poller (periodic). */
   function applyParsedSession(next: NormalizedSession) {
     session = { ...next, messages: [...next.messages] };
+    if (codexOptimisticUserMessages.length > 0) {
+      codexOptimisticUserMessages = codexOptimisticUserMessages.filter(
+        (message) =>
+          !hasCanonicalUserMessageMatchingOptimistic(next.messages, message),
+      );
+    }
     lastLoadedAt = Date.now();
     pollCount += 1;
     // If a send is in flight, watch for the message count to grow — that
@@ -1390,6 +1523,9 @@
   let codexQueueDraining = false;
   let codexQueueBlocked = false;
   let codexQueueExpanded = false;
+  let codexPlanExpanded = false;
+  let codexWarningsExpanded = false;
+  let composerWarnings: string[] = [];
   let editingCodexQueueId: string | null = null;
   let editingCodexQueueText = "";
   let editingCodexQueueAttachments: ImageInlineAttachment[] = [];
@@ -1399,6 +1535,10 @@
   let codexModelsKey = "";
   let codexModelsLoading = false;
   let codexModelsError = "";
+  let codexPendingDeltaPatches: VisualTranscriptDeltaPatch<NormalizedBlock>[] =
+    [];
+  let codexDeltaFlushFrame: number | null = null;
+  let codexDeltaFlushTimer: ReturnType<typeof setTimeout> | null = null;
   const CODEX_SETTINGS_KEY = "supergit:codexApp:turnSettings";
   const CODEX_QUEUE_KEY_PREFIX = "supergit:codexApp:queue:";
   const codexSavedSettings = readCodexSettings();
@@ -1415,6 +1555,7 @@
     liveCodexApp && visualAppEnabled && transcriptSurface === "read";
   $: sessionFileSource = liveCodexApp ? (transcriptSource ?? "") : source;
   $: sessionPollSource = sessionFileSource || source;
+  $: titleStorageSource = sessionFileSource || source;
   $: shouldPollTranscript = shouldPollSessionSource({
     agent,
     source: sessionPollSource,
@@ -1422,6 +1563,8 @@
   $: effectiveSessionId = resumeSessionId ?? session?.sessionId;
   $: effectiveSessionCwd = session?.cwd || wtPath;
   $: codexRunning = liveCodexApp && (sending || !!codexActiveTurnId);
+  $: codexVisualAppCanStop =
+    codexVisualAppSurface && (codexRunning || !!onStopVisualApp);
   $: visualTranscriptActive = liveCodexApp ? codexRunning : sending;
   $: codexLastMessageActivityIso = session?.messages
     .map((m) => m.timestamp)
@@ -1713,10 +1856,12 @@
     if (!msg) return;
     const block = msg.blocks[0];
     if (!block || block.type !== "text") return;
-    block.text = (block.text ?? "") + delta;
-    // Force reactivity — Svelte 4 needs a new identity for the
-    // messages array to re-render the bubble.
-    session = { ...session, messages: [...session.messages] };
+    const messages = [...session.messages];
+    messages[idx] = {
+      ...msg,
+      blocks: [{ ...block, text: (block.text ?? "") + delta }],
+    };
+    session = { ...session, messages };
   }
 
   function stopOllamaStream(): void {
@@ -1864,10 +2009,66 @@
   }
 
   function closeCodexEventStream(): void {
+    flushCodexDeltaPatches();
     unsubscribeCodexEvents?.();
     unsubscribeCodexEvents = null;
     codexEventsThreadId = null;
     codexEventStreamState = "closed";
+  }
+
+  function scheduleCodexDeltaFlush(): void {
+    if (codexDeltaFlushFrame !== null || codexDeltaFlushTimer !== null) return;
+    if (typeof requestAnimationFrame === "function") {
+      codexDeltaFlushFrame = requestAnimationFrame(() => {
+        codexDeltaFlushFrame = null;
+        flushCodexDeltaPatches();
+      });
+      return;
+    }
+    codexDeltaFlushTimer = setTimeout(() => {
+      codexDeltaFlushTimer = null;
+      flushCodexDeltaPatches();
+    }, 16);
+  }
+
+  function flushCodexDeltaPatches(): void {
+    if (codexDeltaFlushFrame !== null) {
+      cancelAnimationFrame(codexDeltaFlushFrame);
+      codexDeltaFlushFrame = null;
+    }
+    if (codexDeltaFlushTimer !== null) {
+      clearTimeout(codexDeltaFlushTimer);
+      codexDeltaFlushTimer = null;
+    }
+    if (!session || codexPendingDeltaPatches.length === 0) return;
+    const patches = codexPendingDeltaPatches;
+    codexPendingDeltaPatches = [];
+    session = {
+      ...session,
+      messages: applyVisualTranscriptDeltaPatches(session.messages, patches),
+    };
+  }
+
+  function queueCodexBlockDelta(
+    id: string,
+    role: NormalizedMessage["role"],
+    type: NormalizedBlock["type"],
+    delta: string,
+    blockFields: Partial<NormalizedBlock> = {},
+  ): void {
+    if (!delta || !session) return;
+    codexPendingDeltaPatches = [
+      ...codexPendingDeltaPatches,
+      {
+        id,
+        role,
+        type,
+        delta,
+        blockFields,
+        timestamp: new Date().toISOString(),
+      },
+    ];
+    scheduleCodexDeltaFlush();
   }
 
   function applyCodexEvent(event: CodexAppEvent): void {
@@ -1881,6 +2082,7 @@
     }
 
     if (event.kind === "request") {
+      flushCodexDeltaPatches();
       codexRequests = [
         ...codexRequests.filter((r) => r.id !== event.id),
         event,
@@ -1896,6 +2098,7 @@
       return;
     }
     if (event.method === "turn/status") {
+      flushCodexDeltaPatches();
       const active = event.params?.active === true;
       codexActiveTurnId = active
         ? (event.turnId ??
@@ -1907,6 +2110,7 @@
       return;
     }
     if (event.method === "turn/completed") {
+      flushCodexDeltaPatches();
       codexActiveTurnId = null;
       sending = false;
       awaitingInput = codexRequests.length > 0;
@@ -1914,11 +2118,11 @@
         clearTimeout(pendingTimer);
         pendingTimer = null;
       }
-      void load();
       void drainCodexQueue();
       return;
     }
     if (event.method === "serverRequest/resolved") {
+      flushCodexDeltaPatches();
       const id = (event.params?.requestId ?? event.params?.id) as
         | string
         | number
@@ -1930,7 +2134,7 @@
       return;
     }
     if (event.method === "item/agentMessage/delta") {
-      appendCodexBlock(
+      queueCodexBlockDelta(
         `codex-agent-${event.params.itemId ?? event.turnId ?? "message"}`,
         "assistant",
         "text",
@@ -1943,7 +2147,7 @@
       event.method === "item/reasoning/summaryTextDelta" ||
       event.method === "item/reasoning/textDelta"
     ) {
-      appendCodexBlock(
+      queueCodexBlockDelta(
         `codex-plan-${event.params.itemId ?? event.turnId ?? "plan"}`,
         "assistant",
         "thinking",
@@ -1957,15 +2161,27 @@
       event.method === "item/commandExecution/outputDelta" ||
       event.method === "item/fileChange/outputDelta"
     ) {
-      appendCodexBlock(
-        `codex-output-${event.params.itemId ?? event.turnId ?? "output"}`,
+      const itemId =
+        typeof event.params.itemId === "string"
+          ? event.params.itemId
+          : event.turnId;
+      queueCodexBlockDelta(
+        `codex-output-${itemId ?? "output"}`,
         "tool",
         "tool_result",
         String(event.params.delta ?? ""),
+        {
+          toolName:
+            event.method === "item/fileChange/outputDelta"
+              ? "file change"
+              : "exec_command",
+          toolUseId: itemId,
+        },
       );
       return;
     }
     if (event.method === "item/fileChange/patchUpdated") {
+      flushCodexDeltaPatches();
       upsertCodexToolUse(
         `codex-file-${event.params.itemId ?? event.turnId ?? "file"}`,
         "file change",
@@ -1974,14 +2190,12 @@
       return;
     }
     if (event.method === "turn/plan/updated") {
-      upsertCodexToolUse(
-        `codex-turn-plan-${event.turnId ?? "plan"}`,
-        "plan",
-        event.params,
-      );
+      flushCodexDeltaPatches();
+      upsertCodexPlan(`codex-turn-plan-${event.turnId ?? "plan"}`, event.params);
       return;
     }
     if (event.method === "error" || event.method === "warning") {
+      flushCodexDeltaPatches();
       const message =
         typeof event.params.message === "string"
           ? event.params.message
@@ -1991,56 +2205,33 @@
     }
     const media = codexMediaBlockFromParams(event.method, event.params);
     if (media) {
+      flushCodexDeltaPatches();
       upsertCodexMedia(
         `codex-media-${event.params.itemId ?? event.turnId ?? event.seq ?? "media"}`,
         media,
       );
       return;
     }
+    flushCodexDeltaPatches();
     logUnhandledCodexEvent(event);
-  }
-
-  function appendCodexBlock(
-    id: string,
-    role: NormalizedMessage["role"],
-    type: NormalizedBlock["type"],
-    delta: string,
-  ): void {
-    if (!delta || !session) return;
-    const messages = [...session.messages];
-    let msg = messages.find((m) => m.id === id);
-    if (!msg) {
-      msg = {
-        id,
-        role,
-        timestamp: new Date().toISOString(),
-        blocks: [{ type, text: "" }],
-      };
-      messages.push(msg);
-    }
-    let block = msg.blocks[0];
-    if (!block || block.type !== type) {
-      block = { type, text: "" };
-      msg.blocks = [block];
-    }
-    block.text = (block.text ?? "") + delta;
-    session = { ...session, messages };
   }
 
   function upsertCodexMedia(id: string, block: NormalizedBlock): void {
     if (!session) return;
     const messages = [...session.messages];
-    let msg = messages.find((m) => m.id === id);
-    if (!msg) {
-      msg = {
+    const existingIndex = messages.findIndex((m) => m.id === id);
+    if (existingIndex < 0) {
+      messages.push({
         id,
         role: "assistant",
         timestamp: new Date().toISOString(),
         blocks: [block],
-      };
-      messages.push(msg);
+      });
     } else {
-      msg.blocks = [block];
+      messages[existingIndex] = {
+        ...messages[existingIndex]!,
+        blocks: [block],
+      };
     }
     session = { ...session, messages };
   }
@@ -2052,10 +2243,53 @@
   ): void {
     if (!session) return;
     const messages = [...session.messages];
-    const existing = messages.find((m) => m.id === id);
+    const existingIndex = messages.findIndex((m) => m.id === id);
     const block: NormalizedBlock = { type: "tool_use", toolName, toolInput };
-    if (existing) existing.blocks = [block];
-    else {
+    if (existingIndex >= 0) {
+      messages[existingIndex] = {
+        ...messages[existingIndex]!,
+        blocks: [block],
+      };
+    } else {
+      messages.push({
+        id,
+        role: "assistant",
+        timestamp: new Date().toISOString(),
+        blocks: [block],
+      });
+    }
+    session = { ...session, messages };
+  }
+
+  function codexPlanFromParams(params: unknown): VisualPlan | undefined {
+    return visualPlanFromPayload(params);
+  }
+
+  function upsertCodexPlan(id: string, params: unknown): void {
+    if (!session) return;
+    const plan = codexPlanFromParams(params);
+    if (!plan) {
+      console.warn("supergit: Codex plan event missing plan items", {
+        id,
+        params,
+      });
+      return;
+    }
+    const block: NormalizedBlock = {
+      type: "plan",
+      explanation: plan.explanation,
+      planItems: plan.items,
+      toolName: "update_plan",
+      toolInput: params,
+    };
+    const messages = [...session.messages];
+    const existingIndex = messages.findIndex((m) => m.id === id);
+    if (existingIndex >= 0) {
+      messages[existingIndex] = {
+        ...messages[existingIndex]!,
+        blocks: [block],
+      };
+    } else {
       messages.push({
         id,
         role: "assistant",
@@ -2086,26 +2320,24 @@
       ),
       ...(text ? [{ type: "text" as const, text }] : []),
     ];
-    session = {
-      ...session,
-      messages: [
-        ...session.messages,
-        {
-          id,
-          role: "user",
-          timestamp: new Date().toISOString(),
-          blocks,
-        },
-      ],
-    };
+    codexOptimisticUserMessages = [
+      ...codexOptimisticUserMessages,
+      {
+        id,
+        role: "user",
+        timestamp: new Date().toISOString(),
+        blocks,
+      },
+    ];
+    forceVisualTailFollow();
     return id;
   }
 
   function removeOptimisticCodexUser(id: string | null): void {
-    if (!session || !id) return;
-    const messages = session.messages.filter((m) => m.id !== id);
-    if (messages.length === session.messages.length) return;
-    session = { ...session, messages };
+    if (!id) return;
+    const messages = codexOptimisticUserMessages.filter((m) => m.id !== id);
+    if (messages.length === codexOptimisticUserMessages.length) return;
+    codexOptimisticUserMessages = messages;
   }
 
   function composerImageUrl(attachment: ImageInlineAttachment): string {
@@ -2371,6 +2603,7 @@
     codexLiveLastActivityIso = new Date().toISOString();
     codexQueueBlocked = false;
     sendError = "";
+    forceVisualTailFollow();
   }
 
   function queueCodexMessage(): void {
@@ -2553,6 +2786,14 @@
     } catch (e) {
       sendError = e instanceof Error ? e.message : String(e);
     }
+  }
+
+  async function stopCodexVisualAppSession(): Promise<void> {
+    if (codexRunning) {
+      await stopCodexTurn();
+      return;
+    }
+    onStopVisualApp?.();
   }
 
   function codexRequestTitle(req: CodexAppEvent): string {
@@ -2787,6 +3028,13 @@
   $: if (codexQueuedMessages.length === 0 && codexQueueExpanded) {
     codexQueueExpanded = false;
   }
+  $: if (!codexLatestPlan && codexPlanExpanded) {
+    codexPlanExpanded = false;
+  }
+  $: composerWarnings = sendError ? [sendError] : [];
+  $: if (composerWarnings.length === 0 && codexWarningsExpanded) {
+    codexWarningsExpanded = false;
+  }
 
   $: composerPlaceholder =
     agent === "codex" ? "Message Codex…" : `Message ${model || "Ollama"}…`;
@@ -2796,6 +3044,48 @@
     if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
       e.preventDefault();
       void sendMessage();
+    }
+  }
+
+  function codexPlanBadgeLabel(plan: VisualPlan | undefined): string {
+    if (!plan) return "Todo";
+    return `Todo: ${plan.completed}/${plan.total}`;
+  }
+
+  function codexPlanStatusLabel(status: string): string {
+    if (status === "completed") return "Done";
+    if (status === "in_progress") return "Doing";
+    if (status === "pending") return "Todo";
+    return status.replace(/_/g, " ");
+  }
+
+  function codexPlanStatusIcon(status: string): string {
+    if (status === "completed") return "✓";
+    if (status === "in_progress") return "•";
+    return "○";
+  }
+
+  function toggleCodexPlanPane(): void {
+    codexPlanExpanded = !codexPlanExpanded;
+    if (codexPlanExpanded) {
+      codexQueueExpanded = false;
+      codexWarningsExpanded = false;
+    }
+  }
+
+  function toggleCodexQueuePane(): void {
+    codexQueueExpanded = !codexQueueExpanded;
+    if (codexQueueExpanded) {
+      codexPlanExpanded = false;
+      codexWarningsExpanded = false;
+    }
+  }
+
+  function toggleCodexWarningsPane(): void {
+    codexWarningsExpanded = !codexWarningsExpanded;
+    if (codexWarningsExpanded) {
+      codexPlanExpanded = false;
+      codexQueueExpanded = false;
     }
   }
 
@@ -2862,30 +3152,25 @@
   // Scroll-to-bottom policy:
   //   - First render (right after open or after switching sessions): jump
   //     to the newest message so you see "now".
-  //   - Subsequent renders (the 2-second poll): only scroll if the user is
-  //     already pinned near the bottom. If they've scrolled up to read
-  //     history, we must not yank them back down.
-  $: if (session && messagesEl) {
-    const el = messagesEl;
-    const NEAR = 64;
-    const wasNearBottom =
-      el.scrollHeight - el.scrollTop - el.clientHeight < NEAR;
-    const shouldStick = !hasRenderedOnce || wasNearBottom;
-    if (shouldStick) {
-      requestAnimationFrame(() => {
-        el.scrollTop = el.scrollHeight;
-      });
+  //   - Subsequent renders: only follow the tail if the user was already
+  //     pinned near the bottom. This includes the nested live "Worked for…"
+  //     scroller; live deltas inside that foldout need to tail like a TUI.
+  $: if (messagesEl) {
+    const nextTailKey = visualMessagesTailKey(visualSessionMessages);
+    if (nextTailKey !== visualTailKey) {
+      visualTailKey = nextTailKey;
+      scheduleVisualTailFollow();
     }
-    hasRenderedOnce = true;
   }
 
   // Live sync. Registers with the SHARED session poller instead of running a
   // per-column setInterval: one timer + one batched request per daemon for the
   // whole dashboard, instead of ~50 req/s when 30+ columns are open (see
   // plans/performance.md "per-column session-poll storm"). The poller is
-  // idle-gated and resume-aware centrally; it dispatches a changed body via
-  // onSession and this column's active-sends slice via onInflight. load() /
-  // refreshInflight() remain for event-driven immediate refresh (post-send).
+  // idle-gated and resume-aware centrally; it dispatches non-live transcript
+  // bodies via onSession and this column's active-sends slice via onInflight.
+  // Live Codex app-server panes intentionally skip transcript body polling:
+  // their active turn arrives through the app-server event stream.
   // `source` is keyed in App.svelte's {#each}, so it's stable for this mount.
 
   let unregisterPoll: (() => void) | null = null;
@@ -2896,9 +3181,18 @@
         source: sessionPollSource,
         daemonId,
         getSessionId: () => session?.sessionId,
+        shouldPollSession: () =>
+          !liveCodexApp &&
+          ollamaStreamingIdx === null &&
+          codexActiveTurnId === null,
         onSession: (bodyText, etag) => {
           // Don't clobber a live API stream mid-flight.
-          if (ollamaStreamingIdx !== null || codexActiveTurnId !== null) return;
+          if (
+            liveCodexApp ||
+            ollamaStreamingIdx !== null ||
+            codexActiveTurnId !== null
+          )
+            return;
           if (bodyText === lastResponseBody) return;
           lastEtag = etag;
           lastResponseBody = bodyText;
@@ -2912,9 +3206,6 @@
           inflight = list as unknown as InflightRec[];
         },
       });
-      // Kick off an immediate inflight refresh so the indicator's accurate
-      // from the first render, not up to 2s later.
-      void refreshInflight();
     }
   });
 
@@ -2938,7 +3229,6 @@
     transcriptSurface === "terminal"}
   class:empty-chat-composer={showChatComposer &&
     (session?.messages.length ?? 0) === 0}
-  class:has-composer-error={!!sendError}
   bind:this={sessionEl}
   on:mousemove={onSessionMouseMove}
   on:mouseleave={onSessionMouseLeave}
@@ -2958,15 +3248,15 @@
           : codexAgentLabel}
       agentIcon={agentEffortIcon}
       {agentSettings}
-      {source}
+      source={titleStorageSource}
       {manualTitle}
       aiTitle={summaryTitle}
       {mode}
       canResume={canResumeCurrentSurface()}
       canEnd={mode === "read"
-        ? codexVisualAppSurface && codexRunning
+        ? codexVisualAppCanStop
         : !!effectiveSessionId && (agent === "claude" || agent === "codex")}
-      showEndInRead={codexVisualAppSurface && codexRunning}
+      showEndInRead={codexVisualAppCanStop}
       {disposing}
       {awaitingInput}
       working={mode === "terminal" ? working : codexVisualAppSurface && codexRunning}
@@ -2988,14 +3278,16 @@
       onTitleSaved={(next) => onManualTitleSaved(next)}
       onResume={resumeCurrentSurface}
       onEndSession={mode === "read" && codexVisualAppSurface
-        ? stopCodexTurn
+        ? stopCodexVisualAppSession
         : disposeTerminal}
       onCancelInflight={cancelAllInflight}
       {onClose}
       {onDragStart}
       resumeTitle={resumeTitleForAgent()}
       endSessionTitle={mode === "read" && codexVisualAppSurface
-        ? "Interrupt the running Codex turn"
+        ? codexRunning
+          ? "Interrupt the running Codex turn"
+          : "Stop the live Codex app session and keep the saved transcript open"
         : undefined}
       endSessionLabel={mode === "read" && codexVisualAppSurface
         ? "Stop"
@@ -3299,7 +3591,7 @@
         // Same effect as Dispose: flip to read, scroll to the newest
         // messages on the next render.
         terminalId = null;
-        hasRenderedOnce = false;
+        resetVisualTailFollow();
         mode = "read";
         onModeChange(mode);
         void load();
@@ -3327,6 +3619,7 @@
       onMessagesLeave={onMessagesLeave}
       onMessagesWheel={onMessagesWheel}
       active={visualTranscriptActive}
+      showLiveThinkingLine={codexVisualAppSurface && codexRunning}
     />
   {/if}
 
@@ -3431,6 +3724,41 @@
                     >
                   {/if}
                 </div>
+              </div>
+            {/each}
+          </div>
+        </div>
+      {/if}
+      {#if agent === "codex" && composerWarnings.length && codexWarningsExpanded}
+        <div class="codex-warning-pane" aria-label="Codex warnings">
+          {#each composerWarnings as warning, i (`${i}:${warning}`)}
+            <div class="codex-warning-item">{warning}</div>
+          {/each}
+        </div>
+      {/if}
+      {#if agent === "codex" && codexLatestPlan && codexPlanExpanded}
+        <div class="codex-plan-pane" aria-label="Codex plan">
+          {#if codexLatestPlan.explanation}
+            <div class="codex-plan-explanation">
+              {codexLatestPlan.explanation}
+            </div>
+          {/if}
+          <div class="codex-plan-items">
+            {#each codexLatestPlan.items as item, i (`${item.status}:${item.step}:${i}`)}
+              <div
+                class="codex-plan-item"
+                class:active={item.status === "in_progress"}
+              >
+                <span
+                  class="codex-plan-status"
+                  class:done={item.status === "completed"}
+                  class:active={item.status === "in_progress"}
+                  title={codexPlanStatusLabel(item.status)}
+                  aria-label={codexPlanStatusLabel(item.status)}
+                >
+                  {codexPlanStatusIcon(item.status)}
+                </span>
+                <span class="codex-plan-step">{item.step}</span>
               </div>
             {/each}
           </div>
@@ -3620,21 +3948,53 @@
       </div>
       <div class="composer-footer">
         <div class="composer-send-wrap">
-          {#if agent === "codex" && codexQueuedMessages.length}
-            <button
-              type="button"
-              class="codex-queue-badge"
-              class:expanded={codexQueueExpanded}
-              on:click={() => (codexQueueExpanded = !codexQueueExpanded)}
-              title={codexQueueExpanded
-                ? "Collapse queued messages"
-                : "Show queued messages"}
-              aria-label={codexQueueExpanded
-                ? "Collapse queued messages"
-                : "Show queued messages"}
-            >
-              Queue: {codexQueuedMessages.length}
-            </button>
+          {#if agent === "codex" && (codexLatestPlan || codexQueuedMessages.length || composerWarnings.length)}
+            <div class="composer-indicators">
+              {#if composerWarnings.length}
+                <button
+                  type="button"
+                  class="codex-composer-badge warning"
+                  class:expanded={codexWarningsExpanded}
+                  on:click={toggleCodexWarningsPane}
+                  title={codexWarningsExpanded
+                    ? "Collapse warnings"
+                    : "Show warnings"}
+                  aria-label={codexWarningsExpanded
+                    ? "Collapse warnings"
+                    : "Show warnings"}
+                >
+                  Warnings: {composerWarnings.length}
+                </button>
+              {/if}
+              {#if codexLatestPlan}
+                <button
+                  type="button"
+                  class="codex-composer-badge"
+                  class:expanded={codexPlanExpanded}
+                  on:click={toggleCodexPlanPane}
+                  title={codexPlanExpanded ? "Collapse todo" : "Show todo"}
+                  aria-label={codexPlanExpanded ? "Collapse todo" : "Show todo"}
+                >
+                  {codexPlanBadgeLabel(codexLatestPlan)}
+                </button>
+              {/if}
+              {#if codexQueuedMessages.length}
+                <button
+                  type="button"
+                  class="codex-composer-badge"
+                  class:expanded={codexQueueExpanded}
+                  on:click={toggleCodexQueuePane}
+                  title={codexQueueExpanded
+                    ? "Collapse queued messages"
+                    : "Show queued messages"}
+                  aria-label={codexQueueExpanded
+                    ? "Collapse queued messages"
+                    : "Show queued messages"}
+                >
+                  Queue: {codexQueuedMessages.length}
+                </button>
+              {/if}
+            </div>
           {/if}
           {#if sending && agent === "ollama"}
             <button
@@ -3697,9 +4057,6 @@
         </div>
       </div>
     </div>
-    {#if sendError}
-      <div class="composer-error" title={sendError}>{sendError}</div>
-    {/if}
     </div>
   {/if}
   {#if openComposerAttachment && openComposerAttachmentIndex !== null}
@@ -4073,7 +4430,9 @@
     overflow-y: auto;
     overscroll-behavior: contain;
   }
-  .codex-queue-pane {
+  .codex-queue-pane,
+  .codex-warning-pane,
+  .codex-plan-pane {
     position: absolute;
     right: 0;
     bottom: calc(100% + 0.4rem);
@@ -4087,6 +4446,14 @@
     box-shadow: 0 14px 30px -22px rgba(0, 0, 0, 0.9);
     overflow-y: auto;
     overscroll-behavior: contain;
+  }
+  .codex-plan-pane {
+    left: auto;
+    width: min(100%, 34rem);
+  }
+  .codex-warning-pane {
+    left: auto;
+    width: min(100%, 34rem);
   }
   .composer-box,
   .composer-footer {
@@ -4154,6 +4521,60 @@
   .codex-queue {
     display: grid;
     gap: 0.35rem;
+  }
+  .codex-plan-explanation {
+    margin: 0 0 0.35rem;
+    color: var(--text-muted);
+    font-size: 0.72rem;
+    line-height: 1.25;
+  }
+  .codex-warning-item {
+    padding: 0.36rem 0.42rem;
+    border-radius: var(--radius-sm);
+    background: color-mix(in srgb, var(--error-bg) 46%, transparent);
+    color: var(--error-text);
+    font-size: 0.72rem;
+    line-height: 1.28;
+    overflow-wrap: anywhere;
+  }
+  .codex-plan-items {
+    display: grid;
+    gap: 0.2rem;
+  }
+  .codex-plan-item {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    gap: 0.42rem;
+    align-items: start;
+    min-width: 0;
+    padding: 0.28rem 0.32rem;
+    border-radius: var(--radius-sm);
+    color: var(--text-2);
+    font-size: 0.76rem;
+    line-height: 1.28;
+  }
+  .codex-plan-item.active {
+    background: color-mix(in srgb, var(--surface-1) 70%, transparent);
+    color: var(--text-1);
+  }
+  .codex-plan-status {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 1rem;
+    color: var(--text-faint);
+    font-size: 0.72rem;
+    line-height: 1.28;
+  }
+  .codex-plan-status.done {
+    color: var(--status-clean);
+  }
+  .codex-plan-status.active {
+    color: var(--status-warn);
+  }
+  .codex-plan-step {
+    min-width: 0;
+    overflow-wrap: anywhere;
   }
   .codex-queue-item {
     display: grid;
@@ -4470,10 +4891,16 @@
     justify-content: flex-end;
     gap: 0.25rem;
   }
-  .codex-queue-badge {
+  .composer-indicators {
     position: absolute;
     right: 0;
     bottom: calc(100% + 0.35rem);
+    display: flex;
+    justify-content: flex-end;
+    gap: 0.25rem;
+    max-width: min(22rem, calc(100vw - 2rem));
+  }
+  .codex-composer-badge {
     max-width: 8rem;
     border: 1px solid color-mix(in srgb, var(--status-clean) 42%, var(--surface-3));
     border-radius: 999px;
@@ -4488,11 +4915,21 @@
     cursor: pointer;
     box-shadow: 0 8px 22px -18px rgba(0, 0, 0, 0.9);
   }
-  .codex-queue-badge:hover,
-  .codex-queue-badge.expanded {
+  .codex-composer-badge:hover,
+  .codex-composer-badge.expanded {
     color: var(--text-1);
     border-color: color-mix(in srgb, var(--status-clean) 62%, var(--surface-3));
     background: color-mix(in srgb, var(--surface-2) 92%, transparent);
+  }
+  .codex-composer-badge.warning {
+    border-color: color-mix(in srgb, var(--error-text) 46%, var(--surface-3));
+    color: var(--error-text);
+  }
+  .codex-composer-badge.warning:hover,
+  .codex-composer-badge.warning.expanded {
+    border-color: color-mix(in srgb, var(--error-text) 64%, var(--surface-3));
+    background: color-mix(in srgb, var(--error-bg) 38%, var(--surface-2));
+    color: var(--error-text);
   }
   .composer-send {
     display: inline-flex;

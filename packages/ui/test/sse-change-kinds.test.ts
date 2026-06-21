@@ -10,6 +10,7 @@ import {
   changeKindRequiresDaemonsReload,
   changeKindRequiresEventsReload,
   changeKindRequiresReposReload,
+  createFsChangeBatcher,
 } from "../src/sse-change-kinds";
 
 describe("change-kind UI gating", () => {
@@ -155,5 +156,69 @@ describe("change-kind UI gating", () => {
     expect(changeKindRequiresDaemonsReload(undefined)).toBe(false);
     expect(changeKindRequiresDaemonsReload(null)).toBe(false);
     expect(changeKindRequiresDaemonsReload(42)).toBe(false);
+  });
+});
+
+describe("createFsChangeBatcher", () => {
+  test("coalesces a burst into one flush with deduped paths", () => {
+    let scheduled: (() => void) | null = null;
+    const flushed: string[][] = [];
+    const batcher = createFsChangeBatcher({
+      delayMs: 250,
+      onFlush: (paths) => flushed.push(paths),
+      setTimer: (fn) => {
+        scheduled = fn;
+        return "timer";
+      },
+      clearTimer: () => {},
+    });
+
+    batcher.push("/wt/a");
+    batcher.push("/wt/b");
+    batcher.push("/wt/a");
+    expect(flushed).toEqual([]);
+
+    scheduled?.();
+    expect(flushed).toEqual([["/wt/a", "/wt/b"]]);
+  });
+
+  test("flushes synchronously and clears the pending timer", () => {
+    let clearCount = 0;
+    const flushed: string[][] = [];
+    const batcher = createFsChangeBatcher({
+      delayMs: 250,
+      onFlush: (paths) => flushed.push(paths),
+      setTimer: () => "timer",
+      clearTimer: () => {
+        clearCount++;
+      },
+    });
+
+    batcher.push("/wt/a");
+    batcher.flush();
+    batcher.flush();
+
+    expect(clearCount).toBe(1);
+    expect(flushed).toEqual([["/wt/a"]]);
+  });
+
+  test("dispose drops pending paths without flushing", () => {
+    let clearCount = 0;
+    const flushed: string[][] = [];
+    const batcher = createFsChangeBatcher({
+      delayMs: 250,
+      onFlush: (paths) => flushed.push(paths),
+      setTimer: () => "timer",
+      clearTimer: () => {
+        clearCount++;
+      },
+    });
+
+    batcher.push("/wt/a");
+    batcher.dispose();
+    batcher.flush();
+
+    expect(clearCount).toBe(1);
+    expect(flushed).toEqual([]);
   });
 });

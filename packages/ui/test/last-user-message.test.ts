@@ -1,13 +1,21 @@
 import { describe, it, expect } from "bun:test";
 import {
+  applyVisualTranscriptDeltaPatches,
   buildVisualWorkDisplayEntries,
   buildVisualTranscriptItems,
   cleanVisualUserText,
   cleanVisualToolResultText,
   lastUserMessageBurst,
   lastUserMessageWithContext,
+  latestVisualPlan,
+  mergeVisualSessionMessages,
+  reuseStableVisualTranscriptItems,
+  visualPlanFromBlock,
+  visualPlanFromPayload,
   visualUserImageAttachments,
   visualFileEditSummaryForBlock,
+  visualThinkingSummary,
+  withoutDuplicateOptimisticUserMessages,
   type Message,
 } from "../src/last-user-message";
 
@@ -193,6 +201,110 @@ describe("cleanVisualUserText", () => {
 
   it("keeps ordinary text unchanged", () => {
     expect(cleanVisualUserText("please keep this")).toBe("please keep this");
+  });
+});
+
+describe("visual plan extraction", () => {
+  it("extracts a typed plan block", () => {
+    const plan = visualPlanFromBlock({
+      type: "plan",
+      explanation: "Work in clear phases.",
+      planItems: [
+        { step: "Read the session", status: "completed" },
+        { step: "Add UI", status: "in_progress" },
+        { step: "Verify", status: "pending" },
+      ],
+    });
+
+    expect(plan).toMatchObject({
+      explanation: "Work in clear phases.",
+      completed: 1,
+      inProgress: 1,
+      total: 3,
+      items: [
+        { step: "Read the session", status: "completed" },
+        { step: "Add UI", status: "in_progress" },
+        { step: "Verify", status: "pending" },
+      ],
+    });
+  });
+
+  it("normalizes live plan payloads at the boundary", () => {
+    expect(
+      visualPlanFromPayload({
+        explanation: "Newest snapshot.",
+        plan: [
+          { step: "Old step", status: "completed" },
+          { step: "Next step", status: "in_progress" },
+        ],
+      }),
+    ).toMatchObject({
+      explanation: "Newest snapshot.",
+      completed: 1,
+      inProgress: 1,
+      total: 2,
+      items: [
+        { step: "Old step", status: "completed" },
+        { step: "Next step", status: "in_progress" },
+      ],
+    });
+  });
+
+  it("returns the latest normalized plan snapshot", () => {
+    const messages: Message[] = [
+      {
+        role: "assistant",
+        blocks: [
+          {
+            type: "plan",
+            planItems: [{ step: "Old step", status: "in_progress" }],
+          },
+        ],
+      },
+      {
+        role: "assistant",
+        blocks: [
+          {
+            type: "plan",
+            explanation: "Newest snapshot.",
+            planItems: [
+              { step: "Old step", status: "completed" },
+              { step: "Next step", status: "in_progress" },
+            ],
+          },
+        ],
+      },
+    ];
+
+    expect(latestVisualPlan(messages)).toMatchObject({
+      explanation: "Newest snapshot.",
+      completed: 1,
+      inProgress: 1,
+      total: 2,
+      items: [
+        { step: "Old step", status: "completed" },
+        { step: "Next step", status: "in_progress" },
+      ],
+    });
+  });
+
+  it("does not treat raw tool_use plan calls as display plans", () => {
+    expect(
+      latestVisualPlan([
+        {
+          role: "assistant",
+          blocks: [
+            {
+              type: "tool_use",
+              toolName: "update_plan",
+              toolInput: {
+                plan: [{ step: "Should be normalized first", status: "pending" }],
+              },
+            },
+          ],
+        },
+      ]),
+    ).toBeUndefined();
   });
 });
 
@@ -476,6 +588,197 @@ describe("buildVisualTranscriptItems", () => {
   });
 });
 
+describe("reuseStableVisualTranscriptItems", () => {
+  it("preserves unchanged transcript item identities when the live tail grows", () => {
+    const user = msg("user", "fix it", "2026-06-19T10:00:00.000Z");
+    const firstAnswer = msg(
+      "assistant",
+      "I’ll inspect it.",
+      "2026-06-19T10:00:02.000Z",
+    );
+    const secondUser = msg("user", "continue", "2026-06-19T10:00:10.000Z");
+    const liveThinking: Message = {
+      id: "live-thinking",
+      role: "assistant",
+      timestamp: "2026-06-19T10:00:12.000Z",
+      blocks: [{ type: "thinking", text: "checking" }],
+    };
+    const previous = buildVisualTranscriptItems(
+      [user, firstAnswer, secondUser, liveThinking],
+      { active: true },
+    );
+
+    const grownThinking: Message = {
+      ...liveThinking,
+      blocks: [{ type: "thinking", text: "checking more" }],
+    };
+    const nextRaw = buildVisualTranscriptItems(
+      [user, firstAnswer, secondUser, grownThinking],
+      { active: true },
+    );
+    const next = reuseStableVisualTranscriptItems(previous, nextRaw);
+
+    expect(next[0]).toBe(previous[0]);
+    expect(next[1]).toBe(previous[1]);
+    expect(next[2]).toBe(previous[2]);
+    expect(next[3]).not.toBe(previous[3]);
+  });
+
+  it("preserves unchanged work entries inside a growing live work item", () => {
+    const user = msg("user", "fix it", "2026-06-19T10:00:00.000Z");
+    const toolUse: Message = {
+      id: "tool-use",
+      role: "assistant",
+      timestamp: "2026-06-19T10:00:01.000Z",
+      blocks: [{ type: "tool_use", toolName: "exec_command" }],
+    };
+    const toolResult: Message = {
+      id: "tool-result",
+      role: "tool",
+      timestamp: "2026-06-19T10:00:02.000Z",
+      blocks: [{ type: "tool_result", text: "first line" }],
+    };
+    const previous = buildVisualTranscriptItems([user, toolUse, toolResult], {
+      active: true,
+    });
+
+    const grownToolResult: Message = {
+      ...toolResult,
+      blocks: [{ type: "tool_result", text: "first line\nsecond line" }],
+    };
+    const nextRaw = buildVisualTranscriptItems(
+      [user, toolUse, grownToolResult],
+      { active: true },
+    );
+    const next = reuseStableVisualTranscriptItems(previous, nextRaw);
+
+    if (previous[1]?.kind !== "work" || next[1]?.kind !== "work") {
+      throw new Error("expected live work items");
+    }
+    expect(next[1].entries[0]).toBe(previous[1].entries[0]);
+    expect(next[1].entries[1]).not.toBe(previous[1].entries[1]);
+  });
+});
+
+describe("withoutDuplicateOptimisticUserMessages", () => {
+  it("replaces a local optimistic user row with the canonical transcript row", () => {
+    const optimistic: Message = {
+      id: "codex-optimistic-user-local",
+      role: "user",
+      timestamp: "2026-06-19T10:00:00.000Z",
+      blocks: [{ type: "text", text: "commit this please" }],
+    };
+    const canonical = msg(
+      "user",
+      "commit this please",
+      "2026-06-19T10:00:01.000Z",
+    );
+
+    expect(
+      withoutDuplicateOptimisticUserMessages([optimistic, canonical]),
+    ).toEqual([canonical]);
+  });
+
+  it("keeps intentionally repeated canonical user messages", () => {
+    const first = msg("user", "again", "2026-06-19T10:00:00.000Z");
+    const second = msg("user", "again", "2026-06-19T10:00:01.000Z");
+
+    expect(withoutDuplicateOptimisticUserMessages([first, second])).toEqual([
+      first,
+      second,
+    ]);
+  });
+});
+
+describe("mergeVisualSessionMessages", () => {
+  it("places optimistic user rows by timestamp before later live assistant updates", () => {
+    const before = msg("assistant", "before", "2026-06-19T10:00:00.000Z");
+    const liveAssistant = msg(
+      "assistant",
+      "working",
+      "2026-06-19T10:00:02.000Z",
+    );
+    const optimistic: Message = {
+      id: "codex-optimistic-user-queued",
+      role: "user",
+      timestamp: "2026-06-19T10:00:01.000Z",
+      blocks: [{ type: "text", text: "queued follow-up" }],
+    };
+
+    expect(
+      mergeVisualSessionMessages([before, liveAssistant], [optimistic]).map(
+        (message) => message.blocks[0]?.text,
+      ),
+    ).toEqual(["before", "queued follow-up", "working"]);
+  });
+
+  it("drops optimistic rows when matching canonical user rows arrive", () => {
+    const optimistic: Message = {
+      id: "codex-optimistic-user-steer",
+      role: "user",
+      timestamp: "2026-06-19T10:00:01.000Z",
+      blocks: [{ type: "text", text: "steer this" }],
+    };
+    const canonical = msg("user", "steer this", "2026-06-19T10:00:02.000Z");
+
+    expect(mergeVisualSessionMessages([canonical], [optimistic])).toEqual([
+      canonical,
+    ]);
+  });
+});
+
+describe("applyVisualTranscriptDeltaPatches", () => {
+  it("coalesces streamed deltas and preserves untouched message identities", () => {
+    const existing = msg("user", "run tests", "2026-06-21T20:00:00.000Z");
+    existing.id = "user-1";
+    const messages = [existing];
+
+    const next = applyVisualTranscriptDeltaPatches(messages, [
+      {
+        id: "codex-agent-item-1",
+        role: "assistant",
+        type: "text",
+        delta: "First",
+        timestamp: "2026-06-21T20:00:01.000Z",
+      },
+      {
+        id: "codex-agent-item-1",
+        role: "assistant",
+        type: "text",
+        delta: " second",
+        timestamp: "2026-06-21T20:00:02.000Z",
+      },
+      {
+        id: "codex-output-call-1",
+        role: "tool",
+        type: "tool_result",
+        delta: "stdout",
+        blockFields: { toolName: "exec_command", toolUseId: "call-1" },
+        timestamp: "2026-06-21T20:00:03.000Z",
+      },
+    ]);
+
+    expect(next[0]).toBe(existing);
+    expect(next[1]).toMatchObject({
+      id: "codex-agent-item-1",
+      role: "assistant",
+      blocks: [{ type: "text", text: "First second" }],
+    });
+    expect(next[2]).toMatchObject({
+      id: "codex-output-call-1",
+      role: "tool",
+      blocks: [
+        {
+          type: "tool_result",
+          text: "stdout",
+          toolName: "exec_command",
+          toolUseId: "call-1",
+        },
+      ],
+    });
+  });
+});
+
 describe("cleanVisualToolResultText", () => {
   it("strips Codex command chunk metadata and keeps the command output", () => {
     expect(
@@ -522,11 +825,39 @@ describe("cleanVisualToolResultText", () => {
     });
   });
 
+  it("strips plain command result metadata and keeps the output", () => {
+    expect(
+      cleanVisualToolResultText(
+        "Exit code: 0\nWall time: 0.25 seconds\nOutput:\nrestored prior state prefs shape for repro",
+      ),
+    ).toEqual({
+      title: "Command output",
+      body: "restored prior state prefs shape for repro",
+      wrappedCodexChunk: true,
+      wallTimeSeconds: 0.25,
+      exitCode: 0,
+      originalTokenCount: undefined,
+    });
+  });
+
   it("leaves ordinary tool results alone", () => {
     expect(cleanVisualToolResultText("tests passed")).toEqual({
       title: "Tool result",
       body: "tests passed",
       wrappedCodexChunk: false,
+    });
+  });
+});
+
+describe("visualThinkingSummary", () => {
+  it("removes duplicated thinking labels and markdown title wrappers", () => {
+    expect(
+      visualThinkingSummary(
+        "thinking **Exploring response options**\nI am checking the transcript rows.",
+      ),
+    ).toEqual({
+      title: "Exploring response options",
+      body: "I am checking the transcript rows.",
     });
   });
 });
@@ -603,6 +934,58 @@ describe("buildVisualWorkDisplayEntries", () => {
     expect(entries[0]?.pairedResult).toBe(firstResult);
     expect(entries[1]?.entry).toBe(secondToolUse);
     expect(entries[1]?.pairedResult).toBe(secondResult);
+  });
+
+  it("carries a paired tool use name onto sparse tool results", () => {
+    const toolUse = {
+      message: {
+        role: "assistant",
+        blocks: [
+          {
+            type: "tool_use",
+            toolName: "exec_command",
+            toolUseId: "call-1",
+          },
+        ],
+      },
+      blocks: [
+        {
+          type: "tool_use",
+          toolName: "exec_command",
+          toolUseId: "call-1",
+        },
+      ],
+      messageIndex: 1,
+    };
+    const toolResult = {
+      message: {
+        role: "tool",
+        blocks: [
+          {
+            type: "tool_result",
+            text: "tests passed",
+            toolUseId: "call-1",
+          },
+        ],
+      },
+      blocks: [
+        {
+          type: "tool_result",
+          text: "tests passed",
+          toolUseId: "call-1",
+        },
+      ],
+      messageIndex: 2,
+    };
+
+    const entries = buildVisualWorkDisplayEntries([toolUse, toolResult]);
+
+    expect(entries[0]?.pairedResult?.blocks[0]).toMatchObject({
+      type: "tool_result",
+      toolName: "exec_command",
+      toolUseId: "call-1",
+    });
+    expect(toolResult.blocks[0]).not.toHaveProperty("toolName");
   });
 
   it("keeps standalone tool results visible", () => {

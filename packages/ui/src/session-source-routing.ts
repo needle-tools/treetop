@@ -1,3 +1,5 @@
+import { isLiveCodexAppSource } from "./storage";
+
 /**
  * Pure session-source routing helpers extracted from App.svelte.
  * Behaviour pinned by packages/ui/test/session-source-routing.test.ts.
@@ -160,6 +162,53 @@ export function openSessionHasLiveTerminal(
 
   if (session.mode !== "terminal") return false;
   return !!session.attachTermId && options.liveTerminalIds.has(session.attachTermId);
+}
+
+export function openSessionHasDockActivity(
+  session: Pick<OpenSession, "agent" | "source" | "mode" | "attachTermId">,
+  options: {
+    liveTerminalIds: ReadonlySet<string>;
+    newTermIds: Record<string, string>;
+    transientExited?: Record<string, boolean>;
+    transientWorking?: Record<string, boolean>;
+    transientAwaiting?: Record<string, boolean>;
+  },
+): boolean {
+  if (
+    openSessionHasLiveTerminal(session, {
+      liveTerminalIds: options.liveTerminalIds,
+      newTermIds: options.newTermIds,
+      transientExited: options.transientExited,
+    })
+  ) {
+    return true;
+  }
+  if (
+    session.agent === "shell" ||
+    session.agent === "files" ||
+    session.agent === "history" ||
+    options.transientExited?.[session.source]
+  ) {
+    return false;
+  }
+  if (session.agent === "codex" && isLiveCodexAppSource(session.source)) {
+    return true;
+  }
+  return (
+    options.transientWorking?.[session.source] === true ||
+    options.transientAwaiting?.[session.source] === true
+  );
+}
+
+export function canResumeVisualSurface(options: {
+  agent: string;
+  liveAppSurface: boolean;
+  sessionId: string | undefined | null;
+  hasVisualResume: boolean;
+}): boolean {
+  if (options.agent !== "codex") return false;
+  if (options.liveAppSurface) return false;
+  return !!options.sessionId && options.hasVisualResume;
 }
 
 export function reconcileLiveAgentTerminals(

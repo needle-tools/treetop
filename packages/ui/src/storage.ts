@@ -542,6 +542,33 @@ export function shouldPollSessionSource(session: {
   return !(session.agent === "codex" && isLiveCodexAppSource(session.source));
 }
 
+export function transientDiscoverySources(
+  byWt: Record<string, readonly Pick<PersistedSession, "agent" | "source">[]>,
+  options: {
+    newTermIds: Readonly<Record<string, string>>;
+    liveTerminalIds: ReadonlySet<string>;
+    discoveryDeadlineMs: Readonly<Record<string, number>>;
+    nowMs: number;
+  },
+): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const sessions of Object.values(byWt)) {
+    for (const s of sessions) {
+      if (s.agent === "shell") continue;
+      if (!s.source.startsWith("__new__:")) continue;
+      const deadline = options.discoveryDeadlineMs[s.source] ?? 0;
+      if (deadline <= options.nowMs) continue;
+      const termId = options.newTermIds[s.source];
+      if (!termId || !options.liveTerminalIds.has(termId)) continue;
+      if (seen.has(s.source)) continue;
+      seen.add(s.source);
+      out.push(s.source);
+    }
+  }
+  return out;
+}
+
 /**
  * Filter a persisted list to sessions whose source file is still detected
  * by the daemon (i.e. present in the current `/api/agents` snapshot) OR
@@ -834,10 +861,28 @@ export function resolveTitleSource(
   session: {
     source: string;
     resumeSessionId?: string;
+    transcriptSource?: string;
     agent: PersistedAgent | "shell";
   },
   agents: ReadonlyArray<{ agent: string; sessionId?: string; source: string }>,
 ): string {
+  if (
+    session.agent === "codex" &&
+    isLiveCodexAppSource(session.source) &&
+    session.transcriptSource
+  ) {
+    return session.transcriptSource;
+  }
+  if (
+    session.agent === "codex" &&
+    isLiveCodexAppSource(session.source) &&
+    session.resumeSessionId
+  ) {
+    const match = agents.find(
+      (a) => a.agent === session.agent && a.sessionId === session.resumeSessionId,
+    );
+    if (match) return match.source;
+  }
   if (!session.source.startsWith("__new__:")) return session.source;
   const sid = session.resumeSessionId;
   if (!sid) return session.source;

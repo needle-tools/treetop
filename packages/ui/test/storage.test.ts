@@ -28,6 +28,7 @@ import {
   stampDiscoveredSessionId,
   stampDiscoveredSessionIdWithDetail,
   toggleVisibleWorktree,
+  transientDiscoverySources,
   type KVStore,
   type PersistedSession,
 } from "../src/storage";
@@ -629,6 +630,66 @@ describe("filterToExistingSessions", () => {
     expect(filterToExistingSessions(persisted, new Set<string>())).toEqual([
       mkSess("__new__:claude:abc"),
     ]);
+  });
+});
+
+describe("transientDiscoverySources", () => {
+  test("ignores stale persisted __new__ agent sessions without a live spawned terminal", () => {
+    const byWt = {
+      "/wt": [{ agent: "codex" as const, source: "__new__:codex:t_stale" }],
+    };
+    expect(
+      transientDiscoverySources(byWt, {
+        newTermIds: {},
+        liveTerminalIds: new Set(),
+        discoveryDeadlineMs: { "__new__:codex:t_stale": 10_000 },
+        nowMs: 1_000,
+      }),
+    ).toEqual([]);
+  });
+
+  test("keeps live current __new__ agent sessions inside the discovery window", () => {
+    const source = "__new__:claude:t_current";
+    const byWt = {
+      "/wt": [{ agent: "claude" as const, source }],
+    };
+    expect(
+      transientDiscoverySources(byWt, {
+        newTermIds: { [source]: "term_1" },
+        liveTerminalIds: new Set(["term_1"]),
+        discoveryDeadlineMs: { [source]: 10_000 },
+        nowMs: 1_000,
+      }),
+    ).toEqual([source]);
+  });
+
+  test("stops polling expired, dead, and shell transient sources", () => {
+    const liveExpired = "__new__:codex:t_expired";
+    const dead = "__new__:codex:t_dead";
+    const shell = "__new__:shell:t_shell";
+    const byWt = {
+      "/wt": [
+        { agent: "codex" as const, source: liveExpired },
+        { agent: "codex" as const, source: dead },
+        { agent: "shell" as const, source: shell },
+      ],
+    };
+    expect(
+      transientDiscoverySources(byWt, {
+        newTermIds: {
+          [liveExpired]: "term_expired",
+          [dead]: "term_dead",
+          [shell]: "term_shell",
+        },
+        liveTerminalIds: new Set(["term_expired", "term_shell"]),
+        discoveryDeadlineMs: {
+          [liveExpired]: 500,
+          [dead]: 10_000,
+          [shell]: 10_000,
+        },
+        nowMs: 1_000,
+      }),
+    ).toEqual([]);
   });
 });
 
@@ -1417,6 +1478,31 @@ describe("resolveTitleSource", () => {
     const out = resolveTitleSource(
       { agent: "claude", source: JSONL_PATH, resumeSessionId: "sid-A" },
       [{ agent: "claude", sessionId: "sid-A", source: JSONL_PATH }],
+    );
+    expect(out).toBe(JSONL_PATH);
+  });
+
+  test("stores live Codex App titles on the transcript source when available", () => {
+    const out = resolveTitleSource(
+      {
+        agent: "codex",
+        source: "__codex_app__:sid-A",
+        resumeSessionId: "sid-A",
+        transcriptSource: JSONL_PATH,
+      },
+      [],
+    );
+    expect(out).toBe(JSONL_PATH);
+  });
+
+  test("falls back from live Codex App source to the detected session source", () => {
+    const out = resolveTitleSource(
+      {
+        agent: "codex",
+        source: "__codex_app__:sid-A",
+        resumeSessionId: "sid-A",
+      },
+      [{ agent: "codex", sessionId: "sid-A", source: JSONL_PATH }],
     );
     expect(out).toBe(JSONL_PATH);
   });

@@ -19,6 +19,8 @@ import {
   shellToSession,
   shellSourceToDismiss,
   moveSessionStateKey,
+  canResumeVisualSurface,
+  openSessionHasDockActivity,
   openSessionHasLiveTerminal,
   reconcileLiveAgentTerminals,
   type AgentSession,
@@ -381,6 +383,87 @@ describe("openSessionHasLiveTerminal", () => {
           liveTerminalIds: new Set(["t_live"]),
           newTermIds: {},
           transientExited: { "/agents/codex.jsonl": true },
+        },
+      ),
+    ).toBe(false);
+  });
+});
+
+describe("openSessionHasDockActivity", () => {
+  test("keeps an idle live Codex app-server pane active without pretending it is working", () => {
+    expect(
+      openSessionHasDockActivity(
+        {
+          agent: "codex",
+          source: "__codex_app__:019ed710",
+        },
+        {
+          liveTerminalIds: new Set(),
+          newTermIds: {},
+        },
+      ),
+    ).toBe(true);
+  });
+
+  test("keeps a working visual app-server session active without a live PTY", () => {
+    expect(
+      openSessionHasDockActivity(
+        {
+          agent: "codex",
+          source: "__codex_app__:019ed710",
+        },
+        {
+          liveTerminalIds: new Set(),
+          newTermIds: {},
+          transientWorking: { "__codex_app__:019ed710": true },
+        },
+      ),
+    ).toBe(true);
+  });
+
+  test("keeps an awaiting visual app-server session active without a live PTY", () => {
+    expect(
+      openSessionHasDockActivity(
+        {
+          agent: "codex",
+          source: "__codex_app__:019ed710",
+        },
+        {
+          liveTerminalIds: new Set(),
+          newTermIds: {},
+          transientAwaiting: { "__codex_app__:019ed710": true },
+        },
+      ),
+    ).toBe(true);
+  });
+
+  test("idle read-mode history remains inactive without visual activity", () => {
+    expect(
+      openSessionHasDockActivity(
+        {
+          agent: "codex",
+          source: "/agents/codex.jsonl",
+        },
+        {
+          liveTerminalIds: new Set(),
+          newTermIds: {},
+        },
+      ),
+    ).toBe(false);
+  });
+
+  test("transient exited state wins over visual activity", () => {
+    expect(
+      openSessionHasDockActivity(
+        {
+          agent: "codex",
+          source: "__codex_app__:019ed710",
+        },
+        {
+          liveTerminalIds: new Set(),
+          newTermIds: {},
+          transientWorking: { "__codex_app__:019ed710": true },
+          transientExited: { "__codex_app__:019ed710": true },
         },
       ),
     ).toBe(false);
@@ -761,5 +844,56 @@ describe("shellToSession", () => {
       messageCount: 3,
       manualTitle: "git wt",
     });
+  });
+});
+
+describe("canResumeVisualSurface", () => {
+  test("offers Resume for a stopped Codex transcript that can become visual", () => {
+    expect(
+      canResumeVisualSurface({
+        agent: "codex",
+        liveAppSurface: false,
+        sessionId: "thread-1",
+        hasVisualResume: true,
+      }),
+    ).toBe(true);
+  });
+
+  test("does not show Resume inside an already live-wired visual Codex pane", () => {
+    expect(
+      canResumeVisualSurface({
+        agent: "codex",
+        liveAppSurface: true,
+        sessionId: "thread-1",
+        hasVisualResume: true,
+      }),
+    ).toBe(false);
+  });
+
+  test("requires a resumable Codex session id and visual resume handler", () => {
+    expect(
+      canResumeVisualSurface({
+        agent: "codex",
+        liveAppSurface: false,
+        sessionId: undefined,
+        hasVisualResume: true,
+      }),
+    ).toBe(false);
+    expect(
+      canResumeVisualSurface({
+        agent: "codex",
+        liveAppSurface: false,
+        sessionId: "thread-1",
+        hasVisualResume: false,
+      }),
+    ).toBe(false);
+    expect(
+      canResumeVisualSurface({
+        agent: "claude",
+        liveAppSurface: false,
+        sessionId: "thread-1",
+        hasVisualResume: true,
+      }),
+    ).toBe(false);
   });
 });

@@ -640,6 +640,7 @@
       <button
         class="resume-btn dispose-btn"
         class:is-stopping={disposing}
+        class:is-running={working && !disposing}
         on:click={onEndSession}
         title={disposing
           ? "Click again to cancel — the agent is still running"
@@ -648,6 +649,9 @@
         {#if disposing}
           <span class="stop-spinner" aria-hidden="true"></span>
           <span>Stopping…</span>
+        {:else if working}
+          <span class="stop-running-ring" aria-hidden="true"></span>
+          <span>{effectiveEndSessionLabel}</span>
         {:else}
           {effectiveEndSessionLabel}
         {/if}
@@ -690,6 +694,7 @@
         <button
           class="resume-btn dispose-btn"
           class:is-stopping={disposing}
+          class:is-running={working && !disposing}
           on:click={onEndSession}
           title={disposing
             ? "Click again to cancel — the agent is still running"
@@ -698,6 +703,9 @@
           {#if disposing}
             <span class="stop-spinner" aria-hidden="true"></span>
             <span>Stopping…</span>
+          {:else if working}
+            <span class="stop-running-ring" aria-hidden="true"></span>
+            <span>{effectiveEndSessionLabel}</span>
           {:else}
             {effectiveEndSessionLabel}
           {/if}
@@ -810,6 +818,11 @@
     color: #ffcaca;
     border-color: color-mix(in srgb, #efaaaa 55%, transparent);
   }
+  .resume-btn.dispose-btn.is-running {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+  }
   /* "Stopping…" state: stays clickable (a second click cancels during
      the 1s grace window) but signals progress with a spinner and a
      slight desaturation so it reads as "in-flight, not destructive
@@ -827,6 +840,16 @@
     border: 1.5px solid color-mix(in srgb, currentColor 35%, transparent);
     border-top-color: currentColor;
     animation: spin 0.8s linear infinite;
+    flex: 0 0 auto;
+  }
+  .stop-running-ring {
+    width: 0.7rem;
+    height: 0.7rem;
+    border-radius: 50%;
+    border: 1.5px solid color-mix(in srgb, currentColor 22%, transparent);
+    border-top-color: currentColor;
+    border-right-color: color-mix(in srgb, currentColor 70%, transparent);
+    animation: spin 1.05s linear infinite;
     flex: 0 0 auto;
   }
   .resume-btn:disabled {
@@ -1085,6 +1108,9 @@
   }
   @media (prefers-reduced-motion: reduce) {
     .agent-pill.working::before {
+      animation: none;
+    }
+    .stop-running-ring {
       animation: none;
     }
   }

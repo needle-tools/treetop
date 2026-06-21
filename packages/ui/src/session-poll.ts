@@ -36,6 +36,10 @@ export interface SessionPollReg {
   /** This column's current sessionId, for slicing the global active-sends
    *  list. May be undefined before the session has loaded. */
   getSessionId: () => string | undefined;
+  /** Return false to skip this column's transcript body on a tick while still
+   *  keeping active-sends state live. Used by app-server sessions while their
+   *  SSE stream is already carrying the active turn. */
+  shouldPollSession?: () => boolean;
   /** Called with the session JSON text whenever it changes (never for an
    *  unchanged 304), plus the ETag the daemon returned. */
   onSession: (bodyText: string, etag: string | null) => void;
@@ -90,34 +94,45 @@ export function createSessionPoller(deps: SessionPollerDeps): SessionPoller {
 
   async function pollDaemon(daemonId: string | undefined, group: RegState[]) {
     // 1) One batched session request for every source on this daemon.
-    try {
-      const res = await deps.fetchImpl(apiUrl("/api/sessions/batch", daemonId), {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          sources: group.map((g) => ({ source: g.reg.source, etag: g.etag })),
-        }),
-      });
-      if (res.ok) {
-        const { results } = (await res.json()) as { results: BatchResult[] };
-        const bySource = new Map(group.map((g) => [g.reg.source, g]));
-        for (const result of results) {
-          const g = bySource.get(result.source);
-          if (!g) continue;
-          if (result.status === 200) {
-            g.etag = result.etag;
-            if (result.body !== g.lastBody) {
-              g.lastBody = result.body;
-              g.reg.onSession(result.body, result.etag);
+    const sessionGroup = group.filter(
+      (g) => g.reg.shouldPollSession?.() !== false,
+    );
+    if (sessionGroup.length > 0) {
+      try {
+        const res = await deps.fetchImpl(
+          apiUrl("/api/sessions/batch", daemonId),
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              sources: sessionGroup.map((g) => ({
+                source: g.reg.source,
+                etag: g.etag,
+              })),
+            }),
+          },
+        );
+        if (res.ok) {
+          const { results } = (await res.json()) as { results: BatchResult[] };
+          const bySource = new Map(sessionGroup.map((g) => [g.reg.source, g]));
+          for (const result of results) {
+            const g = bySource.get(result.source);
+            if (!g) continue;
+            if (result.status === 200) {
+              g.etag = result.etag;
+              if (result.body !== g.lastBody) {
+                g.lastBody = result.body;
+                g.reg.onSession(result.body, result.etag);
+              }
+            } else if (result.status === 304) {
+              g.etag = result.etag;
             }
-          } else if (result.status === 304) {
-            g.etag = result.etag;
+            // 403: source no longer allowed — leave the column's last state.
           }
-          // 403: source no longer allowed — leave the column's last state.
         }
+      } catch {
+        // Network blip — keep cached state, try again next tick.
       }
-    } catch {
-      // Network blip — keep cached state, try again next tick.
     }
 
     // 2) One global active-sends poll for this daemon, sliced per column.

@@ -110,3 +110,50 @@ export function changeKindRequiresEventsReload(kind: unknown): boolean {
     typeof kind === "string" && CHANGE_KINDS_REQUIRING_EVENTS_RELOAD.has(kind)
   );
 }
+
+export interface FsChangeBatcher {
+  push(path: string): void;
+  flush(): void;
+  dispose(): void;
+}
+
+export function createFsChangeBatcher(opts: {
+  delayMs: number;
+  onFlush: (paths: string[]) => void;
+  setTimer?: (fn: () => void, ms: number) => unknown;
+  clearTimer?: (handle: unknown) => void;
+}): FsChangeBatcher {
+  const setTimer = opts.setTimer ?? ((fn, ms) => setTimeout(fn, ms));
+  const clearTimer =
+    opts.clearTimer ??
+    ((handle) => clearTimeout(handle as ReturnType<typeof setTimeout>));
+  const pending = new Set<string>();
+  let timer: unknown = null;
+
+  const flush = () => {
+    if (timer !== null) {
+      clearTimer(timer);
+      timer = null;
+    }
+    if (pending.size === 0) return;
+    const paths = [...pending];
+    pending.clear();
+    opts.onFlush(paths);
+  };
+
+  return {
+    push(path: string) {
+      pending.add(path);
+      if (timer !== null) return;
+      timer = setTimer(flush, opts.delayMs);
+    },
+    flush,
+    dispose() {
+      if (timer !== null) {
+        clearTimer(timer);
+        timer = null;
+      }
+      pending.clear();
+    },
+  };
+}

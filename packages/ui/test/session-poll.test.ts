@@ -230,4 +230,99 @@ describe("createSessionPoller", () => {
       true,
     );
   });
+
+  test("hundreds of open session panes still produce one batch and one active-sends request", async () => {
+    const openCount = 200;
+    const { fn, calls } = makeFetch((url) => {
+      if (url.includes("/api/sessions/batch"))
+        return jsonResponse({
+          results: Array.from({ length: openCount }, (_, index) => ({
+            source: `session-${index}`,
+            status: 304,
+            etag: `etag-${index}`,
+          })),
+        });
+      if (url.includes("/api/active-sends"))
+        return jsonResponse(
+          Array.from({ length: 50 }, (_, index) => ({
+            id: `send-${index}`,
+            sessionId: `sid-${index * 2}`,
+          })),
+          { etag: "rev-hundreds" },
+        );
+      return jsonResponse({}, { status: 404 });
+    });
+    const poller = createSessionPoller({ fetchImpl: fn, isIdle: () => false });
+    let sessionDispatches = 0;
+    let inflightDispatches = 0;
+    for (let index = 0; index < openCount; index += 1) {
+      poller.register({
+        source: `session-${index}`,
+        getSessionId: () => `sid-${index}`,
+        onSession: () => {
+          sessionDispatches += 1;
+        },
+        onInflight: () => {
+          inflightDispatches += 1;
+        },
+      });
+    }
+
+    await poller.tick();
+    await poller.tick();
+
+    const batchCalls = calls.filter((c) =>
+      c.url.includes("/api/sessions/batch"),
+    );
+    const sendsCalls = calls.filter((c) => c.url.includes("/api/active-sends"));
+    expect(batchCalls).toHaveLength(2);
+    expect(sendsCalls).toHaveLength(2);
+    expect(JSON.parse(batchCalls[0]!.body as string).sources).toHaveLength(
+      openCount,
+    );
+    expect(sessionDispatches).toBe(0);
+    expect(inflightDispatches).toBe(200);
+  });
+
+  test("can skip transcript body polling for live-streamed panes while active-sends stays live", async () => {
+    const { fn, calls } = makeFetch((url) => {
+      if (url.includes("/api/sessions/batch"))
+        return jsonResponse({
+          results: [{ source: "history", status: 304, etag: "h1" }],
+        });
+      if (url.includes("/api/active-sends"))
+        return jsonResponse([{ id: "send-1", sessionId: "live-sid" }], {
+          etag: "rev-live",
+        });
+      return jsonResponse({}, { status: 404 });
+    });
+    const poller = createSessionPoller({ fetchImpl: fn, isIdle: () => false });
+    const liveInflight: string[][] = [];
+    poller.register({
+      source: "live",
+      getSessionId: () => "live-sid",
+      shouldPollSession: () => false,
+      onSession: () => {
+        throw new Error("live stream should not poll transcript bodies");
+      },
+      onInflight: (list) => liveInflight.push(list.map((item) => item.id)),
+    });
+    poller.register({
+      source: "history",
+      getSessionId: () => "history-sid",
+      onSession: noop,
+      onInflight: noop,
+    });
+
+    await poller.tick();
+
+    const batch = calls.find((call) =>
+      call.url.includes("/api/sessions/batch"),
+    );
+    expect(JSON.parse(batch!.body as string).sources).toEqual([
+      { source: "history" },
+    ]);
+    expect(calls.filter((call) => call.url.includes("/api/active-sends"))).toHaveLength(1);
+    expect(liveInflight).toEqual([["send-1"]]);
+  });
 });

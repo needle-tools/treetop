@@ -16,6 +16,8 @@
  * is component-scoped, so we re-export a subscribe()-able list instead).
  */
 
+import { snapshot as uiTimingSnapshot } from "./timings";
+
 export type FrontendErrorKind =
   | "fetch"
   | "uncaught"
@@ -315,10 +317,24 @@ let originalFetch: typeof fetch = globalThis.fetch?.bind(globalThis);
 let installed = false;
 let apiFetchSeq = 0;
 let apiFetchesInFlight = 0;
+const activeApiFetches = new Map<
+  string,
+  {
+    traceId: string;
+    method: string;
+    route: string;
+    apiPath: string;
+    daemonId?: string;
+    startedAtMs: number;
+  }
+>();
 
 const SLOW_API_MUTATION_MS = 250;
 const SLOW_API_READ_MS = 1_000;
 const LONG_TASK_MS = 250;
+const EVENT_LOOP_STALL_INTERVAL_MS = 1_000;
+const EVENT_LOOP_STALL_THRESHOLD_MS = 2_000;
+const EVENT_LOOP_STALL_COOLDOWN_MS = 10_000;
 
 interface ParsedApiRoute {
   route: string;
@@ -471,6 +487,7 @@ export function __resetFetchTrackingForTests(): void {
   installed = false;
   apiFetchSeq = 0;
   apiFetchesInFlight = 0;
+  activeApiFetches.clear();
 }
 
 /**
@@ -490,6 +507,16 @@ export function installFetchTracking(): void {
     const traceId = `fetch-${++apiFetchSeq}`;
     const startedAtMs = performance.now();
     const inFlightAtStart = ++apiFetchesInFlight;
+    if (parsed && !shouldSkipSelfDiagnostic(parsed.route, method)) {
+      activeApiFetches.set(traceId, {
+        traceId,
+        method,
+        route: parsed.route,
+        apiPath: parsed.apiPath,
+        daemonId: parsed.daemonId,
+        startedAtMs,
+      });
+    }
     try {
       const res = await orig(input as RequestInfo, init);
       const completedAtMs = performance.now();
@@ -578,22 +605,100 @@ export function installFetchTracking(): void {
       throw err;
     } finally {
       apiFetchesInFlight = Math.max(0, apiFetchesInFlight - 1);
+      activeApiFetches.delete(traceId);
     }
   };
 }
 
 let browserResponsivenessInstalled = false;
 let longTaskObserver: PerformanceObserver | null = null;
+let eventLoopStallTimer: ReturnType<typeof setInterval> | null = null;
+let lastEventLoopStallRecordedAtMs = -Infinity;
 
 export function __resetBrowserResponsivenessTrackingForTests(): void {
   browserResponsivenessInstalled = false;
   longTaskObserver?.disconnect();
   longTaskObserver = null;
+  if (eventLoopStallTimer) {
+    clearInterval(eventLoopStallTimer);
+    eventLoopStallTimer = null;
+  }
+  lastEventLoopStallRecordedAtMs = -Infinity;
+}
+
+export function eventLoopStallDiagnostic(opts: {
+  expectedAtMs: number;
+  observedAtMs: number;
+  lastRecordedAtMs: number;
+  thresholdMs?: number;
+  cooldownMs?: number;
+}): { message: string; extra: Record<string, unknown> } | null {
+  const thresholdMs = opts.thresholdMs ?? EVENT_LOOP_STALL_THRESHOLD_MS;
+  const cooldownMs = opts.cooldownMs ?? EVENT_LOOP_STALL_COOLDOWN_MS;
+  const driftMs = opts.observedAtMs - opts.expectedAtMs;
+  if (driftMs < thresholdMs) return null;
+  if (opts.observedAtMs - opts.lastRecordedAtMs < cooldownMs) return null;
+  const extra: Record<string, unknown> = {
+    driftMs: roundMs(driftMs),
+    expectedAtMs: roundMs(opts.expectedAtMs),
+    observedAtMs: roundMs(opts.observedAtMs),
+    inFlightFetches: apiFetchesInFlight,
+    visibilityState: globalThis.document?.visibilityState,
+  };
+  const activeFetches = activeFetchDiagnostics(opts.observedAtMs);
+  if (activeFetches.length > 0) extra.activeFetches = activeFetches;
+  const uiTimings = uiTimingDiagnostics();
+  if (uiTimings.length > 0) extra.uiTimings = uiTimings;
+  return {
+    message: `browser-event-loop-stall driftMs=${roundMs(driftMs)}`,
+    extra,
+  };
+}
+
+function activeFetchDiagnostics(nowMs: number): Record<string, unknown>[] {
+  return [...activeApiFetches.values()]
+    .sort((a, b) => a.startedAtMs - b.startedAtMs)
+    .slice(0, 12)
+    .map((fetch) => ({
+      traceId: fetch.traceId,
+      method: fetch.method,
+      route: fetch.route,
+      apiPath: fetch.apiPath,
+      daemonId: fetch.daemonId,
+      ageMs: roundMs(nowMs - fetch.startedAtMs),
+    }));
+}
+
+function uiTimingDiagnostics(): Record<string, unknown>[] {
+  return Object.entries(uiTimingSnapshot())
+    .filter(([, span]) => span.max >= 16 || span.last >= 16)
+    .sort((a, b) => b[1].max - a[1].max)
+    .slice(0, 12)
+    .map(([name, span]) => ({
+      name,
+      count: span.count,
+      p95: roundMs(span.p95),
+      max: roundMs(span.max),
+      last: roundMs(span.last),
+    }));
 }
 
 export function installBrowserResponsivenessTracking(): void {
   if (browserResponsivenessInstalled) return;
   browserResponsivenessInstalled = true;
+  let expectedAtMs = performance.now() + EVENT_LOOP_STALL_INTERVAL_MS;
+  eventLoopStallTimer = setInterval(() => {
+    const observedAtMs = performance.now();
+    const diagnostic = eventLoopStallDiagnostic({
+      expectedAtMs,
+      observedAtMs,
+      lastRecordedAtMs: lastEventLoopStallRecordedAtMs,
+    });
+    expectedAtMs = observedAtMs + EVENT_LOOP_STALL_INTERVAL_MS;
+    if (!diagnostic) return;
+    lastEventLoopStallRecordedAtMs = observedAtMs;
+    recordBrowserDiagnostic(diagnostic.message, diagnostic.extra);
+  }, EVENT_LOOP_STALL_INTERVAL_MS);
   const Observer = globalThis.PerformanceObserver;
   if (!Observer?.supportedEntryTypes?.includes("longtask")) return;
   try {

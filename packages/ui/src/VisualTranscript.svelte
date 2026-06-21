@@ -9,9 +9,14 @@
     buildVisualWorkDisplayEntries,
     cleanVisualToolResultText,
     cleanVisualUserText,
+    getVisualTranscriptItemKey,
+    getVisualWorkDisplayEntryKey,
     visualFileEditSummaryForBlock,
+    visualPlanFromBlock,
+    visualThinkingSummary,
     visualUserImageAttachments,
     type VisualFileEditSummary,
+    type VisualPlanItem,
     type VisualMarkerKind,
     type VisualTranscriptItem,
     type VisualWorkEntry,
@@ -24,6 +29,7 @@
     type:
       | "text"
       | "thinking"
+      | "plan"
       | "tool_use"
       | "tool_result"
       | "media"
@@ -35,6 +41,8 @@
     toolName?: string;
     toolInput?: unknown;
     toolUseId?: string;
+    explanation?: string;
+    planItems?: VisualPlanItem[];
     tagName?: string;
     mediaKind?: "image" | "file" | "artifact";
     mimeType?: string;
@@ -85,17 +93,23 @@
   export let onMessagesEnter: () => void = () => {};
   export let onMessagesLeave: () => void = () => {};
   export let onMessagesWheel: (e: WheelEvent) => void = () => {};
+  export let showLiveThinkingLine = false;
 
   let liveNowIso = new Date().toISOString();
   let liveClock: ReturnType<typeof setInterval> | null = null;
   let openMediaBlocks: NormalizedBlock[] = [];
   let openMediaIndex = -1;
+  const MARKDOWN_CACHE_LIMIT = 500;
+  const markdownCache = new Map<string, string>();
 
   $: openMediaBlock =
     openMediaIndex >= 0 ? openMediaBlocks[openMediaIndex] : undefined;
   $: openMediaSrc = openMediaBlock ? mediaSourceUrl(openMediaBlock) : undefined;
   $: hasOpenWork = items.some((item) => item.kind === "work" && item.open);
-  $: shouldRunLiveClock = active || hasOpenWork;
+  $: shouldRunLiveClock = active || hasOpenWork || showLiveThinkingLine;
+  $: liveThinkingAttachedToWork = items.some(
+    (item, index) => isLiveTailWork(item, index),
+  );
 
   $: {
     if (shouldRunLiveClock && !liveClock) {
@@ -123,6 +137,9 @@
 
   function md(text: string | undefined): string {
     if (!text) return "";
+    const cacheKey = `${daemonId ?? ""}\u0000${text}`;
+    const cached = markdownCache.get(cacheKey);
+    if (cached !== undefined) return cached;
     const processed = text.replace(
       /\[Image:\s*source:\s*([^\]]+?\.(?:png|jpe?g|gif|webp|svg|bmp))\s*\]/gi,
       (_match, filePath) => {
@@ -133,9 +150,15 @@
         return `![pasted image](${url})`;
       },
     );
-    return DOMPurify.sanitize(
+    const html = DOMPurify.sanitize(
       marked.parse(processed, { async: false }) as string,
     );
+    markdownCache.set(cacheKey, html);
+    if (markdownCache.size > MARKDOWN_CACHE_LIMIT) {
+      const first = markdownCache.keys().next().value;
+      if (first !== undefined) markdownCache.delete(first);
+    }
+    return html;
   }
 
   function portal(node: HTMLElement): { destroy: () => void } {
@@ -211,6 +234,17 @@
         node.removeEventListener("click", handleMarkdownCodeCopy);
       },
     };
+  }
+
+  function handOffNestedWheel(e: WheelEvent): void {
+    if (Math.abs(e.deltaX) <= Math.abs(e.deltaY)) return;
+    const strip = (e.currentTarget as HTMLElement | null)?.closest(
+      ".sessions-strip",
+    ) as HTMLElement | null;
+    if (!strip) return;
+    e.preventDefault();
+    e.stopPropagation();
+    strip.scrollLeft += e.deltaX;
   }
 
   function inputPreview(input: unknown): string {
@@ -333,13 +367,15 @@
   ): string {
     const first = entry.blocks[0];
     if (!first) return roleLabel(entry.message.role, entry.message.author);
-    if (first.type === "thinking") return "Thinking";
-    if (first.type === "tool_use") return first.toolName ?? "Used a tool";
+    if (first.type === "thinking") {
+      const thought = thinkingDisplay(first.text);
+      return thought.title || thought.body || "Thinking";
+    }
+    if (first.type === "plan") return planTitle(first);
+    if (first.type === "tool_use") return first.toolName || "Tool call";
     if (first.type === "tool_result") {
       const cleaned = cleanVisualToolResultText(first.text);
-      return cleaned.wrappedCodexChunk
-        ? cleaned.title
-        : workEntryBlocksText(entry.blocks) || cleaned.title;
+      return first.toolName ?? cleaned.title;
     }
     if (first.type === "media") return mediaLabel(first);
     if (first.type === "ide_context") return first.tagName ?? "IDE context";
@@ -349,28 +385,55 @@
     return preview || roleLabel(entry.message.role, entry.message.author);
   }
 
-  function cleanThinkingTitle(text: string): string {
-    return text
-      .trim()
-      .replace(/^(?:\*\*|__)(.*?)(?:\*\*|__)$/s, "$1")
-      .replace(/^(?:\*|_)(.*?)(?:\*|_)$/s, "$1")
-      .trim();
-  }
-
   function thinkingDisplay(text: string | undefined): {
     title: string;
     body: string;
   } {
-    const raw = (text ?? "").replace(/\r\n/g, "\n").trim();
-    const cleaned = raw
-      .replace(/^thinking(?:\s*[:—–-]\s*|\s+)/i, "")
-      .trim();
-    if (!cleaned) return { title: "", body: "" };
-    const [firstLine = "", ...rest] = cleaned.split("\n");
-    const title = cleanThinkingTitle(firstLine);
-    const body = rest.join("\n").trim();
-    if (title && body && title.length <= 96) return { title, body };
-    return { title: "", body: cleaned };
+    return visualThinkingSummary(text);
+  }
+
+  function planTitle(block: NormalizedBlock): string {
+    const plan = visualPlanFromBlock(block);
+    if (!plan) return "Todo";
+    return `Todo ${plan.completed}/${plan.total}`;
+  }
+
+  function planPreview(block: NormalizedBlock): string {
+    const plan = visualPlanFromBlock(block);
+    if (!plan) return "";
+    const active = plan.items.find((item) => item.status === "in_progress");
+    return active?.step ?? plan.explanation ?? plan.items[0]?.step ?? "";
+  }
+
+  function planStatusIcon(status: string): string {
+    if (status === "completed") return "✓";
+    if (status === "in_progress") return "•";
+    return "○";
+  }
+
+  function firstCollapsedLine(text: string | undefined): string {
+    return (text ?? "")
+      .split("\n")
+      .map((line) => line.trim())
+      .find(Boolean) ?? "";
+  }
+
+  function workEntryCollapsedPreview(
+    entry: VisualWorkEntry<NormalizedBlock, NormalizedMessage>,
+  ): string {
+    const first = entry.blocks[0];
+    if (!first) return "";
+    if (first.type === "thinking") {
+      const thought = thinkingDisplay(first.text);
+      return thought.title || firstCollapsedLine(thought.body);
+    }
+    if (first.type === "tool_result") {
+      return firstCollapsedLine(cleanVisualToolResultText(first.text).body);
+    }
+    if (first.type === "plan") return planPreview(first);
+    if (first.type === "tool_use") return workEntryToolPreview(first);
+    if (first.type === "media") return mediaLabel(first);
+    return firstCollapsedLine(workEntryBlocksText(entry.blocks));
   }
 
   function workEntryToolUseBlock(
@@ -419,10 +482,17 @@
     return cleanVisualToolResultText(block.text);
   }
 
+  function workEntryToolResultBlock(
+    entry: VisualWorkEntry<NormalizedBlock, NormalizedMessage> | undefined,
+  ): NormalizedBlock | undefined {
+    return entry?.blocks.find((b) => b.type === "tool_result");
+  }
+
   function toolResultLabel(
     result: ReturnType<typeof cleanVisualToolResultText>,
+    toolName?: string,
   ): string {
-    const parts = [result.title];
+    const parts = [toolName ? `${toolName} result` : result.title];
     const duration = formatToolWallTime(result.wallTimeSeconds);
     if (duration) parts.push(duration);
     return parts.join(" · ");
@@ -503,6 +573,30 @@
   function toolInputLanguage(block: NormalizedBlock): string {
     return block.toolName === "exec_command" ? "sh" : "json";
   }
+
+  function isLiveTailWork(
+    item: VisualTranscriptItem<NormalizedBlock, NormalizedMessage>,
+    index: number,
+  ): boolean {
+    return (
+      showLiveThinkingLine &&
+      index === items.length - 1 &&
+      item.kind === "work" &&
+      item.open === true &&
+      !item.endedAt
+    );
+  }
+
+  function visualBlockRenderKey(block: NormalizedBlock, index: number): string {
+    return [
+      index,
+      block.type,
+      block.toolUseId ?? "",
+      block.toolName ?? "",
+      block.path ?? block.url ?? "",
+      block.mediaKind ?? "",
+    ].join(":");
+  }
 </script>
 
 {#snippet renderThinkingIcon()}
@@ -527,6 +621,16 @@
     <path d="M7.75 13.25H12" />
     <path d="M16.25 13.25H12" />
   </svg>
+{/snippet}
+
+{#snippet renderLiveThinkingLine()}
+  <div class="live-thinking-line" aria-live="polite">
+    {@render renderThinkingIcon()}
+    <span>Thinking</span>
+    <span class="live-thinking-dots" aria-hidden="true">
+      <span>.</span><span>.</span><span>.</span>
+    </span>
+  </div>
 {/snippet}
 
 {#snippet renderImageAttachmentFrame(
@@ -573,7 +677,7 @@
       {/each}
     </div>
   {/if}
-  {#each blocks as b}
+  {#each blocks as b, blockIndex (visualBlockRenderKey(b, blockIndex))}
     {#if m.role === "user" && isImageMediaBlock(b) && mediaSourceUrl(b)}
       <!-- Rendered once in the horizontal image strip above. -->
     {:else if b.type === "text"}
@@ -598,6 +702,24 @@
           {/if}
         </div>
       </div>
+    {:else if b.type === "plan"}
+      {@const plan = visualPlanFromBlock(b)}
+      {#if plan}
+        <div class="block plan-block">
+          <div class="plan-title">{planTitle(b)}</div>
+          {#if plan.explanation}
+            <div class="plan-explanation">{plan.explanation}</div>
+          {/if}
+          <div class="plan-items">
+            {#each plan.items as item, i (`${item.status}:${item.step}:${i}`)}
+              <div class="plan-item" class:active={item.status === "in_progress"}>
+                <span class="plan-status">{planStatusIcon(item.status)}</span>
+                <span>{item.step}</span>
+              </div>
+            {/each}
+          </div>
+        </div>
+      {/if}
     {:else if b.type === "tool_use"}
       <div class="block tool-use">
         <ToolIcon name={b.toolName} />
@@ -610,7 +732,7 @@
       {@const cleaned = cleanVisualToolResultText(b.text)}
       {#if cleaned.body || cleaned.wrappedCodexChunk}
         <div class="block tool-result md" class:tool-result-empty={!cleaned.body}>
-          <span class="muted small">{toolResultLabel(cleaned)}</span>
+          <span class="muted small">{toolResultLabel(cleaned, b.toolName)}</span>
           {#if cleaned.body}
             {@html markdownCodeBlockHtml(cleaned.body, "text")}
           {:else}
@@ -728,7 +850,7 @@
 {/snippet}
 
 {#snippet renderWorkEntryBlocks(blocks: NormalizedBlock[])}
-  {#each blocks as b}
+  {#each blocks as b, blockIndex (visualBlockRenderKey(b, blockIndex))}
     {#if b.type === "text"}
       {#if b.text}
         <div class="work-step-text md">{@html md(b.text)}</div>
@@ -746,6 +868,21 @@
           {/if}
         </div>
       </div>
+    {:else if b.type === "plan"}
+      {@const plan = visualPlanFromBlock(b)}
+      {#if plan}
+        <div class="work-step-detail work-plan-detail">
+          <span class="tag-label">{planTitle(b)}</span>
+          <div class="plan-items">
+            {#each plan.items as item, i (`${item.status}:${item.step}:${i}`)}
+              <div class="plan-item" class:active={item.status === "in_progress"}>
+                <span class="plan-status">{planStatusIcon(item.status)}</span>
+                <span>{item.step}</span>
+              </div>
+            {/each}
+          </div>
+        </div>
+      {/if}
     {:else if b.type === "tool_use"}
       {@const inputCode = toolInputCode(b)}
       {#if inputCode}
@@ -757,7 +894,9 @@
       {@const cleaned = cleanVisualToolResultText(b.text)}
       {#if cleaned.body || cleaned.wrappedCodexChunk}
         <div class="md work-tool-output" class:work-tool-output-empty={!cleaned.body}>
-          <div class="work-tool-output-label">{toolResultLabel(cleaned)}</div>
+          <div class="work-tool-output-label">
+            {toolResultLabel(cleaned, b.toolName)}
+          </div>
           {#if cleaned.body}
             {@html markdownCodeBlockHtml(cleaned.body, "text")}
           {:else}
@@ -807,7 +946,7 @@
   on:wheel={onMessagesWheel}
   use:codeCopy
 >
-  {#each items as item}
+  {#each items as item, itemIndex (getVisualTranscriptItemKey(item, itemIndex))}
     {#if item.kind === "work"}
       <li class="work-row">
         <details
@@ -822,8 +961,8 @@
               {item.entries.length === 1 ? "step" : "steps"}
             </span>
           </summary>
-          <div class="work-foldout-body">
-            {#each buildVisualWorkDisplayEntries(item.entries) as displayEntry}
+          <div class="work-foldout-body" on:wheel|capture={handOffNestedWheel}>
+            {#each buildVisualWorkDisplayEntries(item.entries) as displayEntry (getVisualWorkDisplayEntryKey(displayEntry))}
               {@const entry = displayEntry.entry}
               {#if isPlainAssistantWorkText(entry)}
                 <div class="work-entry-inline">
@@ -860,6 +999,10 @@
                 {@const editSummary = workEntryFileEditSummary(entry)}
                 {@const resultMeta = toolResultMeta(displayEntry.pairedResult)}
                 {@const toolPreview = toolBlock ? workEntryToolPreview(toolBlock) : ""}
+                {@const entryBlock = entry.blocks[0]}
+                {@const resultBlock = workEntryToolResultBlock(entry)}
+                {@const collapsedTitle = workEntryTitle(entry)}
+                {@const collapsedPreview = workEntryCollapsedPreview(entry)}
                 <details class="work-entry">
                   <summary>
                     {#if toolBlock}
@@ -893,8 +1036,33 @@
                       {#if resultMeta}
                         <span class="work-tool-meta">{resultMeta}</span>
                       {/if}
+                    {:else if entryBlock?.type === "thinking"}
+                      <span class="work-tool-chip icon-only work-thinking-chip">
+                        {@render renderThinkingIcon()}
+                      </span>
+                      <span
+                        class="work-tool-preview work-thinking-preview"
+                        title={collapsedPreview || collapsedTitle}
+                      >
+                        {collapsedPreview || collapsedTitle}
+                      </span>
+                    {:else if entryBlock?.type === "tool_result"}
+                      <span class="work-tool-chip">
+                        <ToolIcon name={resultBlock?.toolName ?? "tool_result"} />
+                        <span>{collapsedTitle}</span>
+                      </span>
+                      {#if collapsedPreview}
+                        <span class="work-tool-preview" title={collapsedPreview}>
+                          {collapsedPreview}
+                        </span>
+                      {/if}
                     {:else}
-                      <span>{workEntryTitle(entry)}</span>
+                      <span class="work-entry-title">{collapsedTitle}</span>
+                      {#if collapsedPreview && collapsedPreview !== collapsedTitle}
+                        <span class="work-tool-preview" title={collapsedPreview}>
+                          {collapsedPreview}
+                        </span>
+                      {/if}
                     {/if}
                     {#if entry.message.timestamp}
                       <span
@@ -905,7 +1073,7 @@
                       </span>
                     {/if}
                   </summary>
-                  <div class="work-entry-body">
+                  <div class="work-entry-body" on:wheel|capture={handOffNestedWheel}>
                     {#if editSummary}
                       {@render renderFileEditSummary(editSummary)}
                       <details class="work-raw-tool-details">
@@ -925,6 +1093,9 @@
                 </details>
               {/if}
             {/each}
+            {#if isLiveTailWork(item, itemIndex)}
+              {@render renderLiveThinkingLine()}
+            {/if}
           </div>
         </details>
       </li>
@@ -979,6 +1150,11 @@
       </li>
     {/if}
   {/each}
+  {#if showLiveThinkingLine && !liveThinkingAttachedToWork}
+    <li class="live-thinking-row">
+      {@render renderLiveThinkingLine()}
+    </li>
+  {/if}
 </ul>
 
 {#if openMediaBlock && openMediaSrc}
@@ -1072,10 +1248,10 @@
     gap: 0.18rem;
     padding: 1.1rem 0.45rem 0.35rem;
     font-family:
-      ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono",
-      "Courier New", monospace;
-    font-size: 0.78rem;
-    line-height: 1.45;
+      "SF Mono", "JetBrains Mono", Menlo, Consolas, "Liberation Mono",
+      monospace;
+    font-size: 12px;
+    line-height: 1.15;
   }
   .messages.terminal-transcript :global(*) {
     border-radius: 0 !important;
@@ -1107,6 +1283,13 @@
   .messages.terminal-transcript .md,
   .messages.terminal-transcript .md :global(*) {
     font-family: inherit;
+    line-height: inherit;
+  }
+  .messages.terminal-transcript .md :global(p) {
+    margin: 0 0 1.15em;
+  }
+  .messages.terminal-transcript .md :global(p:last-child) {
+    margin-bottom: 0;
   }
   .messages.terminal-transcript .role,
   .messages.terminal-transcript .role.assistant {
@@ -1295,10 +1478,12 @@
     max-width: calc(100% - 1.7rem);
   }
   .work-foldout-live > .work-foldout-body {
-    max-height: min(42vh, 26rem);
-    overflow: auto;
+    max-height: clamp(8rem, 28vh, 16rem);
+    overflow-x: hidden;
+    overflow-y: auto;
     padding-right: 0.35rem;
-    overscroll-behavior: contain;
+    overscroll-behavior-x: contain;
+    overscroll-behavior-y: auto;
   }
   .work-entry {
     padding: 0;
@@ -1373,6 +1558,12 @@
     text-overflow: ellipsis;
     white-space: nowrap;
   }
+  .work-entry-title {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
   .work-tool-chip {
     display: inline-flex;
     align-items: center;
@@ -1395,9 +1586,21 @@
   .work-tool-chip.file-edit {
     color: var(--text-muted);
   }
+  .work-thinking-chip {
+    color: color-mix(in srgb, var(--text-muted) 88%, var(--brand));
+  }
+  .work-thinking-chip .thinking-icon {
+    width: 0.86rem;
+    height: 0.86rem;
+    margin: 0;
+  }
   .work-tool-chip span {
     flex: 0 0 auto;
     white-space: nowrap;
+  }
+  .work-thinking-preview {
+    font-family: inherit;
+    font-size: 0.74rem;
   }
   .work-tool-preview {
     flex: 1 1 auto;
@@ -1951,6 +2154,90 @@
     color: var(--text-muted);
     font-size: 0.78rem;
     line-height: 1.4;
+  }
+  .live-thinking-row {
+    list-style: none;
+    margin: 0.15rem 0 0;
+  }
+  .live-thinking-line {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.42rem;
+    min-width: 0;
+    color: var(--text-muted);
+    font-size: 0.82rem;
+    line-height: 1.35;
+  }
+  .live-thinking-line .thinking-icon {
+    width: 0.95rem;
+    height: 0.95rem;
+    margin-top: 0;
+    color: color-mix(in srgb, var(--text-muted) 78%, var(--brand));
+  }
+  .live-thinking-dots {
+    display: inline-flex;
+    width: 1.1em;
+    overflow: hidden;
+  }
+  .live-thinking-dots span {
+    animation: live-thinking-dot 1.25s infinite;
+    opacity: 0.18;
+  }
+  .live-thinking-dots span:nth-child(2) {
+    animation-delay: 0.16s;
+  }
+  .live-thinking-dots span:nth-child(3) {
+    animation-delay: 0.32s;
+  }
+  @keyframes live-thinking-dot {
+    0%,
+    55%,
+    100% {
+      opacity: 0.18;
+      transform: translateY(0);
+    }
+    25% {
+      opacity: 1;
+      transform: translateY(-0.05rem);
+    }
+  }
+  .plan-block {
+    display: grid;
+    gap: 0.35rem;
+    margin-top: 0.25rem;
+    padding: 0.25rem 0.5rem;
+    border-radius: var(--radius-sm);
+    background: rgba(160, 160, 160, 0.06);
+    color: var(--text-2);
+    font-size: 0.78rem;
+    line-height: 1.35;
+  }
+  .plan-title {
+    color: var(--text-1);
+    font-weight: 650;
+  }
+  .plan-explanation {
+    color: var(--text-muted);
+  }
+  .plan-items {
+    display: grid;
+    gap: 0.16rem;
+  }
+  .plan-item {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    gap: 0.42rem;
+    min-width: 0;
+  }
+  .plan-item.active {
+    color: var(--text-1);
+  }
+  .plan-status {
+    color: var(--text-faint);
+    font-size: 0.82em;
+  }
+  .work-plan-detail {
+    align-items: start;
   }
   .thinking-icon {
     flex: 0 0 auto;
