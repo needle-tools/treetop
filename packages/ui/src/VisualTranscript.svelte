@@ -93,6 +93,7 @@
   export let onMessagesEnter: () => void = () => {};
   export let onMessagesLeave: () => void = () => {};
   export let onMessagesWheel: (e: WheelEvent) => void = () => {};
+  export let onMessagesScroll: () => void = () => {};
   export let showLiveThinkingLine = false;
 
   let liveNowIso = new Date().toISOString();
@@ -944,6 +945,7 @@
   on:mouseenter={onMessagesEnter}
   on:mouseleave={onMessagesLeave}
   on:wheel={onMessagesWheel}
+  on:scroll={onMessagesScroll}
   use:codeCopy
 >
   {#each items as item, itemIndex (getVisualTranscriptItemKey(item, itemIndex))}

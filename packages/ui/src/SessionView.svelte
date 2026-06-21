@@ -369,7 +369,11 @@
     }
   }
   function onMessagesWheel(ev: WheelEvent): void {
-    if (msgCursorSettled) return;
+    if (msgCursorSettled) {
+      if (ev.deltaY < 0) setVisualTailFollowPaused(true);
+      else if (ev.deltaY > 0) updateVisualTailFollowIntent();
+      return;
+    }
     // Horizontal-dominant wheels (trackpad swipes across the sessions
     // strip) must pass through so the parent strip can pan — don't
     // intercept those.
@@ -378,6 +382,9 @@
     // as still part of a page-scroll session and forward it.
     ev.preventDefault();
     window.scrollBy({ top: ev.deltaY, behavior: "auto" });
+  }
+  function onMessagesScroll(): void {
+    updateVisualTailFollowIntent();
   }
   let lastLoadedAt = 0;
   let pollCount = 0;
@@ -1303,6 +1310,8 @@
   // they've scrolled up to read history).
   let hasRenderedOnce = false;
   let visualTailKey = "";
+  let visualTailFollowPaused = false;
+  let visualTailFollowPauseSeq = 0;
   const TAIL_FOLLOW_NEAR_PX = 64;
 
   function isNearScrollEnd(el: HTMLElement): boolean {
@@ -1356,6 +1365,24 @@
   function resetVisualTailFollow(): void {
     hasRenderedOnce = false;
     visualTailKey = "";
+    visualTailFollowPaused = false;
+    visualTailFollowPauseSeq += 1;
+  }
+
+  function setVisualTailFollowPaused(paused: boolean): void {
+    if (visualTailFollowPaused === paused) return;
+    visualTailFollowPaused = paused;
+    visualTailFollowPauseSeq += 1;
+  }
+
+  function updateVisualTailFollowIntent(): void {
+    const el = messagesEl;
+    if (!el) return;
+    setVisualTailFollowPaused(!isNearScrollEnd(el));
+  }
+
+  function canApplyVisualTailFollow(seq: number): boolean {
+    return visualTailFollowPauseSeq === seq && !visualTailFollowPaused;
   }
 
   function scheduleVisualTailFollow(opts: { force?: boolean } = {}): void {
@@ -1363,10 +1390,15 @@
     if (!el) return;
     const force = opts.force === true;
     const firstRender = !hasRenderedOnce;
-    const shouldStickMessages = force || firstRender || isNearScrollEnd(el);
+    const pauseSeq = visualTailFollowPauseSeq;
+    const shouldStickMessages =
+      force || firstRender || (!visualTailFollowPaused && isNearScrollEnd(el));
     const liveBodyStates = liveWorkBodies().map((body) => ({
       body,
-      shouldStick: force || firstRender || isNearScrollEnd(body),
+      shouldStick:
+        force ||
+        firstRender ||
+        (!visualTailFollowPaused && isNearScrollEnd(body)),
     }));
     hasRenderedOnce = true;
 
@@ -1374,21 +1406,29 @@
       requestAnimationFrame(() => {
         const current = messagesEl;
         if (!current) return;
-        if (shouldStickMessages) scrollToEnd(current);
+        const mayFollow =
+          firstRender || canApplyVisualTailFollow(pauseSeq);
+        if (shouldStickMessages && mayFollow) scrollToEnd(current);
 
         for (const body of liveWorkBodies()) {
           const previous = liveBodyStates.find((state) => state.body === body);
-          if (previous?.shouldStick ?? shouldStickMessages) {
+          if (mayFollow && (previous?.shouldStick ?? shouldStickMessages)) {
             scrollToEnd(body);
           }
         }
 
         requestAnimationFrame(() => {
           const settled = messagesEl;
-          if (settled && shouldStickMessages) scrollToEnd(settled);
+          const mayFollowSettled =
+            firstRender || canApplyVisualTailFollow(pauseSeq);
+          if (settled && shouldStickMessages && mayFollowSettled)
+            scrollToEnd(settled);
           for (const body of liveWorkBodies()) {
             const previous = liveBodyStates.find((state) => state.body === body);
-            if (previous?.shouldStick ?? shouldStickMessages) {
+            if (
+              mayFollowSettled &&
+              (previous?.shouldStick ?? shouldStickMessages)
+            ) {
               scrollToEnd(body);
             }
           }
@@ -1398,6 +1438,7 @@
   }
 
   function forceVisualTailFollow(): void {
+    setVisualTailFollowPaused(false);
     scheduleVisualTailFollow({ force: true });
   }
   /** ETag from the last /api/session response. Sent as If-None-Match on
@@ -3618,6 +3659,7 @@
       onMessagesEnter={onMessagesEnter}
       onMessagesLeave={onMessagesLeave}
       onMessagesWheel={onMessagesWheel}
+      onMessagesScroll={onMessagesScroll}
       active={visualTranscriptActive}
       showLiveThinkingLine={codexVisualAppSurface && codexRunning}
     />
@@ -3948,24 +3990,8 @@
       </div>
       <div class="composer-footer">
         <div class="composer-send-wrap">
-          {#if agent === "codex" && (codexLatestPlan || codexQueuedMessages.length || composerWarnings.length)}
+          {#if agent === "codex" && (codexLatestPlan || codexQueuedMessages.length)}
             <div class="composer-indicators">
-              {#if composerWarnings.length}
-                <button
-                  type="button"
-                  class="codex-composer-badge warning"
-                  class:expanded={codexWarningsExpanded}
-                  on:click={toggleCodexWarningsPane}
-                  title={codexWarningsExpanded
-                    ? "Collapse warnings"
-                    : "Show warnings"}
-                  aria-label={codexWarningsExpanded
-                    ? "Collapse warnings"
-                    : "Show warnings"}
-                >
-                  Warnings: {composerWarnings.length}
-                </button>
-              {/if}
               {#if codexLatestPlan}
                 <button
                   type="button"
@@ -4053,6 +4079,24 @@
             >
               {sending ? "…" : "↑"}
             </button>
+          {/if}
+          {#if agent === "codex" && composerWarnings.length}
+            <div class="composer-warning-indicators">
+              <button
+                type="button"
+                class="codex-composer-badge warning"
+                class:expanded={codexWarningsExpanded}
+                on:click={toggleCodexWarningsPane}
+                title={codexWarningsExpanded
+                  ? "Collapse warnings"
+                  : "Show warnings"}
+                aria-label={codexWarningsExpanded
+                  ? "Collapse warnings"
+                  : "Show warnings"}
+              >
+                Warnings: {composerWarnings.length}
+              </button>
+            </div>
           {/if}
         </div>
       </div>
@@ -4898,6 +4942,14 @@
     display: flex;
     justify-content: flex-end;
     gap: 0.25rem;
+    max-width: min(22rem, calc(100vw - 2rem));
+  }
+  .composer-warning-indicators {
+    position: absolute;
+    right: 0;
+    top: calc(100% + 0.35rem);
+    display: flex;
+    justify-content: flex-end;
     max-width: min(22rem, calc(100vw - 2rem));
   }
   .codex-composer-badge {
