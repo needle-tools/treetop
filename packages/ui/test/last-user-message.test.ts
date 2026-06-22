@@ -416,6 +416,45 @@ describe("buildVisualTranscriptItems", () => {
     });
   });
 
+  it("marks user messages during an open Codex task as steering", () => {
+    const items = buildVisualTranscriptItems([
+      msg("user", "implement this", "2026-06-19T10:00:00.000Z"),
+      {
+        role: "system",
+        timestamp: "2026-06-19T10:00:01.000Z",
+        blocks: [{ type: "marker", text: "[Task started]" }],
+      },
+      msg("assistant", "I’ll start.", "2026-06-19T10:00:02.000Z"),
+      msg("user", "also keep it small", "2026-06-19T10:00:03.000Z"),
+      msg("assistant", "Noted.", "2026-06-19T10:00:04.000Z"),
+      msg("user", "and add a test", "2026-06-19T10:00:05.000Z"),
+      {
+        role: "system",
+        timestamp: "2026-06-19T10:00:06.000Z",
+        blocks: [{ type: "marker", text: "[Task complete]" }],
+      },
+      msg("assistant", "Done.", "2026-06-19T10:00:07.000Z"),
+      msg("user", "new turn", "2026-06-19T10:00:08.000Z"),
+    ]);
+
+    const userMessages = items
+      .filter((item) => item.kind === "message" && item.message.role === "user")
+      .map((item) => item.message);
+
+    expect(userMessages.map((message) => message.blocks[0]?.text)).toEqual([
+      "implement this",
+      "also keep it small",
+      "and add a test",
+      "new turn",
+    ]);
+    expect(userMessages.map((message) => message.intent)).toEqual([
+      undefined,
+      "steer",
+      "steer",
+      undefined,
+    ]);
+  });
+
   it("keeps the active turn expanded instead of showing a final response", () => {
     const items = buildVisualTranscriptItems(
       [
@@ -801,12 +840,13 @@ describe("mergeVisualSessionMessages", () => {
       id: "codex-optimistic-user-steer",
       role: "user",
       timestamp: "2026-06-19T10:00:01.000Z",
+      intent: "steer",
       blocks: [{ type: "text", text: "steer this" }],
     };
     const canonical = msg("user", "steer this", "2026-06-19T10:00:02.000Z");
 
     expect(mergeVisualSessionMessages([canonical], [optimistic])).toEqual([
-      canonical,
+      { ...canonical, intent: "steer" },
     ]);
   });
 });

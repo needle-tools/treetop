@@ -28,6 +28,7 @@ export interface Message<B extends MessageBlock = MessageBlock> {
   blocks: B[];
   timestamp?: string;
   id?: string;
+  intent?: "steer";
 }
 
 export interface VisualWorkEntry<
@@ -791,6 +792,18 @@ function isAssistantResponseEntry<B extends MessageBlock, M extends Message<B>>(
   );
 }
 
+function hasTurnMarker<B extends MessageBlock, M extends Message<B>>(
+  entries: readonly VisualWorkEntry<B, M>[],
+  kind: VisualMarkerKind,
+): boolean {
+  return entries.some((entry) =>
+    entry.blocks.some(
+      (block) =>
+        block.type === "marker" && visualMarkerKind(block.text) === kind,
+    ),
+  );
+}
+
 function compactionMarkerEntry<
   B extends MessageBlock,
   M extends Message<B>,
@@ -815,6 +828,24 @@ function isOptimisticUserMessage<B extends MessageBlock>(
     typeof message.id === "string" &&
     message.id.startsWith("codex-optimistic-user-")
   );
+}
+
+export function userMessageIntent<B extends MessageBlock>(
+  message: Message<B> | undefined,
+): "steer" | undefined {
+  if (!message || message.role !== "user") return undefined;
+  if (message.intent === "steer") return "steer";
+  if (message.id === "codex-optimistic-user-steer") return "steer";
+  if (message.id?.startsWith("codex-optimistic-user-steer-")) return "steer";
+  return undefined;
+}
+
+function withUserMessageIntent<
+  B extends MessageBlock,
+  M extends Message<B>,
+>(message: M, intent: "steer" | undefined): M {
+  if (!intent || message.intent === intent) return message;
+  return { ...message, intent } as M;
 }
 
 function userMessageFingerprint<B extends MessageBlock>(
@@ -872,13 +903,43 @@ export function withoutDuplicateOptimisticUserMessages<
         isOptimisticUserMessage(previous) &&
         !isOptimisticUserMessage(message)
       ) {
-        out[out.length - 1] = message;
+        out[out.length - 1] = withUserMessageIntent(
+          message,
+          userMessageIntent(previous),
+        );
+      } else if (
+        !isOptimisticUserMessage(previous) &&
+        isOptimisticUserMessage(message)
+      ) {
+        out[out.length - 1] = withUserMessageIntent(
+          previous,
+          userMessageIntent(message),
+        );
       }
       continue;
     }
     out.push(message);
   }
   return out;
+}
+
+export function withOptimisticUserMessageIntent<
+  B extends MessageBlock,
+  M extends Message<B>,
+>(messages: readonly M[], overlays: readonly Message<B>[]): M[] {
+  if (overlays.length === 0) return [...messages];
+  return messages.map((message) => {
+    if (message.role !== "user" || isOptimisticUserMessage(message)) {
+      return message;
+    }
+    const optimistic = overlays.find(
+      (overlay) =>
+        isOptimisticUserMessage(overlay) &&
+        userMessageIntent(overlay) &&
+        sameUserMessageContent(message, overlay),
+    );
+    return withUserMessageIntent(message, userMessageIntent(optimistic));
+  });
 }
 
 export function hasCanonicalUserMessageMatchingOptimistic<
@@ -897,9 +958,11 @@ export function mergeVisualSessionMessages<
   B extends MessageBlock,
   M extends Message<B>,
 >(messages: readonly M[], overlays: readonly M[]): M[] {
-  if (overlays.length === 0) return withoutDuplicateOptimisticUserMessages(messages);
+  const messagesWithIntent = withOptimisticUserMessageIntent(messages, overlays);
+  if (overlays.length === 0)
+    return withoutDuplicateOptimisticUserMessages(messagesWithIntent);
   return withoutDuplicateOptimisticUserMessages(
-    [...messages, ...overlays].sort((a, b) => {
+    [...messagesWithIntent, ...overlays].sort((a, b) => {
       const aMs = timestampMs(a.timestamp) ?? Number.POSITIVE_INFINITY;
       const bMs = timestampMs(b.timestamp) ?? Number.POSITIVE_INFINITY;
       return aMs - bMs;
@@ -1138,6 +1201,7 @@ export function buildVisualTranscriptItems<
   const out: VisualTranscriptItem<B, M>[] = [];
   let messageIndex = 0;
   let pendingTurnPrefixEntries: VisualWorkEntry<B, M>[] = [];
+  let previousTurnAcceptsSteering = false;
 
   function pushMessage(entry: VisualWorkEntry<B, M>): void {
     out.push({
@@ -1280,7 +1344,19 @@ export function buildVisualTranscriptItems<
       continue;
     }
 
-    out.push({ kind: "message", message, blocks, messageIndex });
+    const turnWasAlreadyOpen = previousTurnAcceptsSteering;
+    const messageForDisplay = withUserMessageIntent(
+      message,
+      userMessageIntent(message) ??
+        (turnWasAlreadyOpen ? "steer" : undefined),
+    );
+    out.push({
+      kind: "message",
+      message: messageForDisplay,
+      blocks,
+      messageIndex,
+    });
+    previousTurnAcceptsSteering = false;
     const userTimestamp = message.timestamp;
     const turnEntries: VisualWorkEntry<B, M>[] = pendingTurnPrefixEntries;
     pendingTurnPrefixEntries = [];
@@ -1302,6 +1378,10 @@ export function buildVisualTranscriptItems<
       userTimestamp,
       opts.active === true && messageIndex >= messages.length,
     );
+    previousTurnAcceptsSteering =
+      (turnWasAlreadyOpen || hasTurnMarker(turnEntries, "started")) &&
+      !hasTurnMarker(turnEntries, "complete") &&
+      !hasTurnMarker(turnEntries, "aborted");
   }
 
   return out;

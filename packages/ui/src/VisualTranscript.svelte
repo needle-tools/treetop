@@ -62,6 +62,7 @@
     blocks: NormalizedBlock[];
     timestamp?: string;
     id?: string;
+    intent?: "steer";
     author?: string;
   }
 
@@ -401,6 +402,15 @@
     role: string,
   ): string {
     return role === "user" ? cleanVisualUserText(text) : (text ?? "");
+  }
+
+  function isSteeredUserMessage(message: NormalizedMessage): boolean {
+    return (
+      message.role === "user" &&
+      (message.intent === "steer" ||
+        message.id === "codex-optimistic-user-steer" ||
+        !!message.id?.startsWith("codex-optimistic-user-steer-"))
+    );
   }
 
   function displayBlocksForMessage(
@@ -1300,6 +1310,11 @@
             </span>
           {/if}
         </div>
+        {#if isSteeredUserMessage(m)}
+          <span class="user-intent-chip steered" title="Sent as steering">
+            steered
+          </span>
+        {/if}
         {@render renderMessageBlocks(
           displayBlocksForMessage(item.blocks, m.role),
           m,
@@ -1471,9 +1486,14 @@
   }
   .messages.terminal-transcript .work-tool-chip,
   .messages.terminal-transcript .work-marker-pill,
+  .messages.terminal-transcript .user-intent-chip,
   .messages.terminal-transcript .md :global(code),
   .messages.terminal-transcript .md :global(.md-code-frame) {
     background: color-mix(in srgb, var(--surface-2) 64%, transparent);
+  }
+  .messages.terminal-transcript .user-intent-chip {
+    border-radius: 0;
+    font-family: inherit;
   }
   .msg {
     align-self: stretch;
@@ -1497,6 +1517,22 @@
   }
   .msg.user-message .msg-head {
     display: none;
+  }
+  .user-intent-chip {
+    align-self: flex-end;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.25rem;
+    padding: 0.1rem 0.42rem;
+    border-radius: 999px;
+    border: 1px solid color-mix(in srgb, var(--accent) 54%, transparent);
+    background: color-mix(in srgb, var(--accent) 12%, transparent);
+    color: color-mix(in srgb, var(--accent) 76%, var(--text));
+    font-size: 0.66rem;
+    font-weight: 700;
+    line-height: 1.15;
+    text-transform: uppercase;
+    letter-spacing: 0;
   }
   .msg.user-message .block.text {
     padding: 0.45rem 0.7rem;

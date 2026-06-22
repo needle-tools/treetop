@@ -39,6 +39,7 @@
     mergeVisualSessionMessages,
     reuseStableVisualTranscriptItems,
     visualPlanFromPayload,
+    withOptimisticUserMessageIntent,
     type VisualPlan,
     type VisualPlanItem,
     type VisualTranscriptDeltaPatch,
@@ -249,6 +250,7 @@
     blocks: NormalizedBlock[];
     timestamp?: string;
     id?: string;
+    intent?: "steer";
     /** Optional per-turn assistant label override. Set by the
      *  daemon's Ollama parser to the model that produced the turn
      *  (e.g. `gemma4:latest`). */
@@ -1481,7 +1483,11 @@
    *  composer once a pending send has landed in the JSONL. Shared by load()
    *  (event-driven immediate refresh) and the shared poller (periodic). */
   function applyParsedSession(next: NormalizedSession) {
-    session = { ...next, messages: [...next.messages] };
+    const messages = withOptimisticUserMessageIntent(
+      next.messages,
+      codexOptimisticUserMessages,
+    );
+    session = { ...next, messages: [...messages] };
     if (codexOptimisticUserMessages.length > 0) {
       codexOptimisticUserMessages = codexOptimisticUserMessages.filter(
         (message) =>
@@ -2428,9 +2434,10 @@
     text: string,
     attachments: readonly ImageInlineAttachment[] = [],
     sourceRect: ComposerMotionRect | null = null,
+    intent?: "steer",
   ): string | null {
     if (!session) return null;
-    const id = `codex-optimistic-user-${randomUUID()}`;
+    const id = `codex-optimistic-user-${intent === "steer" ? "steer-" : ""}${randomUUID()}`;
     const blocks: NormalizedBlock[] = [
       ...attachments.map(
         (attachment): NormalizedBlock => ({
@@ -2451,6 +2458,7 @@
         id,
         role: "user",
         timestamp: new Date().toISOString(),
+        intent,
         blocks,
       },
     ];
@@ -2994,6 +3002,7 @@
       payload.text,
       payload.attachments,
       opts.sourceRect ?? null,
+      opts.steer ? "steer" : undefined,
     );
     try {
       const res = await fetch(apiUrl("/api/codex-app/turns", daemonId), {
