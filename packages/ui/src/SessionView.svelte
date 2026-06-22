@@ -2,6 +2,9 @@
   import { apiUrl } from "./api";
   import { play } from "./sound";
   import { onMount, onDestroy, tick } from "svelte";
+  import { flip } from "svelte/animate";
+  import { cubicOut } from "svelte/easing";
+  import { fly } from "svelte/transition";
   import TerminalView from "./TerminalView.svelte";
   import VisualTranscript from "./VisualTranscript.svelte";
   import LoadingOverlay from "./LoadingOverlay.svelte";
@@ -62,15 +65,17 @@
   import {
     canSaveCodexQueueEdit,
     enqueueCodexQueue,
+    mergeCodexQueuedMessageUp,
     parseCodexQueue,
-    removeCodexQueuedAttachment,
     removeCodexQueuedMessage as removeCodexQueueItem,
+    reorderCodexQueuedMessage,
     updateCodexQueuedMessage,
     type CodexQueuedMessage,
   } from "./codex-queue";
 
   export let agent: "claude" | "codex" | "copilot" | "ollama" = "claude";
   export let source: string;
+  export let focusComposerSeq = 0;
   /** Provider session/thread id for live native app sessions whose
    *  supergit source is synthetic rather than an on-disk transcript path. */
   export let resumeSessionId: string | undefined = undefined;
@@ -275,11 +280,10 @@
    *  from) before flying into the row's pin slot. */
   let sessionEl: HTMLDivElement | null = null;
   let messagesEl: HTMLElement | null = null;
-  /** True while the cursor sits in the top 60% of the session column.
-   *  Drives the pinned-last-message reveal: at rest the pin is hidden
-   *  (out of the way of the TUI); a hover anywhere in the upper area
-   *  fades it in so the user can glance back at their last prompt
-   *  without scrolling the column. */
+  /** True while the cursor sits in the session column's top-right
+   *  hotspot. Drives the pinned summary / last-message reveal: at
+   *  rest the pin is hidden; the small corner target keeps ordinary
+   *  reading/scrolling in the transcript from opening the overlay. */
   /** Debug switch: `?debugPin` (any value) forces the summary /
    *  last-message overlay to stay revealed so its layout, pointer-events,
    *  and scroll behavior can be inspected without chasing the hover. */
@@ -287,10 +291,7 @@
     typeof location !== "undefined" &&
     new URLSearchParams(location.search).has("debugPin");
   let pinnedRevealed = FORCE_PIN;
-  /** Vertical fraction of the session column below which the pin
-   *  retracts. Generous threshold so the pin shows whenever the user
-   *  is reading the top of the chat, not just brushing the title. */
-  const PIN_REVEAL_RATIO = 0.5;
+  const PIN_REVEAL_HOTSPOT_PX = 120;
   /** Hide-only debounce. The pin shows instantly when the cursor
    *  enters the top zone, but lingers for 300ms after leaving so
    *  small excursions (or micro-movements past the threshold while
@@ -324,9 +325,17 @@
   function onSessionMouseMove(ev: MouseEvent): void {
     if (!sessionEl) return;
     const r = sessionEl.getBoundingClientRect();
-    if (r.height <= 0) return;
-    const yFrac = (ev.clientY - r.top) / r.height;
-    setPinRevealed(yFrac >= 0 && yFrac <= PIN_REVEAL_RATIO);
+    if (r.width <= 0 || r.height <= 0) return;
+    const x = ev.clientX - r.left;
+    const y = ev.clientY - r.top;
+    const hotspotWidth = Math.min(PIN_REVEAL_HOTSPOT_PX, r.width);
+    const hotspotHeight = Math.min(PIN_REVEAL_HOTSPOT_PX, r.height);
+    setPinRevealed(
+      x >= r.width - hotspotWidth &&
+        x <= r.width &&
+        y >= 0 &&
+        y <= hotspotHeight,
+    );
   }
   function onSessionMouseLeave(): void {
     setPinRevealed(false);
@@ -391,6 +400,24 @@
   let inputText = "";
   let sending = false;
   let sendError = "";
+  let composerFlightSourceEl: HTMLElement | null = null;
+  let composerQueueTargetEl: HTMLElement | null = null;
+  let composerInputEl: HTMLTextAreaElement | null = null;
+  type ComposerFlightTarget = "flow" | "queue";
+  type ComposerFlightRect = {
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+  };
+  type ComposerFlight = {
+    id: string;
+    text: string;
+    from: ComposerFlightRect;
+    to: ComposerFlightRect;
+    target: ComposerFlightTarget;
+  };
+  let composerFlights: ComposerFlight[] = [];
   /** Cached summary body for this session, fetched lazily from
    *  `<workspace>/summaries/<key>.md` via /api/sessions/summarize.
    *  Empty string when none exists. Drives both the always-visible
@@ -1568,8 +1595,12 @@
   let codexWarningsExpanded = false;
   let composerWarnings: string[] = [];
   let editingCodexQueueId: string | null = null;
-  let editingCodexQueueText = "";
-  let editingCodexQueueAttachments: ImageInlineAttachment[] = [];
+  let editingCodexQueueDraft:
+    | { text: string; attachments: ImageInlineAttachment[] }
+    | null = null;
+  let draggingCodexQueueId: string | null = null;
+  let codexQueueDropBeforeId: string | null = null;
+  let codexQueueDropAtEnd = false;
   let codexLiveLastActivityIso: string | undefined = undefined;
   let codexQueueHydratedKey = "";
   let codexModels: CodexModelInfo[] = [];
@@ -2631,6 +2662,112 @@
     openComposerAttachmentIndex = null;
   }
 
+  function snapshotRect(rect: DOMRect): ComposerFlightRect {
+    return {
+      x: rect.left,
+      y: rect.top,
+      width: rect.width,
+      height: rect.height,
+    };
+  }
+
+  function composerFlightSourceRect(): ComposerFlightRect | null {
+    const rect = composerFlightSourceEl?.getBoundingClientRect();
+    return rect ? snapshotRect(rect) : null;
+  }
+
+  function prefersReducedMotion(): boolean {
+    return (
+      typeof window !== "undefined" &&
+      window.matchMedia("(prefers-reduced-motion: reduce)").matches
+    );
+  }
+
+  function composerFlightPreview(text: string): string {
+    const compact = text.replace(/\s+/g, " ").trim();
+    return compact || "(attachments only)";
+  }
+
+  function composerFlightTargetRect(
+    target: ComposerFlightTarget,
+    from: ComposerFlightRect,
+  ): ComposerFlightRect | null {
+    if (target === "queue") {
+      const queueRect = composerQueueTargetEl?.getBoundingClientRect();
+      if (queueRect) return snapshotRect(queueRect);
+    }
+    const messagesRect = messagesEl?.getBoundingClientRect();
+    if (!messagesRect) return null;
+    const width = Math.min(
+      Math.max(220, from.width * 0.62),
+      Math.max(220, messagesRect.width * 0.8),
+    );
+    const height = Math.max(42, Math.min(from.height, 96));
+    return {
+      x: Math.max(messagesRect.left + 16, messagesRect.right - width - 26),
+      y: Math.max(
+        messagesRect.top + 18,
+        Math.min(messagesRect.bottom - height - 18, from.y - height - 28),
+      ),
+      width,
+      height,
+    };
+  }
+
+  async function launchComposerFlight(
+    text: string,
+    target: ComposerFlightTarget,
+    from: ComposerFlightRect | null,
+  ): Promise<void> {
+    if (!from || prefersReducedMotion()) return;
+    await tick();
+    const to = composerFlightTargetRect(target, from);
+    if (!to) return;
+    const id = `composer-flight-${randomUUID()}`;
+    composerFlights = [
+      ...composerFlights,
+      { id, text: composerFlightPreview(text), from, to, target },
+    ];
+    setTimeout(() => {
+      composerFlights = composerFlights.filter((flight) => flight.id !== id);
+    }, 520);
+  }
+
+  function composerFlightStyle(flight: ComposerFlight): string {
+    const { from } = flight;
+    return [
+      `left:${from.x}px`,
+      `top:${from.y}px`,
+      `width:${from.width}px`,
+      `min-height:${Math.max(42, Math.min(from.height, 120))}px`,
+    ].join(";");
+  }
+
+  function composerFlightTransition(
+    _node: Element,
+    params: { flight: ComposerFlight },
+  ) {
+    const { from, to } = params.flight;
+    const dx = to.x - from.x;
+    const dy = to.y - from.y;
+    const dw = to.width - from.width;
+    const minHeight = Math.max(42, Math.min(from.height, 120));
+    const dh = Math.max(32, Math.min(to.height, 96)) - minHeight;
+    return {
+      duration: 440,
+      easing: cubicOut,
+      css: (t: number) => {
+        const spring = Math.sin(t * Math.PI) * 0.018;
+        return `
+          opacity: ${Math.min(1, 0.18 + t * 1.2)};
+          transform: translate3d(${dx * t}px, ${dy * t}px, 0) scale(${1 + spring});
+          width: ${from.width + dw * t}px;
+          min-height: ${minHeight + dh * t}px;
+        `;
+      },
+    };
+  }
+
   function enqueueCodexPayload(payload: {
     text: string;
     attachments: ImageInlineAttachment[];
@@ -2650,8 +2787,10 @@
   function queueCodexMessage(): void {
     const payload = currentCodexPayload();
     if (!payload) return;
+    const fromRect = composerFlightSourceRect();
     enqueueCodexPayload(payload);
     clearCodexComposer();
+    void launchComposerFlight(payload.text, "queue", fromRect);
   }
 
   async function startCodexTurn(
@@ -2713,15 +2852,21 @@
       queueCodexMessage();
       return;
     }
+    const fromRect = composerFlightSourceRect();
     clearCodexComposer();
-    await startCodexTurn(payload, { steer: false });
+    const sendPromise = startCodexTurn(payload, { steer: false });
+    void launchComposerFlight(payload.text, "flow", fromRect);
+    await sendPromise;
   }
 
   async function steerCodexMessage(): Promise<void> {
     const payload = currentCodexPayload();
     if (!payload || !codexActiveTurnId) return;
+    const fromRect = composerFlightSourceRect();
     clearCodexComposer();
-    await startCodexTurn(payload, { steer: true });
+    const sendPromise = startCodexTurn(payload, { steer: true });
+    void launchComposerFlight(payload.text, "flow", fromRect);
+    await sendPromise;
   }
 
   async function drainCodexQueue(): Promise<void> {
@@ -2743,22 +2888,41 @@
     item: CodexQueuedMessage<ImageInlineAttachment>,
   ): void {
     codexQueueExpanded = true;
+    if (editingCodexQueueId !== item.id) {
+      editingCodexQueueDraft ??= {
+        text: inputText,
+        attachments: [...composerAttachments],
+      };
+    }
     editingCodexQueueId = item.id;
-    editingCodexQueueText = item.text;
-    editingCodexQueueAttachments = [...item.attachments];
+    inputText = item.text;
+    composerAttachments = [...item.attachments];
+    openComposerAttachmentIndex = null;
+    sendError = "";
+  }
+
+  function finishCodexQueueEdit(restoreDraft: boolean): void {
+    const draft = editingCodexQueueDraft;
+    editingCodexQueueId = null;
+    editingCodexQueueDraft = null;
+    if (restoreDraft && draft) {
+      inputText = draft.text;
+      composerAttachments = draft.attachments;
+    } else {
+      clearCodexComposer();
+    }
   }
 
   function cancelEditCodexQueuedMessage(): void {
-    editingCodexQueueId = null;
-    editingCodexQueueText = "";
-    editingCodexQueueAttachments = [];
+    finishCodexQueueEdit(true);
   }
 
-  function saveCodexQueuedMessage(id: string): void {
+  function saveCodexQueuedMessage(id: string | null = editingCodexQueueId): void {
+    if (!id) return;
     if (
       !canSaveCodexQueueEdit(
-        editingCodexQueueText,
-        editingCodexQueueAttachments,
+        inputText,
+        composerAttachments,
       )
     )
       return;
@@ -2766,12 +2930,12 @@
       codexQueuedMessages,
       id,
       {
-        text: editingCodexQueueText,
-        attachments: editingCodexQueueAttachments,
+        text: inputText,
+        attachments: composerAttachments,
       },
     );
     codexQueueBlocked = false;
-    cancelEditCodexQueuedMessage();
+    finishCodexQueueEdit(true);
   }
 
   function removeCodexQueuedMessage(id: string): void {
@@ -2780,11 +2944,62 @@
     if (editingCodexQueueId === id) cancelEditCodexQueuedMessage();
   }
 
-  function removeEditingCodexQueueAttachment(index: number): void {
-    editingCodexQueueAttachments = removeCodexQueuedAttachment(
-      editingCodexQueueAttachments,
-      index,
+  function reorderCodexQueueItem(id: string, beforeId: string | null): void {
+    const next = reorderCodexQueuedMessage(
+      codexQueuedMessages,
+      id,
+      beforeId,
     );
+    if (next === codexQueuedMessages) return;
+    codexQueuedMessages = next;
+    codexQueueBlocked = false;
+  }
+
+  function mergeCodexQueuedMessageIntoPrevious(id: string): void {
+    const next = mergeCodexQueuedMessageUp(codexQueuedMessages, id);
+    if (next === codexQueuedMessages) return;
+    codexQueuedMessages = next;
+    codexQueueBlocked = false;
+    if (editingCodexQueueId === id) finishCodexQueueEdit(true);
+  }
+
+  function onCodexQueueDragStart(
+    e: DragEvent,
+    item: CodexQueuedMessage<ImageInlineAttachment>,
+  ): void {
+    if (editingCodexQueueId) {
+      e.preventDefault();
+      return;
+    }
+    draggingCodexQueueId = item.id;
+    codexQueueDropBeforeId = null;
+    codexQueueDropAtEnd = false;
+    e.dataTransfer?.setData("text/plain", item.id);
+    if (e.dataTransfer) e.dataTransfer.effectAllowed = "move";
+  }
+
+  function onCodexQueueDragOver(e: DragEvent, beforeId: string | null): void {
+    if (!draggingCodexQueueId) return;
+    if (beforeId === draggingCodexQueueId) return;
+    e.preventDefault();
+    if (e.dataTransfer) e.dataTransfer.dropEffect = "move";
+    codexQueueDropBeforeId = beforeId;
+    codexQueueDropAtEnd = beforeId === null;
+  }
+
+  function clearCodexQueueDragState(): void {
+    draggingCodexQueueId = null;
+    codexQueueDropBeforeId = null;
+    codexQueueDropAtEnd = false;
+  }
+
+  function onCodexQueueDrop(e: DragEvent, beforeId: string | null): void {
+    const id =
+      draggingCodexQueueId || e.dataTransfer?.getData("text/plain") || null;
+    if (!id) return;
+    e.preventDefault();
+    reorderCodexQueueItem(id, beforeId);
+    clearCodexQueueDragState();
   }
 
   async function runCodexQueuedMessage(
@@ -3064,6 +3279,11 @@
   $: showChatComposer =
     mode === "read" &&
     (agent === "ollama" || (agent === "codex" && codexVisualAppSurface));
+  let lastFocusComposerSeq = 0;
+  $: if (focusComposerSeq > 0 && focusComposerSeq !== lastFocusComposerSeq) {
+    lastFocusComposerSeq = focusComposerSeq;
+    void focusComposerInput();
+  }
   $: showComposerTray =
     codexVisualAppSurface && codexRequests.length > 0;
   $: if (codexQueuedMessages.length === 0 && codexQueueExpanded) {
@@ -3078,12 +3298,35 @@
   }
 
   $: composerPlaceholder =
-    agent === "codex" ? "Message Codex…" : `Message ${model || "Ollama"}…`;
+    editingCodexQueueId
+      ? "Edit queued message…"
+      : agent === "codex"
+        ? "Message Codex…"
+        : `Message ${model || "Ollama"}…`;
+
+  async function focusComposerInput(): Promise<void> {
+    await tick();
+    if (typeof requestAnimationFrame === "function") {
+      await new Promise<void>((resolve) =>
+        requestAnimationFrame(() => resolve()),
+      );
+    }
+    if (!showChatComposer || !composerInputEl || composerInputEl.disabled)
+      return;
+    composerInputEl.focus({ preventScroll: true });
+    const end = composerInputEl.value.length;
+    composerInputEl.setSelectionRange(end, end);
+  }
+
   function onComposerKey(e: KeyboardEvent) {
     // Enter sends. Shift+Enter inserts a newline. IME composition keeps
     // its own use of Enter and must not trigger a send.
     if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
       e.preventDefault();
+      if (editingCodexQueueId) {
+        saveCodexQueuedMessage();
+        return;
+      }
       void sendMessage();
     }
   }
@@ -3808,30 +4051,48 @@
       {/if}
       {#if agent === "codex" && codexQueuedMessages.length && codexQueueExpanded}
         <div class="codex-queue-pane" aria-label="Queued Codex messages">
-          <div class="codex-queue">
-            {#each codexQueuedMessages as item (item.id)}
-              {@const queueAttachments =
-                editingCodexQueueId === item.id
-                  ? editingCodexQueueAttachments
-                  : item.attachments}
-              <div class="codex-queue-item">
+          <div
+            class="codex-queue"
+            class:drop-at-end={codexQueueDropAtEnd}
+            role="list"
+            on:dragover={(e) => onCodexQueueDragOver(e, null)}
+            on:drop={(e) => onCodexQueueDrop(e, null)}
+          >
+            {#each codexQueuedMessages as item, itemIndex (item.id)}
+              {@const queueAttachments = item.attachments}
+              <div
+                class="codex-queue-item"
+                class:editing={editingCodexQueueId === item.id}
+                class:dragging={draggingCodexQueueId === item.id}
+                class:drop-before={codexQueueDropBeforeId === item.id}
+                role="listitem"
+                on:dragover|stopPropagation={(e) =>
+                  onCodexQueueDragOver(e, item.id)}
+                on:drop|stopPropagation={(e) => onCodexQueueDrop(e, item.id)}
+                in:fly={{ y: 8, duration: 180 }}
+                animate:flip={{ duration: 180 }}
+              >
+                <button
+                  type="button"
+                  class="codex-queue-drag"
+                  draggable={!editingCodexQueueId}
+                  disabled={!!editingCodexQueueId}
+                  on:dragstart={(e) => onCodexQueueDragStart(e, item)}
+                  on:dragend={clearCodexQueueDragState}
+                  title="Drag to reorder queued message"
+                  aria-label="Drag to reorder queued message"
+                >
+                  ⋮⋮
+                </button>
                 <div
                   class="codex-queue-main"
                   class:editing={editingCodexQueueId === item.id}
                   class:hasAttachments={queueAttachments.length > 0}
                 >
                   <span class="codex-queue-label">queued</span>
-                  {#if editingCodexQueueId === item.id}
-                    <textarea
-                      class="codex-queue-edit"
-                      bind:value={editingCodexQueueText}
-                      rows="2"
-                    ></textarea>
-                  {:else}
-                    <div class="codex-queue-preview" title={item.text}>
-                      {item.text || "(attachments only)"}
-                    </div>
-                  {/if}
+                  <div class="codex-queue-preview" title={item.text}>
+                    {item.text || "(attachments only)"}
+                  </div>
                   {#if queueAttachments.length}
                     <div class="codex-queue-attachments">
                       {#each queueAttachments as attachment, attachmentIndex (`${item.id}:${attachment.path}:${attachmentIndex}`)}
@@ -3842,20 +4103,6 @@
                             !!attachment.hasAlpha,
                             "composer-photo-frame codex-queue-photo",
                           )}
-                          {#if editingCodexQueueId === item.id}
-                            <button
-                              type="button"
-                              class="composer-attachment-remove"
-                              on:click={() =>
-                                removeEditingCodexQueueAttachment(
-                                  attachmentIndex,
-                                )}
-                              title={`Remove ${inlineAttachmentLabel(attachment)}`}
-                              aria-label={`Remove ${inlineAttachmentLabel(attachment)}`}
-                            >
-                              ×
-                            </button>
-                          {/if}
                         </div>
                       {/each}
                     </div>
@@ -3863,26 +4110,19 @@
                 </div>
                 <div class="codex-queue-actions">
                   {#if editingCodexQueueId === item.id}
-                    <button
-                      type="button"
-                      on:click={() => saveCodexQueuedMessage(item.id)}
-                      disabled={!canSaveCodexQueueEdit(
-                        editingCodexQueueText,
-                        editingCodexQueueAttachments,
-                      )}
-                      title="Save queued message"
-                      aria-label="Save queued message">✓</button
-                    >
-                    <button
-                      type="button"
-                      on:click={cancelEditCodexQueuedMessage}
-                      title="Cancel edit"
-                      aria-label="Cancel edit">×</button
-                    >
+                    <span class="codex-queue-editing">editing</span>
                   {:else}
                     <button
                       type="button"
+                      on:click={() => mergeCodexQueuedMessageIntoPrevious(item.id)}
+                      disabled={itemIndex === 0 || !!editingCodexQueueId}
+                      title="Merge into previous queued message"
+                      aria-label="Merge into previous queued message">⇡</button
+                    >
+                    <button
+                      type="button"
                       on:click={() => beginEditCodexQueuedMessage(item)}
+                      disabled={!!editingCodexQueueId}
                       title="Edit queued message"
                       aria-label="Edit queued message">✎</button
                     >
@@ -3890,6 +4130,7 @@
                       <button
                         type="button"
                         on:click={() => void steerCodexQueuedMessage(item)}
+                        disabled={!!editingCodexQueueId}
                         title="Send this queued message as steering now"
                         aria-label="Steer queued message">↩</button
                       >
@@ -3897,6 +4138,7 @@
                       <button
                         type="button"
                         on:click={() => void runCodexQueuedMessage(item)}
+                        disabled={!!editingCodexQueueId}
                         title="Run this queued message now"
                         aria-label="Run queued message">▶</button
                       >
@@ -3904,6 +4146,7 @@
                     <button
                       type="button"
                       on:click={() => removeCodexQueuedMessage(item.id)}
+                      disabled={!!editingCodexQueueId}
                       title="Remove queued message"
                       aria-label="Remove queued message">×</button
                     >
@@ -3975,9 +4218,10 @@
             {/if}
           </div>
         {/if}
-      <div class="composer-box">
+      <div class="composer-box" bind:this={composerFlightSourceEl}>
         <textarea
           class="composer-input"
+          bind:this={composerInputEl}
           bind:value={inputText}
           placeholder={composerPlaceholder}
           rows="2"
@@ -4009,6 +4253,7 @@
                   type="button"
                   class="codex-composer-badge"
                   class:expanded={codexQueueExpanded}
+                  bind:this={composerQueueTargetEl}
                   on:click={toggleCodexQueuePane}
                   title={codexQueueExpanded
                     ? "Collapse queued messages"
@@ -4022,7 +4267,28 @@
               {/if}
             </div>
           {/if}
-          {#if sending && agent === "ollama"}
+          {#if editingCodexQueueId}
+            <button
+              type="button"
+              class="composer-send composer-save-queue"
+              on:click={() => saveCodexQueuedMessage()}
+              disabled={!canSaveCodexQueueEdit(inputText, composerAttachments) ||
+                composerUploadingImages > 0}
+              title="Save queued message (Enter)"
+              aria-label="Save queued message"
+            >
+              ✓
+            </button>
+            <button
+              type="button"
+              class="composer-send composer-cancel-queue"
+              on:click={cancelEditCodexQueuedMessage}
+              title="Cancel queued message edit"
+              aria-label="Cancel queued message edit"
+            >
+              ×
+            </button>
+          {:else if sending && agent === "ollama"}
             <button
               type="button"
               class="composer-send is-sending"
@@ -4100,6 +4366,16 @@
           {/if}
         </div>
       </div>
+      {#each composerFlights as flight (flight.id)}
+        <div
+          class="composer-flight-bubble"
+          class:to-queue={flight.target === "queue"}
+          style={composerFlightStyle(flight)}
+          in:composerFlightTransition={{ flight }}
+        >
+          {flight.text}
+        </div>
+      {/each}
     </div>
     </div>
   {/if}
@@ -4287,15 +4563,13 @@
     flex: 1 1 0;
   }
   /* The head-stack hosts the header + the absolutely-positioned pin.
-     `z-index: 2` lifts its entire compositing layer above the TUI
-     (which has implicit auto stacking from flex document order), so
-     the pin — painted within head-stack's layer — can overlay the
-     top of the TUI when revealed. Without this, the TUI would paint
-     on top of the revealed pin and visually swallow it. */
+     This layer must clear both the transcript and the chat composer
+     so summary / last-message popups stay readable instead of tucking
+     underneath the message bar. */
   .session-head-stack {
     position: relative;
     flex: 0 0 auto;
-    z-index: 2;
+    z-index: 6;
   }
   /* The pin hangs just below the header. Fast opacity transition so
      the appear/disappear feels snappy rather than gradual — short
@@ -4306,6 +4580,7 @@
     top: 100%;
     left: 0;
     right: 0;
+    z-index: 1;
     display: flex;
     /* Right-aligned so the pill hugs the column's right edge —
        leaves the left/centre of the TUI uncovered when the pin is
@@ -4508,6 +4783,34 @@
     flex: 1 1 auto;
     display: flex;
   }
+  .composer-flight-bubble {
+    position: fixed;
+    z-index: 100;
+    box-sizing: border-box;
+    display: flex;
+    align-items: center;
+    justify-content: flex-start;
+    overflow: hidden;
+    pointer-events: none;
+    padding: 0.72rem 0.95rem;
+    border: 1px solid color-mix(in srgb, var(--surface-3) 72%, transparent);
+    border-radius: 1.25rem;
+    background: color-mix(in srgb, var(--surface-2) 92%, var(--surface-1));
+    color: var(--text-1);
+    box-shadow: 0 18px 40px -28px rgba(0, 0, 0, 0.95);
+    font-size: 0.86rem;
+    font-weight: 650;
+    line-height: 1.25;
+    text-align: left;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    will-change: transform, width, min-height, opacity;
+  }
+  .composer-flight-bubble.to-queue {
+    border-radius: var(--radius-sm);
+    background: color-mix(in srgb, var(--surface-1) 88%, transparent);
+    font-size: 0.76rem;
+  }
   .codex-requests {
     display: flex;
     flex-direction: column;
@@ -4565,6 +4868,15 @@
   .codex-queue {
     display: grid;
     gap: 0.35rem;
+    position: relative;
+  }
+  .codex-queue.drop-at-end::after {
+    content: "";
+    display: block;
+    height: 0.16rem;
+    margin-left: 0.15rem;
+    border-radius: 999px;
+    background: var(--accent, #6aa9ff);
   }
   .codex-plan-explanation {
     margin: 0 0 0.35rem;
@@ -4621,14 +4933,68 @@
     overflow-wrap: anywhere;
   }
   .codex-queue-item {
+    position: relative;
     display: grid;
-    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-columns: auto minmax(0, 1fr) auto;
     gap: 0.45rem;
     align-items: start;
     padding: 0.4rem 0.45rem;
     border: 1px solid var(--surface-3);
     border-radius: var(--radius-sm);
     background: color-mix(in srgb, var(--surface-1) 82%, transparent);
+  }
+  .codex-queue-item.drop-before::before {
+    content: "";
+    position: absolute;
+    left: 0.22rem;
+    top: -0.24rem;
+    bottom: auto;
+    width: 0.22rem;
+    height: calc(100% + 0.12rem);
+    border-radius: 999px;
+    background: var(--accent, #6aa9ff);
+    box-shadow: 0 0 0 1px
+      color-mix(in srgb, var(--accent, #6aa9ff) 35%, transparent);
+  }
+  .codex-queue-item.dragging {
+    opacity: 0.52;
+  }
+  .codex-queue-item.editing {
+    border-color: color-mix(
+      in srgb,
+      var(--accent, #6aa9ff) 55%,
+      var(--surface-3)
+    );
+    background: color-mix(
+      in srgb,
+      var(--surface-1) 92%,
+      var(--accent, #6aa9ff) 8%
+    );
+  }
+  .codex-queue-drag {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 1.1rem;
+    min-height: 1.55rem;
+    border: 0;
+    background: transparent;
+    color: var(--text-faint);
+    cursor: grab;
+    font: inherit;
+    font-size: 0.72rem;
+    line-height: 1;
+    padding: 0;
+  }
+  .codex-queue-drag:active {
+    cursor: grabbing;
+  }
+  .codex-queue-drag:hover {
+    color: var(--text-2);
+  }
+  .codex-queue-drag:disabled {
+    color: color-mix(in srgb, var(--text-faint) 55%, transparent);
+    cursor: default;
   }
   .codex-queue-main {
     min-width: 0;
@@ -4656,21 +5022,6 @@
     line-height: 1.25;
     text-overflow: ellipsis;
     white-space: nowrap;
-  }
-  .codex-queue-edit {
-    flex: 1 1 12rem;
-    width: 100%;
-    box-sizing: border-box;
-    resize: vertical;
-    min-height: 2.4rem;
-    border: 1px solid var(--surface-3);
-    border-radius: var(--radius-sm);
-    background: var(--surface-0);
-    color: var(--text-1);
-    font: inherit;
-    font-size: 0.76rem;
-    line-height: 1.3;
-    padding: 0.35rem 0.42rem;
   }
   .codex-queue-attachments {
     flex: 1 0 100%;
@@ -4716,6 +5067,12 @@
   .codex-queue-actions button:disabled {
     color: var(--text-faint);
     cursor: not-allowed;
+  }
+  .codex-queue-editing {
+    color: var(--text-faint);
+    font-size: 0.68rem;
+    line-height: 1.55rem;
+    text-transform: uppercase;
   }
   .codex-request-questions {
     display: grid;
@@ -5005,6 +5362,11 @@
     border-color: var(--text-2);
   }
   .composer-steer {
+    background: transparent;
+    color: var(--text-1);
+    border-color: var(--surface-3);
+  }
+  .composer-cancel-queue {
     background: transparent;
     color: var(--text-1);
     border-color: var(--surface-3);

@@ -5,6 +5,8 @@ import {
   parseCodexQueue,
   removeCodexQueuedAttachment,
   removeCodexQueuedMessage,
+  mergeCodexQueuedMessageUp,
+  reorderCodexQueuedMessage,
   updateCodexQueuedMessage,
 } from "../src/codex-queue";
 
@@ -132,5 +134,80 @@ describe("Codex queue updates", () => {
         0,
       ),
     ).toEqual([{ path: "/tmp/two.png" }]);
+  });
+
+  it("reorders a queued message by id", () => {
+    const queue = [
+      {
+        id: "one",
+        text: "first",
+        attachments: [],
+        createdAt: "2026-06-19T10:00:00.000Z",
+      },
+      {
+        id: "two",
+        text: "second",
+        attachments: [],
+        createdAt: "2026-06-19T10:01:00.000Z",
+      },
+      {
+        id: "three",
+        text: "third",
+        attachments: [],
+        createdAt: "2026-06-19T10:02:00.000Z",
+      },
+    ];
+
+    expect(reorderCodexQueuedMessage(queue, "three", "one")).toEqual([
+      queue[2],
+      queue[0],
+      queue[1],
+    ]);
+    expect(reorderCodexQueuedMessage(queue, "one", "three")).toEqual([
+      queue[1],
+      queue[0],
+      queue[2],
+    ]);
+    expect(reorderCodexQueuedMessage(queue, "one", null)).toEqual([
+      queue[1],
+      queue[2],
+      queue[0],
+    ]);
+    expect(reorderCodexQueuedMessage(queue, "two", "two")).toBe(queue);
+    expect(reorderCodexQueuedMessage(queue, "missing", "one")).toBe(queue);
+  });
+
+  it("merges a queued message into the previous one", () => {
+    const queue = [
+      {
+        id: "one",
+        text: "first",
+        attachments: [{ path: "/tmp/one.png" }],
+        createdAt: "2026-06-19T10:00:00.000Z",
+      },
+      {
+        id: "two",
+        text: "second",
+        attachments: [{ path: "/tmp/two.png" }],
+        createdAt: "2026-06-19T10:01:00.000Z",
+      },
+      {
+        id: "three",
+        text: "third",
+        attachments: [],
+        createdAt: "2026-06-19T10:02:00.000Z",
+      },
+    ];
+
+    expect(mergeCodexQueuedMessageUp(queue, "two")).toEqual([
+      {
+        ...queue[0],
+        text: "first\n\nsecond",
+        attachments: [{ path: "/tmp/one.png" }, { path: "/tmp/two.png" }],
+      },
+      queue[2],
+    ]);
+    expect(mergeCodexQueuedMessageUp(queue, "one")).toBe(queue);
+    expect(mergeCodexQueuedMessageUp(queue, "missing")).toBe(queue);
   });
 });

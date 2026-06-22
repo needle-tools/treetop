@@ -87,6 +87,51 @@ export function removeCodexQueuedMessage<Attachment>(
   return queue.filter((item) => item.id !== id);
 }
 
+export function reorderCodexQueuedMessage<Attachment>(
+  queue: readonly CodexQueuedMessage<Attachment>[],
+  id: string,
+  beforeId: string | null,
+): CodexQueuedMessage<Attachment>[] {
+  const fromIndex = queue.findIndex((item) => item.id === id);
+  if (fromIndex < 0) return queue as CodexQueuedMessage<Attachment>[];
+  const moving = queue[fromIndex];
+  if (!moving) return queue as CodexQueuedMessage<Attachment>[];
+  const withoutMoving = queue.filter((item) => item.id !== id);
+  const toIndex =
+    beforeId === null
+      ? withoutMoving.length
+      : withoutMoving.findIndex((item) => item.id === beforeId);
+  if (toIndex < 0) return queue as CodexQueuedMessage<Attachment>[];
+  if (queue[toIndex]?.id === id || fromIndex === toIndex) {
+    return queue as CodexQueuedMessage<Attachment>[];
+  }
+  return [
+    ...withoutMoving.slice(0, toIndex),
+    moving,
+    ...withoutMoving.slice(toIndex),
+  ];
+}
+
+export function mergeCodexQueuedMessageUp<Attachment>(
+  queue: readonly CodexQueuedMessage<Attachment>[],
+  id: string,
+): CodexQueuedMessage<Attachment>[] {
+  const index = queue.findIndex((item) => item.id === id);
+  if (index <= 0) return queue as CodexQueuedMessage<Attachment>[];
+  const previous = queue[index - 1];
+  const current = queue[index];
+  if (!previous || !current) return queue as CodexQueuedMessage<Attachment>[];
+  return [
+    ...queue.slice(0, index - 1),
+    {
+      ...previous,
+      text: [previous.text, current.text].filter(Boolean).join("\n\n"),
+      attachments: [...previous.attachments, ...current.attachments],
+    },
+    ...queue.slice(index + 1),
+  ];
+}
+
 export function removeCodexQueuedAttachment<Attachment>(
   attachments: readonly Attachment[],
   index: number,

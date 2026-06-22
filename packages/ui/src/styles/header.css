@@ -474,7 +474,8 @@ main > header {
 }
 .projects-row {
   width: 100%;
-  display: flex;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
   align-items: center;
   gap: 0.5rem;
   padding: 0.35rem 0.45rem;
@@ -493,10 +494,67 @@ main > header {
   outline: none;
 }
 .projects-dot {
-  width: 9px;
-  height: 9px;
-  border-radius: 50%;
+  position: relative;
+  width: 11px;
+  height: 11px;
   flex: 0 0 auto;
+  color: var(--project-color, var(--text-muted));
+}
+.projects-dot-core {
+  position: absolute;
+  inset: 1px;
+  border-radius: 999px;
+  background: var(--project-color, var(--text-muted));
+  opacity: 0.68;
+}
+.projects-row.has-live .projects-dot-core {
+  opacity: 1;
+}
+.projects-row.is-working .projects-dot-core {
+  background: color-mix(
+    in oklch,
+    var(--project-color, var(--text-muted)) 22%,
+    transparent
+  );
+}
+.projects-dot-spinner {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+  pointer-events: none;
+  opacity: 0;
+}
+.projects-dot-spinner circle {
+  fill: none;
+  stroke: color-mix(
+    in oklch,
+    var(--project-color, var(--text-muted)) 65%,
+    #fff 35%
+  );
+  stroke-width: 5;
+  stroke-linecap: round;
+  stroke-dasharray: 35 65;
+  transform-origin: 50% 50%;
+}
+.projects-row.is-working .projects-dot-spinner {
+  opacity: 1;
+  animation: projects-spin 0.9s linear infinite;
+}
+.projects-row.is-awaiting .projects-dot-core {
+  box-shadow: 0 0 0 2px
+    color-mix(in srgb, var(--project-color, var(--text-muted)) 44%, transparent);
+}
+@keyframes projects-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .projects-row.is-working .projects-dot-spinner {
+    animation: none;
+  }
 }
 .projects-virtual-item {
   margin-top: 0.25rem;
@@ -525,6 +583,15 @@ main > header {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+.projects-time {
+  color: var(--text-muted);
+  font-size: 0.72rem;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.projects-row.has-live .projects-time {
+  color: var(--text-2);
 }
 
 /* Remote daemons popover list */

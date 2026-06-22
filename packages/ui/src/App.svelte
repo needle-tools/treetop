@@ -1,7 +1,6 @@
 <script lang="ts">
   import {
     resolveTermId,
-    isOpenInWt,
     normalizeSessionForOpen,
     shellToSession,
     shellSourceToDismiss,
@@ -447,6 +446,14 @@
    *  when that session is closed, and stays in memory only (a reload
    *  starts unfocused). */
   let focusedSource: string | null = null;
+  let composerFocusSeqBySource: Record<string, number> = {};
+
+  function requestComposerFocus(source: string): void {
+    composerFocusSeqBySource = {
+      ...composerFocusSeqBySource,
+      [source]: (composerFocusSeqBySource[source] ?? 0) + 1,
+    };
+  }
 
   // The unique row key (repoId + worktree path) whose repo-edit popover
   // (name + color + reorder) is currently open. Keyed by row rather than
@@ -2983,6 +2990,19 @@
     return surface === "terminal" ? "terminal" : undefined;
   }
 
+  function isSessionOpenInWt(
+    wtPath: string,
+    s: Pick<
+      OpenSession,
+      "agent" | "source" | "resumeSessionId" | "transcriptSource"
+    > & { sessionId?: string },
+  ): boolean {
+    const keys = new Set(sessionSurfaceKeys(s));
+    return (openSessionsByWt[wtPath] ?? []).some((open) =>
+      sessionMatchesKnownKeys(open, keys),
+    );
+  }
+
   /** Mark a shell column as user-dismissed so `restoreLiveShells` won't
    *  re-add it on the next page load. Handles both the synthetic
    *  `__new__:` and the termId-based `__attached__:` forms: if the user
@@ -3479,7 +3499,7 @@
   ): void {
     const plan = planReveal({
       rowFolded: !!rowFolded[rowKey],
-      isOpen: isOpenInWt(wtPath, s.source, openSessionsByWt),
+      isOpen: isSessionOpenInWt(wtPath, s),
       mode,
     });
     if (plan.unfold) {
@@ -3569,6 +3589,7 @@
     });
     startReadGrace(entry.source);
     focusedSource = entry.source;
+    requestComposerFocus(entry.source);
 
     // After one Svelte flush + a paint, check whether the column
     // actually landed in the DOM. If not, warn the user, but never
@@ -6399,6 +6420,40 @@
     return out as any;
   });
 
+  $: projectMenuEntries = repos.map((repo) => {
+    const dock = dockEntries.filter((entry) => entry.repoId === repo.id);
+    const sessions = (repo.worktrees ?? []).flatMap(
+      (wt) => pickerSessionsByWt[wt.path] ?? [],
+    );
+    let latestActivity: string | undefined;
+    for (const session of sessions) {
+      const ts = session.lastMessageTs ?? session.lastActive;
+      if (
+        ts &&
+        (!latestActivity ||
+          Date.parse(ts) > Date.parse(latestActivity))
+      ) {
+        latestActivity = ts;
+      }
+    }
+    let liveCount = 0;
+    let working = false;
+    let awaiting = false;
+    for (const entry of dock) {
+      if (entry.exited) continue;
+      liveCount += 1;
+      working = working || entry.working || entry.terminalActive;
+      awaiting = awaiting || entry.awaiting;
+    }
+    return {
+      repo,
+      latestActivity,
+      liveCount,
+      working,
+      awaiting,
+    };
+  });
+
   /** Per-repo push/pull/dirty status for the dock's arrow indicators.
    *  Aggregates across all worktrees in each repo. Only repos with
    *  ahead > 0 or behind > 0 render an arrow; the dirty/staged/
@@ -7297,20 +7352,41 @@
           {/if}
           <ul class="projects-list">
             {#if repos.length > 0}
-              {#each repos as repo (daemonRepoKey(repo))}
+              {#each projectMenuEntries as project (daemonRepoKey(project.repo))}
                 <li>
                   <button
                     class="projects-row"
+                    class:has-live={project.liveCount > 0}
+                    class:is-working={project.working}
+                    class:is-awaiting={project.awaiting}
                     on:click={() => {
                       projectsMenuOpen = false;
-                      void focusRepoRow(repo.id);
+                      void focusRepoRow(project.repo.id);
                     }}
+                    title={project.latestActivity
+                      ? `${project.repo.name}\nLast active ${relTime(project.latestActivity)}`
+                      : project.repo.name}
                   >
                     <span
                       class="projects-dot"
-                      style="background: {repo.color || 'var(--text-muted)'};"
-                    ></span>
-                    <span class="projects-name">{repo.name}</span>
+                      style:--project-color={project.repo.color ||
+                        "var(--text-muted)"}
+                    >
+                      <span class="projects-dot-core"></span>
+                      <svg
+                        class="projects-dot-spinner"
+                        viewBox="0 0 24 24"
+                        aria-hidden="true"
+                      >
+                        <circle cx="12" cy="12" r="9.5" pathLength="100" />
+                      </svg>
+                    </span>
+                    <span class="projects-name">{project.repo.name}</span>
+                    {#if project.latestActivity}
+                      <span class="projects-time">
+                        {relTime(project.latestActivity)}
+                      </span>
+                    {/if}
                   </button>
                 </li>
               {/each}
@@ -8844,7 +8920,11 @@
                     {#if a}
                       <button
                         class="agent-badge agent-{a.agent}"
-                        class:active={isOpenInWt(wt.path, a.source, openSessionsByWt)}
+                        class:active={isSessionOpenInWt(wt.path, {
+                          agent: a.agent,
+                          source: a.source,
+                          sessionId: a.sessionId,
+                        })}
                         title={activeTuis.length > 1
                           ? `Jump to one of ${activeTuis.length} active TUIs in this worktree`
                           : `${a.manualTitle ?? a.aiTitle ?? `Show the latest ${a.agent} session`}\nLast active ${relTime(a.lastActive)}`}
@@ -8905,7 +8985,7 @@
                           headText={`${activeTuis.length} active TUIs in this worktree`}
                           dismissedSources={dismissedSessions}
                           starredSources={starredSessions}
-                          isOpen={(s) => isOpenInWt(wt.path, s.source, openSessionsByWt)}
+                          isOpen={(s) => isSessionOpenInWt(wt.path, s)}
                           tooltipFor={(s) => sessionTooltip(s)}
                           surfaceFor={sessionSurfaceForPicker}
                           on:pick={(e) => {
@@ -9013,7 +9093,7 @@
                           headText={`${pickerSessions.length} sessions in this worktree`}
                           dismissedSources={dismissedSessions}
                           starredSources={starredSessions}
-                          isOpen={(s) => isOpenInWt(wt.path, s.source, openSessionsByWt)}
+                          isOpen={(s) => isSessionOpenInWt(wt.path, s)}
                           tooltipFor={(s) => sessionTooltip(s)}
                           surfaceFor={sessionSurfaceForPicker}
                           on:pick={(e) => {
@@ -9867,10 +9947,10 @@
                               commitStripSearch(row.key, wt.path, s.source);
                               // Bubbles from any click inside the column — a
                               // child handler that closes the session will
-                              // have run first, so guard with isOpenInWt so
-                              // we don't park `focusedSource` on a source
-                              // that's already been removed.
-                              if (isOpenInWt(wt.path, s.source, openSessionsByWt)) {
+                              // have run first, so guard against parking
+                              // `focusedSource` on a session that's already
+                              // been removed.
+                              if (isSessionOpenInWt(wt.path, s)) {
                                 focusedSource = s.source;
                               }
                             }}
@@ -10340,6 +10420,9 @@
                                     | "codex"
                                     | "copilot"}
                                   source={s.source}
+                                  focusComposerSeq={composerFocusSeqBySource[
+                                    s.source
+                                  ] ?? 0}
                                   resumeSessionId={s.resumeSessionId ??
                                     agentMeta?.sessionId}
                                   transcriptSource={s.transcriptSource}
