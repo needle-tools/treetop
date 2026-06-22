@@ -2,6 +2,8 @@ import { beforeEach, describe, expect, test } from "bun:test";
 import {
   __resetCodexEventStreamsForTests,
   __setCodexEventSourceCtorForTests,
+  codexLiveToolUseFromEvent,
+  codexToolInputQuality,
   codexEventThreadIdForSession,
   subscribeCodexEvents,
   type CodexAppEvent,
@@ -131,5 +133,69 @@ describe("codex event stream hub", () => {
         liveCodexApp: true,
       }),
     ).toBeUndefined();
+  });
+
+  test("normalizes live command events into paired tool-use rows", () => {
+    const start: CodexAppEvent = {
+      kind: "notification",
+      method: "item/commandExecution/started",
+      params: {
+        itemId: "call-1",
+        cmd: "rg visual transcript packages/ui/src",
+      },
+      turnId: "turn-1",
+      receivedAt: "2026-06-22T10:00:00.000Z",
+    };
+    const output: CodexAppEvent = {
+      kind: "notification",
+      method: "item/commandExecution/outputDelta",
+      params: { itemId: "call-1", delta: "stdout chunk" },
+      turnId: "turn-1",
+      receivedAt: "2026-06-22T10:00:01.000Z",
+    };
+
+    expect(codexLiveToolUseFromEvent(start)).toEqual({
+      id: "codex-tool-call-1",
+      toolName: "exec_command",
+      toolInput: {
+        itemId: "call-1",
+        cmd: "rg visual transcript packages/ui/src",
+      },
+      toolUseId: "call-1",
+      inputQuality: 2,
+    });
+    expect(codexLiveToolUseFromEvent(output)).toEqual({
+      id: "codex-tool-call-1",
+      toolName: "exec_command",
+      toolInput: { itemId: "call-1" },
+      toolUseId: "call-1",
+      inputQuality: 0,
+    });
+    expect(
+      codexToolInputQuality(codexLiveToolUseFromEvent(start)?.toolInput),
+    ).toBeGreaterThan(
+      codexToolInputQuality(codexLiveToolUseFromEvent(output)?.toolInput),
+    );
+  });
+
+  test("normalizes live file-change events without dropping the patch payload", () => {
+    const event: CodexAppEvent = {
+      kind: "notification",
+      method: "item/fileChange/patchUpdated",
+      params: {
+        itemId: "patch-1",
+        changes: [{ path: "packages/ui/src/SessionView.svelte" }],
+      },
+      turnId: "turn-1",
+      receivedAt: "2026-06-22T10:00:00.000Z",
+    };
+
+    expect(codexLiveToolUseFromEvent(event)).toEqual({
+      id: "codex-file-patch-1",
+      toolName: "file change",
+      toolInput: [{ path: "packages/ui/src/SessionView.svelte" }],
+      toolUseId: "patch-1",
+      inputQuality: 1,
+    });
   });
 });

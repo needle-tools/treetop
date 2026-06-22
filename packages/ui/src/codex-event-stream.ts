@@ -11,6 +11,14 @@ export interface CodexAppEvent {
   seq?: number;
 }
 
+export interface CodexLiveToolUse {
+  id: string;
+  toolName: "exec_command" | "file change";
+  toolInput: unknown;
+  toolUseId: string;
+  inputQuality: number;
+}
+
 export type CodexEventStreamState =
   | "connecting"
   | "live"
@@ -93,6 +101,77 @@ function parseEvent(data: unknown): CodexAppEvent | null {
   } catch {
     return null;
   }
+}
+
+export function codexLiveToolUseFromEvent(
+  event: CodexAppEvent,
+): CodexLiveToolUse | null {
+  const itemId = codexEventItemId(event);
+  if (!itemId) return null;
+  const toolName = codexEventToolName(event.method);
+  if (!toolName) return null;
+  const id = `${toolName === "file change" ? "codex-file" : "codex-tool"}-${itemId}`;
+  const toolInput =
+    toolName === "file change" && event.params.changes !== undefined
+      ? event.params.changes
+      : codexEventToolInput(event.params);
+  return {
+    id,
+    toolName,
+    toolInput,
+    toolUseId: itemId,
+    inputQuality: codexToolInputQuality(toolInput),
+  };
+}
+
+export function codexEventItemId(event: CodexAppEvent): string | undefined {
+  return typeof event.params.itemId === "string"
+    ? event.params.itemId
+    : event.turnId;
+}
+
+export function codexToolInputQuality(input: unknown): number {
+  if (typeof input === "string") return input.trim() ? 3 : 0;
+  if (!input || typeof input !== "object") return 0;
+  const record = input as Record<string, unknown>;
+  let quality = 0;
+  for (const [key, value] of Object.entries(record)) {
+    if (
+      key === "itemId" ||
+      key === "turnId" ||
+      key === "delta" ||
+      key === "output" ||
+      key === "stdout" ||
+      key === "stderr"
+    ) {
+      continue;
+    }
+    if (value === undefined || value === null || value === "") continue;
+    quality += key === "cmd" || key === "command" || key === "changes" ? 2 : 1;
+  }
+  return quality;
+}
+
+function codexEventToolName(
+  method: string,
+): CodexLiveToolUse["toolName"] | null {
+  if (method.includes("commandExecution") || method.includes("command/exec")) {
+    return "exec_command";
+  }
+  if (method.includes("process/")) return "exec_command";
+  if (method.includes("fileChange")) return "file change";
+  return null;
+}
+
+function codexEventToolInput(
+  params: Record<string, unknown>,
+): Record<string, unknown> {
+  const input: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(params)) {
+    if (key === "delta" || value === undefined) continue;
+    input[key] = value;
+  }
+  return input;
 }
 
 function createHub(daemonId: string | undefined): Hub {
