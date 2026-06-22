@@ -47,7 +47,10 @@
   import { registerSessionPoll } from "./session-poll";
   import { canResumeVisualSurface } from "./session-source-routing";
   import {
+    codexEventItemId,
     codexEventThreadIdForSession,
+    codexLiveToolUseFromEvent,
+    codexToolInputQuality,
     subscribeCodexEvents,
     type CodexAppEvent,
     type CodexEventStreamState,
@@ -2153,12 +2156,24 @@
 
     if (event.kind === "request") {
       flushCodexDeltaPatches();
+      upsertCodexToolUseFromRequest(event);
       codexRequests = [
         ...codexRequests.filter((r) => r.id !== event.id),
         event,
       ];
       awaitingInput = true;
       return;
+    }
+    const liveToolUse = codexLiveToolUseFromEvent(event);
+    if (liveToolUse && !event.method.endsWith("/outputDelta")) {
+      flushCodexDeltaPatches();
+      upsertCodexToolUse(
+        liveToolUse.id,
+        liveToolUse.toolName,
+        liveToolUse.toolInput,
+        liveToolUse.toolUseId,
+        liveToolUse.inputQuality,
+      );
     }
 
     if (event.method === "turn/started") {
@@ -2231,10 +2246,16 @@
       event.method === "item/commandExecution/outputDelta" ||
       event.method === "item/fileChange/outputDelta"
     ) {
-      const itemId =
-        typeof event.params.itemId === "string"
-          ? event.params.itemId
-          : event.turnId;
+      const itemId = codexEventItemId(event);
+      if (liveToolUse) {
+        upsertCodexToolUse(
+          liveToolUse.id,
+          liveToolUse.toolName,
+          liveToolUse.toolInput,
+          liveToolUse.toolUseId,
+          liveToolUse.inputQuality,
+        );
+      }
       queueCodexBlockDelta(
         `codex-output-${itemId ?? "output"}`,
         "tool",
@@ -2252,11 +2273,15 @@
     }
     if (event.method === "item/fileChange/patchUpdated") {
       flushCodexDeltaPatches();
-      upsertCodexToolUse(
-        `codex-file-${event.params.itemId ?? event.turnId ?? "file"}`,
-        "file change",
-        event.params.changes ?? event.params,
-      );
+      if (liveToolUse) {
+        upsertCodexToolUse(
+          liveToolUse.id,
+          liveToolUse.toolName,
+          liveToolUse.toolInput,
+          liveToolUse.toolUseId,
+          liveToolUse.inputQuality,
+        );
+      }
       return;
     }
     if (event.method === "turn/plan/updated") {
@@ -2310,11 +2335,27 @@
     id: string,
     toolName: string,
     toolInput: unknown,
+    toolUseId?: string,
+    inputQuality = codexToolInputQuality(toolInput),
   ): void {
     if (!session) return;
     const messages = [...session.messages];
     const existingIndex = messages.findIndex((m) => m.id === id);
-    const block: NormalizedBlock = { type: "tool_use", toolName, toolInput };
+    if (existingIndex >= 0) {
+      const existingToolUse = messages[existingIndex]?.blocks.find(
+        (block) => block.type === "tool_use",
+      );
+      const existingQuality = codexToolInputQuality(
+        existingToolUse?.toolInput,
+      );
+      if (existingQuality > inputQuality) return;
+    }
+    const block: NormalizedBlock = {
+      type: "tool_use",
+      toolName,
+      toolInput,
+      toolUseId,
+    };
     if (existingIndex >= 0) {
       messages[existingIndex] = {
         ...messages[existingIndex]!,
@@ -2329,6 +2370,19 @@
       });
     }
     session = { ...session, messages };
+  }
+
+  function upsertCodexToolUseFromRequest(event: CodexAppEvent): void {
+    const liveToolUse = codexLiveToolUseFromEvent(event);
+    if (liveToolUse) {
+      upsertCodexToolUse(
+        liveToolUse.id,
+        liveToolUse.toolName,
+        liveToolUse.toolInput,
+        liveToolUse.toolUseId,
+        liveToolUse.inputQuality,
+      );
+    }
   }
 
   function codexPlanFromParams(params: unknown): VisualPlan | undefined {
