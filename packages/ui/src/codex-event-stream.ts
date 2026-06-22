@@ -108,7 +108,7 @@ export function codexLiveToolUseFromEvent(
 ): CodexLiveToolUse | null {
   const itemId = codexEventItemId(event);
   if (!itemId) return null;
-  const toolName = codexEventToolName(event.method);
+  const toolName = codexEventToolName(event.method, event.params);
   if (!toolName) return null;
   const id = `${toolName === "file change" ? "codex-file" : "codex-tool"}-${itemId}`;
   const toolInput =
@@ -125,8 +125,11 @@ export function codexLiveToolUseFromEvent(
 }
 
 export function codexEventItemId(event: CodexAppEvent): string | undefined {
+  const item = codexEventItem(event.params);
   return typeof event.params.itemId === "string"
     ? event.params.itemId
+    : typeof item?.id === "string"
+      ? item.id
     : event.turnId;
 }
 
@@ -154,7 +157,11 @@ export function codexToolInputQuality(input: unknown): number {
 
 function codexEventToolName(
   method: string,
+  params?: Record<string, unknown>,
 ): CodexLiveToolUse["toolName"] | null {
+  const item = params ? codexEventItem(params) : undefined;
+  if (item?.type === "commandExecution") return "exec_command";
+  if (item?.type === "fileChange") return "file change";
   if (method.includes("commandExecution") || method.includes("command/exec")) {
     return "exec_command";
   }
@@ -165,13 +172,65 @@ function codexEventToolName(
 
 function codexEventToolInput(
   params: Record<string, unknown>,
-): Record<string, unknown> {
+): Record<string, unknown> | undefined {
+  const item = codexEventItem(params);
+  if (item?.type === "commandExecution") {
+    return cleanCodexToolInput({
+      command: stringField(item, "command"),
+      cwd: stringField(item, "cwd"),
+      source: stringField(item, "source"),
+      commandActions: Array.isArray(item.commandActions)
+        ? item.commandActions
+        : undefined,
+    });
+  }
+  if (item?.type === "fileChange") {
+    return cleanCodexToolInput({
+      changes: item.changes,
+      cwd: stringField(item, "cwd"),
+    });
+  }
   const input: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(params)) {
-    if (key === "delta" || value === undefined) continue;
+    if (
+      key === "delta" ||
+      key === "threadId" ||
+      key === "turnId" ||
+      key === "itemId" ||
+      value === undefined
+    ) {
+      continue;
+    }
     input[key] = value;
   }
-  return input;
+  return Object.keys(input).length ? input : undefined;
+}
+
+function codexEventItem(
+  params: Record<string, unknown>,
+): Record<string, unknown> | undefined {
+  return params.item && typeof params.item === "object"
+    ? (params.item as Record<string, unknown>)
+    : undefined;
+}
+
+function stringField(
+  record: Record<string, unknown>,
+  key: string,
+): string | undefined {
+  const value = record[key];
+  return typeof value === "string" && value.trim() ? value : undefined;
+}
+
+function cleanCodexToolInput(
+  input: Record<string, unknown>,
+): Record<string, unknown> | undefined {
+  const out: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(input)) {
+    if (value === undefined || value === null || value === "") continue;
+    out[key] = value;
+  }
+  return Object.keys(out).length ? out : undefined;
 }
 
 function createHub(daemonId: string | undefined): Hub {

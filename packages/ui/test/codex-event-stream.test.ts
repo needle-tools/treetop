@@ -135,13 +135,22 @@ describe("codex event stream hub", () => {
     ).toBeUndefined();
   });
 
-  test("normalizes live command events into paired tool-use rows", () => {
+  test("normalizes live command item events into paired tool-use rows", () => {
     const start: CodexAppEvent = {
       kind: "notification",
-      method: "item/commandExecution/started",
+      method: "item/started",
       params: {
-        itemId: "call-1",
-        cmd: "rg visual transcript packages/ui/src",
+        item: {
+          type: "commandExecution",
+          id: "call-1",
+          command: "/bin/zsh -lc 'rg visual transcript packages/ui/src'",
+          cwd: "/repo",
+          processId: "123",
+          status: "inProgress",
+          aggregatedOutput: null,
+        },
+        threadId: "thread-1",
+        turnId: "turn-1",
       },
       turnId: "turn-1",
       receivedAt: "2026-06-22T10:00:00.000Z",
@@ -158,16 +167,16 @@ describe("codex event stream hub", () => {
       id: "codex-tool-call-1",
       toolName: "exec_command",
       toolInput: {
-        itemId: "call-1",
-        cmd: "rg visual transcript packages/ui/src",
+        command: "/bin/zsh -lc 'rg visual transcript packages/ui/src'",
+        cwd: "/repo",
       },
       toolUseId: "call-1",
-      inputQuality: 2,
+      inputQuality: 3,
     });
     expect(codexLiveToolUseFromEvent(output)).toEqual({
       id: "codex-tool-call-1",
       toolName: "exec_command",
-      toolInput: { itemId: "call-1" },
+      toolInput: undefined,
       toolUseId: "call-1",
       inputQuality: 0,
     });
@@ -176,6 +185,34 @@ describe("codex event stream hub", () => {
     ).toBeGreaterThan(
       codexToolInputQuality(codexLiveToolUseFromEvent(output)?.toolInput),
     );
+  });
+
+  test("normalizes command approval request payloads as command input", () => {
+    const request: CodexAppEvent = {
+      kind: "request",
+      id: 99,
+      method: "item/commandExecution/requestApproval",
+      params: {
+        itemId: "call-2",
+        command: "bun test",
+        cwd: "/repo",
+        threadId: "thread-1",
+        turnId: "turn-1",
+      },
+      turnId: "turn-1",
+      receivedAt: "2026-06-22T10:00:00.000Z",
+    };
+
+    expect(codexLiveToolUseFromEvent(request)).toEqual({
+      id: "codex-tool-call-2",
+      toolName: "exec_command",
+      toolInput: {
+        command: "bun test",
+        cwd: "/repo",
+      },
+      toolUseId: "call-2",
+      inputQuality: 3,
+    });
   });
 
   test("normalizes live file-change events without dropping the patch payload", () => {
