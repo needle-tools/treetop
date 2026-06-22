@@ -305,6 +305,59 @@ export function sessionSurfaceKeys(session: {
   return keys;
 }
 
+export function sessionMatchesKnownKeys(
+  session: {
+    agent: PersistedAgent | string;
+    source?: string;
+    transcriptSource?: string;
+    resumeSessionId?: string;
+    sessionId?: string;
+  },
+  knownKeys: ReadonlySet<string>,
+): boolean {
+  return sessionSurfaceKeys(session).some((key) => knownKeys.has(key));
+}
+
+export function rememberedSessionSurface(
+  session: {
+    agent: PersistedAgent | string;
+    source?: string;
+    transcriptSource?: string;
+    resumeSessionId?: string;
+    sessionId?: string;
+  },
+  surfaces: Record<string, SessionSurface>,
+): SessionSurface | undefined {
+  for (const key of sessionSurfaceKeys(session)) {
+    const remembered = surfaces[key];
+    if (remembered) return remembered;
+  }
+  return undefined;
+}
+
+export function defaultSessionSurface(_session: {
+  agent: PersistedAgent | string;
+  mode?: "terminal";
+}): SessionSurface {
+  return "terminal";
+}
+
+export function sessionSurfacePreference(
+  session: {
+    agent: PersistedAgent | string;
+    source?: string;
+    transcriptSource?: string;
+    resumeSessionId?: string;
+    sessionId?: string;
+    mode?: "terminal";
+  },
+  surfaces: Record<string, SessionSurface>,
+): SessionSurface {
+  return (
+    rememberedSessionSurface(session, surfaces) ?? defaultSessionSurface(session)
+  );
+}
+
 export function applySessionSurfacePreference<
   T extends {
     agent: PersistedAgent | string;
@@ -328,14 +381,7 @@ export function applySessionSurfacePreference<
   const supportsTerminalSurface =
     (withResume.agent === "claude" || withResume.agent === "codex") &&
     !!withResume.resumeSessionId;
-  let surface: SessionSurface | undefined;
-  for (const key of sessionSurfaceKeys(withResume)) {
-    const remembered = surfaces[key];
-    if (remembered) {
-      surface = remembered;
-      break;
-    }
-  }
+  const surface = rememberedSessionSurface(withResume, surfaces);
   if (
     withResume.mode === "terminal" &&
     (!supportsTerminalSurface || surface === "read")
@@ -597,7 +643,7 @@ export function filterToExistingSessions(
     if (seen.has(s.source)) return false;
     const keep =
       SYNTHETIC_SOURCE_PREFIXES.some((p) => s.source.startsWith(p)) ||
-      sessionSurfaceKeys(s).some((key) => existingSources.has(key));
+      sessionMatchesKnownKeys(s, existingSources);
     if (keep) seen.add(s.source);
     return keep;
   });
@@ -613,7 +659,7 @@ export function isSessionForeignToWorktree(
   if (SYNTHETIC_SOURCE_PREFIXES.some((p) => session.source.startsWith(p))) {
     return false;
   }
-  return !sessionSurfaceKeys(session).some((key) => knownSources.has(key));
+  return !sessionMatchesKnownKeys(session, knownSources);
 }
 
 /**

@@ -12,6 +12,7 @@ import {
   claudeModelAlias,
   codexAppSource,
   cmdForOpenSession,
+  defaultSessionSurface,
   effectiveVisibleWorktrees,
   filterToExistingSessions,
   hideVisibleWorktree,
@@ -20,6 +21,8 @@ import {
   isSessionForeignToWorktree,
   reconcileOpenSessionsWithSurfacePreferences,
   resolveTitleSource,
+  sessionMatchesKnownKeys,
+  sessionSurfacePreference,
   sessionSurfaceKeys,
   showVisibleWorktree,
   setSessionMode,
@@ -1802,6 +1805,89 @@ describe("SessionSurfaceStore", () => {
         sessionId: "sid-1",
       }),
     ).toEqual(["/agents/claude.jsonl", "session:claude:sid-1"]);
+  });
+
+  test("sessionMatchesKnownKeys matches source, transcript source, and provider session id aliases", () => {
+    const known = new Set([
+      "/agents/claude-transcript.jsonl",
+      "session:codex:sid-2",
+    ]);
+
+    expect(
+      sessionMatchesKnownKeys(
+        {
+          agent: "claude",
+          source: "__new__:claude:t_1",
+          transcriptSource: "/agents/claude-transcript.jsonl",
+          resumeSessionId: "sid-1",
+        },
+        known,
+      ),
+    ).toBe(true);
+    expect(
+      sessionMatchesKnownKeys(
+        {
+          agent: "codex",
+          source: "__codex_app__:sid-2",
+          resumeSessionId: "sid-2",
+        },
+        known,
+      ),
+    ).toBe(true);
+    expect(
+      sessionMatchesKnownKeys(
+        {
+          agent: "claude",
+          source: "/agents/other.jsonl",
+          resumeSessionId: "sid-3",
+        },
+        known,
+      ),
+    ).toBe(false);
+  });
+
+  test("defaultSessionSurface keeps transcripts terminal-style by default", () => {
+    expect(defaultSessionSurface({ agent: "claude" })).toBe("terminal");
+    expect(defaultSessionSurface({ agent: "codex" })).toBe("terminal");
+    expect(defaultSessionSurface({ agent: "ollama" })).toBe("terminal");
+    expect(defaultSessionSurface({ agent: "claude", mode: "terminal" })).toBe(
+      "terminal",
+    );
+  });
+
+  test("sessionSurfacePreference requires an explicit remembered choice before a session becomes visual", () => {
+    expect(
+      sessionSurfacePreference(
+        {
+          agent: "claude",
+          source: "/agents/claude.jsonl",
+          sessionId: "sid-1",
+        },
+        {},
+      ),
+    ).toBe("terminal");
+
+    expect(
+      sessionSurfacePreference(
+        {
+          agent: "codex",
+          source: "/agents/codex.jsonl",
+          sessionId: "sid-2",
+        },
+        {},
+      ),
+    ).toBe("terminal");
+
+    expect(
+      sessionSurfacePreference(
+        {
+          agent: "claude",
+          source: "/agents/claude.jsonl",
+          sessionId: "sid-1",
+        },
+        { "session:claude:sid-1": "read" },
+      ),
+    ).toBe("read");
   });
 
   test("applySessionSurfacePreference stamps a provider session id without spawning a terminal", () => {

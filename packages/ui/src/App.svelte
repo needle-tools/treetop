@@ -149,7 +149,10 @@
     filterToExistingSessions,
     hideVisibleWorktree,
     isSessionForeignToWorktree,
+    rememberedSessionSurface,
     reconcileOpenSessionsWithSurfacePreferences,
+    sessionMatchesKnownKeys,
+    sessionSurfacePreference,
     sessionSurfaceKeys,
     setSessionMode,
     setSessionAttachTermId,
@@ -2965,10 +2968,6 @@
 
   function sessionSurfaceForPicker(s: AgentSession): SessionSurface | undefined {
     if (s.agent !== "claude" && s.agent !== "codex") return undefined;
-    for (const key of sessionSurfaceKeys(s)) {
-      const remembered = sessionSurfaces[key];
-      if (remembered) return remembered;
-    }
     const subject: {
       agent: "claude" | "codex";
       source: string;
@@ -2980,7 +2979,8 @@
       sessionId: s.sessionId,
     };
     const normalized = applySessionSurfacePreference(subject, sessionSurfaces);
-    return normalized.mode === "terminal" ? "terminal" : undefined;
+    const surface = sessionSurfacePreference(normalized, sessionSurfaces);
+    return surface === "terminal" ? "terminal" : undefined;
   }
 
   /** Mark a shell column as user-dismissed so `restoreLiveShells` won't
@@ -3267,21 +3267,12 @@
     sessionSurfaceStore.save(next);
   }
 
-  function rememberedSessionSurface(s: OpenSession): SessionSurface | undefined {
-    for (const key of sessionSurfaceKeys(s)) {
-      const remembered = sessionSurfaces[key];
-      if (remembered) return remembered;
-    }
-    return undefined;
-  }
-
   function transcriptSurfaceForSession(s: OpenSession): SessionSurface {
-    return rememberedSessionSurface(s) ??
-      (s.mode === "terminal" ? "terminal" : "read");
+    return sessionSurfacePreference(s, sessionSurfaces);
   }
 
   function isExplicitVisualSurface(s: OpenSession): boolean {
-    return rememberedSessionSurface(s) === "read";
+    return rememberedSessionSurface(s, sessionSurfaces) === "read";
   }
 
   function resumeCodexVisualSession(
@@ -6219,23 +6210,24 @@
   $: activeTuisByWt = ((): Record<string, AgentSession[]> => {
     const m: Record<string, AgentSession[]> = {};
     for (const wtPath of Object.keys(pickerSessionsByWt)) {
-      const openSources = new Set(
-        (openSessionsByWt[wtPath] ?? [])
-          .filter((o) =>
-            openSessionHasLiveTerminal(o, {
-              liveTerminalIds,
-              newTermIds,
-              transientExited,
-            }),
-          )
-          .map((o) => o.source),
-      );
-      if (openSources.size === 0) {
+      const openKeys = new Set<string>();
+      for (const o of openSessionsByWt[wtPath] ?? []) {
+        if (
+          openSessionHasLiveTerminal(o, {
+            liveTerminalIds,
+            newTermIds,
+            transientExited,
+          })
+        ) {
+          for (const key of sessionSurfaceKeys(o)) openKeys.add(key);
+        }
+      }
+      if (openKeys.size === 0) {
         m[wtPath] = [];
         continue;
       }
       m[wtPath] = (pickerSessionsByWt[wtPath] ?? []).filter((s) =>
-        openSources.has(s.source),
+        sessionMatchesKnownKeys(s, openKeys),
       );
     }
     return m;
