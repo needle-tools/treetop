@@ -1596,6 +1596,8 @@
     background: color-mix(in srgb, var(--surface-1) 75%, transparent);
     font-size: 0.72rem;
     line-height: 1.2;
+    font-variant-numeric: tabular-nums;
+    font-feature-settings: "tnum";
   }
   .work-foldout > summary:hover {
     color: var(--text-1);
@@ -1625,6 +1627,8 @@
     color: var(--text-faint);
     font-family: ui-monospace, monospace;
     font-size: 0.68rem;
+    font-variant-numeric: tabular-nums;
+    font-feature-settings: "tnum";
   }
   .work-foldout-body {
     display: grid;
