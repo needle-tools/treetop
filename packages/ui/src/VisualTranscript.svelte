@@ -99,6 +99,8 @@
   export let onMessagesWheel: (e: WheelEvent) => void = () => {};
   export let onMessagesScroll: () => void = () => {};
   export let showLiveThinkingLine = false;
+  export let messageMotionSources: Map<string, ComposerMotionRect> = new Map();
+  export let onMessageMotionDone: (id: string) => void = () => {};
 
   let liveNowIso = new Date().toISOString();
   let liveClock: ReturnType<typeof setInterval> | null = null;
@@ -107,6 +109,13 @@
   let expandedThinkingWorkKeys = new Set<string>();
   const MARKDOWN_CACHE_LIMIT = 500;
   const markdownCache = new Map<string, string>();
+
+  interface ComposerMotionRect {
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+  }
 
   $: openMediaBlock =
     openMediaIndex >= 0 ? openMediaBlocks[openMediaIndex] : undefined;
@@ -268,6 +277,84 @@
     e.preventDefault();
     e.stopPropagation();
     strip.scrollLeft += e.deltaX;
+  }
+
+  function prefersReducedMotion(): boolean {
+    return (
+      typeof window !== "undefined" &&
+      window.matchMedia("(prefers-reduced-motion: reduce)").matches
+    );
+  }
+
+  function motionSourceForMessage(
+    message: NormalizedMessage,
+  ): ComposerMotionRect | undefined {
+    if (message.role !== "user" || !message.id) return undefined;
+    return messageMotionSources.get(message.id);
+  }
+
+  function flyActualMessageFromComposer(
+    node: HTMLElement,
+    params: { id?: string; source?: ComposerMotionRect },
+  ) {
+    let cancelled = false;
+
+    function run(id: string | undefined, source: ComposerMotionRect | undefined) {
+      if (!id || !source || prefersReducedMotion()) return;
+      requestAnimationFrame(() => {
+        if (cancelled) return;
+        const target = node.getBoundingClientRect();
+        if (target.width <= 0 || target.height <= 0) {
+          onMessageMotionDone(id);
+          return;
+        }
+        const dx = source.x - target.left;
+        const dy = source.y - target.top;
+        const sx = Math.max(0.16, Math.min(2.4, source.width / target.width));
+        const sy = Math.max(0.28, Math.min(2.2, source.height / target.height));
+        node.style.transformOrigin = "top left";
+        node.style.willChange = "transform, opacity, filter";
+        node
+          .animate(
+            [
+              {
+                opacity: 0.72,
+                transform: `translate3d(${dx}px, ${dy}px, 0) scale(${sx}, ${sy})`,
+                filter: "blur(0.2px)",
+              },
+              {
+                opacity: 1,
+                transform: "translate3d(0, 0, 0) scale(1, 1)",
+                filter: "blur(0)",
+              },
+            ],
+            {
+              duration: 430,
+              easing: "cubic-bezier(.16, 1, .3, 1)",
+              fill: "both",
+            },
+          )
+          .finished.catch(() => {})
+          .finally(() => {
+            node.style.transformOrigin = "";
+            node.style.willChange = "";
+            onMessageMotionDone(id);
+          });
+      });
+    }
+
+    run(params.id, params.source);
+
+    return {
+      update() {
+        // This action is intentionally mount-only. New sends get new message ids,
+        // and re-running on ordinary reactive updates would make bubbles jump.
+      },
+      destroy() {
+        cancelled = true;
+        if (params.id && params.source) onMessageMotionDone(params.id);
+      },
+    };
   }
 
   function inputPreview(input: unknown): string {
@@ -1173,6 +1260,10 @@
         class="msg role-{m.role}"
         class:user-message={m.role === "user"}
         class:assistant-response={m.role === "assistant"}
+        use:flyActualMessageFromComposer={{
+          id: m.id,
+          source: motionSourceForMessage(m),
+        }}
       >
         <div class="msg-head">
           <span

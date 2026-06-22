@@ -3,8 +3,6 @@
   import { play } from "./sound";
   import { onMount, onDestroy, tick } from "svelte";
   import { flip } from "svelte/animate";
-  import { cubicOut } from "svelte/easing";
-  import { fly } from "svelte/transition";
   import TerminalView from "./TerminalView.svelte";
   import VisualTranscript from "./VisualTranscript.svelte";
   import LoadingOverlay from "./LoadingOverlay.svelte";
@@ -400,24 +398,17 @@
   let inputText = "";
   let sending = false;
   let sendError = "";
-  let composerFlightSourceEl: HTMLElement | null = null;
+  let composerMotionSourceEl: HTMLElement | null = null;
   let composerQueueTargetEl: HTMLElement | null = null;
   let composerInputEl: HTMLTextAreaElement | null = null;
-  type ComposerFlightTarget = "flow" | "queue";
-  type ComposerFlightRect = {
+  type ComposerMotionRect = {
     x: number;
     y: number;
     width: number;
     height: number;
   };
-  type ComposerFlight = {
-    id: string;
-    text: string;
-    from: ComposerFlightRect;
-    to: ComposerFlightRect;
-    target: ComposerFlightTarget;
-  };
-  let composerFlights: ComposerFlight[] = [];
+  let composerMessageMotionSources = new Map<string, ComposerMotionRect>();
+  let composerQueueMotionSources = new Map<string, ComposerMotionRect>();
   /** Cached summary body for this session, fetched lazily from
    *  `<workspace>/summaries/<key>.md` via /api/sessions/summarize.
    *  Empty string when none exists. Drives both the always-visible
@@ -2375,6 +2366,7 @@
   function optimisticCodexUser(
     text: string,
     attachments: readonly ImageInlineAttachment[] = [],
+    sourceRect: ComposerMotionRect | null = null,
   ): string | null {
     if (!session) return null;
     const id = `codex-optimistic-user-${randomUUID()}`;
@@ -2401,6 +2393,7 @@
         blocks,
       },
     ];
+    rememberComposerMessageMotion(id, sourceRect);
     forceVisualTailFollow();
     return id;
   }
@@ -2662,7 +2655,7 @@
     openComposerAttachmentIndex = null;
   }
 
-  function snapshotRect(rect: DOMRect): ComposerFlightRect {
+  function snapshotRect(rect: DOMRect): ComposerMotionRect {
     return {
       x: rect.left,
       y: rect.top,
@@ -2671,8 +2664,8 @@
     };
   }
 
-  function composerFlightSourceRect(): ComposerFlightRect | null {
-    const rect = composerFlightSourceEl?.getBoundingClientRect();
+  function composerMotionSourceRect(): ComposerMotionRect | null {
+    const rect = composerMotionSourceEl?.getBoundingClientRect();
     return rect ? snapshotRect(rect) : null;
   }
 
@@ -2683,114 +2676,128 @@
     );
   }
 
-  function composerFlightPreview(text: string): string {
-    const compact = text.replace(/\s+/g, " ").trim();
-    return compact || "(attachments only)";
-  }
-
-  function composerFlightTargetRect(
-    target: ComposerFlightTarget,
-    from: ComposerFlightRect,
-  ): ComposerFlightRect | null {
-    if (target === "queue") {
-      const queueRect = composerQueueTargetEl?.getBoundingClientRect();
-      if (queueRect) return snapshotRect(queueRect);
-    }
-    const messagesRect = messagesEl?.getBoundingClientRect();
-    if (!messagesRect) return null;
-    const width = Math.min(
-      Math.max(220, from.width * 0.62),
-      Math.max(220, messagesRect.width * 0.8),
+  function rememberComposerMessageMotion(
+    id: string,
+    source: ComposerMotionRect | null | undefined,
+  ): void {
+    if (!source || prefersReducedMotion()) return;
+    composerMessageMotionSources = new Map(composerMessageMotionSources).set(
+      id,
+      source,
     );
-    const height = Math.max(42, Math.min(from.height, 96));
-    return {
-      x: Math.max(messagesRect.left + 16, messagesRect.right - width - 26),
-      y: Math.max(
-        messagesRect.top + 18,
-        Math.min(messagesRect.bottom - height - 18, from.y - height - 28),
-      ),
-      width,
-      height,
-    };
   }
 
-  async function launchComposerFlight(
-    text: string,
-    target: ComposerFlightTarget,
-    from: ComposerFlightRect | null,
-  ): Promise<void> {
-    if (!from || prefersReducedMotion()) return;
-    await tick();
-    const to = composerFlightTargetRect(target, from);
-    if (!to) return;
-    const id = `composer-flight-${randomUUID()}`;
-    composerFlights = [
-      ...composerFlights,
-      { id, text: composerFlightPreview(text), from, to, target },
-    ];
-    setTimeout(() => {
-      composerFlights = composerFlights.filter((flight) => flight.id !== id);
-    }, 520);
+  function clearComposerMessageMotion(id: string): void {
+    if (!composerMessageMotionSources.has(id)) return;
+    const next = new Map(composerMessageMotionSources);
+    next.delete(id);
+    composerMessageMotionSources = next;
   }
 
-  function composerFlightStyle(flight: ComposerFlight): string {
-    const { from } = flight;
-    return [
-      `left:${from.x}px`,
-      `top:${from.y}px`,
-      `width:${from.width}px`,
-      `min-height:${Math.max(42, Math.min(from.height, 120))}px`,
-    ].join(";");
+  function rememberComposerQueueMotion(
+    id: string,
+    source: ComposerMotionRect | null | undefined,
+  ): void {
+    if (!source || prefersReducedMotion()) return;
+    composerQueueMotionSources = new Map(composerQueueMotionSources).set(
+      id,
+      source,
+    );
   }
 
-  function composerFlightTransition(
-    _node: Element,
-    params: { flight: ComposerFlight },
+  function clearComposerQueueMotion(id: string): void {
+    if (!composerQueueMotionSources.has(id)) return;
+    const next = new Map(composerQueueMotionSources);
+    next.delete(id);
+    composerQueueMotionSources = next;
+  }
+
+  function flyActualQueueItemFromComposer(
+    node: HTMLElement,
+    params: { id: string; source?: ComposerMotionRect },
   ) {
-    const { from, to } = params.flight;
-    const dx = to.x - from.x;
-    const dy = to.y - from.y;
-    const dw = to.width - from.width;
-    const minHeight = Math.max(42, Math.min(from.height, 120));
-    const dh = Math.max(32, Math.min(to.height, 96)) - minHeight;
+    let cancelled = false;
+    const { id, source } = params;
+    if (source && !prefersReducedMotion()) {
+      requestAnimationFrame(() => {
+        if (cancelled) return;
+        const target = node.getBoundingClientRect();
+        if (target.width <= 0 || target.height <= 0) {
+          clearComposerQueueMotion(id);
+          return;
+        }
+        const dx = source.x - target.left;
+        const dy = source.y - target.top;
+        const sx = Math.max(0.2, Math.min(2.6, source.width / target.width));
+        const sy = Math.max(0.28, Math.min(2.2, source.height / target.height));
+        node.style.transformOrigin = "top left";
+        node.style.willChange = "transform, opacity";
+        node
+          .animate(
+            [
+              {
+                opacity: 0.74,
+                transform: `translate3d(${dx}px, ${dy}px, 0) scale(${sx}, ${sy})`,
+              },
+              {
+                opacity: 1,
+                transform: "translate3d(0, 0, 0) scale(1, 1)",
+              },
+            ],
+            {
+              duration: 420,
+              easing: "cubic-bezier(.16, 1, .3, 1)",
+              fill: "both",
+            },
+          )
+          .finished.catch(() => {})
+          .finally(() => {
+            node.style.transformOrigin = "";
+            node.style.willChange = "";
+            clearComposerQueueMotion(id);
+          });
+      });
+    }
     return {
-      duration: 440,
-      easing: cubicOut,
-      css: (t: number) => {
-        const spring = Math.sin(t * Math.PI) * 0.018;
-        return `
-          opacity: ${Math.min(1, 0.18 + t * 1.2)};
-          transform: translate3d(${dx * t}px, ${dy * t}px, 0) scale(${1 + spring});
-          width: ${from.width + dw * t}px;
-          min-height: ${minHeight + dh * t}px;
-        `;
+      update() {
+        // Mount-only, like message motion: reorder/drag updates use flip.
+      },
+      destroy() {
+        cancelled = true;
+        if (source) clearComposerQueueMotion(id);
       },
     };
   }
 
-  function enqueueCodexPayload(payload: {
-    text: string;
-    attachments: ImageInlineAttachment[];
-  }): void {
+  function enqueueCodexPayload(
+    payload: {
+      text: string;
+      attachments: ImageInlineAttachment[];
+    },
+    sourceRect: ComposerMotionRect | null = null,
+  ): string {
+    const id = randomUUID();
     codexQueuedMessages = enqueueCodexQueue(
       codexQueuedMessages,
       payload,
-      randomUUID(),
+      id,
       new Date().toISOString(),
     );
+    rememberComposerQueueMotion(id, sourceRect);
     codexLiveLastActivityIso = new Date().toISOString();
     codexQueueBlocked = false;
     sendError = "";
     forceVisualTailFollow();
+    return id;
   }
 
   function queueCodexMessage(): void {
     const payload = currentCodexPayload();
     if (!payload) return;
-    const fromRect = composerFlightSourceRect();
-    enqueueCodexPayload(payload);
+    const fromRect = composerMotionSourceRect();
+    codexQueueExpanded = true;
+    enqueueCodexPayload(payload, fromRect);
     clearCodexComposer();
-    void launchComposerFlight(payload.text, "queue", fromRect);
   }
 
   async function startCodexTurn(
@@ -2798,6 +2805,7 @@
     opts: {
       steer: boolean;
       fromQueue?: CodexQueuedMessage<ImageInlineAttachment>;
+      sourceRect?: ComposerMotionRect | null;
     } = { steer: false },
   ): Promise<boolean> {
     if (!session?.sessionId || !session.cwd) return false;
@@ -2808,6 +2816,7 @@
     const optimisticId = optimisticCodexUser(
       payload.text,
       payload.attachments,
+      opts.sourceRect ?? null,
     );
     try {
       const res = await fetch(apiUrl("/api/codex-app/turns", daemonId), {
@@ -2852,20 +2861,24 @@
       queueCodexMessage();
       return;
     }
-    const fromRect = composerFlightSourceRect();
+    const fromRect = composerMotionSourceRect();
     clearCodexComposer();
-    const sendPromise = startCodexTurn(payload, { steer: false });
-    void launchComposerFlight(payload.text, "flow", fromRect);
+    const sendPromise = startCodexTurn(payload, {
+      steer: false,
+      sourceRect: fromRect,
+    });
     await sendPromise;
   }
 
   async function steerCodexMessage(): Promise<void> {
     const payload = currentCodexPayload();
     if (!payload || !codexActiveTurnId) return;
-    const fromRect = composerFlightSourceRect();
+    const fromRect = composerMotionSourceRect();
     clearCodexComposer();
-    const sendPromise = startCodexTurn(payload, { steer: true });
-    void launchComposerFlight(payload.text, "flow", fromRect);
+    const sendPromise = startCodexTurn(payload, {
+      steer: true,
+      sourceRect: fromRect,
+    });
     await sendPromise;
   }
 
@@ -3905,6 +3918,8 @@
       onMessagesScroll={onMessagesScroll}
       active={visualTranscriptActive}
       showLiveThinkingLine={codexVisualAppSurface && codexRunning}
+      messageMotionSources={composerMessageMotionSources}
+      onMessageMotionDone={clearComposerMessageMotion}
     />
   {/if}
 
@@ -4066,10 +4081,13 @@
                 class:dragging={draggingCodexQueueId === item.id}
                 class:drop-before={codexQueueDropBeforeId === item.id}
                 role="listitem"
+                use:flyActualQueueItemFromComposer={{
+                  id: item.id,
+                  source: composerQueueMotionSources.get(item.id),
+                }}
                 on:dragover|stopPropagation={(e) =>
                   onCodexQueueDragOver(e, item.id)}
                 on:drop|stopPropagation={(e) => onCodexQueueDrop(e, item.id)}
-                in:fly={{ y: 8, duration: 180 }}
                 animate:flip={{ duration: 180 }}
               >
                 <button
@@ -4218,7 +4236,7 @@
             {/if}
           </div>
         {/if}
-      <div class="composer-box" bind:this={composerFlightSourceEl}>
+      <div class="composer-box" bind:this={composerMotionSourceEl}>
         <textarea
           class="composer-input"
           bind:this={composerInputEl}
@@ -4366,16 +4384,6 @@
           {/if}
         </div>
       </div>
-      {#each composerFlights as flight (flight.id)}
-        <div
-          class="composer-flight-bubble"
-          class:to-queue={flight.target === "queue"}
-          style={composerFlightStyle(flight)}
-          in:composerFlightTransition={{ flight }}
-        >
-          {flight.text}
-        </div>
-      {/each}
     </div>
     </div>
   {/if}
@@ -4782,34 +4790,6 @@
     min-width: 0;
     flex: 1 1 auto;
     display: flex;
-  }
-  .composer-flight-bubble {
-    position: fixed;
-    z-index: 100;
-    box-sizing: border-box;
-    display: flex;
-    align-items: center;
-    justify-content: flex-start;
-    overflow: hidden;
-    pointer-events: none;
-    padding: 0.72rem 0.95rem;
-    border: 1px solid color-mix(in srgb, var(--surface-3) 72%, transparent);
-    border-radius: 1.25rem;
-    background: color-mix(in srgb, var(--surface-2) 92%, var(--surface-1));
-    color: var(--text-1);
-    box-shadow: 0 18px 40px -28px rgba(0, 0, 0, 0.95);
-    font-size: 0.86rem;
-    font-weight: 650;
-    line-height: 1.25;
-    text-align: left;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    will-change: transform, width, min-height, opacity;
-  }
-  .composer-flight-bubble.to-queue {
-    border-radius: var(--radius-sm);
-    background: color-mix(in srgb, var(--surface-1) 88%, transparent);
-    font-size: 0.76rem;
   }
   .codex-requests {
     display: flex;
