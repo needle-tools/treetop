@@ -9,6 +9,7 @@
     buildVisualWorkDisplayEntries,
     cleanVisualToolResultText,
     cleanVisualUserText,
+    formatVisualWorkDuration,
     getVisualTranscriptItemKey,
     getVisualWorkDisplayEntryKey,
     visualFileEditSummaryForBlock,
@@ -284,24 +285,6 @@
     return s.length > 200 ? s.slice(0, 200) + "…" : s;
   }
 
-  function formatWorkDuration(
-    startedAt: string | undefined,
-    endedAt: string | undefined,
-  ): string | undefined {
-    if (!startedAt || !endedAt) return undefined;
-    const start = Date.parse(startedAt);
-    const end = Date.parse(endedAt);
-    if (Number.isNaN(start) || Number.isNaN(end) || end <= start) {
-      return undefined;
-    }
-    const totalSeconds = Math.max(0, Math.floor((end - start) / 1000));
-    const minutes = Math.floor(totalSeconds / 60);
-    const seconds = totalSeconds % 60;
-    if (minutes <= 0) return `${seconds}s`;
-    if (seconds === 0) return `${minutes}m`;
-    return `${minutes}m ${seconds}s`;
-  }
-
   function workDurationLabel(
     item: Extract<
       VisualTranscriptItem<NormalizedBlock, NormalizedMessage>,
@@ -310,7 +293,7 @@
     nowIso: string,
   ): string | undefined {
     const running = item.open && !item.endedAt;
-    const duration = formatWorkDuration(
+    const duration = formatVisualWorkDuration(
       item.startedAt,
       running ? nowIso : item.endedAt,
     );

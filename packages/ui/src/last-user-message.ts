@@ -301,6 +301,41 @@ export interface VisualToolResultText {
   originalTokenCount?: number;
 }
 
+export function formatVisualWorkDuration(
+  startedAt: string | undefined,
+  endedAt: string | undefined,
+): string | undefined {
+  if (!startedAt || !endedAt) return undefined;
+  const start = Date.parse(startedAt);
+  const end = Date.parse(endedAt);
+  if (Number.isNaN(start) || Number.isNaN(end) || end <= start) {
+    return undefined;
+  }
+  const totalSeconds = Math.max(0, Math.floor((end - start) / 1000));
+  const days = Math.floor(totalSeconds / 86400);
+  const hours = Math.floor((totalSeconds % 86400) / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+
+  if (days > 0) {
+    const parts = [`${days}d`];
+    if (hours > 0) parts.push(`${hours}h`);
+    if (minutes > 0) parts.push(`${minutes}m`);
+    if (seconds > 0) parts.push(`${seconds}s`);
+    return parts.join(" ");
+  }
+  if (hours > 0) {
+    const parts = [`${hours}hr`];
+    if (minutes > 0) parts.push(`${minutes}m`);
+    if (seconds > 0) parts.push(`${seconds}s`);
+    return parts.join(" ");
+  }
+  if (minutes > 0) {
+    return seconds === 0 ? `${minutes}m` : `${minutes}m ${seconds}s`;
+  }
+  return `${seconds}s`;
+}
+
 function cleanThinkingTitle(text: string): string {
   return text
     .trim()

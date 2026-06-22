@@ -5,6 +5,7 @@ import {
   buildVisualTranscriptItems,
   cleanVisualUserText,
   cleanVisualToolResultText,
+  formatVisualWorkDuration,
   lastUserMessageBurst,
   lastUserMessageWithContext,
   latestVisualPlan,
@@ -33,6 +34,34 @@ function msg(role: string, text: string, timestamp?: string): Message {
 function ts(offsetMs: number): string {
   return new Date(Date.now() + offsetMs).toISOString();
 }
+
+describe("formatVisualWorkDuration", () => {
+  const start = "2026-06-22T10:00:00.000Z";
+
+  it("keeps short durations compact", () => {
+    expect(formatVisualWorkDuration(start, "2026-06-22T10:00:05.900Z")).toBe(
+      "5s",
+    );
+    expect(formatVisualWorkDuration(start, "2026-06-22T10:02:00.000Z")).toBe(
+      "2m",
+    );
+    expect(formatVisualWorkDuration(start, "2026-06-22T10:02:03.000Z")).toBe(
+      "2m 3s",
+    );
+  });
+
+  it("formats hours instead of rolling them into minutes", () => {
+    expect(formatVisualWorkDuration(start, "2026-06-22T11:59:32.000Z")).toBe(
+      "1hr 59m 32s",
+    );
+  });
+
+  it("formats multi-day work with day and hour units", () => {
+    expect(formatVisualWorkDuration(start, "2026-06-25T14:12:05.000Z")).toBe(
+      "3d 4h 12m 5s",
+    );
+  });
+});
 
 describe("lastUserMessageBurst", () => {
   it("returns undefined for empty messages", () => {
