@@ -117,6 +117,11 @@ export interface NoteClipboardPayload {
   attachments: InlineAttachment[];
 }
 
+export interface CodexComposerDropPayload {
+  text: string;
+  attachments: ImageInlineAttachment[];
+}
+
 export function shouldAttachPastedText(text: string): boolean {
   return Array.from(text).length > LARGE_PASTE_CHAR_THRESHOLD;
 }
@@ -534,6 +539,51 @@ export function codexAppInputFromComposer(
     if (attachment.kind === "image") appendImage(attachment.path);
   }
   return input;
+}
+
+export function codexComposerDropPayloadFromNoteBody(
+  body: string,
+): CodexComposerDropPayload {
+  const textChunks: string[] = [];
+  const attachments: ImageInlineAttachment[] = [];
+  const seenImages = new Set<string>();
+  const appendImage = (attachment: ImageInlineAttachment) => {
+    const path = attachment.path.trim();
+    if (!path || seenImages.has(path)) return;
+    seenImages.add(path);
+    attachments.push({ ...attachment, path });
+  };
+
+  for (const part of parseInlineAttachments(body)) {
+    if (part.kind === "text") {
+      textChunks.push(part.text);
+    } else if (part.attachment.kind === "image") {
+      appendImage(part.attachment);
+    } else if (part.attachment.kind === "note") {
+      const nested = codexComposerDropPayloadFromNoteBody(part.attachment.body);
+      textChunks.push(nested.text);
+      for (const image of nested.attachments) appendImage(image);
+    } else {
+      textChunks.push(inlineAttachmentCopyText(part.attachment));
+    }
+  }
+
+  return {
+    text: textChunks.join("").trim(),
+    attachments,
+  };
+}
+
+export function codexComposerDropPayloadFromInlineAttachment(
+  attachment: InlineAttachment,
+): CodexComposerDropPayload {
+  if (attachment.kind === "image") {
+    return { text: "", attachments: [{ ...attachment }] };
+  }
+  if (attachment.kind === "note") {
+    return codexComposerDropPayloadFromNoteBody(attachment.body);
+  }
+  return { text: inlineAttachmentCopyText(attachment).trim(), attachments: [] };
 }
 
 export function expandNoteBodyForCopy(body: string): string {

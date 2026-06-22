@@ -2376,7 +2376,7 @@
           : `Command: ${note.target.command ?? note.target.label ?? note.target.value}`;
       window.dispatchEvent(
         new CustomEvent(STAGE_PROMPT_EVENT, {
-          detail: { source: sessionSource, chunks: [text] },
+          detail: { source: sessionSource, chunks: [text], noteBody: text },
         }),
       );
       return;
@@ -2390,7 +2390,7 @@
       if (!chunks.some((chunk) => chunk.trim())) return;
       window.dispatchEvent(
         new CustomEvent(STAGE_PROMPT_EVENT, {
-          detail: { source: sessionSource, chunks },
+          detail: { source: sessionSource, chunks, noteBody: note.body },
         }),
       );
     } catch {}

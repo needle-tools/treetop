@@ -55,9 +55,16 @@
   import { splitParent } from "./file-browser-utils";
   import { imageBlobHasAlpha, shrinkImageBlob } from "./image-shrink";
   import {
+    INLINE_ATTACHMENT_DRAG_MIME,
+    STAGE_PROMPT_EVENT,
     codexAppInputFromComposer,
+    codexComposerDropPayloadFromInlineAttachment,
+    codexComposerDropPayloadFromNoteBody,
+    extractNoteClipboardPayloadFromHtml,
     inlineAttachmentLabel,
+    parseInlineAttachments,
     type ImageInlineAttachment,
+    type InlineAttachment,
   } from "./note-inline-attachments";
   import { randomUUID } from "./random-id";
   import {
@@ -2450,6 +2457,79 @@
     );
   }
 
+  function composerInlineAttachmentFromTransfer(
+    dt: DataTransfer | null,
+  ): InlineAttachment | null {
+    const raw = dt?.getData(INLINE_ATTACHMENT_DRAG_MIME);
+    if (!raw) return null;
+    try {
+      const value = JSON.parse(raw) as unknown;
+      if (!value || typeof value !== "object") return null;
+      const attachment = (value as { attachment?: unknown }).attachment;
+      if (!attachment || typeof attachment !== "object") return null;
+      return attachment as InlineAttachment;
+    } catch {
+      return null;
+    }
+  }
+
+  function composerNoteBodyFromTransfer(dt: DataTransfer | null): string {
+    if (!dt) return "";
+    const html = dt.getData("text/html");
+    const notePayload = html ? extractNoteClipboardPayloadFromHtml(html) : null;
+    if (notePayload) return notePayload.body;
+    const plain = dt.getData("text/plain");
+    if (!plain || !plain.includes("supergit://attachment/")) return "";
+    return parseInlineAttachments(plain).some((part) => part.kind === "attachment")
+      ? plain
+      : "";
+  }
+
+  function composerHasNoteTransfer(dt: DataTransfer | null): boolean {
+    if (!dt) return false;
+    const types = Array.from(dt.types ?? []);
+    return (
+      types.includes(INLINE_ATTACHMENT_DRAG_MIME) ||
+      types.includes("text/html")
+    );
+  }
+
+  function appendComposerText(text: string): void {
+    const trimmed = text.trim();
+    if (!trimmed) return;
+    const sep = inputText.trim()
+      ? inputText.endsWith("\n")
+        ? "\n"
+        : "\n\n"
+      : "";
+    inputText = `${inputText}${sep}${trimmed}`;
+  }
+
+  function appendComposerAttachments(
+    attachments: readonly ImageInlineAttachment[],
+  ): void {
+    if (!attachments.length) return;
+    const seen = new Set(composerAttachments.map((a) => a.path));
+    const next = attachments.filter((attachment) => {
+      if (seen.has(attachment.path)) return false;
+      seen.add(attachment.path);
+      return true;
+    });
+    if (!next.length) return;
+    composerAttachments = [...composerAttachments, ...next];
+  }
+
+  function appendComposerDropPayload(payload: {
+    text: string;
+    attachments: readonly ImageInlineAttachment[];
+  }): void {
+    appendComposerText(payload.text);
+    appendComposerAttachments(payload.attachments);
+    sendError = "";
+    composerAttachmentError = "";
+    void focusComposerSoon();
+  }
+
   async function addComposerImageAttachment(
     blob: Blob,
     opts: { filename?: string; source: "clipboard" | "drop"; types: string[] },
@@ -2565,12 +2645,34 @@
   }
 
   function onComposerDragOver(e: DragEvent): void {
-    if (agent !== "codex" || !composerHasImageTransfer(e.dataTransfer)) return;
+    if (
+      agent !== "codex" ||
+      (!composerHasImageTransfer(e.dataTransfer) &&
+        !composerHasNoteTransfer(e.dataTransfer))
+    )
+      return;
     e.preventDefault();
+    if (e.dataTransfer) e.dataTransfer.dropEffect = "copy";
   }
 
   function onComposerDrop(e: DragEvent): void {
     if (agent !== "codex") return;
+    const inlineAttachment = composerInlineAttachmentFromTransfer(
+      e.dataTransfer,
+    );
+    if (inlineAttachment) {
+      e.preventDefault();
+      appendComposerDropPayload(
+        codexComposerDropPayloadFromInlineAttachment(inlineAttachment),
+      );
+      return;
+    }
+    const noteBody = composerNoteBodyFromTransfer(e.dataTransfer);
+    if (noteBody) {
+      e.preventDefault();
+      appendComposerDropPayload(codexComposerDropPayloadFromNoteBody(noteBody));
+      return;
+    }
     const images = composerTransferImages(e.dataTransfer);
     if (!images.length) return;
     e.preventDefault();
@@ -2582,6 +2684,27 @@
         types,
       });
     }
+  }
+
+  function onStagePrompt(e: Event): void {
+    if (!showChatComposer || agent !== "codex") return;
+    const detail = (
+      e as CustomEvent<{
+        source?: string;
+        text?: string;
+        chunks?: string[];
+        noteBody?: string;
+      }>
+    ).detail;
+    if (!detail || detail.source !== source) return;
+    const body =
+      detail.noteBody ??
+      detail.text ??
+      (detail.chunks && detail.chunks.length > 0
+        ? detail.chunks.join("\n\n")
+        : "");
+    if (!body.trim()) return;
+    appendComposerDropPayload(codexComposerDropPayloadFromNoteBody(body));
   }
 
   function removeComposerAttachment(index: number): void {
@@ -3473,6 +3596,7 @@
   let unregisterPoll: (() => void) | null = null;
 
   onMount(() => {
+    window.addEventListener(STAGE_PROMPT_EVENT, onStagePrompt);
     if (shouldPollTranscript) {
       unregisterPoll = registerSessionPoll({
         source: sessionPollSource,
@@ -3507,6 +3631,7 @@
   });
 
   onDestroy(() => {
+    window.removeEventListener(STAGE_PROMPT_EVENT, onStagePrompt);
     if (unregisterPoll) unregisterPoll();
     if (pendingTimer) clearTimeout(pendingTimer);
     closeCodexEventStream();

@@ -3,6 +3,8 @@ import {
   LARGE_PASTE_CHAR_THRESHOLD,
   appendInlineAttachmentRef,
   codexAppInputFromComposer,
+  codexComposerDropPayloadFromInlineAttachment,
+  codexComposerDropPayloadFromNoteBody,
   commandCopyText,
   commandPowerLabel,
   commandUrlSatellite,
@@ -201,6 +203,66 @@ describe("note inline attachments", () => {
       },
       { type: "localImage", path: "/tmp/supergit/attachments/shot.png" },
     ]);
+  });
+
+  test("turns dropped note bodies into composer text plus image attachments", () => {
+    const first = makeImageAttachmentRef({
+      path: "/tmp/a.png",
+      filename: "a.png",
+      mimeType: "image/png",
+      hasAlpha: true,
+    });
+    const duplicate = makeImageAttachmentRef({
+      path: "/tmp/a.png",
+      filename: "a-again.png",
+    });
+    const paste = makeTextAttachmentRef({
+      path: "/tmp/paste.txt",
+      filename: "paste.txt",
+      charCount: 12,
+    });
+
+    expect(
+      codexComposerDropPayloadFromNoteBody(
+        `please use this\n${first}\nthen ${paste}\n${duplicate}`,
+      ),
+    ).toEqual({
+      text: "please use this\n\nthen /tmp/paste.txt",
+      attachments: [
+        {
+          kind: "image",
+          path: "/tmp/a.png",
+          filename: "a.png",
+          mimeType: "image/png",
+          hasAlpha: true,
+        },
+      ],
+    });
+  });
+
+  test("expands nested dropped note attachments for the visual composer", () => {
+    const image = makeImageAttachmentRef({ path: "/tmp/nested.png" });
+    const nested = makeNoteAttachmentRef({ body: `nested text\n${image}` });
+
+    expect(codexComposerDropPayloadFromNoteBody(`outer\n${nested}`)).toEqual({
+      text: "outer\nnested text",
+      attachments: [{ kind: "image", path: "/tmp/nested.png" }],
+    });
+  });
+
+  test("turns directly dragged image attachments into composer attachments", () => {
+    expect(
+      codexComposerDropPayloadFromInlineAttachment({
+        kind: "image",
+        path: "/tmp/direct.png",
+        filename: "direct.png",
+      }),
+    ).toEqual({
+      text: "",
+      attachments: [
+        { kind: "image", path: "/tmp/direct.png", filename: "direct.png" },
+      ],
+    });
   });
 
   test("uses image filenames instead of absolute paths for attachment labels", () => {
