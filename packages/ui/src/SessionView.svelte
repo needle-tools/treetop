@@ -5456,8 +5456,10 @@
     right: 0;
     bottom: calc(100% + 0.35rem);
     display: flex;
+    align-items: center;
     justify-content: flex-end;
     gap: 0.25rem;
+    min-height: 1.55rem;
     max-width: min(22rem, calc(100vw - 2rem));
   }
   .composer-warning-indicators {
@@ -5465,10 +5467,18 @@
     right: 0;
     top: calc(100% + 0.35rem);
     display: flex;
+    align-items: center;
     justify-content: flex-end;
+    min-height: 1.55rem;
     max-width: min(22rem, calc(100vw - 2rem));
   }
   .codex-composer-badge {
+    box-sizing: border-box;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex: 0 0 auto;
+    height: 1.55rem;
     max-width: 8rem;
     border: 1px solid color-mix(in srgb, var(--status-clean) 42%, var(--surface-3));
     border-radius: 999px;
@@ -5479,9 +5489,17 @@
     font-weight: 650;
     line-height: 1;
     padding: 0.3rem 0.48rem;
+    font-variant-numeric: tabular-nums;
     white-space: nowrap;
     cursor: pointer;
     box-shadow: 0 8px 22px -18px rgba(0, 0, 0, 0.9);
+  }
+  .codex-composer-badge:focus {
+    outline: none;
+  }
+  .codex-composer-badge:focus-visible {
+    outline: 1px solid color-mix(in srgb, var(--status-clean) 72%, transparent);
+    outline-offset: 2px;
   }
   .codex-composer-badge:hover,
   .codex-composer-badge.expanded {
