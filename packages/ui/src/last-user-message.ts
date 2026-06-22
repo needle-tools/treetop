@@ -50,6 +50,13 @@ export type VisualTranscriptItem<
       messageIndex: number;
     }
   | {
+      kind: "marker";
+      entry: VisualWorkEntry<B, M>;
+      markerBlock: B;
+      markerKind: VisualMarkerKind;
+      markerLabel: string;
+    }
+  | {
       kind: "work";
       entries: VisualWorkEntry<B, M>[];
       startedAt?: string;
@@ -366,6 +373,60 @@ export function cleanVisualToolResultText(
       ? Number.parseInt(codexChunk[3], 10)
       : undefined,
   };
+}
+
+function stringifyToolPayload(input: unknown): string {
+  if (input === undefined) return "";
+  if (typeof input === "string") return input;
+  try {
+    return JSON.stringify(input, null, 2);
+  } catch {
+    return String(input);
+  }
+}
+
+function stringFromToolInputField(
+  input: unknown,
+  key: string,
+): string | undefined {
+  if (!input || typeof input !== "object") return undefined;
+  const value = (input as Record<string, unknown>)[key];
+  if (typeof value === "string" && value.trim()) return value.trim();
+  if (Array.isArray(value) && value.length > 0) {
+    return value.map(String).join(" ");
+  }
+  return undefined;
+}
+
+export function visualToolCallPayloadText(
+  block: MessageBlock | undefined,
+): string {
+  if (!block || block.type !== "tool_use") return "";
+  return stringifyToolPayload(block.toolInput);
+}
+
+export function visualToolCallPayloadLanguage(
+  block: MessageBlock | undefined,
+): string {
+  if (!block || block.type !== "tool_use") return "text";
+  return typeof block.toolInput === "string" ? "text" : "json";
+}
+
+export function visualToolPreviewText(
+  block: MessageBlock | undefined,
+): string {
+  if (!block || block.type !== "tool_use") return "";
+  const name = (block.toolName ?? "").toLowerCase();
+  const input = block.toolInput;
+  const command =
+    stringFromToolInputField(input, "cmd") ??
+    stringFromToolInputField(input, "command");
+  const text =
+    command &&
+    (name.includes("bash") || name.includes("shell") || name.includes("exec"))
+      ? command
+      : stringifyToolPayload(input);
+  return text.replace(/\s+/g, " ").trim();
 }
 
 function hasBlockType(entry: VisualWorkEntry | undefined, type: string): boolean {
@@ -695,6 +756,22 @@ function isAssistantResponseEntry<B extends MessageBlock, M extends Message<B>>(
   );
 }
 
+function compactionMarkerEntry<
+  B extends MessageBlock,
+  M extends Message<B>,
+>(entry: VisualWorkEntry<B, M>): VisualTranscriptItem<B, M> | undefined {
+  const markerBlock = visualMarkerBlock(entry);
+  if (!markerBlock || visualMarkerKind(markerBlock.text) !== "compacted")
+    return undefined;
+  return {
+    kind: "marker",
+    entry,
+    markerBlock,
+    markerKind: "compacted",
+    markerLabel: visualMarkerLabel(markerBlock.text),
+  };
+}
+
 function isOptimisticUserMessage<B extends MessageBlock>(
   message: Message<B> | undefined,
 ): boolean {
@@ -914,6 +991,14 @@ function itemSignature<B extends MessageBlock, M extends Message<B>>(
       item.blocks.map(blockSignature).join("\u0001"),
     ].join("\u0002");
   }
+  if (item.kind === "marker") {
+    return [
+      getVisualTranscriptItemKey(item),
+      blockSignature(item.markerBlock),
+      item.markerKind,
+      item.markerLabel,
+    ].join("\u0002");
+  }
   return [
     getVisualTranscriptItemKey(item),
     item.startedAt ?? "",
@@ -936,6 +1021,14 @@ export function getVisualTranscriptItemKey<
 >(item: VisualTranscriptItem<B, M>, fallbackIndex = 0): string {
   if (item.kind === "message") {
     return `message:${messageKey(item.message, item.messageIndex)}`;
+  }
+  if (item.kind === "marker") {
+    return [
+      "marker",
+      getVisualWorkEntryKey(item.entry),
+      item.markerKind,
+      item.markerLabel,
+    ].join(":");
   }
   const first = item.entries[0];
   return [
@@ -1019,10 +1112,64 @@ export function buildVisualTranscriptItems<
     });
   }
 
+  function pushMarker(entry: VisualWorkEntry<B, M>): boolean {
+    const marker = compactionMarkerEntry(entry);
+    if (!marker) return false;
+    out.push(marker);
+    return true;
+  }
+
   function pushTurnWorkAndResponse(
+    rawEntries: VisualWorkEntry<B, M>[],
+    userTimestamp: string | undefined,
+    active: boolean,
+  ): void {
+    let segment: VisualWorkEntry<B, M>[] = [];
+    let segmentStartedAt = userTimestamp;
+    let lastCompactionMs: number | undefined;
+
+    function flushSegment(
+      segmentActive: boolean,
+      segmentEndedAt?: string,
+    ): void {
+      if (segment.length === 0) return;
+      pushWorkAndResponse(
+        segment,
+        segmentStartedAt,
+        segmentActive,
+        segmentEndedAt,
+      );
+      segment = [];
+    }
+
+    for (const entry of rawEntries) {
+      const marker = compactionMarkerEntry(entry);
+      if (!marker) {
+        segment.push(entry);
+        continue;
+      }
+      const markerMs = timestampMs(entry.message.timestamp);
+      if (
+        markerMs !== undefined &&
+        lastCompactionMs !== undefined &&
+        Math.abs(markerMs - lastCompactionMs) < 1000
+      ) {
+        continue;
+      }
+      lastCompactionMs = markerMs;
+      flushSegment(false, entry.message.timestamp);
+      out.push(marker);
+      segmentStartedAt = entry.message.timestamp;
+    }
+
+    flushSegment(active);
+  }
+
+  function pushWorkAndResponse(
     entries: VisualWorkEntry<B, M>[],
     userTimestamp: string | undefined,
     active: boolean,
+    forcedEndedAt?: string,
   ): void {
     const hasResponse = entries.some(isAssistantResponseEntry);
     if (active || !hasResponse) {
@@ -1034,7 +1181,8 @@ export function buildVisualTranscriptItems<
           kind: "work",
           entries,
           startedAt: userTimestamp ?? firstWorkTs,
-          open: true,
+          endedAt: forcedEndedAt,
+          open: forcedEndedAt ? undefined : true,
         });
       }
       return;
@@ -1063,7 +1211,7 @@ export function buildVisualTranscriptItems<
         kind: "work",
         entries: workEntries,
         startedAt: userTimestamp ?? firstWorkTs,
-        endedAt: finalResponse.message.timestamp,
+        endedAt: finalResponse.message.timestamp ?? forcedEndedAt,
       });
     }
 
@@ -1079,7 +1227,8 @@ export function buildVisualTranscriptItems<
     const message = messages[messageIndex]!;
     const blocks = message.blocks ?? [];
     if (message.role !== "user") {
-      pushMessage({ message, blocks, messageIndex });
+      const pushedMarker = pushMarker({ message, blocks, messageIndex });
+      if (!pushedMarker) pushMessage({ message, blocks, messageIndex });
       messageIndex += 1;
       continue;
     }

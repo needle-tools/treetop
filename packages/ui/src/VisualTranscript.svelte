@@ -14,6 +14,9 @@
     visualFileEditSummaryForBlock,
     visualPlanFromBlock,
     visualThinkingSummary,
+    visualToolCallPayloadLanguage,
+    visualToolCallPayloadText,
+    visualToolPreviewText,
     visualUserImageAttachments,
     type VisualFileEditSummary,
     type VisualPlanItem,
@@ -100,6 +103,7 @@
   let liveClock: ReturnType<typeof setInterval> | null = null;
   let openMediaBlocks: NormalizedBlock[] = [];
   let openMediaIndex = -1;
+  let expandedThinkingWorkKeys = new Set<string>();
   const MARKDOWN_CACHE_LIMIT = 500;
   const markdownCache = new Map<string, string>();
 
@@ -111,6 +115,23 @@
   $: liveThinkingAttachedToWork = items.some(
     (item, index) => isLiveTailWork(item, index),
   );
+  $: {
+    const liveKeys = new Set(
+      items
+        .map((item, index) =>
+          item.kind === "work" && item.open && !item.endedAt
+            ? getVisualTranscriptItemKey(item, index)
+            : undefined,
+        )
+        .filter((key): key is string => !!key),
+    );
+    const next = new Set(
+      [...expandedThinkingWorkKeys].filter((key) => liveKeys.has(key)),
+    );
+    if (next.size !== expandedThinkingWorkKeys.size) {
+      expandedThinkingWorkKeys = next;
+    }
+  }
 
   $: {
     if (shouldRunLiveClock && !liveClock) {
@@ -263,30 +284,38 @@
     return s.length > 200 ? s.slice(0, 200) + "…" : s;
   }
 
-  function formatWorkedDuration(startedAt?: string, endedAt?: string): string {
-    if (!startedAt || !endedAt) return "Worked";
+  function formatWorkDuration(
+    startedAt: string | undefined,
+    endedAt: string | undefined,
+  ): string | undefined {
+    if (!startedAt || !endedAt) return undefined;
     const start = Date.parse(startedAt);
     const end = Date.parse(endedAt);
     if (Number.isNaN(start) || Number.isNaN(end) || end <= start) {
-      return "Worked";
+      return undefined;
     }
-    const totalSeconds = Math.max(1, Math.round((end - start) / 1000));
+    const totalSeconds = Math.max(0, Math.floor((end - start) / 1000));
     const minutes = Math.floor(totalSeconds / 60);
     const seconds = totalSeconds % 60;
-    if (minutes <= 0) return `Worked for ${seconds}s`;
-    if (seconds === 0) return `Worked for ${minutes}m`;
-    return `Worked for ${minutes}m ${seconds}s`;
+    if (minutes <= 0) return `${seconds}s`;
+    if (seconds === 0) return `${minutes}m`;
+    return `${minutes}m ${seconds}s`;
   }
 
-  function workEndedAt(
+  function workDurationLabel(
     item: Extract<
       VisualTranscriptItem<NormalizedBlock, NormalizedMessage>,
       { kind: "work" }
     >,
+    nowIso: string,
   ): string | undefined {
-    if (item.endedAt) return item.endedAt;
-    if (item.open) return liveNowIso;
-    return undefined;
+    const running = item.open && !item.endedAt;
+    const duration = formatWorkDuration(
+      item.startedAt,
+      running ? nowIso : item.endedAt,
+    );
+    const prefix = running ? "Working" : "Worked";
+    return duration ? `${prefix} for ${duration}` : prefix;
   }
 
   function formatToolWallTime(seconds: number | undefined): string | undefined {
@@ -460,10 +489,7 @@
   }
 
   function workEntryToolPreview(block: NormalizedBlock): string {
-    const text =
-      block.toolName === "exec_command"
-        ? toolInputCode(block)
-        : inputPreview(block.toolInput);
+    const text = visualToolPreviewText(block) || inputPreview(block.toolInput);
     return text.replace(/\s+/g, " ").trim();
   }
 
@@ -550,31 +576,6 @@
     return `${Math.floor(s / 86400)} days ago`;
   }
 
-  function toolInputCode(block: NormalizedBlock): string {
-    const input = block.toolInput;
-    if (
-      block.toolName === "exec_command" &&
-      input &&
-      typeof input === "object" &&
-      "cmd" in input
-    ) {
-      const cmd = (input as { cmd?: unknown }).cmd;
-      if (typeof cmd === "string") return cmd;
-      if (Array.isArray(cmd)) return cmd.map(String).join(" ");
-    }
-    if (input === undefined) return "";
-    if (typeof input === "string") return input;
-    try {
-      return JSON.stringify(input, null, 2);
-    } catch {
-      return String(input);
-    }
-  }
-
-  function toolInputLanguage(block: NormalizedBlock): string {
-    return block.toolName === "exec_command" ? "sh" : "json";
-  }
-
   function isLiveTailWork(
     item: VisualTranscriptItem<NormalizedBlock, NormalizedMessage>,
     index: number,
@@ -586,6 +587,41 @@
       item.open === true &&
       !item.endedAt
     );
+  }
+
+  function isThinkingWorkEntry(
+    entry: VisualWorkEntry<NormalizedBlock, NormalizedMessage>,
+  ): boolean {
+    return entry.blocks.some((block) => block.type === "thinking");
+  }
+
+  function forceOpenThinkingEntry(
+    workKey: string,
+    entry: VisualWorkEntry<NormalizedBlock, NormalizedMessage>,
+  ): boolean {
+    return isThinkingWorkEntry(entry) && expandedThinkingWorkKeys.has(workKey);
+  }
+
+  function onWorkEntryToggle(
+    event: Event,
+    item: Extract<
+      VisualTranscriptItem<NormalizedBlock, NormalizedMessage>,
+      { kind: "work" }
+    >,
+    workKey: string,
+    entry: VisualWorkEntry<NormalizedBlock, NormalizedMessage>,
+  ): void {
+    const details = event.currentTarget as HTMLDetailsElement | null;
+    if (
+      !details?.open ||
+      !item.open ||
+      item.endedAt ||
+      !isThinkingWorkEntry(entry)
+    ) {
+      return;
+    }
+    if (expandedThinkingWorkKeys.has(workKey)) return;
+    expandedThinkingWorkKeys = new Set([...expandedThinkingWorkKeys, workKey]);
   }
 
   function visualBlockRenderKey(block: NormalizedBlock, index: number): string {
@@ -628,10 +664,14 @@
   <div class="live-thinking-line" aria-live="polite">
     {@render renderThinkingIcon()}
     <span>Thinking</span>
-    <span class="live-thinking-dots" aria-hidden="true">
-      <span>.</span><span>.</span><span>.</span>
-    </span>
+    {@render renderLiveDots()}
   </div>
+{/snippet}
+
+{#snippet renderLiveDots()}
+  <span class="live-thinking-dots" aria-hidden="true">
+    <span>.</span><span>.</span><span>.</span>
+  </span>
 {/snippet}
 
 {#snippet renderImageAttachmentFrame(
@@ -885,10 +925,20 @@
         </div>
       {/if}
     {:else if b.type === "tool_use"}
-      {@const inputCode = toolInputCode(b)}
+      {@const inputCode = visualToolCallPayloadText(b)}
       {#if inputCode}
         <div class="md work-tool-code">
-          {@html markdownCodeBlockHtml(inputCode, toolInputLanguage(b))}
+          <div class="work-tool-output-label">
+            {b.toolName ?? "tool"} input
+          </div>
+          {@html markdownCodeBlockHtml(
+            inputCode,
+            visualToolCallPayloadLanguage(b),
+          )}
+        </div>
+      {:else}
+        <div class="work-tool-empty-text">
+          {b.toolName ?? "tool"} input: no payload
         </div>
       {/if}
     {:else if b.type === "tool_result"}
@@ -950,6 +1000,7 @@
 >
   {#each items as item, itemIndex (getVisualTranscriptItemKey(item, itemIndex))}
     {#if item.kind === "work"}
+      {@const workKey = getVisualTranscriptItemKey(item, itemIndex)}
       <li class="work-row">
         <details
           class="work-foldout"
@@ -957,7 +1008,10 @@
           open={item.open}
         >
           <summary>
-            <span>{formatWorkedDuration(item.startedAt, workEndedAt(item))}</span>
+            <span>{workDurationLabel(item, liveNowIso)}</span>
+            {#if item.open && !item.endedAt}
+              {@render renderLiveDots()}
+            {/if}
             <span class="work-count">
               {item.entries.length}
               {item.entries.length === 1 ? "step" : "steps"}
@@ -1005,7 +1059,12 @@
                 {@const resultBlock = workEntryToolResultBlock(entry)}
                 {@const collapsedTitle = workEntryTitle(entry)}
                 {@const collapsedPreview = workEntryCollapsedPreview(entry)}
-                <details class="work-entry">
+                <details
+                  class="work-entry"
+                  open={forceOpenThinkingEntry(workKey, entry)}
+                  on:toggle={(event) =>
+                    onWorkEntryToggle(event, item, workKey, entry)}
+                >
                   <summary>
                     {#if toolBlock}
                       {#if editSummary}
@@ -1100,6 +1159,30 @@
             {/if}
           </div>
         </details>
+      </li>
+    {:else if item.kind === "marker"}
+      <li class="marker-row">
+        <div
+          class="work-marker-pill transcript-marker-pill"
+          class:complete={item.markerKind === "complete"}
+          class:started={item.markerKind === "started"}
+          class:compacted={item.markerKind === "compacted"}
+          class:aborted={item.markerKind === "aborted"}
+          title={item.markerBlock.text}
+        >
+          <span class="work-marker-icon" aria-hidden="true">
+            {workMarkerIcon(item.markerKind)}
+          </span>
+          <span>{item.markerLabel}</span>
+          {#if item.entry.message.timestamp}
+            <span
+              class="muted small"
+              title={new Date(item.entry.message.timestamp).toLocaleString()}
+            >
+              {relTimeFromIso(item.entry.message.timestamp)}
+            </span>
+          {/if}
+        </div>
       </li>
     {:else}
       {@const m = item.message}
@@ -1500,6 +1583,11 @@
     min-width: 0;
     max-width: 100%;
   }
+  .marker-row {
+    display: flex;
+    justify-content: center;
+    margin: 0.7rem 0 0.4rem;
+  }
   .work-marker-pill {
     display: inline-flex;
     align-items: center;
@@ -1513,6 +1601,10 @@
     color: var(--text-muted);
     font-size: 0.74rem;
     line-height: 1.2;
+  }
+  .transcript-marker-pill {
+    padding-inline: 0.62rem;
+    font-size: 0.78rem;
   }
   .work-marker-pill.complete {
     border-color: color-mix(in srgb, var(--ok) 38%, var(--surface-3));

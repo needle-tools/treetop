@@ -12,6 +12,9 @@ import {
   reuseStableVisualTranscriptItems,
   visualPlanFromBlock,
   visualPlanFromPayload,
+  visualToolCallPayloadLanguage,
+  visualToolCallPayloadText,
+  visualToolPreviewText,
   visualUserImageAttachments,
   visualFileEditSummaryForBlock,
   visualThinkingSummary,
@@ -507,6 +510,58 @@ describe("buildVisualTranscriptItems", () => {
     expect(items[2].blocks).toEqual([{ type: "text", text: "Done." }]);
   });
 
+  it("surfaces duplicate Codex compaction rows as one transcript marker", () => {
+    const user = msg("user", "keep going", "2026-06-22T10:15:00.000Z");
+    const before: Message = {
+      role: "assistant",
+      timestamp: "2026-06-22T10:40:00.000Z",
+      blocks: [{ type: "thinking", text: "I’m still refactoring." }],
+    };
+    const compactedA: Message = {
+      role: "system",
+      timestamp: "2026-06-22T10:43:31.612Z",
+      blocks: [{ type: "marker", text: "[Context compacted]" }],
+    };
+    const compactedB: Message = {
+      role: "system",
+      timestamp: "2026-06-22T10:43:31.661Z",
+      blocks: [{ type: "marker", text: "[Context compacted]" }],
+    };
+    const after: Message = {
+      role: "assistant",
+      timestamp: "2026-06-22T10:44:00.000Z",
+      blocks: [{ type: "tool_use", toolName: "exec_command" }],
+    };
+
+    const items = buildVisualTranscriptItems([
+      user,
+      before,
+      compactedA,
+      compactedB,
+      after,
+    ]);
+
+    expect(items.map((item) => item.kind)).toEqual([
+      "message",
+      "work",
+      "marker",
+      "work",
+    ]);
+    expect(items[2]).toMatchObject({
+      kind: "marker",
+      markerKind: "compacted",
+      markerLabel: "Context compacted",
+    });
+    if (items[1]?.kind !== "work") throw new Error("expected first work item");
+    expect(items[1].entries.map((entry) => entry.blocks[0]?.type)).toEqual([
+      "thinking",
+    ]);
+    if (items[3]?.kind !== "work") throw new Error("expected second work item");
+    expect(items[3].entries.map((entry) => entry.blocks[0]?.type)).toEqual([
+      "tool_use",
+    ]);
+  });
+
   it("does not treat non-assistant text/media rows as the final response", () => {
     const items = buildVisualTranscriptItems([
       msg("user", "please inspect this", "2026-06-19T10:00:00.000Z"),
@@ -859,6 +914,44 @@ describe("visualThinkingSummary", () => {
       title: "Exploring response options",
       body: "I am checking the transcript rows.",
     });
+  });
+});
+
+describe("visual tool payload display helpers", () => {
+  it("keeps collapsed exec_command previews readable while expanded payloads stay complete", () => {
+    const block = {
+      type: "tool_use",
+      toolName: "exec_command",
+      toolInput: {
+        cmd: "bun test packages/ui/test/last-user-message.test.ts",
+        workdir: "/Users/herbst/git/supergit",
+        yield_time_ms: 1000,
+      },
+    };
+
+    expect(visualToolPreviewText(block)).toBe(
+      "bun test packages/ui/test/last-user-message.test.ts",
+    );
+    expect(visualToolCallPayloadLanguage(block)).toBe("json");
+    expect(visualToolCallPayloadText(block)).toContain(
+      '"workdir": "/Users/herbst/git/supergit"',
+    );
+  });
+
+  it("keeps Claude Bash commands readable while preserving the full payload", () => {
+    const block = {
+      type: "tool_use",
+      toolName: "Bash",
+      toolInput: {
+        command: "npm test",
+        description: "run focused tests",
+      },
+    };
+
+    expect(visualToolPreviewText(block)).toBe("npm test");
+    expect(visualToolCallPayloadText(block)).toContain(
+      '"description": "run focused tests"',
+    );
   });
 });
 
