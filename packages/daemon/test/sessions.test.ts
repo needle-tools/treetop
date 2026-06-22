@@ -837,15 +837,18 @@ describe("parseCodexJsonl with a real sanitized fixture", () => {
     const s = parseCodexJsonl(text);
     expect(s.cwd).toBe("/Users/sanitized/proj");
     expect(s.sessionId).toBe("019e1bc1-9658-7a70-8529-42744e0c08ed");
-    // Should find the user prompt + the assistant reply.
+    // Should find only the visible user prompt + the assistant reply.
     const userMsgs = s.messages.filter((m) => m.role === "user");
     const assistantMsgs = s.messages.filter((m) => m.role === "assistant");
-    expect(userMsgs.length).toBeGreaterThanOrEqual(1);
-    expect(assistantMsgs.length).toBeGreaterThanOrEqual(1);
+    expect(userMsgs).toHaveLength(1);
+    expect(assistantMsgs).toHaveLength(1);
     expect(userMsgs.some((m) => m.blocks[0]?.text === "test")).toBe(true);
     expect(
       assistantMsgs.some((m) => m.blocks[0]?.text === "Test received."),
     ).toBe(true);
+    expect(s.messages.some((m) => m.blocks[0]?.text?.includes("<"))).toBe(
+      false,
+    );
     // event_msg / turn_context lines aren't messages.
     const everyHasContent = s.messages.every(
       (m) => m.blocks.length > 0 && m.blocks[0]?.text,

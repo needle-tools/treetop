@@ -511,6 +511,26 @@ function codexTextBlocks(text: string): NormalizedBlock[] {
   return blocks;
 }
 
+function codexVisibleUserText(text: string): string {
+  let visible = text;
+  visible = visible.replace(
+    /<environment_context>[\s\S]*?<\/environment_context>/g,
+    "",
+  );
+  visible = visible.replace(
+    /<filesystem>[\s\S]*?<\/filesystem>/g,
+    "",
+  );
+  visible = visible.replace(
+    /<codex_internal_context\b[^>]*>[\s\S]*?<\/codex_internal_context>/g,
+    "",
+  );
+  const trimmed = visible.trim();
+  if (/^#\s+(AGENTS|CLAUDE)\.md instructions\b/i.test(trimmed)) return "";
+  if (/^#\s+(Instructions|Context|System)\b/i.test(trimmed)) return "";
+  return trimmed;
+}
+
 function codexEventMarker(payload: Record<string, unknown>): string | null {
   switch (payload.type) {
     case "task_started":
@@ -748,20 +768,24 @@ function parseCodexJsonlLine(line: string, out: NormalizedSession): void {
       if (p.role === "system" || p.role === "developer") return "system";
       return "user";
     })();
+    if (role === "system") return;
     const blocks: NormalizedBlock[] = [];
     if (Array.isArray(p.content)) {
       for (const raw of p.content) {
         if (typeof raw !== "object" || raw === null) continue;
         const b = raw as Record<string, unknown>;
         if (typeof b.text === "string") {
-          blocks.push(...codexTextBlocks(b.text));
+          const text = role === "user" ? codexVisibleUserText(b.text) : b.text;
+          if (text) blocks.push(...codexTextBlocks(text));
         } else {
           const media = mediaBlockFromContent(b);
           if (media) blocks.push(media);
         }
       }
     } else if (typeof p.content === "string") {
-      blocks.push(...codexTextBlocks(p.content));
+      const text =
+        role === "user" ? codexVisibleUserText(p.content) : p.content;
+      if (text) blocks.push(...codexTextBlocks(text));
     }
     pushSessionMessage(out, role, blocks, ts);
     return;

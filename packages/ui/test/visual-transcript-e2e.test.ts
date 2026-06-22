@@ -130,6 +130,114 @@ describe("visual transcript provider flow", () => {
     );
   });
 
+  test("skips Codex protocol context when shaping visual transcript turns", () => {
+    const session = parseCodexJsonl(
+      jsonl([
+        {
+          timestamp: "2026-06-01T16:43:41.257Z",
+          type: "event_msg",
+          payload: { type: "task_started" },
+        },
+        {
+          timestamp: "2026-06-01T16:43:41.258Z",
+          type: "response_item",
+          payload: {
+            type: "message",
+            role: "developer",
+            content: [
+              {
+                type: "input_text",
+                text: "<permissions instructions>\nFilesystem sandboxing enabled\n</permissions instructions>",
+              },
+            ],
+          },
+        },
+        {
+          timestamp: "2026-06-01T16:43:41.260Z",
+          type: "response_item",
+          payload: {
+            type: "message",
+            role: "user",
+            content: [
+              {
+                type: "input_text",
+                text: "<environment_context>\n  <cwd>/Users/herbst/git/pdf.js</cwd>\n</environment_context>",
+              },
+            ],
+          },
+        },
+        {
+          timestamp: "2026-06-16T11:29:21.985Z",
+          type: "response_item",
+          payload: {
+            type: "message",
+            role: "user",
+            content: [
+              {
+                type: "input_text",
+                text: '<codex_internal_context source="goal">\nContinue working toward the active thread goal.\n</codex_internal_context>',
+              },
+            ],
+          },
+        },
+        {
+          timestamp: "2026-06-01T16:43:41.317Z",
+          type: "response_item",
+          payload: {
+            type: "message",
+            role: "user",
+            content: [
+              {
+                type: "input_text",
+                text: "<environment_context>\n  <cwd>/Users/herbst/git/pdf.js</cwd>\n</environment_context>\nAudit the print feature PR.",
+              },
+            ],
+          },
+        },
+        {
+          timestamp: "2026-06-01T16:43:48.151Z",
+          type: "event_msg",
+          payload: {
+            type: "agent_message",
+            message: "I’ll inspect the local diff first.",
+          },
+        },
+        {
+          timestamp: "2026-06-01T16:43:48.165Z",
+          type: "response_item",
+          payload: {
+            type: "message",
+            role: "assistant",
+            content: [
+              { type: "output_text", text: "I’ll inspect the local diff first." },
+            ],
+          },
+        },
+      ]),
+    );
+
+    const items = buildVisualTranscriptItems(session.messages);
+
+    expect(session.messages).toHaveLength(3);
+    expect(items).toHaveLength(3);
+    expect(items[0]).toMatchObject({
+      kind: "message",
+      blocks: [{ type: "text", text: "Audit the print feature PR." }],
+    });
+    expect(items[1]).toMatchObject({
+      kind: "work",
+      entries: [
+        {
+          blocks: [{ type: "marker", text: "[Task started]" }],
+        },
+      ],
+    });
+    expect(items[2]).toMatchObject({
+      kind: "message",
+      blocks: [{ type: "text", text: "I’ll inspect the local diff first." }],
+    });
+  });
+
   test("keeps Codex tool output visible when the matching call is outside the retained slice", () => {
     const session = parseCodexJsonl(
       jsonl([

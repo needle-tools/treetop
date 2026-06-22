@@ -1137,6 +1137,7 @@ export function buildVisualTranscriptItems<
 ): VisualTranscriptItem<B, M>[] {
   const out: VisualTranscriptItem<B, M>[] = [];
   let messageIndex = 0;
+  let pendingTurnPrefixEntries: VisualWorkEntry<B, M>[] = [];
 
   function pushMessage(entry: VisualWorkEntry<B, M>): void {
     out.push({
@@ -1262,7 +1263,18 @@ export function buildVisualTranscriptItems<
     const message = messages[messageIndex]!;
     const blocks = message.blocks ?? [];
     if (message.role !== "user") {
-      const pushedMarker = pushMarker({ message, blocks, messageIndex });
+      const entry = { message, blocks, messageIndex };
+      const markerBlock = blocks.find((block) => block.type === "marker");
+      if (
+        out.length === 0 &&
+        markerBlock &&
+        visualMarkerKind(markerBlock.text) === "started"
+      ) {
+        pendingTurnPrefixEntries.push(entry);
+        messageIndex += 1;
+        continue;
+      }
+      const pushedMarker = pushMarker(entry);
       if (!pushedMarker) pushMessage({ message, blocks, messageIndex });
       messageIndex += 1;
       continue;
@@ -1270,7 +1282,8 @@ export function buildVisualTranscriptItems<
 
     out.push({ kind: "message", message, blocks, messageIndex });
     const userTimestamp = message.timestamp;
-    const turnEntries: VisualWorkEntry<B, M>[] = [];
+    const turnEntries: VisualWorkEntry<B, M>[] = pendingTurnPrefixEntries;
+    pendingTurnPrefixEntries = [];
     messageIndex += 1;
     while (
       messageIndex < messages.length &&
