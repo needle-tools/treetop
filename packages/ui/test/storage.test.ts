@@ -2280,6 +2280,16 @@ describe("effectiveVisibleWorktrees", () => {
     ).toEqual(["/wt/A/feature"]);
   });
 
+  test("orders visible worktrees by git's current disk order, not stored order", () => {
+    expect(
+      effectiveVisibleWorktrees(
+        "rA",
+        ["/repos/A", "/wt/A/feature", "/wt/A/other"],
+        { rA: ["/wt/A/other", "/repos/A", "/wt/A/feature"] },
+      ),
+    ).toEqual(["/repos/A", "/wt/A/feature", "/wt/A/other"]);
+  });
+
   test("an explicit empty list keeps the repo hidden — does NOT fall back to first wt", () => {
     expect(
       effectiveVisibleWorktrees("rA", ["/repos/A", "/wt/A/feature"], {

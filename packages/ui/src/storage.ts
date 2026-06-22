@@ -1017,9 +1017,11 @@ export class VisibleWorktreesStore {
  * showing **the first worktree only**. (The first one from `git
  * worktree list` is the original / main worktree of the repo.)
  *
- * Caller is responsible for passing the *current* set of on-disk
+ * Caller is responsible for passing the *current* ordered set of on-disk
  * worktrees — any path in the stored list that no longer exists on
  * disk is silently dropped so removed worktrees don't haunt the UI.
+ * Stored entries are visibility only, not display order: render order
+ * always follows git's worktree list so the main checkout stays first.
  */
 export function effectiveVisibleWorktrees(
   repoId: string,
@@ -1031,8 +1033,8 @@ export function effectiveVisibleWorktrees(
   if (entry === undefined) {
     return [diskWorktreePaths[0]!];
   }
-  const onDisk = new Set(diskWorktreePaths);
-  return entry.filter((p) => onDisk.has(p));
+  const visible = new Set(entry);
+  return diskWorktreePaths.filter((p) => visible.has(p));
 }
 
 export function showVisibleWorktree(
