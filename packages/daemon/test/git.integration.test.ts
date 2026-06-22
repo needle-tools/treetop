@@ -366,6 +366,25 @@ describe("getWorktreeDetails against real git", () => {
     expect(details.branchStatus?.ahead).toBe(1);
     expect(details.branchStatus?.unpushed).toBeNull();
   });
+
+  test("selected remote becomes the push target for a branch with no upstream", async () => {
+    const bare = await realpath(
+      await mkdtemp(join(tmpdir(), "supergit-origin-bare-")),
+    );
+    await $`git -C ${bare} init -q --bare -b main`.quiet();
+    const repo = await tempRepo();
+    await $`git -C ${repo} remote add needle ${bare}`.quiet();
+    await $`git -C ${repo} push -q needle main`.quiet();
+
+    await $`git -C ${repo} checkout -q -b experiment/local-only`.quiet();
+    await $`git -C ${repo} commit --allow-empty -m local-only -q`.quiet();
+
+    const details = await getWorktreeDetails(repo, { remote: "needle" });
+    expect(details.branchStatus?.upstream).toBe("needle/experiment/local-only");
+    expect(details.branchStatus?.ahead).toBe(1);
+    expect(details.branchStatus?.behind).toBe(0);
+    expect(details.branchStatus?.unpushed).toBeNull();
+  });
 });
 
 describe("listCommits against real git", () => {

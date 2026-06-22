@@ -70,6 +70,22 @@ export interface ShellOption {
   label: string;
 }
 
+export function selectedRemoteForRepo(opts: {
+  selectedRemotes: Record<string, string>;
+  repoId: string;
+  remotes: { name: string }[];
+}): string | null {
+  const selected = opts.selectedRemotes[opts.repoId];
+  if (selected && opts.remotes.some((r) => r.name === selected)) {
+    return selected;
+  }
+  return (
+    opts.remotes.find((r) => r.name === "origin")?.name ??
+    opts.remotes[0]?.name ??
+    null
+  );
+}
+
 /** The interactive shells a user can pick for a plain terminal column on THIS
  *  box. On Windows we surface BOTH PowerShell and CMD (both ship with every
  *  install), so the new-session picker offers each as its own entry —

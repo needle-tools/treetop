@@ -20,6 +20,7 @@ import {
   summarizeRequestCounts,
   codexThreadIdFromTitleSource,
   applyCodexThreadTitleIndex,
+  selectedRemoteForRepo,
 } from "../src/server-helpers";
 
 // ---------------------------------------------------------------------------
@@ -810,6 +811,42 @@ describe("patchWorktreeDetailsInRepos", () => {
       fileStatus: { dirtyLines: 4 },
     });
     expect(ok).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// selectedRemoteForRepo
+// ---------------------------------------------------------------------------
+describe("selectedRemoteForRepo", () => {
+  const remotes = [{ name: "needle" }, { name: "upstream" }];
+
+  test("uses a valid persisted remote selection", () => {
+    expect(
+      selectedRemoteForRepo({
+        repoId: "r1",
+        selectedRemotes: { r1: "upstream" },
+        remotes,
+      }),
+    ).toBe("upstream");
+  });
+
+  test("falls back to origin when present, otherwise the first repo remote", () => {
+    expect(
+      selectedRemoteForRepo({ repoId: "r1", selectedRemotes: {}, remotes }),
+    ).toBe("needle");
+    expect(
+      selectedRemoteForRepo({
+        repoId: "r1",
+        selectedRemotes: {},
+        remotes: [{ name: "upstream" }, { name: "origin" }],
+      }),
+    ).toBe("origin");
+  });
+
+  test("returns null when the repo has no remotes", () => {
+    expect(
+      selectedRemoteForRepo({ repoId: "r1", selectedRemotes: {}, remotes: [] }),
+    ).toBeNull();
   });
 });
 

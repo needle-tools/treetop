@@ -124,6 +124,10 @@ export interface BranchStatus {
    *  upstream exists, the lookup failed, or the value came straight from
    *  the porcelain parser. */
   unpushed: number | null;
+  /** True when `upstream` names an existing remote-tracking branch. False
+   *  when it is an intended push target for a selected remote whose branch
+   *  does not exist yet. */
+  remoteBranchExists?: boolean;
 }
 
 export interface LastCommit {
@@ -993,7 +997,10 @@ export async function getWorktreeDetails(
         worktreePath,
         options.remote,
       );
-      if (selectedStatus?.upstream || !branchStatus.upstream) {
+      if (
+        selectedStatus &&
+        (selectedStatus.remoteBranchExists || !branchStatus.upstream)
+      ) {
         branchStatus = selectedStatus ?? branchStatus;
       }
     }
@@ -1086,22 +1093,30 @@ export async function getSelectedRemoteBranchStatus(
       behind: Number.isNaN(behind) ? 0 : behind,
       aheadOldestTime,
       unpushed: null,
+      remoteBranchExists: true,
     };
   }
 
-  const countOut =
-    await $`git -C ${worktreePath} rev-list --count HEAD --not --remotes=${remote}`
+  const [countOut, oldestOut] = await Promise.all([
+    $`git -C ${worktreePath} rev-list --count HEAD --not --remotes=${remote}`
       .quiet()
       .text()
-      .catch(() => "");
-  const unpushed = Number.parseInt(countOut.trim(), 10);
+      .catch(() => ""),
+    $`git -C ${worktreePath} log HEAD --not --remotes=${remote} --reverse --format=%cI`
+      .quiet()
+      .text()
+      .catch(() => ""),
+  ]);
+  const ahead = Number.parseInt(countOut.trim(), 10);
+  const aheadOldestTime = oldestOut.split("\n")[0]?.trim() || null;
   return {
     branch,
-    upstream: null,
-    ahead: 0,
+    upstream: Number.isNaN(ahead) || ahead === 0 ? null : `${remote}/${branch}`,
+    ahead: Number.isNaN(ahead) ? 0 : ahead,
     behind: 0,
-    aheadOldestTime: null,
-    unpushed: Number.isNaN(unpushed) ? null : unpushed,
+    aheadOldestTime,
+    unpushed: null,
+    remoteBranchExists: false,
   };
 }
 

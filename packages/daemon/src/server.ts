@@ -145,6 +145,7 @@ import {
   patchWorktreeDetailsInRepos,
   summarizeRequestCounts,
   applyCodexThreadTitleIndex,
+  selectedRemoteForRepo,
 } from "./server-helpers";
 import {
   normalizeRemote,
@@ -1341,8 +1342,12 @@ const REPOS_CACHE_MS = 2500;
 type EnrichedRepo = Record<string, unknown> & { id: string };
 let reposInflight: { key: string; promise: Promise<EnrichedRepo[]> } | null =
   null;
-let reposCache: { at: number; key: string; value: EnrichedRepo[] } | null =
-  null;
+let reposCache: {
+  at: number;
+  key: string;
+  selectedRemotes: Record<string, string>;
+  value: EnrichedRepo[];
+} | null = null;
 let repsCacheGen = 0;
 
 // /api/agent-usage caches its (detectAgents + computeAgentUsage)
@@ -1444,6 +1449,26 @@ function invalidateWorktreeDetails(wtPath: string): void {
   }
 }
 
+function selectedRemoteForCachedWorktree(wtPath: string): string | null {
+  if (!reposCache) return null;
+  for (const repo of reposCache.value) {
+    const worktrees = (repo as { worktrees?: Array<{ path?: unknown }> })
+      .worktrees;
+    if (!Array.isArray(worktrees)) continue;
+    if (!worktrees.some((wt) => wt.path === wtPath)) continue;
+    const remotes = (repo as { remotes?: Array<{ name?: unknown }> }).remotes;
+    const validRemotes = Array.isArray(remotes)
+      ? remotes.filter((r): r is { name: string } => typeof r.name === "string")
+      : [];
+    return selectedRemoteForRepo({
+      selectedRemotes: reposCache.selectedRemotes,
+      repoId: repo.id,
+      remotes: validRemotes,
+    });
+  }
+  return null;
+}
+
 // fs-watcher reaction: recompute just the changed worktree's git state and
 // splice it into the cached /api/repos payload in place, THEN broadcast.
 //
@@ -1460,17 +1485,22 @@ function invalidateWorktreeDetails(wtPath: string): void {
 // /api/repos GET sees the fresh row instead of racing the recompute.
 async function onWorktreeFsChange(wtPath: string): Promise<void> {
   let details: WorktreeDetails;
+  const selectedRemote = selectedRemoteForCachedWorktree(wtPath);
   try {
-    details = await worktreeDetailLimit(() => getWorktreeDetails(wtPath));
+    details = await worktreeDetailLimit(() =>
+      selectedRemote
+        ? getWorktreeDetails(wtPath, { remote: selectedRemote })
+        : getWorktreeDetails(wtPath),
+    );
   } catch {
     // git failed (dir vanished mid-rename, etc.) — drop both caches so the
     // next GET rebuilds from scratch rather than serving a stale row.
-    worktreeDetailsCache.delete(wtPath);
+    invalidateWorktreeDetails(wtPath);
     invalidateReposCache();
     broadcast("change", { kind: "fs_change", path: wtPath });
     return;
   }
-  worktreeDetailsCache.set(worktreeDetailsCacheKey(wtPath), {
+  worktreeDetailsCache.set(worktreeDetailsCacheKey(wtPath, selectedRemote), {
     at: Date.now(),
     value: details,
   });
@@ -1570,16 +1600,6 @@ function reposNDJSONFromCache(
 /** Fresh build that yields each repo as soon as its worktrees finish
  *  enriching. Also populates the cache + resolves `reposInflight` so
  *  concurrent callers can share the work. */
-function selectedRemoteForRepo(
-  selectedRemotes: Record<string, string>,
-  repoId: string,
-  remotes: { name: string }[],
-): string | null {
-  const selected = selectedRemotes[repoId];
-  if (!selected) return null;
-  return remotes.some((r) => r.name === selected) ? selected : null;
-}
-
 function reposSelectionCacheKey(selectedRemotes: Record<string, string>): string {
   return JSON.stringify(
     Object.keys(selectedRemotes)
@@ -1705,11 +1725,11 @@ function reposNDJSONFresh(
                   ]),
                   titledP,
                 ]);
-                const selectedRemote = selectedRemoteForRepo(
+                const selectedRemote = selectedRemoteForRepo({
                   selectedRemotes,
-                  repo.id,
+                  repoId: repo.id,
                   remotes,
-                );
+                });
                 const withDetails = await Promise.all(
                   worktrees.map(async (wt) => {
                     const tWt = performance.now();
@@ -1771,7 +1791,12 @@ function reposNDJSONFresh(
             .map((r) => byId.get(r.id))
             .filter((r): r is EnrichedRepo => r !== undefined);
           if (myGen === repsCacheGen) {
-            reposCache = { at: Date.now(), key: cacheKey, value: ordered };
+            reposCache = {
+              at: Date.now(),
+              key: cacheKey,
+              selectedRemotes,
+              value: ordered,
+            };
           }
           resolveInflight(ordered);
           const totalMs = performance.now() - t0;
@@ -6711,9 +6736,12 @@ const server = Bun.serve<TermWsData, never>({
           const repos = await workspace.listRepos();
           const repo = repos.find((r) => r.id === id);
           if (!repo) return json({ error: "repo not found" }, { status: 404 });
-          const remotes = remote ? await listRemotes(repo.path) : [];
-          const selectedRemote =
-            remote && remotes.some((r) => r.name === remote) ? remote : null;
+          const remotes = await listRemotes(repo.path);
+          const selectedRemote = selectedRemoteForRepo({
+            selectedRemotes: remote ? { [id]: remote } : {},
+            repoId: id,
+            remotes,
+          });
           const result = await pullFastForward(wtPath, {
             preStash,
             remote: selectedRemote,
@@ -6770,9 +6798,12 @@ const server = Bun.serve<TermWsData, never>({
           const repos = await workspace.listRepos();
           const repo = repos.find((r) => r.id === id);
           if (!repo) return json({ error: "repo not found" }, { status: 404 });
-          const remotes = remote ? await listRemotes(repo.path) : [];
-          const selectedRemote =
-            remote && remotes.some((r) => r.name === remote) ? remote : null;
+          const remotes = await listRemotes(repo.path);
+          const selectedRemote = selectedRemoteForRepo({
+            selectedRemotes: remote ? { [id]: remote } : {},
+            repoId: id,
+            remotes,
+          });
           const result = await pushUpstream(wtPath, {
             remote: selectedRemote,
           });
