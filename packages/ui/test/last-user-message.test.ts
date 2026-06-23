@@ -484,6 +484,37 @@ describe("buildVisualTranscriptItems", () => {
     });
   });
 
+  it("ends active work at a turn-aborted marker", () => {
+    const items = buildVisualTranscriptItems(
+      [
+        msg("user", "continue", "2026-06-19T10:00:00.000Z"),
+        {
+          role: "assistant",
+          timestamp: "2026-06-19T10:00:10.000Z",
+          blocks: [{ type: "thinking", text: "working" }],
+        },
+        {
+          role: "system",
+          timestamp: "2026-06-19T10:00:15.000Z",
+          blocks: [{ type: "marker", text: "[Turn aborted]" }],
+        },
+      ],
+      { active: true },
+    );
+
+    expect(items.map((item) => item.kind)).toEqual(["message", "work"]);
+    expect(items[1]).toMatchObject({
+      kind: "work",
+      endedAt: "2026-06-19T10:00:15.000Z",
+      open: undefined,
+    });
+    if (items[1]?.kind !== "work") throw new Error("expected work item");
+    expect(items[1].entries.map((entry) => entry.blocks[0]?.type)).toEqual([
+      "thinking",
+      "marker",
+    ]);
+  });
+
   it("splits mixed assistant work and response blocks", () => {
     const mixed: Message = {
       role: "assistant",
