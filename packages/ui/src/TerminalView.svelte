@@ -24,6 +24,7 @@
     TerminalIoByteAccounting,
     TerminalRepaintTracker,
     TerminalWriteBuffer,
+    splitTerminalWrite,
     setTerminalIoStats,
     removeTerminalIoStats,
     type TerminalRepaintCell,
@@ -63,6 +64,8 @@
   const REPAINT_DEBUG_FOREGROUND = "#07130a";
   const TERMINAL_THEME_BACKGROUND = "#1a1a1b";
   const TERMINAL_THEME_FOREGROUND = "#e8e8e8";
+  const TERMINAL_WRITE_CHUNK_BYTES = 64 * 1024;
+  const TERMINAL_WRITE_BUDGET_MS = 4;
 
   /** Read the current selection and collapse soft-wrap newlines so a
    *  command that wrapped across visual rows pastes as one runnable line.
@@ -530,9 +533,15 @@
       reconcile();
     };
     if (msSinceScroll() >= SCROLL_QUIET_MS) reconcile();
-    else revealReconcileTimer = setTimeout(tick, SCROLL_QUIET_MS - msSinceScroll() + 20);
+    else
+      revealReconcileTimer = setTimeout(
+        tick,
+        SCROLL_QUIET_MS - msSinceScroll() + 20,
+      );
   }
   const writeBuffer = new TerminalWriteBuffer();
+  let visibleWriteQueue: Uint8Array[] = [];
+  let visibleWriteRaf: number | null = null;
   let hiddenFlushes = 0;
   let terminalId = "";
   let phase: "starting" | "live" | "exited" | "error" = "starting";
@@ -828,10 +837,43 @@
     return batch;
   }
 
+  function scheduleVisibleTerminalWrites(): void {
+    if (visibleWriteRaf !== null) return;
+    visibleWriteRaf = requestAnimationFrame(() => {
+      visibleWriteRaf = null;
+      if (!xterm) {
+        visibleWriteQueue = [];
+        return;
+      }
+      const startedAt = performance.now();
+      while (visibleWriteQueue.length > 0) {
+        const chunk = visibleWriteQueue.shift()!;
+        xterm.write(chunk);
+        if (performance.now() - startedAt >= TERMINAL_WRITE_BUDGET_MS) break;
+      }
+      if (visibleWriteQueue.length > 0) scheduleVisibleTerminalWrites();
+    });
+  }
+
+  function writeTerminalOutput(bytes: Uint8Array): void {
+    if (!xterm) return;
+    if (
+      visibleWriteQueue.length === 0 &&
+      bytes.byteLength <= TERMINAL_WRITE_CHUNK_BYTES
+    ) {
+      xterm.write(bytes);
+      return;
+    }
+    visibleWriteQueue.push(
+      ...splitTerminalWrite(bytes, TERMINAL_WRITE_CHUNK_BYTES),
+    );
+    scheduleVisibleTerminalWrites();
+  }
+
   function paintBufferedTerminalOutput(): void {
     if (!xterm) return;
     const batch = flushBufferedTerminalOutput();
-    if (batch) xterm.write(batch);
+    if (batch) writeTerminalOutput(batch);
   }
 
   /** Retry after a failed spawn. Tears down whatever half-state the
@@ -1040,10 +1082,10 @@
         const newlyObservedBytes = ioAccounting.countRawBytes(bytes.byteLength);
         if (newlyObservedBytes > 0) recordRx(newlyObservedBytes);
         if (isTerminalVisible) {
-          xterm?.write(bytes);
+          writeTerminalOutput(bytes);
         } else if (writeBuffer.push(bytes)) {
           const batch = flushBufferedTerminalOutput();
-          if (batch) xterm?.write(batch);
+          if (batch) writeTerminalOutput(batch);
         }
         noteActivity();
         if (sshSession)
@@ -1511,10 +1553,7 @@
     // missed daemon false-edge cannot leave the dock stuck in "working" while
     // the terminal I/O chip has already dropped to 0/s.
     workingTicker = setInterval(() => {
-      if (
-        currentWorking &&
-        Date.now() - lastActivityTs > WORKING_IDLE_MS
-      ) {
+      if (currentWorking && Date.now() - lastActivityTs > WORKING_IDLE_MS) {
         setCurrentWorking(false);
       }
     }, 500);
@@ -1566,6 +1605,11 @@
     }
     if (tuiSettleTimer) clearTimeout(tuiSettleTimer);
     if (revealReconcileTimer) clearTimeout(revealReconcileTimer);
+    if (visibleWriteRaf !== null) {
+      cancelAnimationFrame(visibleWriteRaf);
+      visibleWriteRaf = null;
+    }
+    visibleWriteQueue = [];
     resizeObs?.disconnect();
     resizeCoalescer?.cancel();
     visibilityObs?.disconnect();
@@ -2037,21 +2081,33 @@
         out {formatBytes(txBytesTotal)} <span aria-hidden="true">·</span>
         {isTerminalVisible ? "visible" : "paused"}</span
       >
-      <label class="term-debug-toggle" title="Flash cells as terminal content changes">
+      <label
+        class="term-debug-toggle"
+        title="Flash cells as terminal content changes"
+      >
         <input
           type="checkbox"
           checked={$flashTermRepaints === true}
           on:change={(ev) =>
-            writeDebugToggle("terminal.flashRepaints", ev.currentTarget.checked)}
+            writeDebugToggle(
+              "terminal.flashRepaints",
+              ev.currentTarget.checked,
+            )}
         />
         flash
       </label>
-      <label class="term-debug-toggle" title="Pop cells as terminal content changes">
+      <label
+        class="term-debug-toggle"
+        title="Pop cells as terminal content changes"
+      >
         <input
           type="checkbox"
           checked={$scaleTermRepaints === true}
           on:change={(ev) =>
-            writeDebugToggle("terminal.scaleRepaints", ev.currentTarget.checked)}
+            writeDebugToggle(
+              "terminal.scaleRepaints",
+              ev.currentTarget.checked,
+            )}
         />
         scale
       </label>
@@ -2189,10 +2245,10 @@
     overflow: visible;
   }
   :global(
-      .terminal-wrap
-        .xterm-decoration.term-repaint-decoration.scale
-        .term-repaint-glyph
-    ) {
+    .terminal-wrap
+      .xterm-decoration.term-repaint-decoration.scale
+      .term-repaint-glyph
+  ) {
     display: block;
     width: 100%;
     height: 100%;
@@ -2206,10 +2262,8 @@
       cubic-bezier(0.18, 0.9, 0.18, 1) forwards;
   }
   :global(
-      .terminal-wrap.repaint-debug-active
-        .xterm-rows
-        span.xterm-decoration-top
-    ) {
+    .terminal-wrap.repaint-debug-active .xterm-rows span.xterm-decoration-top
+  ) {
     transform-origin: center center;
     will-change: transform, background-color, opacity;
   }
@@ -2217,13 +2271,13 @@
     animation: term-repaint-decoration-flash 520ms ease-out forwards;
   }
   :global(
-      .terminal-wrap.repaint-debug-flash
-        .xterm-rows
-        span.xterm-decoration-top
-    ) {
+    .terminal-wrap.repaint-debug-flash .xterm-rows span.xterm-decoration-top
+  ) {
     animation: term-repaint-decoration-flash 520ms ease-out forwards;
   }
-  :global(.terminal-wrap .xterm-decoration.term-repaint-decoration.flash.scale) {
+  :global(
+    .terminal-wrap .xterm-decoration.term-repaint-decoration.flash.scale
+  ) {
     animation: term-repaint-decoration-flash 520ms ease-out forwards;
   }
   @keyframes -global-term-repaint-decoration-flash {

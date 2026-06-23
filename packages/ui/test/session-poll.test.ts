@@ -39,6 +39,68 @@ function makeFetch(handler: (url: string, init?: RequestInit) => Response) {
 const noop = () => {};
 
 describe("createSessionPoller", () => {
+  test("does not overlap poll cycles when ticks fire while a request is in flight", async () => {
+    let resolveBatch!: () => void;
+    const batchGate = new Promise<void>((resolve) => {
+      resolveBatch = resolve;
+    });
+    const { fn, calls } = makeFetch((url) => {
+      if (url.includes("/api/sessions/batch")) {
+        return new Response(
+          new ReadableStream({
+            async start(controller) {
+              await batchGate;
+              controller.enqueue(
+                new TextEncoder().encode(
+                  JSON.stringify({
+                    results: [
+                      { source: "A", status: 200, etag: "a1", body: '{"v":1}' },
+                    ],
+                  }),
+                ),
+              );
+              controller.close();
+            },
+          }),
+        );
+      }
+      if (url.includes("/api/active-sends")) {
+        return jsonResponse([], { etag: "rev-0-all" });
+      }
+      return jsonResponse({}, { status: 404 });
+    });
+    const poller = createSessionPoller({ fetchImpl: fn, isIdle: () => false });
+    const got: string[] = [];
+    poller.register({
+      source: "A",
+      getSessionId: () => undefined,
+      onSession: (body) => got.push(body),
+      onInflight: noop,
+    });
+
+    const first = poller.tick();
+    const second = poller.tick();
+    await Promise.resolve();
+
+    expect(calls.filter((c) => c.url.includes("/api/sessions/batch"))).toHaveLength(
+      1,
+    );
+    expect(calls.filter((c) => c.url.includes("/api/active-sends"))).toHaveLength(
+      0,
+    );
+
+    resolveBatch();
+    await Promise.all([first, second]);
+
+    expect(calls.filter((c) => c.url.includes("/api/sessions/batch"))).toHaveLength(
+      2,
+    );
+    expect(calls.filter((c) => c.url.includes("/api/active-sends"))).toHaveLength(
+      2,
+    );
+    expect(got).toEqual(['{"v":1}']);
+  });
+
   test("coalesces N same-daemon sources into ONE batch POST + ONE active-sends GET", async () => {
     const { fn, calls } = makeFetch((url) => {
       if (url.includes("/api/sessions/batch"))

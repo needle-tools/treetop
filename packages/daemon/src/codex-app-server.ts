@@ -297,7 +297,7 @@ export class CodexAppServerAdapter implements NativeAgentAdapter {
     listener: CodexAppServerListener,
   ): () => void {
     const filtered = (event: CodexAppServerEvent) => {
-      if (!threadId || !event.threadId || event.threadId === threadId) {
+      if (!threadId || event.threadId === threadId) {
         listener(event);
       }
     };

@@ -43,6 +43,16 @@ interface SpanState {
 }
 
 const spans = new Map<string, SpanState>();
+const SLOW_SAMPLE_MS = 16;
+const RECENT_SLOW_LIMIT = 64;
+
+export type RecentSlowSample = {
+  name: string;
+  ms: number;
+  atMs: number;
+};
+
+const recentSlow: RecentSlowSample[] = [];
 
 /**
  * Record a latency sample for the named span.
@@ -65,6 +75,17 @@ export function record(name: string, ms: number): void {
   }
   state.count++;
   state.last = ms;
+
+  if (ms >= SLOW_SAMPLE_MS) {
+    recentSlow.push({
+      name,
+      ms: round3(ms),
+      atMs: round3(performance.now()),
+    });
+    if (recentSlow.length > RECENT_SLOW_LIMIT) {
+      recentSlow.splice(0, recentSlow.length - RECENT_SLOW_LIMIT);
+    }
+  }
 }
 
 /**
@@ -142,11 +163,16 @@ export function snapshot(): Record<string, SpanSnapshot> {
   return out;
 }
 
+export function recentSlowSamples(limit = 12): RecentSlowSample[] {
+  return recentSlow.slice(-limit).reverse();
+}
+
 /**
  * Clear all recorded state. Primarily a test hook.
  */
 export function reset(): void {
   spans.clear();
+  recentSlow.length = 0;
 }
 
 // Inspect in the browser console via `__sgTimings()`.

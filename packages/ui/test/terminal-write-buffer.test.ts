@@ -11,6 +11,7 @@ import {
   TerminalRepaintTracker,
   TerminalWriteBuffer,
   TerminalIoByteAccounting,
+  splitTerminalWrite,
   TERMINAL_ACTIVITY_RECENT_MS,
   formatTerminalIoRate,
   isTerminalRecentlyActive,
@@ -78,6 +79,22 @@ describe("TerminalWriteBuffer", () => {
     expect(b.push(bytes(1, 2, 3, 4, 5, 6))).toBe(true);
     expect(b.pendingBytes).toBe(6);
     expect(Array.from(b.flush()!)).toEqual([1, 2, 3, 4, 5, 6]);
+  });
+});
+
+describe("splitTerminalWrite", () => {
+  test("returns small writes unchanged", () => {
+    const input = bytes(1, 2, 3);
+    expect(splitTerminalWrite(input, 4)).toEqual([input]);
+  });
+
+  test("splits large writes into ordered subarrays", () => {
+    const chunks = splitTerminalWrite(bytes(1, 2, 3, 4, 5), 2);
+    expect(chunks.map((chunk) => Array.from(chunk))).toEqual([
+      [1, 2],
+      [3, 4],
+      [5],
+    ]);
   });
 });
 

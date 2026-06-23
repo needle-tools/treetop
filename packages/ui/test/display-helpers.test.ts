@@ -14,6 +14,7 @@ import {
   remoteButtonLabel,
   pushCount,
   pushBadgeDanger,
+  formatAbsoluteTimeTitle,
 } from "../src/display-helpers";
 import type { RemoteRef } from "../src/display-helpers";
 
@@ -103,6 +104,39 @@ describe("fileManagerLabel", () => {
   it('returns "Files" when navigator is undefined (SSR/node)', () => {
     const result = withNavigator(undefined, () => fileManagerLabel());
     expect(result).toBe("Files");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// formatAbsoluteTimeTitle
+// ---------------------------------------------------------------------------
+
+describe("formatAbsoluteTimeTitle", () => {
+  it("returns an empty title for invalid timestamps", () => {
+    const formatter = {
+      format() {
+        throw new Error("formatter should not run for invalid input");
+      },
+    };
+
+    expect(formatAbsoluteTimeTitle("", formatter)).toBe("");
+    expect(formatAbsoluteTimeTitle("not-a-date", formatter)).toBe("");
+  });
+
+  it("formats valid timestamps through a reusable formatter", () => {
+    const calls: number[] = [];
+    const iso = "2026-06-23T05:20:08.387Z";
+    const formatter = {
+      format(date: Date) {
+        calls.push(date.getTime());
+        return "Jun 23, 2026, 05:20:08";
+      },
+    };
+
+    expect(formatAbsoluteTimeTitle(iso, formatter)).toBe(
+      "Jun 23, 2026, 05:20:08",
+    );
+    expect(calls).toEqual([Date.parse(iso)]);
   });
 });
 

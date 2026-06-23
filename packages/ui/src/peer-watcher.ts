@@ -33,6 +33,8 @@ const HOST_COOLDOWN_KEY = (host: string) =>
 
 let timer: ReturnType<typeof setInterval> | null = null;
 let knownKeys: Set<string> | null = null;
+let tickInFlight: Promise<void> | null = null;
+let tickAgain = false;
 
 function peerKey(p: PeerEntry): string {
   return `${p.id}:${p.host}:${p.port}`;
@@ -55,7 +57,7 @@ function stampHost(host: string): void {
   }
 }
 
-async function tick(): Promise<void> {
+async function runTick(): Promise<void> {
   let peers: PeerEntry[] = [];
   try {
     const res = await fetch(apiUrl("/api/peers"));
@@ -82,6 +84,24 @@ async function tick(): Promise<void> {
     play("lan-peer-connect");
   }
   knownKeys = next;
+}
+
+function tick(): Promise<void> {
+  if (tickInFlight) {
+    tickAgain = true;
+    return tickInFlight;
+  }
+  tickInFlight = (async () => {
+    try {
+      do {
+        tickAgain = false;
+        await runTick();
+      } while (tickAgain);
+    } finally {
+      tickInFlight = null;
+    }
+  })();
+  return tickInFlight;
 }
 
 export function startPeerWatcher(): void {

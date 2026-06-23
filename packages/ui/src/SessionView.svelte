@@ -1,3 +1,62 @@
+<script context="module" lang="ts">
+  import { apiUrl as moduleApiUrl } from "./api";
+  import type { CodexModelInfo as ModuleCodexModelInfo } from "./claude-session-menu";
+
+  interface CodexModelsResult {
+    models: ModuleCodexModelInfo[];
+    error: string;
+  }
+
+  const codexModelsCache = new Map<string, CodexModelsResult>();
+  const codexModelsInFlight = new Map<string, Promise<CodexModelsResult>>();
+
+  function codexModelsCacheKey(
+    daemonId: string | undefined,
+    cwd: string,
+  ): string {
+    return `${daemonId ?? ""}\0${cwd}`;
+  }
+
+  async function loadSharedCodexModels(
+    daemonId: string | undefined,
+    cwd: string,
+  ): Promise<CodexModelsResult> {
+    const key = codexModelsCacheKey(daemonId, cwd);
+    const cached = codexModelsCache.get(key);
+    if (cached) return cached;
+    const inFlight = codexModelsInFlight.get(key);
+    if (inFlight) return inFlight;
+    const promise = (async () => {
+      try {
+        const qs = new URLSearchParams({ cwd });
+        const res = await fetch(
+          moduleApiUrl(`/api/codex-app/models?${qs.toString()}`, daemonId),
+        );
+        const body = (await res.json().catch(() => null)) as {
+          models?: ModuleCodexModelInfo[];
+          error?: string;
+        } | null;
+        if (!res.ok) throw new Error(body?.error ?? `HTTP ${res.status}`);
+        const result = {
+          models: Array.isArray(body?.models) ? body.models : [],
+          error: "",
+        };
+        codexModelsCache.set(key, result);
+        return result;
+      } catch (e) {
+        return {
+          models: [],
+          error: e instanceof Error ? e.message : String(e),
+        };
+      } finally {
+        codexModelsInFlight.delete(key);
+      }
+    })();
+    codexModelsInFlight.set(key, promise);
+    return promise;
+  }
+</script>
+
 <script lang="ts">
   import { apiUrl } from "./api";
   import { play } from "./sound";
@@ -45,7 +104,7 @@
     type VisualTranscriptDeltaPatch,
     type VisualTranscriptItem,
   } from "./last-user-message";
-  import { registerSessionPoll } from "./session-poll";
+  import { registerSessionPoll, requestSessionPollNow } from "./session-poll";
   import { canResumeVisualSurface } from "./session-source-routing";
   import {
     codexEventItemId,
@@ -710,10 +769,21 @@
       summaryRefreshing = false;
     }
   }
-  // Re-fetch on mount + whenever the transcript source changes.
+  let lastSummaryRequestSource: string | undefined = undefined;
+  // Re-fetch after the transcript body is present + whenever its source changes.
+  // Initial transcript hydration is batched by session-poll.ts; summary lookups
+  // should not compete with first paint for every restored column.
   $: {
-    void sessionFileSource;
-    void refreshSummary();
+    const target = sessionFileSource;
+    if (!target) {
+      if (lastSummaryRequestSource !== "") {
+        lastSummaryRequestSource = "";
+        void refreshSummary();
+      }
+    } else if (session && target !== lastSummaryRequestSource) {
+      lastSummaryRequestSource = target;
+      void refreshSummary();
+    }
   }
   // Re-fetch whenever the global summarize dialog *closes* against
   // this source — picks up newly-generated or just-deleted summaries
@@ -1516,25 +1586,7 @@
     loading = true;
     error = "";
     try {
-      const qs = new URLSearchParams({ source: sessionPollSource });
-      const headers: Record<string, string> = {};
-      if (lastEtag) headers["If-None-Match"] = lastEtag;
-      const res = await fetch(
-        apiUrl(`/api/session?${qs.toString()}`, daemonId),
-        { headers },
-      );
-      if (res.status === 304) return;
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({}));
-        throw new Error(body.error ?? `HTTP ${res.status}`);
-      }
-      const etag = res.headers.get("ETag");
-      if (etag) lastEtag = etag;
-      const bodyText = await res.text();
-      if (bodyText === lastResponseBody) return;
-      lastResponseBody = bodyText;
-      const next = JSON.parse(bodyText) as NormalizedSession;
-      applyParsedSession(next);
+      await requestSessionPollNow();
     } catch (e) {
       error = e instanceof Error ? e.message : String(e);
     } finally {
@@ -1612,6 +1664,7 @@
   let codexQueueHydratedKey = "";
   let codexModels: CodexModelInfo[] = [];
   let codexModelsKey = "";
+  let codexModelsLoadingKey = "";
   let codexModelsLoading = false;
   let codexModelsError = "";
   let codexPendingDeltaPatches: VisualTranscriptDeltaPatch<NormalizedBlock>[] =
@@ -1805,25 +1858,22 @@
     onPickApproval: pickCodexApproval,
   });
   async function loadCodexModels(cwd: string): Promise<void> {
-    if (!cwd || codexModelsLoading || codexModelsKey === cwd) return;
+    const key = cwd ? codexModelsCacheKey(daemonId, cwd) : "";
+    if (!cwd || codexModelsKey === key || codexModelsLoadingKey === key) return;
     codexModelsLoading = true;
+    codexModelsLoadingKey = key;
     codexModelsError = "";
     try {
-      const qs = new URLSearchParams({ cwd });
-      const res = await fetch(
-        apiUrl(`/api/codex-app/models?${qs.toString()}`, daemonId),
-      );
-      const body = (await res.json().catch(() => null)) as {
-        models?: CodexModelInfo[];
-        error?: string;
-      } | null;
-      if (!res.ok) throw new Error(body?.error ?? `HTTP ${res.status}`);
-      codexModels = Array.isArray(body?.models) ? body.models : [];
-      codexModelsKey = cwd;
-    } catch (e) {
-      codexModelsError = e instanceof Error ? e.message : String(e);
+      const result = await loadSharedCodexModels(daemonId, cwd);
+      if (codexModelsLoadingKey !== key) return;
+      codexModels = result.models;
+      codexModelsError = result.error;
+      codexModelsKey = key;
     } finally {
-      codexModelsLoading = false;
+      if (codexModelsLoadingKey === key) {
+        codexModelsLoadingKey = "";
+        codexModelsLoading = false;
+      }
     }
   }
 
@@ -2075,7 +2125,7 @@
     closeCodexEventStream();
     codexEventsThreadId = threadId;
     codexEventStreamState = "connecting";
-    unsubscribeCodexEvents = subscribeCodexEvents(daemonId, {
+    unsubscribeCodexEvents = subscribeCodexEvents(daemonId, threadId, {
       onState: (state) => {
         codexEventStreamState = state;
       },
@@ -3603,22 +3653,18 @@
     return s.length > 200 ? s.slice(0, 200) + "…" : s;
   }
 
-  $: if (sessionPollSource && shouldPollTranscript) {
-    void load();
-  }
-
   $: {
     const threadId = codexEventThreadIdForSession({
       agent,
       mode,
       sessionId: session?.sessionId,
-      liveCodexApp,
+      liveCodexApp: codexVisualAppSurface,
     });
     if (threadId) openCodexEventStream(threadId);
     else closeCodexEventStream();
   }
 
-  $: if (agent === "codex" && session?.cwd) {
+  $: if (codexVisualAppSurface && session?.cwd) {
     void loadCodexModels(session.cwd);
   }
 
@@ -3652,50 +3698,78 @@
   // plans/performance.md "per-column session-poll storm"). The poller is
   // idle-gated and resume-aware centrally; it dispatches non-live transcript
   // bodies via onSession and this column's active-sends slice via onInflight.
-  // Live Codex app-server panes intentionally skip transcript body polling:
-  // their active turn arrives through the app-server event stream.
-  // `source` is keyed in App.svelte's {#each}, so it's stable for this mount.
+  // Live Codex app-server panes still need transcript-file hydration for their
+  // existing messages. They only skip body polling while an active app-server
+  // turn is streaming, so a batch response does not clobber the live event UI.
+  // `source` is keyed in App.svelte's {#each}, but `transcriptSource` may arrive
+  // after mount for live app-server rows, so registration tracks the resolved
+  // `sessionPollSource`.
 
   let unregisterPoll: (() => void) | null = null;
+  let mounted = false;
+  let registeredPollKey = "";
+
+  function syncSessionPollRegistration(): void {
+    if (!mounted) return;
+    const nextKey =
+      shouldPollTranscript && sessionPollSource
+        ? `${daemonId ?? ""}\0${sessionPollSource}`
+        : "";
+    if (nextKey === registeredPollKey) return;
+    if (unregisterPoll) {
+      unregisterPoll();
+      unregisterPoll = null;
+    }
+    registeredPollKey = nextKey;
+    if (!nextKey) return;
+    unregisterPoll = registerSessionPoll({
+      source: sessionPollSource,
+      daemonId,
+      getSessionId: () => session?.sessionId,
+      shouldPollSession: () =>
+        ollamaStreamingIdx === null &&
+        (!codexVisualAppSurface || !session || codexActiveTurnId === null),
+      onSession: (bodyText, etag) => {
+        // Don't clobber a live API stream mid-flight after initial hydration.
+        if (
+          ollamaStreamingIdx !== null ||
+          (codexVisualAppSurface && codexActiveTurnId !== null && session)
+        )
+          return;
+        if (bodyText === lastResponseBody) return;
+        lastEtag = etag;
+        lastResponseBody = bodyText;
+        try {
+          applyParsedSession(JSON.parse(bodyText) as NormalizedSession);
+        } catch (e) {
+          error = e instanceof Error ? e.message : String(e);
+        }
+      },
+      onInflight: (list) => {
+        inflight = list as unknown as InflightRec[];
+      },
+    });
+  }
+
+  $: {
+    void sessionPollSource;
+    void shouldPollTranscript;
+    void daemonId;
+    syncSessionPollRegistration();
+  }
 
   onMount(() => {
+    mounted = true;
     window.addEventListener(STAGE_PROMPT_EVENT, onStagePrompt);
-    if (shouldPollTranscript) {
-      unregisterPoll = registerSessionPoll({
-        source: sessionPollSource,
-        daemonId,
-        getSessionId: () => session?.sessionId,
-        shouldPollSession: () =>
-          !liveCodexApp &&
-          ollamaStreamingIdx === null &&
-          codexActiveTurnId === null,
-        onSession: (bodyText, etag) => {
-          // Don't clobber a live API stream mid-flight.
-          if (
-            liveCodexApp ||
-            ollamaStreamingIdx !== null ||
-            codexActiveTurnId !== null
-          )
-            return;
-          if (bodyText === lastResponseBody) return;
-          lastEtag = etag;
-          lastResponseBody = bodyText;
-          try {
-            applyParsedSession(JSON.parse(bodyText) as NormalizedSession);
-          } catch (e) {
-            error = e instanceof Error ? e.message : String(e);
-          }
-        },
-        onInflight: (list) => {
-          inflight = list as unknown as InflightRec[];
-        },
-      });
-    }
+    syncSessionPollRegistration();
   });
 
   onDestroy(() => {
     window.removeEventListener(STAGE_PROMPT_EVENT, onStagePrompt);
     if (unregisterPoll) unregisterPoll();
+    unregisterPoll = null;
+    registeredPollKey = "";
+    mounted = false;
     if (pendingTimer) clearTimeout(pendingTimer);
     closeCodexEventStream();
     if (disposeGraceTimer) clearTimeout(disposeGraceTimer);

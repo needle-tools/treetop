@@ -1600,7 +1600,9 @@ function reposNDJSONFromCache(
 /** Fresh build that yields each repo as soon as its worktrees finish
  *  enriching. Also populates the cache + resolves `reposInflight` so
  *  concurrent callers can share the work. */
-function reposSelectionCacheKey(selectedRemotes: Record<string, string>): string {
+function reposSelectionCacheKey(
+  selectedRemotes: Record<string, string>,
+): string {
   return JSON.stringify(
     Object.keys(selectedRemotes)
       .sort()
@@ -8398,7 +8400,7 @@ const server = Bun.serve<TermWsData, never>({
       }
 
       if (url.pathname === "/api/errors" && req.method === "POST") {
-        const body = (await req.json().catch(() => null)) as {
+        type BrowserErrorPostBody = {
           id?: string;
           kind?: ErrorKind;
           source?: ErrorSource;
@@ -8408,35 +8410,62 @@ const server = Bun.serve<TermWsData, never>({
           message?: string;
           stack?: string;
           extra?: Record<string, unknown>;
-        } | null;
-        if (!body || typeof body.message !== "string" || !body.message) {
+        };
+        const body = (await req.json().catch(() => null)) as
+          | BrowserErrorPostBody
+          | BrowserErrorPostBody[]
+          | null;
+        const bodies = Array.isArray(body) ? body : body ? [body] : [];
+        if (
+          bodies.length === 0 ||
+          bodies.some(
+            (entry) => typeof entry.message !== "string" || !entry.message,
+          )
+        ) {
           return json(
             { error: "body.message (string) is required" },
             { status: 400 },
           );
         }
-        const entry = await errors.append(
-          {
-            kind: body.kind ?? "uncaught",
-            source: body.source ?? "browser",
-            route: body.route,
-            method: body.method,
-            status: body.status,
-            message: body.message,
-            stack: body.stack,
-            extra: body.extra,
-          },
-          body.id,
-        );
-        if (body.kind === "diagnostic") {
+        const appended = [];
+        let diagnosticCount = 0;
+        for (const item of bodies) {
+          const entry = await errors.append(
+            {
+              kind: item.kind ?? "uncaught",
+              source: item.source ?? "browser",
+              route: item.route,
+              method: item.method,
+              status: item.status,
+              message: item.message!,
+              stack: item.stack,
+              extra: item.extra,
+            },
+            item.id,
+          );
+          appended.push(entry);
+          if (item.kind === "diagnostic") diagnosticCount += 1;
+          broadcast("error", entry);
+        }
+        if (diagnosticCount === 1 && bodies.length === 1) {
+          const item = bodies[0]!;
           console.log(
-            `supergit daemon: browser diagnostic ${body.message} ${
-              body.extra ? JSON.stringify(body.extra) : "{}"
+            `supergit daemon: browser diagnostic ${item.message} ${
+              item.extra ? JSON.stringify(item.extra) : "{}"
             }`,
           );
+        } else if (diagnosticCount > 0) {
+          const sample = bodies
+            .filter((item) => item.kind === "diagnostic")
+            .slice(0, 3)
+            .map((item) => item.message)
+            .join(" | ");
+          console.log(
+            `supergit daemon: browser diagnostics batch count=${diagnosticCount}` +
+              `${sample ? ` sample=${sample}` : ""}`,
+          );
         }
-        broadcast("error", entry);
-        return json(entry);
+        return json(Array.isArray(body) ? appended : appended[0]);
       }
 
       if (url.pathname === "/api/errors" && req.method === "DELETE") {

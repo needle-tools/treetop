@@ -270,3 +270,16 @@ export class TerminalWriteBuffer {
     return out;
   }
 }
+
+export function splitTerminalWrite(
+  bytes: Uint8Array,
+  chunkBytes: number,
+): Uint8Array[] {
+  const chunkSize = Math.max(1, Math.floor(chunkBytes));
+  if (bytes.byteLength <= chunkSize) return [bytes];
+  const chunks: Uint8Array[] = [];
+  for (let offset = 0; offset < bytes.byteLength; offset += chunkSize) {
+    chunks.push(bytes.subarray(offset, offset + chunkSize));
+  }
+  return chunks;
+}

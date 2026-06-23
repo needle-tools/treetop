@@ -389,6 +389,38 @@ describe("CodexAppServerAdapter", () => {
     await run.exited;
   });
 
+  test("thread subscriptions do not receive unthreaded app-server events", async () => {
+    const fake = fakeCodexProcess();
+    const adapter = new CodexAppServerAdapter({ spawn: () => fake.proc });
+    const threadEvents: unknown[] = [];
+    const globalEvents: unknown[] = [];
+    adapter.subscribe("thr_existing", (event) => threadEvents.push(event));
+    adapter.subscribe(undefined, (event) => globalEvents.push(event));
+
+    const models = adapter.listModels("/repo");
+    await waitFor(() => fake.writes[0], "initialize request");
+    fake.enqueue({ id: 0, result: {} });
+    await waitFor(() => fake.writes[2], "model list request");
+
+    fake.enqueue({
+      method: "mcpServer/startupStatus/updated",
+      params: { name: "tools", status: "starting" },
+    });
+    await waitFor(
+      () => (globalEvents.length > 0 ? true : undefined),
+      "global unthreaded event",
+    );
+    expect(threadEvents).toEqual([]);
+    expect(globalEvents).toContainEqual(
+      expect.objectContaining({
+        method: "mcpServer/startupStatus/updated",
+      }),
+    );
+
+    fake.enqueue({ id: 1, result: { data: [] } });
+    await expect(models).resolves.toEqual([]);
+  });
+
   test("steers and interrupts active Codex turns over app-server RPC", async () => {
     const fake = fakeCodexProcess();
     const adapter = new CodexAppServerAdapter({ spawn: () => fake.proc });

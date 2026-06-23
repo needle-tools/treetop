@@ -69,6 +69,24 @@ export function formatRelativeTime(iso: string, now = Date.now()): string {
   return `${Math.round(mo / 12)}y ago`;
 }
 
+const absoluteTimeTitleFormatter = new Intl.DateTimeFormat(undefined, {
+  year: "numeric",
+  month: "short",
+  day: "numeric",
+  hour: "2-digit",
+  minute: "2-digit",
+  second: "2-digit",
+});
+
+export function formatAbsoluteTimeTitle(
+  iso: string,
+  formatter: Pick<Intl.DateTimeFormat, "format"> = absoluteTimeTitleFormatter,
+): string {
+  const t = Date.parse(iso);
+  if (!Number.isFinite(t)) return "";
+  return formatter.format(new Date(t));
+}
+
 // ---------------------------------------------------------------------------
 // duplicateRepoNotice  (Add-folder duplicate toast)
 // ---------------------------------------------------------------------------

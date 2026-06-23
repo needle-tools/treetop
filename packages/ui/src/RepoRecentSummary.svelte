@@ -66,9 +66,10 @@
   /** True once we've heard back from the GET, so we don't flash
    *  "no summary yet" while the probe is still in flight. */
   let probed: boolean = false;
+  let probing: boolean = false;
   /** Becomes true the first time the strip intersects the viewport.
-   *  Generation is deferred until then so off-screen repos don't
-   *  burn an Ollama slot on the user's first paint. */
+   *  Cache probes and generation are deferred until then so off-screen
+   *  repos don't compete with first paint. */
   let visible: boolean = false;
   /** Cancel handle returned by `enqueueSummary`. Lets us drop a
    *  job from the queue if the component unmounts before it runs. */
@@ -89,7 +90,10 @@
   }
 
   async function probe(): Promise<void> {
+    if (probing || probed) return;
+    probing = true;
     const data = await fetchCached();
+    probing = false;
     probed = true;
     if (!data) return;
     if (data.summary) {
@@ -404,12 +408,7 @@
     return `last ${Math.round(days / 30)}mo`;
   }
 
-  let startupTimer: ReturnType<typeof setTimeout> | undefined;
-  onMount(() => {
-    startupTimer = setTimeout(() => void probe(), 3000);
-  });
   onDestroy(() => {
-    clearTimeout(startupTimer);
     io?.disconnect();
     cancelQueued?.();
     aborter?.abort();
@@ -417,16 +416,20 @@
 
   /** Svelte action: attach an IntersectionObserver to the strip and
    *  flip `visible` true on the first intersection. Once visible
-   *  fires, we trigger maybeEnqueue (in case the probe already
-   *  finished and was waiting on us). No need to keep observing
-   *  past the first hit — generation is one-shot per mount. */
+   *  fires, we probe the cache and maybe enqueue generation. No need
+   *  to keep observing past the first hit — summary loading is one-shot
+   *  per mount. */
   function observeVisible(node: HTMLElement): { destroy: () => void } {
+    if (visible) {
+      void probe();
+      return { destroy: () => {} };
+    }
     io = new IntersectionObserver(
       (entries) => {
         for (const e of entries) {
           if (e.isIntersecting) {
             visible = true;
-            maybeEnqueue();
+            void probe();
             io?.disconnect();
             io = null;
             break;
@@ -444,11 +447,20 @@
     };
   }
 
-  $: void repoId; // re-fetch if the bound repoId ever swaps
+  $: if (visible) {
+    void repoId;
+    void probe();
+  }
 </script>
 
-{#if probed}
-  {#if inline}
+{#if inline}
+  {#if !probed}
+    <span
+      class="inline-summary empty"
+      bind:this={stripEl}
+      use:observeVisible
+    ></span>
+  {:else}
     <!-- Compact inline variant: sits inside .row-status alongside OpenInActions -->
     <span
       class="inline-summary"
@@ -512,6 +524,14 @@
         </button>
       {/if}
     </span>
+  {/if}
+{:else}
+  {#if !probed}
+    <div
+      class="strip repo-summary empty"
+      bind:this={stripEl}
+      use:observeVisible
+    ></div>
   {:else}
     <div
       class="strip repo-summary"

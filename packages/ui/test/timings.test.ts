@@ -17,6 +17,7 @@ import {
   time,
   timeAsync,
   snapshot,
+  recentSlowSamples,
   reset,
 } from "../src/timings";
 
@@ -224,5 +225,29 @@ describe("multiple independent spans", () => {
     fill("b", 5);
     expect(snapshot()["a"]!.count).toBe(10);
     expect(snapshot()["b"]!.count).toBe(5);
+  });
+});
+
+describe("recent slow samples", () => {
+  test("keeps slow samples newest-first and omits sub-frame work", () => {
+    record("fast", 5);
+    record("slow-a", 17);
+    record("slow-b", 31);
+
+    expect(recentSlowSamples()).toMatchObject([
+      { name: "slow-b", ms: 31 },
+      { name: "slow-a", ms: 17 },
+    ]);
+  });
+
+  test("honors the caller limit", () => {
+    record("slow-a", 17);
+    record("slow-b", 31);
+    record("slow-c", 45);
+
+    expect(recentSlowSamples(2).map((s) => s.name)).toEqual([
+      "slow-c",
+      "slow-b",
+    ]);
   });
 });

@@ -31,11 +31,13 @@ export interface InboxSnapshot {
 
 const empty: InboxSnapshot = { inbox: [], mutes: {} };
 export const messages = writable<InboxSnapshot>(empty);
+let refreshInFlight: Promise<void> | null = null;
+let refreshAgain = false;
 
 /** Refresh from the daemon. Called on mount, after a successful
  *  send, and from App.svelte's SSE handler when a `message_received`
  *  broadcast arrives. */
-export async function refreshMessages(): Promise<void> {
+async function runRefreshMessages(): Promise<void> {
   try {
     const res = await fetch(apiUrl("/api/messages"));
     if (!res.ok) return;
@@ -47,6 +49,24 @@ export async function refreshMessages(): Promise<void> {
   } catch {
     // best-effort — empty state on failure is fine
   }
+}
+
+export function refreshMessages(): Promise<void> {
+  if (refreshInFlight) {
+    refreshAgain = true;
+    return refreshInFlight;
+  }
+  refreshInFlight = (async () => {
+    try {
+      do {
+        refreshAgain = false;
+        await runRefreshMessages();
+      } while (refreshAgain);
+    } finally {
+      refreshInFlight = null;
+    }
+  })();
+  return refreshInFlight;
 }
 
 /** Total INBOUND messages across all non-muted senders. Used as a

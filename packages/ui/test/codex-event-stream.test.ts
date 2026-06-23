@@ -56,12 +56,16 @@ describe("codex event stream hub", () => {
     __setCodexEventSourceCtorForTests(FakeEventSource);
   });
 
-  test("shares one EventSource for multiple subscribers on the same daemon", () => {
+  test("shares one EventSource for multiple subscribers on the same daemon and thread", () => {
     const a: CodexAppEvent[] = [];
     const b: CodexAppEvent[] = [];
 
-    const offA = subscribeCodexEvents(undefined, { onEvent: (e) => a.push(e) });
-    const offB = subscribeCodexEvents(undefined, { onEvent: (e) => b.push(e) });
+    const offA = subscribeCodexEvents(undefined, "t1", {
+      onEvent: (e) => a.push(e),
+    });
+    const offB = subscribeCodexEvents(undefined, "t1", {
+      onEvent: (e) => b.push(e),
+    });
 
     expect(FakeEventSource.instances.length).toBe(1);
     expect(FakeEventSource.instances[0]?.url).toBe("/api/codex-app/events");
@@ -76,9 +80,10 @@ describe("codex event stream hub", () => {
     expect(FakeEventSource.instances[0]?.closed).toBe(true);
   });
 
-  test("keeps separate shared streams per daemon", () => {
-    subscribeCodexEvents(undefined, { onEvent: () => {} });
-    subscribeCodexEvents("remote-1", { onEvent: () => {} });
+  test("keeps one shared stream per daemon, not per thread", () => {
+    subscribeCodexEvents(undefined, "t1", { onEvent: () => {} });
+    subscribeCodexEvents(undefined, "t2", { onEvent: () => {} });
+    subscribeCodexEvents("remote-1", "t1", { onEvent: () => {} });
 
     expect(FakeEventSource.instances.map((es) => es.url)).toEqual([
       "/api/codex-app/events",
@@ -86,13 +91,36 @@ describe("codex event stream hub", () => {
     ]);
   });
 
+  test("filters shared daemon events by subscriber thread", () => {
+    const a: CodexAppEvent[] = [];
+    const b: CodexAppEvent[] = [];
+
+    subscribeCodexEvents(undefined, "t1", { onEvent: (e) => a.push(e) });
+    subscribeCodexEvents(undefined, "t2", { onEvent: (e) => b.push(e) });
+
+    expect(FakeEventSource.instances.length).toBe(1);
+    FakeEventSource.instances[0]?.emit("codex", event("t1", 1));
+    FakeEventSource.instances[0]?.emit("codex", event("t2", 2));
+    FakeEventSource.instances[0]?.emit("codex", {
+      kind: "notification",
+      method: "mcpServer/startupStatus/updated",
+      params: { name: "server", status: "starting" },
+      receivedAt: "2026-06-18T00:00:00.000Z",
+      seq: 3,
+    });
+
+    expect(a.map((e) => e.seq)).toEqual([1]);
+    expect(b.map((e) => e.seq)).toEqual([2]);
+  });
+
   test("replays hub history to later subscribers", () => {
     const a: CodexAppEvent[] = [];
     const b: CodexAppEvent[] = [];
 
-    subscribeCodexEvents(undefined, { onEvent: (e) => a.push(e) });
+    subscribeCodexEvents(undefined, "t1", { onEvent: (e) => a.push(e) });
     FakeEventSource.instances[0]?.emit("codex", event("t1", 1));
-    subscribeCodexEvents(undefined, { onEvent: (e) => b.push(e) });
+    FakeEventSource.instances[0]?.emit("codex", event("t2", 2));
+    subscribeCodexEvents(undefined, "t1", { onEvent: (e) => b.push(e) });
 
     expect(a.map((e) => e.seq)).toEqual([1]);
     expect(b.map((e) => e.seq)).toEqual([1]);
@@ -101,7 +129,7 @@ describe("codex event stream hub", () => {
   test("reports connection state to each subscriber", () => {
     const states: CodexEventStreamState[] = [];
 
-    subscribeCodexEvents(undefined, { onState: (s) => states.push(s) });
+    subscribeCodexEvents(undefined, "t1", { onState: (s) => states.push(s) });
     FakeEventSource.instances[0]?.onopen?.();
     FakeEventSource.instances[0]?.onerror?.();
 

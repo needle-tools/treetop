@@ -38,6 +38,10 @@ interface Subscriber {
   onState?: (state: CodexEventStreamState) => void;
 }
 
+interface HubSubscriber extends Subscriber {
+  threadId: string | undefined;
+}
+
 export function codexEventThreadIdForSession(opts: {
   agent: string;
   mode: string;
@@ -53,7 +57,7 @@ export function codexEventThreadIdForSession(opts: {
 interface Hub {
   es: EventSourceLike;
   state: CodexEventStreamState;
-  subscribers: Set<Subscriber>;
+  subscribers: Set<HubSubscriber>;
   history: CodexAppEvent[];
 }
 
@@ -80,12 +84,29 @@ function setState(hub: Hub, state: CodexEventStreamState): void {
   for (const subscriber of hub.subscribers) subscriber.onState?.(state);
 }
 
+function eventThreadId(event: CodexAppEvent): string | undefined {
+  return (
+    event.threadId ??
+    (typeof event.params.threadId === "string" ? event.params.threadId : undefined)
+  );
+}
+
+function subscriberWantsEvent(
+  subscriber: HubSubscriber,
+  event: CodexAppEvent,
+): boolean {
+  if (!subscriber.threadId) return true;
+  return eventThreadId(event) === subscriber.threadId;
+}
+
 function pushEvent(hub: Hub, event: CodexAppEvent): void {
   hub.history.push(event);
   if (hub.history.length > HISTORY_LIMIT) {
     hub.history.splice(0, hub.history.length - HISTORY_LIMIT);
   }
-  for (const subscriber of hub.subscribers) subscriber.onEvent?.(event);
+  for (const subscriber of hub.subscribers) {
+    if (subscriberWantsEvent(subscriber, event)) subscriber.onEvent?.(event);
+  }
 }
 
 function parseEvent(data: unknown): CodexAppEvent | null {
@@ -233,7 +254,9 @@ function cleanCodexToolInput(
   return Object.keys(out).length ? out : undefined;
 }
 
-function createHub(daemonId: string | undefined): Hub {
+function createHub(
+  daemonId: string | undefined,
+): Hub {
   const es = new (eventSourceCtor())(eventSourceUrl(daemonId));
   const hub: Hub = {
     es,
@@ -252,6 +275,7 @@ function createHub(daemonId: string | undefined): Hub {
 
 export function subscribeCodexEvents(
   daemonId: string | undefined,
+  threadId: string | undefined,
   subscriber: Subscriber,
 ): () => void {
   const key = daemonKey(daemonId);
@@ -260,13 +284,18 @@ export function subscribeCodexEvents(
     hub = createHub(daemonId);
     hubs.set(key, hub);
   }
-  hub.subscribers.add(subscriber);
-  subscriber.onState?.(hub.state);
-  for (const event of hub.history) subscriber.onEvent?.(event);
+  const hubSubscriber: HubSubscriber = { ...subscriber, threadId };
+  hub.subscribers.add(hubSubscriber);
+  hubSubscriber.onState?.(hub.state);
+  for (const event of hub.history) {
+    if (subscriberWantsEvent(hubSubscriber, event)) {
+      hubSubscriber.onEvent?.(event);
+    }
+  }
   return () => {
     const current = hubs.get(key);
     if (!current) return;
-    current.subscribers.delete(subscriber);
+    current.subscribers.delete(hubSubscriber);
     if (current.subscribers.size > 0) return;
     current.es.close();
     hubs.delete(key);

@@ -14,8 +14,11 @@ import {
   __resetBrowserResponsivenessTrackingForTests,
   describeWsClose,
   terminalWsCloseRepresentsExit,
+  __flushErrorPostsForTests,
+  __resetErrorPostsForTests,
   type FrontendErrorEntry,
 } from "../src/errors";
+import { record as recordTiming, reset as resetTimings } from "../src/timings";
 
 function makeEntry(over: Partial<FrontendErrorEntry> = {}): FrontendErrorEntry {
   return {
@@ -94,6 +97,8 @@ describe("terminal websocket close lifecycle", () => {
 describe("frontend errors store", () => {
   beforeEach(() => {
     clearErrorsLocal();
+    resetTimings();
+    __resetErrorPostsForTests();
   });
 
   test("subscribers receive the current list on subscribe", () => {
@@ -213,6 +218,100 @@ describe("frontend errors store", () => {
       expect(e.extra).toEqual({ traceId: "t1", elapsedMs: 12 });
     } finally {
       globalThis.fetch = origFetch;
+    }
+  });
+
+  test("persists browser errors in one batched POST", async () => {
+    const origFetch = globalThis.fetch;
+    const posted: unknown[] = [];
+    globalThis.fetch = (async (_input, init) => {
+      posted.push(JSON.parse(String(init?.body)));
+      return new Response("{}", { status: 200 });
+    }) as typeof fetch;
+    try {
+      __resetFetchTrackingForTests();
+      installFetchTracking();
+      recordBrowserError({
+        kind: "fetch",
+        source: "browser",
+        message: "GET /api/a -> slow",
+        route: "/api/a",
+        method: "GET",
+      });
+      recordBrowserDiagnostic("browser-event-loop-stall driftMs=3000", {
+        driftMs: 3000,
+      });
+      await __flushErrorPostsForTests();
+      expect(posted.length).toBe(1);
+      expect(Array.isArray(posted[0])).toBe(true);
+      expect((posted[0] as FrontendErrorEntry[]).map((e) => e.message)).toEqual(
+        ["GET /api/a -> slow", "browser-event-loop-stall driftMs=3000"],
+      );
+    } finally {
+      globalThis.fetch = origFetch;
+      __resetFetchTrackingForTests();
+      __resetErrorPostsForTests();
+    }
+  });
+
+  test("serializes persisted browser errors while a POST is in flight", async () => {
+    const origFetch = globalThis.fetch;
+    const posted: unknown[] = [];
+    let releaseFirst!: () => void;
+    const firstPostGate = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    let firstPostStarted!: () => void;
+    const firstPostStartedPromise = new Promise<void>((resolve) => {
+      firstPostStarted = resolve;
+    });
+    let postCount = 0;
+    globalThis.fetch = (async (_input, init) => {
+      postCount++;
+      posted.push(JSON.parse(String(init?.body)));
+      if (postCount === 1) {
+        firstPostStarted();
+        await firstPostGate;
+      }
+      return new Response("{}", { status: 200 });
+    }) as typeof fetch;
+    try {
+      __resetFetchTrackingForTests();
+      installFetchTracking();
+      recordBrowserError({
+        kind: "fetch",
+        source: "browser",
+        message: "GET /api/a -> slow",
+        route: "/api/a",
+        method: "GET",
+      });
+      const firstFlush = __flushErrorPostsForTests();
+      await firstPostStartedPromise;
+
+      recordBrowserDiagnostic("browser-event-loop-stall driftMs=3000", {
+        driftMs: 3000,
+      });
+      const secondFlush = __flushErrorPostsForTests();
+      await Promise.resolve();
+
+      expect(postCount).toBe(1);
+      releaseFirst();
+      await Promise.all([firstFlush, secondFlush]);
+      expect(postCount).toBe(2);
+      expect(
+        posted.flatMap((body) =>
+          Array.isArray(body)
+            ? body.map((entry: FrontendErrorEntry) => entry.message)
+            : [(body as FrontendErrorEntry).message],
+        ),
+      ).toEqual([
+        "GET /api/a -> slow",
+        "browser-event-loop-stall driftMs=3000",
+      ]);
+    } finally {
+      globalThis.fetch = origFetch;
+      __resetFetchTrackingForTests();
+      __resetErrorPostsForTests();
     }
   });
 
@@ -336,6 +435,7 @@ describe("installFetchTracking — expected-client-error filter", () => {
   afterEach(() => {
     globalThis.fetch = savedFetch;
     __resetFetchTrackingForTests();
+    __resetErrorPostsForTests();
   });
 
   function stubResponse(status: number, statusText: string) {
@@ -371,6 +471,20 @@ describe("installFetchTracking — expected-client-error filter", () => {
     stubResponse(304, "Not Modified");
     const res = await fetch("/api/session?source=foo.jsonl");
     expect(res.status).toBe(304);
+    expect(getErrors().length).toBe(0);
+  });
+
+  test("skips recording expected /api/processes timeout aborts", async () => {
+    globalThis.fetch = (async () => {
+      const err = new Error("The operation was aborted.");
+      err.name = "AbortError";
+      throw err;
+    }) as typeof fetch;
+    installFetchTracking();
+
+    await expect(fetch("/api/processes")).rejects.toThrow(
+      "The operation was aborted.",
+    );
     expect(getErrors().length).toBe(0);
   });
 
@@ -492,6 +606,7 @@ describe("installBrowserResponsivenessTracking", () => {
 
   beforeEach(() => {
     clearErrorsLocal();
+    resetTimings();
     __resetBrowserResponsivenessTrackingForTests();
     savedPerformanceObserver = globalThis.PerformanceObserver;
   });
@@ -568,5 +683,21 @@ describe("installBrowserResponsivenessTracking", () => {
         lastRecordedAtMs: 3_250,
       }),
     ).toBeNull();
+  });
+
+  test("includes recent slow UI timing samples in stall diagnostics", () => {
+    recordTiming("load.repo-upsert", 24);
+    recordTiming("dockEntries", 41);
+
+    const diagnostic = eventLoopStallDiagnostic({
+      expectedAtMs: 1_000,
+      observedAtMs: 3_500,
+      lastRecordedAtMs: -Infinity,
+    });
+
+    expect(diagnostic?.extra.recentUiTimings).toMatchObject([
+      { name: "dockEntries", ms: 41 },
+      { name: "load.repo-upsert", ms: 24 },
+    ]);
   });
 });

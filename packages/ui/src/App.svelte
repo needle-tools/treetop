@@ -16,7 +16,16 @@
     MIN_WORKING_FOR_PULSE_MS,
   } from "./unread-pulse-manager";
   import { apiUrl } from "./api";
-  import { daemonRepoKey, upsertRepo, replaceDaemonRepos, daemonIdForWorktreePath, daemonIdForRepoId, repoPrefsKey, planRepoRemoval, sortReposByKeys } from "./repo-fanout";
+  import {
+    daemonRepoKey,
+    upsertRepo,
+    replaceDaemonRepos,
+    daemonIdForWorktreePath,
+    daemonIdForRepoId,
+    repoPrefsKey,
+    planRepoRemoval,
+    sortReposByKeys,
+  } from "./repo-fanout";
   import { onMount, onDestroy, tick } from "svelte";
   import { flip } from "svelte/animate";
   import {
@@ -31,7 +40,7 @@
   import { restoreScrollAfterDelay } from "./scroll-restore";
   import { animateValue, centerScrollTarget } from "./scroll-util";
   import { singleFlight } from "./single-flight";
-  import { time, timeAsync } from "./timings";
+  import { record, time, timeAsync } from "./timings";
   import {
     changeKindRequiresDaemonsReload,
     changeKindRequiresEventsReload,
@@ -172,11 +181,7 @@
     clearErrors,
     type FrontendErrorEntry,
   } from "./errors";
-  import {
-    anchorLabel,
-    eventLabel,
-    type Event,
-  } from "./event-format";
+  import { anchorLabel, eventLabel, type Event } from "./event-format";
   import { play, setEnabled, setMasterVolume } from "./sound";
   import { createToastManager, type Toast } from "./toast-manager";
   import { subscribeToasts } from "./toast-bus";
@@ -610,9 +615,7 @@
   const soundEnabled = settingValue("sound.enabled");
   const soundVolume = settingValue("sound.volume");
   $: setEnabled($soundEnabled !== false);
-  $: setMasterVolume(
-    typeof $soundVolume === "number" ? $soundVolume / 100 : 1,
-  );
+  $: setMasterVolume(typeof $soundVolume === "number" ? $soundVolume / 100 : 1);
   /** When set, the Add-daemon dialog opens in attach mode (live-log only) for
    *  an already-started job — currently used for "Uninstall on box". */
   let provisionAttachJob: { jobId: string; title: string } | null = null;
@@ -1301,11 +1304,17 @@
     stashed?: boolean;
   }> {
     try {
-      const res = await fetch(apiUrl(`/api/repos/${repoId}/checkout`, daemonIdForRepoId(repos, repoId)), {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ path: wtPath, branch, ...options }),
-      });
+      const res = await fetch(
+        apiUrl(
+          `/api/repos/${repoId}/checkout`,
+          daemonIdForRepoId(repos, repoId),
+        ),
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ path: wtPath, branch, ...options }),
+        },
+      );
       if (res.ok) {
         const body = (await res.json().catch(() => ({}))) as {
           stashed?: boolean;
@@ -1429,16 +1438,19 @@
     error?: string;
   }> {
     try {
-      const res = await fetch(apiUrl(`/api/repos/${repoId}/pull`, daemonIdForRepoId(repos, repoId)), {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          path: wtPath,
-          remote: persistedSelectedRemoteForRepoId(repoId),
-          ...options,
-        }),
-        signal: AbortSignal.timeout(90_000),
-      });
+      const res = await fetch(
+        apiUrl(`/api/repos/${repoId}/pull`, daemonIdForRepoId(repos, repoId)),
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            path: wtPath,
+            remote: persistedSelectedRemoteForRepoId(repoId),
+            ...options,
+          }),
+          signal: AbortSignal.timeout(90_000),
+        },
+      );
       const body = (await res.json().catch(() => ({}))) as {
         ok?: boolean;
         kind?: string;
@@ -1634,15 +1646,18 @@
     if (pushBusy[wtPath]) return;
     pushBusy = { ...pushBusy, [wtPath]: true };
     try {
-      const res = await fetch(apiUrl(`/api/repos/${repoId}/push`, daemonIdForRepoId(repos, repoId)), {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          path: wtPath,
-          remote: persistedSelectedRemoteForRepoId(repoId),
-        }),
-        signal: AbortSignal.timeout(90_000),
-      });
+      const res = await fetch(
+        apiUrl(`/api/repos/${repoId}/push`, daemonIdForRepoId(repos, repoId)),
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            path: wtPath,
+            remote: persistedSelectedRemoteForRepoId(repoId),
+          }),
+          signal: AbortSignal.timeout(90_000),
+        },
+      );
       const body = (await res.json().catch(() => ({}))) as {
         ok?: boolean;
         error?: string;
@@ -2816,11 +2831,17 @@
     error = "";
     newWtBusy = { ...newWtBusy, [repoId]: true };
     try {
-      const res = await fetch(apiUrl(`/api/repos/${repoId}/worktrees`, daemonIdForRepoId(repos, repoId)), {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ branch }),
-      });
+      const res = await fetch(
+        apiUrl(
+          `/api/repos/${repoId}/worktrees`,
+          daemonIdForRepoId(repos, repoId),
+        ),
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ branch }),
+        },
+      );
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));
         throw new Error(body.error ?? `HTTP ${res.status}`);
@@ -2973,7 +2994,9 @@
     scrollNewColIntoView(wtPath, s.source);
   }
 
-  function sessionSurfaceForPicker(s: AgentSession): SessionSurface | undefined {
+  function sessionSurfaceForPicker(
+    s: AgentSession,
+  ): SessionSurface | undefined {
     if (s.agent !== "claude" && s.agent !== "codex") return undefined;
     const subject: {
       agent: "claude" | "codex";
@@ -3721,8 +3744,7 @@
       // jump shares the dock's short, tunable duration.
       const anchor = (col.closest(".row-body") as HTMLElement | null) ?? col;
       const aRect = anchor.getBoundingClientRect();
-      const maxY =
-        document.documentElement.scrollHeight - window.innerHeight;
+      const maxY = document.documentElement.scrollHeight - window.innerHeight;
       animateValue({
         from: window.scrollY,
         to: centerScrollTarget(
@@ -3890,240 +3912,269 @@
    *  here. Without the wrapper an `fs_change` storm or two mutations
    *  landing in the same tick would issue concurrent /api/repos NDJSON
    *  streams that race each other writing into `repos`. */
-  const load = singleFlight(() => timeAsync("load", async () => {
-    loading = true;
-    loadingSlow = false;
-    loadingTotal = 0;
-    loadingDone = 0;
-    if (loadingSlowTimer) clearTimeout(loadingSlowTimer);
-    loadingSlowTimer = setTimeout(() => {
-      loadingSlow = true;
-    }, 5000);
-    error = "";
-    // Browser-side timing for the initial dashboard load. Pair with the
-    // daemon's `/api/repos total=…` line — together they tell you
-    // whether a slow load is server-side (git fan-out) or client-side
-    // (rendering / network).
-    const tStart = performance.now();
-    let tManifest = 0;
-    let tFirstRepo = 0;
-    let repoCount = 0;
-    try {
-      // Kick off /api/repos NDJSON first so its manifest lands and
-      // paints skeleton rows before the other fetches resolve. The
-      // sibling fetches still run in parallel — we just don't await
-      // them inside the stream pump.
-      // Build NDJSON handlers scoped to one daemon (undefined ⇒ local).
-      // The same handlers drive the local stream and every remote-daemon
-      // stream; each writes only its own repos into the merged `repos`
-      // array, keyed by [daemonId, id] so a remote repo never clobbers a
-      // local one that shares a git id.
-      const makeRepoHandlers = (daemonId?: string) => ({
-        onManifest: (skel: Repo[]) => {
-          if (!daemonId && tManifest === 0)
-            tManifest = performance.now() - tStart;
-          loadingTotal += skel.length;
-          const filtered =
-            pendingRemoval.size > 0
-              ? skel.filter((s) => !pendingRemoval.has(s.id))
-              : skel;
-          // Preserve already-enriched repos for repos we've seen before
-          // (manifest skeletons carry no worktrees yet); replaceDaemonRepos
-          // swaps in this daemon's block in place, leaving other daemons'
-          // rows untouched.
-          const existing = new Map(repos.map((r) => [daemonRepoKey(r), r]));
-          const merged = filtered.map(
-            (s) => existing.get(daemonRepoKey(s)) ?? s,
-          );
-          // Apply the user's cross-daemon row order on top of the per-daemon
-          // block layout so local + remote rows can interleave (no-op until
-          // the user reorders — savedRepoOrder is empty by default).
-          repos = sortReposByKeys(
-            replaceDaemonRepos(repos, daemonId, merged),
-            savedRepoOrder,
-          );
-          loading = false;
-        },
-        onRepo: (full: Repo) => {
-          repoCount += 1;
-          loadingDone = repoCount;
-          if (tFirstRepo === 0) tFirstRepo = performance.now() - tStart;
-          // If a color save is still in flight for this repo, the daemon's
-          // snapshot of `color` is stale (the POST hasn't persisted yet).
-          // Preserve the optimistic local value so the UI doesn't flicker
-          // back to the old color. Keyed by daemonRepoKey (daemonId+id), not
-          // bare id, so two rows for the same repo on different daemons don't
-          // share a guard. (`full` is daemonId-stamped by parseNDJSONLines.)
-          if (pendingRemoval.has(full.id)) return;
-          const colorKey = daemonRepoKey(full);
-          if (pendingRepoColor.has(colorKey)) {
-            const pending = pendingRepoColor.get(colorKey);
-            if (pending === null) delete (full as { color?: string }).color;
-            else full.color = pending;
-          }
-          repos = upsertRepo(repos, full);
-        },
-      });
-      const reposStream = fetchReposNDJSON(makeRepoHandlers());
-      const [e, s, t, liveTermsResp, dResp] = await Promise.all([
-        fetch(apiUrl("/api/events")),
-        fetch(apiUrl("/api/shells")),
-        fetch(apiUrl("/api/session-titles")),
-        fetch(apiUrl("/api/terminals")).catch(() => null),
-        // Cheap local read of the remote-daemon registry; null if it
-        // ever fails so fan-out is simply skipped (local path unaffected).
-        fetch(apiUrl("/api/daemons")).catch(() => null),
-      ]);
-      if (!e.ok) throw new Error(`/api/events: ${e.status}`);
-      // Wait for the stream to finish before reading sibling responses,
-      // but DON'T reassign `repos` from the stream's return value — that
-      // array is in completion order, while `repos` is already in
-      // canonical workspace order (manifest seeds order, `onRepo` does
-      // in-place updates by id). Reassigning would reorder the dashboard
-      // on every refresh.
-      await reposStream;
-      if (liveTermsResp && liveTermsResp.ok) {
-        const liveTerms = await liveTermsResp.json().catch(() => []);
-        if (Array.isArray(liveTerms)) {
-          liveTerminalIds = new Set(
-            liveTerms
-              .filter((t) => !t?.exitedAt && typeof t?.id === "string")
-              .map((t) => t.id),
-          );
-          openSessionsByWt = reconcileLiveAgentTerminals(
-            openSessionsByWt,
-            repos,
-            liveTerms,
-          ) as typeof openSessionsByWt;
-        }
-      }
-      // Fan out to any registered remote daemons. Each contributes its
-      // repos (tagged with its daemonId) into the merged `repos` array,
-      // appearing as folder rows beside the local ones. Best-effort: a
-      // daemon whose tunnel is down is skipped this cycle (Phase C adds
-      // per-row online/offline state). When none are registered this is a
-      // pure no-op, so the local-only path is unchanged.
-      const online = new Map<string, boolean>();
-      if (dResp && dResp.ok) {
-        let daemons: { id: string; label: string; host: string; port: number; color?: string }[] = [];
-        try {
-          daemons = (await dResp.json()) as typeof daemons;
-        } catch {
-          daemons = [];
-        }
-        remoteDaemons = Array.isArray(daemons) ? daemons : [];
-        if (Array.isArray(daemons) && daemons.length > 0) {
-          await Promise.all(
-            daemons.map((d) =>
-              fetchReposNDJSON(makeRepoHandlers(d.id), d.id)
-                .then(() => online.set(d.id, true))
-                .catch(() => online.set(d.id, false)),
-            ),
-          );
-        }
-        // Populate per-daemon agent/shell caches so the "Start a new session"
-        // dropdown shows the remote box's CLIs, not the local machine's.
-        // Build into temp maps and assign ONCE at the end. Assigning the live
-        // `agentsByDaemon = { local }` up front would, on every reload,
-        // momentarily drop the remote entries — a remote row's "+" menu then
-        // flips to the LOCAL agents until the async fetches refill it (the
-        // "Claude here / Claude there" flip-flop).
-        const nextAgents: Record<string, { name: string; path: string }[]> = {
-          local: installedAgents,
-        };
-        const nextShell: Record<string, string> = { local: defaultShell };
-        const nextShellArgs: Record<string, string[]> = {
-          local: defaultShellArgs,
-        };
-        const nextShells: Record<string, ShellOption[]> = {
-          local: shellsByDaemon.local ?? [],
-        };
-        for (const d of remoteDaemons) {
-          try {
-            const [aRes, sRes, lsRes] = await Promise.all([
-              fetch(apiUrl("/api/agents/installed", d.id)),
-              fetch(apiUrl("/api/shell-default", d.id)),
-              fetch(apiUrl("/api/shells/available", d.id)),
-            ]);
-            if (aRes.ok) {
-              const body = (await aRes.json()) as { installed?: { name: string; path: string }[] };
-              nextAgents[d.id] = Array.isArray(body?.installed) ? body.installed : [];
-            }
-            if (sRes.ok) {
-              const body = (await sRes.json()) as { shell?: unknown; args?: unknown };
-              if (typeof body.shell === "string" && body.shell.length > 0) {
-                nextShell[d.id] = body.shell;
-              }
-              if (Array.isArray(body.args)) {
-                nextShellArgs[d.id] = body.args.filter(
-                  (a): a is string => typeof a === "string",
-                );
-              }
-            }
-            if (lsRes.ok) {
-              const body = (await lsRes.json()) as { shells?: unknown };
-              if (Array.isArray(body.shells)) {
-                nextShells[d.id] = body.shells as ShellOption[];
-              }
-            }
-          } catch {
-            // Offline daemon — keep its prior entries so the row doesn't flap
-            // to local agents just because one refresh couldn't reach it.
-            if (agentsByDaemon[d.id]) nextAgents[d.id] = agentsByDaemon[d.id];
-            if (shellByDaemon[d.id]) nextShell[d.id] = shellByDaemon[d.id];
-            if (shellArgsByDaemon[d.id])
-              nextShellArgs[d.id] = shellArgsByDaemon[d.id];
-            if (shellsByDaemon[d.id]) nextShells[d.id] = shellsByDaemon[d.id];
-          }
-        }
-        // Single atomic assignment — no intermediate wipe, no flip-flop.
-        agentsByDaemon = nextAgents;
-        shellByDaemon = nextShell;
-        shellArgsByDaemon = nextShellArgs;
-        shellsByDaemon = nextShells;
-      } else {
-        remoteDaemons = [];
-      }
-      daemonsOnline = online;
-      events = await e.json();
-      // /api/shells failing is non-fatal — empty list just means no
-      // shell entries surface in the worktree picker this cycle.
-      if (s.ok) allShells = (await s.json()) as ShellRecord[];
-      // Pre-populate `newSessionTitles` for every saved synthetic-source
-      // title. Titles for real JSONL sources already flow through
-      // /api/repos -> agent.manualTitle, so we only adopt the entries
-      // whose key matches a synthetic prefix — keeps the in-memory map
-      // tight and avoids confusing two state sources for the same source.
-      if (t.ok) {
-        const allTitles = (await t.json()) as Record<string, string>;
-        const synthetic: Record<string, string> = {};
-        for (const [src, title] of Object.entries(allTitles)) {
-          if (SYNTHETIC_SOURCE_PREFIXES.some((p) => src.startsWith(p))) {
-            synthetic[src] = title;
-          }
-        }
-        // Merge: anything the user just typed locally wins over the
-        // server snapshot (they may have an unflushed save in flight).
-        newSessionTitles = { ...synthetic, ...newSessionTitles };
-      }
-    } catch (e) {
-      error = e instanceof Error ? e.message : String(e);
-    } finally {
-      loading = false;
+  const load = singleFlight(() =>
+    timeAsync("load", async () => {
+      loading = true;
       loadingSlow = false;
-      if (loadingSlowTimer) {
-        clearTimeout(loadingSlowTimer);
-        loadingSlowTimer = null;
+      loadingTotal = 0;
+      loadingDone = 0;
+      if (loadingSlowTimer) clearTimeout(loadingSlowTimer);
+      loadingSlowTimer = setTimeout(() => {
+        loadingSlow = true;
+      }, 5000);
+      error = "";
+      // Browser-side timing for the initial dashboard load. Pair with the
+      // daemon's `/api/repos total=…` line — together they tell you
+      // whether a slow load is server-side (git fan-out) or client-side
+      // (rendering / network).
+      const tStart = performance.now();
+      let tManifest = 0;
+      let tFirstRepo = 0;
+      let repoCount = 0;
+      try {
+        // Kick off /api/repos NDJSON first so its manifest lands and
+        // paints skeleton rows before the other fetches resolve. The
+        // sibling fetches still run in parallel — we just don't await
+        // them inside the stream pump.
+        // Build NDJSON handlers scoped to one daemon (undefined ⇒ local).
+        // The same handlers drive the local stream and every remote-daemon
+        // stream; each writes only its own repos into the merged `repos`
+        // array, keyed by [daemonId, id] so a remote repo never clobbers a
+        // local one that shares a git id.
+        const makeRepoHandlers = (daemonId?: string) => ({
+          onManifest: (skel: Repo[]) => {
+            time("load.manifest-apply", () => {
+              if (!daemonId && tManifest === 0)
+                tManifest = performance.now() - tStart;
+              loadingTotal += skel.length;
+              const filtered =
+                pendingRemoval.size > 0
+                  ? skel.filter((s) => !pendingRemoval.has(s.id))
+                  : skel;
+              // Preserve already-enriched repos for repos we've seen before
+              // (manifest skeletons carry no worktrees yet); replaceDaemonRepos
+              // swaps in this daemon's block in place, leaving other daemons'
+              // rows untouched.
+              const existing = new Map(repos.map((r) => [daemonRepoKey(r), r]));
+              const merged = filtered.map(
+                (s) => existing.get(daemonRepoKey(s)) ?? s,
+              );
+              // Apply the user's cross-daemon row order on top of the per-daemon
+              // block layout so local + remote rows can interleave (no-op until
+              // the user reorders — savedRepoOrder is empty by default).
+              repos = sortReposByKeys(
+                replaceDaemonRepos(repos, daemonId, merged),
+                savedRepoOrder,
+              );
+              loading = false;
+            });
+          },
+          onRepo: (full: Repo) => {
+            time("load.repo-upsert", () => {
+              repoCount += 1;
+              loadingDone = repoCount;
+              if (tFirstRepo === 0) tFirstRepo = performance.now() - tStart;
+              // If a color save is still in flight for this repo, the daemon's
+              // snapshot of `color` is stale (the POST hasn't persisted yet).
+              // Preserve the optimistic local value so the UI doesn't flicker
+              // back to the old color. Keyed by daemonRepoKey (daemonId+id), not
+              // bare id, so two rows for the same repo on different daemons don't
+              // share a guard. (`full` is daemonId-stamped by parseNDJSONLines.)
+              if (pendingRemoval.has(full.id)) return;
+              const colorKey = daemonRepoKey(full);
+              if (pendingRepoColor.has(colorKey)) {
+                const pending = pendingRepoColor.get(colorKey);
+                if (pending === null) delete (full as { color?: string }).color;
+                else full.color = pending;
+              }
+              repos = upsertRepo(repos, full);
+            });
+          },
+        });
+        const reposStream = fetchReposNDJSON(makeRepoHandlers());
+        const [e, s, t, liveTermsResp, dResp] = await Promise.all([
+          fetch(apiUrl("/api/events")),
+          fetch(apiUrl("/api/shells")),
+          fetch(apiUrl("/api/session-titles")),
+          fetch(apiUrl("/api/terminals")).catch(() => null),
+          // Cheap local read of the remote-daemon registry; null if it
+          // ever fails so fan-out is simply skipped (local path unaffected).
+          fetch(apiUrl("/api/daemons")).catch(() => null),
+        ]);
+        if (!e.ok) throw new Error(`/api/events: ${e.status}`);
+        // Wait for the stream to finish before reading sibling responses,
+        // but DON'T reassign `repos` from the stream's return value — that
+        // array is in completion order, while `repos` is already in
+        // canonical workspace order (manifest seeds order, `onRepo` does
+        // in-place updates by id). Reassigning would reorder the dashboard
+        // on every refresh.
+        await reposStream;
+        if (liveTermsResp && liveTermsResp.ok) {
+          const liveTerms = await timeAsync("load.terminals-json", () =>
+            liveTermsResp.json().catch(() => []),
+          );
+          if (Array.isArray(liveTerms)) {
+            liveTerminalIds = new Set(
+              liveTerms
+                .filter((t) => !t?.exitedAt && typeof t?.id === "string")
+                .map((t) => t.id),
+            );
+            openSessionsByWt = reconcileLiveAgentTerminals(
+              openSessionsByWt,
+              repos,
+              liveTerms,
+            ) as typeof openSessionsByWt;
+          }
+        }
+        // Fan out to any registered remote daemons. Each contributes its
+        // repos (tagged with its daemonId) into the merged `repos` array,
+        // appearing as folder rows beside the local ones. Best-effort: a
+        // daemon whose tunnel is down is skipped this cycle (Phase C adds
+        // per-row online/offline state). When none are registered this is a
+        // pure no-op, so the local-only path is unchanged.
+        const online = new Map<string, boolean>();
+        if (dResp && dResp.ok) {
+          let daemons: {
+            id: string;
+            label: string;
+            host: string;
+            port: number;
+            color?: string;
+          }[] = [];
+          try {
+            daemons = (await timeAsync("load.daemons-json", () =>
+              dResp.json(),
+            )) as typeof daemons;
+          } catch {
+            daemons = [];
+          }
+          remoteDaemons = Array.isArray(daemons) ? daemons : [];
+          if (Array.isArray(daemons) && daemons.length > 0) {
+            await Promise.all(
+              daemons.map((d) =>
+                fetchReposNDJSON(makeRepoHandlers(d.id), d.id)
+                  .then(() => online.set(d.id, true))
+                  .catch(() => online.set(d.id, false)),
+              ),
+            );
+          }
+          // Populate per-daemon agent/shell caches so the "Start a new session"
+          // dropdown shows the remote box's CLIs, not the local machine's.
+          // Build into temp maps and assign ONCE at the end. Assigning the live
+          // `agentsByDaemon = { local }` up front would, on every reload,
+          // momentarily drop the remote entries — a remote row's "+" menu then
+          // flips to the LOCAL agents until the async fetches refill it (the
+          // "Claude here / Claude there" flip-flop).
+          const nextAgents: Record<string, { name: string; path: string }[]> = {
+            local: installedAgents,
+          };
+          const nextShell: Record<string, string> = { local: defaultShell };
+          const nextShellArgs: Record<string, string[]> = {
+            local: defaultShellArgs,
+          };
+          const nextShells: Record<string, ShellOption[]> = {
+            local: shellsByDaemon.local ?? [],
+          };
+          for (const d of remoteDaemons) {
+            try {
+              const [aRes, sRes, lsRes] = await Promise.all([
+                fetch(apiUrl("/api/agents/installed", d.id)),
+                fetch(apiUrl("/api/shell-default", d.id)),
+                fetch(apiUrl("/api/shells/available", d.id)),
+              ]);
+              if (aRes.ok) {
+                const body = (await aRes.json()) as {
+                  installed?: { name: string; path: string }[];
+                };
+                nextAgents[d.id] = Array.isArray(body?.installed)
+                  ? body.installed
+                  : [];
+              }
+              if (sRes.ok) {
+                const body = (await sRes.json()) as {
+                  shell?: unknown;
+                  args?: unknown;
+                };
+                if (typeof body.shell === "string" && body.shell.length > 0) {
+                  nextShell[d.id] = body.shell;
+                }
+                if (Array.isArray(body.args)) {
+                  nextShellArgs[d.id] = body.args.filter(
+                    (a): a is string => typeof a === "string",
+                  );
+                }
+              }
+              if (lsRes.ok) {
+                const body = (await lsRes.json()) as { shells?: unknown };
+                if (Array.isArray(body.shells)) {
+                  nextShells[d.id] = body.shells as ShellOption[];
+                }
+              }
+            } catch {
+              // Offline daemon — keep its prior entries so the row doesn't flap
+              // to local agents just because one refresh couldn't reach it.
+              if (agentsByDaemon[d.id]) nextAgents[d.id] = agentsByDaemon[d.id];
+              if (shellByDaemon[d.id]) nextShell[d.id] = shellByDaemon[d.id];
+              if (shellArgsByDaemon[d.id])
+                nextShellArgs[d.id] = shellArgsByDaemon[d.id];
+              if (shellsByDaemon[d.id]) nextShells[d.id] = shellsByDaemon[d.id];
+            }
+          }
+          // Single atomic assignment — no intermediate wipe, no flip-flop.
+          agentsByDaemon = nextAgents;
+          shellByDaemon = nextShell;
+          shellArgsByDaemon = nextShellArgs;
+          shellsByDaemon = nextShells;
+        } else {
+          remoteDaemons = [];
+        }
+        daemonsOnline = online;
+        events = await timeAsync("load.events-json", () => e.json());
+        // /api/shells failing is non-fatal — empty list just means no
+        // shell entries surface in the worktree picker this cycle.
+        if (s.ok)
+          allShells = (await timeAsync("load.shells-json", () =>
+            s.json(),
+          )) as ShellRecord[];
+        // Pre-populate `newSessionTitles` for every saved synthetic-source
+        // title. Titles for real JSONL sources already flow through
+        // /api/repos -> agent.manualTitle, so we only adopt the entries
+        // whose key matches a synthetic prefix — keeps the in-memory map
+        // tight and avoids confusing two state sources for the same source.
+        if (t.ok) {
+          const allTitles = (await timeAsync("load.session-titles-json", () =>
+            t.json(),
+          )) as Record<string, string>;
+          const synthetic: Record<string, string> = {};
+          for (const [src, title] of Object.entries(allTitles)) {
+            if (SYNTHETIC_SOURCE_PREFIXES.some((p) => src.startsWith(p))) {
+              synthetic[src] = title;
+            }
+          }
+          // Merge: anything the user just typed locally wins over the
+          // server snapshot (they may have an unflushed save in flight).
+          newSessionTitles = { ...synthetic, ...newSessionTitles };
+        }
+      } catch (e) {
+        error = e instanceof Error ? e.message : String(e);
+      } finally {
+        loading = false;
+        loadingSlow = false;
+        if (loadingSlowTimer) {
+          clearTimeout(loadingSlowTimer);
+          loadingSlowTimer = null;
+        }
+        const totalMs = performance.now() - tStart;
+        record("load.total", totalMs);
+        if (totalMs > 200) {
+          console.log(
+            `[load] slow: ${totalMs.toFixed(0)}ms ` +
+              `(manifest=${tManifest.toFixed(0)}ms firstRepo=${tFirstRepo.toFixed(0)}ms repos=${repoCount})`,
+          );
+        }
       }
-      const totalMs = performance.now() - tStart;
-      if (totalMs > 200) {
-        console.log(
-          `[load] slow: ${totalMs.toFixed(0)}ms ` +
-            `(manifest=${tManifest.toFixed(0)}ms firstRepo=${tFirstRepo.toFixed(0)}ms repos=${repoCount})`,
-        );
-      }
-    }
-  }));
+    }),
+  );
 
   const FS_CHANGE_BATCH_MS = 250;
   const fsChangeBatcher = createFsChangeBatcher({
@@ -4346,9 +4397,11 @@
           `Your local daemon may be an older build without this endpoint — rebuild + restart it.`,
       );
     }
-    const json = (await res.json().catch(() => null)) as
-      | { id?: string; label?: string; error?: string }
-      | null;
+    const json = (await res.json().catch(() => null)) as {
+      id?: string;
+      label?: string;
+      error?: string;
+    } | null;
     if (!res.ok) throw new Error(json?.error ?? `HTTP ${res.status}`);
     if (!json || typeof json.id !== "string") {
       throw new Error("daemon accepted the request but returned no record");
@@ -4439,7 +4492,10 @@
       }
       return j.jobId;
     },
-    stream: (jobId: string, handlers: ProvisionStreamHandlers): (() => void) => {
+    stream: (
+      jobId: string,
+      handlers: ProvisionStreamHandlers,
+    ): (() => void) => {
       const es = new EventSource(
         apiUrl(`/api/daemons/provision/${jobId}/stream`),
       );
@@ -4633,11 +4689,14 @@
     }
     error = "";
     try {
-      const res = await fetch(apiUrl(`/api/repos/${id}/rename`, daemonIdForRepoId(repos, id)), {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name }),
-      });
+      const res = await fetch(
+        apiUrl(`/api/repos/${id}/rename`, daemonIdForRepoId(repos, id)),
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ name }),
+        },
+      );
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));
         throw new Error(body.error ?? `HTTP ${res.status}`);
@@ -4818,11 +4877,17 @@
         },
   ): Promise<boolean> {
     try {
-      const res = await fetch(apiUrl(`/api/repos/${repoId}/custom-links`, daemonIdForRepoId(repos, repoId)), {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(input),
-      });
+      const res = await fetch(
+        apiUrl(
+          `/api/repos/${repoId}/custom-links`,
+          daemonIdForRepoId(repos, repoId),
+        ),
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(input),
+        },
+      );
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));
         throw new Error(body.error ?? `HTTP ${res.status}`);
@@ -4863,11 +4928,17 @@
       }
     }
     try {
-      const res = await fetch(apiUrl(`/api/repos/${repoId}/custom-links/order`, daemonIdForRepoId(repos, repoId)), {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ order: orderedIds }),
-      });
+      const res = await fetch(
+        apiUrl(
+          `/api/repos/${repoId}/custom-links/order`,
+          daemonIdForRepoId(repos, repoId),
+        ),
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ order: orderedIds }),
+        },
+      );
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));
         throw new Error(body.error ?? `HTTP ${res.status}`);
@@ -4895,11 +4966,17 @@
     },
   ): Promise<boolean> {
     try {
-      const res = await fetch(apiUrl(`/api/repos/${repoId}/custom-links/${linkId}`, daemonIdForRepoId(repos, repoId)), {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(input),
-      });
+      const res = await fetch(
+        apiUrl(
+          `/api/repos/${repoId}/custom-links/${linkId}`,
+          daemonIdForRepoId(repos, repoId),
+        ),
+        {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(input),
+        },
+      );
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));
         throw new Error(body.error ?? `HTTP ${res.status}`);
@@ -4924,9 +5001,15 @@
     linkId: string,
   ): Promise<void> {
     try {
-      const res = await fetch(apiUrl(`/api/repos/${repoId}/custom-links/${linkId}`, daemonIdForRepoId(repos, repoId)), {
-        method: "DELETE",
-      });
+      const res = await fetch(
+        apiUrl(
+          `/api/repos/${repoId}/custom-links/${linkId}`,
+          daemonIdForRepoId(repos, repoId),
+        ),
+        {
+          method: "DELETE",
+        },
+      );
       if (!res.ok && res.status !== 204) {
         const body = await res.json().catch(() => ({}));
         throw new Error(body.error ?? `HTTP ${res.status}`);
@@ -5043,11 +5126,14 @@
     )?.id;
 
     try {
-      const res = await fetch(apiUrl("/api/command/run", daemonIdForWorktreePath(repos, wtPath)), {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ linkId: link.id, repoId, repoPath: wtPath }),
-      });
+      const res = await fetch(
+        apiUrl("/api/command/run", daemonIdForWorktreePath(repos, wtPath)),
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ linkId: link.id, repoId, repoPath: wtPath }),
+        },
+      );
       const body = await res.json();
       if (!res.ok) {
         addToast({
@@ -5332,7 +5418,10 @@
       void load().then(flipOnline, flipOnline); // refresh rows; keep badge online
       return { ok: true };
     }
-    return { ok: false, error: j?.error || `reconnect failed (HTTP ${res.status})` };
+    return {
+      ok: false,
+      error: j?.error || `reconnect failed (HTTP ${res.status})`,
+    };
   }
 
   /** Diagnose a remote daemon's connection (GET .../connection): ssh present
@@ -5424,7 +5513,9 @@
     projectsMenuOpen = false;
     await tick();
     await tick();
-    const el = document.querySelector(".add-folder-footer") as HTMLElement | null;
+    const el = document.querySelector(
+      ".add-folder-footer",
+    ) as HTMLElement | null;
     if (!el) return;
     el.scrollIntoView({ behavior: "smooth", block: "center" });
   }
@@ -5447,11 +5538,17 @@
       return;
     }
     async function call(force: boolean) {
-      const res = await fetch(apiUrl(`/api/repos/${repoId}/worktrees`, daemonIdForRepoId(repos, repoId)), {
-        method: "DELETE",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ path: wt.path, force }),
-      });
+      const res = await fetch(
+        apiUrl(
+          `/api/repos/${repoId}/worktrees`,
+          daemonIdForRepoId(repos, repoId),
+        ),
+        {
+          method: "DELETE",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ path: wt.path, force }),
+        },
+      );
       if (res.ok) return { ok: true as const };
       const body = (await res.json().catch(() => ({}))) as {
         error?: string;
@@ -5710,7 +5807,9 @@
   let remoteStreams = new Map<string, EventSource>();
   function syncRemoteStreams(): void {
     const online = new Set(
-      remoteDaemons.filter((d) => daemonsOnline.get(d.id) !== false).map((d) => d.id),
+      remoteDaemons
+        .filter((d) => daemonsOnline.get(d.id) !== false)
+        .map((d) => d.id),
     );
     // Close streams for daemons no longer online/registered.
     for (const [id, es] of remoteStreams) {
@@ -5747,165 +5846,170 @@
     const es = new EventSource(apiUrl("/api/stream"));
     es.addEventListener("change", (rawEvt: MessageEvent) => {
       time("sse-change", () => {
-      // Parse first so we can gate the two expensive refetches on the
-      // payload kind. Before this gate `load()` ran for every "change"
-      // event including chatty notifications (sound_play, note_*,
-      // undo/redo, peerDiscovery, command_*, message_*,
-      // session_invite_*), each one triggering a fresh `/api/repos`
-      // streaming response — easily 500–1000 ms server-side. See
-      // `sse-change-kinds.ts` for the kind taxonomy.
-      const data = rawEvt?.data;
-      let payload: { kind?: string; path?: string } = {};
-      if (typeof data === "string") {
-        try {
-          payload = JSON.parse(data);
-        } catch {
-          // Non-JSON payload — treat as "kind unknown" so the gates
-          // both skip; pre-fix we always called load(), but a payload
-          // we can't parse can't be a real mutation either.
+        // Parse first so we can gate the two expensive refetches on the
+        // payload kind. Before this gate `load()` ran for every "change"
+        // event including chatty notifications (sound_play, note_*,
+        // undo/redo, peerDiscovery, command_*, message_*,
+        // session_invite_*), each one triggering a fresh `/api/repos`
+        // streaming response — easily 500–1000 ms server-side. See
+        // `sse-change-kinds.ts` for the kind taxonomy.
+        const data = rawEvt?.data;
+        let payload: { kind?: string; path?: string } = {};
+        if (typeof data === "string") {
+          try {
+            payload = JSON.parse(data);
+          } catch {
+            // Non-JSON payload — treat as "kind unknown" so the gates
+            // both skip; pre-fix we always called load(), but a payload
+            // we can't parse can't be a real mutation either.
+          }
         }
-      }
-      // Cheap events-only refetch so the notes-list popover ("Recently
-      // deleted" + Undo) and the Undo tray pick up the new event
-      // within one round-trip. Gated to skip notifications that don't
-      // write to events.jsonl.
-      if (changeKindRequiresEventsReload(payload.kind)) {
-        void refreshEvents();
-      }
-      // Refresh /api/repos so worktree-row counters reflect the change.
-      // Gated to skip kinds that don't affect repo enrichment.
-      if (
-        changeKindRequiresReposReload(payload.kind) &&
-        payload.kind !== "fs_change"
-      ) {
-        void load();
-      }
-      // A remote daemon was added/removed (registry edit, provision, or
-      // uninstall success). load() re-reads /api/daemons and re-fans-out,
-      // so the Daemons list + that daemon's repo rows update reactively —
-      // independent of the add/uninstall dialog's lifecycle. These are rare
-      // user-driven events, so the load() cost is a non-issue.
-      else if (changeKindRequiresDaemonsReload(payload.kind)) {
-        void load();
-      }
+        // Cheap events-only refetch so the notes-list popover ("Recently
+        // deleted" + Undo) and the Undo tray pick up the new event
+        // within one round-trip. Gated to skip notifications that don't
+        // write to events.jsonl.
+        if (changeKindRequiresEventsReload(payload.kind)) {
+          void refreshEvents();
+        }
+        // Refresh /api/repos so worktree-row counters reflect the change.
+        // Gated to skip kinds that don't affect repo enrichment.
+        if (
+          changeKindRequiresReposReload(payload.kind) &&
+          payload.kind !== "fs_change"
+        ) {
+          void load();
+        }
+        // A remote daemon was added/removed (registry edit, provision, or
+        // uninstall success). load() re-reads /api/daemons and re-fans-out,
+        // so the Daemons list + that daemon's repo rows update reactively —
+        // independent of the add/uninstall dialog's lifecycle. These are rare
+        // user-driven events, so the load() cost is a non-issue.
+        else if (changeKindRequiresDaemonsReload(payload.kind)) {
+          void load();
+        }
 
-      // Daemon-side FS-change broadcast: `{ kind: "fs_change", path }`.
-      // SourceControlPane owns the diff cache per row; we just bump the
-      // worktree's fsChangeKey counter so it reacts and refetches.
-      if (typeof data !== "string") return;
-      if (payload.kind === "sound_play") {
-        const tag = (payload as { tag?: string }).tag;
-        const tid = (payload as { termId?: string }).termId;
-        if (!tag) return;
-        if (!document.hasFocus()) return;
-        if (tid) {
-          const col = document.querySelector(
-            `.session-col[data-session-source*="${CSS.escape(tid)}"]`,
-          );
-          if (!col) return;
-          const rect = col.getBoundingClientRect();
-          if (rect.right < 0 || rect.left > window.innerWidth) return;
+        // Daemon-side FS-change broadcast: `{ kind: "fs_change", path }`.
+        // SourceControlPane owns the diff cache per row; we just bump the
+        // worktree's fsChangeKey counter so it reacts and refetches.
+        if (typeof data !== "string") return;
+        if (payload.kind === "sound_play") {
+          const tag = (payload as { tag?: string }).tag;
+          const tid = (payload as { termId?: string }).termId;
+          if (!tag) return;
+          if (!document.hasFocus()) return;
+          if (tid) {
+            const col = document.querySelector(
+              `.session-col[data-session-source*="${CSS.escape(tid)}"]`,
+            );
+            if (!col) return;
+            const rect = col.getBoundingClientRect();
+            if (rect.right < 0 || rect.left > window.innerWidth) return;
+          }
+          play(tag as any);
+          return;
         }
-        play(tag as any);
-        return;
-      }
-      if (
-        payload.kind === "note_create" ||
-        payload.kind === "note_update" ||
-        payload.kind === "note_delete"
-      ) {
-        notesChangeKey++;
-        return;
-      }
-      // Undo / redo toggles re-broadcast as `{ kind: "undo"|"redo",
-      // eventId }`. We don't know from the payload whether the
-      // underlying event was a note operation, so just bump the
-      // change key on every toggle — re-fetching /api/notes is cheap
-      // and avoids the "undo works after reload but UI doesn't
-      // update" bug where a restored note stayed invisible until
-      // the next page load.
-      if (payload.kind === "undo" || payload.kind === "redo") {
-        notesChangeKey++;
-        return;
-      }
-      if (payload.kind === "session_invite_received") {
-        // Persistent toast — stays until the user clicks the body
-        // (which opens the accept/decline dialog) or the × close button.
-        const offerId = (payload as { offerId?: unknown }).offerId;
-        if (typeof offerId === "string") {
-          addToast({
-            kind: "invite",
-            title: "Session invite",
-            message: "click to review",
-            onClick: () => openInvite(offerId),
-            persist: true,
-          });
+        if (
+          payload.kind === "note_create" ||
+          payload.kind === "note_update" ||
+          payload.kind === "note_delete"
+        ) {
+          notesChangeKey++;
+          return;
         }
-        return;
-      }
-      if (payload.kind === "message_received") {
-        // Refresh the inbox snapshot, then surface a toast unless the
-        // sender is currently muted. The toast is auto-dismiss so it
-        // doesn't pile up; the badge on the Inbox pill is the
-        // persistent surface.
-        const muted = (payload as { muted?: unknown }).muted === true;
-        const from = (payload as { from?: { label?: unknown } }).from;
-        const label =
-          from && typeof from.label === "string" ? from.label : "a peer";
-        const rawPreview = (payload as { preview?: unknown }).preview;
-        const preview =
-          typeof rawPreview === "string" && rawPreview.trim()
-            ? rawPreview.trim()
-            : "";
-        void refreshMessages();
-        if (!muted) {
-          play("message-receive");
-          addToast({
-            kind: "info",
-            title: `Message from ${label}`,
-            message: preview ? `“${preview}”` : "click the Inbox pill to read",
-            messageItalic: true,
-          });
+        // Undo / redo toggles re-broadcast as `{ kind: "undo"|"redo",
+        // eventId }`. We don't know from the payload whether the
+        // underlying event was a note operation, so just bump the
+        // change key on every toggle — re-fetching /api/notes is cheap
+        // and avoids the "undo works after reload but UI doesn't
+        // update" bug where a restored note stayed invisible until
+        // the next page load.
+        if (payload.kind === "undo" || payload.kind === "redo") {
+          notesChangeKey++;
+          return;
         }
-        return;
-      }
-      if (
-        payload.kind === "message_mute" ||
-        payload.kind === "message_unmute" ||
-        payload.kind === "message_deleted"
-      ) {
-        void refreshMessages();
-        return;
-      }
-      if (payload.kind === "peerDiscovery") {
-        peerDiscoveryEnabled =
-          (payload as { enabled?: unknown }).enabled === true;
-        return;
-      }
-      if (payload.kind === "command_start" || payload.kind === "command_exit") {
-        void refreshRunningCommands();
-        return;
-      }
-      if (payload.kind === "command_url") {
-        const { linkId, urls } = payload as {
-          linkId?: string;
-          urls?: string[];
-        };
-        if (linkId && urls) {
-          commandUrls = { ...commandUrls, [linkId]: urls };
+        if (payload.kind === "session_invite_received") {
+          // Persistent toast — stays until the user clicks the body
+          // (which opens the accept/decline dialog) or the × close button.
+          const offerId = (payload as { offerId?: unknown }).offerId;
+          if (typeof offerId === "string") {
+            addToast({
+              kind: "invite",
+              title: "Session invite",
+              message: "click to review",
+              onClick: () => openInvite(offerId),
+              persist: true,
+            });
+          }
+          return;
         }
-        return;
-      }
-      if (
-        payload.kind === "session_copied" ||
-        payload.kind === "session_imported"
-      ) {
-        void load();
-        return;
-      }
-      if (payload.kind !== "fs_change" || typeof payload.path !== "string")
-        return;
-      fsChangeBatcher.push(payload.path);
+        if (payload.kind === "message_received") {
+          // Refresh the inbox snapshot, then surface a toast unless the
+          // sender is currently muted. The toast is auto-dismiss so it
+          // doesn't pile up; the badge on the Inbox pill is the
+          // persistent surface.
+          const muted = (payload as { muted?: unknown }).muted === true;
+          const from = (payload as { from?: { label?: unknown } }).from;
+          const label =
+            from && typeof from.label === "string" ? from.label : "a peer";
+          const rawPreview = (payload as { preview?: unknown }).preview;
+          const preview =
+            typeof rawPreview === "string" && rawPreview.trim()
+              ? rawPreview.trim()
+              : "";
+          void refreshMessages();
+          if (!muted) {
+            play("message-receive");
+            addToast({
+              kind: "info",
+              title: `Message from ${label}`,
+              message: preview
+                ? `“${preview}”`
+                : "click the Inbox pill to read",
+              messageItalic: true,
+            });
+          }
+          return;
+        }
+        if (
+          payload.kind === "message_mute" ||
+          payload.kind === "message_unmute" ||
+          payload.kind === "message_deleted"
+        ) {
+          void refreshMessages();
+          return;
+        }
+        if (payload.kind === "peerDiscovery") {
+          peerDiscoveryEnabled =
+            (payload as { enabled?: unknown }).enabled === true;
+          return;
+        }
+        if (
+          payload.kind === "command_start" ||
+          payload.kind === "command_exit"
+        ) {
+          void refreshRunningCommands();
+          return;
+        }
+        if (payload.kind === "command_url") {
+          const { linkId, urls } = payload as {
+            linkId?: string;
+            urls?: string[];
+          };
+          if (linkId && urls) {
+            commandUrls = { ...commandUrls, [linkId]: urls };
+          }
+          return;
+        }
+        if (
+          payload.kind === "session_copied" ||
+          payload.kind === "session_imported"
+        ) {
+          void load();
+          return;
+        }
+        if (payload.kind !== "fs_change" || typeof payload.path !== "string")
+          return;
+        fsChangeBatcher.push(payload.path);
       }); // end time("sse-change", ...)
     });
     es.addEventListener("activity", (rawEvt: MessageEvent) => {
@@ -5969,7 +6073,6 @@
     return () => es.close();
   }
 
-
   /** Notes whose first usable anchor doesn't resolve to any
    *  currently-registered repo / worktree. These are the rows that
    *  show up in the orphan-notes tray so the user can re-anchor or
@@ -5998,11 +6101,14 @@
     );
     const nextAnchors = [anchor, ...others];
     try {
-      const res = await fetch(apiUrl(`/api/notes/${encodeURIComponent(noteId)}`, note.daemonId), {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ anchors: nextAnchors }),
-      });
+      const res = await fetch(
+        apiUrl(`/api/notes/${encodeURIComponent(noteId)}`, note.daemonId),
+        {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ anchors: nextAnchors }),
+        },
+      );
       if (!res.ok) return;
       orphanReanchorFor = null;
     } catch (e) {
@@ -6013,9 +6119,15 @@
   async function deleteOrphan(noteId: string): Promise<void> {
     const orphanNote = $notesAll.find((n) => n.id === noteId);
     try {
-      const res = await fetch(apiUrl(`/api/notes/${encodeURIComponent(noteId)}`, orphanNote?.daemonId), {
-        method: "DELETE",
-      });
+      const res = await fetch(
+        apiUrl(
+          `/api/notes/${encodeURIComponent(noteId)}`,
+          orphanNote?.daemonId,
+        ),
+        {
+          method: "DELETE",
+        },
+      );
       if (!res.ok) return;
     } catch (e) {
       error = e instanceof Error ? e.message : String(e);
@@ -6096,7 +6208,12 @@
     }
     try {
       const qs = new URLSearchParams({ path });
-      const res = await fetch(apiUrl(`/api/wt-summary?${qs.toString()}`, daemonIdForWorktreePath(repos, path)));
+      const res = await fetch(
+        apiUrl(
+          `/api/wt-summary?${qs.toString()}`,
+          daemonIdForWorktreePath(repos, path),
+        ),
+      );
       if (!res.ok) {
         // Drop the "loading" sentinel so the next hover retries. Don't
         // wipe real cached data on a transient failure — better to
@@ -6140,9 +6257,21 @@
       // synthetic so the row stays interactive.
       const synthetic = repo.worktrees.find((w) => w.nonGit);
       if (synthetic) {
-        return [{ repo, wt: synthetic, key: `${repoPrefsKey(repo)}|${synthetic.path}` }];
+        return [
+          {
+            repo,
+            wt: synthetic,
+            key: `${repoPrefsKey(repo)}|${synthetic.path}`,
+          },
+        ];
       }
-      return [{ repo, wt: null as Worktree | null, key: `${repoPrefsKey(repo)}|none` }];
+      return [
+        {
+          repo,
+          wt: null as Worktree | null,
+          key: `${repoPrefsKey(repo)}|none`,
+        },
+      ];
     }
     return visiblePaths.map((path) => {
       const wt = repo.worktrees.find((w) => w.path === path)!;
@@ -6263,162 +6392,167 @@
    *  transport"; visual sessions can report working/awaiting without owning
    *  a PTY and must still survive the active-only dock filter. */
   type DockAgent = "claude" | "codex" | "copilot" | "ollama" | "shell";
-  $: dockEntries = time("dockEntries", (): Array<{
-    source: string;
-    wtPath: string;
-    rowKey: string;
-    repoId: string;
-    agent: DockAgent;
-    repoColor?: string;
-    repoName: string;
-    branch?: string;
-    title?: string;
-    manualTitle?: string;
-    aiTitle?: string;
-    lastUserMessage?: string;
-    lastActive?: string;
-    lastMessageTs?: string;
-    /** JSONL path the dock can fetch via `/api/session?source=…` to
-     *  show the last few user/assistant messages on hover. Undefined
-     *  for shells and for `__new__:` columns that haven't been
-     *  stamped with a `resumeSessionId` yet. */
-    transcriptSource?: string;
-    resumeSessionId?: string;
-    working: boolean;
-    awaiting: boolean;
-    /** True once this column has no live PTY transport. The side dock
-     *  dims these rows without changing marker size. */
-    exited: boolean;
-    terminalActive: boolean;
-    /** ms timestamp of the most recent working→idle transition.
-     *  Drives the dock dot's "unread" pulse — set when the AI
-     *  just finished a turn the user hasn't focused yet. Cleared
-     *  by the dock's 20-min auto-expiry or by App's on:pick
-     *  handler when the user opens the session. */
-    finishedAt?: number;
-    ioDebugLabel?: string;
-  }> => {
-    const out: ReturnType<typeof Array> = [] as any;
-    for (const repo of repos) {
-      for (const wt of repo.worktrees ?? []) {
-        const opens = openSessionsByWt[wt.path];
-        if (!opens || opens.length === 0) continue;
-        const known = pickerSessionsByWt[wt.path] ?? [];
-        const bySource = new Map<string, (typeof known)[number]>();
-        for (const a of known) bySource.set(a.source, a);
-        const knownSources = new Set<string>();
-        for (const a of known) {
-          for (const key of sessionSurfaceKeys(a)) knownSources.add(key);
-        }
-        const rowKey = `${repo.id}|${wt.path}`;
-        for (const s of opens) {
-          // Skip real (file-backed) sessions the daemon doesn't associate
-          // with THIS worktree. A session whose JSONL belongs to another
-          // repo but got filed under this worktree's open-sessions list
-          // would otherwise render as a phantom dot labelled with this
-          // worktree's branch (e.g. a needle-logs-view session showing as
-          // "supergit main"). The sessions-strip already drops these via
-          // filterToExistingSessions; this is the same per-worktree gate.
-          if (isSessionForeignToWorktree(s, knownSources)) continue;
-          // Live TUI means the column can point at an actual live PTY
-          // from `/api/terminals`. Persisted terminal mode alone is only
-          // a surface preference, not proof that the agent is still
-          // running.
-          const isLiveTui = openSessionHasLiveTerminal(s, {
-            liveTerminalIds,
-            newTermIds,
-            transientExited,
-          });
-          // Utility panels (file browser, git history) are browsing
-          // views, not sessions — skip them in the activity dock.
-          // Agent and shell sessions appear regardless of mode
-          // (terminal or read-only).
-          if (
-            s.agent === "files" ||
-            s.agent === "history" ||
-            s.source.startsWith("__files__:") ||
-            s.source.startsWith("__remote__:") ||
-            s.source.startsWith("__restore__:") ||
-            s.source.startsWith("__history__:")
-          )
-            continue;
-          const hasDockActivity = openSessionHasDockActivity(s, {
-            liveTerminalIds,
-            newTermIds,
-            transientExited,
-            transientWorking,
-            transientAwaiting,
-          });
-          // Same lookup precedence as the NewSessionCol render: once a
-          // sid is stamped onto a `__new__:` column, prefer the matched
-          // real-source agent's metadata so the dock shows the title
-          // bound to the live conversation rather than whatever landed
-          // on the disposable synthetic key.
-          const realMeta = s.resumeSessionId
-            ? known.find(
-                (a) => a.agent === s.agent && a.sessionId === s.resumeSessionId,
-              )
-            : undefined;
-          const meta = realMeta ?? bySource.get(s.source);
-          const titleSource = resolveTitleSource(s, known);
-          const terminalIoStats = $terminalIoStatsByKey[s.source];
-          const ioStats =
-            $showTerminalIoDebug === true ? terminalIoStats : undefined;
-          out.push({
-            source: s.source,
-            wtPath: wt.path,
-            rowKey,
-            repoId: repo.id,
-            agent: s.agent,
-            repoColor: repo.color,
-            repoName: repo.name ?? repoName(repo),
-            branch: wt.branch,
-            title: meta?.title,
-            manualTitle:
-              meta?.manualTitle ??
-              newSessionTitles[titleSource] ??
-              newSessionTitles[s.source],
-            aiTitle: meta?.aiTitle,
-            lastUserMessage: meta?.lastUserMessage,
-            lastActive: meta?.lastActive,
-            lastMessageTs: meta?.lastMessageTs,
-            recentMessageCount: meta?.recentMessageCount,
-            resumeSessionId: s.resumeSessionId,
-            transcriptSource:
-              meta?.source && !meta.source.startsWith("__")
-                ? meta.source
+  $: dockEntries = time(
+    "dockEntries",
+    (): Array<{
+      source: string;
+      wtPath: string;
+      rowKey: string;
+      repoId: string;
+      agent: DockAgent;
+      repoColor?: string;
+      repoName: string;
+      branch?: string;
+      title?: string;
+      manualTitle?: string;
+      aiTitle?: string;
+      lastUserMessage?: string;
+      lastActive?: string;
+      lastMessageTs?: string;
+      /** JSONL path the dock can fetch via `/api/session?source=…` to
+       *  show the last few user/assistant messages on hover. Undefined
+       *  for shells and for `__new__:` columns that haven't been
+       *  stamped with a `resumeSessionId` yet. */
+      transcriptSource?: string;
+      resumeSessionId?: string;
+      working: boolean;
+      awaiting: boolean;
+      /** True once this column has no live PTY transport. The side dock
+       *  dims these rows without changing marker size. */
+      exited: boolean;
+      terminalActive: boolean;
+      /** ms timestamp of the most recent working→idle transition.
+       *  Drives the dock dot's "unread" pulse — set when the AI
+       *  just finished a turn the user hasn't focused yet. Cleared
+       *  by the dock's 20-min auto-expiry or by App's on:pick
+       *  handler when the user opens the session. */
+      finishedAt?: number;
+      ioDebugLabel?: string;
+    }> => {
+      const out: ReturnType<typeof Array> = [] as any;
+      for (const repo of repos) {
+        for (const wt of repo.worktrees ?? []) {
+          const opens = openSessionsByWt[wt.path];
+          if (!opens || opens.length === 0) continue;
+          const known = pickerSessionsByWt[wt.path] ?? [];
+          const bySource = new Map<string, (typeof known)[number]>();
+          for (const a of known) bySource.set(a.source, a);
+          const knownSources = new Set<string>();
+          for (const a of known) {
+            for (const key of sessionSurfaceKeys(a)) knownSources.add(key);
+          }
+          const rowKey = `${repo.id}|${wt.path}`;
+          for (const s of opens) {
+            // Skip real (file-backed) sessions the daemon doesn't associate
+            // with THIS worktree. A session whose JSONL belongs to another
+            // repo but got filed under this worktree's open-sessions list
+            // would otherwise render as a phantom dot labelled with this
+            // worktree's branch (e.g. a needle-logs-view session showing as
+            // "supergit main"). The sessions-strip already drops these via
+            // filterToExistingSessions; this is the same per-worktree gate.
+            if (isSessionForeignToWorktree(s, knownSources)) continue;
+            // Live TUI means the column can point at an actual live PTY
+            // from `/api/terminals`. Persisted terminal mode alone is only
+            // a surface preference, not proof that the agent is still
+            // running.
+            const isLiveTui = openSessionHasLiveTerminal(s, {
+              liveTerminalIds,
+              newTermIds,
+              transientExited,
+            });
+            // Utility panels (file browser, git history) are browsing
+            // views, not sessions — skip them in the activity dock.
+            // Agent and shell sessions appear regardless of mode
+            // (terminal or read-only).
+            if (
+              s.agent === "files" ||
+              s.agent === "history" ||
+              s.source.startsWith("__files__:") ||
+              s.source.startsWith("__remote__:") ||
+              s.source.startsWith("__restore__:") ||
+              s.source.startsWith("__history__:")
+            )
+              continue;
+            const hasDockActivity = openSessionHasDockActivity(s, {
+              liveTerminalIds,
+              newTermIds,
+              transientExited,
+              transientWorking,
+              transientAwaiting,
+            });
+            // Same lookup precedence as the NewSessionCol render: once a
+            // sid is stamped onto a `__new__:` column, prefer the matched
+            // real-source agent's metadata so the dock shows the title
+            // bound to the live conversation rather than whatever landed
+            // on the disposable synthetic key.
+            const realMeta = s.resumeSessionId
+              ? known.find(
+                  (a) =>
+                    a.agent === s.agent && a.sessionId === s.resumeSessionId,
+                )
+              : undefined;
+            const meta = realMeta ?? bySource.get(s.source);
+            const titleSource = resolveTitleSource(s, known);
+            const terminalIoStats = $terminalIoStatsByKey[s.source];
+            const ioStats =
+              $showTerminalIoDebug === true ? terminalIoStats : undefined;
+            out.push({
+              source: s.source,
+              wtPath: wt.path,
+              rowKey,
+              repoId: repo.id,
+              agent: s.agent,
+              repoColor: repo.color,
+              repoName: repo.name ?? repoName(repo),
+              branch: wt.branch,
+              title: meta?.title,
+              manualTitle:
+                meta?.manualTitle ??
+                newSessionTitles[titleSource] ??
+                newSessionTitles[s.source],
+              aiTitle: meta?.aiTitle,
+              lastUserMessage: meta?.lastUserMessage,
+              lastActive: meta?.lastActive,
+              lastMessageTs: meta?.lastMessageTs,
+              recentMessageCount: meta?.recentMessageCount,
+              resumeSessionId: s.resumeSessionId,
+              transcriptSource:
+                meta?.source && !meta.source.startsWith("__")
+                  ? meta.source
+                  : undefined,
+              // Shells emit output continuously (log tails, dev-server
+              // streams, REPLs) — none of that is "thinking", so we
+              // never surface a working/awaiting state for them in the
+              // dock. The shell dot stays static; its live-PTY state
+              // is conveyed by its dedicated terminal-style square
+              // (vs. the round agent dot).
+              working:
+                s.agent === "shell" ? false : !!transientWorking[s.source],
+              awaiting:
+                s.agent === "shell" ? false : !!transientAwaiting[s.source],
+              // Inactive covers sessions with neither a live terminal
+              // transport nor live visual/API activity. A visual
+              // app-server turn can be active without a PTY, so don't
+              // dim/filter it merely because it is displayed as chat.
+              exited: !hasDockActivity,
+              terminalActive:
+                isLiveTui &&
+                isTerminalRecentlyActive(terminalIoStats, Date.now()),
+              finishedAt: transientFinishedAt[s.source],
+              ioDebugLabel: ioStats
+                ? `in ${formatTerminalIoRate(ioStats.rxBytesPerSec)}`
                 : undefined,
-            // Shells emit output continuously (log tails, dev-server
-            // streams, REPLs) — none of that is "thinking", so we
-            // never surface a working/awaiting state for them in the
-            // dock. The shell dot stays static; its live-PTY state
-            // is conveyed by its dedicated terminal-style square
-            // (vs. the round agent dot).
-            working: s.agent === "shell" ? false : !!transientWorking[s.source],
-            awaiting:
-              s.agent === "shell" ? false : !!transientAwaiting[s.source],
-            // Inactive covers sessions with neither a live terminal
-            // transport nor live visual/API activity. A visual
-            // app-server turn can be active without a PTY, so don't
-            // dim/filter it merely because it is displayed as chat.
-            exited: !hasDockActivity,
-            terminalActive:
-              isLiveTui &&
-              isTerminalRecentlyActive(terminalIoStats, Date.now()),
-            finishedAt: transientFinishedAt[s.source],
-            ioDebugLabel: ioStats
-              ? `in ${formatTerminalIoRate(ioStats.rxBytesPerSec)}`
-              : undefined,
-          });
+            });
+          }
         }
       }
-    }
-    // No sort — the iteration order (repos × worktrees × open
-    // sessions) already mirrors the dashboard's vertical layout and
-    // the user's manual session ordering. Reordering within a repo
-    // group causes the dock dots to jump around and is disorienting.
-    return out as any;
-  });
+      // No sort — the iteration order (repos × worktrees × open
+      // sessions) already mirrors the dashboard's vertical layout and
+      // the user's manual session ordering. Reordering within a repo
+      // group causes the dock dots to jump around and is disorienting.
+      return out as any;
+    },
+  );
 
   $: projectMenuEntries = repos.map((repo) => {
     const dock = dockEntries.filter((entry) => entry.repoId === repo.id);
@@ -6430,8 +6564,7 @@
       const ts = session.lastMessageTs ?? session.lastActive;
       if (
         ts &&
-        (!latestActivity ||
-          Date.parse(ts) > Date.parse(latestActivity))
+        (!latestActivity || Date.parse(ts) > Date.parse(latestActivity))
       ) {
         latestActivity = ts;
       }
@@ -6461,7 +6594,11 @@
   $: dockRepoStatuses = repos.map((repo) => {
     const diskPaths = (repo.worktrees ?? []).map((w) => w.path);
     const visible = new Set(
-      effectiveVisibleWorktrees(repoPrefsKey(repo), diskPaths, visibleWorktreesByRepo),
+      effectiveVisibleWorktrees(
+        repoPrefsKey(repo),
+        diskPaths,
+        visibleWorktreesByRepo,
+      ),
     );
     let ahead = 0;
     let behind = 0;
@@ -6505,20 +6642,27 @@
    *  tooltips, grouped by worktree). Computed alongside
    *  dockRepoStatuses so the visibility filter stays in sync. */
   $: dockRepoWorktrees = (() => {
-    const out: Record<string, Array<{
-      path: string;
-      branch: string;
-      ahead: number;
-      behind: number;
-      dirty: number;
-      upstream: string | null;
-      aheadDanger: boolean;
-      daemonId: string | undefined;
-    }>> = {};
+    const out: Record<
+      string,
+      Array<{
+        path: string;
+        branch: string;
+        ahead: number;
+        behind: number;
+        dirty: number;
+        upstream: string | null;
+        aheadDanger: boolean;
+        daemonId: string | undefined;
+      }>
+    > = {};
     for (const repo of repos) {
       const diskPaths = (repo.worktrees ?? []).map((w) => w.path);
       const visible = new Set(
-        effectiveVisibleWorktrees(repoPrefsKey(repo), diskPaths, visibleWorktreesByRepo),
+        effectiveVisibleWorktrees(
+          repoPrefsKey(repo),
+          diskPaths,
+          visibleWorktreesByRepo,
+        ),
       );
       const rows: Array<{
         path: string;
@@ -6538,7 +6682,10 @@
         const dirty = fs
           ? Math.max(
               0,
-              fs.staged + fs.unstaged + fs.untracked - (fs.submoduleChanges ?? 0),
+              fs.staged +
+                fs.unstaged +
+                fs.untracked -
+                (fs.submoduleChanges ?? 0),
             )
           : 0;
         if (ahead === 0 && behind === 0 && dirty === 0) continue;
@@ -7316,620 +7463,631 @@
   <div class="menubar-stack" class:zen-menu-armed={zenMenuArmed}>
     <nav class="menubar" aria-label="Workspace actions">
       <h1 class="menubar-brand">
-        <a href="https://needle.tools" target="_blank" rel="noopener noreferrer">
+        <a
+          href="https://needle.tools"
+          target="_blank"
+          rel="noopener noreferrer"
+        >
           <img src="/needle-logo.svg" alt="" class="brand-mark" />
           treetop
         </a>
       </h1>
-    <!-- Per-agent usage buttons live leftmost — one icon-only button
+      <!-- Per-agent usage buttons live leftmost — one icon-only button
          per detected coding agent (Claude / Codex / Ollama / Copilot),
          each with its own hover tooltip. Claude renders the real
          /api/oauth/usage bars; others fall back to local JSONL
          counts. AgentUsageChip iterates and emits the buttons here. -->
-    <AgentUsageChip />
+      <AgentUsageChip />
 
-    <!-- Projects dropdown: jump to an added repo's row. Lists `repos`
+      <!-- Projects dropdown: jump to an added repo's row. Lists `repos`
          directly so the order matches the on-page row order (both are
          driven by the same `savedRepoOrder` sort). -->
-    <div
-      class="actions-anchor projects-anchor"
-      on:mouseenter={openProjectsMenu}
-      on:mouseleave={scheduleCloseProjectsMenu}
-    >
-      <button
-        class="actions-btn projects-btn"
-        class:open={projectsMenuOpen}
-        on:click={() => (projectsMenuOpen = !projectsMenuOpen)}
-        title="Jump to a project"
+      <div
+        class="actions-anchor projects-anchor"
+        on:mouseenter={openProjectsMenu}
+        on:mouseleave={scheduleCloseProjectsMenu}
       >
-        Projects<span class="count">{repos.length}</span>
-      </button>
-      {#if projectsMenuOpen}
-        <Popover variant="actions" extraClass="projects-popover" unclamped>
-          <svelte:fragment slot="head"><span>Projects</span></svelte:fragment>
-          {#if repos.length === 0}
-            <p class="muted small nopad">No projects yet.</p>
-          {/if}
-          <ul class="projects-list">
-            {#if repos.length > 0}
-              {#each projectMenuEntries as project (daemonRepoKey(project.repo))}
-                <li>
-                  <button
-                    class="projects-row"
-                    class:has-live={project.liveCount > 0}
-                    class:is-working={project.working}
-                    class:is-awaiting={project.awaiting}
-                    on:click={() => {
-                      projectsMenuOpen = false;
-                      void focusRepoRow(project.repo.id);
-                    }}
-                    title={project.latestActivity
-                      ? `${project.repo.name}\nLast active ${relTime(project.latestActivity)}`
-                      : project.repo.name}
-                  >
-                    <span
-                      class="projects-dot"
-                      style:--project-color={project.repo.color ||
-                        "var(--text-muted)"}
-                    >
-                      <span class="projects-dot-core"></span>
-                      <svg
-                        class="projects-dot-spinner"
-                        viewBox="0 0 24 24"
-                        aria-hidden="true"
-                      >
-                        <circle cx="12" cy="12" r="9.5" pathLength="100" />
-                      </svg>
-                    </span>
-                    <span class="projects-name">{project.repo.name}</span>
-                    {#if project.latestActivity}
-                      <span class="projects-time">
-                        {relTime(project.latestActivity)}
-                      </span>
-                    {/if}
-                  </button>
-                </li>
-              {/each}
+        <button
+          class="actions-btn projects-btn"
+          class:open={projectsMenuOpen}
+          on:click={() => (projectsMenuOpen = !projectsMenuOpen)}
+          title="Jump to a project"
+        >
+          Projects<span class="count">{repos.length}</span>
+        </button>
+        {#if projectsMenuOpen}
+          <Popover variant="actions" extraClass="projects-popover" unclamped>
+            <svelte:fragment slot="head"><span>Projects</span></svelte:fragment>
+            {#if repos.length === 0}
+              <p class="muted small nopad">No projects yet.</p>
             {/if}
-            <li class="projects-virtual-item">
-              <button
-                class="projects-row projects-add-folder-row"
-                on:click={() => {
-                  void focusAddFolderFooter();
-                }}
-              >
-                <span class="projects-plus" aria-hidden="true">+</span>
-                <span class="projects-name">Add Folder</span>
-              </button>
-            </li>
-          </ul>
-        </Popover>
-      {/if}
-    </div>
+            <ul class="projects-list">
+              {#if repos.length > 0}
+                {#each projectMenuEntries as project (daemonRepoKey(project.repo))}
+                  <li>
+                    <button
+                      class="projects-row"
+                      class:has-live={project.liveCount > 0}
+                      class:is-working={project.working}
+                      class:is-awaiting={project.awaiting}
+                      on:click={() => {
+                        projectsMenuOpen = false;
+                        void focusRepoRow(project.repo.id);
+                      }}
+                      title={project.latestActivity
+                        ? `${project.repo.name}\nLast active ${relTime(project.latestActivity)}`
+                        : project.repo.name}
+                    >
+                      <span
+                        class="projects-dot"
+                        style:--project-color={project.repo.color ||
+                          "var(--text-muted)"}
+                      >
+                        <span class="projects-dot-core"></span>
+                        <svg
+                          class="projects-dot-spinner"
+                          viewBox="0 0 24 24"
+                          aria-hidden="true"
+                        >
+                          <circle cx="12" cy="12" r="9.5" pathLength="100" />
+                        </svg>
+                      </span>
+                      <span class="projects-name">{project.repo.name}</span>
+                      {#if project.latestActivity}
+                        <span class="projects-time">
+                          {relTime(project.latestActivity)}
+                        </span>
+                      {/if}
+                    </button>
+                  </li>
+                {/each}
+              {/if}
+              <li class="projects-virtual-item">
+                <button
+                  class="projects-row projects-add-folder-row"
+                  on:click={() => {
+                    void focusAddFolderFooter();
+                  }}
+                >
+                  <span class="projects-plus" aria-hidden="true">+</span>
+                  <span class="projects-name">Add Folder</span>
+                </button>
+              </li>
+            </ul>
+          </Popover>
+        {/if}
+      </div>
 
-    <ProcessList
-      bind:this={processListRef}
-      {repos}
-      {activityByCwd}
-      {systemMemBytes}
-      {daemonsOnline}
-      on:focusSession={(e) => void focusSessionBySource(e.detail.source)}
-    />
+      <ProcessList
+        bind:this={processListRef}
+        {repos}
+        {activityByCwd}
+        {systemMemBytes}
+        {daemonsOnline}
+        on:focusSession={(e) => void focusSessionBySource(e.detail.source)}
+      />
 
-    <!-- Notes tray. Pinned in the menubar (no longer conditional on
+      <!-- Notes tray. Pinned in the menubar (no longer conditional on
          `orphanNotes.length > 0`) so the affordance stays put across
          the initial-load race where notes finish loading before
          repos do — that gap used to make the button flash in and
          out. Count badge only renders when there are orphans to
          action, but the button is always reachable. -->
-    <div class="actions-anchor notes-tray-anchor">
-      <button
-        class="actions-btn"
-        class:open={notesTrayOpen}
-        on:click={() => (notesTrayOpen = !notesTrayOpen)}
-        title={orphanNotes.length > 0
-          ? `${orphanNotes.length} note${orphanNotes.length === 1 ? "" : "s"} whose repo/worktree was removed — click to re-anchor or delete`
-          : "Notes whose repo/worktree was removed appear here for re-anchoring."}
-      >
-        Notes
-        {#if orphanNotes.length > 0}
-          <span class="count">{orphanNotes.length}</span>
-        {/if}
-      </button>
-      {#if notesTrayOpen}
-        <Popover variant="actions" extraClass="notes-tray-popover" unclamped>
-          <span slot="head">Orphaned notes</span>
-          {#if orphanNotes.length === 0}
-            <p class="muted small nopad">
-              No orphaned notes. When a repo or worktree gets removed, any notes
-              anchored there land in this tray so you can re-anchor or delete
-              them.
-            </p>
-          {:else}
-            <ul class="orphan-list">
-              {#each orphanNotes as n (n.id)}
-                <li class="orphan-row">
-                  <div class="orphan-summary">
-                    <span class="orphan-body" title={n.body}>
-                      {noteExcerpt(n.body) || "(empty)"}
-                    </span>
-                    <span class="orphan-anchor" title={n.anchors.join("\n")}>
-                      ⚓ {n.anchors[0] ?? "no anchor"}
-                    </span>
-                  </div>
-                  <div class="orphan-actions">
-                    <button
-                      class="undo"
-                      on:click={() =>
-                        (orphanReanchorFor =
-                          orphanReanchorFor === n.id ? null : n.id)}
-                      >Re-anchor…</button
-                    >
-                    <button
-                      class="undo"
-                      on:click={() => void deleteOrphan(n.id)}
-                      title="Delete (an Undo toast lets you bring it back)"
-                      >Delete</button
-                    >
-                  </div>
-                  {#if orphanReanchorFor === n.id}
-                    <AnchorPicker
-                      {repos}
-                      currentAnchor={n.anchors[0] ?? null}
-                      on:pick={(e) =>
-                        void reassignOrphan(n.id, e.detail.anchor)}
-                      on:cancel={() => (orphanReanchorFor = null)}
-                    />
-                  {/if}
-                </li>
-              {/each}
-            </ul>
-          {/if}
-        </Popover>
-      {/if}
-    </div>
-
-    <div class="btn-group">
-      <Tooltip placement="bottom">
+      <div class="actions-anchor notes-tray-anchor">
         <button
-          slot="trigger"
-          class="actions-btn peer-toggle"
-          class:peer-on={peerDiscoveryEnabled}
-          disabled={peerToggleBusy}
-          on:click={togglePeerDiscovery}
-          >{#if peerDiscoveryEnabled}<svg
-              width="14"
-              height="14"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              stroke-width="2"
-              stroke-linecap="round"
-              stroke-linejoin="round"
-              aria-hidden="true"
-              ><path d="M5 12.55a11 11 0 0 1 14.08 0" /><path
-                d="M1.42 9a16 16 0 0 1 21.16 0"
-              /><path d="M8.53 16.11a6 6 0 0 1 6.95 0" /><circle
-                cx="12"
-                cy="20"
-                r="1"
-              /></svg
-            >{:else}<svg
-              width="14"
-              height="14"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              stroke-width="2"
-              stroke-linecap="round"
-              stroke-linejoin="round"
-              aria-hidden="true"
-              ><line x1="1" y1="1" x2="23" y2="23" /><path
-                d="M16.72 11.06A10.94 10.94 0 0 1 19 12.55"
-              /><path d="M5 12.55a10.94 10.94 0 0 1 5.17-2.39" /><path
-                d="M10.71 5.05A16 16 0 0 1 22.56 9"
-              /><path d="M1.42 9a15.91 15.91 0 0 1 4.7-2.88" /><path
-                d="M8.53 16.11a6 6 0 0 1 6.95 0"
-              /><line x1="12" y1="20" x2="12.01" y2="20" /></svg
-            >{/if}</button
+          class="actions-btn"
+          class:open={notesTrayOpen}
+          on:click={() => (notesTrayOpen = !notesTrayOpen)}
+          title={orphanNotes.length > 0
+            ? `${orphanNotes.length} note${orphanNotes.length === 1 ? "" : "s"} whose repo/worktree was removed — click to re-anchor or delete`
+            : "Notes whose repo/worktree was removed appear here for re-anchoring."}
         >
-        <span slot="content" class="peer-tooltip">
-          <svg
-            class="peer-tooltip-illustration"
-            viewBox="0 0 180 64"
-            fill="none"
-            stroke="currentColor"
-            stroke-width="1.8"
-            stroke-linecap="round"
-            stroke-linejoin="round"
-            aria-hidden="true"
+          Notes
+          {#if orphanNotes.length > 0}
+            <span class="count">{orphanNotes.length}</span>
+          {/if}
+        </button>
+        {#if notesTrayOpen}
+          <Popover variant="actions" extraClass="notes-tray-popover" unclamped>
+            <span slot="head">Orphaned notes</span>
+            {#if orphanNotes.length === 0}
+              <p class="muted small nopad">
+                No orphaned notes. When a repo or worktree gets removed, any
+                notes anchored there land in this tray so you can re-anchor or
+                delete them.
+              </p>
+            {:else}
+              <ul class="orphan-list">
+                {#each orphanNotes as n (n.id)}
+                  <li class="orphan-row">
+                    <div class="orphan-summary">
+                      <span class="orphan-body" title={n.body}>
+                        {noteExcerpt(n.body) || "(empty)"}
+                      </span>
+                      <span class="orphan-anchor" title={n.anchors.join("\n")}>
+                        ⚓ {n.anchors[0] ?? "no anchor"}
+                      </span>
+                    </div>
+                    <div class="orphan-actions">
+                      <button
+                        class="undo"
+                        on:click={() =>
+                          (orphanReanchorFor =
+                            orphanReanchorFor === n.id ? null : n.id)}
+                        >Re-anchor…</button
+                      >
+                      <button
+                        class="undo"
+                        on:click={() => void deleteOrphan(n.id)}
+                        title="Delete (an Undo toast lets you bring it back)"
+                        >Delete</button
+                      >
+                    </div>
+                    {#if orphanReanchorFor === n.id}
+                      <AnchorPicker
+                        {repos}
+                        currentAnchor={n.anchors[0] ?? null}
+                        on:pick={(e) =>
+                          void reassignOrphan(n.id, e.detail.anchor)}
+                        on:cancel={() => (orphanReanchorFor = null)}
+                      />
+                    {/if}
+                  </li>
+                {/each}
+              </ul>
+            {/if}
+          </Popover>
+        {/if}
+      </div>
+
+      <div class="btn-group">
+        <Tooltip placement="bottom">
+          <button
+            slot="trigger"
+            class="actions-btn peer-toggle"
+            class:peer-on={peerDiscoveryEnabled}
+            disabled={peerToggleBusy}
+            on:click={togglePeerDiscovery}
+            >{#if peerDiscoveryEnabled}<svg
+                width="14"
+                height="14"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                aria-hidden="true"
+                ><path d="M5 12.55a11 11 0 0 1 14.08 0" /><path
+                  d="M1.42 9a16 16 0 0 1 21.16 0"
+                /><path d="M8.53 16.11a6 6 0 0 1 6.95 0" /><circle
+                  cx="12"
+                  cy="20"
+                  r="1"
+                /></svg
+              >{:else}<svg
+                width="14"
+                height="14"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                aria-hidden="true"
+                ><line x1="1" y1="1" x2="23" y2="23" /><path
+                  d="M16.72 11.06A10.94 10.94 0 0 1 19 12.55"
+                /><path d="M5 12.55a10.94 10.94 0 0 1 5.17-2.39" /><path
+                  d="M10.71 5.05A16 16 0 0 1 22.56 9"
+                /><path d="M1.42 9a15.91 15.91 0 0 1 4.7-2.88" /><path
+                  d="M8.53 16.11a6 6 0 0 1 6.95 0"
+                /><line x1="12" y1="20" x2="12.01" y2="20" /></svg
+              >{/if}</button
           >
-            <!-- house roof -->
-            <path d="M8 30L90 6l82 24" opacity="0.12" stroke-width="1.5" />
-            <!-- left person: head, body, arms relaxed, sitting -->
-            <circle
-              cx="36"
-              cy="24"
-              r="4.5"
-              opacity={peerDiscoveryEnabled ? "1" : "0.35"}
-            />
-            <path
-              d="M36 28.5v7"
-              opacity={peerDiscoveryEnabled ? "1" : "0.35"}
-            />
-            <path
-              d="M31 31c2 1.5 8 1.5 10 0"
-              opacity={peerDiscoveryEnabled ? "1" : "0.35"}
-            />
-            <path
-              d="M32 35.5l-1 6M40 35.5l1 6"
-              opacity={peerDiscoveryEnabled ? "1" : "0.35"}
-            />
-            <!-- left laptop -->
-            <rect
-              x="24"
-              y="44"
-              width="24"
-              height="14"
-              rx="2.5"
-              opacity={peerDiscoveryEnabled ? "1" : "0.35"}
-            />
-            <rect
-              x="27"
-              y="46.5"
-              width="18"
-              height="9"
-              rx="1.5"
-              opacity={peerDiscoveryEnabled ? "0.5" : "0.15"}
-            />
-            {#if peerDiscoveryEnabled}
-              <!-- small wifi dot on left screen -->
+          <span slot="content" class="peer-tooltip">
+            <svg
+              class="peer-tooltip-illustration"
+              viewBox="0 0 180 64"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.8"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              aria-hidden="true"
+            >
+              <!-- house roof -->
+              <path d="M8 30L90 6l82 24" opacity="0.12" stroke-width="1.5" />
+              <!-- left person: head, body, arms relaxed, sitting -->
               <circle
                 cx="36"
-                cy="51"
-                r="1.2"
-                fill="currentColor"
-                stroke="none"
-                opacity="0.6"
+                cy="24"
+                r="4.5"
+                opacity={peerDiscoveryEnabled ? "1" : "0.35"}
               />
               <path
-                d="M33 49a4.2 4.2 0 0 1 6 0"
-                opacity="0.4"
-                stroke-width="1"
+                d="M36 28.5v7"
+                opacity={peerDiscoveryEnabled ? "1" : "0.35"}
               />
-            {/if}
-            <!-- connection between laptops -->
-            {#if peerDiscoveryEnabled}
-              <!-- dashed path the envelope travels along -->
               <path
-                d="M50 36 Q90 18 130 36"
-                opacity="0.12"
-                stroke-dasharray="3 3"
-                stroke-width="1"
-                fill="none"
+                d="M31 31c2 1.5 8 1.5 10 0"
+                opacity={peerDiscoveryEnabled ? "1" : "0.35"}
               />
-              <!-- envelope flying left→right -->
-              <g opacity="0.6">
-                <rect x="-5" y="-3.5" width="10" height="7" rx="1" />
-                <path d="M-5-3.5l5 4 5-4" />
-                <animateMotion
-                  dur="3s"
-                  repeatCount="indefinite"
-                  path="M50,36 Q90,18 130,36"
-                  rotate="auto"
+              <path
+                d="M32 35.5l-1 6M40 35.5l1 6"
+                opacity={peerDiscoveryEnabled ? "1" : "0.35"}
+              />
+              <!-- left laptop -->
+              <rect
+                x="24"
+                y="44"
+                width="24"
+                height="14"
+                rx="2.5"
+                opacity={peerDiscoveryEnabled ? "1" : "0.35"}
+              />
+              <rect
+                x="27"
+                y="46.5"
+                width="18"
+                height="9"
+                rx="1.5"
+                opacity={peerDiscoveryEnabled ? "0.5" : "0.15"}
+              />
+              {#if peerDiscoveryEnabled}
+                <!-- small wifi dot on left screen -->
+                <circle
+                  cx="36"
+                  cy="51"
+                  r="1.2"
+                  fill="currentColor"
+                  stroke="none"
+                  opacity="0.6"
                 />
-              </g>
-              <!-- envelope flying right→left (offset) -->
-              <g opacity="0.4">
-                <rect x="-5" y="-3.5" width="10" height="7" rx="1" />
-                <path d="M-5-3.5l5 4 5-4" />
-                <animateMotion
-                  dur="3.4s"
-                  repeatCount="indefinite"
-                  path="M130,36 Q90,18 50,36"
-                  rotate="auto"
-                  begin="0.8s"
+                <path
+                  d="M33 49a4.2 4.2 0 0 1 6 0"
+                  opacity="0.4"
+                  stroke-width="1"
                 />
-              </g>
-            {:else}
-              <!-- broken / no signal -->
-              <line
-                x1="60"
-                y1="32"
-                x2="120"
-                y2="32"
-                opacity="0.1"
-                stroke-dasharray="3 4"
-              />
-              <line
-                x1="84"
-                y1="26"
-                x2="96"
-                y2="38"
-                opacity="0.25"
-                stroke-width="1.5"
-              />
-              <line
-                x1="84"
-                y1="38"
-                x2="96"
-                y2="26"
-                opacity="0.25"
-                stroke-width="1.5"
-              />
-            {/if}
-            <!-- right person: head, body, arms relaxed, sitting -->
-            <circle
-              cx="144"
-              cy="24"
-              r="4.5"
-              opacity={peerDiscoveryEnabled ? "1" : "0.35"}
-            />
-            <path
-              d="M144 28.5v7"
-              opacity={peerDiscoveryEnabled ? "1" : "0.35"}
-            />
-            <path
-              d="M139 31c2 1.5 8 1.5 10 0"
-              opacity={peerDiscoveryEnabled ? "1" : "0.35"}
-            />
-            <path
-              d="M140 35.5l-1 6M148 35.5l1 6"
-              opacity={peerDiscoveryEnabled ? "1" : "0.35"}
-            />
-            <!-- right laptop -->
-            <rect
-              x="132"
-              y="44"
-              width="24"
-              height="14"
-              rx="2.5"
-              opacity={peerDiscoveryEnabled ? "1" : "0.35"}
-            />
-            <rect
-              x="135"
-              y="46.5"
-              width="18"
-              height="9"
-              rx="1.5"
-              opacity={peerDiscoveryEnabled ? "0.5" : "0.15"}
-            />
-            {#if peerDiscoveryEnabled}
-              <!-- small wifi dot on right screen -->
+              {/if}
+              <!-- connection between laptops -->
+              {#if peerDiscoveryEnabled}
+                <!-- dashed path the envelope travels along -->
+                <path
+                  d="M50 36 Q90 18 130 36"
+                  opacity="0.12"
+                  stroke-dasharray="3 3"
+                  stroke-width="1"
+                  fill="none"
+                />
+                <!-- envelope flying left→right -->
+                <g opacity="0.6">
+                  <rect x="-5" y="-3.5" width="10" height="7" rx="1" />
+                  <path d="M-5-3.5l5 4 5-4" />
+                  <animateMotion
+                    dur="3s"
+                    repeatCount="indefinite"
+                    path="M50,36 Q90,18 130,36"
+                    rotate="auto"
+                  />
+                </g>
+                <!-- envelope flying right→left (offset) -->
+                <g opacity="0.4">
+                  <rect x="-5" y="-3.5" width="10" height="7" rx="1" />
+                  <path d="M-5-3.5l5 4 5-4" />
+                  <animateMotion
+                    dur="3.4s"
+                    repeatCount="indefinite"
+                    path="M130,36 Q90,18 50,36"
+                    rotate="auto"
+                    begin="0.8s"
+                  />
+                </g>
+              {:else}
+                <!-- broken / no signal -->
+                <line
+                  x1="60"
+                  y1="32"
+                  x2="120"
+                  y2="32"
+                  opacity="0.1"
+                  stroke-dasharray="3 4"
+                />
+                <line
+                  x1="84"
+                  y1="26"
+                  x2="96"
+                  y2="38"
+                  opacity="0.25"
+                  stroke-width="1.5"
+                />
+                <line
+                  x1="84"
+                  y1="38"
+                  x2="96"
+                  y2="26"
+                  opacity="0.25"
+                  stroke-width="1.5"
+                />
+              {/if}
+              <!-- right person: head, body, arms relaxed, sitting -->
               <circle
                 cx="144"
-                cy="51"
-                r="1.2"
-                fill="currentColor"
-                stroke="none"
-                opacity="0.6"
+                cy="24"
+                r="4.5"
+                opacity={peerDiscoveryEnabled ? "1" : "0.35"}
               />
               <path
-                d="M141 49a4.2 4.2 0 0 1 6 0"
-                opacity="0.4"
-                stroke-width="1"
+                d="M144 28.5v7"
+                opacity={peerDiscoveryEnabled ? "1" : "0.35"}
               />
+              <path
+                d="M139 31c2 1.5 8 1.5 10 0"
+                opacity={peerDiscoveryEnabled ? "1" : "0.35"}
+              />
+              <path
+                d="M140 35.5l-1 6M148 35.5l1 6"
+                opacity={peerDiscoveryEnabled ? "1" : "0.35"}
+              />
+              <!-- right laptop -->
+              <rect
+                x="132"
+                y="44"
+                width="24"
+                height="14"
+                rx="2.5"
+                opacity={peerDiscoveryEnabled ? "1" : "0.35"}
+              />
+              <rect
+                x="135"
+                y="46.5"
+                width="18"
+                height="9"
+                rx="1.5"
+                opacity={peerDiscoveryEnabled ? "0.5" : "0.15"}
+              />
+              {#if peerDiscoveryEnabled}
+                <!-- small wifi dot on right screen -->
+                <circle
+                  cx="144"
+                  cy="51"
+                  r="1.2"
+                  fill="currentColor"
+                  stroke="none"
+                  opacity="0.6"
+                />
+                <path
+                  d="M141 49a4.2 4.2 0 0 1 6 0"
+                  opacity="0.4"
+                  stroke-width="1"
+                />
+              {/if}
+            </svg>
+            {#if peerDiscoveryEnabled}
+              <span
+                >LAN discovery is <span class="peer-badge peer-badge-on"
+                  >ON</span
+                > — other supergit instances on your local network can see this workspace
+                and exchange messages. Click to disable.</span
+              >
+            {:else}
+              <span
+                >LAN discovery is <span class="peer-badge peer-badge-off"
+                  >OFF</span
+                > — this workspace is invisible to others on your network. Click to
+                enable peer-to-peer messaging.</span
+              >
             {/if}
-          </svg>
-          {#if peerDiscoveryEnabled}
-            <span
-              >LAN discovery is <span class="peer-badge peer-badge-on">ON</span> —
-              other supergit instances on your local network can see this workspace
-              and exchange messages. Click to disable.</span
-            >
-          {:else}
-            <span
-              >LAN discovery is <span class="peer-badge peer-badge-off"
-                >OFF</span
-              > — this workspace is invisible to others on your network. Click to
-              enable peer-to-peer messaging.</span
-            >
-          {/if}
-        </span>
-      </Tooltip>
-      <MessagesInbox />
-    </div>
+          </span>
+        </Tooltip>
+        <MessagesInbox />
+      </div>
 
-    <div class="actions-anchor">
-      <button
-        class="actions-btn"
-        class:open={actionsOpen}
-        on:click={() => (actionsOpen = !actionsOpen)}
-        title="Reversible workspace actions (undo / redo)"
-      >
-        Undo
-        {#if visibleEvents.length > 0}
-          <span class="count">{visibleEvents.length}</span>
-        {/if}
-      </button>
-      {#if actionsOpen}
-        <Popover variant="actions" unclamped>
-          <span slot="head">Recent actions</span>
-          {#if visibleEvents.length === 0}
-            <p class="muted small nopad">No actions yet.</p>
-          {:else}
-            <ul class="events">
-              {#each visibleEvents.slice(0, 50) as ev (ev.id)}
-                <li class:undone={ev.undone}>
-                  <div class="ev-row">
-                    <span class="ev-type">{eventLabel(ev, repos)}</span>
-                    <span class="muted ev-time">{relTime(ev.timestamp)}</span>
-                  </div>
-                  <div class="ev-meta">
-                    <span class="actor actor-{ev.actor}">{ev.actor}</span>
-                    {#if ev.reversible}
-                      {#if ev.undone}
-                        <button
-                          class="undo"
-                          on:click={() => toggleEvent(ev.id, "redo")}
-                          >Redo</button
-                        >
-                      {:else}
-                        <button
-                          class="undo"
-                          on:click={() => toggleEvent(ev.id, "undo")}
-                          >Undo</button
-                        >
+      <div class="actions-anchor">
+        <button
+          class="actions-btn"
+          class:open={actionsOpen}
+          on:click={() => (actionsOpen = !actionsOpen)}
+          title="Reversible workspace actions (undo / redo)"
+        >
+          Undo
+          {#if visibleEvents.length > 0}
+            <span class="count">{visibleEvents.length}</span>
+          {/if}
+        </button>
+        {#if actionsOpen}
+          <Popover variant="actions" unclamped>
+            <span slot="head">Recent actions</span>
+            {#if visibleEvents.length === 0}
+              <p class="muted small nopad">No actions yet.</p>
+            {:else}
+              <ul class="events">
+                {#each visibleEvents.slice(0, 50) as ev (ev.id)}
+                  <li class:undone={ev.undone}>
+                    <div class="ev-row">
+                      <span class="ev-type">{eventLabel(ev, repos)}</span>
+                      <span class="muted ev-time">{relTime(ev.timestamp)}</span>
+                    </div>
+                    <div class="ev-meta">
+                      <span class="actor actor-{ev.actor}">{ev.actor}</span>
+                      {#if ev.reversible}
+                        {#if ev.undone}
+                          <button
+                            class="undo"
+                            on:click={() => toggleEvent(ev.id, "redo")}
+                            >Redo</button
+                          >
+                        {:else}
+                          <button
+                            class="undo"
+                            on:click={() => toggleEvent(ev.id, "undo")}
+                            >Undo</button
+                          >
+                        {/if}
                       {/if}
-                    {/if}
-                  </div>
-                </li>
-              {/each}
-            </ul>
-          {/if}
-        </Popover>
-      {/if}
-    </div>
-
-    <div class="actions-anchor events-anchor">
-      <button
-        class="actions-btn"
-        class:open={eventsOpen}
-        class:has-errors={errorEntries.length > 0}
-        on:click={() => (eventsOpen = !eventsOpen)}
-        title="Diagnostics — daemon 5xx, fetch failures, uncaught browser errors"
-      >
-        Events
-        {#if errorEntries.length > 0}
-          <span class="count">{errorEntries.length}</span>
+                    </div>
+                  </li>
+                {/each}
+              </ul>
+            {/if}
+          </Popover>
         {/if}
-      </button>
-      {#if eventsOpen}
-        <EventsPopover {errorEntries} on:clear={clearAllErrors} />
-      {/if}
-    </div>
+      </div>
 
-    <div class="actions-anchor daemons-anchor">
-      <button
-        class="actions-btn daemons-btn"
-        class:open={daemonsMenuOpen}
-        on:click={() => (daemonsMenuOpen = !daemonsMenuOpen)}
-        title="Remote daemons"
-      >
-        Daemons<span class="count">{remoteDaemons.length}</span>
-      </button>
-      {#if daemonsMenuOpen}
-        <Popover variant="actions" extraClass="daemons-popover" unclamped>
-          <svelte:fragment slot="head"><span>Remote daemons</span></svelte:fragment>
-          {#if remoteDaemons.length === 0}
-            <p class="muted small nopad">No remote daemons yet.</p>
-          {:else}
-            <ul class="daemons-list">
-              {#each remoteDaemons as d (d.id)}
-                <li class="daemons-row">
-                  <span
-                    class="daemons-dot"
-                    class:online={daemonsOnline.get(d.id)}
-                    title={daemonsOnline.get(d.id) ? "online" : "offline / no tunnel"}
-                  ></span>
-                  <span class="daemons-meta">
-                    <span class="daemons-label"
-                      >{d.label}{#if d.user}<span
-                          class="daemons-user"
-                          class:root={d.user === "root"}
-                          title={d.user === "root"
-                            ? "runs as root — full access to the box"
-                            : `runs as ${d.user}`}>{d.user}</span
-                        >{/if}</span
-                    >
-                    <span class="daemons-host">{d.host}:{d.port}</span>
-                  </span>
-                  <button
-                    class="daemons-addfolder"
-                    title="Add a folder on this daemon"
-                    on:click|stopPropagation={() => {
-                      addRemoteFolderDaemonId = d.id;
-                      addRemoteFolderOpen = true;
-                      daemonsMenuOpen = false;
-                    }}
-                  >+ Folder</button>
-                  <button
-                    class="daemons-kebab"
-                    title="Manage this daemon"
-                    aria-label="Manage daemon"
-                    disabled={daemonRemoving.has(d.id)}
-                    on:click|stopPropagation={() => {
-                      daemonDialogId = d.id;
-                      daemonsMenuOpen = false;
-                    }}
-                  >
-                    {#if daemonRemoving.has(d.id)}…{:else}
-                      <svg
-                        width="14"
-                        height="14"
-                        viewBox="0 0 16 16"
-                        fill="none"
-                        aria-hidden="true"
-                      >
-                        <path
-                          d="M2 4h12M2 8h12M2 12h12"
-                          stroke="currentColor"
-                          stroke-width="1.5"
-                          stroke-linecap="round"
-                        />
-                      </svg>
-                    {/if}
-                  </button>
-                </li>
-              {/each}
-            </ul>
+      <div class="actions-anchor events-anchor">
+        <button
+          class="actions-btn"
+          class:open={eventsOpen}
+          class:has-errors={errorEntries.length > 0}
+          on:click={() => (eventsOpen = !eventsOpen)}
+          title="Diagnostics — daemon 5xx, fetch failures, uncaught browser errors"
+        >
+          Events
+          {#if errorEntries.length > 0}
+            <span class="count">{errorEntries.length}</span>
           {/if}
-          <div class="daemons-footer">
-            <button
-              class="add-folder-cta add-folder-cta-compact daemons-addremote"
-              on:click|stopPropagation={() => {
-                provisionAttachJob = null;
-                addDaemonOpen = true;
-                daemonsMenuOpen = false;
-              }}
-            >+ Add remote</button>
-          </div>
-        </Popover>
-      {/if}
-    </div>
+        </button>
+        {#if eventsOpen}
+          <EventsPopover {errorEntries} on:clear={clearAllErrors} />
+        {/if}
+      </div>
 
-    <button
-      class="actions-btn settings-menu-btn"
-      class:open={settingsDialogOpen}
-      on:click={() => (settingsDialogOpen = true)}
-      title="Settings"
-      aria-label="Settings"
-      ><svg
-        width="14"
-        height="14"
-        viewBox="0 0 24 24"
-        fill="none"
-        stroke="currentColor"
-        stroke-width="2"
-        stroke-linecap="round"
-        stroke-linejoin="round"
-        aria-hidden="true"
-        ><circle cx="12" cy="12" r="3" /><path
-          d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"
-        /></svg
-      ></button
-    >
+      <div class="actions-anchor daemons-anchor">
+        <button
+          class="actions-btn daemons-btn"
+          class:open={daemonsMenuOpen}
+          on:click={() => (daemonsMenuOpen = !daemonsMenuOpen)}
+          title="Remote daemons"
+        >
+          Daemons<span class="count">{remoteDaemons.length}</span>
+        </button>
+        {#if daemonsMenuOpen}
+          <Popover variant="actions" extraClass="daemons-popover" unclamped>
+            <svelte:fragment slot="head"
+              ><span>Remote daemons</span></svelte:fragment
+            >
+            {#if remoteDaemons.length === 0}
+              <p class="muted small nopad">No remote daemons yet.</p>
+            {:else}
+              <ul class="daemons-list">
+                {#each remoteDaemons as d (d.id)}
+                  <li class="daemons-row">
+                    <span
+                      class="daemons-dot"
+                      class:online={daemonsOnline.get(d.id)}
+                      title={daemonsOnline.get(d.id)
+                        ? "online"
+                        : "offline / no tunnel"}
+                    ></span>
+                    <span class="daemons-meta">
+                      <span class="daemons-label"
+                        >{d.label}{#if d.user}<span
+                            class="daemons-user"
+                            class:root={d.user === "root"}
+                            title={d.user === "root"
+                              ? "runs as root — full access to the box"
+                              : `runs as ${d.user}`}>{d.user}</span
+                          >{/if}</span
+                      >
+                      <span class="daemons-host">{d.host}:{d.port}</span>
+                    </span>
+                    <button
+                      class="daemons-addfolder"
+                      title="Add a folder on this daemon"
+                      on:click|stopPropagation={() => {
+                        addRemoteFolderDaemonId = d.id;
+                        addRemoteFolderOpen = true;
+                        daemonsMenuOpen = false;
+                      }}>+ Folder</button
+                    >
+                    <button
+                      class="daemons-kebab"
+                      title="Manage this daemon"
+                      aria-label="Manage daemon"
+                      disabled={daemonRemoving.has(d.id)}
+                      on:click|stopPropagation={() => {
+                        daemonDialogId = d.id;
+                        daemonsMenuOpen = false;
+                      }}
+                    >
+                      {#if daemonRemoving.has(d.id)}…{:else}
+                        <svg
+                          width="14"
+                          height="14"
+                          viewBox="0 0 16 16"
+                          fill="none"
+                          aria-hidden="true"
+                        >
+                          <path
+                            d="M2 4h12M2 8h12M2 12h12"
+                            stroke="currentColor"
+                            stroke-width="1.5"
+                            stroke-linecap="round"
+                          />
+                        </svg>
+                      {/if}
+                    </button>
+                  </li>
+                {/each}
+              </ul>
+            {/if}
+            <div class="daemons-footer">
+              <button
+                class="add-folder-cta add-folder-cta-compact daemons-addremote"
+                on:click|stopPropagation={() => {
+                  provisionAttachJob = null;
+                  addDaemonOpen = true;
+                  daemonsMenuOpen = false;
+                }}>+ Add remote</button
+              >
+            </div>
+          </Popover>
+        {/if}
+      </div>
 
-    <button
-      class="actions-btn tutorial-btn"
-      class:tour-active={tourRunning}
-      on:click={restartTutorial}
-      title={tourRunning ? "Stop the walkthrough" : "Start the UI walkthrough"}
-      ><svg
-        width="14"
-        height="14"
-        viewBox="0 0 24 24"
-        fill="none"
-        stroke="currentColor"
-        stroke-width="2"
-        stroke-linecap="round"
-        stroke-linejoin="round"
-        aria-hidden="true"
-        ><circle cx="12" cy="12" r="10" /><path
-          d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"
-        /><line x1="12" y1="17" x2="12.01" y2="17" /></svg
-      ></button
-    >
+      <button
+        class="actions-btn settings-menu-btn"
+        class:open={settingsDialogOpen}
+        on:click={() => (settingsDialogOpen = true)}
+        title="Settings"
+        aria-label="Settings"
+        ><svg
+          width="14"
+          height="14"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="2"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+          aria-hidden="true"
+          ><circle cx="12" cy="12" r="3" /><path
+            d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"
+          /></svg
+        ></button
+      >
+
+      <button
+        class="actions-btn tutorial-btn"
+        class:tour-active={tourRunning}
+        on:click={restartTutorial}
+        title={tourRunning
+          ? "Stop the walkthrough"
+          : "Start the UI walkthrough"}
+        ><svg
+          width="14"
+          height="14"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="2"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+          aria-hidden="true"
+          ><circle cx="12" cy="12" r="10" /><path
+            d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"
+          /><line x1="12" y1="17" x2="12.01" y2="17" /></svg
+        ></button
+      >
     </nav>
   </div>
 
@@ -8113,8 +8271,31 @@
             </Popover>
           {/if}
         </div>
-        <button class="add-folder-cta" on:click={() => { provisionAttachJob = null; addDaemonOpen = true; }}>
-          <svg class="add-folder-icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
+        <button
+          class="add-folder-cta"
+          on:click={() => {
+            provisionAttachJob = null;
+            addDaemonOpen = true;
+          }}
+        >
+          <svg
+            class="add-folder-icon"
+            width="20"
+            height="20"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            aria-hidden="true"
+            ><rect x="2" y="3" width="20" height="14" rx="2" /><line
+              x1="8"
+              y1="21"
+              x2="16"
+              y2="21"
+            /><line x1="12" y1="17" x2="12" y2="21" /></svg
+          >
           <span>Add remote daemon</span>
         </button>
       </div>
@@ -8176,7 +8357,9 @@
                       ? cancelRenameRepo()
                       : openRepoEdit(repo, row.key)}
                 >
-                  {#if repo.daemonId}<span class="daemon-scheme">{daemonLabelForRepo(repo.daemonId)}://</span>{/if}{repo.name}
+                  {#if repo.daemonId}<span class="daemon-scheme"
+                      >{daemonLabelForRepo(repo.daemonId)}://</span
+                    >{/if}{repo.name}
                   <span class="chip-tail">
                     <span class="pencil">✎</span>
                   </span>
@@ -8268,7 +8451,10 @@
                           class="repo-edit-remove-daemon"
                           on:click|stopPropagation={() => {
                             const d = repo.daemonId;
-                            if (d) { cancelRenameRepo(); void removeDaemon(d); }
+                            if (d) {
+                              cancelRenameRepo();
+                              void removeDaemon(d);
+                            }
                           }}
                         >
                           Remove daemon
@@ -8607,10 +8793,17 @@
                       }}>+</button
                     >
                     {#if newAgentPopoverOpen[wt.path]}
-                      {@const rowDaemonId = daemonIdForWorktreePath(repos, wt.path)}
-                      {@const rowAgents = agentsByDaemon[rowDaemonId ?? "local"] ?? installedAgents}
-                      {@const rowShell = shellByDaemon[rowDaemonId ?? "local"] ?? defaultShell}
-                      {@const rowShells = shellsByDaemon[rowDaemonId ?? "local"] ?? []}
+                      {@const rowDaemonId = daemonIdForWorktreePath(
+                        repos,
+                        wt.path,
+                      )}
+                      {@const rowAgents =
+                        agentsByDaemon[rowDaemonId ?? "local"] ??
+                        installedAgents}
+                      {@const rowShell =
+                        shellByDaemon[rowDaemonId ?? "local"] ?? defaultShell}
+                      {@const rowShells =
+                        shellsByDaemon[rowDaemonId ?? "local"] ?? []}
                       <Popover variant="agents" extraClass="new-agent-popover">
                         <svelte:fragment slot="head"
                           >Start a new session</svelte:fragment
@@ -8764,7 +8957,8 @@
                                       src="/agents/codex.svg"
                                       alt=""
                                     />
-                                    <span class="agent-row-name">Codex App</span>
+                                    <span class="agent-row-name">Codex App</span
+                                    >
                                     <span class="agent-title muted">
                                       app-server
                                     </span>
@@ -8845,8 +9039,7 @@
                                   /></svg
                                 >
                                 <span class="agent-row-name">Terminal</span>
-                                <span class="agent-title muted"
-                                  >{rowShell}</span
+                                <span class="agent-title muted">{rowShell}</span
                                 >
                               </button>
                             </li>
@@ -10020,7 +10213,10 @@
                               <FileBrowser
                                 wtPath={wt.path}
                                 source={s.source}
-                                daemonId={daemonIdForWorktreePath(repos, wt.path)}
+                                daemonId={daemonIdForWorktreePath(
+                                  repos,
+                                  wt.path,
+                                )}
                                 onClose={() => closeSessionInWt(wt.path, s)}
                                 onToast={(m) =>
                                   addToast({ kind: "warning", message: m })}
@@ -10035,7 +10231,10 @@
                                 onDragStart={(e) =>
                                   handleSessionDragStart(e, wt.path, i)}
                                 fsChangeKey={fsChangeKey[wt.path] ?? 0}
-                                daemonId={daemonIdForWorktreePath(repos, wt.path)}
+                                daemonId={daemonIdForWorktreePath(
+                                  repos,
+                                  wt.path,
+                                )}
                               />
                             {:else if s.source.startsWith("__transcript__:ollama:")}
                               <!-- Read-mode column for a stopped (or live)
@@ -10134,7 +10333,10 @@
                                   agent={s.agent}
                                   source={titleSource}
                                   wtPath={wt.path}
-                                  daemonId={daemonIdForWorktreePath(repos, wt.path)}
+                                  daemonId={daemonIdForWorktreePath(
+                                    repos,
+                                    wt.path,
+                                  )}
                                   cmd={cmdForOpenSession(
                                     s,
                                     shellByDaemon[
@@ -10429,13 +10631,15 @@
                                   visualAppEnabled={isExplicitVisualSurface({
                                     ...s,
                                     resumeSessionId:
-                                      s.resumeSessionId ??
-                                      agentMeta?.sessionId,
+                                      s.resumeSessionId ?? agentMeta?.sessionId,
                                     transcriptSource:
                                       s.transcriptSource ?? agentMeta?.source,
                                   })}
                                   wtPath={wt.path}
-                                  daemonId={daemonIdForWorktreePath(repos, wt.path)}
+                                  daemonId={daemonIdForWorktreePath(
+                                    repos,
+                                    wt.path,
+                                  )}
                                   totalMessageCount={agentMeta?.messageCount}
                                   contextTokens={agentMeta?.contextTokens}
                                   contextTokensExact={agentMeta?.contextTokensExact}
@@ -10481,8 +10685,7 @@
                                         s.resumeSessionId ??
                                         agentMeta?.sessionId,
                                       transcriptSource:
-                                        s.transcriptSource ??
-                                        agentMeta?.source,
+                                        s.transcriptSource ?? agentMeta?.source,
                                     },
                                   )}
                                   onTranscriptSurfaceChange={(surface) => {
@@ -10503,13 +10706,12 @@
                                     resumeCodexVisualSession(
                                       wt.path,
                                       s,
-                                      s.resumeSessionId ??
-                                        agentMeta?.sessionId,
+                                      s.resumeSessionId ?? agentMeta?.sessionId,
                                       s.transcriptSource ?? agentMeta?.source,
                                     );
                                   }}
                                   onStopVisualApp={(s.transcriptSource ??
-                                    agentMeta?.source)
+                                  agentMeta?.source)
                                     ? () =>
                                         stopCodexVisualSession(
                                           wt.path,
@@ -10845,8 +11047,31 @@
             </Popover>
           {/if}
         </div>
-        <button class="add-folder-cta add-folder-cta-compact" on:click={() => { provisionAttachJob = null; addDaemonOpen = true; }}>
-          <svg class="add-folder-icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
+        <button
+          class="add-folder-cta add-folder-cta-compact"
+          on:click={() => {
+            provisionAttachJob = null;
+            addDaemonOpen = true;
+          }}
+        >
+          <svg
+            class="add-folder-icon"
+            width="20"
+            height="20"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            aria-hidden="true"
+            ><rect x="2" y="3" width="20" height="14" rx="2" /><line
+              x1="8"
+              y1="21"
+              x2="16"
+              y2="21"
+            /><line x1="12" y1="17" x2="12" y2="21" /></svg
+          >
           <span>Add remote daemon</span>
         </button>
       </div>
@@ -10922,7 +11147,7 @@
   onConnect={connectRemoteDaemon}
   provision={provisionApi}
   canProvision={provisionCapable}
-  provisionUnavailableReason={provisionUnavailableReason}
+  {provisionUnavailableReason}
   attachJob={provisionAttachJob}
   onDone={({ status, mode }) => {
     if (status === "done") {
@@ -11001,7 +11226,10 @@
             : undefined}
         >
           {#if t.title}<strong class="toast-title">{t.title}</strong>{/if}
-          <span class="toast-message" class:toast-message-italic={t.messageItalic}>{t.message}</span>
+          <span
+            class="toast-message"
+            class:toast-message-italic={t.messageItalic}>{t.message}</span
+          >
         </div>
         <button
           class="toast-close"

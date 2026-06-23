@@ -83,6 +83,8 @@ export function createSessionPoller(deps: SessionPollerDeps): SessionPoller {
   // recompute slices for newly-registered columns without a re-fetch.
   const activeSendsEtag = new Map<string | undefined, string>();
   const activeSendsList = new Map<string | undefined, InflightRec[]>();
+  let runningTick: Promise<void> | null = null;
+  let rerunRequested = false;
 
   function register(reg: SessionPollReg): () => void {
     const key = Symbol(reg.source);
@@ -164,7 +166,7 @@ export function createSessionPoller(deps: SessionPollerDeps): SessionPoller {
     }
   }
 
-  async function tick(): Promise<void> {
+  async function runTick(): Promise<void> {
     if (deps.isIdle()) return;
     if (regs.size === 0) return;
     const byDaemon = new Map<string | undefined, RegState[]>();
@@ -178,12 +180,31 @@ export function createSessionPoller(deps: SessionPollerDeps): SessionPoller {
     );
   }
 
+  function tick(): Promise<void> {
+    if (runningTick) {
+      rerunRequested = true;
+      return runningTick;
+    }
+    runningTick = (async () => {
+      try {
+        do {
+          rerunRequested = false;
+          await runTick();
+        } while (rerunRequested);
+      } finally {
+        runningTick = null;
+      }
+    })();
+    return runningTick;
+  }
+
   return { register, tick, size: () => regs.size };
 }
 
 // --- Module singleton: real fetch + idle gate + a single 2 s interval -------
 
 const POLL_INTERVAL_MS = 2_000;
+const INITIAL_TICK_GRACE_MS = 50;
 
 const singleton = createSessionPoller({
   fetchImpl: (...args) => fetch(...args),
@@ -192,6 +213,7 @@ const singleton = createSessionPoller({
 
 let timer: ReturnType<typeof setInterval> | null = null;
 let resumeOff: (() => void) | null = null;
+let immediateTickTimer: ReturnType<typeof setTimeout> | null = null;
 
 function ensureTimer() {
   if (timer !== null) return;
@@ -202,6 +224,10 @@ function ensureTimer() {
 
 function maybeStopTimer() {
   if (singleton.size() > 0) return;
+  if (immediateTickTimer !== null) {
+    clearTimeout(immediateTickTimer);
+    immediateTickTimer = null;
+  }
   if (timer !== null) {
     clearInterval(timer);
     timer = null;
@@ -212,6 +238,19 @@ function maybeStopTimer() {
   }
 }
 
+function queueImmediateTick() {
+  if (immediateTickTimer !== null) return;
+  immediateTickTimer = setTimeout(() => {
+    immediateTickTimer = null;
+    void singleton.tick();
+  }, INITIAL_TICK_GRACE_MS);
+}
+
+export function requestSessionPollNow(): Promise<void> {
+  if (singleton.size() === 0) return Promise.resolve();
+  return singleton.tick();
+}
+
 /**
  * Register a SessionView with the shared poller. Returns an unregister fn that
  * the caller MUST invoke on destroy. The 2 s timer starts on the first
@@ -220,6 +259,7 @@ function maybeStopTimer() {
 export function registerSessionPoll(reg: SessionPollReg): () => void {
   const off = singleton.register(reg);
   ensureTimer();
+  queueImmediateTick();
   return () => {
     off();
     maybeStopTimer();

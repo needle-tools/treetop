@@ -45,6 +45,8 @@
   let open = false;
   let peers: DiscoveredPeer[] = [];
   let peersPoll: ReturnType<typeof setInterval> | null = null;
+  let peersRefreshInFlight: Promise<void> | null = null;
+  let peersRefreshAgain = false;
   /** Polls /api/messages on a slow cadence as a safety net for the
    *  SSE-driven refresh. The SSE handler in App.svelte normally
    *  keeps the store in sync; this catches the case where an SSE
@@ -172,7 +174,7 @@
     messagesPoll = setInterval(refreshMessages, interval);
   }
 
-  async function refreshPeers() {
+  async function runRefreshPeers() {
     try {
       const res = await fetch(apiUrl("/api/peers"));
       if (!res.ok) return;
@@ -181,6 +183,24 @@
     } catch {
       // best-effort
     }
+  }
+
+  function refreshPeers(): Promise<void> {
+    if (peersRefreshInFlight) {
+      peersRefreshAgain = true;
+      return peersRefreshInFlight;
+    }
+    peersRefreshInFlight = (async () => {
+      try {
+        do {
+          peersRefreshAgain = false;
+          await runRefreshPeers();
+        } while (peersRefreshAgain);
+      } finally {
+        peersRefreshInFlight = null;
+      }
+    })();
+    return peersRefreshInFlight;
   }
 
   function setOpen(next: boolean) {

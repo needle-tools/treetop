@@ -44,7 +44,7 @@ describe("TerminalView ws.onopen post-mount fixups", () => {
    *  that the fixup calls live INSIDE the open handler, not somewhere
    *  unrelated in the file. */
   function onOpenBlock(): string {
-    const openIdx = SOURCE.indexOf("ws.onopen");
+    const openIdx = SOURCE.indexOf("ws.onopen = () =>");
     expect(openIdx, "ws.onopen not found in TerminalView").toBeGreaterThan(-1);
     const nextHandlerIdx = SOURCE.indexOf("ws.onmessage", openIdx);
     expect(
@@ -330,7 +330,7 @@ describe("TerminalView hidden terminal output", () => {
     const block = SOURCE.slice(binaryIdx, noteIdx);
     expect(block).toContain("writeBuffer.push(bytes)");
     expect(block).toContain("flushBufferedTerminalOutput()");
-    expect(block).toContain("xterm?.write(batch)");
+    expect(block).toContain("writeTerminalOutput(batch)");
     expect(block).not.toContain("console.warn");
     expect(block).not.toContain("skipped hidden terminal output");
     const helperIdx = SOURCE.indexOf("function flushBufferedTerminalOutput()");
@@ -353,7 +353,7 @@ describe("TerminalView hidden terminal output", () => {
     );
     const helper = SOURCE.slice(helperIdx, helperEnd);
     expect(helper).toContain("flushBufferedTerminalOutput()");
-    expect(helper).toContain("xterm.write(batch)");
+    expect(helper).toContain("writeTerminalOutput(batch)");
 
     const observerIdx = SOURCE.indexOf("new IntersectionObserver");
     expect(observerIdx).toBeGreaterThan(-1);

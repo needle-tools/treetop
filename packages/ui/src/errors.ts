@@ -16,7 +16,11 @@
  * is component-scoped, so we re-export a subscribe()-able list instead).
  */
 
-import { snapshot as uiTimingSnapshot } from "./timings";
+import {
+  record as recordUiTiming,
+  recentSlowSamples,
+  snapshot as uiTimingSnapshot,
+} from "./timings";
 
 export type FrontendErrorKind =
   | "fetch"
@@ -103,12 +107,17 @@ const seenIds = new Set<string>();
 let entries: FrontendErrorEntry[] = [];
 
 function notify(): void {
-  for (const fn of subscribers) {
-    try {
-      fn(entries);
-    } catch {
-      // a subscriber bug should not crash other subscribers
+  const t = performance.now();
+  try {
+    for (const fn of subscribers) {
+      try {
+        fn(entries);
+      } catch {
+        // a subscriber bug should not crash other subscribers
+      }
     }
+  } finally {
+    recordUiTiming("errors.notify", performance.now() - t);
   }
 }
 
@@ -142,27 +151,32 @@ export function getErrors(): FrontendErrorEntry[] {
  * an identical row each time.
  */
 export function pushError(entry: FrontendErrorEntry): void {
-  if (seenIds.has(entry.id)) return;
-  seenIds.add(entry.id);
-  pruneOld(Date.now());
-  const key = dedupKey(entry);
-  const idx = entries.findIndex((e) => dedupKey(e) === key);
-  if (idx === -1) {
-    entries = [entry, ...entries].slice(0, MAX_ENTRIES);
-  } else {
-    // Fold: keep the existing row's id (stable DOM / subscriber key) but
-    // adopt the incoming occurrence's details — timestamp, stack, extra —
-    // so "Copy" yields the most recent instance. Float it to the top so
-    // the freshest activity leads.
-    const existing = entries[idx];
-    const merged: FrontendErrorEntry = {
-      ...entry,
-      id: existing.id,
-      count: (existing.count ?? 1) + 1,
-    };
-    entries = [merged, ...entries.slice(0, idx), ...entries.slice(idx + 1)];
+  const t = performance.now();
+  try {
+    if (seenIds.has(entry.id)) return;
+    seenIds.add(entry.id);
+    pruneOld(Date.now());
+    const key = dedupKey(entry);
+    const idx = entries.findIndex((e) => dedupKey(e) === key);
+    if (idx === -1) {
+      entries = [entry, ...entries].slice(0, MAX_ENTRIES);
+    } else {
+      // Fold: keep the existing row's id (stable DOM / subscriber key) but
+      // adopt the incoming occurrence's details — timestamp, stack, extra —
+      // so "Copy" yields the most recent instance. Float it to the top so
+      // the freshest activity leads.
+      const existing = entries[idx];
+      const merged: FrontendErrorEntry = {
+        ...entry,
+        id: existing.id,
+        count: (existing.count ?? 1) + 1,
+      };
+      entries = [merged, ...entries.slice(0, idx), ...entries.slice(idx + 1)];
+    }
+    notify();
+  } finally {
+    recordUiTiming("errors.push", performance.now() - t);
   }
-  notify();
 }
 
 /** Content key for deduping — two entries collapse into one row iff they
@@ -256,18 +270,82 @@ function newId(): string {
   return `local-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
 }
 
-async function postEntry(entry: FrontendErrorEntry): Promise<void> {
+const ERROR_POST_BATCH_MS = 50;
+const ERROR_POST_BATCH_MAX = 100;
+const ERROR_POST_QUEUE_MAX = 500;
+const ERROR_POST_TIMEOUT_MS = 5_000;
+let pendingErrorPosts: FrontendErrorEntry[] = [];
+let errorPostTimer: ReturnType<typeof setTimeout> | null = null;
+let errorPostInFlight: Promise<void> | null = null;
+let errorPostFlushRequested = false;
+
+function timeoutSignal(ms: number): AbortSignal | undefined {
+  return (
+    AbortSignal as typeof AbortSignal & {
+      timeout?: (milliseconds: number) => AbortSignal;
+    }
+  ).timeout?.(ms);
+}
+
+async function postEntries(entriesToPost: FrontendErrorEntry[]): Promise<void> {
+  if (entriesToPost.length === 0) return;
   try {
     await originalFetch("/api/errors", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(entry),
+      signal: timeoutSignal(ERROR_POST_TIMEOUT_MS),
+      body: JSON.stringify(
+        entriesToPost.length === 1 ? entriesToPost[0] : entriesToPost,
+      ),
     });
   } catch {
     // If we can't reach the daemon (the very condition that probably
     // produced this error), just keep it in memory. The user still
     // sees it in the popover.
   }
+}
+
+function schedulePostEntry(entry: FrontendErrorEntry): void {
+  pendingErrorPosts.push(entry);
+  if (pendingErrorPosts.length > ERROR_POST_QUEUE_MAX) {
+    pendingErrorPosts.splice(
+      0,
+      pendingErrorPosts.length - ERROR_POST_QUEUE_MAX,
+    );
+  }
+  if (pendingErrorPosts.length >= ERROR_POST_BATCH_MAX) {
+    void flushPendingErrorPosts();
+    return;
+  }
+  if (errorPostTimer !== null) return;
+  errorPostTimer = setTimeout(() => {
+    void flushPendingErrorPosts();
+  }, ERROR_POST_BATCH_MS);
+}
+
+async function flushPendingErrorPosts(): Promise<void> {
+  if (errorPostTimer !== null) {
+    clearTimeout(errorPostTimer);
+    errorPostTimer = null;
+  }
+  if (errorPostInFlight) {
+    errorPostFlushRequested = true;
+    await errorPostInFlight;
+    return;
+  }
+  errorPostInFlight = (async () => {
+    try {
+      do {
+        errorPostFlushRequested = false;
+        const batch = pendingErrorPosts;
+        pendingErrorPosts = [];
+        await postEntries(batch);
+      } while (pendingErrorPosts.length > 0 || errorPostFlushRequested);
+    } finally {
+      errorPostInFlight = null;
+    }
+  })();
+  await errorPostInFlight;
 }
 
 /** Build + record + persist a browser-side error. */
@@ -280,7 +358,7 @@ export function recordBrowserError(
     ...input,
   };
   pushError(entry);
-  void postEntry(entry);
+  schedulePostEntry(entry);
   return entry;
 }
 
@@ -391,6 +469,18 @@ function shouldSkipSelfDiagnostic(route: string, method: string): boolean {
   return route.includes("/api/errors") && method === "POST";
 }
 
+function isExpectedFetchFailure(
+  parsed: ParsedApiRoute | null,
+  method: string,
+  err: unknown,
+): boolean {
+  return (
+    method === "GET" &&
+    parsed?.apiPath === "/api/processes" &&
+    (err as { name?: string })?.name === "AbortError"
+  );
+}
+
 function slowFetchThreshold(method: string): number {
   return method === "GET" || method === "HEAD"
     ? SLOW_API_READ_MS
@@ -490,6 +580,20 @@ export function __resetFetchTrackingForTests(): void {
   activeApiFetches.clear();
 }
 
+export async function __flushErrorPostsForTests(): Promise<void> {
+  await flushPendingErrorPosts();
+}
+
+export function __resetErrorPostsForTests(): void {
+  if (errorPostTimer !== null) {
+    clearTimeout(errorPostTimer);
+    errorPostTimer = null;
+  }
+  pendingErrorPosts = [];
+  errorPostInFlight = null;
+  errorPostFlushRequested = false;
+}
+
 /**
  * Wrap window.fetch so any non-ok response or network failure becomes a
  * recorded error. Idempotent. Returns the previous fetch (mostly so
@@ -576,8 +680,12 @@ export function installFetchTracking(): void {
       const inFlightAtEnd = apiFetchesInFlight;
       const msg = err instanceof Error ? err.message : String(err);
       const stack = err instanceof Error ? err.stack : undefined;
-      // Skip recording our own /api/errors POST failures (same reason).
-      if (!shouldSkipSelfDiagnostic(route, method)) {
+      // Skip recording our own /api/errors POST failures (same reason), and
+      // expected aborts from bounded health polls.
+      if (
+        !shouldSkipSelfDiagnostic(route, method) &&
+        !isExpectedFetchFailure(parsed, method, err)
+      ) {
         recordBrowserError({
           kind: "fetch",
           source: "browser",
@@ -649,6 +757,8 @@ export function eventLoopStallDiagnostic(opts: {
   if (activeFetches.length > 0) extra.activeFetches = activeFetches;
   const uiTimings = uiTimingDiagnostics();
   if (uiTimings.length > 0) extra.uiTimings = uiTimings;
+  const recentUiTimings = recentSlowSamples(12);
+  if (recentUiTimings.length > 0) extra.recentUiTimings = recentUiTimings;
   return {
     message: `browser-event-loop-stall driftMs=${roundMs(driftMs)}`,
     extra,
@@ -757,7 +867,9 @@ export function installGlobalErrorHandlers(): void {
 /** Hydrate from /api/errors. Best-effort. */
 export async function hydrateFromServer(): Promise<void> {
   try {
-    const res = await originalFetch("/api/errors");
+    const res = await originalFetch("/api/errors", {
+      signal: timeoutSignal(ERROR_POST_TIMEOUT_MS),
+    });
     if (!res.ok) return;
     const list = (await res.json()) as FrontendErrorEntry[];
     if (Array.isArray(list)) setErrors(list);
@@ -769,7 +881,10 @@ export async function hydrateFromServer(): Promise<void> {
 /** DELETE /api/errors then clear local state. */
 export async function clearErrors(): Promise<void> {
   try {
-    await fetch("/api/errors", { method: "DELETE" });
+    await originalFetch("/api/errors", {
+      method: "DELETE",
+      signal: timeoutSignal(ERROR_POST_TIMEOUT_MS),
+    });
   } catch {
     // ignore; still clear locally so the popover empties
   }

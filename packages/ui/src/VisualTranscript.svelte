@@ -5,6 +5,7 @@
   import { apiUrl } from "./api";
   import LoadingSpinner from "./LoadingSpinner.svelte";
   import ToolIcon from "./ToolIcon.svelte";
+  import { formatAbsoluteTimeTitle } from "./display-helpers";
   import {
     buildVisualWorkDisplayEntries,
     cleanVisualToolResultText,
@@ -110,6 +111,8 @@
   let expandedThinkingWorkKeys = new Set<string>();
   const MARKDOWN_CACHE_LIMIT = 500;
   const markdownCache = new Map<string, string>();
+  const TIME_TITLE_CACHE_LIMIT = 1000;
+  const timeTitleCache = new Map<string, string>();
 
   interface ComposerMotionRect {
     x: number;
@@ -655,6 +658,18 @@
     return `${Math.floor(s / 86400)}d`;
   }
 
+  function absoluteTimeTitle(iso: string): string {
+    const cached = timeTitleCache.get(iso);
+    if (cached !== undefined) return cached;
+    const formatted = formatAbsoluteTimeTitle(iso);
+    timeTitleCache.set(iso, formatted);
+    if (timeTitleCache.size > TIME_TITLE_CACHE_LIMIT) {
+      const firstKey = timeTitleCache.keys().next().value;
+      if (firstKey !== undefined) timeTitleCache.delete(firstKey);
+    }
+    return formatted;
+  }
+
   function isLiveTailWork(
     item: VisualTranscriptItem<NormalizedBlock, NormalizedMessage>,
     index: number,
@@ -1123,7 +1138,7 @@
                   {#if entry.message.timestamp}
                     <span
                       class="muted small"
-                      title={new Date(entry.message.timestamp).toLocaleString()}
+                      title={absoluteTimeTitle(entry.message.timestamp)}
                     >
                       {relTimeFromIso(entry.message.timestamp)}
                     </span>
@@ -1207,7 +1222,7 @@
                     {#if entry.message.timestamp}
                       <span
                         class="muted small work-entry-time"
-                        title={new Date(entry.message.timestamp).toLocaleString()}
+                        title={absoluteTimeTitle(entry.message.timestamp)}
                       >
                         {relTimeFromIso(entry.message.timestamp)}
                       </span>
@@ -1256,7 +1271,7 @@
           {#if item.entry.message.timestamp}
             <span
               class="muted small"
-              title={new Date(item.entry.message.timestamp).toLocaleString()}
+              title={absoluteTimeTitle(item.entry.message.timestamp)}
             >
               {relTimeFromIso(item.entry.message.timestamp)}
             </span>
@@ -1302,10 +1317,7 @@
             {roleLabel(m.role, m.author)}
           </span>
           {#if m.timestamp}
-            <span
-              class="muted small"
-              title={new Date(m.timestamp).toLocaleString()}
-            >
+            <span class="muted small" title={absoluteTimeTitle(m.timestamp)}>
               {relTimeFromIso(m.timestamp)}
             </span>
           {/if}

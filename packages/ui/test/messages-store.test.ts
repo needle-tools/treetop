@@ -13,6 +13,7 @@ import { test, expect, describe, afterEach } from "bun:test";
 import { get } from "svelte/store";
 import {
   messages,
+  refreshMessages,
   totalCount,
   unreadCount,
   recallLastRead,
@@ -168,7 +169,12 @@ describe("unreadCount", () => {
 });
 
 describe("messages store", () => {
-  afterEach(() => messages.set({ inbox: [], mutes: {} }));
+  const originalFetch = globalThis.fetch;
+
+  afterEach(() => {
+    messages.set({ inbox: [], mutes: {} });
+    globalThis.fetch = originalFetch;
+  });
 
   test("starts empty", () => {
     expect(get(messages)).toEqual({ inbox: [], mutes: {} });
@@ -184,6 +190,38 @@ describe("messages store", () => {
     // Initial emission + the set = two values.
     expect(seen.length).toBe(2);
     expect(totalCount(seen[1]!)).toBe(1);
+  });
+
+  test("serializes overlapping refreshes into one in-flight request and one follow-up", async () => {
+    let releaseFirst!: () => void;
+    const firstGate = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    const calls: string[] = [];
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      calls.push(String(input));
+      if (calls.length === 1) {
+        await firstGate;
+        return Response.json(
+          snap([{ peer: "first", msgs: [{ at: "2026-01-01T00:00:00Z" }] }]),
+        );
+      }
+      return Response.json(
+        snap([{ peer: "second", msgs: [{ at: "2026-01-02T00:00:00Z" }] }]),
+      );
+    }) as typeof fetch;
+
+    const first = refreshMessages();
+    const second = refreshMessages();
+    await Promise.resolve();
+
+    expect(calls).toHaveLength(1);
+
+    releaseFirst();
+    await Promise.all([first, second]);
+
+    expect(calls).toHaveLength(2);
+    expect(get(messages).inbox[0]?.peer.id).toBe("second");
   });
 });
 
