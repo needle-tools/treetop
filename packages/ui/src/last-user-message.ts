@@ -1201,7 +1201,7 @@ export function buildVisualTranscriptItems<
   const out: VisualTranscriptItem<B, M>[] = [];
   let messageIndex = 0;
   let pendingTurnPrefixEntries: VisualWorkEntry<B, M>[] = [];
-  let previousTurnAcceptsSteering = false;
+  let previousTurnAcceptsSteering: boolean = false;
 
   function pushMessage(entry: VisualWorkEntry<B, M>): void {
     out.push({
@@ -1243,17 +1243,17 @@ export function buildVisualTranscriptItems<
     }
 
     for (const entry of rawEntries) {
-      const marker = compactionMarkerEntry(entry);
       const markerBlock = visualMarkerBlock(entry);
       const markerKind = visualMarkerKind(markerBlock?.text);
-      if (!marker && markerKind !== "aborted") {
-        segment.push(entry);
-        continue;
-      }
       if (markerKind === "aborted") {
         segment.push(entry);
         flushSegment(false, entry.message.timestamp);
         segmentStartedAt = entry.message.timestamp;
+        continue;
+      }
+      const marker = compactionMarkerEntry(entry);
+      if (!marker) {
+        segment.push(entry);
         continue;
       }
       const markerMs = timestampMs(entry.message.timestamp);
@@ -1352,7 +1352,7 @@ export function buildVisualTranscriptItems<
       continue;
     }
 
-    const turnWasAlreadyOpen = previousTurnAcceptsSteering;
+    const turnWasAlreadyOpen: boolean = previousTurnAcceptsSteering;
     const messageForDisplay = withUserMessageIntent(
       message,
       userMessageIntent(message) ??

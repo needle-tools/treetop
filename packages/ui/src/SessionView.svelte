@@ -4437,6 +4437,24 @@
           </div>
         </div>
       {/if}
+      {#if agent === "codex" && composerWarnings.length}
+        <div class="composer-warning-indicators">
+          <button
+            type="button"
+            class="codex-composer-badge warning"
+            class:expanded={codexWarningsExpanded}
+            on:click={toggleCodexWarningsPane}
+            title={codexWarningsExpanded
+              ? "Collapse warnings"
+              : "Show warnings"}
+            aria-label={codexWarningsExpanded
+              ? "Collapse warnings"
+              : "Show warnings"}
+          >
+            Warnings: {composerWarnings.length}
+          </button>
+        </div>
+      {/if}
       <div
         class="composer"
         class:wide-actions={agent === "codex" && codexRunning}
@@ -4625,24 +4643,6 @@
             >
               {sending ? "…" : "↑"}
             </button>
-          {/if}
-          {#if agent === "codex" && composerWarnings.length}
-            <div class="composer-warning-indicators">
-              <button
-                type="button"
-                class="codex-composer-badge warning"
-                class:expanded={codexWarningsExpanded}
-                on:click={toggleCodexWarningsPane}
-                title={codexWarningsExpanded
-                  ? "Collapse warnings"
-                  : "Show warnings"}
-                aria-label={codexWarningsExpanded
-                  ? "Collapse warnings"
-                  : "Show warnings"}
-              >
-                Warnings: {composerWarnings.length}
-              </button>
-            </div>
           {/if}
         </div>
       </div>
@@ -5547,8 +5547,9 @@
   }
   .composer-warning-indicators {
     position: absolute;
-    right: 0;
-    top: calc(100% + 0.35rem);
+    right: 1.25rem;
+    bottom: 0.62rem;
+    z-index: 6;
     display: flex;
     align-items: center;
     justify-content: flex-end;
