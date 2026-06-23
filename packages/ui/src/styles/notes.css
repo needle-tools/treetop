@@ -4,6 +4,12 @@
    slight per-note rotation is derived from the id so it doesn't jitter
    on refetch. */
 
+  :root {
+    /* disabled until we find a better readable handwriting font
+    --handwriting-font: -apple-system, "Caveat", "Comic Neue", "Patrick Hand", "Marker Felt", system-ui, sans-serif;
+    */
+  }
+
 /* Layer is absolutely positioned at the document's top-left (NOT
    `position: fixed`) so notes inside scroll natively with the page.
    `fixed` + JS-driven position updates produced a one-frame lag
@@ -872,9 +878,7 @@
   transition:
     box-shadow 0.15s ease,
     transform 0.15s ease;
-  font-family:
-    -apple-system, "Caveat", "Comic Neue", "Patrick Hand", "Marker Felt",
-    system-ui, sans-serif;
+  font-family: var(--handwriting-font), var(--sans-font);
   font-size: 15px;
   line-height: 1.35;
   pointer-events: auto;
@@ -1525,9 +1529,7 @@
     0 1px 1px rgba(0, 0, 0, 0.18),
     0 10px 28px -14px rgba(0, 0, 0, 0.48);
   color: #2a2516;
-  font-family:
-    -apple-system, "Caveat", "Comic Neue", "Patrick Hand", "Marker Felt",
-    system-ui, sans-serif;
+  font-family: var(--handwriting-font), var(--sans-font);
   font-size: 18px;
   line-height: 1.35;
 }
@@ -1555,9 +1557,7 @@
     0 1px 1px rgba(0, 0, 0, 0.18),
     0 10px 28px -14px rgba(0, 0, 0, 0.48);
   color: #2a2516;
-  font-family:
-    -apple-system, "Caveat", "Comic Neue", "Patrick Hand", "Marker Felt",
-    system-ui, sans-serif;
+  font-family: var(--handwriting-font), var(--sans-font);
   font-size: 18px;
   line-height: 1.35;
 }

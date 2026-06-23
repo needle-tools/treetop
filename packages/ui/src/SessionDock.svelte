@@ -1591,11 +1591,10 @@
     }
   }
   /* Ended / inactive session: keep the same marker geometry as live
-     rows. Visual-vs-terminal and live-vs-stopped affect behavior, not
-     the sidebar dot size; shrinking these made healthy stopped
-     transcripts look like accidental specks. */
+     rows. */
   .dock-dot.dot-exited .dock-dot-inner {
     opacity: 0.62;
+    transform: scale(0.66);
   }
   /* Inactive sessions also dim the session-name label to match
      the dot — bright text-1 was reserved for *live* rows. */
