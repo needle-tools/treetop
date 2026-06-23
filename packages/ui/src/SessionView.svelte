@@ -3527,6 +3527,8 @@
   $: showChatComposer =
     mode === "read" &&
     (agent === "ollama" || (agent === "codex" && codexVisualAppSurface));
+  $: stoppedTranscriptSurface =
+    mode === "read" && !showChatComposer && !visualTranscriptActive;
   let lastFocusComposerSeq = 0;
   $: if (focusComposerSeq > 0 && focusComposerSeq !== lastFocusComposerSeq) {
     lastFocusComposerSeq = focusComposerSeq;
@@ -3785,6 +3787,7 @@
   class:read-mode={mode === "read"}
   class:terminal-transcript-surface={mode === "read" &&
     transcriptSurface === "terminal"}
+  class:stopped-transcript-surface={stoppedTranscriptSurface}
   class:empty-chat-composer={showChatComposer &&
     (session?.messages.length ?? 0) === 0}
   bind:this={sessionEl}
@@ -4773,6 +4776,9 @@
   }
   .session.terminal-transcript-surface {
     border-radius: 0;
+  }
+  .session.stopped-transcript-surface :global(.messages) {
+    color: color-mix(in srgb, var(--text-1) 75%, transparent);
   }
   .session.terminal-transcript-surface :global(header),
   .session.terminal-transcript-surface :global(button),
