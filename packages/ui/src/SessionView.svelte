@@ -3030,7 +3030,6 @@
     const payload = currentCodexPayload();
     if (!payload) return;
     const fromRect = composerMotionSourceRect();
-    codexQueueExpanded = true;
     enqueueCodexPayload(payload, fromRect);
     clearCodexComposer();
   }
