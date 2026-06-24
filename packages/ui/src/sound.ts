@@ -113,7 +113,7 @@ export const DEFAULT_MAPPINGS: Partial<Record<SoundTag, SoundMapping>> = {
       "/sounds/folder-add-first.mp3",
       "/sounds/folder-add-first-alt1.mp3",
     ],
-    volume: 0.3,
+    volume: 0.5,
     selfCooldown: 20_000,
     globalCooldown: 2000,
     maxDelay: 500,
@@ -121,7 +121,7 @@ export const DEFAULT_MAPPINGS: Partial<Record<SoundTag, SoundMapping>> = {
   },
   "folder-add": {
     files: ["/sounds/folder-add.mp3"],
-    volume: 0.3,
+    volume: 0.5,
     selfCooldown: 5000,
     globalCooldown: 1000,
     maxDelay: 1000,
@@ -129,12 +129,12 @@ export const DEFAULT_MAPPINGS: Partial<Record<SoundTag, SoundMapping>> = {
   },
   "note-edit-start": {
     files: ["/sounds/note-edit-start.mp3"],
-    volume: 0.35,
+    volume: 0.63,
     overlay: true,
   },
   "note-edit-end": {
     files: ["/sounds/note-edit-end.mp3", "/sounds/note-edit-end-alt1.mp3"],
-    volume: 0.5,
+    volume: 0.88,
     overlay: true,
   },
   "message-receive": {
@@ -142,19 +142,19 @@ export const DEFAULT_MAPPINGS: Partial<Record<SoundTag, SoundMapping>> = {
       "/sounds/message-receive.mp3",
       "/sounds/message-receive-alt1.ogg",
     ],
-    volume: 0.5,
+    volume: 0.88,
     selfCooldown: 5000,
     overlay: true,
   },
   error: {
     files: ["/sounds/error.mp3"],
-    volume: 0.4,
+    volume: 0.69,
     selfCooldown: 1000,
     overlay: true,
   },
   "peer-session": {
     files: ["/sounds/peer-session.mp3"],
-    volume: 0.4,
+    volume: 0.69,
     selfCooldown: 3000,
     maxDelay: 500,
     overlay: true,
@@ -165,14 +165,14 @@ export const DEFAULT_MAPPINGS: Partial<Record<SoundTag, SoundMapping>> = {
   // stacking when several sessions cross the threshold at once.
   "ai-needs-input": {
     files: ["/sounds/ai-needs-input.ogg"],
-    volume: 0.4,
+    volume: 0.69,
     overlay: true,
     selfCooldown: 10_000,
   },
   // Positive "achievement" chime on a successful git push.
   "git-push": {
     files: ["/sounds/git-push.ogg"],
-    volume: 0.6,
+    volume: 1.0,
     overlay: true,
     selfCooldown: 2000,
   },
@@ -180,7 +180,7 @@ export const DEFAULT_MAPPINGS: Partial<Record<SoundTag, SoundMapping>> = {
   // bulk closes (closing a worktree's whole strip) into one swoosh.
   "session-close": {
     files: ["/sounds/session-close.ogg"],
-    volume: 0.2,
+    volume: 0.38,
     overlay: true,
     selfCooldown: 5000,
     // Session-end takes precedence: closing a column that just ended a
@@ -192,111 +192,111 @@ export const DEFAULT_MAPPINGS: Partial<Record<SoundTag, SoundMapping>> = {
   // Phase 2: AI-queued sounds (not wired yet — needs daemon WebSocket events)
   "ai-disagree": {
     files: ["/sounds/ai-disagree.mp3"],
-    volume: 0.4,
+    volume: 0.69,
     overlay: true,
     selfCooldown: 30_000,
   },
   "ai-tired": {
     files: ["/sounds/ai-tired.mp3"],
-    volume: 0.4,
+    volume: 0.69,
     overlay: true,
     selfCooldown: 60_000,
   },
   "ai-uh-oh": {
     files: ["/sounds/ai-uh-oh.mp3"],
-    volume: 0.4,
+    volume: 0.69,
     overlay: true,
     selfCooldown: 30_000,
   },
   "session-stop": {
     files: ["/sounds/session-stop.mp3"],
-    volume: 0.4,
+    volume: 0.69,
     overlay: true,
     selfCooldown: 2000,
     fadeOutMs: 1000,
   },
   "ai-funny": {
     files: ["/sounds/ai-howl.mp3"],
-    volume: 0.3,
+    volume: 0.5,
     overlay: true,
     selfCooldown: 60_000,
     fadeOutMs: 1000,
   },
   "ai-omg": {
     files: ["/sounds/ai-omg.mp3"],
-    volume: 0.4,
+    volume: 0.69,
     overlay: true,
     selfCooldown: 30_000,
   },
   "ai-ascend": {
     files: ["/sounds/ai-ascend.mp3", "/sounds/ai-ascend-short.mp3"],
-    volume: 0.3,
+    volume: 0.5,
     overlay: true,
     selfCooldown: 30_000,
     fadeOutMs: 1000,
   },
   "ai-eureka": {
     files: ["/sounds/ai-eureka.mp3"],
-    volume: 0.3,
+    volume: 0.5,
     overlay: true,
     selfCooldown: 30_000,
     fadeOutMs: 1500,
   },
   "ai-confused": {
     files: ["/sounds/ai-confused.mp3"],
-    volume: 0.4,
+    volume: 0.69,
     overlay: true,
     selfCooldown: 30_000,
   },
   "ai-surprised": {
     files: ["/sounds/ai-surprised.mp3"],
-    volume: 0.4,
+    volume: 0.69,
     overlay: true,
     selfCooldown: 30_000,
   },
   "ai-wow": {
     files: ["/sounds/ai-wow.mp3"],
-    volume: 0.4,
+    volume: 0.69,
     overlay: true,
     selfCooldown: 30_000,
   },
   "ai-gulp": {
     files: ["/sounds/ai-gulp.mp3"],
-    volume: 0.4,
+    volume: 0.69,
     overlay: true,
     selfCooldown: 30_000,
   },
   "ai-applause": {
     files: ["/sounds/ai-applause.mp3"],
-    volume: 0.3,
+    volume: 0.5,
     overlay: true,
     selfCooldown: 60_000,
     fadeOutMs: 1500,
   },
   "ai-crickets": {
     files: ["/sounds/ai-crickets.mp3"],
-    volume: 0.3,
+    volume: 0.5,
     overlay: true,
     selfCooldown: 60_000,
     fadeOutMs: 1500,
   },
   "ai-boxing-bell": {
     files: ["/sounds/ai-boxing-bell.mp3"],
-    volume: 0.3,
+    volume: 0.5,
     overlay: true,
     selfCooldown: 60_000,
     fadeOutMs: 2000,
   },
   "ai-braam": {
     files: ["/sounds/ai-braam.mp3"],
-    volume: 0.25,
+    volume: 0.44,
     overlay: true,
     selfCooldown: 60_000,
     fadeOutMs: 3000,
   },
   "ai-crowd-gasp": {
     files: ["/sounds/ai-crowd-gasp.mp3"],
-    volume: 0.3,
+    volume: 0.5,
     overlay: true,
     selfCooldown: 30_000,
     fadeOutMs: 1000,
@@ -307,7 +307,7 @@ export const DEFAULT_MAPPINGS: Partial<Record<SoundTag, SoundMapping>> = {
   // the same render tick.
   "usage-over-pace": {
     files: ["/sounds/usage-over-pace.ogg"],
-    volume: 0.4,
+    volume: 0.69,
     overlay: true,
     selfCooldown: 1000,
     fadeOutMs: 500,
@@ -317,7 +317,7 @@ export const DEFAULT_MAPPINGS: Partial<Record<SoundTag, SoundMapping>> = {
   // out (the toasts themselves dedup via their own 8h slots).
   "toast-warning": {
     files: ["/sounds/toast-warning.ogg"],
-    volume: 0.35,
+    volume: 0.63,
     overlay: true,
     selfCooldown: 3000,
   },
@@ -327,7 +327,7 @@ export const DEFAULT_MAPPINGS: Partial<Record<SoundTag, SoundMapping>> = {
   // distinct hosts from triggering the chime in lockstep.
   "lan-peer-connect": {
     files: ["/sounds/lan-peer-connect.ogg"],
-    volume: 0.6,
+    volume: 1.0,
     overlay: true,
     selfCooldown: 60_000,
   },
@@ -335,7 +335,7 @@ export const DEFAULT_MAPPINGS: Partial<Record<SoundTag, SoundMapping>> = {
   // advanced HEAD. "Already up to date" doesn't fire it.
   "git-pull": {
     files: ["/sounds/git-pull.ogg"],
-    volume: 0.5,
+    volume: 0.88,
     overlay: true,
     selfCooldown: 2000,
   },
@@ -344,7 +344,7 @@ export const DEFAULT_MAPPINGS: Partial<Record<SoundTag, SoundMapping>> = {
   // for this specific flow.
   "daemon-connect-fail": {
     files: ["/sounds/daemon-connect-fail.ogg"],
-    volume: 0.5,
+    volume: 0.88,
     overlay: true,
     selfCooldown: 2000,
   },
@@ -352,7 +352,7 @@ export const DEFAULT_MAPPINGS: Partial<Record<SoundTag, SoundMapping>> = {
   // / paste-adds successfully. Companion to "daemon-connect-fail".
   "daemon-connect-ok": {
     files: ["/sounds/daemon-connect-ok.ogg"],
-    volume: 0.5,
+    volume: 0.88,
     overlay: true,
     selfCooldown: 2000,
   },
@@ -362,7 +362,7 @@ export const DEFAULT_MAPPINGS: Partial<Record<SoundTag, SoundMapping>> = {
   // / fail chime fades this out via the overlay system's fadeOutMs.
   "daemon-connect-waiting": {
     files: ["/sounds/daemon-connect-waiting.ogg"],
-    volume: 0.35,
+    volume: 0.63,
     overlay: true,
     selfCooldown: 60_000,
     fadeOutMs: 800,
@@ -371,7 +371,7 @@ export const DEFAULT_MAPPINGS: Partial<Record<SoundTag, SoundMapping>> = {
   // on the remote box.
   "daemon-remove": {
     files: ["/sounds/daemon-remove.ogg"],
-    volume: 0.5,
+    volume: 0.88,
     overlay: true,
     selfCooldown: 2000,
   },
@@ -381,7 +381,7 @@ export const DEFAULT_MAPPINGS: Partial<Record<SoundTag, SoundMapping>> = {
   // also what creates the AudioContext.)
   "app-startup": {
     files: ["/sounds/app-startup.ogg"],
-    volume: 0.6,
+    volume: 1.0,
     overlay: true,
     selfCooldown: 60 * 60 * 1000,
   },
