@@ -24,3 +24,18 @@ jobs:
 
       - name: Coverage report
         run: bun test --coverage packages/
+
+      # No-op when DISCORD_WEBHOOK isn't configured (e.g. forks). Git Bash is
+      # present on the self-hosted Windows runner (see release.yml).
+      - name: Notify Discord
+        if: always()
+        shell: bash
+        env:
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+        run: |
+          bun run scripts/notify-discord.ts \
+            --title "Tests" \
+            --status "${{ job.status }}" \
+            --url "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
+            --details "Branch ${{ github.ref_name }} · ${{ github.event_name }} · commit ${{ github.sha }}" \
+            --context "${{ github.workflow }} #${{ github.run_number }}"

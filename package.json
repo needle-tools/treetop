@@ -23,7 +23,8 @@
     "build:launch": "bun run scripts/build-launch.ts",
     "build:native": "bun run scripts/build-native.ts",
     "build:bun": "cd packages/ui && bun run build",
-    "icons": "node scripts/generate-icons.mjs"
+    "icons": "node scripts/generate-icons.mjs",
+    "notify:test": "bun run scripts/notify-discord.ts --title \"Webhook test\" --status info --details \"Test notification from supergit\" --context \"local test\""
   },
   "devDependencies": {
     "@types/bun": "latest",

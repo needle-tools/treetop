@@ -103,6 +103,8 @@ jobs:
     needs: build
     runs-on: ["self-hosted", "Windows", "X64", "playwright", "general"]
     timeout-minutes: 10
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
     steps:
       - uses: actions/checkout@v4
 
@@ -134,3 +136,34 @@ jobs:
           prerelease: true
           fail_on_unmatched_files: true
           files: release-assets/*
+
+  # ── Report the overall build+release result to Discord ───────────────
+  # Runs on a GitHub-hosted runner (the build/release runners don't set up
+  # bun). No-op when DISCORD_WEBHOOK isn't configured.
+  notify:
+    needs: [build, release]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: .bun-version
+
+      - name: Notify Discord
+        env:
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+        run: |
+          status=success
+          if [ "${{ needs.build.result }}" != "success" ] || [ "${{ needs.release.result }}" != "success" ]; then
+            status=failure
+          fi
+          tag="${{ needs.release.outputs.tag }}"
+          bun run scripts/notify-discord.ts \
+            --title "Treetop release ${tag:-(failed)}" \
+            --status "$status" \
+            --url "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
+            --details "build: ${{ needs.build.result }} · release: ${{ needs.release.result }}" \
+            --context "${{ github.workflow }} #${{ github.run_number }}"

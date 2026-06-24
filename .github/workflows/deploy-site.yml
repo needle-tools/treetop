@@ -47,3 +47,16 @@ jobs:
         run: |
           echo "## 🌳 Treetop deployed" >> "$GITHUB_STEP_SUMMARY"
           echo "[${{ steps.deploy.outputs.url }}](${{ steps.deploy.outputs.url }})" >> "$GITHUB_STEP_SUMMARY"
+
+      # No-op when DISCORD_WEBHOOK isn't configured (e.g. forks).
+      - name: Notify Discord
+        if: always()
+        env:
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+        run: |
+          bun run scripts/notify-discord.ts \
+            --title "Treetop site deploy" \
+            --status "${{ job.status }}" \
+            --url "${{ steps.deploy.outputs.url || format('{0}/{1}/actions/runs/{2}', github.server_url, github.repository, github.run_id) }}" \
+            --details "Branch ${{ github.ref_name }} · commit ${{ github.sha }}" \
+            --context "${{ github.workflow }} #${{ github.run_number }}"
