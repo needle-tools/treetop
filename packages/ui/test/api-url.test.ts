@@ -1,6 +1,11 @@
 import { test, expect, describe } from "bun:test";
 import { apiUrl, apiWsUrl } from "../src/api";
-import { shouldOpenHrefOutsideApp } from "../src/open-url";
+import {
+  isLocalFileMarkdownHref,
+  resolveLocalFileMarkdownHref,
+  shouldOpenHrefOutsideApp,
+  shouldUseWindowOpenFallback,
+} from "../src/open-url";
 
 /**
  * apiUrl()/apiWsUrl() route a daemon request to either the LOCAL daemon
@@ -103,5 +108,85 @@ describe("shouldOpenHrefOutsideApp", () => {
     expect(
       shouldOpenHrefOutsideApp("blob:http://localhost:27787/id", currentHref),
     ).toBe(false);
+  });
+});
+
+describe("transcript markdown file links", () => {
+  const cwd = "/Users/herbst/git/usd-viewer";
+
+  test("classifies relative and absolute filesystem hrefs as local files", () => {
+    expect(isLocalFileMarkdownHref("README_BUILDING.md")).toBe(true);
+    expect(isLocalFileMarkdownHref("./docs/openusd.md#notes")).toBe(true);
+    expect(isLocalFileMarkdownHref("../shared/file with spaces.md")).toBe(true);
+    expect(
+      isLocalFileMarkdownHref("/Users/herbst/git/usd-viewer/package.json"),
+    ).toBe(true);
+    expect(isLocalFileMarkdownHref("file:///Users/herbst/file.md")).toBe(true);
+  });
+
+  test("does not classify web or browser-owned hrefs as local files", () => {
+    expect(isLocalFileMarkdownHref("https://example.com")).toBe(false);
+    expect(isLocalFileMarkdownHref("http://localhost:27787/api/events")).toBe(
+      false,
+    );
+    expect(isLocalFileMarkdownHref("//example.com/file.md")).toBe(false);
+    expect(isLocalFileMarkdownHref("#section")).toBe(false);
+    expect(isLocalFileMarkdownHref("mailto:test@example.com")).toBe(false);
+    expect(isLocalFileMarkdownHref("data:text/plain,hello")).toBe(false);
+  });
+
+  test("resolves relative transcript file links against the session cwd", () => {
+    expect(resolveLocalFileMarkdownHref("README_BUILDING.md", cwd)).toBe(
+      "/Users/herbst/git/usd-viewer/README_BUILDING.md",
+    );
+    expect(
+      resolveLocalFileMarkdownHref(
+        "docs/openusd-26.05-modernization.md#release",
+        cwd,
+      ),
+    ).toBe("/Users/herbst/git/usd-viewer/docs/openusd-26.05-modernization.md");
+    expect(resolveLocalFileMarkdownHref("../shared/file%20name.md", cwd)).toBe(
+      "/Users/herbst/git/shared/file name.md",
+    );
+  });
+
+  test("preserves absolute filesystem and file URL targets", () => {
+    expect(
+      resolveLocalFileMarkdownHref(
+        "/Users/herbst/git/usd-viewer/package.json",
+        cwd,
+      ),
+    ).toBe("/Users/herbst/git/usd-viewer/package.json");
+    expect(
+      resolveLocalFileMarkdownHref("file:///Users/herbst/file%20name.md", cwd),
+    ).toBe("/Users/herbst/file name.md");
+  });
+
+  test("refuses relative file links without an absolute cwd", () => {
+    expect(resolveLocalFileMarkdownHref("README.md", "")).toBe(null);
+    expect(resolveLocalFileMarkdownHref("README.md", "relative-cwd")).toBe(
+      null,
+    );
+    expect(resolveLocalFileMarkdownHref("~/README.md", cwd)).toBe(null);
+  });
+});
+
+describe("shouldUseWindowOpenFallback", () => {
+  test("keeps the browser fallback for web-style targets", () => {
+    expect(shouldUseWindowOpenFallback("https://example.com")).toBe(true);
+    expect(shouldUseWindowOpenFallback("http://localhost:27787/api/events")).toBe(
+      true,
+    );
+    expect(shouldUseWindowOpenFallback("mailto:test@example.com")).toBe(true);
+  });
+
+  test("does not fallback-navigate filesystem targets", () => {
+    expect(shouldUseWindowOpenFallback("/Users/herbst/git/usd-viewer/README.md")).toBe(
+      false,
+    );
+    expect(shouldUseWindowOpenFallback("README.md")).toBe(false);
+    expect(shouldUseWindowOpenFallback("file:///Users/herbst/file.md")).toBe(
+      false,
+    );
   });
 });

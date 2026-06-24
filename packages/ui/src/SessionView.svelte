@@ -4173,6 +4173,7 @@
       {agent}
       {daemonId}
       items={visualTranscriptItems}
+      sessionCwd={effectiveSessionCwd}
       {transcriptSurface}
       {ollamaStreamingIdx}
       bind:messagesEl

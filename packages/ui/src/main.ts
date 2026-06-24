@@ -1,6 +1,10 @@
 import { mount } from "svelte";
 import { initDaemonKV } from "./daemon-kv";
-import { openUrl, shouldOpenHrefOutsideApp } from "./open-url";
+import {
+  openUrl,
+  resolveLocalFileMarkdownHref,
+  shouldOpenHrefOutsideApp,
+} from "./open-url";
 import {
   configure,
   DEFAULT_MAPPINGS,
@@ -52,6 +56,21 @@ document.addEventListener("click", (ev) => {
     "a[href]",
   ) as HTMLAnchorElement | null;
   if (!a) return;
+  const fileHref = a.getAttribute("data-supergit-file-href");
+  if (fileHref) {
+    const owner = a.closest(
+      "[data-supergit-session-cwd]",
+    ) as HTMLElement | null;
+    const filePath = resolveLocalFileMarkdownHref(
+      fileHref,
+      owner?.dataset.supergitSessionCwd,
+    );
+    if (filePath) {
+      ev.preventDefault();
+      openUrl(filePath);
+      return;
+    }
+  }
   if (!shouldOpenHrefOutsideApp(a.getAttribute("href"), location.href)) return;
   ev.preventDefault();
   openUrl(a.href);

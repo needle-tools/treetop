@@ -3,6 +3,7 @@
   import { marked } from "marked";
   import DOMPurify from "dompurify";
   import { apiUrl } from "./api";
+  import { isLocalFileMarkdownHref } from "./open-url";
   import LoadingSpinner from "./LoadingSpinner.svelte";
   import ToolIcon from "./ToolIcon.svelte";
   import { formatAbsoluteTimeTitle } from "./display-helpers";
@@ -78,7 +79,10 @@
       link(token: { href: string; title?: string | null; text: string }) {
         const href = token.href ?? "";
         const title = token.title ? ` title="${escapeAttr(token.title)}"` : "";
-        return `<a href="${escapeAttr(href)}"${title} target="_blank" rel="noopener noreferrer">${token.text}</a>`;
+        const fileHref = isLocalFileMarkdownHref(href)
+          ? ` data-supergit-file-href="${escapeAttr(href)}"`
+          : "";
+        return `<a href="${escapeAttr(href)}"${fileHref}${title} target="_blank" rel="noopener noreferrer">${token.text}</a>`;
       },
       code(token: { text?: string; lang?: string | null }) {
         return markdownCodeBlockHtml(token.text ?? "", token.lang);
@@ -96,6 +100,7 @@
   export let ollamaStreamingIdx: number | null = null;
   export let active = false;
   export let messagesEl: HTMLElement | null = null;
+  export let sessionCwd = "";
   export let onMessagesEnter: () => void = () => {};
   export let onMessagesLeave: () => void = () => {};
   export let onMessagesWheel: (e: WheelEvent) => void = () => {};
@@ -188,6 +193,7 @@
     );
     const html = DOMPurify.sanitize(
       marked.parse(processed, { async: false }) as string,
+      { ADD_ATTR: ["data-supergit-file-href"] },
     );
     markdownCache.set(cacheKey, html);
     if (markdownCache.size > MARKDOWN_CACHE_LIMIT) {
@@ -1091,6 +1097,7 @@
   on:wheel={onMessagesWheel}
   on:scroll={onMessagesScroll}
   use:codeCopy
+  data-supergit-session-cwd={sessionCwd}
 >
   {#each items as item, itemIndex (getVisualTranscriptItemKey(item, itemIndex))}
     {#if item.kind === "work"}
