@@ -1,5 +1,6 @@
 import { test, expect, describe } from "bun:test";
 import { apiUrl, apiWsUrl } from "../src/api";
+import { shouldOpenHrefOutsideApp } from "../src/open-url";
 
 /**
  * apiUrl()/apiWsUrl() route a daemon request to either the LOCAL daemon
@@ -61,5 +62,46 @@ describe("apiWsUrl", () => {
     expect(apiWsUrl("/api/terminals/t1/io", host, "ws:", "hz")).toBe(
       "ws://localhost:7777/api/daemons/hz/terminals/t1/io",
     );
+  });
+});
+
+describe("shouldOpenHrefOutsideApp", () => {
+  const currentHref = "http://localhost:27787/workspace?repo=supergit";
+
+  test("routes same-origin http links outside the app shell", () => {
+    expect(
+      shouldOpenHrefOutsideApp(
+        "http://localhost:27787/api/attachments/img.png",
+        currentHref,
+      ),
+    ).toBe(true);
+    expect(
+      shouldOpenHrefOutsideApp("/api/attachments/img.png", currentHref),
+    ).toBe(true);
+  });
+
+  test("routes external web and default-app links", () => {
+    expect(shouldOpenHrefOutsideApp("https://example.com", currentHref)).toBe(
+      true,
+    );
+    expect(
+      shouldOpenHrefOutsideApp("mailto:test@example.com", currentHref),
+    ).toBe(true);
+    expect(
+      shouldOpenHrefOutsideApp("file:///tmp/report.txt", currentHref),
+    ).toBe(true);
+  });
+
+  test("does not route hash-only or unsafe/browser-owned protocols", () => {
+    expect(shouldOpenHrefOutsideApp("#events", currentHref)).toBe(false);
+    expect(shouldOpenHrefOutsideApp("javascript:alert(1)", currentHref)).toBe(
+      false,
+    );
+    expect(shouldOpenHrefOutsideApp("data:text/plain,hello", currentHref)).toBe(
+      false,
+    );
+    expect(
+      shouldOpenHrefOutsideApp("blob:http://localhost:27787/id", currentHref),
+    ).toBe(false);
   });
 });

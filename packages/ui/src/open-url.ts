@@ -5,6 +5,30 @@
  */
 import { apiUrl } from "./api";
 
+const DEFAULT_BROWSER_PROTOCOLS = new Set([
+  "http:",
+  "https:",
+  "mailto:",
+  "file:",
+]);
+
+export function shouldOpenHrefOutsideApp(
+  href: string | null | undefined,
+  currentHref: string,
+): boolean {
+  if (!href) return false;
+  if (href.startsWith("#")) return false;
+
+  let url: URL;
+  try {
+    url = new URL(href, currentHref);
+  } catch {
+    return false;
+  }
+
+  return DEFAULT_BROWSER_PROTOCOLS.has(url.protocol);
+}
+
 export function openUrl(url: string): void {
   fetch(apiUrl("/api/open-default"), {
     method: "POST",

@@ -1,6 +1,6 @@
 import { mount } from "svelte";
 import { initDaemonKV } from "./daemon-kv";
-import { apiUrl } from "./api";
+import { openUrl, shouldOpenHrefOutsideApp } from "./open-url";
 import {
   configure,
   DEFAULT_MAPPINGS,
@@ -43,25 +43,18 @@ window.addEventListener("popstate", () => {
   history.pushState(null, "", location.href);
 });
 
-// Intercept clicks on <a> links to external URLs and route them through
-// the daemon so they open in the OS browser. In WKWebView (native app),
-// clicking an <a href> would navigate the webview itself instead.
+// Intercept navigational <a> clicks and route them through the daemon so
+// they open in the OS browser. In WKWebView (native app), even same-origin
+// localhost links would navigate/reload the app shell itself.
 document.addEventListener("click", (ev) => {
+  if (ev.defaultPrevented) return;
   const a = (ev.target as HTMLElement)?.closest?.(
     "a[href]",
   ) as HTMLAnchorElement | null;
   if (!a) return;
-  const href = a.href;
-  if (!href || !href.startsWith("http")) return;
-  if (new URL(href).origin === location.origin) return;
+  if (!shouldOpenHrefOutsideApp(a.getAttribute("href"), location.href)) return;
   ev.preventDefault();
-  fetch(apiUrl("/api/open-default"), {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ path: href }),
-  }).catch(() => {
-    window.open(href, "_blank", "noopener,noreferrer");
-  });
+  openUrl(a.href);
 });
 
 // Mark Windows clients so CSS can target them. Used by worktree-row.css
