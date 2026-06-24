@@ -1411,6 +1411,66 @@ describe("visualFileEditSummaryForBlock", () => {
     });
   });
 
+  it("summarizes direct live file-change arrays", () => {
+    expect(
+      visualFileEditSummaryForBlock({
+        type: "tool_use",
+        toolName: "file change",
+        toolInput: [
+          {
+            path: "src/App.svelte",
+            action: "modify",
+            unified_diff: "@@\n-old\n+new\n+extra\n",
+          },
+        ],
+      }),
+    ).toEqual({
+      title: "Edited App.svelte",
+      files: [
+        {
+          path: "src/App.svelte",
+          action: "edited",
+          additions: 2,
+          deletions: 1,
+          raw: "@@\n-old\n+new\n+extra\n",
+        },
+      ],
+    });
+  });
+
+  it("summarizes keyed Codex patch_apply_end changes with line counts", () => {
+    expect(
+      visualFileEditSummaryForBlock({
+        type: "tool_use",
+        toolName: "file change",
+        toolInput: {
+          changes: {
+            "/repo/deploy/registry.env.template": {
+              type: "update",
+              unified_diff: [
+                "@@ -11 +11,2 @@",
+                " MEDIKIT_LOGTO_BOOTSTRAP_IMAGE=latest",
+                "+MEDIKIT_DOCKER_FLAVOR=remote",
+                "",
+              ].join("\n"),
+            },
+          },
+        },
+      }),
+    ).toEqual({
+      title: "Edited registry.env.template",
+      files: [
+        {
+          path: "/repo/deploy/registry.env.template",
+          action: "edited",
+          additions: 1,
+          deletions: 0,
+          raw: "@@ -11 +11,2 @@\n MEDIKIT_LOGTO_BOOTSTRAP_IMAGE=latest\n+MEDIKIT_DOCKER_FLAVOR=remote\n",
+        },
+      ],
+    });
+  });
+
   it("summarizes Claude edit tool inputs", () => {
     expect(
       visualFileEditSummaryForBlock({

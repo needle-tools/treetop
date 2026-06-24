@@ -947,6 +947,85 @@ function changedLineCount(value: unknown): number | undefined {
     : value.split("\n").length;
 }
 
+function countUnifiedDiffLines(diff: unknown):
+  | { additions: number; deletions: number }
+  | undefined {
+  if (typeof diff !== "string") return undefined;
+  let additions = 0;
+  let deletions = 0;
+  for (const line of diff.split(/\r?\n/)) {
+    if (line.startsWith("+") && !line.startsWith("+++")) additions += 1;
+    if (line.startsWith("-") && !line.startsWith("---")) deletions += 1;
+  }
+  return { additions, deletions };
+}
+
+function rawDiffFromChange(item: Record<string, unknown>): string | undefined {
+  const raw = item.unified_diff ?? item.unifiedDiff ?? item.diff ?? item.patch;
+  return typeof raw === "string" ? raw : undefined;
+}
+
+function actionFromChangeKind(kind: string): VisualFileEdit["action"] {
+  if (kind.includes("add") || kind === "create") return "added";
+  if (kind.includes("delete") || kind.includes("remove")) return "deleted";
+  return "edited";
+}
+
+function lineCountsFromChange(
+  item: Record<string, unknown>,
+  action: VisualFileEdit["action"],
+): Pick<VisualFileEdit, "additions" | "deletions" | "raw"> {
+  const raw = rawDiffFromChange(item);
+  const diffCounts = countUnifiedDiffLines(raw);
+  if (diffCounts) {
+    return { ...diffCounts, raw };
+  }
+  if (typeof item.content === "string" && action === "added") {
+    return { additions: changedLineCount(item.content), deletions: 0 };
+  }
+  return {
+    additions: numberField(item, "additions") ?? numberField(item, "added"),
+    deletions: numberField(item, "deletions") ?? numberField(item, "deleted"),
+    raw,
+  };
+}
+
+function fileChangeFromRecord(
+  item: Record<string, unknown>,
+  fallbackPath?: string,
+): VisualFileEdit | undefined {
+  const path = filePathFromObject(item) ?? fallbackPath;
+  if (!path) return undefined;
+  const kind = String(item.type ?? item.action ?? "edited").toLowerCase();
+  const action = actionFromChangeKind(kind);
+  return {
+    path,
+    action,
+    ...lineCountsFromChange(item, action),
+  };
+}
+
+function fileChangesFromInput(input: unknown): VisualFileEdit[] {
+  if (Array.isArray(input)) {
+    return input
+      .map((change): VisualFileEdit | undefined =>
+        change && typeof change === "object"
+          ? fileChangeFromRecord(change as Record<string, unknown>)
+          : undefined,
+      )
+      .filter((file): file is VisualFileEdit => !!file);
+  }
+  if (!input || typeof input !== "object") return [];
+  const obj = input as Record<string, unknown>;
+  return Object.entries(obj)
+    .map(([path, change]): VisualFileEdit | undefined =>
+      change && typeof change === "object"
+        ? fileChangeFromRecord(change as Record<string, unknown>, path)
+        : undefined,
+    )
+    .filter((file): file is VisualFileEdit => !!file);
+}
+
 function claudeEditSummary(
   toolName: string,
   input: Record<string, unknown>,
@@ -1020,27 +1099,11 @@ export function visualFileEditSummaryForBlock(
 
   if (lowerName.includes("file change") && input && typeof input === "object") {
     const obj = input as Record<string, unknown>;
-    const rawChanges = obj.changes ?? obj.files ?? obj.edits;
-    if (Array.isArray(rawChanges)) {
-      const files = rawChanges
-        .map((change): VisualFileEdit | undefined => {
-          if (!change || typeof change !== "object") return undefined;
-          const item = change as Record<string, unknown>;
-          const path = filePathFromObject(item);
-          if (!path) return undefined;
-          const kind = String(item.type ?? item.action ?? "edited").toLowerCase();
-          return {
-            path,
-            action: kind.includes("add")
-              ? "added"
-              : kind.includes("delete") || kind.includes("remove")
-                ? "deleted"
-                : "edited",
-          };
-        })
-        .filter((file): file is VisualFileEdit => !!file);
-      return summarizeFileEdits(files);
-    }
+    const rawChanges =
+      Array.isArray(input) || filePathFromObject(obj)
+        ? input
+        : (obj.changes ?? obj.files ?? obj.edits);
+    return summarizeFileEdits(fileChangesFromInput(rawChanges));
   }
 
   if (input && typeof input === "object") {
