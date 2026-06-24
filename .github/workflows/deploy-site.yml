@@ -42,21 +42,27 @@ jobs:
           token: ${{ secrets.NEEDLE_CLOUD_TOKEN }}
           name: treetop
           dir: ./packages/site/dist
+          # On success the action posts its own deploy notification (with the
+          # deployed URL). No-op when the secret is unset (forks).
+          webhookUrl: ${{ secrets.DISCORD_WEBHOOK }}
 
       - name: Summary
         run: |
           echo "## 🌳 Treetop deployed" >> "$GITHUB_STEP_SUMMARY"
           echo "[${{ steps.deploy.outputs.url }}](${{ steps.deploy.outputs.url }})" >> "$GITHUB_STEP_SUMMARY"
 
-      # No-op when DISCORD_WEBHOOK isn't configured (e.g. forks).
-      - name: Notify Discord
-        if: always()
+      # The deploy action notifies on success; this covers failures (e.g. the
+      # site build breaking before the deploy step runs). No-op without the secret.
+      - name: Notify Discord (failure)
+        if: failure()
         env:
           DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
         run: |
+          sha="${{ github.sha }}"
+          commit_url="${{ github.server_url }}/${{ github.repository }}/commit/${{ github.sha }}"
           bun run scripts/notify-discord.ts \
             --title "Treetop site deploy" \
             --status "${{ job.status }}" \
             --url "${{ steps.deploy.outputs.url || format('{0}/{1}/actions/runs/{2}', github.server_url, github.repository, github.run_id) }}" \
-            --details "Branch ${{ github.ref_name }} · commit ${{ github.sha }}" \
+            --details "Branch \`${{ github.ref_name }}\` · commit [\`${sha:0:7}\`](${commit_url})" \
             --context "${{ github.workflow }} #${{ github.run_number }}"

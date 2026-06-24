@@ -161,9 +161,11 @@ jobs:
             status=failure
           fi
           tag="${{ needs.release.outputs.tag }}"
+          sha="${{ github.sha }}"
+          commit_url="${{ github.server_url }}/${{ github.repository }}/commit/${{ github.sha }}"
           bun run scripts/notify-discord.ts \
             --title "Treetop release ${tag:-(failed)}" \
             --status "$status" \
             --url "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
-            --details "build: ${{ needs.build.result }} · release: ${{ needs.release.result }}" \
+            --details "build: ${{ needs.build.result }} · release: ${{ needs.release.result }} · commit [\`${sha:0:7}\`](${commit_url})" \
             --context "${{ github.workflow }} #${{ github.run_number }}"

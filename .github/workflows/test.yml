@@ -33,9 +33,11 @@ jobs:
         env:
           DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
         run: |
+          sha="${{ github.sha }}"
+          commit_url="${{ github.server_url }}/${{ github.repository }}/commit/${{ github.sha }}"
           bun run scripts/notify-discord.ts \
             --title "Tests" \
             --status "${{ job.status }}" \
             --url "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
-            --details "Branch ${{ github.ref_name }} · ${{ github.event_name }} · commit ${{ github.sha }}" \
+            --details "Branch \`${{ github.ref_name }}\` · ${{ github.event_name }} · commit [\`${sha:0:7}\`](${commit_url})" \
             --context "${{ github.workflow }} #${{ github.run_number }}"
