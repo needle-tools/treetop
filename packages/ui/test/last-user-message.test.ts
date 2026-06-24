@@ -1100,6 +1100,21 @@ describe("visual tool payload display helpers", () => {
     expect(visualToolCallPayloadText(block)).toContain("rg -n");
   });
 
+  it("summarizes numbered line reads piped through sed", () => {
+    const block = {
+      type: "tool_use",
+      toolName: "exec_command",
+      toolInput: {
+        cmd: '/bin/zsh -lc "nl -ba src/lib/projectModel.js | sed -n \'414,424p\'"',
+      },
+    };
+
+    expect(visualToolPreviewText(block)).toBe(
+      "Read src/lib/projectModel.js:414-424",
+    );
+    expect(visualToolCallPayloadText(block)).toContain("nl -ba");
+  });
+
   it("summarizes structured read and grep tool payloads", () => {
     expect(
       visualToolPreviewText({

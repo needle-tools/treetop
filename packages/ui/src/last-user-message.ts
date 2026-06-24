@@ -545,6 +545,8 @@ function pathWithRange(path: string, obj: Record<string, unknown>): string {
 
 function visualCommandPreview(command: string): string | undefined {
   const unwrapped = unwrapShellCommand(command);
+  const pipeSummary = summarizePipeRead(unwrapped);
+  if (pipeSummary) return `Read ${pipeSummary.target}`;
   const parts = splitShellCommandChain(unwrapped);
   if (parts.length === 0) return undefined;
   const summaries = parts
@@ -666,18 +668,77 @@ function summarizeShellCommand(command: string): VisualCommandSummary | undefine
   return undefined;
 }
 
-function summarizeSedRead(tokens: string[]): VisualCommandSummary | undefined {
-  let range: { start: string; end?: string } | undefined;
-  let path: string | undefined;
-  for (let i = 1; i < tokens.length; i += 1) {
-    const token = tokens[i]!;
-    const match = token.match(/^(\d+)(?:,(\d+))?p$/);
-    if (match) {
-      range = { start: match[1]!, end: match[2] };
-      path = tokens.slice(i + 1).find((candidate) => !candidate.startsWith("-"));
-      break;
+function summarizePipeRead(command: string): VisualCommandSummary | undefined {
+  const parts = splitShellPipeline(command);
+  if (parts.length !== 2) return undefined;
+  const left = shellTokens(parts[0]!);
+  const right = shellTokens(parts[1]!);
+  const leftName = left[0]?.split("/").pop();
+  const rightName = right[0]?.split("/").pop();
+  if (leftName !== "nl" || rightName !== "sed") return undefined;
+  const path = left.slice(1).find((token) => !token.startsWith("-"));
+  if (!path) return undefined;
+  const sed = summarizeSedRange(right);
+  if (!sed) return undefined;
+  const suffix = sed.end ? `:${sed.start}-${sed.end}` : `:${sed.start}`;
+  return { kind: "read", target: `${path}${suffix}` };
+}
+
+function splitShellPipeline(command: string): string[] {
+  const parts: string[] = [];
+  let start = 0;
+  let quote: "'" | '"' | null = null;
+  let escaped = false;
+  for (let i = 0; i < command.length; i += 1) {
+    const ch = command[i]!;
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (ch === "\\") {
+      escaped = true;
+      continue;
+    }
+    if (quote) {
+      if (ch === quote) quote = null;
+      continue;
+    }
+    if (ch === "'" || ch === '"') {
+      quote = ch;
+      continue;
+    }
+    if (ch === "|") {
+      const part = command.slice(start, i).trim();
+      if (part) parts.push(part);
+      start = i + 1;
     }
   }
+  const tail = command.slice(start).trim();
+  if (tail) parts.push(tail);
+  return parts;
+}
+
+function summarizeSedRange(
+  tokens: string[],
+): { start: string; end?: string } | undefined {
+  for (let i = 1; i < tokens.length; i += 1) {
+    const match = tokens[i]!.match(/^(\d+)(?:,(\d+))?p$/);
+    if (match) return { start: match[1]!, end: match[2] };
+  }
+  return undefined;
+}
+
+function summarizeSedRead(tokens: string[]): VisualCommandSummary | undefined {
+  const range = summarizeSedRange(tokens);
+  const rangeIndex = range
+    ? tokens.findIndex((token) =>
+        token === `${range.start}${range.end ? `,${range.end}` : ""}p`
+      )
+    : -1;
+  const path =
+    rangeIndex >= 0
+      ? tokens.slice(rangeIndex + 1).find((candidate) => !candidate.startsWith("-"))
+      : undefined;
   if (!range || !path) return undefined;
   const suffix = range.end ? `:${range.start}-${range.end}` : `:${range.start}`;
   return { kind: "read", target: `${path}${suffix}` };
