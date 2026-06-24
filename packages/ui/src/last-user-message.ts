@@ -454,15 +454,289 @@ export function visualToolPreviewText(
   if (!block || block.type !== "tool_use") return "";
   const name = (block.toolName ?? "").toLowerCase();
   const input = block.toolInput;
+  const structuredPreview = visualStructuredToolPreview(name, input);
+  if (structuredPreview) return structuredPreview;
   const command =
     stringFromToolInputField(input, "cmd") ??
     stringFromToolInputField(input, "command");
+  const commandPreview = command ? visualCommandPreview(command) : undefined;
+  if (commandPreview) return commandPreview;
   const text =
     command &&
     (name.includes("bash") || name.includes("shell") || name.includes("exec"))
       ? command
       : stringifyToolPayload(input);
   return text.replace(/\s+/g, " ").trim();
+}
+
+type VisualCommandSummary =
+  | { kind: "read"; target: string }
+  | { kind: "search"; pattern: string; paths: string[] };
+
+function visualStructuredToolPreview(
+  toolName: string,
+  input: unknown,
+): string | undefined {
+  if (!input || typeof input !== "object" || Array.isArray(input)) {
+    return undefined;
+  }
+  const obj = input as Record<string, unknown>;
+  const path = stringField(obj, "file_path") ?? stringField(obj, "path");
+  if (path && /\bread\b|read_file|view_file/.test(toolName)) {
+    return `Read ${pathWithRange(path, obj)}`;
+  }
+
+  const pattern = stringField(obj, "pattern") ?? stringField(obj, "query");
+  if (
+    pattern &&
+    (toolName.includes("grep") ||
+      toolName.includes("search") ||
+      toolName.includes("rg"))
+  ) {
+    const paths = [
+      stringField(obj, "path"),
+      stringField(obj, "cwd"),
+      stringField(obj, "workdir"),
+    ].filter((value): value is string => !!value);
+    return searchLabel(pattern, paths);
+  }
+
+  return undefined;
+}
+
+function stringField(
+  obj: Record<string, unknown>,
+  key: string,
+): string | undefined {
+  const value = obj[key];
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+function numberField(
+  obj: Record<string, unknown>,
+  key: string,
+): number | undefined {
+  const value = obj[key];
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "string" && /^\d+$/.test(value.trim())) {
+    return Number(value.trim());
+  }
+  return undefined;
+}
+
+function pathWithRange(path: string, obj: Record<string, unknown>): string {
+  const start =
+    numberField(obj, "line") ??
+    numberField(obj, "start_line") ??
+    numberField(obj, "startLine") ??
+    numberField(obj, "offset");
+  const explicitEnd =
+    numberField(obj, "end_line") ?? numberField(obj, "endLine");
+  const limit = numberField(obj, "limit");
+  const end =
+    explicitEnd ??
+    (start !== undefined && limit !== undefined
+      ? Math.max(start, start + limit - 1)
+      : undefined);
+  if (start === undefined) return path;
+  if (end === undefined || end === start) return `${path}:${start}`;
+  return `${path}:${start}-${end}`;
+}
+
+function visualCommandPreview(command: string): string | undefined {
+  const unwrapped = unwrapShellCommand(command);
+  const parts = splitShellCommandChain(unwrapped);
+  if (parts.length === 0) return undefined;
+  const summaries = parts
+    .map((part) => summarizeShellCommand(part))
+    .filter((summary): summary is VisualCommandSummary => !!summary);
+  if (summaries.length !== parts.length) return undefined;
+
+  if (summaries.every((summary) => summary.kind === "read")) {
+    return `Read ${summaries.map((summary) => summary.target).join(", ")}`;
+  }
+  if (summaries.length === 1 && summaries[0]!.kind === "search") {
+    const summary = summaries[0]!;
+    return searchLabel(summary.pattern, summary.paths);
+  }
+  return undefined;
+}
+
+function unwrapShellCommand(command: string): string {
+  let current = command.trim();
+  for (let i = 0; i < 3; i += 1) {
+    const tokens = shellTokens(current);
+    if (tokens.length < 3) return current;
+    const shell = tokens[0]!.split("/").pop() ?? tokens[0]!;
+    if (!/^(?:bash|sh|zsh)$/.test(shell)) return current;
+    const flagIndex = tokens.findIndex(
+      (token, index) => index > 0 && /^-[a-zA-Z]*c[a-zA-Z]*$/.test(token),
+    );
+    const next = flagIndex >= 0 ? tokens[flagIndex + 1] : undefined;
+    if (!next) return current;
+    current = next.trim();
+  }
+  return current;
+}
+
+function splitShellCommandChain(command: string): string[] {
+  const parts: string[] = [];
+  let start = 0;
+  let quote: "'" | '"' | null = null;
+  let escaped = false;
+  for (let i = 0; i < command.length; i += 1) {
+    const ch = command[i]!;
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (ch === "\\") {
+      escaped = true;
+      continue;
+    }
+    if (quote) {
+      if (ch === quote) quote = null;
+      continue;
+    }
+    if (ch === "'" || ch === '"') {
+      quote = ch;
+      continue;
+    }
+    if (ch === ";" || (ch === "&" && command[i + 1] === "&")) {
+      const part = command.slice(start, i).trim();
+      if (part) parts.push(part);
+      if (ch === "&") i += 1;
+      start = i + 1;
+    }
+  }
+  const tail = command.slice(start).trim();
+  if (tail) parts.push(tail);
+  return parts;
+}
+
+function shellTokens(command: string): string[] {
+  const tokens: string[] = [];
+  let current = "";
+  let quote: "'" | '"' | null = null;
+  let escaped = false;
+  for (const ch of command) {
+    if (escaped) {
+      current += ch;
+      escaped = false;
+      continue;
+    }
+    if (ch === "\\" && quote !== "'") {
+      escaped = true;
+      continue;
+    }
+    if (quote) {
+      if (ch === quote) {
+        quote = null;
+      } else {
+        current += ch;
+      }
+      continue;
+    }
+    if (ch === "'" || ch === '"') {
+      quote = ch;
+      continue;
+    }
+    if (/\s/.test(ch)) {
+      if (current) {
+        tokens.push(current);
+        current = "";
+      }
+      continue;
+    }
+    current += ch;
+  }
+  if (current) tokens.push(current);
+  return tokens;
+}
+
+function summarizeShellCommand(command: string): VisualCommandSummary | undefined {
+  const tokens = shellTokens(command);
+  if (tokens.length === 0) return undefined;
+  const name = tokens[0]!.split("/").pop() ?? tokens[0]!;
+  if (name === "sed") return summarizeSedRead(tokens);
+  if (name === "cat") return summarizeCatRead(tokens);
+  if (name === "rg" || name === "ripgrep" || name === "grep") {
+    return summarizeSearch(tokens);
+  }
+  return undefined;
+}
+
+function summarizeSedRead(tokens: string[]): VisualCommandSummary | undefined {
+  let range: { start: string; end?: string } | undefined;
+  let path: string | undefined;
+  for (let i = 1; i < tokens.length; i += 1) {
+    const token = tokens[i]!;
+    const match = token.match(/^(\d+)(?:,(\d+))?p$/);
+    if (match) {
+      range = { start: match[1]!, end: match[2] };
+      path = tokens.slice(i + 1).find((candidate) => !candidate.startsWith("-"));
+      break;
+    }
+  }
+  if (!range || !path) return undefined;
+  const suffix = range.end ? `:${range.start}-${range.end}` : `:${range.start}`;
+  return { kind: "read", target: `${path}${suffix}` };
+}
+
+function summarizeCatRead(tokens: string[]): VisualCommandSummary | undefined {
+  const paths = tokens
+    .slice(1)
+    .filter((token) => !token.startsWith("-") && !/[|<>]/.test(token));
+  if (paths.length === 0) return undefined;
+  return { kind: "read", target: paths.join(", ") };
+}
+
+function summarizeSearch(tokens: string[]): VisualCommandSummary | undefined {
+  let pattern: string | undefined;
+  const paths: string[] = [];
+  const optionsWithValue = new Set([
+    "-e",
+    "-f",
+    "-g",
+    "-t",
+    "-T",
+    "-C",
+    "-A",
+    "-B",
+    "--regexp",
+    "--file",
+    "--glob",
+    "--type",
+    "--type-not",
+    "--context",
+    "--after-context",
+    "--before-context",
+  ]);
+  for (let i = 1; i < tokens.length; i += 1) {
+    const token = tokens[i]!;
+    if (token === "--") continue;
+    if (optionsWithValue.has(token)) {
+      const value = tokens[i + 1];
+      if ((token === "-e" || token === "--regexp") && value) {
+        pattern = value;
+      }
+      i += 1;
+      continue;
+    }
+    if (token.startsWith("-")) continue;
+    if (!pattern) {
+      pattern = token;
+    } else {
+      paths.push(token);
+    }
+  }
+  if (!pattern) return undefined;
+  return { kind: "search", pattern, paths };
+}
+
+function searchLabel(pattern: string, paths: string[]): string {
+  const where = paths.length ? `${paths.join(", ")} ` : "";
+  return `Search ${where}for "${pattern}"`;
 }
 
 function hasBlockType(entry: VisualWorkEntry | undefined, type: string): boolean {

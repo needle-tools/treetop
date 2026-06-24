@@ -1053,6 +1053,77 @@ describe("visual tool payload display helpers", () => {
       '"description": "run focused tests"',
     );
   });
+
+  it("summarizes sed file reads while preserving the raw command payload", () => {
+    const block = {
+      type: "tool_use",
+      toolName: "exec_command",
+      toolInput: {
+        cmd: "/bin/zsh -lc \"sed -n '60,155p' usd-wasm/src/create.three.js\"",
+      },
+    };
+
+    expect(visualToolPreviewText(block)).toBe(
+      "Read usd-wasm/src/create.three.js:60-155",
+    );
+    expect(visualToolCallPayloadText(block)).toContain(
+      "/bin/zsh -lc \\\"sed -n '60,155p' usd-wasm/src/create.three.js\\\"",
+    );
+  });
+
+  it("summarizes combined sed reads as one readable preview", () => {
+    const block = {
+      type: "tool_use",
+      toolName: "exec_command",
+      toolInput: {
+        cmd: "sed -n '1,70p' usd-wasm/src/types/hydra.d.ts && sed -n '35,60p' usd-wasm/src/types/bindings.d.ts",
+      },
+    };
+
+    expect(visualToolPreviewText(block)).toBe(
+      "Read usd-wasm/src/types/hydra.d.ts:1-70, usd-wasm/src/types/bindings.d.ts:35-60",
+    );
+  });
+
+  it("summarizes rg searches without hiding the real command", () => {
+    const block = {
+      type: "tool_use",
+      toolName: "exec_command",
+      toolInput: {
+        cmd: "/bin/zsh -lc 'rg -n \"GetStage\\(\\)\" usd-wasm/src'",
+      },
+    };
+
+    expect(visualToolPreviewText(block)).toBe(
+      'Search usd-wasm/src for "GetStage()"',
+    );
+    expect(visualToolCallPayloadText(block)).toContain("rg -n");
+  });
+
+  it("summarizes structured read and grep tool payloads", () => {
+    expect(
+      visualToolPreviewText({
+        type: "tool_use",
+        toolName: "Read",
+        toolInput: {
+          file_path: "packages/ui/src/VisualTranscript.svelte",
+          offset: 100,
+          limit: 51,
+        },
+      }),
+    ).toBe("Read packages/ui/src/VisualTranscript.svelte:100-150");
+
+    expect(
+      visualToolPreviewText({
+        type: "tool_use",
+        toolName: "Grep",
+        toolInput: {
+          pattern: "visualToolPreviewText",
+          path: "packages/ui/src",
+        },
+      }),
+    ).toBe('Search packages/ui/src for "visualToolPreviewText"');
+  });
 });
 
 describe("buildVisualWorkDisplayEntries", () => {
