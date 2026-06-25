@@ -4779,7 +4779,10 @@
     border-radius: 0;
   }
   .session.stopped-transcript-surface :global(.messages) {
-    color: color-mix(in srgb, var(--text-1) 75%, transparent);
+    /* Dim text to ~50% — strong enough contrast against the
+       full-strength text-1 in active TUIs that the eye can spot
+       which sessions are read-only at a glance. */
+    color: color-mix(in srgb, var(--text-1) 50%, transparent);
   }
   .session.terminal-transcript-surface :global(header),
   .session.terminal-transcript-surface :global(button),
