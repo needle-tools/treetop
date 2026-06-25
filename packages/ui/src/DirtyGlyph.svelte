@@ -46,12 +46,12 @@
   ><path d={GIT_DIRTY}
     >{#if !reduceMotion}<animate
         attributeName="d"
-        dur="1.83s"
+        dur="3s"
         repeatCount="indefinite"
         calcMode="spline"
-        keyTimes="0;0.765;0.874;0.891;1"
-        keySplines="0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1"
-        values="M2 6c1-2 3-2 4 0s3 2 4 0;M2 6c1-2 3-2 4 0s3 2 4 0;M2 6c1 2 3 2 4 0s3 -2 4 0;M2 6c1 2 3 2 4 0s3 -2 4 0;M2 6c1-2 3-2 4 0s3 2 4 0"
+        keyTimes="0;0.05;0.1;0.15;0.2;1"
+        keySplines="0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1"
+        values="M2 6c1-2 3-2 4 0s3 2 4 0;M2 6c1 2 3 2 4 0s3 -2 4 0;M2 6c1-2 3-2 4 0s3 2 4 0;M2 6c1 2 3 2 4 0s3 -2 4 0;M2 6c1-2 3-2 4 0s3 2 4 0;M2 6c1-2 3-2 4 0s3 2 4 0"
       ></animate>{/if}</path
   ></svg
 >

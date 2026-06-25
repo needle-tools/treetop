@@ -1868,30 +1868,38 @@
        read as motion, short enough that the gap is unambiguous. */
     stroke-dasharray: 35 65;
   }
+  /* Shell sessions don't use the SVG spinner — they snap-rotate the
+     square itself 90° each second instead, which reads more like
+     "terminal flipping through output" than the agent's smooth
+     ring sweep. */
   .dock-dot-spinner-rect {
     display: none;
   }
-  .dock-dot.agent-shell .dock-dot-spinner-rect {
-    display: block;
-    stroke-dasharray: 24 76;
-    stroke-dashoffset: 0;
+  .dock-dot.agent-shell .dock-dot-spinner {
+    display: none;
   }
-  .dock-dot.agent-shell.dot-working .dock-dot-spinner,
-  .dock-dot.agent-shell.dot-terminal-active .dock-dot-spinner {
-    animation: none;
+  .dock-dot.agent-shell.dot-working .dock-dot-inner,
+  .dock-dot.agent-shell.dot-terminal-active .dock-dot-inner {
+    animation: dock-shell-step 4s linear infinite;
   }
-  .dock-dot.agent-shell.dot-working .dock-dot-spinner-rect,
-  .dock-dot.agent-shell.dot-terminal-active .dock-dot-spinner-rect {
-    animation: dock-rect-dash 0.9s linear infinite;
+  /* Per-keyframe `animation-timing-function` controls the ease for
+     the segment STARTING at that keyframe. Rotation segments get a
+     smooth s-curve; hold segments stay frozen via `step-end` so
+     they don't try to interpolate. */
+  @keyframes dock-shell-step {
+    0%   { transform: rotate(0deg);   animation-timing-function: cubic-bezier(.5, 0, .5, 1); }
+    20%  { transform: rotate(90deg);  animation-timing-function: step-end; }
+    25%  { transform: rotate(90deg);  animation-timing-function: cubic-bezier(.5, 0, .5, 1); }
+    45%  { transform: rotate(180deg); animation-timing-function: step-end; }
+    50%  { transform: rotate(180deg); animation-timing-function: cubic-bezier(.5, 0, .5, 1); }
+    70%  { transform: rotate(270deg); animation-timing-function: step-end; }
+    75%  { transform: rotate(270deg); animation-timing-function: cubic-bezier(.5, 0, .5, 1); }
+    95%  { transform: rotate(360deg); animation-timing-function: step-end; }
+    100% { transform: rotate(360deg); }
   }
   @keyframes dock-spin {
     to {
       transform: rotate(360deg);
-    }
-  }
-  @keyframes dock-rect-dash {
-    to {
-      stroke-dashoffset: -100;
     }
   }
 
@@ -1909,7 +1917,7 @@
      plans/performance.md). ::before is taken by the working ring, so the
      halo uses ::after. */
   .dock-dot.dot-awaiting .dock-dot-inner {
-    animation: dock-awaiting 1.1s ease-in-out infinite;
+    animation: dock-awaiting 0.9s ease-in-out infinite;
   }
   @keyframes dock-awaiting {
     0%,
@@ -1917,7 +1925,7 @@
       transform: scale(1);
     }
     50% {
-      transform: scale(1.35);
+      transform: scale(1.7);
     }
   }
   .dock-dot.dot-awaiting .dock-dot-inner::after {
@@ -1926,14 +1934,14 @@
     inset: 0;
     border-radius: inherit;
     pointer-events: none;
-    box-shadow: 0 0 0 3px color-mix(in oklch, var(--dot-fill) 30%, #fff 70%);
-    animation: dock-awaiting-halo 1.1s ease-in-out infinite;
+    box-shadow: 0 0 0 5px color-mix(in oklch, var(--dot-fill) 45%, #fff 55%);
+    animation: dock-awaiting-halo 0.9s ease-in-out infinite;
   }
   /* Awaiting (urgent): after 20s without user action, escalate —
      bigger scale, faster cadence, stronger glow so the dot is
      impossible to miss. */
   .dock-dot.dot-awaiting-urgent .dock-dot-inner {
-    animation: dock-awaiting-urgent 0.7s ease-in-out infinite;
+    animation: dock-awaiting-urgent 0.55s ease-in-out infinite;
   }
   @keyframes dock-awaiting-urgent {
     0%,
@@ -1941,7 +1949,7 @@
       transform: scale(1);
     }
     50% {
-      transform: scale(1.5);
+      transform: scale(2);
     }
   }
   .dock-dot.dot-awaiting-urgent .dock-dot-inner::after {
@@ -1950,8 +1958,8 @@
     inset: 0;
     border-radius: inherit;
     pointer-events: none;
-    box-shadow: 0 0 0 4px color-mix(in oklch, var(--dot-fill) 40%, #fff 60%);
-    animation: dock-awaiting-halo 0.7s ease-in-out infinite;
+    box-shadow: 0 0 0 7px color-mix(in oklch, var(--dot-fill) 55%, #fff 45%);
+    animation: dock-awaiting-halo 0.55s ease-in-out infinite;
   }
   /* Shared halo: fade a static ring in/out — composited opacity only. */
   @keyframes dock-awaiting-halo {
