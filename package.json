@@ -9,6 +9,7 @@
   "scripts": {
     "start": "bun run build:bun && bun run start.ts",
     "dev": "bun run dev.ts",
+    "dev:temp": "bash -lc 'TREETOP_TEMP_WORKSPACE_FROM=\"$HOME/supergit/workspaces/default\" SUPERGIT_DEV_PORT=17777 SUPERGIT_DEV_UI_PORT=17779 bun dev'",
     "dev:site": "cd packages/site && bun run dev",
     "build:site": "cd packages/site && bun run build",
     "stop-dev": "bun run stop-dev.ts",

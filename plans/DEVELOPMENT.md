@@ -87,6 +87,26 @@ AI introduces it, not weeks later in production.
   they catch breakage even when the AI introduced an "improvement" that's
   technically correct for the examples but violates an invariant.
 
+## Side-instance development
+
+Use a temporary workspace copy when dogfooding performance, layout, or CSS
+against realistic persisted data while leaving the production Treetop workspace
+metadata alone:
+
+```sh
+npm run dev:temp
+```
+
+The script starts the daemon on `:17777` and Vite on `:17779`, copying from
+`$HOME/supergit/workspaces/default`. The UI shows a red `TEMP WORKSPACE` badge
+when this mode is active. Use `http://localhost:17779`.
+
+The copied workspace keeps normal persisted UI state, but excludes live/runtime
+state such as `active-terminals.json`, `shells/`, daemon/error logs, peer
+identity, invites, keys, and remote cache. Repo paths inside `repos.json` still
+point at the real repos, so commands launched in terminals can still affect
+real files and git state.
+
 ## The point
 
 The goal isn't "the AI wrote tests" — AI can write bad tests too. The goal

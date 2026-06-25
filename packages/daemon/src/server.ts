@@ -1,6 +1,15 @@
-import { join, resolve, normalize, sep, dirname, basename } from "node:path";
+import {
+  join,
+  resolve,
+  normalize,
+  sep,
+  dirname,
+  basename,
+  relative,
+} from "node:path";
 import {
   homedir,
+  tmpdir,
   totalmem,
   networkInterfaces,
   hostname as osHostname,
@@ -12,8 +21,10 @@ import {
   readFile,
   mkdir as fsMkdir,
   rename as fsRename,
+  cp as fsCp,
+  rm as fsRm,
 } from "node:fs/promises";
-import { existsSync, mkdirSync } from "node:fs";
+import { existsSync, mkdirSync, statSync } from "node:fs";
 import { DuplicateRepoError, Workspace } from "./workspace";
 import { initDaemonLog } from "./daemon-log";
 import { installCrashGuard } from "./process-safety-net";
@@ -147,6 +158,9 @@ import {
   summarizeRequestCounts,
   applyCodexThreadTitleIndex,
   selectedRemoteForRepo,
+  envFlag,
+  readonlyRouteDecision,
+  shouldCopyTempWorkspaceRelativePath,
 } from "./server-helpers";
 import {
   normalizeRemote,
@@ -200,14 +214,62 @@ import { ClaudeCliAdapter } from "./claude-cli-adapter";
 import { CodexAppServerAdapter } from "./codex-app-server";
 import { createNativeAgentRegistry } from "./native-agent-adapters";
 
-const WORKSPACE_PATH =
+const REQUESTED_WORKSPACE_PATH =
   process.env.SUPERGIT_WORKSPACE ??
   join(homedir(), "supergit", "workspaces", "default");
+const TEMP_WORKSPACE_SOURCE = process.env.TREETOP_TEMP_WORKSPACE_FROM
+  ? resolve(process.env.TREETOP_TEMP_WORKSPACE_FROM)
+  : null;
 
-// Tee console.* into <workspace>/daemon.log so instrumentation +
+function shouldCopyTempWorkspaceEntry(sourceRoot: string, sourcePath: string) {
+  return shouldCopyTempWorkspaceRelativePath(relative(sourceRoot, sourcePath));
+}
+
+async function prepareTempWorkspaceCopy(source: string): Promise<string> {
+  const st = statSync(source);
+  if (!st.isDirectory()) {
+    throw new Error(
+      `TREETOP_TEMP_WORKSPACE_FROM must be a directory: ${source}`,
+    );
+  }
+  const baseDir = process.env.TREETOP_TEMP_WORKSPACE_DIR
+    ? resolve(process.env.TREETOP_TEMP_WORKSPACE_DIR)
+    : join(tmpdir(), "treetop-temp-workspaces");
+  const target = join(
+    baseDir,
+    `${basename(source) || "workspace"}-${Date.now()}-${process.pid}`,
+  );
+  await fsRm(target, { recursive: true, force: true });
+  await fsCp(source, target, {
+    recursive: true,
+    filter: (src) => shouldCopyTempWorkspaceEntry(source, src),
+  });
+  return target;
+}
+
+const WORKSPACE_PATH = TEMP_WORKSPACE_SOURCE
+  ? await prepareTempWorkspaceCopy(TEMP_WORKSPACE_SOURCE)
+  : REQUESTED_WORKSPACE_PATH;
+const TEMP_WORKSPACE_MODE = TEMP_WORKSPACE_SOURCE !== null;
+const READONLY_MODE = envFlag(process.env.TREETOP_READONLY);
+const SIDE_INSTANCE_MODE = READONLY_MODE || TEMP_WORKSPACE_MODE;
+const INSTANCE_RUNTIME_PATH = process.env.TREETOP_RUNTIME_DIR
+  ? resolve(process.env.TREETOP_RUNTIME_DIR)
+  : process.env.TREETOP_LOG_DIR
+    ? resolve(process.env.TREETOP_LOG_DIR)
+    : READONLY_MODE
+      ? join(tmpdir(), "treetop-readonly", `${Date.now()}-${process.pid}`)
+      : WORKSPACE_PATH;
+const INSTANCE_LOG_PATH = process.env.TREETOP_LOG_DIR
+  ? resolve(process.env.TREETOP_LOG_DIR)
+  : READONLY_MODE
+    ? INSTANCE_RUNTIME_PATH
+    : WORKSPACE_PATH;
+
+// Tee console.* into daemon.log so instrumentation +
 // startup banners survive headless runs. Best-effort; failures here
 // are non-fatal — the daemon keeps logging to stderr regardless.
-const daemonLogPath = await initDaemonLog(WORKSPACE_PATH);
+const daemonLogPath = await initDaemonLog(INSTANCE_LOG_PATH);
 
 function stringFormValue(value: FormDataEntryValue | null): string | undefined {
   return typeof value === "string" && value ? value : undefined;
@@ -359,8 +421,10 @@ process.title =
 
 const workspace = await Workspace.open(WORKSPACE_PATH);
 const events = await EventLog.open(WORKSPACE_PATH);
-const errors = await ErrorLog.open(WORKSPACE_PATH);
-const shells = await ShellsLog.open(WORKSPACE_PATH);
+const errors = await ErrorLog.open(INSTANCE_LOG_PATH);
+const shells = await ShellsLog.open(
+  READONLY_MODE ? INSTANCE_RUNTIME_PATH : WORKSPACE_PATH,
+);
 const ollamaSessions = await OllamaSessionsLog.open(WORKSPACE_PATH);
 
 /** External (non-TUI) repo-resident processes for the Processes panel.
@@ -712,7 +776,9 @@ const provisionManager = new ProvisionManager({
 
 /** Per-terminal SSH session state. Updated by the 5s CWD sampling cycle. */
 const termSshSessions = new Map<string, SshSession>();
-const terminalPersist = new TerminalPersist(WORKSPACE_PATH);
+const terminalPersist = new TerminalPersist(
+  READONLY_MODE ? INSTANCE_RUNTIME_PATH : WORKSPACE_PATH,
+);
 
 const orphanCleaner = new OrphanCleaner({
   getTerminals: () =>
@@ -965,6 +1031,20 @@ function findLocalIp(): string | null {
 }
 
 console.log(`supergit daemon: workspace = ${WORKSPACE_PATH}`);
+if (TEMP_WORKSPACE_SOURCE) {
+  console.log(
+    `supergit daemon: temp workspace source = ${TEMP_WORKSPACE_SOURCE}`,
+  );
+}
+if (READONLY_MODE) {
+  console.log("supergit daemon: read-only mode enabled (TREETOP_READONLY=1)");
+}
+if (INSTANCE_RUNTIME_PATH !== WORKSPACE_PATH) {
+  console.log(`supergit daemon: instance runtime = ${INSTANCE_RUNTIME_PATH}`);
+}
+if (INSTANCE_LOG_PATH !== INSTANCE_RUNTIME_PATH) {
+  console.log(`supergit daemon: instance logs = ${INSTANCE_LOG_PATH}`);
+}
 if (daemonLogPath) {
   console.log(`supergit daemon: log file = ${daemonLogPath}`);
 }
@@ -974,90 +1054,96 @@ if (daemonLogPath) {
   if (ip) console.log(`supergit daemon: LAN url       http://${ip}:${PORT}`);
 }
 
-// One-time migration for imported sessions written under the
-// pre-discovery layout (<machine>/<sid>.jsonl → <machine>/<agent>/<sid>.jsonl).
-// Idempotent — a daemon restart on a clean tree is a noop. Logs the
-// outcome so the user can spot if anything got left behind.
-void migrateLegacyImportedSessions(WORKSPACE_PATH)
-  .then((r) => {
-    if (r.moved > 0 || r.skipped > 0) {
-      console.log(
-        `supergit daemon: imported-sessions migrate — moved=${r.moved} skipped=${r.skipped}`,
+if (READONLY_MODE) {
+  console.log(
+    "supergit daemon: workspace migrations disabled (read-only mode)",
+  );
+} else {
+  // One-time migration for imported sessions written under the
+  // pre-discovery layout (<machine>/<sid>.jsonl → <machine>/<agent>/<sid>.jsonl).
+  // Idempotent — a daemon restart on a clean tree is a noop. Logs the
+  // outcome so the user can spot if anything got left behind.
+  void migrateLegacyImportedSessions(WORKSPACE_PATH)
+    .then((r) => {
+      if (r.moved > 0 || r.skipped > 0) {
+        console.log(
+          `supergit daemon: imported-sessions migrate — moved=${r.moved} skipped=${r.skipped}`,
+        );
+      }
+    })
+    .catch((e) => {
+      console.error(
+        `supergit daemon: imported-sessions migrate failed: ${
+          e instanceof Error ? e.message : String(e)
+        }`,
       );
-    }
-  })
-  .catch((e) => {
-    console.error(
-      `supergit daemon: imported-sessions migrate failed: ${
-        e instanceof Error ? e.message : String(e)
-      }`,
-    );
-  });
+    });
 
-// Second-stage migrate: rehouse legacy claude JSONLs that still live
-// under <ws>/imported-sessions/<machine>/claude/ into the equivalent
-// ~/.claude/projects/<encoded(cwd)>/ slot so Claude Code's --resume
-// finds them. Sidecar stays where it is, gains importedJsonlPath.
-// Idempotent.
-void migrateClaudeImportsToProjects(WORKSPACE_PATH)
-  .then((r) => {
-    if (r.moved > 0 || r.skipped > 0) {
-      console.log(
-        `supergit daemon: claude imports → projects — moved=${r.moved} skipped=${r.skipped}`,
+  // Second-stage migrate: rehouse legacy claude JSONLs that still live
+  // under <ws>/imported-sessions/<machine>/claude/ into the equivalent
+  // ~/.claude/projects/<encoded(cwd)>/ slot so Claude Code's --resume
+  // finds them. Sidecar stays where it is, gains importedJsonlPath.
+  // Idempotent.
+  void migrateClaudeImportsToProjects(WORKSPACE_PATH)
+    .then((r) => {
+      if (r.moved > 0 || r.skipped > 0) {
+        console.log(
+          `supergit daemon: claude imports → projects — moved=${r.moved} skipped=${r.skipped}`,
+        );
+      }
+    })
+    .catch((e) => {
+      console.error(
+        `supergit daemon: claude imports → projects migrate failed: ${
+          e instanceof Error ? e.message : String(e)
+        }`,
       );
-    }
-  })
-  .catch((e) => {
-    console.error(
-      `supergit daemon: claude imports → projects migrate failed: ${
-        e instanceof Error ? e.message : String(e)
-      }`,
-    );
-  });
+    });
 
-// Mirror for ollama imports: move them from
-// <ws>/imported-sessions/<machine>/ollama/<sid>.jsonl into
-// <ws>/ollama/<sid>.jsonl so scanOllama surfaces them as native
-// sessions. Sidecar stays under imported-sessions/, gains
-// importedJsonlPath.
-void migrateOllamaImportsToWorkspace(WORKSPACE_PATH)
-  .then((r) => {
-    if (r.moved > 0 || r.skipped > 0) {
-      console.log(
-        `supergit daemon: ollama imports → workspace — moved=${r.moved} skipped=${r.skipped}`,
+  // Mirror for ollama imports: move them from
+  // <ws>/imported-sessions/<machine>/ollama/<sid>.jsonl into
+  // <ws>/ollama/<sid>.jsonl so scanOllama surfaces them as native
+  // sessions. Sidecar stays under imported-sessions/, gains
+  // importedJsonlPath.
+  void migrateOllamaImportsToWorkspace(WORKSPACE_PATH)
+    .then((r) => {
+      if (r.moved > 0 || r.skipped > 0) {
+        console.log(
+          `supergit daemon: ollama imports → workspace — moved=${r.moved} skipped=${r.skipped}`,
+        );
+      }
+    })
+    .catch((e) => {
+      console.error(
+        `supergit daemon: ollama imports → workspace migrate failed: ${
+          e instanceof Error ? e.message : String(e)
+        }`,
       );
-    }
-  })
-  .catch((e) => {
-    console.error(
-      `supergit daemon: ollama imports → workspace migrate failed: ${
-        e instanceof Error ? e.message : String(e)
-      }`,
-    );
-  });
+    });
 
-// Fourth-stage repair: re-apply the origin→local path rewrite to imported
-// claude sessions that under-rewrote at accept time (the forward-slash
-// `originRepoPath` vs backslash-cwd mismatch left a dead foreign cwd,
-// which made the terminal spawn fail with a misleading
-// `fork/exec /bin/bash: no such file or directory`). Idempotent: a
-// correctly-rewritten transcript no longer contains the origin path, so
-// the rewrite is a no-op. Pre-repair bytes are parked as `<jsonl>.repair-bak`.
-void repairImportedSessionCwds(WORKSPACE_PATH)
-  .then((r) => {
-    if (r.repaired > 0) {
-      console.log(
-        `supergit daemon: imported-session cwd repair — repaired=${r.repaired} scanned=${r.scanned}`,
+  // Fourth-stage repair: re-apply the origin→local path rewrite to imported
+  // claude sessions that under-rewrote at accept time (the forward-slash
+  // `originRepoPath` vs backslash-cwd mismatch left a dead foreign cwd,
+  // which made the terminal spawn fail with a misleading
+  // `fork/exec /bin/bash: no such file or directory`). Idempotent: a
+  // correctly-rewritten transcript no longer contains the origin path, so
+  // the rewrite is a no-op. Pre-repair bytes are parked as `<jsonl>.repair-bak`.
+  void repairImportedSessionCwds(WORKSPACE_PATH)
+    .then((r) => {
+      if (r.repaired > 0) {
+        console.log(
+          `supergit daemon: imported-session cwd repair — repaired=${r.repaired} scanned=${r.scanned}`,
+        );
+      }
+    })
+    .catch((e) => {
+      console.error(
+        `supergit daemon: imported-session cwd repair failed: ${
+          e instanceof Error ? e.message : String(e)
+        }`,
       );
-    }
-  })
-  .catch((e) => {
-    console.error(
-      `supergit daemon: imported-session cwd repair failed: ${
-        e instanceof Error ? e.message : String(e)
-      }`,
-    );
-  });
+    });
+}
 
 // Peer identity + mDNS discovery. Identity is the stable
 // `(id, label)` pair this daemon advertises and that receivers store
@@ -1127,6 +1213,10 @@ const LAN_ALLOWED_ROUTES = new Set<string>([
 
 void (async () => {
   try {
+    if (SIDE_INSTANCE_MODE) {
+      console.log("supergit daemon: peer discovery disabled (side instance)");
+      return;
+    }
     const username = process.env.USER || process.env.USERNAME || "user";
     const defaultLabel = `${username}@${osHostname() || "unknown"}`;
     peerIdentity = await loadOrCreatePeerIdentity(WORKSPACE_PATH, {
@@ -2500,6 +2590,20 @@ const server = Bun.serve<TermWsData, never>({
         }
       }
 
+      if (READONLY_MODE) {
+        const decision = readonlyRouteDecision(req.method, url.pathname);
+        if (!decision.allowed) {
+          return json(
+            {
+              error: "daemon is running in read-only mode",
+              readonly: true,
+              reason: decision.reason,
+            },
+            { status: 423 },
+          );
+        }
+      }
+
       // WebSocket upgrade for terminal I/O — /api/terminals/:id/io.
       // CORS does not apply to WS handshakes, but we still validate the
       // termId exists in our manager before upgrading.
@@ -2577,11 +2681,14 @@ const server = Bun.serve<TermWsData, never>({
         return json({
           status: "ok",
           workspace: WORKSPACE_PATH,
+          temporaryWorkspace: TEMP_WORKSPACE_MODE,
+          sourceWorkspace: TEMP_WORKSPACE_SOURCE,
           totalMemBytes: totalmem(),
           localIp: findLocalIp(),
           port: PORT,
           buildTime: DAEMON_BUILD_TIME,
           version: "0.1.0",
+          readonly: READONLY_MODE,
         });
       }
 
@@ -9810,7 +9917,9 @@ console.log(
 // Check for corrupted .claude.json files in all monitored repos.
 // Windows hard-kills Claude Code PTYs on shutdown, which can leave
 // .claude.json mid-write (double JSON, trailing garbage).
-{
+if (SIDE_INSTANCE_MODE) {
+  console.log("supergit daemon: .claude.json repair disabled (side instance)");
+} else {
   const repos = await workspace.listRepos();
   const repairs = await repairAllClaudeJson(repos.map((r) => r.path));
   for (const r of repairs) {
@@ -9820,7 +9929,9 @@ console.log(
   }
 }
 
-if (FETCH_INTERVAL_MS > 0) {
+if (SIDE_INSTANCE_MODE) {
+  console.log("supergit daemon: auto-fetch disabled (side instance)");
+} else if (FETCH_INTERVAL_MS > 0) {
   // Kick off shortly after startup so the dashboard doesn't show stale
   // ahead/behind on first load.
   setTimeout(() => void runFetchCycle(), 4_000);

@@ -97,6 +97,26 @@ main > header {
   pointer-events: none;
 }
 
+.temp-workspace-badge {
+  position: absolute;
+  right: 0.8rem;
+  top: 0.05rem;
+  pointer-events: auto;
+  max-width: min(32vw, 18rem);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding: 0.28rem 0.5rem;
+  border: 1px solid #ff6b6b;
+  border-radius: 6px;
+  background: #7f1d1d;
+  color: #fff1f1;
+  box-shadow: 0 4px 14px rgba(127, 29, 29, 0.42);
+  font-family: var(--font-brand);
+  font-size: 0.72rem;
+  font-weight: 800;
+}
+
 /* The brand pill. Per the Needle guidelines the workbench UI uses
    solid surfaces — no blur/glass/gradients — with restrained accents,
    so this is a flat dark surface with the brand typeface; the Needle

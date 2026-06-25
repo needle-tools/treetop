@@ -13,6 +13,84 @@ import { existsSync } from "node:fs";
 import { basename } from "node:path";
 import type { AttachmentKind, LinkTarget } from "./notes";
 
+const READONLY_POST_ALLOWLIST = new Set([
+  "/api/command/run",
+  "/api/command/stop",
+  "/api/errors",
+  "/api/exists",
+  "/api/sessions/batch",
+  "/api/terminals",
+  "/api/terminals/persisted/remove",
+]);
+
+export interface ReadonlyRouteDecision {
+  allowed: boolean;
+  reason?: string;
+}
+
+export function envFlag(value: string | undefined): boolean {
+  if (value === undefined) return false;
+  const normalized = value.trim().toLowerCase();
+  return (
+    normalized !== "" &&
+    normalized !== "0" &&
+    normalized !== "false" &&
+    normalized !== "no" &&
+    normalized !== "off"
+  );
+}
+
+export function readonlyRouteDecision(
+  method: string,
+  pathname: string,
+): ReadonlyRouteDecision {
+  const normalizedMethod = method.toUpperCase();
+  if (
+    normalizedMethod === "GET" ||
+    normalizedMethod === "HEAD" ||
+    normalizedMethod === "OPTIONS"
+  ) {
+    return { allowed: true };
+  }
+
+  if (
+    normalizedMethod === "DELETE" &&
+    (pathname === "/api/terminals/persisted" ||
+      /^\/api\/terminals\/[^/]+$/.test(pathname))
+  ) {
+    return { allowed: true };
+  }
+
+  if (normalizedMethod === "POST" && READONLY_POST_ALLOWLIST.has(pathname)) {
+    return { allowed: true };
+  }
+
+  return {
+    allowed: false,
+    reason: `${normalizedMethod} ${pathname} is disabled in read-only mode`,
+  };
+}
+
+const TEMP_WORKSPACE_EXCLUDED_NAMES = new Set([
+  ".remote-cache",
+  "active-terminals.json",
+  "daemon.log",
+  "daemon.log.prev",
+  "errors.jsonl",
+  "keys",
+  "peer-identity.json",
+  "session-invites",
+  "shells",
+]);
+
+export function shouldCopyTempWorkspaceRelativePath(path: string): boolean {
+  if (!path || path === ".") return true;
+  const first = path.split(/[\\/]/, 1)[0] ?? path;
+  if (TEMP_WORKSPACE_EXCLUDED_NAMES.has(first)) return false;
+  if (first.endsWith(".tmp")) return false;
+  return true;
+}
+
 /** Strip model-specific thinking artifacts from Ollama output.
  *  Some models leak internal reasoning even with `think: false`:
  *  - gemma4 uses `<channel|>` as a separator (everything before is thinking)

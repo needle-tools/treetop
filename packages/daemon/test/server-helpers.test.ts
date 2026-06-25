@@ -21,6 +21,9 @@ import {
   codexThreadIdFromTitleSource,
   applyCodexThreadTitleIndex,
   selectedRemoteForRepo,
+  envFlag,
+  readonlyRouteDecision,
+  shouldCopyTempWorkspaceRelativePath,
 } from "../src/server-helpers";
 
 // ---------------------------------------------------------------------------
@@ -861,7 +864,9 @@ describe("Codex session_index title sync", () => {
   test("extracts a Codex thread id from JSONL and live app sources", () => {
     expect(codexThreadIdFromTitleSource(source)).toBe(id);
     expect(codexThreadIdFromTitleSource(`__codex_app__:${id}`)).toBe(id);
-    expect(codexThreadIdFromTitleSource("/tmp/not-a-session.txt")).toBeUndefined();
+    expect(
+      codexThreadIdFromTitleSource("/tmp/not-a-session.txt"),
+    ).toBeUndefined();
   });
 
   test("creates exactly one title row when the app index is missing the session", () => {
@@ -874,7 +879,10 @@ describe("Codex session_index title sync", () => {
     );
     expect(result.changed).toBe(true);
     expect(result.appended).toBe(true);
-    const rows = result.raw.trim().split(/\n/).map((line) => JSON.parse(line));
+    const rows = result.raw
+      .trim()
+      .split(/\n/)
+      .map((line) => JSON.parse(line));
     expect(rows.filter((row) => row.id === id)).toEqual([
       {
         id,
@@ -898,7 +906,10 @@ describe("Codex session_index title sync", () => {
     );
     expect(result.changed).toBe(true);
     expect(result.appended).toBe(false);
-    const rows = result.raw.trim().split(/\n/).map((line) => JSON.parse(line));
+    const rows = result.raw
+      .trim()
+      .split(/\n/)
+      .map((line) => JSON.parse(line));
     expect(rows).toEqual([
       {
         id,
@@ -920,7 +931,10 @@ describe("Codex session_index title sync", () => {
       "Performance Testing",
       now,
     );
-    const rows = result.raw.trim().split(/\n/).map((line) => JSON.parse(line));
+    const rows = result.raw
+      .trim()
+      .split(/\n/)
+      .map((line) => JSON.parse(line));
     expect(rows.filter((row) => row.id === id)).toEqual([
       {
         id,
@@ -941,5 +955,107 @@ describe("Codex session_index title sync", () => {
     const missing = applyCodexThreadTitleIndex("", source, "", now);
     expect(missing.changed).toBe(false);
     expect(missing.raw).toBe("");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Read-only route policy
+// ---------------------------------------------------------------------------
+describe("read-only daemon route policy", () => {
+  test("envFlag treats explicit false-y values as disabled", () => {
+    expect(envFlag(undefined)).toBe(false);
+    expect(envFlag("")).toBe(false);
+    expect(envFlag("0")).toBe(false);
+    expect(envFlag("false")).toBe(false);
+    expect(envFlag("off")).toBe(false);
+    expect(envFlag("1")).toBe(true);
+    expect(envFlag("true")).toBe(true);
+    expect(envFlag("yes")).toBe(true);
+  });
+
+  test("allows normal read requests", () => {
+    expect(readonlyRouteDecision("GET", "/api/repos")).toEqual({
+      allowed: true,
+    });
+    expect(readonlyRouteDecision("HEAD", "/")).toEqual({ allowed: true });
+    expect(readonlyRouteDecision("OPTIONS", "/api/repos")).toEqual({
+      allowed: true,
+    });
+  });
+
+  test("allows body-based read routes and instance diagnostics the UI already uses", () => {
+    expect(readonlyRouteDecision("POST", "/api/sessions/batch")).toEqual({
+      allowed: true,
+    });
+    expect(readonlyRouteDecision("POST", "/api/exists")).toEqual({
+      allowed: true,
+    });
+    expect(readonlyRouteDecision("POST", "/api/errors")).toEqual({
+      allowed: true,
+    });
+  });
+
+  test("allows side-instance terminal and command runtime", () => {
+    expect(readonlyRouteDecision("POST", "/api/terminals")).toEqual({
+      allowed: true,
+    });
+    expect(readonlyRouteDecision("GET", "/api/terminals/t-1/io")).toEqual({
+      allowed: true,
+    });
+    expect(readonlyRouteDecision("POST", "/api/command/run")).toEqual({
+      allowed: true,
+    });
+    expect(readonlyRouteDecision("POST", "/api/command/stop")).toEqual({
+      allowed: true,
+    });
+    expect(readonlyRouteDecision("DELETE", "/api/terminals/persisted")).toEqual(
+      {
+        allowed: true,
+      },
+    );
+    expect(readonlyRouteDecision("DELETE", "/api/terminals/t-1")).toEqual({
+      allowed: true,
+    });
+    expect(
+      readonlyRouteDecision("POST", "/api/terminals/persisted/remove"),
+    ).toEqual({ allowed: true });
+  });
+
+  test("blocks workspace and repo mutations", () => {
+    expect(readonlyRouteDecision("POST", "/api/fetch").allowed).toBe(false);
+    expect(readonlyRouteDecision("PATCH", "/api/prefs").allowed).toBe(false);
+    expect(readonlyRouteDecision("DELETE", "/api/errors").allowed).toBe(false);
+    expect(readonlyRouteDecision("POST", "/api/open-default").allowed).toBe(
+      false,
+    );
+  });
+});
+
+describe("temporary workspace copy policy", () => {
+  test("copies persisted workspace data", () => {
+    expect(shouldCopyTempWorkspaceRelativePath("repos.json")).toBe(true);
+    expect(shouldCopyTempWorkspaceRelativePath("prefs.json")).toBe(true);
+    expect(shouldCopyTempWorkspaceRelativePath("events.jsonl")).toBe(true);
+    expect(shouldCopyTempWorkspaceRelativePath("notes.json")).toBe(true);
+    expect(shouldCopyTempWorkspaceRelativePath("summaries/session.md")).toBe(
+      true,
+    );
+  });
+
+  test("skips live runtime, logs, peer identity, and local secret/cache state", () => {
+    expect(shouldCopyTempWorkspaceRelativePath("active-terminals.json")).toBe(
+      false,
+    );
+    expect(shouldCopyTempWorkspaceRelativePath("shells/t-1.jsonl")).toBe(false);
+    expect(shouldCopyTempWorkspaceRelativePath("daemon.log")).toBe(false);
+    expect(shouldCopyTempWorkspaceRelativePath("errors.jsonl")).toBe(false);
+    expect(shouldCopyTempWorkspaceRelativePath("peer-identity.json")).toBe(
+      false,
+    );
+    expect(shouldCopyTempWorkspaceRelativePath("keys/id_ed25519")).toBe(false);
+    expect(shouldCopyTempWorkspaceRelativePath(".remote-cache/host/file")).toBe(
+      false,
+    );
+    expect(shouldCopyTempWorkspaceRelativePath("repos.json.tmp")).toBe(false);
   });
 });
