@@ -20,6 +20,7 @@
     visualToolCallPayloadLanguage,
     visualToolCallPayloadText,
     visualToolPreviewText,
+    visualWorkSummary,
     visualUserImageAttachments,
     type VisualFileEditSummary,
     type VisualPlanItem,
@@ -396,6 +397,16 @@
     );
     const prefix = running ? "Working" : "Worked";
     return duration ? `${prefix} for ${duration}` : prefix;
+  }
+
+  function workCountLabel(steps: number, compactions: number): string {
+    const parts = [`${steps} ${steps === 1 ? "step" : "steps"}`];
+    if (compactions > 0) {
+      parts.push(
+        `${compactions} ${compactions === 1 ? "compaction" : "compactions"}`,
+      );
+    }
+    return parts.join(", ");
   }
 
   function formatToolWallTime(seconds: number | undefined): string | undefined {
@@ -1103,6 +1114,7 @@
   {#each items as item, itemIndex (getVisualTranscriptItemKey(item, itemIndex))}
     {#if item.kind === "work"}
       {@const workKey = getVisualTranscriptItemKey(item, itemIndex)}
+      {@const workSummary = visualWorkSummary(item.entries)}
       <li class="work-row">
         <details
           class="work-foldout"
@@ -1115,8 +1127,7 @@
               {@render renderLiveDots()}
             {/if}
             <span class="work-count">
-              {item.entries.length}
-              {item.entries.length === 1 ? "step" : "steps"}
+              {workCountLabel(workSummary.steps, workSummary.compactions)}
             </span>
           </summary>
           <div class="work-foldout-body" on:wheel|capture={handOffNestedWheel}>

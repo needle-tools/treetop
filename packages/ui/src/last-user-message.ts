@@ -84,6 +84,11 @@ export interface VisualWorkDisplayEntry<
   markerLabel?: string;
 }
 
+export interface VisualWorkSummary {
+  steps: number;
+  compactions: number;
+}
+
 export interface VisualTranscriptDeltaPatch<
   B extends MessageBlock = MessageBlock,
 > {
@@ -1202,6 +1207,23 @@ function hasTurnMarker<B extends MessageBlock, M extends Message<B>>(
   );
 }
 
+export function visualWorkSummary<
+  B extends MessageBlock,
+  M extends Message<B>,
+>(entries: readonly VisualWorkEntry<B, M>[]): VisualWorkSummary {
+  let compactions = 0;
+  for (const entry of entries) {
+    const markerBlock = visualMarkerBlock(entry);
+    if (markerBlock && visualMarkerKind(markerBlock.text) === "compacted") {
+      compactions += 1;
+    }
+  }
+  return {
+    steps: entries.length - compactions,
+    compactions,
+  };
+}
+
 function compactionMarkerEntry<
   B extends MessageBlock,
   M extends Message<B>,
@@ -1622,36 +1644,27 @@ export function buildVisualTranscriptItems<
     userTimestamp: string | undefined,
     active: boolean,
   ): void {
-    let segment: VisualWorkEntry<B, M>[] = [];
+    let entries: VisualWorkEntry<B, M>[] = [];
     let segmentStartedAt = userTimestamp;
     let lastCompactionMs: number | undefined;
-
-    function flushSegment(
-      segmentActive: boolean,
-      segmentEndedAt?: string,
-    ): void {
-      if (segment.length === 0) return;
-      pushWorkAndResponse(
-        segment,
-        segmentStartedAt,
-        segmentActive,
-        segmentEndedAt,
-      );
-      segment = [];
-    }
 
     for (const entry of rawEntries) {
       const markerBlock = visualMarkerBlock(entry);
       const markerKind = visualMarkerKind(markerBlock?.text);
       if (markerKind === "aborted") {
-        segment.push(entry);
-        flushSegment(false, entry.message.timestamp);
+        entries.push(entry);
+        pushWorkAndResponse(
+          entries,
+          segmentStartedAt,
+          false,
+          entry.message.timestamp,
+        );
+        entries = [];
         segmentStartedAt = entry.message.timestamp;
         continue;
       }
-      const marker = compactionMarkerEntry(entry);
-      if (!marker) {
-        segment.push(entry);
+      if (markerKind !== "compacted") {
+        entries.push(entry);
         continue;
       }
       const markerMs = timestampMs(entry.message.timestamp);
@@ -1663,12 +1676,10 @@ export function buildVisualTranscriptItems<
         continue;
       }
       lastCompactionMs = markerMs;
-      flushSegment(false, entry.message.timestamp);
-      out.push(marker);
-      segmentStartedAt = entry.message.timestamp;
+      entries.push(entry);
     }
 
-    flushSegment(active);
+    pushWorkAndResponse(entries, segmentStartedAt, active);
   }
 
   function pushWorkAndResponse(

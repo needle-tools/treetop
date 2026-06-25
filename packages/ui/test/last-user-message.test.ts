@@ -16,6 +16,7 @@ import {
   visualToolCallPayloadLanguage,
   visualToolCallPayloadText,
   visualToolPreviewText,
+  visualWorkSummary,
   visualUserImageAttachments,
   visualFileEditSummaryForBlock,
   visualThinkingSummary,
@@ -609,7 +610,7 @@ describe("buildVisualTranscriptItems", () => {
     expect(items[2].blocks).toEqual([{ type: "text", text: "Done." }]);
   });
 
-  it("surfaces duplicate Codex compaction rows as one transcript marker", () => {
+  it("keeps duplicate Codex compaction rows inside one work range", () => {
     const user = msg("user", "keep going", "2026-06-22T10:15:00.000Z");
     const before: Message = {
       role: "assistant",
@@ -631,6 +632,11 @@ describe("buildVisualTranscriptItems", () => {
       timestamp: "2026-06-22T10:44:00.000Z",
       blocks: [{ type: "tool_use", toolName: "exec_command" }],
     };
+    const final: Message = {
+      role: "assistant",
+      timestamp: "2026-06-22T10:46:00.000Z",
+      blocks: [{ type: "text", text: "Done." }],
+    };
 
     const items = buildVisualTranscriptItems([
       user,
@@ -638,27 +644,33 @@ describe("buildVisualTranscriptItems", () => {
       compactedA,
       compactedB,
       after,
+      final,
     ]);
 
     expect(items.map((item) => item.kind)).toEqual([
       "message",
       "work",
-      "marker",
-      "work",
+      "message",
     ]);
-    expect(items[2]).toMatchObject({
-      kind: "marker",
-      markerKind: "compacted",
-      markerLabel: "Context compacted",
-    });
-    if (items[1]?.kind !== "work") throw new Error("expected first work item");
+    if (items[1]?.kind !== "work") throw new Error("expected work item");
     expect(items[1].entries.map((entry) => entry.blocks[0]?.type)).toEqual([
       "thinking",
-    ]);
-    if (items[3]?.kind !== "work") throw new Error("expected second work item");
-    expect(items[3].entries.map((entry) => entry.blocks[0]?.type)).toEqual([
+      "marker",
       "tool_use",
     ]);
+    expect(visualWorkSummary(items[1].entries)).toEqual({
+      steps: 2,
+      compactions: 1,
+    });
+    const displayEntries = buildVisualWorkDisplayEntries(items[1].entries);
+    expect(displayEntries).toContainEqual(
+      expect.objectContaining({
+        kind: "marker",
+        markerKind: "compacted",
+        markerLabel: "Context compacted",
+      }),
+    );
+    expect(items[1].endedAt).toBe("2026-06-22T10:46:00.000Z");
   });
 
   it("does not treat non-assistant text/media rows as the final response", () => {
