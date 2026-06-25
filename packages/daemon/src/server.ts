@@ -60,6 +60,7 @@ import {
   getSessionsBatchResults,
   sessionCacheStats,
   parseSessionFile,
+  readSessionInlineMedia,
 } from "./sessions";
 import { diagnoseClaudeSession, repairClaudeSession } from "./session-repair";
 import { serveImage } from "./images";
@@ -2931,6 +2932,37 @@ const server = Bun.serve<TermWsData, never>({
           headers: {
             ...CORS,
             "Cache-Control": "private, max-age=60",
+          },
+        });
+      }
+
+      if (url.pathname === "/api/session/media" && req.method === "GET") {
+        const source = url.searchParams.get("source");
+        if (!source) {
+          return json(
+            { error: "?source=<session-file> required" },
+            { status: 400 },
+          );
+        }
+        const resolved = resolveSessionAgent(source);
+        if (!resolved) {
+          return json(
+            { error: "source is outside any known agent root" },
+            { status: 403 },
+          );
+        }
+        const result = await readSessionInlineMedia(
+          resolved.normalised,
+          url.searchParams.get("hash"),
+        );
+        if (result.status !== 200) {
+          return json({ error: result.error }, { status: result.status });
+        }
+        return new Response(result.bytes, {
+          headers: {
+            ...CORS,
+            "Content-Type": result.mimeType,
+            "Cache-Control": "private, max-age=300",
           },
         });
       }

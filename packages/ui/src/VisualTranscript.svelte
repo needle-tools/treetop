@@ -640,6 +640,7 @@
         daemonId,
       );
     }
+    if (block.url?.startsWith("/api/")) return apiUrl(block.url, daemonId);
     return block.url;
   }
 

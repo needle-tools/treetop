@@ -9,6 +9,7 @@
  * third. We keep that mess contained here.
  */
 
+import { createHash } from "node:crypto";
 import { readFile, stat, open } from "node:fs/promises";
 import type { AgentKind } from "./agents";
 
@@ -60,6 +61,7 @@ export interface NormalizedBlock {
   mimeType?: string;
   path?: string;
   url?: string;
+  inlineDataHash?: string;
   title?: string;
   alt?: string;
 }
@@ -212,6 +214,17 @@ function mediaKindFrom(
   return src || mime ? "file" : "artifact";
 }
 
+const DATA_URL_PREFIX_RE = /^data:([^;,]+)?(?:;[^,]*)?,/i;
+
+function dataUrlMimeType(url: string | undefined): string | undefined {
+  const match = url?.match(DATA_URL_PREFIX_RE);
+  return match?.[1] || undefined;
+}
+
+function inlineDataHash(url: string): string {
+  return createHash("sha256").update(url).digest("hex");
+}
+
 function mediaBlockFromContent(
   raw: Record<string, unknown>,
 ): NormalizedBlock | null {
@@ -229,18 +242,21 @@ function mediaBlockFromContent(
     stringProp(container, "path") ??
     stringProp(container, "file_path") ??
     stringProp(container, "filePath");
-  const url =
+  const rawUrl =
     stringProp(raw, "url") ??
     stringProp(raw, "image_url") ??
     stringProp(container, "url") ??
     stringProp(container, "image_url");
+  const inlineDataMimeType = dataUrlMimeType(rawUrl);
+  const url = inlineDataMimeType ? undefined : rawUrl;
   const mimeType =
     stringProp(raw, "mime_type") ??
     stringProp(raw, "mimeType") ??
     stringProp(raw, "media_type") ??
     stringProp(container, "mime_type") ??
     stringProp(container, "mimeType") ??
-    stringProp(container, "media_type");
+    stringProp(container, "media_type") ??
+    inlineDataMimeType;
   const sourceRef = path ?? url;
   const kind = mediaKindFrom(type, mimeType, sourceRef);
   const isMediaType =
@@ -278,10 +294,102 @@ function mediaBlockFromContent(
   if (mimeType) block.mimeType = mimeType;
   if (path) block.path = path;
   if (url) block.url = url;
-  if (!path && !url && source?.type === "base64") {
+  if (!path && !url && (source?.type === "base64" || inlineDataMimeType)) {
     block.text = `[${mimeType ?? "image"} data stored in source transcript]`;
+    if (rawUrl && inlineDataMimeType) {
+      block.inlineDataHash = inlineDataHash(rawUrl);
+    }
   }
   return block;
+}
+
+function attachSessionInlineMediaUrls(
+  session: NormalizedSession,
+  source: string,
+): void {
+  const encodedSource = encodeURIComponent(source);
+  for (const message of session.messages) {
+    for (const block of message.blocks) {
+      if (block.type !== "media" || !block.inlineDataHash || block.url) continue;
+      block.url = `/api/session/media?source=${encodedSource}&hash=${block.inlineDataHash}`;
+      block.text = undefined;
+      block.inlineDataHash = undefined;
+    }
+  }
+}
+
+export type SessionInlineMediaResult =
+  | { status: 400; error: string }
+  | { status: 404; error: string }
+  | { status: 500; error: string }
+  | { status: 200; bytes: Uint8Array; mimeType: string };
+
+function decodeDataUrl(
+  url: string,
+): { bytes: Uint8Array; mimeType: string } | null {
+  const match = url.match(DATA_URL_PREFIX_RE);
+  if (!match) return null;
+  const comma = url.indexOf(",");
+  if (comma < 0) return null;
+  const meta = url.slice(5, comma);
+  const payload = url.slice(comma + 1);
+  const mimeType = match[1] || "application/octet-stream";
+  try {
+    const bytes = /(?:^|;)base64(?:;|$)/i.test(meta)
+      ? Buffer.from(payload, "base64")
+      : Buffer.from(decodeURIComponent(payload), "utf-8");
+    return { bytes, mimeType };
+  } catch {
+    return null;
+  }
+}
+
+function findInlineDataUrlByHash(value: unknown, hash: string): string | null {
+  if (typeof value === "string") {
+    return DATA_URL_PREFIX_RE.test(value) && inlineDataHash(value) === hash
+      ? value
+      : null;
+  }
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const found = findInlineDataUrlByHash(item, hash);
+      if (found) return found;
+    }
+    return null;
+  }
+  if (value && typeof value === "object") {
+    for (const item of Object.values(value as Record<string, unknown>)) {
+      const found = findInlineDataUrlByHash(item, hash);
+      if (found) return found;
+    }
+  }
+  return null;
+}
+
+export async function readSessionInlineMedia(
+  source: string,
+  hash: string | null | undefined,
+): Promise<SessionInlineMediaResult> {
+  if (typeof hash !== "string" || !/^[a-f0-9]{64}$/i.test(hash)) {
+    return { status: 400, error: "?hash required" };
+  }
+  const text = await readFile(source, "utf-8").catch(() => null);
+  if (text === null) return { status: 404, error: "session not found" };
+  for (const line of text.split("\n")) {
+    if (!line) continue;
+    let obj: unknown;
+    try {
+      obj = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    const dataUrl = findInlineDataUrlByHash(obj, hash);
+    if (!dataUrl) continue;
+    const decoded = decodeDataUrl(dataUrl);
+    if (!decoded) return { status: 400, error: "invalid data URL" };
+    return { status: 200, ...decoded };
+  }
+  return { status: 404, error: "media not found" };
 }
 
 /** Process a single JSONL line into `out`. Returns void; mutates `out`
@@ -1383,6 +1491,7 @@ export async function getSessionResponseJson(
     const text = await readFile(path, "utf-8").catch(() => "");
     const parsed = parseOllamaJsonl(text);
     trimMessages(parsed);
+    attachSessionInlineMediaUrls(parsed, path);
     return {
       body: injectManualTitle(JSON.stringify(parsed), manualTitle),
       etag,
@@ -1425,6 +1534,7 @@ export async function getSessionResponseJson(
         cached.size = st.size;
         cached.mtimeMs = st.mtimeMs;
         trimMessages(cached.parsed);
+        attachSessionInlineMediaUrls(cached.parsed, path);
         cached.jsonNoTitle = JSON.stringify(cached.parsed);
         touch(path, cached);
         return {
@@ -1441,6 +1551,7 @@ export async function getSessionResponseJson(
   // TAIL_BYTES and parse those lines.
   const parsed = await tailParseSessionFileForCache(agent, path, st.size);
   trimMessages(parsed);
+  attachSessionInlineMediaUrls(parsed, path);
   const jsonNoTitle = JSON.stringify(parsed);
   sessionCache.set(path, {
     mtimeMs: st.mtimeMs,

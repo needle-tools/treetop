@@ -1,4 +1,5 @@
 import { test, expect, describe, beforeEach } from "bun:test";
+import { createHash } from "node:crypto";
 import { mkdtemp, writeFile, appendFile, utimes } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -14,6 +15,7 @@ import {
   sessionCacheStats,
   tailParseSessionFile,
   clearParseCache,
+  readSessionInlineMedia,
 } from "../src/sessions";
 
 async function getSessionResponseJson(
@@ -586,6 +588,40 @@ describe("parseCodexJsonl", () => {
     ]);
   });
 
+  test("does not inline Codex image data URLs into parsed session blocks", () => {
+    const dataUrl = `data:image/png;base64,${"a".repeat(100_000)}`;
+    const hash = createHash("sha256").update(dataUrl).digest("hex");
+    const line = JSON.stringify({
+      timestamp: "2026-06-19T10:00:00.000Z",
+      type: "response_item",
+      payload: {
+        type: "message",
+        role: "user",
+        content: [
+          {
+            type: "input_image",
+            image_url: {
+              url: dataUrl,
+            },
+          },
+        ],
+      },
+    });
+
+    const session = parseCodexJsonl(line);
+    expect(session.messages[0]?.blocks).toEqual([
+      {
+        type: "media",
+        mediaKind: "image",
+        mimeType: "image/png",
+        title: "Image",
+        alt: "Image",
+        text: "[image/png data stored in source transcript]",
+        inlineDataHash: hash,
+      },
+    ]);
+  });
+
   test("keeps Codex image generation calls visible before media exists", () => {
     const line = JSON.stringify({
       timestamp: "2026-06-19T10:00:00.000Z",
@@ -933,6 +969,45 @@ describe("getSessionResponseJson cache", () => {
     );
     expect(s.messages).toEqual([]);
     expect(s.agent).toBe("claude");
+  });
+
+  test("exposes Codex inline image data as compact session media URLs", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "supergit-session-cache-"));
+    const path = join(dir, "session.jsonl");
+    const bytes = Buffer.from("image bytes");
+    const dataUrl = `data:image/png;base64,${bytes.toString("base64")}`;
+    const hash = createHash("sha256").update(dataUrl).digest("hex");
+    await writeFile(
+      path,
+      JSON.stringify({
+        timestamp: "2026-06-19T10:00:00.000Z",
+        type: "response_item",
+        payload: {
+          type: "message",
+          role: "user",
+          content: [{ type: "input_image", image_url: { url: dataUrl } }],
+        },
+      }) + "\n",
+    );
+
+    const body = await getSessionResponseJson("codex", path);
+    expect(body).not.toContain(dataUrl);
+    const session = JSON.parse(body);
+    expect(session.messages[0]?.blocks[0]).toEqual({
+      type: "media",
+      mediaKind: "image",
+      mimeType: "image/png",
+      title: "Image",
+      alt: "Image",
+      url: `/api/session/media?source=${encodeURIComponent(path)}&hash=${hash}`,
+    });
+
+    const media = await readSessionInlineMedia(path, hash);
+    expect(media.status).toBe(200);
+    if (media.status === 200) {
+      expect(media.mimeType).toBe("image/png");
+      expect(Buffer.from(media.bytes).toString("utf-8")).toBe("image bytes");
+    }
   });
 
   test("injects manualTitle into cached JSON without busting the cache", async () => {
