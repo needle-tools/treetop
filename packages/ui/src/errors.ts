@@ -406,6 +406,7 @@ const activeApiFetches = new Map<
     startedAtMs: number;
   }
 >();
+let recentApiFetches: CompletedApiFetch[] = [];
 
 const SLOW_API_MUTATION_MS = 250;
 const SLOW_API_READ_MS = 1_000;
@@ -413,11 +414,26 @@ const LONG_TASK_MS = 250;
 const EVENT_LOOP_STALL_INTERVAL_MS = 1_000;
 const EVENT_LOOP_STALL_THRESHOLD_MS = 2_000;
 const EVENT_LOOP_STALL_COOLDOWN_MS = 10_000;
+const RECENT_API_FETCH_MAX = 40;
+const RECENT_API_FETCH_WINDOW_MS = 2_000;
 
 interface ParsedApiRoute {
   route: string;
   apiPath: string;
   daemonId?: string;
+}
+
+interface CompletedApiFetch {
+  traceId: string;
+  method: string;
+  route: string;
+  apiPath: string;
+  daemonId?: string;
+  startedAtMs: number;
+  completedAtMs: number;
+  fetchMs: number;
+  status?: number;
+  ok?: boolean;
 }
 
 function roundMs(n: number): number {
@@ -569,6 +585,38 @@ function maybeRecordSlowApiFetch(opts: {
   });
 }
 
+function rememberCompletedApiFetch(opts: {
+  traceId: string;
+  parsed: ParsedApiRoute | null;
+  method: string;
+  startedAtMs: number;
+  completedAtMs: number;
+  fetchMs: number;
+  status?: number;
+  ok?: boolean;
+}): void {
+  if (!opts.parsed) return;
+  if (shouldSkipSelfDiagnostic(opts.parsed.route, opts.method)) return;
+  recentApiFetches.push({
+    traceId: opts.traceId,
+    method: opts.method,
+    route: opts.parsed.route,
+    apiPath: opts.parsed.apiPath,
+    daemonId: opts.parsed.daemonId,
+    startedAtMs: opts.startedAtMs,
+    completedAtMs: opts.completedAtMs,
+    fetchMs: opts.fetchMs,
+    status: opts.status,
+    ok: opts.ok,
+  });
+  if (recentApiFetches.length > RECENT_API_FETCH_MAX) {
+    recentApiFetches.splice(
+      0,
+      recentApiFetches.length - RECENT_API_FETCH_MAX,
+    );
+  }
+}
+
 /** Test-only: re-set the install flag so a fresh `installFetchTracking`
  *  can capture a freshly-stubbed `globalThis.fetch` as its underlying
  *  fetch. Not exported for production callers — they should only call
@@ -578,6 +626,7 @@ export function __resetFetchTrackingForTests(): void {
   apiFetchSeq = 0;
   apiFetchesInFlight = 0;
   activeApiFetches.clear();
+  recentApiFetches = [];
 }
 
 export async function __flushErrorPostsForTests(): Promise<void> {
@@ -626,6 +675,16 @@ export function installFetchTracking(): void {
       const completedAtMs = performance.now();
       const fetchMs = completedAtMs - startedAtMs;
       const inFlightAtEnd = apiFetchesInFlight;
+      rememberCompletedApiFetch({
+        traceId,
+        parsed,
+        method,
+        startedAtMs,
+        completedAtMs,
+        fetchMs,
+        status: res.status,
+        ok: res.ok,
+      });
       maybeRecordSlowApiFetch({
         traceId,
         parsed,
@@ -678,6 +737,14 @@ export function installFetchTracking(): void {
       const completedAtMs = performance.now();
       const fetchMs = completedAtMs - startedAtMs;
       const inFlightAtEnd = apiFetchesInFlight;
+      rememberCompletedApiFetch({
+        traceId,
+        parsed,
+        method,
+        startedAtMs,
+        completedAtMs,
+        fetchMs,
+      });
       const msg = err instanceof Error ? err.message : String(err);
       const stack = err instanceof Error ? err.stack : undefined;
       // Skip recording our own /api/errors POST failures (same reason), and
@@ -779,6 +846,27 @@ function activeFetchDiagnostics(nowMs: number): Record<string, unknown>[] {
     }));
 }
 
+function recentApiFetchDiagnostics(nowMs: number): Record<string, unknown>[] {
+  return recentApiFetches
+    .filter((fetch) => {
+      const ageMs = nowMs - fetch.completedAtMs;
+      return ageMs >= 0 && ageMs <= RECENT_API_FETCH_WINDOW_MS;
+    })
+    .sort((a, b) => b.completedAtMs - a.completedAtMs)
+    .slice(0, 12)
+    .map((fetch) => ({
+      traceId: fetch.traceId,
+      method: fetch.method,
+      route: fetch.route,
+      apiPath: fetch.apiPath,
+      daemonId: fetch.daemonId,
+      status: fetch.status,
+      ok: fetch.ok,
+      fetchMs: roundMs(fetch.fetchMs),
+      ageMs: roundMs(nowMs - fetch.completedAtMs),
+    }));
+}
+
 function uiTimingDiagnostics(): Record<string, unknown>[] {
   return Object.entries(uiTimingSnapshot())
     .filter(([, span]) => span.max >= 16 || span.last >= 16)
@@ -791,6 +879,25 @@ function uiTimingDiagnostics(): Record<string, unknown>[] {
       max: roundMs(span.max),
       last: roundMs(span.last),
     }));
+}
+
+function longTaskExtra(entry: PerformanceEntry): Record<string, unknown> {
+  const endedAtMs = entry.startTime + entry.duration;
+  const extra: Record<string, unknown> = {
+    durationMs: roundMs(entry.duration),
+    startTimeMs: roundMs(entry.startTime),
+    name: entry.name,
+    inFlightFetches: apiFetchesInFlight,
+  };
+  const activeFetches = activeFetchDiagnostics(endedAtMs);
+  if (activeFetches.length > 0) extra.activeFetches = activeFetches;
+  const recentApiFetches = recentApiFetchDiagnostics(endedAtMs);
+  if (recentApiFetches.length > 0) extra.recentApiFetches = recentApiFetches;
+  const uiTimings = uiTimingDiagnostics();
+  if (uiTimings.length > 0) extra.uiTimings = uiTimings;
+  const recentUiTimings = recentSlowSamples(12);
+  if (recentUiTimings.length > 0) extra.recentUiTimings = recentUiTimings;
+  return extra;
 }
 
 export function installBrowserResponsivenessTracking(): void {
@@ -817,11 +924,7 @@ export function installBrowserResponsivenessTracking(): void {
         if (entry.duration < LONG_TASK_MS) continue;
         recordBrowserDiagnostic(
           `browser-longtask durationMs=${roundMs(entry.duration)}`,
-          {
-            durationMs: roundMs(entry.duration),
-            startTimeMs: roundMs(entry.startTime),
-            name: entry.name,
-          },
+          longTaskExtra(entry),
         );
       }
     });

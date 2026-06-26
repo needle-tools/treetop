@@ -648,11 +648,70 @@ describe("installBrowserResponsivenessTracking", () => {
     const entry = getErrors()[0];
     expect(entry?.kind).toBe("diagnostic");
     expect(entry?.message).toBe("browser-longtask durationMs=1234");
-    expect(entry?.extra).toEqual({
+    expect(entry?.extra).toMatchObject({
       durationMs: 1234,
       startTimeMs: 55,
       name: "self",
+      inFlightFetches: 0,
     });
+  });
+
+  test("long task diagnostics include nearby completed API fetches", async () => {
+    let now = 100;
+    const savedNow = globalThis.performance.now;
+    Object.defineProperty(globalThis.performance, "now", {
+      configurable: true,
+      value: () => now,
+    });
+    let callback:
+      | ((list: {
+          getEntries: () => Array<{
+            duration: number;
+            startTime: number;
+            name?: string;
+          }>;
+        }) => void)
+      | null = null;
+    class FakePerformanceObserver {
+      static supportedEntryTypes = ["longtask"];
+      constructor(cb: NonNullable<typeof callback>) {
+        callback = cb;
+      }
+      observe() {}
+      disconnect() {}
+    }
+    const savedFetch = globalThis.fetch;
+    (
+      globalThis as typeof globalThis & { PerformanceObserver?: unknown }
+    ).PerformanceObserver = FakePerformanceObserver;
+    globalThis.fetch = (async () => {
+      now = 150;
+      return new Response("{}", { status: 200, statusText: "OK" });
+    }) as typeof fetch;
+
+    try {
+      installFetchTracking();
+      installBrowserResponsivenessTracking();
+      await fetch("/api/sessions/batch", { method: "POST", body: "{}" });
+      callback?.({
+        getEntries: () => [{ duration: 300, startTime: 160, name: "self" }],
+      });
+
+      expect(getErrors()[0]?.extra?.recentApiFetches).toMatchObject([
+        {
+          method: "POST",
+          apiPath: "/api/sessions/batch",
+          status: 200,
+          fetchMs: 50,
+        },
+      ]);
+    } finally {
+      globalThis.fetch = savedFetch;
+      Object.defineProperty(globalThis.performance, "now", {
+        configurable: true,
+        value: savedNow,
+      });
+    }
   });
 
   test("builds event-loop stall diagnostics with cooldown gating", () => {
