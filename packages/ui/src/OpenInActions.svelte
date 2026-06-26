@@ -984,8 +984,9 @@
       >
         <span class="add-link-glyph" aria-hidden="true">+</span>
       </button>
-      <div class="custom-link-popover-mount" class:hidden={!addOpen}>
-        <Popover variant="agents" extraClass="custom-link-popover">
+      {#if addOpen}
+        <div class="custom-link-popover-mount">
+          <Popover variant="agents" extraClass="custom-link-popover">
           <div
             class="custom-link-form"
             on:keydown={onAddPopoverKeydown}
@@ -1306,8 +1307,9 @@
               >
             </div>
           </div>
-        </Popover>
-      </div>
+          </Popover>
+        </div>
+      {/if}
     </span>
   {/if}
   {#each displayLinks as link (link.id)}
@@ -2318,9 +2320,6 @@
     max-width: 40ch;
     white-space: normal;
     text-align: left;
-  }
-  .custom-link-popover-mount.hidden {
-    display: none;
   }
   .custom-link-suggest-wrap {
     position: relative;
