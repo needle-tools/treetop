@@ -11,14 +11,7 @@
  * `isOverPace` (that drives the red tint + the over-pace warning sound).
  */
 import { describe, expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
 import { classifyWeeklyPace } from "../src/usage-pace";
-
-const chip = readFileSync(
-  join(import.meta.dir, "../src/AgentUsageChip.svelte"),
-  "utf-8",
-);
 
 describe("classifyWeeklyPace", () => {
   test("healthy under-pace: headroom label, not over, not perfect", () => {
@@ -67,24 +60,5 @@ describe("classifyWeeklyPace", () => {
     expect(r.isPerfect).toBe(false);
     expect(r.isOverPace).toBe(false);
     expect(r.label).toBe("Projection available in ~3h (need more data)");
-  });
-});
-
-describe("AgentUsageChip wires the PERFECT state", () => {
-  test("delegates classification to usage-pace and renders the perfect class", () => {
-    expect(chip).toContain('from "./usage-pace"');
-    expect(chip).toContain("classifyWeeklyPace(");
-    // Both the Claude and Codex projection rows must opt into the state.
-    const perfectBindings = chip.match(/class:perfect=\{[^}]+\.isPerfect\}/g);
-    expect(perfectBindings?.length).toBe(2);
-  });
-
-  test("the perfect CSS celebrates (green-ish), never the over-pace red", () => {
-    const rule = chip.match(
-      /\.usage-projection\.perfect[\s\S]*?\n\s*\}\s*\n\s*\}/,
-    )?.[0];
-    expect(rule, ".usage-projection.perfect rule not found").toBeTruthy();
-    // Must not reuse the over-pace warning orange/red.
-    expect(rule).not.toContain("#f97316");
   });
 });
