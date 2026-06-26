@@ -11,7 +11,6 @@
 
 import { createHash } from "node:crypto";
 import { readFile, stat, open } from "node:fs/promises";
-import sharp from "sharp";
 import type { AgentKind } from "./agents";
 
 export type NormalizedRole = "user" | "assistant" | "system" | "tool";
@@ -406,7 +405,13 @@ export async function readSessionInlineMedia(
     const decoded = decodeDataUrl(dataUrl);
     if (!decoded) return { status: 400, error: "invalid data URL" };
     if (options.maxSide !== undefined) {
-      return await resizeInlineMedia(decoded, options.maxSide);
+      const maxSide = Math.floor(options.maxSide);
+      if (!Number.isFinite(maxSide) || maxSide <= 0) {
+        return { status: 400, error: "?max must be a positive number" };
+      }
+      if (!decoded.mimeType.toLowerCase().startsWith("image/")) {
+        return { status: 400, error: "?max is only supported for images" };
+      }
     }
     return { status: 200, ...decoded };
   };
@@ -428,44 +433,6 @@ export async function readSessionInlineMedia(
     return { status: 404, error: "session not found" };
   }
   return { status: 404, error: "media not found" };
-}
-
-async function resizeInlineMedia(
-  media: { bytes: Uint8Array; mimeType: string },
-  maxSide: number,
-): Promise<SessionInlineMediaResult> {
-  if (!Number.isFinite(maxSide) || maxSide <= 0) {
-    return { status: 400, error: "?max must be a positive number" };
-  }
-  const roundedMax = Math.floor(maxSide);
-  if (roundedMax <= 0)
-    return { status: 400, error: "?max must be a positive number" };
-  if (!media.mimeType.toLowerCase().startsWith("image/")) {
-    return { status: 400, error: "?max is only supported for images" };
-  }
-  try {
-    const image = sharp(media.bytes, { animated: false });
-    const meta = await image.metadata();
-    const width = meta.width ?? 0;
-    const height = meta.height ?? 0;
-    if (width <= 0 || height <= 0) {
-      return { status: 500, error: "failed to read image dimensions" };
-    }
-    if (Math.max(width, height) <= roundedMax) {
-      return { status: 200, ...media };
-    }
-    const bytes = await image
-      .resize({
-        width: roundedMax,
-        height: roundedMax,
-        fit: "inside",
-        withoutEnlargement: true,
-      })
-      .toBuffer();
-    return { status: 200, bytes, mimeType: media.mimeType };
-  } catch {
-    return { status: 500, error: "failed to resize inline media" };
-  }
 }
 
 /** Process a single JSONL line into `out`. Returns void; mutates `out`
@@ -1552,11 +1519,12 @@ async function getSessionResponseData(
   const st = await stat(path).catch(() => null);
   if (!st) {
     const session = emptySession(agent);
-    const body = injectManualTitle(
-      JSON.stringify(session),
-      manualTitle,
-    );
-    return { body, etag: `"0-0"`, session: withManualTitle(session, manualTitle) };
+    const body = injectManualTitle(JSON.stringify(session), manualTitle);
+    return {
+      body,
+      etag: `"0-0"`,
+      session: withManualTitle(session, manualTitle),
+    };
   }
   const etag = `"${st.mtimeMs}-${st.size}"`;
 
@@ -1808,11 +1776,7 @@ export async function getSessionsBatchResults(
           body,
           etag: full,
           session,
-        } = await getSessionResponseData(
-          agent,
-          source,
-          getTitle(source),
-        );
+        } = await getSessionResponseData(agent, source, getTitle(source));
         if (etag && etag === full) return { source, status: 304, etag: full };
         const hashes = messageHashes(session.messages);
         if (etag) {

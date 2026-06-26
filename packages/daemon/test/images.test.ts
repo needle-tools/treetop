@@ -2,7 +2,6 @@ import { test, expect, describe } from "bun:test";
 import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import sharp from "sharp";
 import { serveImage } from "../src/images";
 
 // Minimal PNG header (8 bytes) — enough that Bun.file.exists() is true
@@ -74,28 +73,17 @@ describe("serveImage", () => {
     }
   });
 
-  test("resizes an existing image when maxSide is requested", async () => {
-    const dir = await mkdtemp(join(tmpdir(), "supergit-img-"));
-    const path = join(dir, "large.png");
-    await sharp({
-      create: {
-        width: 1024,
-        height: 512,
-        channels: 4,
-        background: { r: 20, g: 40, b: 60, alpha: 1 },
-      },
-    })
-      .png()
-      .toFile(path);
-
+  test("validates maxSide and serves the original image file", async () => {
+    const path = await writeTempPng();
     const r = await serveImage(path, { maxSide: 128 });
     expect(r.status).toBe(200);
     if (r.status === 200) {
-      expect(r.bytes).toBeDefined();
-      const meta = await sharp(r.bytes).metadata();
-      expect(Math.max(meta.width ?? 0, meta.height ?? 0)).toBeLessThanOrEqual(
-        128,
-      );
+      expect(r.file.size).toBe(PNG_HEADER.byteLength);
     }
+  });
+
+  test("400 when maxSide is not positive", async () => {
+    const path = await writeTempPng();
+    expect((await serveImage(path, { maxSide: 0 })).status).toBe(400);
   });
 });
