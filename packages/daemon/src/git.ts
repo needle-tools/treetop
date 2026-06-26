@@ -971,27 +971,16 @@ export async function getWorktreeDetails(
   options: { remote?: string | null } = {},
 ): Promise<WorktreeDetails> {
   try {
-    // Speculative third call: oldest local commit not on upstream. Errors
-    // when there's no upstream — caught into "" and discarded. Running
-    // it in parallel with status keeps the happy path one round-trip.
-    const [statusOut, logOut, aheadOldestOut, shortstatOut] = await Promise.all(
-      [
-        $`git -C ${worktreePath} status --porcelain=v2 --branch`.quiet().text(),
-        $`git -C ${worktreePath} log -1 --format=%H%x00%s%x00%an%x00%aI`
-          .quiet()
-          .text()
-          .catch(() => ""),
-        $`git -C ${worktreePath} log @{u}..HEAD --reverse --format=%cI`
-          .quiet()
-          .text()
-          .catch(() => ""),
-        $`git -C ${worktreePath} diff --shortstat HEAD`
-          .quiet()
-          .text()
-          .catch(() => ""),
-      ],
-    );
+    const [statusOut, logOut] = await Promise.all([
+      $`git -C ${worktreePath} status --porcelain=v2 --branch`.quiet().text(),
+      $`git -C ${worktreePath} log -1 --format=%H%x00%s%x00%an%x00%aI`
+        .quiet()
+        .text()
+        .catch(() => ""),
+    ]);
     let branchStatus = parseBranchStatus(statusOut);
+    const fileStatus = parseFileStatus(statusOut);
+
     if (branchStatus && options.remote) {
       const selectedStatus = await getSelectedRemoteBranchStatus(
         worktreePath,
@@ -1004,7 +993,15 @@ export async function getWorktreeDetails(
         branchStatus = selectedStatus ?? branchStatus;
       }
     }
-    if (branchStatus && branchStatus.ahead > 0) {
+    if (
+      branchStatus &&
+      branchStatus.ahead > 0 &&
+      branchStatus.aheadOldestTime === null
+    ) {
+      const aheadOldestOut = await $`git -C ${worktreePath} log @{u}..HEAD --reverse --format=%cI`
+        .quiet()
+        .text()
+        .catch(() => "");
       const oldest = aheadOldestOut.split("\n")[0]?.trim() ?? "";
       if (oldest.length > 0) branchStatus.aheadOldestTime = oldest;
     }
@@ -1022,8 +1019,13 @@ export async function getWorktreeDetails(
       const n = Number.parseInt(countOut.trim(), 10);
       if (!Number.isNaN(n)) branchStatus.unpushed = n;
     }
-    const fileStatus = parseFileStatus(statusOut);
-    fileStatus.dirtyLines = parseShortstatLines(shortstatOut);
+    if (fileStatus.staged > 0 || fileStatus.unstaged > 0) {
+      const shortstatOut = await $`git -C ${worktreePath} diff --shortstat HEAD`
+        .quiet()
+        .text()
+        .catch(() => "");
+      fileStatus.dirtyLines = parseShortstatLines(shortstatOut);
+    }
     return {
       fileStatus,
       branchStatus,

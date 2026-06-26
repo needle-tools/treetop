@@ -228,6 +228,27 @@ describe("getWorktreeDetails against real git", () => {
     expect(details.fileStatus.staged).toBe(0);
   });
 
+  test("counts dirty lines for tracked changes", async () => {
+    const repo = await tempRepo();
+    await writeFile(join(repo, "tracked.txt"), "v1\n");
+    await $`git -C ${repo} add tracked.txt`.quiet();
+    await $`git -C ${repo} commit -m add -q`.quiet();
+    await writeFile(join(repo, "tracked.txt"), "v1\nv2\nv3\n");
+
+    const details = await getWorktreeDetails(repo);
+    expect(details.fileStatus.unstaged).toBe(1);
+    expect(details.fileStatus.dirtyLines).toBe(2);
+  });
+
+  test("leaves dirty lines at zero for untracked-only changes", async () => {
+    const repo = await tempRepo();
+    await writeFile(join(repo, "new.txt"), "v1\nv2\n");
+
+    const details = await getWorktreeDetails(repo);
+    expect(details.fileStatus.untracked).toBe(1);
+    expect(details.fileStatus.dirtyLines).toBe(0);
+  });
+
   // aheadOldestTime drives the "stale unpushed" pill in the UI. The
   // contract: when ahead > 0 and an upstream exists, it's the ISO
   // timestamp of the *oldest* local commit not on upstream (so the UI

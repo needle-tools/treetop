@@ -1823,11 +1823,13 @@ function reposNDJSONFresh(
           // instead of git + agents.
           const tAgentsStart = performance.now();
           let titledAgentCount = 0;
+          let agentDetectMs = 0;
           const titledP = Promise.all([
             sharedDetectAgents(),
             workspace.listSessionTitles(),
           ]).then(([agents, titles]) => {
             const agentsMs = performance.now() - tAgentsStart;
+            agentDetectMs = agentsMs;
             titledAgentCount = agents.length;
             if (agentsMs > 200) {
               console.log(
@@ -1909,8 +1911,6 @@ function reposNDJSONFresh(
               safeEnqueue(enc.encode(repoLineFor(result)));
             }),
           );
-          const agentsMs = performance.now() - tAgentsStart;
-
           // Stable ordering for the cached array so cache-hit replays
           // match the workspace.listRepos() order. The streaming path
           // already flushed in completion-order, which is fine.
@@ -1935,7 +1935,7 @@ function reposNDJSONFresh(
           const slowestWt = perWorktreeMs.sort((a, b) => b.ms - a.ms)[0];
           console.log(
             `supergit daemon: /api/repos total=${totalMs.toFixed(0)}ms ` +
-              `prelude=${tManifest.toFixed(0)}ms agents=${agentsMs.toFixed(0)}ms(${titledAgentCount}) ` +
+              `prelude=${tManifest.toFixed(0)}ms agents=${agentDetectMs.toFixed(0)}ms(${titledAgentCount}) ` +
               `enrich=${enrichMs.toFixed(0)}ms repos=${repos.length}` +
               (slowestRepo
                 ? ` slowestRepo=${slowestRepo[0]}:${slowestRepo[1].toFixed(0)}ms`

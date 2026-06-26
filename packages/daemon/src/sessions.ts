@@ -373,21 +373,47 @@ export async function readSessionInlineMedia(
   if (typeof hash !== "string" || !/^[a-f0-9]{64}$/i.test(hash)) {
     return { status: 400, error: "?hash required" };
   }
-  const text = await readFile(source, "utf-8").catch(() => null);
-  if (text === null) return { status: 404, error: "session not found" };
-  for (const line of text.split("\n")) {
-    if (!line) continue;
+
+  let stream: ReadableStream<Uint8Array>;
+  try {
+    stream = Bun.file(source).stream();
+  } catch {
+    return { status: 404, error: "session not found" };
+  }
+
+  const decoder = new TextDecoder();
+  let leftover = "";
+
+  const scanLine = (line: string): SessionInlineMediaResult | null => {
+    if (!line || !line.includes("data:")) return null;
     let obj: unknown;
     try {
       obj = JSON.parse(line);
     } catch {
-      continue;
+      return null;
     }
     const dataUrl = findInlineDataUrlByHash(obj, hash);
-    if (!dataUrl) continue;
+    if (!dataUrl) return null;
     const decoded = decodeDataUrl(dataUrl);
     if (!decoded) return { status: 400, error: "invalid data URL" };
     return { status: 200, ...decoded };
+  };
+
+  try {
+    for await (const chunk of stream) {
+      const text = leftover + decoder.decode(chunk, { stream: true });
+      const lines = text.split("\n");
+      leftover = lines.pop() ?? "";
+      for (const line of lines) {
+        const found = scanLine(line);
+        if (found) return found;
+      }
+    }
+    const tail = leftover + decoder.decode();
+    const found = scanLine(tail);
+    if (found) return found;
+  } catch {
+    return { status: 404, error: "session not found" };
   }
   return { status: 404, error: "media not found" };
 }
