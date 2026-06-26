@@ -78,7 +78,10 @@ interface StripSnapshot {
   perStrip: { strip: HTMLElement; panels: Panel[] }[];
 }
 
-type MutationLike = Pick<MutationRecord, "target" | "addedNodes" | "removedNodes">;
+type MutationLike = Pick<
+  MutationRecord,
+  "target" | "addedNodes" | "removedNodes" | "type" | "attributeName"
+>;
 
 function nodeMatches(node: unknown, selector: string): boolean {
   const maybeElement = node as Element | null | undefined;
@@ -104,6 +107,13 @@ function nodeListContainsStrip(nodes: ArrayLike<unknown>): boolean {
 export function mutationsAffectVinesLayout(records: MutationLike[]): boolean {
   for (const record of records) {
     if (nodeMatches(record.target, STRIP_SELECTOR)) return true;
+    if (
+      record.type === "attributes" &&
+      record.attributeName === "class" &&
+      nodeContainsStrip(record.target)
+    ) {
+      return true;
+    }
     if (nodeListContainsStrip(record.addedNodes)) return true;
     if (nodeListContainsStrip(record.removedNodes)) return true;
   }
@@ -178,6 +188,7 @@ export function createVinesOverlay(): { destroy: () => void } {
   let store: SourceAges = load();
   const strips = new Map<HTMLElement, StripState>();
   const panelCache = new Map<HTMLElement, Panel[]>();
+  const sourceCache = new Map<HTMLElement, string[]>();
   const seeded = new Set<string>();
   let lastTick = Date.now();
   let lastSave = Date.now();
@@ -187,6 +198,19 @@ export function createVinesOverlay(): { destroy: () => void } {
   document.body.appendChild(defs);
 
   // ── measure one strip's columns in STRIP-LOCAL content coordinates ───
+  function sourcesForStrip(strip: HTMLElement): string[] {
+    const sources: string[] = [];
+    for (const col of strip.querySelectorAll<HTMLElement>(COL_SELECTOR)) {
+      const source = col.dataset.sessionSource;
+      if (source) sources.push(source);
+    }
+    return sources;
+  }
+
+  function stripNearViewport(strip: HTMLElement): boolean {
+    return !strip.closest(".row-offscreen");
+  }
+
   function panelsForStrip(strip: HTMLElement): Panel[] {
     const sr = strip.getBoundingClientRect();
     const out: Panel[] = [];
@@ -237,14 +261,23 @@ export function createVinesOverlay(): { destroy: () => void } {
     const perStrip: { strip: HTMLElement; panels: Panel[] }[] = [];
 
     for (const strip of document.querySelectorAll<HTMLElement>(STRIP_SELECTOR)) {
+      const sources = sourcesForStrip(strip);
+      sourceCache.set(strip, sources);
+      for (const source of sources) presentSources.push(source);
+      if (!stripNearViewport(strip)) {
+        panelCache.delete(strip);
+        continue;
+      }
       const panels = panelsForStrip(strip);
       liveStrips.add(strip);
       panelCache.set(strip, panels);
       perStrip.push({ strip, panels });
-      for (const p of panels) presentSources.push(p.source);
     }
     for (const strip of [...panelCache.keys()]) {
       if (!liveStrips.has(strip)) panelCache.delete(strip);
+    }
+    for (const strip of [...sourceCache.keys()]) {
+      if (!strip.isConnected) sourceCache.delete(strip);
     }
     return { liveStrips, presentSources, perStrip };
   }
@@ -254,6 +287,15 @@ export function createVinesOverlay(): { destroy: () => void } {
     const presentSources: string[] = [];
     const perStrip: { strip: HTMLElement; panels: Panel[] }[] = [];
 
+    for (const [strip, sources] of sourceCache) {
+      if (!strip.isConnected) {
+        sourceCache.delete(strip);
+        panelCache.delete(strip);
+        continue;
+      }
+      for (const source of sources) presentSources.push(source);
+    }
+
     for (const [strip, panels] of panelCache) {
       if (!strip.isConnected) {
         panelCache.delete(strip);
@@ -261,7 +303,6 @@ export function createVinesOverlay(): { destroy: () => void } {
       }
       liveStrips.add(strip);
       perStrip.push({ strip, panels });
-      for (const p of panels) presentSources.push(p.source);
     }
     return { liveStrips, presentSources, perStrip };
   }
@@ -396,8 +437,14 @@ export function createVinesOverlay(): { destroy: () => void } {
   const mo = new MutationObserver((records) => {
     if (mutationsAffectVinesLayout(records)) queueSync();
   });
-  mo.observe(document.body, { childList: true, subtree: true });
+  mo.observe(document.body, {
+    childList: true,
+    subtree: true,
+    attributes: true,
+    attributeFilter: ["class"],
+  });
   window.addEventListener("resize", queueSync, { passive: true });
+  window.addEventListener("scroll", queueSync, { passive: true });
   // Persist on every exit path so startup restores the exact last size
   // (vines snap to their saved size immediately — no grow-in animation).
   const onHide = () => save(store);
@@ -418,6 +465,7 @@ export function createVinesOverlay(): { destroy: () => void } {
       ro.disconnect();
       mo.disconnect();
       window.removeEventListener("resize", queueSync as EventListener);
+      window.removeEventListener("scroll", queueSync as EventListener);
       window.removeEventListener("pagehide", onHide);
       window.removeEventListener("beforeunload", onHide);
       document.removeEventListener("visibilitychange", onVisibility);

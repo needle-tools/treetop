@@ -203,6 +203,10 @@ describe("mutationsAffectVinesLayout", () => {
     matches: () => false,
     querySelector: (sel: string) => (sel === ".sessions-strip" ? strip : null),
   };
+  const rowWithStrip = {
+    matches: (sel: string) => sel === ".row",
+    querySelector: (sel: string) => (sel === ".sessions-strip" ? strip : null),
+  };
 
   test("resyncs when a sessions strip itself changes children", () => {
     expect(
@@ -214,6 +218,20 @@ describe("mutationsAffectVinesLayout", () => {
     expect(
       mutationsAffectVinesLayout([
         { target: sessionBody, addedNodes: [rowAddedWithStrip], removedNodes: [] },
+      ]),
+    ).toBe(true);
+  });
+
+  test("resyncs when row visibility classes change around a sessions strip", () => {
+    expect(
+      mutationsAffectVinesLayout([
+        {
+          type: "attributes",
+          attributeName: "class",
+          target: rowWithStrip,
+          addedNodes: [],
+          removedNodes: [],
+        },
       ]),
     ).toBe(true);
   });
