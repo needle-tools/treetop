@@ -3503,8 +3503,8 @@
     // First-time unfold of a row that started folded at page load:
     // any session columns inside it mounted with `display: none`, so
     // their initial scroll-to-bottom ran against `clientHeight = 0`
-    // and parked at the top. Force-stick each .messages to its
-    // scrollHeight now that the row has real layout. Subsequent
+    // and parked at the top. Force-stick each .messages to the bottom
+    // now that the row has real layout. Subsequent
     // toggles see rowHasBeenShown = true and leave scroll alone.
     if (wasFolded && wtPath && !rowHasBeenShown[rowKey]) {
       rowHasBeenShown = { ...rowHasBeenShown, [rowKey]: true };
@@ -3745,8 +3745,8 @@
    *  SessionView's first-render scroll-to-bottom runs with
    *  `clientHeight = 0` when the row is `display:none` at the time
    *  the column mounts, so the list stays parked at scrollTop=0. Once
-   *  the row has real layout we force scrollTop = scrollHeight, but
-   *  async markdown rendering keeps growing scrollHeight for a few
+   *  the row has real layout we force a bottom scroll, but async
+   *  markdown rendering keeps growing the content for a few
    *  hundred ms — so we also observe each .msg child and re-stick on
    *  every resize, then disconnect after 1.5s so we don't fight the
    *  user once they start scrolling manually. ResizeObserver on
@@ -3754,15 +3754,25 @@
    *  max-height: 50vh); the children are where the height changes
    *  actually land. */
   function stickMessagesToBottom(messages: HTMLElement): void {
+    let raf = 0;
     const stick = () => {
-      messages.scrollTop = messages.scrollHeight;
+      if (raf) return;
+      raf = requestAnimationFrame(() => {
+        raf = 0;
+        // Let the browser clamp. Reading scrollHeight here forced layout,
+        // and doing that inside ResizeObserver can trip RO loop warnings.
+        messages.scrollTop = 1_000_000_000;
+      });
     };
     stick();
     const ro = new ResizeObserver(stick);
     for (const child of Array.from(messages.children)) {
       ro.observe(child as Element);
     }
-    setTimeout(() => ro.disconnect(), 1500);
+    setTimeout(() => {
+      if (raf) cancelAnimationFrame(raf);
+      ro.disconnect();
+    }, 1500);
   }
   /** First-unfold-after-load path: scroll every session column in
    *  this worktree's strip to the bottom. Used by `toggleRowFolded`
