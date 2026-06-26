@@ -2181,6 +2181,8 @@
   .md :global(.md-code-frame) {
     margin: 0.65em 0;
     overflow: hidden;
+    content-visibility: auto;
+    contain-intrinsic-size: auto 8rem;
     border: 1px solid color-mix(in srgb, var(--surface-3) 72%, transparent);
     border-radius: 0.7rem;
     background: color-mix(in srgb, var(--surface-2) 86%, transparent);
