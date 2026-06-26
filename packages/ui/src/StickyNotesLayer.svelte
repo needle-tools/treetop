@@ -141,7 +141,7 @@
   import {
     anchorRowFor,
     buildAnchorRowMap,
-    mutationsAllInsideTerminal,
+    mutationsAffectStickyNoteLayout,
   } from "./sticky-notes-dom";
   import { getDaemonKV } from "./daemon-kv";
   import { relativeAge } from "./mention-providers";
@@ -291,6 +291,10 @@
   /** Bumped by scroll/resize/MutationObserver to force a re-derive of
    *  every note's screen position from its anchor row's current rect. */
   let tick = 0;
+  /** Row margin work is much heavier than position recompute. Keep it
+   *  dirty-driven so animation ticks can move notes without remeasuring
+   *  every sticky and anchor row. */
+  let rowMarginsDirty = true;
 
   const OFFSETS_KEY = "supergit:notes-offsets";
   const Z_KEY = "supergit:notes-zorder";
@@ -929,6 +933,13 @@
    *  move the note, and the row's-bottom anchor wouldn't follow when
    *  the page scrolled. */
   let positionsByNoteId: Record<string, { x: number; y: number } | null> = {};
+  $: {
+    void notes;
+    void offsets;
+    void staging;
+    void flyingNotes;
+    rowMarginsDirty = true;
+  }
   $: {
     // Touch every reactive dep so the Svelte compiler binds this
     // statement to all three.
@@ -2598,6 +2609,10 @@
       tick++;
     });
   }
+  function scheduleLayoutTick(): void {
+    rowMarginsDirty = true;
+    scheduleTick();
+  }
 
   let mutationObs: MutationObserver | null = null;
   let resizeObs: ResizeObserver | null = null;
@@ -2626,9 +2641,9 @@
    *  compact and adds the spacer *outside* the box — so the note's
    *  tape tucks under the row's visible bottom edge.
    *
-   *  Called from afterUpdate (every reactive render) and from the
-   *  per-note ResizeObserver (typing in edit mode resizes the note's
-   *  textarea, which we'd otherwise miss). */
+   *  Called after updates that actually changed note/row geometry and
+   *  from the per-note ResizeObserver (typing in edit mode resizes the
+   *  note's textarea, which we'd otherwise miss). */
   function applyRowMargins(): void {
     if (!layerEl) return;
     const need = new Map<HTMLElement, number>();
@@ -2780,6 +2795,8 @@
   }
 
   afterUpdate(() => {
+    if (!rowMarginsDirty) return;
+    rowMarginsDirty = false;
     applyRowMargins();
   });
 
@@ -2810,7 +2827,7 @@
     // flow and scroll natively on the compositor without any JS
     // bookkeeping. Resize still needs a tick because the row positions
     // relative to the document change when the viewport resizes.
-    window.addEventListener("resize", scheduleTick);
+    window.addEventListener("resize", scheduleLayoutTick);
     window.addEventListener("pointermove", onWindowPointerMove);
     window.addEventListener("mousemove", onWindowMouseMove);
     window.addEventListener("dragover", onWindowDragOver);
@@ -2825,15 +2842,12 @@
     // `style` from the attribute filter so our own padding-bottom
     // writes on `<li>` don't loop back through the observer.
     //
-    // Batches that are entirely terminal-internal are dropped before
-    // they schedule a tick: xterm's DOM renderer rewrites row
-    // <span>/#text nodes on every keystroke / output chunk, and
-    // `.xterm-host` is `contain: layout`, so none of that can move a
-    // worktree row. Without the filter, any visible streaming TUI
-    // forced a full reposition pass per frame — the 1806ms-of-
-    // querySelector hot path in the 2026-06-09 typing trace.
+    // Drop mutations that cannot move note anchors before scheduling
+    // a full reposition pass: xterm's contained DOM churn, plus
+    // scroll-driven row/column visibility classes used only to pause
+    // offscreen animations. Fold/hide/data/child changes still tick.
     mutationObs = new MutationObserver((records) => {
-      if (!mutationsAllInsideTerminal(records)) scheduleTick();
+      if (mutationsAffectStickyNoteLayout(records)) scheduleLayoutTick();
     });
     const main = document.querySelector("main");
     if (main) {
@@ -2841,28 +2855,29 @@
         childList: true,
         subtree: true,
         attributes: true,
+        attributeOldValue: true,
         attributeFilter: ["class", "data-wt-row"],
       });
     }
     // ResizeObserver on <main> covers viewport-resizing the dashboard
     // (sidebar collapse, devtools open) where children shift without
     // attribute changes.
-    resizeObs = new ResizeObserver(scheduleTick);
+    resizeObs = new ResizeObserver(scheduleLayoutTick);
     if (main) resizeObs.observe(main);
 
     // Per-note ResizeObserver: fires when a note's textarea grows /
     // shrinks under edits. The afterUpdate pass owns the actual
     // padding write, so this just kicks the tick.
-    noteResizeObs = new ResizeObserver(scheduleTick);
+    noteResizeObs = new ResizeObserver(scheduleLayoutTick);
 
     // Initial tick so notes draw on first paint after the row list mounts.
-    scheduleTick();
+    scheduleLayoutTick();
   });
 
   onDestroy(() => {
     _unregisterLayer();
     _unregisterFlyRestore();
-    window.removeEventListener("resize", scheduleTick);
+    window.removeEventListener("resize", scheduleLayoutTick);
     window.removeEventListener("pointermove", onWindowPointerMove);
     window.removeEventListener("mousemove", onWindowMouseMove);
     window.removeEventListener("dragover", onWindowDragOver);

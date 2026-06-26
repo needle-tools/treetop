@@ -29,6 +29,7 @@ import {
   VISIBLE_ROW_SELECTOR,
   anchorRowFor,
   buildAnchorRowMap,
+  mutationsAffectStickyNoteLayout,
   mutationsAllInsideTerminal,
 } from "../src/sticky-notes-dom";
 
@@ -120,6 +121,79 @@ describe("mutationsAllInsideTerminal", () => {
   });
 });
 
+describe("mutationsAffectStickyNoteLayout", () => {
+  function target(className: string, matchesSelector: (sel: string) => boolean) {
+    return {
+      className,
+      getAttribute: (name: string) => (name === "class" ? className : null),
+      matches: matchesSelector,
+      closest: () => null,
+    };
+  }
+
+  const row = (className: string) =>
+    target(className, (sel) => sel === "[data-wt-row]");
+  const col = (className: string) =>
+    target(className, (sel) => sel === ".session-col");
+
+  test("ignores row/column visibility and flash classes that do not move note anchors", () => {
+    expect(
+      mutationsAffectStickyNoteLayout([
+        {
+          type: "attributes",
+          attributeName: "class",
+          oldValue: "row",
+          target: row("row row-offscreen"),
+        },
+        {
+          type: "attributes",
+          attributeName: "class",
+          oldValue: "session-col",
+          target: col("session-col col-offscreen session-col-flash"),
+        },
+      ]),
+    ).toBe(false);
+  });
+
+  test("keeps scheduling for note-layout row classes and structural mutations", () => {
+    expect(
+      mutationsAffectStickyNoteLayout([
+        {
+          type: "attributes",
+          attributeName: "class",
+          oldValue: "row",
+          target: row("row row-folded"),
+        },
+      ]),
+    ).toBe(true);
+    expect(
+      mutationsAffectStickyNoteLayout([
+        {
+          type: "attributes",
+          attributeName: "data-wt-row",
+          oldValue: "/old",
+          target: row("row"),
+        },
+      ]),
+    ).toBe(true);
+    expect(
+      mutationsAffectStickyNoteLayout([{ type: "childList", target: row("row") }]),
+    ).toBe(true);
+  });
+
+  test("falls back to scheduling when class oldValue is unavailable", () => {
+    expect(
+      mutationsAffectStickyNoteLayout([
+        {
+          type: "attributes",
+          attributeName: "class",
+          target: row("row row-offscreen"),
+        },
+      ]),
+    ).toBe(true);
+  });
+});
+
 describe("StickyNotesLayer wiring", () => {
   const SOURCE = readFileSync(
     join(import.meta.dir, "../src/StickyNotesLayer.svelte"),
@@ -131,7 +205,9 @@ describe("StickyNotesLayer wiring", () => {
     expect(start, "MutationObserver not found").toBeGreaterThan(-1);
     const end = SOURCE.indexOf("resizeObs = new ResizeObserver", start);
     expect(end, "ResizeObserver after MutationObserver").toBeGreaterThan(start);
-    expect(SOURCE.slice(start, end)).toContain("mutationsAllInsideTerminal");
+    expect(SOURCE.slice(start, end)).toContain(
+      "mutationsAffectStickyNoteLayout",
+    );
   });
 
   /** Slice a function body by its declaration and a known following

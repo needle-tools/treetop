@@ -62,6 +62,9 @@ export function anchorRowFor<T>(
  *  text nodes reach their element via parentElement. */
 export interface MutationTargetLike {
   closest?(selector: string): unknown;
+  matches?(selector: string): boolean;
+  getAttribute?(name: string): string | null;
+  className?: unknown;
   parentElement?: MutationTargetLike | null;
 }
 
@@ -81,4 +84,79 @@ export function mutationsAllInsideTerminal(
     }
   }
   return true;
+}
+
+type MutationRecordLike = {
+  type?: string;
+  attributeName?: string | null;
+  oldValue?: string | null;
+  target: MutationTargetLike | null;
+};
+
+const ROW_NON_LAYOUT_CLASSES = new Set(["row-offscreen"]);
+const COL_NON_LAYOUT_CLASSES = new Set([
+  "col-offscreen",
+  "session-col-flash",
+]);
+
+function classTokens(value: string): Set<string> {
+  return new Set(value.split(/\s+/).filter(Boolean));
+}
+
+function currentClassName(target: MutationTargetLike): string | null {
+  if (typeof target.getAttribute === "function") {
+    return target.getAttribute("class") ?? "";
+  }
+  return typeof target.className === "string" ? target.className : null;
+}
+
+function changedClassTokens(oldValue: string, newValue: string): Set<string> {
+  const oldTokens = classTokens(oldValue);
+  const newTokens = classTokens(newValue);
+  const changed = new Set<string>();
+  for (const token of oldTokens) {
+    if (!newTokens.has(token)) changed.add(token);
+  }
+  for (const token of newTokens) {
+    if (!oldTokens.has(token)) changed.add(token);
+  }
+  return changed;
+}
+
+function isNonLayoutVisibilityClassMutation(record: MutationRecordLike): boolean {
+  if (record.type !== "attributes" || record.attributeName !== "class") {
+    return false;
+  }
+  const target = record.target;
+  if (!target || typeof target.matches !== "function") return false;
+  if (typeof record.oldValue !== "string") return false;
+  const current = currentClassName(target);
+  if (current === null) return false;
+  const changed = changedClassTokens(record.oldValue, current);
+  if (changed.size === 0) return true;
+  const allowed = target.matches("[data-wt-row]")
+    ? ROW_NON_LAYOUT_CLASSES
+    : target.matches(".session-col")
+      ? COL_NON_LAYOUT_CLASSES
+      : null;
+  if (!allowed) return false;
+  for (const token of changed) {
+    if (!allowed.has(token)) return false;
+  }
+  return true;
+}
+
+/** True when a MutationObserver batch can change sticky-note anchor
+ *  geometry. Drops known decorative visibility/flash class churn before
+ *  it schedules a full note reposition pass; keeps the safe default for
+ *  anything structural or unrecognized. */
+export function mutationsAffectStickyNoteLayout(
+  records: readonly MutationRecordLike[],
+): boolean {
+  if (records.length === 0) return true;
+  if (mutationsAllInsideTerminal(records)) return false;
+  for (const record of records) {
+    if (!isNonLayoutVisibilityClassMutation(record)) return true;
+  }
+  return false;
 }
