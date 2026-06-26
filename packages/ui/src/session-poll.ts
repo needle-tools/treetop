@@ -64,6 +64,11 @@ interface RegState {
   lastInflightKey?: string;
 }
 
+interface CachedSessionBody {
+  etag: string | null;
+  body: string;
+}
+
 export interface SessionPollerDeps {
   fetchImpl: typeof fetch;
   isIdle: () => boolean;
@@ -77,8 +82,19 @@ export interface SessionPoller {
   size: () => number;
 }
 
+const MAX_SESSION_CACHE_CHARS = 32 * 1024 * 1024;
+
+function sessionCacheKey(
+  daemonId: string | undefined,
+  source: string,
+): string {
+  return `${daemonId ?? ""}\0${source}`;
+}
+
 export function createSessionPoller(deps: SessionPollerDeps): SessionPoller {
   const regs = new Map<symbol, RegState>();
+  const sessionCache = new Map<string, CachedSessionBody>();
+  let sessionCacheChars = 0;
   // Per-daemon active-sends cache so a 304 (nothing in flight) still lets us
   // recompute slices for newly-registered columns without a re-fetch.
   const activeSendsEtag = new Map<string | undefined, string>();
@@ -86,9 +102,51 @@ export function createSessionPoller(deps: SessionPollerDeps): SessionPoller {
   let runningTick: Promise<void> | null = null;
   let rerunRequested = false;
 
+  function cachedSession(key: string): CachedSessionBody | undefined {
+    const cached = sessionCache.get(key);
+    if (!cached) return undefined;
+    // Map insertion order is our LRU list.
+    sessionCache.delete(key);
+    sessionCache.set(key, cached);
+    return cached;
+  }
+
+  function rememberSessionBody(
+    key: string,
+    body: string,
+    etag: string | null,
+  ): void {
+    const prev = sessionCache.get(key);
+    if (prev) sessionCacheChars -= prev.body.length;
+    sessionCache.delete(key);
+    sessionCache.set(key, { body, etag });
+    sessionCacheChars += body.length;
+    while (
+      sessionCacheChars > MAX_SESSION_CACHE_CHARS &&
+      sessionCache.size > 1
+    ) {
+      const oldest = sessionCache.keys().next().value;
+      if (oldest === undefined) break;
+      const evicted = sessionCache.get(oldest);
+      if (evicted) sessionCacheChars -= evicted.body.length;
+      sessionCache.delete(oldest);
+    }
+  }
+
   function register(reg: SessionPollReg): () => void {
     const key = Symbol(reg.source);
-    regs.set(key, { reg });
+    const cacheKey = sessionCacheKey(reg.daemonId, reg.source);
+    const cached = cachedSession(cacheKey);
+    regs.set(key, {
+      reg,
+      etag: cached?.etag ?? undefined,
+      lastBody: cached?.body,
+    });
+    if (cached) {
+      queueMicrotask(() => {
+        if (regs.has(key)) reg.onSession(cached.body, cached.etag);
+      });
+    }
     return () => {
       regs.delete(key);
     };
@@ -122,6 +180,11 @@ export function createSessionPoller(deps: SessionPollerDeps): SessionPoller {
             if (!g) continue;
             if (result.status === 200) {
               g.etag = result.etag;
+              rememberSessionBody(
+                sessionCacheKey(daemonId, result.source),
+                result.body,
+                result.etag,
+              );
               if (result.body !== g.lastBody) {
                 g.lastBody = result.body;
                 g.reg.onSession(result.body, result.etag);

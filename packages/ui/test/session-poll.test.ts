@@ -179,6 +179,54 @@ describe("createSessionPoller", () => {
     expect(JSON.parse(batches[1]!.body as string).sources[0].etag).toBe("a1");
   });
 
+  test("reuses cached session bodies and etags when a column remounts", async () => {
+    let phase = 0;
+    const { fn, calls } = makeFetch((url) => {
+      if (url.includes("/api/sessions/batch")) {
+        phase++;
+        if (phase === 1) {
+          return jsonResponse({
+            results: [{ source: "A", status: 200, etag: "a1", body: '{"v":1}' }],
+          });
+        }
+        return jsonResponse({
+          results: [{ source: "A", status: 304, etag: "a1" }],
+        });
+      }
+      if (url.includes("/api/active-sends"))
+        return jsonResponse([], { etag: "rev-0-all" });
+      return jsonResponse({}, { status: 404 });
+    });
+    const poller = createSessionPoller({ fetchImpl: fn, isIdle: () => false });
+    const first: string[] = [];
+    const unmount = poller.register({
+      source: "A",
+      getSessionId: () => undefined,
+      onSession: (body) => first.push(body),
+      onInflight: noop,
+    });
+
+    await poller.tick();
+    unmount();
+
+    const remount: string[] = [];
+    poller.register({
+      source: "A",
+      getSessionId: () => undefined,
+      onSession: (body) => remount.push(body),
+      onInflight: noop,
+    });
+    await Promise.resolve();
+    await poller.tick();
+
+    expect(first).toEqual(['{"v":1}']);
+    expect(remount).toEqual(['{"v":1}']);
+    const batches = calls.filter((c) => c.url.includes("/api/sessions/batch"));
+    expect(JSON.parse(batches[1]!.body as string).sources).toEqual([
+      { source: "A", etag: "a1" },
+    ]);
+  });
+
   test("polls active-sends once and slices it per column by sessionId; dispatch on change only", async () => {
     const { fn } = makeFetch((url, init) => {
       if (url.includes("/api/sessions/batch"))
