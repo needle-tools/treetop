@@ -37,3 +37,11 @@ describe("dock spinner is gated to active dots", () => {
   });
 
 });
+
+describe("dock repo arrows pause while UI is idle", () => {
+  test("ui-idle de-promotes dock arrow bounce animations", () => {
+    expect(FLAT).toMatch(
+      /:global\(body\.ui-idle\)\s+\.dock-arrow-glyph\s*\{[^}]*animation:\s*none/,
+    );
+  });
+});

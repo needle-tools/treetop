@@ -1512,6 +1512,9 @@
   .dock-arrow-down {
     animation: dock-arrow-bounce-down 10s ease-in-out infinite;
   }
+  :global(body.ui-idle) .dock-arrow-glyph {
+    animation: none;
+  }
   @keyframes dock-arrow-bounce-up {
     0% {
       transform: translateY(0);
