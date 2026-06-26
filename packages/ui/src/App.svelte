@@ -466,6 +466,19 @@
     };
   }
 
+  function focusOpenSessionColumn(source: string): void {
+    const wasFocused = focusedSource === source;
+    focusedSource = source;
+    if (!wasFocused) {
+      requestAnimationFrame(() => {
+        const col = document.querySelector<HTMLElement>(
+          `.session-col[data-session-source="${CSS.escape(source)}"]`,
+        );
+        if (col) stickSessionColumnToTail(col);
+      });
+    }
+  }
+
   // The unique row key (repoId + worktree path) whose repo-edit popover
   // (name + color + reorder) is currently open. Keyed by row rather than
   // repo id because repos with multiple worktrees produce multiple rows
@@ -3731,8 +3744,7 @@
       });
       col.classList.add("session-col-flash");
       setTimeout(() => col.classList.remove("session-col-flash"), 2000);
-      const messages = col.querySelector<HTMLElement>(".messages");
-      if (messages) stickMessagesToBottom(messages);
+      stickSessionColumnToTail(col);
     });
   }
   /** Park a SessionView's messages list at the bottom, then re-stick
@@ -3749,7 +3761,7 @@
    *  `.messages` itself wouldn't fire (the container is capped at
    *  max-height: 50vh); the children are where the height changes
    *  actually land. */
-  function stickMessagesToBottom(messages: HTMLElement): void {
+  function stickScrollerToBottom(scroller: HTMLElement): void {
     let raf = 0;
     const stick = () => {
       if (raf) return;
@@ -3757,12 +3769,12 @@
         raf = 0;
         // Let the browser clamp. Reading scrollHeight here forced layout,
         // and doing that inside ResizeObserver can trip RO loop warnings.
-        messages.scrollTop = 1_000_000_000;
+        scroller.scrollTop = 1_000_000_000;
       });
     };
     stick();
     const ro = new ResizeObserver(stick);
-    for (const child of Array.from(messages.children)) {
+    for (const child of Array.from(scroller.children)) {
       ro.observe(child as Element);
     }
     setTimeout(() => {
@@ -3770,6 +3782,17 @@
       ro.disconnect();
     }, 1500);
   }
+
+  function stickSessionColumnToTail(col: HTMLElement): void {
+    const messages = col.querySelector<HTMLElement>(".messages");
+    if (messages) stickScrollerToBottom(messages);
+    for (const body of col.querySelectorAll<HTMLElement>(
+      ".work-foldout-live > .work-foldout-body",
+    )) {
+      stickScrollerToBottom(body);
+    }
+  }
+
   /** First-unfold-after-load path: scroll every session column in
    *  this worktree's strip to the bottom. Used by `toggleRowFolded`
    *  when the row transitions from folded → unfolded for the first
@@ -3784,8 +3807,7 @@
       if (!strip) return;
       const cols = strip.querySelectorAll<HTMLElement>(".session-col");
       for (const col of cols) {
-        const messages = col.querySelector<HTMLElement>(".messages");
-        if (messages) stickMessagesToBottom(messages);
+        stickSessionColumnToTail(col);
       }
     });
   }
@@ -7474,6 +7496,7 @@
       block: "center",
       inline: "center",
     });
+    stickSessionColumnToTail(el);
     el.classList.add("session-col-focused");
     setTimeout(() => el.classList.remove("session-col-focused"), 1800);
   }
@@ -10345,7 +10368,7 @@
                               // `focusedSource` on a session that's already
                               // been removed.
                               if (isSessionOpenInWt(wt.path, s)) {
-                                focusedSource = s.source;
+                                focusOpenSessionColumn(s.source);
                               }
                             }}
                             out:closeColumn
