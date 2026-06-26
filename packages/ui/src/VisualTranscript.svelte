@@ -19,6 +19,7 @@
     visualThinkingSummary,
     visualToolCallPayloadLanguage,
     visualToolCallPayloadText,
+    visualToolLauncherLabel,
     visualToolPreviewText,
     visualWorkSummary,
     visualUserImageAttachments,
@@ -1064,7 +1065,7 @@
       {/if}
     {:else if b.type === "tool_use"}
       <div class="block tool-use">
-        <ToolIcon name={b.toolName} />
+        <ToolIcon name={b.toolName} badge={visualToolLauncherLabel(b)} />
         <span class="tool-name">{b.toolName ?? "tool"}</span>
         <code class="tool-input" title={inputPreview(b.toolInput)}>
           {inputPreview(b.toolInput)}
@@ -1396,7 +1397,10 @@
                           class="work-tool-chip"
                           class:icon-only={toolUsesInlineCommandLabel(toolBlock)}
                         >
-                          <ToolIcon name={toolBlock.toolName} />
+                          <ToolIcon
+                            name={toolBlock.toolName}
+                            badge={visualToolLauncherLabel(toolBlock)}
+                          />
                           {#if !toolUsesInlineCommandLabel(toolBlock)}
                             <span>{toolBlock.toolName ?? "tool"}</span>
                           {/if}

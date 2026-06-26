@@ -15,6 +15,7 @@ import {
   visualPlanFromPayload,
   visualToolCallPayloadLanguage,
   visualToolCallPayloadText,
+  visualToolLauncherLabel,
   visualToolPreviewText,
   visualWorkSummary,
   visualUserImageAttachments,
@@ -1124,6 +1125,19 @@ describe("visual tool payload display helpers", () => {
     );
   });
 
+  it("normalizes Unix shell launch wrappers before previewing commands", () => {
+    const block = {
+      type: "tool_use",
+      toolName: "exec_command",
+      toolInput: {
+        cmd: "/usr/bin/env bash -lc 'git diff --stat'",
+      },
+    };
+
+    expect(visualToolPreviewText(block)).toBe("git diff --stat");
+    expect(visualToolLauncherLabel(block)).toBe("bash");
+  });
+
   it("summarizes combined sed reads as one readable preview", () => {
     const block = {
       type: "tool_use",
@@ -1151,6 +1165,30 @@ describe("visual tool payload display helpers", () => {
       'Search usd-wasm/src for "GetStage()"',
     );
     expect(visualToolCallPayloadText(block)).toContain("rg -n");
+  });
+
+  it("normalizes Windows command launch wrappers before previewing commands", () => {
+    expect(
+      visualToolPreviewText({
+        type: "tool_use",
+        toolName: "exec_command",
+        toolInput: {
+          cmd: 'powershell.exe -NoProfile -Command "rg -n \\"GetStage\\(\\)\\" usd-wasm/src"',
+        },
+      }),
+    ).toBe('Search usd-wasm/src for "GetStage()"');
+
+    const cmdBlock = {
+      type: "tool_use",
+      toolName: "exec_command",
+      toolInput: {
+        cmd: 'cmd.exe /d /s /c "type packages\\ui\\src\\last-user-message.ts"',
+      },
+    };
+    expect(visualToolPreviewText(cmdBlock)).toBe(
+      "Read packages\\ui\\src\\last-user-message.ts",
+    );
+    expect(visualToolLauncherLabel(cmdBlock)).toBe("cmd");
   });
 
   it("summarizes numbered line reads piped through sed", () => {

@@ -464,14 +464,25 @@ export function visualToolPreviewText(
   const command =
     stringFromToolInputField(input, "cmd") ??
     stringFromToolInputField(input, "command");
-  const commandPreview = command ? visualCommandPreview(command) : undefined;
+  const commandPreview = command ? visualCommandPreview(command).text : undefined;
   if (commandPreview) return commandPreview;
   const text =
     command &&
     (name.includes("bash") || name.includes("shell") || name.includes("exec"))
-      ? command
+      ? normalizeLaunchedCommand(command).command
       : stringifyToolPayload(input);
   return text.replace(/\s+/g, " ").trim();
+}
+
+export function visualToolLauncherLabel(
+  block: MessageBlock | undefined,
+): string | undefined {
+  if (!block || block.type !== "tool_use") return undefined;
+  const command =
+    stringFromToolInputField(block.toolInput, "cmd") ??
+    stringFromToolInputField(block.toolInput, "command");
+  if (!command) return undefined;
+  return normalizeLaunchedCommand(command).launcher;
 }
 
 type VisualCommandSummary =
@@ -548,42 +559,113 @@ function pathWithRange(path: string, obj: Record<string, unknown>): string {
   return `${path}:${start}-${end}`;
 }
 
-function visualCommandPreview(command: string): string | undefined {
-  const unwrapped = unwrapShellCommand(command);
+function visualCommandPreview(command: string): { text: string; launcher?: string } {
+  const normalized = normalizeLaunchedCommand(command);
+  const unwrapped = normalized.command;
   const pipeSummary = summarizePipeRead(unwrapped);
-  if (pipeSummary) return `Read ${pipeSummary.target}`;
+  if (pipeSummary) return { text: `Read ${pipeSummary.target}`, launcher: normalized.launcher };
   const parts = splitShellCommandChain(unwrapped);
-  if (parts.length === 0) return undefined;
+  if (parts.length === 0) return { text: "", launcher: normalized.launcher };
   const summaries = parts
     .map((part) => summarizeShellCommand(part))
     .filter((summary): summary is VisualCommandSummary => !!summary);
-  if (summaries.length !== parts.length) return undefined;
+  if (summaries.length !== parts.length)
+    return { text: "", launcher: normalized.launcher };
 
   if (summaries.every((summary) => summary.kind === "read")) {
-    return `Read ${summaries.map((summary) => summary.target).join(", ")}`;
+    return {
+      text: `Read ${summaries.map((summary) => summary.target).join(", ")}`,
+      launcher: normalized.launcher,
+    };
   }
   if (summaries.length === 1 && summaries[0]!.kind === "search") {
     const summary = summaries[0]!;
-    return searchLabel(summary.pattern, summary.paths);
+    return {
+      text: searchLabel(summary.pattern, summary.paths),
+      launcher: normalized.launcher,
+    };
+  }
+  return { text: "", launcher: normalized.launcher };
+}
+
+function normalizeLaunchedCommand(command: string): {
+  command: string;
+  launcher?: string;
+} {
+  let current = command.trim();
+  let launcher: string | undefined;
+  for (let i = 0; i < 3; i += 1) {
+    const tokens = shellTokens(current);
+    if (tokens.length < 2) return { command: current, launcher };
+    const shell = shellLauncherName(tokens[0]!);
+    const next = unwrappedShellPayload(tokens, shell);
+    if (!next) return { command: current, launcher };
+    launcher = next.launcher;
+    current = next.command.trim();
+  }
+  return { command: current, launcher };
+}
+
+function shellLauncherName(command: string): string {
+  const base = command.replace(/\\/g, "/").split("/").pop() ?? command;
+  const lower = base.toLowerCase().replace(/\.(?:exe|cmd|bat)$/i, "");
+  if (lower === "pwsh") return "pwsh";
+  if (lower === "powershell") return "powershell";
+  return lower;
+}
+
+function unwrappedShellPayload(
+  tokens: string[],
+  shell: string,
+): { command: string; launcher: string } | undefined {
+  if (shell === "env") {
+    const envPayload = unwrapEnvShellPayload(tokens);
+    if (envPayload) return envPayload;
+  }
+  if (/^(?:bash|dash|fish|ksh|sh|zsh)$/.test(shell)) {
+    const flagIndex = tokens.findIndex(
+      (token, index) => index > 0 && /^-[a-zA-Z]*c[a-zA-Z]*$/.test(token),
+    );
+    const command = flagIndex >= 0 ? tokens[flagIndex + 1] : undefined;
+    return command ? { command, launcher: shell } : undefined;
+  }
+  if (shell === "cmd") {
+    const flagIndex = tokens.findIndex(
+      (token, index) => index > 0 && /^\/c$/i.test(token),
+    );
+    const command = flagIndex >= 0 ? tokens[flagIndex + 1] : undefined;
+    return command ? { command, launcher: shell } : undefined;
+  }
+  if (shell === "powershell" || shell === "pwsh") {
+    const flagIndex = tokens.findIndex(
+      (token, index) =>
+        index > 0 &&
+        /^-(?:command|c|encodedcommand|ec)$/i.test(token),
+    );
+    if (flagIndex < 0) return undefined;
+    const payload = tokens[flagIndex + 1];
+    if (!payload || /^-(?:encodedcommand|ec)$/i.test(tokens[flagIndex]!)) {
+      return undefined;
+    }
+    return { command: payload, launcher: shell };
   }
   return undefined;
 }
 
-function unwrapShellCommand(command: string): string {
-  let current = command.trim();
-  for (let i = 0; i < 3; i += 1) {
-    const tokens = shellTokens(current);
-    if (tokens.length < 3) return current;
-    const shell = tokens[0]!.split("/").pop() ?? tokens[0]!;
-    if (!/^(?:bash|sh|zsh)$/.test(shell)) return current;
-    const flagIndex = tokens.findIndex(
-      (token, index) => index > 0 && /^-[a-zA-Z]*c[a-zA-Z]*$/.test(token),
-    );
-    const next = flagIndex >= 0 ? tokens[flagIndex + 1] : undefined;
-    if (!next) return current;
-    current = next.trim();
+function unwrapEnvShellPayload(
+  tokens: string[],
+): { command: string; launcher: string } | undefined {
+  for (let i = 1; i < tokens.length; i += 1) {
+    const token = tokens[i]!;
+    if (token.includes("=") && !token.startsWith("-")) continue;
+    if (token.startsWith("-")) {
+      if (/^-.[^\s]*S/.test(token) || token === "-S") continue;
+      continue;
+    }
+    const shell = shellLauncherName(token);
+    return unwrappedShellPayload(tokens.slice(i), shell);
   }
-  return current;
+  return undefined;
 }
 
 function splitShellCommandChain(command: string): string[] {
@@ -626,13 +708,21 @@ function shellTokens(command: string): string[] {
   let current = "";
   let quote: "'" | '"' | null = null;
   let escaped = false;
-  for (const ch of command) {
+  for (let index = 0; index < command.length; index += 1) {
+    const ch = command[index]!;
     if (escaped) {
       current += ch;
       escaped = false;
       continue;
     }
-    if (ch === "\\" && quote !== "'") {
+    const next = command[index + 1];
+    const shouldEscape =
+      ch === "\\" &&
+      quote !== "'" &&
+      (quote === '"'
+        ? next !== undefined && /["\\$`]/.test(next)
+        : next !== undefined && /[\s"'\\|&;<>$`]/.test(next));
+    if (shouldEscape) {
       escaped = true;
       continue;
     }
@@ -666,7 +756,9 @@ function summarizeShellCommand(command: string): VisualCommandSummary | undefine
   if (tokens.length === 0) return undefined;
   const name = tokens[0]!.split("/").pop() ?? tokens[0]!;
   if (name === "sed") return summarizeSedRead(tokens);
-  if (name === "cat") return summarizeCatRead(tokens);
+  if (name === "cat" || name.toLowerCase() === "type") {
+    return summarizeCatRead(tokens);
+  }
   if (name === "rg" || name === "ripgrep" || name === "grep") {
     return summarizeSearch(tokens);
   }
@@ -802,7 +894,11 @@ function summarizeSearch(tokens: string[]): VisualCommandSummary | undefined {
 
 function searchLabel(pattern: string, paths: string[]): string {
   const where = paths.length ? `${paths.join(", ")} ` : "";
-  return `Search ${where}for "${pattern}"`;
+  return `Search ${where}for "${readableSearchPattern(pattern)}"`;
+}
+
+function readableSearchPattern(pattern: string): string {
+  return pattern.replace(/\\([(){}[\]])/g, "$1");
 }
 
 function hasBlockType(entry: VisualWorkEntry | undefined, type: string): boolean {
