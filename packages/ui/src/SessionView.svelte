@@ -758,25 +758,25 @@
     }
   }
   let lastSummaryRequestSource: string | undefined = undefined;
-  let summaryNearViewport = false;
-  let summaryVisibilityObs: IntersectionObserver | null = null;
+  let columnNearViewport = false;
+  let sessionVisibilityObs: IntersectionObserver | null = null;
 
-  function observeSummaryVisibility(): void {
+  function observeSessionVisibility(): void {
     if (typeof IntersectionObserver === "undefined" || !sessionEl) {
-      summaryNearViewport = true;
+      columnNearViewport = true;
       return;
     }
-    summaryVisibilityObs?.disconnect();
-    summaryVisibilityObs = new IntersectionObserver(
+    sessionVisibilityObs?.disconnect();
+    sessionVisibilityObs = new IntersectionObserver(
       (entries) => {
-        if (!entries.some((entry) => entry.isIntersecting)) return;
-        summaryNearViewport = true;
-        summaryVisibilityObs?.disconnect();
-        summaryVisibilityObs = null;
+        const near = entries.some((entry) => entry.isIntersecting);
+        if (columnNearViewport === near) return;
+        columnNearViewport = near;
+        if (near) void requestSessionPollNow();
       },
       { root: null, rootMargin: "900px", threshold: 0 },
     );
-    summaryVisibilityObs.observe(sessionEl);
+    sessionVisibilityObs.observe(sessionEl);
   }
 
   // Re-fetch after the transcript body is present + whenever its source changes.
@@ -786,7 +786,7 @@
     const nextSummaryRequest = nextCachedSessionSummaryRequest({
       target: sessionFileSource,
       sessionLoaded: !!session,
-      nearViewport: summaryNearViewport,
+      nearViewport: columnNearViewport,
       lastRequested: lastSummaryRequestSource,
     });
     if (nextSummaryRequest !== null) {
@@ -3734,6 +3734,7 @@
       daemonId,
       getSessionId: () => session?.sessionId,
       shouldPollSession: () =>
+        columnNearViewport &&
         ollamaStreamingIdx === null &&
         (!codexVisualAppSurface || !session || codexActiveTurnId === null),
       onSession: (bodyText, etag) => {
@@ -3767,7 +3768,7 @@
 
   onMount(() => {
     mounted = true;
-    observeSummaryVisibility();
+    observeSessionVisibility();
     window.addEventListener(STAGE_PROMPT_EVENT, onStagePrompt);
     syncSessionPollRegistration();
   });
@@ -3778,8 +3779,8 @@
     unregisterPoll = null;
     registeredPollKey = "";
     mounted = false;
-    summaryVisibilityObs?.disconnect();
-    summaryVisibilityObs = null;
+    sessionVisibilityObs?.disconnect();
+    sessionVisibilityObs = null;
     if (pendingTimer) clearTimeout(pendingTimer);
     closeCodexEventStream();
     if (disposeGraceTimer) clearTimeout(disposeGraceTimer);
