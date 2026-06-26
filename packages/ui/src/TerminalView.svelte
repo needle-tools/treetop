@@ -15,6 +15,7 @@
   import LoadingOverlay from "./LoadingOverlay.svelte";
   import { shrinkImageBlob } from "./image-shrink";
   import { resolveImagePasteBehavior } from "./terminal-image-paste";
+  import { writeClipboard } from "./clipboard-write";
   import {
     isTerminalMouseReport,
     joinSelectionRows,
@@ -99,57 +100,48 @@
     return joinSelectionRows(rows) || raw;
   }
 
-  /** Robust clipboard-write. The async Clipboard API is the modern
-   *  path but it gets silently rejected in WebView2 / strict-Permissions
+  /** Robust clipboard-write. The async Clipboard API is the modern path
+   *  but it gets silently rejected in WebView2 / strict-Permissions
    *  contexts even when the keydown is a trusted user gesture — observed
-   *  on Windows where Ctrl+C-with-selection felt like it "did nothing"
-   *  because the write rejected and the `.catch` swallowed it. We fall
-   *  back to the legacy `execCommand("copy")` via a transient offscreen
-   *  textarea, which honors the same trusted-gesture rule but uses the
-   *  selection-based clipboard path the WebView allows. If BOTH fail
-   *  we surface a console warning so the user can see this isn't a
-   *  silent dropped keystroke. */
+   *  in the electrobun native app on Windows where Ctrl+C-with-selection
+   *  felt like it "did nothing." The legacy `execCommand("copy")` via a
+   *  transient offscreen textarea is the route the WebView actually
+   *  honors, but `execCommand` only works synchronously inside the
+   *  gesture call stack — so it must be tried FIRST, not deferred to the
+   *  async write's `.catch` (which runs after the gesture has unwound and
+   *  is denied too). The sync-first ordering and fallback decision live in
+   *  `writeClipboard` so they can be unit-tested; see clipboard-write.ts. */
   function copyToClipboard(text: string): void {
-    if (!text) return;
-    const tryLegacy = (): boolean => {
-      try {
-        const ta = document.createElement("textarea");
-        ta.value = text;
-        ta.setAttribute("readonly", "");
-        ta.style.cssText =
-          "position:fixed;top:0;left:0;width:1px;height:1px;opacity:0;pointer-events:none;";
-        document.body.appendChild(ta);
-        const prev = document.activeElement as HTMLElement | null;
-        ta.focus();
-        ta.select();
-        const ok = document.execCommand("copy");
-        document.body.removeChild(ta);
-        try {
-          prev?.focus();
-        } catch {
-          /* best-effort restore */
-        }
-        return ok;
-      } catch {
-        return false;
-      }
-    };
     const writeText = navigator.clipboard?.writeText;
-    if (writeText) {
-      writeText.call(navigator.clipboard, text).catch(() => {
-        if (!tryLegacy()) {
-          console.warn(
-            "supergit: clipboard write failed via both async Clipboard API and execCommand",
-          );
+    writeClipboard(text, {
+      syncCopy: (t) => {
+        try {
+          const ta = document.createElement("textarea");
+          ta.value = t;
+          ta.setAttribute("readonly", "");
+          ta.style.cssText =
+            "position:fixed;top:0;left:0;width:1px;height:1px;opacity:0;pointer-events:none;";
+          document.body.appendChild(ta);
+          const prev = document.activeElement as HTMLElement | null;
+          ta.focus();
+          ta.select();
+          const ok = document.execCommand("copy");
+          document.body.removeChild(ta);
+          try {
+            prev?.focus();
+          } catch {
+            /* best-effort restore */
+          }
+          return ok;
+        } catch {
+          return false;
         }
-      });
-      return;
-    }
-    if (!tryLegacy()) {
-      console.warn(
-        "supergit: clipboard write failed (no async API, execCommand denied)",
-      );
-    }
+      },
+      asyncWrite: writeText
+        ? (t) => writeText.call(navigator.clipboard, t)
+        : null,
+      warn: (m) => console.warn(m),
+    });
   }
 
   /** Command + args to spawn. e.g. ["claude", "--resume", "<sid>"]. */
