@@ -81,6 +81,7 @@
     effortIcon,
     type CodexModelInfo,
   } from "./claude-session-menu";
+  import { elementNearViewport } from "./col-visibility";
   import { getDaemonKV } from "./daemon-kv";
   import { openSummarize, activeSummarize } from "./summarize-dialog";
   import {
@@ -759,7 +760,6 @@
   }
   let lastSummaryRequestSource: string | undefined = undefined;
   let columnNearViewport = false;
-  let sessionIoNearViewport = false;
   let sessionVisibilityObs: IntersectionObserver | null = null;
   let sessionAncestorVisibilityObs: MutationObserver | null = null;
 
@@ -773,8 +773,13 @@
     );
   }
 
+  function sessionElementNearViewport(): boolean {
+    if (!sessionEl) return true;
+    return elementNearViewport(sessionEl) && sessionAncestorsNearViewport();
+  }
+
   function syncSessionViewportState(): void {
-    const near = sessionIoNearViewport && sessionAncestorsNearViewport();
+    const near = sessionElementNearViewport();
     if (columnNearViewport === near) return;
     columnNearViewport = near;
     if (near) void requestSessionPollNow();
@@ -782,15 +787,13 @@
 
   function observeSessionVisibility(): void {
     if (typeof IntersectionObserver === "undefined" || !sessionEl) {
-      sessionIoNearViewport = true;
       columnNearViewport = true;
       return;
     }
     sessionVisibilityObs?.disconnect();
     sessionVisibilityObs = new IntersectionObserver(
       (entries) => {
-        sessionIoNearViewport = entries.some((entry) => entry.isIntersecting);
-        syncSessionViewportState();
+        if (entries.length > 0) syncSessionViewportState();
       },
       { root: null, rootMargin: "300px", threshold: 0 },
     );
@@ -3776,7 +3779,7 @@
       daemonId,
       getSessionId: () => session?.sessionId,
       shouldPollSession: () =>
-        columnNearViewport &&
+        sessionElementNearViewport() &&
         ollamaStreamingIdx === null &&
         (!codexVisualAppSurface || !session || codexActiveTurnId === null),
       onSession: (bodyText, etag) => {

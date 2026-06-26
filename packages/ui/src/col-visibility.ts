@@ -19,10 +19,34 @@
  */
 
 export const COL_OFFSCREEN_CLASS = "col-offscreen";
+export const VISIBILITY_ROOT_MARGIN_PX = 300;
 
 /** Pure decision: an off-screen (non-intersecting) column should pause. */
 export function shouldPauseColumn(isIntersecting: boolean): boolean {
   return !isIntersecting;
+}
+
+export function rectNearViewport(
+  rect: Pick<DOMRect, "top" | "bottom" | "left" | "right">,
+  viewport: { width: number; height: number },
+  marginPx = VISIBILITY_ROOT_MARGIN_PX,
+): boolean {
+  return (
+    rect.bottom >= -marginPx &&
+    rect.top <= viewport.height + marginPx &&
+    rect.right >= -marginPx &&
+    rect.left <= viewport.width + marginPx
+  );
+}
+
+export function elementNearViewport(
+  node: HTMLElement,
+  viewport: { width: number; height: number } = {
+    width: window.innerWidth,
+    height: window.innerHeight,
+  },
+): boolean {
+  return rectNearViewport(node.getBoundingClientRect(), viewport);
 }
 
 export function colVisibility(node: HTMLElement) {
@@ -39,7 +63,7 @@ export function colVisibility(node: HTMLElement) {
     // A generous margin pre-activates a column just before it scrolls into
     // view, so its animations are already running when the user sees it
     // (no pop-in). threshold 0: any sliver visible counts as on-screen.
-    { root: null, rootMargin: "300px", threshold: 0 },
+    { root: null, rootMargin: `${VISIBILITY_ROOT_MARGIN_PX}px`, threshold: 0 },
   );
   io.observe(node);
   return {

@@ -18,7 +18,11 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { COL_OFFSCREEN_CLASS, shouldPauseColumn } from "../src/col-visibility";
+import {
+  COL_OFFSCREEN_CLASS,
+  rectNearViewport,
+  shouldPauseColumn,
+} from "../src/col-visibility";
 
 const here = import.meta.dir;
 const baseCss = readFileSync(join(here, "../src/styles/base.css"), "utf-8");
@@ -30,6 +34,40 @@ describe("shouldPauseColumn", () => {
   });
   test("runs when the column is on screen", () => {
     expect(shouldPauseColumn(true)).toBe(false);
+  });
+});
+
+describe("rectNearViewport", () => {
+  const viewport = { width: 1_000, height: 800 };
+
+  test("uses the same generous margin as the column observer", () => {
+    expect(
+      rectNearViewport(
+        { top: 1_050, bottom: 1_100, left: 0, right: 200 },
+        viewport,
+      ),
+    ).toBe(true);
+    expect(
+      rectNearViewport(
+        { top: 1_101, bottom: 1_151, left: 0, right: 200 },
+        viewport,
+      ),
+    ).toBe(false);
+  });
+
+  test("rejects columns outside the horizontal margin too", () => {
+    expect(
+      rectNearViewport(
+        { top: 0, bottom: 200, left: -299, right: -1 },
+        viewport,
+      ),
+    ).toBe(true);
+    expect(
+      rectNearViewport(
+        { top: 0, bottom: 200, left: -650, right: -350 },
+        viewport,
+      ),
+    ).toBe(false);
   });
 });
 
