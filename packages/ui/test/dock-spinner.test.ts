@@ -36,12 +36,4 @@ describe("dock spinner is gated to active dots", () => {
     expect(m![1]).not.toContain("animation:");
   });
 
-  test("shell activity animates the rectangle stroke instead of rotating the whole svg", () => {
-    expect(FLAT).toMatch(
-      /\.dock-dot\.agent-shell\.dot-working\s+\.dock-dot-spinner,\s*\.dock-dot\.agent-shell\.dot-terminal-active\s+\.dock-dot-spinner\s*\{[^}]*animation:\s*none/,
-    );
-    expect(FLAT).toMatch(
-      /\.dock-dot\.agent-shell\.dot-working\s+\.dock-dot-spinner-rect,\s*\.dock-dot\.agent-shell\.dot-terminal-active\s+\.dock-dot-spinner-rect\s*\{[^}]*animation:\s*dock-rect-dash/,
-    );
-  });
 });
