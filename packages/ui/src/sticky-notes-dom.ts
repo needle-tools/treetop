@@ -21,11 +21,11 @@
  * touched) so tests can drive them with plain objects.
  */
 
-/** Rows a note may anchor to: present, not folded, notes not hidden.
+/** Rows a note may anchor to: present, onscreen, not folded, notes not hidden.
  *  Mirrors the visibility rules documented on findAnchorLi in
  *  StickyNotesLayer.svelte. */
 export const VISIBLE_ROW_SELECTOR =
-  "[data-wt-row]:not(.row-folded):not(.row-notes-hidden)";
+  "[data-wt-row]:not(.row-offscreen):not(.row-folded):not(.row-notes-hidden)";
 
 interface RowLike {
   dataset: { wtRow?: string };
@@ -131,7 +131,6 @@ type MutationRecordLike = {
   target: MutationTargetLike | null;
 };
 
-const ROW_NON_LAYOUT_CLASSES = new Set(["row-offscreen"]);
 const COL_NON_LAYOUT_CLASSES = new Set([
   "col-offscreen",
   "session-col-flash",
@@ -172,11 +171,9 @@ function isNonLayoutVisibilityClassMutation(record: MutationRecordLike): boolean
   if (current === null) return false;
   const changed = changedClassTokens(record.oldValue, current);
   if (changed.size === 0) return true;
-  const allowed = target.matches("[data-wt-row]")
-    ? ROW_NON_LAYOUT_CLASSES
-    : target.matches(".session-col")
-      ? COL_NON_LAYOUT_CLASSES
-      : null;
+  const allowed = target.matches(".session-col")
+    ? COL_NON_LAYOUT_CLASSES
+    : null;
   if (!allowed) return false;
   for (const token of changed) {
     if (!allowed.has(token)) return false;
