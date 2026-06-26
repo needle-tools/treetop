@@ -157,6 +157,15 @@ export function readonlyRouteDecision(
   };
 }
 
+const WORKTREE_DETAILS_CACHE_MS = 30_000;
+
+export function shouldReuseWorktreeDetailsCache(args: {
+  cachedAtMs: number;
+  nowMs: number;
+}): boolean {
+  return args.nowMs - args.cachedAtMs <= WORKTREE_DETAILS_CACHE_MS;
+}
+
 const TEMP_WORKSPACE_EXCLUDED_NAMES = new Set([
   ".remote-cache",
   "active-terminals.json",

@@ -162,6 +162,7 @@ import {
   selectedRemoteForRepo,
   envFlag,
   readonlyRouteDecision,
+  shouldReuseWorktreeDetailsCache,
   shouldCopyTempWorkspaceRelativePath,
   debugAnalyzeInstance,
   rewriteTempWorkspaceAttachmentRefs,
@@ -1535,7 +1536,6 @@ const worktreeDetailsCache = new Map<
   string,
   { at: number; value: WorktreeDetails }
 >();
-const WORKTREE_DETAILS_CACHE_MS = 5_000;
 
 // Cap concurrent cold getWorktreeDetails (git subprocess + parse) across
 // the whole daemon. /api/repos enrich fans out over every worktree of
@@ -1560,7 +1560,12 @@ function getCachedWorktreeDetails(
   const key = worktreeDetailsCacheKey(wtPath, remote);
   const cached = worktreeDetailsCache.get(key);
   if (!cached) return null;
-  if (Date.now() - cached.at > WORKTREE_DETAILS_CACHE_MS) {
+  if (
+    !shouldReuseWorktreeDetailsCache({
+      cachedAtMs: cached.at,
+      nowMs: Date.now(),
+    })
+  ) {
     worktreeDetailsCache.delete(key);
     return null;
   }

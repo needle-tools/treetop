@@ -24,6 +24,7 @@ import {
   selectedRemoteForRepo,
   envFlag,
   readonlyRouteDecision,
+  shouldReuseWorktreeDetailsCache,
   shouldCopyTempWorkspaceRelativePath,
   debugAnalyzeInstance,
   rewriteTempWorkspaceAttachmentRefs,
@@ -86,6 +87,33 @@ describe("stripThinkingArtifacts", () => {
     // channel split happens first, then think blocks within the segment
     const input = "ignore<channel|><think>hidden</think>visible";
     expect(stripThinkingArtifacts(input)).toBe("visible");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// worktree details cache freshness
+// ---------------------------------------------------------------------------
+describe("shouldReuseWorktreeDetailsCache", () => {
+  test("keeps unchanged worktree git details warm across normal UI refresh cadence", () => {
+    const cachedAtMs = 1_000;
+
+    expect(
+      shouldReuseWorktreeDetailsCache({
+        cachedAtMs,
+        nowMs: cachedAtMs + 29_999,
+      }),
+    ).toBe(true);
+  });
+
+  test("expires details after the freshness window", () => {
+    const cachedAtMs = 1_000;
+
+    expect(
+      shouldReuseWorktreeDetailsCache({
+        cachedAtMs,
+        nowMs: cachedAtMs + 30_001,
+      }),
+    ).toBe(false);
   });
 });
 
