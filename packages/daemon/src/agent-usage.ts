@@ -15,6 +15,7 @@
 
 import { readFile, stat } from "node:fs/promises";
 import type { AgentKind, AgentSession } from "./agents";
+import { createLimiter } from "./concurrency";
 
 /** Set `SUPERGIT_USAGE_INSTRUMENT=1` to log every scan timing
  *  unconditionally. Otherwise we only log scans that take longer than
@@ -167,6 +168,11 @@ export function floorToHourMs(ms: number): number {
 const WEEK_MS = 7 * DAY_MS;
 const PEAK_DAY_LOOKBACK_MS = 30 * DAY_MS;
 const PEAK_WEEK_LOOKBACK_MS = 90 * DAY_MS;
+// Usage scans can touch hundreds of JSONLs. Bound file reads/parsers across
+// the main usage route and the lazy top-sessions route so a cold tooltip
+// cannot monopolize the daemon event loop.
+const CLAUDE_SESSION_SCAN_CONCURRENCY = 8;
+const claudeSessionScanLimit = createLimiter(CLAUDE_SESSION_SCAN_CONCURRENCY);
 
 interface DailyBucket {
   /** user + assistant turns combined. Tool-result-only "user" turns
@@ -460,46 +466,48 @@ export async function topClaudeSessionsByTokens(
     walkMs: 0,
   };
   const results = await Promise.all(
-    sessions.map(async (s): Promise<ClaudeTopSession | null> => {
-      if (s.agent !== "claude") return null;
-      const lastActive = Date.parse(s.lastActive);
-      if (Number.isNaN(lastActive) || lastActive < cutoffMtime) return null;
-      let mtimeMs: number | undefined;
-      try {
-        const st = await stat(s.source);
-        mtimeMs = st.mtimeMs;
-      } catch {
-        return null;
-      }
-      agg.sessionsScanned++;
-      const cacheKey = `${s.source}|${sinceMs}`;
-      const wasCacheHit =
-        mtimeMs !== undefined &&
-        (() => {
-          const c = claudeTokenScanCache.get(cacheKey);
-          return c?.mtimeMs === mtimeMs && c?.sinceMs === sinceMs;
-        })();
-      if (wasCacheHit) agg.cacheHits++;
-      const scanStart = performance.now();
-      const totals = await scanClaudeSessionTokenTotals(
-        s.source,
-        mtimeMs,
-        sinceMs,
-      );
-      agg.totalScanMs += performance.now() - scanStart;
-      if (totals.totalTokens === 0) return null;
-      return {
-        sessionId: s.sessionId,
-        source: s.source,
-        cwd: s.cwd,
-        title: s.manualTitle ?? s.title ?? s.firstUserMessage,
-        totalTokens: totals.totalTokens,
-        inputTokens: totals.inputTokens,
-        outputTokens: totals.outputTokens,
-        cacheReadTokens: totals.cacheReadTokens,
-        cacheCreationTokens: totals.cacheCreationTokens,
-      };
-    }),
+    sessions.map((s) =>
+      claudeSessionScanLimit(async (): Promise<ClaudeTopSession | null> => {
+        if (s.agent !== "claude") return null;
+        const lastActive = Date.parse(s.lastActive);
+        if (Number.isNaN(lastActive) || lastActive < cutoffMtime) return null;
+        let mtimeMs: number | undefined;
+        try {
+          const st = await stat(s.source);
+          mtimeMs = st.mtimeMs;
+        } catch {
+          return null;
+        }
+        agg.sessionsScanned++;
+        const cacheKey = `${s.source}|${sinceMs}`;
+        const wasCacheHit =
+          mtimeMs !== undefined &&
+          (() => {
+            const c = claudeTokenScanCache.get(cacheKey);
+            return c?.mtimeMs === mtimeMs && c?.sinceMs === sinceMs;
+          })();
+        if (wasCacheHit) agg.cacheHits++;
+        const scanStart = performance.now();
+        const totals = await scanClaudeSessionTokenTotals(
+          s.source,
+          mtimeMs,
+          sinceMs,
+        );
+        agg.totalScanMs += performance.now() - scanStart;
+        if (totals.totalTokens === 0) return null;
+        return {
+          sessionId: s.sessionId,
+          source: s.source,
+          cwd: s.cwd,
+          title: s.manualTitle ?? s.title ?? s.firstUserMessage,
+          totalTokens: totals.totalTokens,
+          inputTokens: totals.inputTokens,
+          outputTokens: totals.outputTokens,
+          cacheReadTokens: totals.cacheReadTokens,
+          cacheCreationTokens: totals.cacheCreationTokens,
+        };
+      }),
+    ),
   );
   agg.walkMs = performance.now() - startMs - agg.totalScanMs;
   const populated = results.filter((r): r is ClaudeTopSession => r !== null);
@@ -530,33 +538,35 @@ async function buildClaudeDailyTotals(
     walkMs: 0,
   };
   await Promise.all(
-    sessions.map(async (s) => {
-      if (s.agent !== "claude") return;
-      const lastActive = Date.parse(s.lastActive);
-      if (Number.isNaN(lastActive) || lastActive < cutoff) return;
-      let mtimeMs: number | undefined;
-      try {
-        const st = await stat(s.source);
-        mtimeMs = st.mtimeMs;
-      } catch {
-        return;
-      }
-      agg.sessionsScanned++;
-      const wasCacheHit = (() => {
-        const c = claudeDailyCache.get(s.source);
-        return c?.mtimeMs === mtimeMs;
-      })();
-      if (wasCacheHit) agg.cacheHits++;
-      const scanStart = performance.now();
-      const buckets = await scanClaudeDailyBuckets(s.source, mtimeMs);
-      agg.totalScanMs += performance.now() - scanStart;
-      for (const [date, b] of buckets) {
-        totals.set(date, (totals.get(date) ?? 0) + b.messages);
-        const setForDate = sessionsByDate.get(date) ?? new Set();
-        setForDate.add(s.source);
-        sessionsByDate.set(date, setForDate);
-      }
-    }),
+    sessions.map((s) =>
+      claudeSessionScanLimit(async () => {
+        if (s.agent !== "claude") return;
+        const lastActive = Date.parse(s.lastActive);
+        if (Number.isNaN(lastActive) || lastActive < cutoff) return;
+        let mtimeMs: number | undefined;
+        try {
+          const st = await stat(s.source);
+          mtimeMs = st.mtimeMs;
+        } catch {
+          return;
+        }
+        agg.sessionsScanned++;
+        const wasCacheHit = (() => {
+          const c = claudeDailyCache.get(s.source);
+          return c?.mtimeMs === mtimeMs;
+        })();
+        if (wasCacheHit) agg.cacheHits++;
+        const scanStart = performance.now();
+        const buckets = await scanClaudeDailyBuckets(s.source, mtimeMs);
+        agg.totalScanMs += performance.now() - scanStart;
+        for (const [date, b] of buckets) {
+          totals.set(date, (totals.get(date) ?? 0) + b.messages);
+          const setForDate = sessionsByDate.get(date) ?? new Set();
+          setForDate.add(s.source);
+          sessionsByDate.set(date, setForDate);
+        }
+      }),
+    ),
   );
   agg.walkMs = performance.now() - startMs - agg.totalScanMs;
   logAggregate("dailyTotals", performance.now() - startMs, agg);
