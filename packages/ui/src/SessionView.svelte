@@ -1575,6 +1575,8 @@
           }
         }
 
+        if (!visualTranscriptActive && liveBodyStates.length === 0) return;
+
         requestAnimationFrame(() => {
           const settled = messagesEl;
           const mayFollowSettled =
