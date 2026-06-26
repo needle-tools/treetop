@@ -110,7 +110,11 @@
     type VisualTranscriptDeltaPatch,
     type VisualTranscriptItem,
   } from "./last-user-message";
-  import { registerSessionPoll, requestSessionPollNow } from "./session-poll";
+  import {
+    registerSessionPoll,
+    requestSessionPollNow,
+    type BatchSessionPatch,
+  } from "./session-poll";
   import { canResumeVisualSurface } from "./session-source-routing";
   import {
     codexEventItemId,
@@ -1631,6 +1635,28 @@
         pendingTimer = null;
       }
     }
+  }
+
+  function applySessionPatch(update: BatchSessionPatch): void {
+    if (!session) return;
+    const { oldStart, oldEnd, messages } = update.patch;
+    if (
+      !Number.isInteger(oldStart) ||
+      !Number.isInteger(oldEnd) ||
+      oldStart < 0 ||
+      oldEnd < oldStart ||
+      oldEnd > session.messages.length ||
+      !Array.isArray(messages)
+    ) {
+      return;
+    }
+    applyParsedSession({
+      ...session,
+      ...(update.session as Partial<NormalizedSession>),
+      messages: session.messages
+        .slice(oldStart, oldEnd)
+        .concat(messages as NormalizedMessage[]),
+    });
   }
 
   async function load() {
@@ -3797,6 +3823,15 @@
         } catch (e) {
           error = e instanceof Error ? e.message : String(e);
         }
+      },
+      onSessionPatch: (patch, etag) => {
+        if (
+          ollamaStreamingIdx !== null ||
+          (codexVisualAppSurface && codexActiveTurnId !== null && session)
+        )
+          return;
+        lastEtag = etag;
+        applySessionPatch(patch);
       },
       onInflight: (list) => {
         inflight = list as unknown as InflightRec[];

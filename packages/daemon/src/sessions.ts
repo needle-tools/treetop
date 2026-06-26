@@ -311,7 +311,8 @@ function attachSessionInlineMediaUrls(
   const encodedSource = encodeURIComponent(source);
   for (const message of session.messages) {
     for (const block of message.blocks) {
-      if (block.type !== "media" || !block.inlineDataHash || block.url) continue;
+      if (block.type !== "media" || !block.inlineDataHash || block.url)
+        continue;
       block.url = `/api/session/media?source=${encodedSource}&hash=${block.inlineDataHash}`;
       block.text = undefined;
       block.inlineDataHash = undefined;
@@ -700,10 +701,7 @@ function codexVisibleUserText(text: string): string {
     /<environment_context>[\s\S]*?<\/environment_context>/g,
     "",
   );
-  visible = visible.replace(
-    /<filesystem>[\s\S]*?<\/filesystem>/g,
-    "",
-  );
+  visible = visible.replace(/<filesystem>[\s\S]*?<\/filesystem>/g, "");
   visible = visible.replace(
     /<codex_internal_context\b[^>]*>[\s\S]*?<\/codex_internal_context>/g,
     "",
@@ -928,8 +926,7 @@ function parseCodexJsonlLine(line: string, out: NormalizedSession): void {
               type: "tool_use",
               toolName: p.type,
               toolInput: clipToolInput(p),
-              toolUseId:
-                typeof p.call_id === "string" ? p.call_id : undefined,
+              toolUseId: typeof p.call_id === "string" ? p.call_id : undefined,
             },
           ],
           ts,
@@ -1018,8 +1015,7 @@ function parseCodexJsonlLine(line: string, out: NormalizedSession): void {
           {
             type: "tool_result",
             text: clipText(codexWebSearchText(p)),
-            toolName:
-              codexToolNameForResult(out, p.call_id) ?? "web_search",
+            toolName: codexToolNameForResult(out, p.call_id) ?? "web_search",
             toolUseId: typeof p.call_id === "string" ? p.call_id : undefined,
           },
         ],
@@ -1644,9 +1640,101 @@ export async function getSessionResponseJson(
  *  the ETag (caller keeps its cached copy), 403 means the source is outside
  *  any known agent root. */
 export type BatchSessionResult =
-  | { source: string; status: 200; etag: string; body: string }
+  | {
+      source: string;
+      status: 200;
+      etag: string;
+      body: string;
+      messageHashes: string[];
+    }
+  | {
+      source: string;
+      status: 206;
+      etag: string;
+      session: Omit<NormalizedSession, "messages">;
+      patch: {
+        oldStart: number;
+        oldEnd: number;
+        messages: NormalizedMessage[];
+      };
+      messageHashes: string[];
+    }
   | { source: string; status: 304; etag: string }
   | { source: string; status: 403 };
+
+export interface BatchSessionCursor {
+  index: number;
+  hash: string;
+}
+
+function hashMessage(message: NormalizedMessage): string {
+  return createHash("sha1")
+    .update(JSON.stringify(message))
+    .digest("base64url")
+    .slice(0, 16);
+}
+
+function messageHashes(messages: readonly NormalizedMessage[]): string[] {
+  return messages.map(hashMessage);
+}
+
+function sessionMeta(
+  session: NormalizedSession,
+): Omit<NormalizedSession, "messages"> {
+  const { messages: _messages, ...meta } = session;
+  return meta;
+}
+
+function patchFromCursor(
+  session: NormalizedSession,
+  hashes: string[],
+  cursor: readonly BatchSessionCursor[] | undefined,
+): {
+  session: Omit<NormalizedSession, "messages">;
+  patch: {
+    oldStart: number;
+    oldEnd: number;
+    messages: NormalizedMessage[];
+  };
+  messageHashes: string[];
+} | null {
+  if (!cursor || cursor.length === 0 || session.messages.length === 0) {
+    return null;
+  }
+  const hashesByValue = new Map<string, number[]>();
+  hashes.forEach((hash, index) => {
+    const list = hashesByValue.get(hash);
+    if (list) list.push(index);
+    else hashesByValue.set(hash, [index]);
+  });
+  const candidates = cursor
+    .filter(
+      (sample): sample is BatchSessionCursor =>
+        Number.isInteger(sample.index) &&
+        sample.index >= 0 &&
+        typeof sample.hash === "string" &&
+        sample.hash.length > 0,
+    )
+    .sort((a, b) => b.index - a.index);
+  for (const sample of candidates) {
+    const matchingNewIndexes = hashesByValue.get(sample.hash);
+    if (!matchingNewIndexes) continue;
+    for (const newIndex of [...matchingNewIndexes].reverse()) {
+      const oldStart = sample.index - newIndex;
+      if (oldStart < 0) continue;
+      return {
+        session: sessionMeta(session),
+        patch: {
+          oldStart,
+          oldEnd: sample.index + 1,
+          messages: session.messages.slice(newIndex + 1),
+        },
+        messageHashes: hashes,
+      };
+    }
+  }
+  return null;
+}
 
 /**
  * Batched equivalent of the `/api/session` GET handler: resolve + 304/200 each
@@ -1664,32 +1752,44 @@ export type BatchSessionResult =
  * @param getTitle     manual title to inject for a source, or undefined
  */
 export async function getSessionsBatchResults(
-  items: { source: string; etag?: string }[],
+  items: {
+    source: string;
+    etag?: string;
+    messageCursor?: BatchSessionCursor[];
+  }[],
   resolveAgent: (source: string) => AgentKind | null,
   getTitle: (source: string) => string | undefined,
 ): Promise<BatchSessionResult[]> {
   return Promise.all(
-    items.map(async ({ source, etag }): Promise<BatchSessionResult> => {
-      const agent = resolveAgent(source);
-      if (!agent) return { source, status: 403 };
+    items.map(
+      async ({ source, etag, messageCursor }): Promise<BatchSessionResult> => {
+        const agent = resolveAgent(source);
+        if (!agent) return { source, status: 403 };
 
-      // Quick stat ETag: skip the parse entirely when the file is unchanged.
-      // Matches getSessionResponseJson's `"<mtimeMs>-<size>"` scheme.
-      if (etag) {
-        const st = await stat(source).catch(() => null);
-        if (st) {
-          const quick = `"${st.mtimeMs}-${st.size}"`;
-          if (etag === quick) return { source, status: 304, etag: quick };
+        // Quick stat ETag: skip the parse entirely when the file is unchanged.
+        // Matches getSessionResponseJson's `"<mtimeMs>-<size>"` scheme.
+        if (etag) {
+          const st = await stat(source).catch(() => null);
+          if (st) {
+            const quick = `"${st.mtimeMs}-${st.size}"`;
+            if (etag === quick) return { source, status: 304, etag: quick };
+          }
         }
-      }
 
-      const { body, etag: full } = await getSessionResponseJson(
-        agent,
-        source,
-        getTitle(source),
-      );
-      if (etag && etag === full) return { source, status: 304, etag: full };
-      return { source, status: 200, etag: full, body };
-    }),
+        const { body, etag: full } = await getSessionResponseJson(
+          agent,
+          source,
+          getTitle(source),
+        );
+        if (etag && etag === full) return { source, status: 304, etag: full };
+        const parsed = JSON.parse(body) as NormalizedSession;
+        const hashes = messageHashes(parsed.messages);
+        if (etag) {
+          const patch = patchFromCursor(parsed, hashes, messageCursor);
+          if (patch) return { source, status: 206, etag: full, ...patch };
+        }
+        return { source, status: 200, etag: full, body, messageHashes: hashes };
+      },
+    ),
   );
 }

@@ -43,13 +43,49 @@ export interface SessionPollReg {
   /** Called with the session JSON text whenever it changes (never for an
    *  unchanged 304), plus the ETag the daemon returned. */
   onSession: (bodyText: string, etag: string | null) => void;
+  /** Called when the daemon can express a changed session as a tail
+   *  replacement. Components that hold parsed session state can apply this
+   *  without parsing/stringifying the previous full body. */
+  onSessionPatch?: (patch: BatchSessionPatch, etag: string | null) => void;
   /** Called with this column's active-sends records whenever the slice
    *  changes (including transitions to/from empty). */
   onInflight: (list: InflightRec[]) => void;
 }
 
+export interface BatchSessionPatch {
+  session: Record<string, unknown>;
+  patch: {
+    oldStart: number;
+    oldEnd: number;
+    messages: unknown[];
+  };
+}
+
+interface MessageCursorEntry {
+  index: number;
+  hash: string;
+}
+
 type BatchResult =
-  | { source: string; status: 200; etag: string; body: string }
+  | {
+      source: string;
+      status: 200;
+      etag: string;
+      body: string;
+      messageHashes?: string[];
+    }
+  | {
+      source: string;
+      status: 206;
+      etag: string;
+      session: Record<string, unknown>;
+      patch: {
+        oldStart: number;
+        oldEnd: number;
+        messages: unknown[];
+      };
+      messageHashes: string[];
+    }
   | { source: string; status: 304; etag: string }
   | { source: string; status: 403 };
 
@@ -60,6 +96,8 @@ interface RegState {
   etag?: string;
   /** Last body text dispatched, to suppress duplicate onSession calls. */
   lastBody?: string;
+  /** Hashes supplied by the daemon for the currently cached message array. */
+  messageHashes?: string[];
   /** JSON of the last active-sends slice dispatched, for change detection. */
   lastInflightKey?: string;
 }
@@ -67,6 +105,7 @@ interface RegState {
 interface CachedSessionBody {
   etag: string | null;
   body: string;
+  messageHashes?: string[];
 }
 
 export interface SessionPollerDeps {
@@ -84,10 +123,7 @@ export interface SessionPoller {
 
 const MAX_SESSION_CACHE_CHARS = 32 * 1024 * 1024;
 
-function sessionCacheKey(
-  daemonId: string | undefined,
-  source: string,
-): string {
+function sessionCacheKey(daemonId: string | undefined, source: string): string {
   return `${daemonId ?? ""}\0${source}`;
 }
 
@@ -115,11 +151,12 @@ export function createSessionPoller(deps: SessionPollerDeps): SessionPoller {
     key: string,
     body: string,
     etag: string | null,
+    messageHashes?: string[],
   ): void {
     const prev = sessionCache.get(key);
     if (prev) sessionCacheChars -= prev.body.length;
     sessionCache.delete(key);
-    sessionCache.set(key, { body, etag });
+    sessionCache.set(key, { body, etag, messageHashes });
     sessionCacheChars += body.length;
     while (
       sessionCacheChars > MAX_SESSION_CACHE_CHARS &&
@@ -133,6 +170,13 @@ export function createSessionPoller(deps: SessionPollerDeps): SessionPoller {
     }
   }
 
+  function forgetSessionBody(key: string): void {
+    const prev = sessionCache.get(key);
+    if (!prev) return;
+    sessionCacheChars -= prev.body.length;
+    sessionCache.delete(key);
+  }
+
   function register(reg: SessionPollReg): () => void {
     const key = Symbol(reg.source);
     const cacheKey = sessionCacheKey(reg.daemonId, reg.source);
@@ -141,6 +185,7 @@ export function createSessionPoller(deps: SessionPollerDeps): SessionPoller {
       reg,
       etag: cached?.etag ?? undefined,
       lastBody: cached?.body,
+      messageHashes: cached?.messageHashes,
     });
     if (cached) {
       queueMicrotask(() => {
@@ -150,6 +195,38 @@ export function createSessionPoller(deps: SessionPollerDeps): SessionPoller {
     return () => {
       regs.delete(key);
     };
+  }
+
+  function messageCursor(g: RegState): MessageCursorEntry[] | undefined {
+    const hashes = g.messageHashes;
+    if (!hashes || hashes.length === 0) return undefined;
+    const out: MessageCursorEntry[] = [];
+    const start = Math.max(0, hashes.length - 12);
+    for (let index = hashes.length - 1; index >= start; index--) {
+      const hash = hashes[index];
+      if (hash) out.push({ index, hash });
+    }
+    return out;
+  }
+
+  function applyPatchToBody(
+    body: string | undefined,
+    result: Extract<BatchResult, { status: 206 }>,
+  ): string | null {
+    if (!body) return null;
+    try {
+      const parsed = JSON.parse(body) as { messages?: unknown[] };
+      const prevMessages = Array.isArray(parsed.messages)
+        ? parsed.messages
+        : [];
+      parsed.messages = prevMessages
+        .slice(result.patch.oldStart, result.patch.oldEnd)
+        .concat(result.patch.messages);
+      Object.assign(parsed, result.session);
+      return JSON.stringify(parsed);
+    } catch {
+      return null;
+    }
   }
 
   async function pollDaemon(daemonId: string | undefined, group: RegState[]) {
@@ -168,6 +245,7 @@ export function createSessionPoller(deps: SessionPollerDeps): SessionPoller {
               sources: sessionGroup.map((g) => ({
                 source: g.reg.source,
                 etag: g.etag,
+                messageCursor: messageCursor(g),
               })),
             }),
           },
@@ -180,14 +258,42 @@ export function createSessionPoller(deps: SessionPollerDeps): SessionPoller {
             if (!g) continue;
             if (result.status === 200) {
               g.etag = result.etag;
+              g.messageHashes = result.messageHashes;
               rememberSessionBody(
                 sessionCacheKey(daemonId, result.source),
                 result.body,
                 result.etag,
+                result.messageHashes,
               );
               if (result.body !== g.lastBody) {
                 g.lastBody = result.body;
                 g.reg.onSession(result.body, result.etag);
+              }
+            } else if (result.status === 206) {
+              g.etag = result.etag;
+              g.messageHashes = result.messageHashes;
+              const cacheKey = sessionCacheKey(daemonId, result.source);
+              if (g.reg.onSessionPatch) {
+                g.lastBody = undefined;
+                forgetSessionBody(cacheKey);
+                g.reg.onSessionPatch(
+                  { session: result.session, patch: result.patch },
+                  result.etag,
+                );
+              } else {
+                const patchedBody = applyPatchToBody(g.lastBody, result);
+                if (patchedBody) {
+                  g.lastBody = patchedBody;
+                  rememberSessionBody(
+                    cacheKey,
+                    patchedBody,
+                    result.etag,
+                    result.messageHashes,
+                  );
+                  g.reg.onSession(patchedBody, result.etag);
+                } else {
+                  g.messageHashes = undefined;
+                }
               }
             } else if (result.status === 304) {
               g.etag = result.etag;

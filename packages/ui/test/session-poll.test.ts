@@ -22,8 +22,12 @@ function jsonResponse(
 }
 
 function makeFetch(handler: (url: string, init?: RequestInit) => Response) {
-  const calls: { url: string; method: string; body?: unknown; init?: RequestInit }[] =
-    [];
+  const calls: {
+    url: string;
+    method: string;
+    body?: unknown;
+    init?: RequestInit;
+  }[] = [];
   const fn = (async (url: string | URL | Request, init?: RequestInit) => {
     calls.push({
       url: String(url),
@@ -82,22 +86,22 @@ describe("createSessionPoller", () => {
     const second = poller.tick();
     await Promise.resolve();
 
-    expect(calls.filter((c) => c.url.includes("/api/sessions/batch"))).toHaveLength(
-      1,
-    );
-    expect(calls.filter((c) => c.url.includes("/api/active-sends"))).toHaveLength(
-      0,
-    );
+    expect(
+      calls.filter((c) => c.url.includes("/api/sessions/batch")),
+    ).toHaveLength(1);
+    expect(
+      calls.filter((c) => c.url.includes("/api/active-sends")),
+    ).toHaveLength(0);
 
     resolveBatch();
     await Promise.all([first, second]);
 
-    expect(calls.filter((c) => c.url.includes("/api/sessions/batch"))).toHaveLength(
-      2,
-    );
-    expect(calls.filter((c) => c.url.includes("/api/active-sends"))).toHaveLength(
-      2,
-    );
+    expect(
+      calls.filter((c) => c.url.includes("/api/sessions/batch")),
+    ).toHaveLength(2);
+    expect(
+      calls.filter((c) => c.url.includes("/api/active-sends")),
+    ).toHaveLength(2);
     expect(got).toEqual(['{"v":1}']);
   });
 
@@ -152,7 +156,9 @@ describe("createSessionPoller", () => {
         phase++;
         if (phase === 1)
           return jsonResponse({
-            results: [{ source: "A", status: 200, etag: "a1", body: '{"v":1}' }],
+            results: [
+              { source: "A", status: 200, etag: "a1", body: '{"v":1}' },
+            ],
           });
         return jsonResponse({
           results: [{ source: "A", status: 304, etag: "a1" }],
@@ -186,7 +192,9 @@ describe("createSessionPoller", () => {
         phase++;
         if (phase === 1) {
           return jsonResponse({
-            results: [{ source: "A", status: 200, etag: "a1", body: '{"v":1}' }],
+            results: [
+              { source: "A", status: 200, etag: "a1", body: '{"v":1}' },
+            ],
           });
         }
         return jsonResponse({
@@ -227,6 +235,157 @@ describe("createSessionPoller", () => {
     ]);
   });
 
+  test("sends message hashes and dispatches daemon tail patches without full-body callback", async () => {
+    let phase = 0;
+    const { fn, calls } = makeFetch((url) => {
+      if (url.includes("/api/sessions/batch")) {
+        phase++;
+        if (phase === 1) {
+          return jsonResponse({
+            results: [
+              {
+                source: "A",
+                status: 200,
+                etag: "a1",
+                body: '{"agent":"claude","messages":[{"role":"user","blocks":[{"type":"text","text":"first"}]}]}',
+                messageHashes: ["h-first"],
+              },
+            ],
+          });
+        }
+        return jsonResponse({
+          results: [
+            {
+              source: "A",
+              status: 206,
+              etag: "a2",
+              session: { agent: "claude" },
+              patch: {
+                oldStart: 0,
+                oldEnd: 1,
+                messages: [
+                  {
+                    role: "assistant",
+                    blocks: [{ type: "text", text: "second" }],
+                  },
+                ],
+              },
+              messageHashes: ["h-first", "h-second"],
+            },
+          ],
+        });
+      }
+      if (url.includes("/api/active-sends"))
+        return jsonResponse([], { etag: "rev-0-all" });
+      return jsonResponse({}, { status: 404 });
+    });
+    const poller = createSessionPoller({ fetchImpl: fn, isIdle: () => false });
+    const bodies: string[] = [];
+    const patches: unknown[] = [];
+    poller.register({
+      source: "A",
+      getSessionId: () => undefined,
+      onSession: (body) => bodies.push(body),
+      onSessionPatch: (patch) => patches.push(patch),
+      onInflight: noop,
+    });
+
+    await poller.tick();
+    await poller.tick();
+
+    expect(bodies).toHaveLength(1);
+    expect(patches).toEqual([
+      {
+        session: { agent: "claude" },
+        patch: {
+          oldStart: 0,
+          oldEnd: 1,
+          messages: [
+            { role: "assistant", blocks: [{ type: "text", text: "second" }] },
+          ],
+        },
+      },
+    ]);
+    const batches = calls.filter((c) => c.url.includes("/api/sessions/batch"));
+    expect(JSON.parse(batches[1]!.body as string).sources[0]).toMatchObject({
+      source: "A",
+      etag: "a1",
+      messageCursor: [{ index: 0, hash: "h-first" }],
+    });
+  });
+
+  test("falls back to synthesizing a patched body for non-patch-aware registrations", async () => {
+    let phase = 0;
+    const { fn } = makeFetch((url) => {
+      if (url.includes("/api/sessions/batch")) {
+        phase++;
+        if (phase === 1) {
+          return jsonResponse({
+            results: [
+              {
+                source: "A",
+                status: 200,
+                etag: "a1",
+                body: '{"agent":"claude","messages":[{"role":"user","blocks":[{"type":"text","text":"first"}]}]}',
+                messageHashes: ["h-first"],
+              },
+            ],
+          });
+        }
+        return jsonResponse({
+          results: [
+            {
+              source: "A",
+              status: 206,
+              etag: "a2",
+              session: { agent: "claude", cwd: "/repo" },
+              patch: {
+                oldStart: 0,
+                oldEnd: 1,
+                messages: [
+                  {
+                    role: "assistant",
+                    blocks: [{ type: "text", text: "second" }],
+                  },
+                ],
+              },
+              messageHashes: ["h-first", "h-second"],
+            },
+          ],
+        });
+      }
+      if (url.includes("/api/active-sends"))
+        return jsonResponse([], { etag: "rev-0-all" });
+      return jsonResponse({}, { status: 404 });
+    });
+    const poller = createSessionPoller({ fetchImpl: fn, isIdle: () => false });
+    const bodies: string[] = [];
+    poller.register({
+      source: "A",
+      getSessionId: () => undefined,
+      onSession: (body) => bodies.push(body),
+      onInflight: noop,
+    });
+
+    await poller.tick();
+    await poller.tick();
+
+    expect(bodies.map((body) => JSON.parse(body))).toEqual([
+      {
+        agent: "claude",
+        messages: [{ role: "user", blocks: [{ type: "text", text: "first" }] }],
+      },
+      {
+        agent: "claude",
+        cwd: "/repo",
+        messages: [
+          { role: "user", blocks: [{ type: "text", text: "first" }] },
+          { role: "assistant", blocks: [{ type: "text", text: "second" }] },
+        ],
+      },
+    ]);
+  });
+
   test("polls active-sends once and slices it per column by sessionId; dispatch on change only", async () => {
     const { fn } = makeFetch((url, init) => {
       if (url.includes("/api/sessions/batch"))
@@ -238,7 +397,9 @@ describe("createSessionPoller", () => {
         });
       if (url.includes("/api/active-sends")) {
         const etag = "rev-7-all";
-        const inm = (init?.headers as Record<string, string>)?.["If-None-Match"];
+        const inm = (init?.headers as Record<string, string>)?.[
+          "If-None-Match"
+        ];
         if (inm === etag) return jsonResponse(null, { status: 304, etag });
         return jsonResponse(
           [
@@ -309,7 +470,11 @@ describe("createSessionPoller", () => {
     un();
     await poller.tick();
     const batch = calls.find((c) => c.url.includes("/api/sessions/batch"))!;
-    expect(JSON.parse(batch.body as string).sources.map((s: { source: string }) => s.source)).toEqual(["B"]);
+    expect(
+      JSON.parse(batch.body as string).sources.map(
+        (s: { source: string }) => s.source,
+      ),
+    ).toEqual(["B"]);
   });
 
   test("groups by daemonId — one batch per distinct daemon", async () => {
@@ -432,7 +597,9 @@ describe("createSessionPoller", () => {
     expect(JSON.parse(batch!.body as string).sources).toEqual([
       { source: "history" },
     ]);
-    expect(calls.filter((call) => call.url.includes("/api/active-sends"))).toHaveLength(1);
+    expect(
+      calls.filter((call) => call.url.includes("/api/active-sends")),
+    ).toHaveLength(1);
     expect(liveInflight).toEqual([["send-1"]]);
   });
 });

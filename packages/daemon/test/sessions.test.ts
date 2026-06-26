@@ -1588,6 +1588,51 @@ describe("getSessionsBatchResults", () => {
     expect(parsed.messages).toHaveLength(2);
   });
 
+  test("stale etag with message hashes returns a tail patch after append", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "supergit-batch-"));
+    const a = join(dir, "a.jsonl");
+    await writeFile(a, claudeLine("first", "2026-05-12T01:00:00Z") + "\n");
+
+    const [first] = await getSessionsBatchResults(
+      [{ source: a }],
+      agentClaude,
+      noTitle,
+    );
+    expect(first.status).toBe(200);
+    if (first.status !== 200) throw new Error("expected first full response");
+    const firstParsed = JSON.parse(first.body);
+
+    await appendFile(a, claudeLine("second", "2026-05-12T01:00:01Z") + "\n");
+    const [second] = await getSessionsBatchResults(
+      [
+        {
+          source: a,
+          etag: first.etag,
+          messageCursor: first.messageHashes.map((hash, index) => ({
+            index,
+            hash,
+          })),
+        },
+      ],
+      agentClaude,
+      noTitle,
+    );
+
+    expect(second.status).toBe(206);
+    if (second.status !== 206) throw new Error("expected patch response");
+    expect(second.patch.oldStart).toBe(0);
+    expect(second.patch.oldEnd).toBe(1);
+    expect(second.patch.messages).toHaveLength(1);
+    const patchedMessages = firstParsed.messages
+      .slice(second.patch.oldStart, second.patch.oldEnd)
+      .concat(second.patch.messages);
+    expect(
+      patchedMessages.map(
+        (m: { blocks: Array<{ text?: string }> }) => m.blocks[0]?.text,
+      ),
+    ).toEqual(["first", "second"]);
+  });
+
   test("unresolved source (resolver returns null) returns 403", async () => {
     const results = await getSessionsBatchResults(
       [{ source: "/outside/any/root.jsonl" }],

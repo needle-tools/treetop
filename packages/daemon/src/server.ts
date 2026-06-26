@@ -73,6 +73,7 @@ import {
   sessionCacheStats,
   parseSessionFile,
   readSessionInlineMedia,
+  type BatchSessionCursor,
 } from "./sessions";
 import { diagnoseClaudeSession, repairClaudeSession } from "./session-repair";
 import { serveImage } from "./images";
@@ -3975,9 +3976,9 @@ const server = Bun.serve<TermWsData, never>({
       // Batched sibling of GET /api/session: the dashboard coalesces every
       // mounted SessionView's 2 s poll into ONE request per daemon instead of
       // one-per-column (see plans/performance.md "per-column session-poll
-      // storm"). Body: { sources: [{ source, etag? }] }. Per-source 304/200/403
-      // mirrors the single route; logic lives in getSessionsBatchResults so it
-      // stays unit-tested.
+      // storm"). Body: { sources: [{ source, etag?, messageCursor? }] }.
+      // Per-source 304/206/200/403 mirrors the single route; logic lives in
+      // getSessionsBatchResults so it stays unit-tested.
       if (url.pathname === "/api/sessions/batch" && req.method === "POST") {
         const payload = await req.json().catch(() => null);
         const sources = (payload as { sources?: unknown } | null)?.sources;
@@ -3987,14 +3988,33 @@ const server = Bun.serve<TermWsData, never>({
             { status: 400 },
           );
         }
+        const parseCursor = (
+          value: unknown,
+        ): BatchSessionCursor[] | undefined => {
+          if (!Array.isArray(value)) return undefined;
+          const cursor: BatchSessionCursor[] = [];
+          for (const entry of value) {
+            if (!entry || typeof entry !== "object") continue;
+            const raw = entry as Record<string, unknown>;
+            if (Number.isInteger(raw.index) && typeof raw.hash === "string") {
+              cursor.push({ index: raw.index, hash: raw.hash });
+            }
+          }
+          return cursor.length > 0 ? cursor : undefined;
+        };
         const items = sources
           .filter(
-            (s): s is { source: string; etag?: string } =>
-              !!s && typeof s.source === "string",
+            (s): s is Record<string, unknown> & { source: string } =>
+              !!s && typeof s === "object" && typeof s.source === "string",
           )
           // Cap the fan-out so a malformed/hostile client can't ask the daemon
           // to stat+parse thousands of files in one request.
-          .slice(0, 200);
+          .slice(0, 200)
+          .map((s) => ({
+            source: s.source,
+            etag: typeof s.etag === "string" ? s.etag : undefined,
+            messageCursor: parseCursor(s.messageCursor),
+          }));
         const titles = await workspace.listSessionTitles();
         const results = await getSessionsBatchResults(
           items,
