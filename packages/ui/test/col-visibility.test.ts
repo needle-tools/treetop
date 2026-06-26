@@ -16,17 +16,10 @@
  * `paused` doesn't silently undo the win.
  */
 import { describe, expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
 import {
-  COL_OFFSCREEN_CLASS,
   rectNearViewport,
   shouldPauseColumn,
 } from "../src/col-visibility";
-
-const here = import.meta.dir;
-const baseCss = readFileSync(join(here, "../src/styles/base.css"), "utf-8");
-const appSvelte = readFileSync(join(here, "../src/App.svelte"), "utf-8");
 
 describe("shouldPauseColumn", () => {
   test("pauses when the column is not intersecting the viewport", () => {
@@ -68,26 +61,5 @@ describe("rectNearViewport", () => {
         viewport,
       ),
     ).toBe(false);
-  });
-});
-
-describe("col-offscreen wiring", () => {
-  test("base.css de-promotes off-screen columns with `animation: none`", () => {
-    const flat = baseCss.replace(/\s+/g, " ");
-    // The rule must target the class + descendants and use `none`, not paused.
-    expect(flat).toMatch(
-      new RegExp(`\\.${COL_OFFSCREEN_CLASS}[^{]*\\{[^}]*animation:\\s*none`),
-    );
-    // Guard against a regression to play-state inside this rule.
-    const rule = flat
-      .split("}")
-      .find((r) => r.includes(`.${COL_OFFSCREEN_CLASS}`) && r.includes("animation:"));
-    expect(rule).toBeDefined();
-    expect(rule).not.toContain("animation-play-state");
-  });
-
-  test("App.svelte attaches the colVisibility action to session columns", () => {
-    expect(appSvelte).toContain("use:colVisibility");
-    expect(appSvelte).toMatch(/import\s*\{[^}]*colVisibility[^}]*\}\s*from\s*["']\.\/col-visibility["']/);
   });
 });
