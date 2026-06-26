@@ -11,6 +11,7 @@
 
 import { createHash } from "node:crypto";
 import { readFile, stat, open } from "node:fs/promises";
+import sharp from "sharp";
 import type { AgentKind } from "./agents";
 
 export type NormalizedRole = "user" | "assistant" | "system" | "tool";
@@ -324,6 +325,10 @@ export type SessionInlineMediaResult =
   | { status: 500; error: string }
   | { status: 200; bytes: Uint8Array; mimeType: string };
 
+export interface SessionInlineMediaOptions {
+  maxSide?: number;
+}
+
 function decodeDataUrl(
   url: string,
 ): { bytes: Uint8Array; mimeType: string } | null {
@@ -369,6 +374,7 @@ function findInlineDataUrlByHash(value: unknown, hash: string): string | null {
 export async function readSessionInlineMedia(
   source: string,
   hash: string | null | undefined,
+  options: SessionInlineMediaOptions = {},
 ): Promise<SessionInlineMediaResult> {
   if (typeof hash !== "string" || !/^[a-f0-9]{64}$/i.test(hash)) {
     return { status: 400, error: "?hash required" };
@@ -384,7 +390,9 @@ export async function readSessionInlineMedia(
   const decoder = new TextDecoder();
   let leftover = "";
 
-  const scanLine = (line: string): SessionInlineMediaResult | null => {
+  const scanLine = async (
+    line: string,
+  ): Promise<SessionInlineMediaResult | null> => {
     if (!line || !line.includes("data:")) return null;
     let obj: unknown;
     try {
@@ -396,6 +404,9 @@ export async function readSessionInlineMedia(
     if (!dataUrl) return null;
     const decoded = decodeDataUrl(dataUrl);
     if (!decoded) return { status: 400, error: "invalid data URL" };
+    if (options.maxSide !== undefined) {
+      return await resizeInlineMedia(decoded, options.maxSide);
+    }
     return { status: 200, ...decoded };
   };
 
@@ -405,17 +416,55 @@ export async function readSessionInlineMedia(
       const lines = text.split("\n");
       leftover = lines.pop() ?? "";
       for (const line of lines) {
-        const found = scanLine(line);
+        const found = await scanLine(line);
         if (found) return found;
       }
     }
     const tail = leftover + decoder.decode();
-    const found = scanLine(tail);
+    const found = await scanLine(tail);
     if (found) return found;
   } catch {
     return { status: 404, error: "session not found" };
   }
   return { status: 404, error: "media not found" };
+}
+
+async function resizeInlineMedia(
+  media: { bytes: Uint8Array; mimeType: string },
+  maxSide: number,
+): Promise<SessionInlineMediaResult> {
+  if (!Number.isFinite(maxSide) || maxSide <= 0) {
+    return { status: 400, error: "?max must be a positive number" };
+  }
+  const roundedMax = Math.floor(maxSide);
+  if (roundedMax <= 0)
+    return { status: 400, error: "?max must be a positive number" };
+  if (!media.mimeType.toLowerCase().startsWith("image/")) {
+    return { status: 400, error: "?max is only supported for images" };
+  }
+  try {
+    const image = sharp(media.bytes, { animated: false });
+    const meta = await image.metadata();
+    const width = meta.width ?? 0;
+    const height = meta.height ?? 0;
+    if (width <= 0 || height <= 0) {
+      return { status: 500, error: "failed to read image dimensions" };
+    }
+    if (Math.max(width, height) <= roundedMax) {
+      return { status: 200, ...media };
+    }
+    const bytes = await image
+      .resize({
+        width: roundedMax,
+        height: roundedMax,
+        fit: "inside",
+        withoutEnlargement: true,
+      })
+      .toBuffer();
+    return { status: 200, bytes, mimeType: media.mimeType };
+  } catch {
+    return { status: 500, error: "failed to resize inline media" };
+  }
 }
 
 /** Process a single JSONL line into `out`. Returns void; mutates `out`

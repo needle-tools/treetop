@@ -3106,6 +3106,9 @@ const server = Bun.serve<TermWsData, never>({
         const result = await readSessionInlineMedia(
           resolved.normalised,
           url.searchParams.get("hash"),
+          url.searchParams.has("max")
+            ? { maxSide: Number(url.searchParams.get("max")) }
+            : undefined,
         );
         if (result.status !== 200) {
           return json({ error: result.error }, { status: result.status });

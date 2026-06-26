@@ -705,14 +705,30 @@
     return "•";
   }
 
-  function mediaSourceUrl(block: NormalizedBlock): string | undefined {
+  const TRANSCRIPT_THUMB_MAX_SIDE = 320;
+
+  function appendQueryParam(path: string, key: string, value: string): string {
+    const separator = path.includes("?") ? "&" : "?";
+    return `${path}${separator}${encodeURIComponent(key)}=${encodeURIComponent(value)}`;
+  }
+
+  function mediaSourceUrl(
+    block: NormalizedBlock,
+    options: { thumbnail?: boolean } = {},
+  ): string | undefined {
     if (block.path && block.mediaKind === "image") {
       return apiUrl(
         `/api/image?path=${encodeURIComponent(block.path)}`,
         daemonId,
       );
     }
-    if (block.url?.startsWith("/api/")) return apiUrl(block.url, daemonId);
+    if (block.url?.startsWith("/api/")) {
+      const path =
+        options.thumbnail && block.url.startsWith("/api/session/media")
+          ? appendQueryParam(block.url, "max", String(TRANSCRIPT_THUMB_MAX_SIDE))
+          : block.url;
+      return apiUrl(path, daemonId);
+    }
     return block.url;
   }
 
@@ -978,7 +994,7 @@
   {#if userImageBlocks.length > 0}
     <div class="block media-strip user-media-strip">
       {#each userImageBlocks as imageBlock, imageIndex (`${imageBlock.path ?? imageBlock.url ?? "image"}:${imageIndex}`)}
-        {@const src = mediaSourceUrl(imageBlock)}
+        {@const src = mediaSourceUrl(imageBlock, { thumbnail: true })}
         {#if src}
           <button
             type="button"
@@ -999,7 +1015,9 @@
     </div>
   {/if}
   {#each blocks as b, blockIndex (visualBlockRenderKey(b, blockIndex))}
-    {#if m.role === "user" && isImageMediaBlock(b) && mediaSourceUrl(b)}
+    {#if m.role === "user" &&
+    isImageMediaBlock(b) &&
+    mediaSourceUrl(b, { thumbnail: true })}
       <!-- Rendered once in the horizontal image strip above. -->
     {:else if b.type === "text"}
       {@const displayText = visualTextForBlock(b.text, m.role)}
@@ -1062,7 +1080,7 @@
         </div>
       {/if}
     {:else if b.type === "media"}
-      {@const src = mediaSourceUrl(b)}
+      {@const src = mediaSourceUrl(b, { thumbnail: true })}
       <figure
         class="block media-block"
         class:media-image={b.mediaKind === "image"}

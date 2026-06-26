@@ -4,6 +4,7 @@ import { mkdtemp, writeFile, appendFile, utimes } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import sharp from "sharp";
 import {
   parseClaudeJsonl,
   parseCodexJsonl,
@@ -1010,6 +1011,83 @@ describe("getSessionResponseJson cache", () => {
     }
   });
 
+  test("can return a bounded thumbnail for inline image data", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "supergit-session-cache-"));
+    const path = join(dir, "session.jsonl");
+    const bytes = await sharp({
+      create: {
+        width: 120,
+        height: 60,
+        channels: 3,
+        background: "#ff3366",
+      },
+    })
+      .png()
+      .toBuffer();
+    const dataUrl = `data:image/png;base64,${bytes.toString("base64")}`;
+    const hash = createHash("sha256").update(dataUrl).digest("hex");
+    await writeFile(
+      path,
+      JSON.stringify({
+        timestamp: "2026-06-19T10:00:00.000Z",
+        type: "response_item",
+        payload: {
+          type: "message",
+          role: "user",
+          content: [{ type: "input_image", image_url: { url: dataUrl } }],
+        },
+      }) + "\n",
+    );
+
+    const media = await readSessionInlineMedia(path, hash, { maxSide: 30 });
+
+    expect(media.status).toBe(200);
+    if (media.status === 200) {
+      expect(media.bytes.byteLength).toBeLessThan(bytes.byteLength);
+      const meta = await sharp(media.bytes).metadata();
+      expect(meta.width).toBe(30);
+      expect(meta.height).toBe(15);
+      expect(media.mimeType).toBe("image/png");
+    }
+  });
+
+  test("does not re-encode inline image data that already fits the thumbnail cap", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "supergit-session-cache-"));
+    const path = join(dir, "session.jsonl");
+    const bytes = await sharp({
+      create: {
+        width: 20,
+        height: 10,
+        channels: 3,
+        background: "#33ccaa",
+      },
+    })
+      .png()
+      .toBuffer();
+    const dataUrl = `data:image/png;base64,${bytes.toString("base64")}`;
+    const hash = createHash("sha256").update(dataUrl).digest("hex");
+    await writeFile(
+      path,
+      JSON.stringify({
+        timestamp: "2026-06-19T10:00:00.000Z",
+        type: "response_item",
+        payload: {
+          type: "message",
+          role: "user",
+          content: [{ type: "input_image", image_url: { url: dataUrl } }],
+        },
+      }) + "\n",
+    );
+
+    const media = await readSessionInlineMedia(path, hash, { maxSide: 30 });
+
+    expect(media.status).toBe(200);
+    if (media.status === 200) {
+      expect(Buffer.from(media.bytes)).toEqual(bytes);
+      expect(media.mimeType).toBe("image/png");
+    }
+  });
+
   test("injects manualTitle into cached JSON without busting the cache", async () => {
     const dir = await mkdtemp(join(tmpdir(), "supergit-session-cache-"));
     const path = join(dir, "session.jsonl");
@@ -1328,8 +1406,7 @@ describe("getSessionResponseJson cache", () => {
     expect(parsed.messages[0]?.role).toBe("user");
     expect(parsed.messages[0]?.blocks[0]?.text).toBe("first visible user");
     expect(
-      parsed.messages.filter((m: { role: string }) => m.role === "user")
-        .length,
+      parsed.messages.filter((m: { role: string }) => m.role === "user").length,
     ).toBe(2);
     expect(parsed.messages.at(-1)?.blocks[0]?.text).toBe("current-tool-19");
   });
