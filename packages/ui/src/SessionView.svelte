@@ -759,24 +759,60 @@
   }
   let lastSummaryRequestSource: string | undefined = undefined;
   let columnNearViewport = false;
+  let sessionIoNearViewport = false;
   let sessionVisibilityObs: IntersectionObserver | null = null;
+  let sessionAncestorVisibilityObs: MutationObserver | null = null;
+
+  function sessionAncestorsNearViewport(): boolean {
+    if (!sessionEl) return true;
+    const col = sessionEl.closest(".session-col");
+    const row = sessionEl.closest(".row");
+    return (
+      !col?.classList.contains("col-offscreen") &&
+      !row?.classList.contains("row-offscreen")
+    );
+  }
+
+  function syncSessionViewportState(): void {
+    const near = sessionIoNearViewport && sessionAncestorsNearViewport();
+    if (columnNearViewport === near) return;
+    columnNearViewport = near;
+    if (near) void requestSessionPollNow();
+  }
 
   function observeSessionVisibility(): void {
     if (typeof IntersectionObserver === "undefined" || !sessionEl) {
+      sessionIoNearViewport = true;
       columnNearViewport = true;
       return;
     }
     sessionVisibilityObs?.disconnect();
     sessionVisibilityObs = new IntersectionObserver(
       (entries) => {
-        const near = entries.some((entry) => entry.isIntersecting);
-        if (columnNearViewport === near) return;
-        columnNearViewport = near;
-        if (near) void requestSessionPollNow();
+        sessionIoNearViewport = entries.some((entry) => entry.isIntersecting);
+        syncSessionViewportState();
       },
-      { root: null, rootMargin: "900px", threshold: 0 },
+      { root: null, rootMargin: "300px", threshold: 0 },
     );
     sessionVisibilityObs.observe(sessionEl);
+    if (typeof MutationObserver !== "undefined") {
+      sessionAncestorVisibilityObs?.disconnect();
+      sessionAncestorVisibilityObs = new MutationObserver(() =>
+        syncSessionViewportState(),
+      );
+      const col = sessionEl.closest(".session-col");
+      const row = sessionEl.closest(".row");
+      col &&
+        sessionAncestorVisibilityObs.observe(col, {
+          attributes: true,
+          attributeFilter: ["class"],
+        });
+      row &&
+        sessionAncestorVisibilityObs.observe(row, {
+          attributes: true,
+          attributeFilter: ["class"],
+        });
+    }
   }
 
   // Re-fetch after the transcript body is present + whenever its source changes.
@@ -1013,17 +1049,22 @@
     visualSessionMessages,
     lastUserMessage,
   );
+  $: renderReadBody = mode !== "read" || columnNearViewport;
   let visualTranscriptItems: VisualTranscriptItem<
     NormalizedBlock,
     NormalizedMessage
   >[] = [];
-  $: visualTranscriptItems = reuseStableVisualTranscriptItems(
-    visualTranscriptItems,
-    buildVisualTranscriptItems(visualSessionMessages, {
-      active: visualTranscriptActive,
-    }),
-  );
-  $: codexLatestPlan = latestVisualPlan(visualSessionMessages);
+  $: visualTranscriptItems = renderReadBody
+    ? reuseStableVisualTranscriptItems(
+        visualTranscriptItems,
+        buildVisualTranscriptItems(visualSessionMessages, {
+          active: visualTranscriptActive,
+        }),
+      )
+    : [];
+  $: codexLatestPlan = renderReadBody
+    ? latestVisualPlan(visualSessionMessages)
+    : null;
 
   /** Build the shell command we'd hand to an external terminal to
    *  resume this session. Mirrors the argv the inline TerminalView
@@ -3536,6 +3577,7 @@
 
   $: showChatComposer =
     mode === "read" &&
+    renderReadBody &&
     (agent === "ollama" || (agent === "codex" && codexVisualAppSurface));
   $: stoppedTranscriptSurface =
     mode === "read" && !showChatComposer && !visualTranscriptActive;
@@ -3781,6 +3823,8 @@
     mounted = false;
     sessionVisibilityObs?.disconnect();
     sessionVisibilityObs = null;
+    sessionAncestorVisibilityObs?.disconnect();
+    sessionAncestorVisibilityObs = null;
     if (pendingTimer) clearTimeout(pendingTimer);
     closeCodexEventStream();
     if (disposeGraceTimer) clearTimeout(disposeGraceTimer);
@@ -4172,6 +4216,8 @@
         void load();
       }}
     />
+  {:else if mode === "read" && !renderReadBody}
+    <div class="session-body-deferred" aria-hidden="true"></div>
   {:else if error}
     <p class="error">{error}</p>
   {:else if loading && !session}
