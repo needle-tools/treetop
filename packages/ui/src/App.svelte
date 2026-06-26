@@ -3977,9 +3977,13 @@
           },
         });
         const reposStream = fetchReposNDJSON(makeRepoHandlers());
-        const [e, s, t, liveTermsResp, dResp] = await Promise.all([
+        // Keep bootstrap fetch fan-out below the browser's same-origin
+        // HTTP/1 connection budget while /api/repos and SSE streams are open.
+        const [e, s] = await Promise.all([
           fetch(apiUrl("/api/events")),
           fetch(apiUrl("/api/shells")),
+        ]);
+        const [t, liveTermsResp, dResp] = await Promise.all([
           fetch(apiUrl("/api/session-titles")),
           fetch(apiUrl("/api/terminals")).catch(() => null),
           // Cheap local read of the remote-daemon registry; null if it
