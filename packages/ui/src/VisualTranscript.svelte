@@ -115,6 +115,7 @@
   let openMediaBlocks: NormalizedBlock[] = [];
   let openMediaIndex = -1;
   let expandedThinkingWorkKeys = new Set<string>();
+  let openWorkEntryKeys = new Set<string>();
   const MARKDOWN_CACHE_LIMIT = 500;
   const markdownCache = new Map<string, string>();
   const TIME_TITLE_CACHE_LIMIT = 1000;
@@ -714,18 +715,43 @@
     return isThinkingWorkEntry(entry) && expandedThinkingWorkKeys.has(workKey);
   }
 
-  function onWorkEntryToggle(
-    event: Event,
+  function workEntryRenderKey(
+    workKey: string,
+    displayEntry: ReturnType<typeof buildVisualWorkDisplayEntries>[number],
+  ): string {
+    return `${workKey}\u0000${getVisualWorkDisplayEntryKey(displayEntry)}`;
+  }
+
+  function setWorkEntryBodyRendered(entryKey: string, open: boolean): void {
+    if (open) {
+      if (!openWorkEntryKeys.has(entryKey)) {
+        openWorkEntryKeys = new Set([...openWorkEntryKeys, entryKey]);
+      }
+      return;
+    }
+    if (!openWorkEntryKeys.has(entryKey)) return;
+    const next = new Set(openWorkEntryKeys);
+    next.delete(entryKey);
+    openWorkEntryKeys = next;
+  }
+
+  function syncWorkEntryOpenState(
+    details: HTMLDetailsElement | null,
     item: Extract<
       VisualTranscriptItem<NormalizedBlock, NormalizedMessage>,
       { kind: "work" }
     >,
     workKey: string,
+    displayEntry: ReturnType<typeof buildVisualWorkDisplayEntries>[number],
     entry: VisualWorkEntry<NormalizedBlock, NormalizedMessage>,
   ): void {
-    const details = event.currentTarget as HTMLDetailsElement | null;
+    if (!details) return;
+    setWorkEntryBodyRendered(
+      workEntryRenderKey(workKey, displayEntry),
+      details.open,
+    );
     if (
-      !details?.open ||
+      !details.open ||
       !item.open ||
       item.endedAt ||
       !isThinkingWorkEntry(entry)
@@ -734,6 +760,63 @@
     }
     if (expandedThinkingWorkKeys.has(workKey)) return;
     expandedThinkingWorkKeys = new Set([...expandedThinkingWorkKeys, workKey]);
+  }
+
+  interface WorkEntryBodyVisibilityParams {
+    item: Extract<
+      VisualTranscriptItem<NormalizedBlock, NormalizedMessage>,
+      { kind: "work" }
+    >;
+    workKey: string;
+    displayEntry: ReturnType<typeof buildVisualWorkDisplayEntries>[number];
+    entry: VisualWorkEntry<NormalizedBlock, NormalizedMessage>;
+  }
+
+  function workEntryBodyVisibility(
+    node: HTMLDetailsElement,
+    params: WorkEntryBodyVisibilityParams,
+  ) {
+    let current = params;
+    const sync = () =>
+      syncWorkEntryOpenState(
+        node,
+        current.item,
+        current.workKey,
+        current.displayEntry,
+        current.entry,
+      );
+    const onSummaryClick = (event: MouseEvent) => {
+      const summary = (event.target as Element | null)?.closest("summary");
+      if (summary?.parentElement !== node) return;
+      requestAnimationFrame(sync);
+    };
+    node.addEventListener("toggle", sync);
+    node.addEventListener("click", onSummaryClick);
+    requestAnimationFrame(sync);
+    return {
+      update(next: WorkEntryBodyVisibilityParams) {
+        current = next;
+        requestAnimationFrame(sync);
+      },
+      destroy() {
+        node.removeEventListener("toggle", sync);
+        node.removeEventListener("click", onSummaryClick);
+      },
+    };
+  }
+
+  function onWorkEntryToggle(
+    event: Event,
+    item: Extract<
+      VisualTranscriptItem<NormalizedBlock, NormalizedMessage>,
+      { kind: "work" }
+    >,
+    workKey: string,
+    displayEntry: ReturnType<typeof buildVisualWorkDisplayEntries>[number],
+    entry: VisualWorkEntry<NormalizedBlock, NormalizedMessage>,
+  ): void {
+    const details = event.currentTarget as HTMLDetailsElement | null;
+    syncWorkEntryOpenState(details, item, workKey, displayEntry, entry);
   }
 
   function visualBlockRenderKey(block: NormalizedBlock, index: number): string {
@@ -1178,11 +1261,27 @@
                 {@const resultBlock = workEntryToolResultBlock(entry)}
                 {@const collapsedTitle = workEntryTitle(entry)}
                 {@const collapsedPreview = workEntryCollapsedPreview(entry)}
+                {@const entryRenderKey = workEntryRenderKey(
+                  workKey,
+                  displayEntry,
+                )}
                 <details
                   class="work-entry"
                   open={forceOpenThinkingEntry(workKey, entry)}
+                  use:workEntryBodyVisibility={{
+                    item,
+                    workKey,
+                    displayEntry,
+                    entry,
+                  }}
                   on:toggle={(event) =>
-                    onWorkEntryToggle(event, item, workKey, entry)}
+                    onWorkEntryToggle(
+                      event,
+                      item,
+                      workKey,
+                      displayEntry,
+                      entry,
+                    )}
                 >
                   <summary>
                     {#if toolBlock}
@@ -1253,23 +1352,25 @@
                       </span>
                     {/if}
                   </summary>
-                  <div class="work-entry-body" on:wheel|capture={handOffNestedWheel}>
-                    {#if editSummary}
-                      {@render renderFileEditSummary(editSummary)}
-                      <details class="work-raw-tool-details">
-                        <summary>Raw tool input/output</summary>
+                  {#if forceOpenThinkingEntry(workKey, entry) || openWorkEntryKeys.has(entryRenderKey)}
+                    <div class="work-entry-body" on:wheel|capture={handOffNestedWheel}>
+                      {#if editSummary}
+                        {@render renderFileEditSummary(editSummary)}
+                        <details class="work-raw-tool-details">
+                          <summary>Raw tool input/output</summary>
+                          {@render renderWorkEntryBlocks(entry.blocks)}
+                          {#if displayEntry.pairedResult}
+                            {@render renderWorkEntryBlocks(displayEntry.pairedResult.blocks)}
+                          {/if}
+                        </details>
+                      {:else}
                         {@render renderWorkEntryBlocks(entry.blocks)}
                         {#if displayEntry.pairedResult}
                           {@render renderWorkEntryBlocks(displayEntry.pairedResult.blocks)}
                         {/if}
-                      </details>
-                    {:else}
-                      {@render renderWorkEntryBlocks(entry.blocks)}
-                      {#if displayEntry.pairedResult}
-                        {@render renderWorkEntryBlocks(displayEntry.pairedResult.blocks)}
                       {/if}
-                    {/if}
-                  </div>
+                    </div>
+                  {/if}
                 </details>
               {/if}
             {/each}
