@@ -86,6 +86,7 @@
   import {
     invalidateCachedSessionSummary,
     loadCachedSessionSummary,
+    nextCachedSessionSummaryRequest,
   } from "./summary-queue";
   import { shouldAutoSummarizeTui } from "./tui-auto-summary";
   import { openRepair } from "./repair-session-dialog";
@@ -757,18 +758,39 @@
     }
   }
   let lastSummaryRequestSource: string | undefined = undefined;
+  let summaryNearViewport = false;
+  let summaryVisibilityObs: IntersectionObserver | null = null;
+
+  function observeSummaryVisibility(): void {
+    if (typeof IntersectionObserver === "undefined" || !sessionEl) {
+      summaryNearViewport = true;
+      return;
+    }
+    summaryVisibilityObs?.disconnect();
+    summaryVisibilityObs = new IntersectionObserver(
+      (entries) => {
+        if (!entries.some((entry) => entry.isIntersecting)) return;
+        summaryNearViewport = true;
+        summaryVisibilityObs?.disconnect();
+        summaryVisibilityObs = null;
+      },
+      { root: null, rootMargin: "900px", threshold: 0 },
+    );
+    summaryVisibilityObs.observe(sessionEl);
+  }
+
   // Re-fetch after the transcript body is present + whenever its source changes.
   // Initial transcript hydration is batched by session-poll.ts; summary lookups
-  // should not compete with first paint for every restored column.
+  // should not compete with first paint for every restored off-screen column.
   $: {
-    const target = sessionFileSource;
-    if (!target) {
-      if (lastSummaryRequestSource !== "") {
-        lastSummaryRequestSource = "";
-        void refreshSummary();
-      }
-    } else if (session && target !== lastSummaryRequestSource) {
-      lastSummaryRequestSource = target;
+    const nextSummaryRequest = nextCachedSessionSummaryRequest({
+      target: sessionFileSource,
+      sessionLoaded: !!session,
+      nearViewport: summaryNearViewport,
+      lastRequested: lastSummaryRequestSource,
+    });
+    if (nextSummaryRequest !== null) {
+      lastSummaryRequestSource = nextSummaryRequest;
       void refreshSummary();
     }
   }
@@ -3745,6 +3767,7 @@
 
   onMount(() => {
     mounted = true;
+    observeSummaryVisibility();
     window.addEventListener(STAGE_PROMPT_EVENT, onStagePrompt);
     syncSessionPollRegistration();
   });
@@ -3755,6 +3778,8 @@
     unregisterPoll = null;
     registeredPollKey = "";
     mounted = false;
+    summaryVisibilityObs?.disconnect();
+    summaryVisibilityObs = null;
     if (pendingTimer) clearTimeout(pendingTimer);
     closeCodexEventStream();
     if (disposeGraceTimer) clearTimeout(disposeGraceTimer);

@@ -130,6 +130,18 @@ export function loadCachedSessionSummary(
   return promise;
 }
 
+export function nextCachedSessionSummaryRequest(opts: {
+  target: string | undefined | null;
+  sessionLoaded: boolean;
+  nearViewport: boolean;
+  lastRequested: string | undefined;
+}): string | null {
+  const target = opts.target ?? "";
+  if (!target) return opts.lastRequested !== "" ? "" : null;
+  if (!opts.sessionLoaded || !opts.nearViewport) return null;
+  return target !== opts.lastRequested ? target : null;
+}
+
 async function pump(): Promise<void> {
   if (running) return;
   running = true;

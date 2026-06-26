@@ -20,6 +20,7 @@ import {
   enqueueSummary,
   invalidateCachedSessionSummary,
   loadCachedSessionSummary,
+  nextCachedSessionSummaryRequest,
 } from "../src/summary-queue";
 
 /** Resolve after the current macrotask queue drains — enough for the
@@ -219,5 +220,56 @@ describe("loadCachedSessionSummary", () => {
       await loadCachedSessionSummary("source-a", "/summary/a", fetchImpl),
     ).toEqual({ summary: { body: "v2" } });
     expect(calls).toBe(2);
+  });
+});
+
+describe("nextCachedSessionSummaryRequest", () => {
+  test("clears when the column no longer has a source", () => {
+    expect(
+      nextCachedSessionSummaryRequest({
+        target: undefined,
+        sessionLoaded: false,
+        nearViewport: false,
+        lastRequested: "source-a",
+      }),
+    ).toBe("");
+  });
+
+  test("waits until the session is loaded and near the viewport", () => {
+    expect(
+      nextCachedSessionSummaryRequest({
+        target: "source-a",
+        sessionLoaded: false,
+        nearViewport: true,
+        lastRequested: undefined,
+      }),
+    ).toBeNull();
+    expect(
+      nextCachedSessionSummaryRequest({
+        target: "source-a",
+        sessionLoaded: true,
+        nearViewport: false,
+        lastRequested: undefined,
+      }),
+    ).toBeNull();
+  });
+
+  test("requests a visible loaded source once", () => {
+    expect(
+      nextCachedSessionSummaryRequest({
+        target: "source-a",
+        sessionLoaded: true,
+        nearViewport: true,
+        lastRequested: undefined,
+      }),
+    ).toBe("source-a");
+    expect(
+      nextCachedSessionSummaryRequest({
+        target: "source-a",
+        sessionLoaded: true,
+        nearViewport: true,
+        lastRequested: "source-a",
+      }),
+    ).toBeNull();
   });
 });
