@@ -1517,7 +1517,9 @@
   }
 
   function scrollToEnd(el: HTMLElement): void {
-    el.scrollTop = el.scrollHeight;
+    // Let the browser clamp to the real end; reading scrollHeight here forces
+    // layout across large transcript columns during startup.
+    el.scrollTop = 1_000_000_000;
   }
 
   function resetVisualTailFollow(): void {
