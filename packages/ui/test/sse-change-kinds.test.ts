@@ -182,6 +182,35 @@ describe("createFsChangeBatcher", () => {
     expect(flushed).toEqual([["/wt/a", "/wt/b"]]);
   });
 
+  test("uses trailing debounce so long bursts flush once after quiet", () => {
+    const timers: Array<() => void> = [];
+    const cleared = new Set<number>();
+    const flushed: string[][] = [];
+    const batcher = createFsChangeBatcher({
+      delayMs: 250,
+      onFlush: (paths) => flushed.push(paths),
+      setTimer: (fn) => {
+        timers.push(fn);
+        return timers.length - 1;
+      },
+      clearTimer: (handle) => {
+        cleared.add(handle as number);
+      },
+    });
+
+    batcher.push("/wt/a");
+    batcher.push("/wt/b");
+    batcher.push("/wt/c");
+
+    timers[0]?.();
+    timers[1]?.();
+    expect(flushed).toEqual([]);
+    expect(cleared).toEqual(new Set([0, 1]));
+
+    timers[2]?.();
+    expect(flushed).toEqual([["/wt/a", "/wt/b", "/wt/c"]]);
+  });
+
   test("flushes synchronously and clears the pending timer", () => {
     let clearCount = 0;
     const flushed: string[][] = [];

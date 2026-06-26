@@ -129,8 +129,10 @@ export function createFsChangeBatcher(opts: {
     ((handle) => clearTimeout(handle as ReturnType<typeof setTimeout>));
   const pending = new Set<string>();
   let timer: unknown = null;
+  let timerToken = 0;
 
   const flush = () => {
+    timerToken++;
     if (timer !== null) {
       clearTimer(timer);
       timer = null;
@@ -144,8 +146,12 @@ export function createFsChangeBatcher(opts: {
   return {
     push(path: string) {
       pending.add(path);
-      if (timer !== null) return;
-      timer = setTimer(flush, opts.delayMs);
+      if (timer !== null) clearTimer(timer);
+      const token = ++timerToken;
+      timer = setTimer(() => {
+        if (token !== timerToken) return;
+        flush();
+      }, opts.delayMs);
     },
     flush,
     dispose() {
