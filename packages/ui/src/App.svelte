@@ -87,7 +87,11 @@
   import StatusBadge from "./StatusBadge.svelte";
   import { aheadAged, BLINK_AHEAD_MINUTES } from "./ahead-age";
   import { statusSummary, type FileStatus } from "./status-summary";
-  import { planReveal, type RevealMode } from "./reveal-session";
+  import {
+    dockEntryExistsInLoadedRepos,
+    planReveal,
+    type RevealMode,
+  } from "./reveal-session";
   import StickyNotesLayer from "./StickyNotesLayer.svelte";
   import AttachmentIcon from "./AttachmentIcon.svelte";
   import NoteIcon from "./NoteIcon.svelte";
@@ -3635,44 +3639,7 @@
       `.session-col[data-session-source="${CSS.escape(entry.source)}"]`,
     );
     if (colEl) return;
-    let daemonReachable = false;
-    let stillExists = false;
-    try {
-      // Drain the NDJSON stream into a full array — we don't need
-      // progressive rendering for this verification path, just the
-      // final list.
-      const fresh = await fetchReposNDJSON();
-      daemonReachable = true;
-      const isSynthetic = SYNTHETIC_SOURCE_PREFIXES.some((p) =>
-        entry.source.startsWith(p),
-      );
-      if (isSynthetic) {
-        // Synthetic sources (__new__:, __attached__:, __transcript__:)
-        // are managed client-side — they "exist" so long as their
-        // owning worktree still exists on disk. The agents list
-        // wouldn't carry them.
-        stillExists = fresh.some((rr) =>
-          (rr.worktrees ?? []).some((w) => w.path === entry.wtPath),
-        );
-      } else {
-        const entryKeys = sessionSurfaceKeys({
-          agent: entry.agent,
-          source: entry.source,
-          resumeSessionId: entry.resumeSessionId,
-          transcriptSource: entry.transcriptSource,
-        });
-        stillExists = fresh.some((rr) =>
-          (rr.worktrees ?? []).some((w) =>
-            (w.agents ?? []).some((a) =>
-              sessionSurfaceKeys(a).some((key) => entryKeys.includes(key)),
-            ),
-          ),
-        );
-      }
-    } catch {
-      daemonReachable = false;
-    }
-    if (daemonReachable && !stillExists) {
+    if (!dockEntryExistsInLoadedRepos(repos, entry)) {
       const label = entry.manualTitle ?? entry.title ?? "this session";
       addToast({
         kind: "warning",
@@ -3680,9 +3647,6 @@
         message: `${label} did not render, but it was left open so your layout is preserved.`,
       });
     }
-    // daemonReachable === false → daemon is down or restarting; leave
-    // openSessionsByWt untouched so the entry is still there once the
-    // daemon comes back up.
   }
   /** Duration (ms) of the dock-pick scroll animations — short and
    *  snappy, versus the browser's sluggish native smooth-scroll. */

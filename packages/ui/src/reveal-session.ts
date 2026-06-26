@@ -9,6 +9,8 @@
  * `toggleOpenSessionInWt`, `scrollToAndFlashSession`).
  */
 
+import { SYNTHETIC_SOURCE_PREFIXES, sessionSurfaceKeys } from "./storage";
+
 /** Two call sources that share most of the matrix:
  *
  *   - `reveal` — the row-head "most recent session" badge: never
@@ -86,4 +88,46 @@ export function planReveal(input: RevealInput): RevealPlan {
     close: isOpen,
     scrollAndFlash: false,
   };
+}
+
+export interface DockEntryLookupRepo {
+  id: string;
+  worktrees?: DockEntryLookupWorktree[];
+}
+
+export interface DockEntryLookupWorktree {
+  path: string;
+  agents?: DockEntryLookupSession[];
+}
+
+export interface DockEntryLookupSession {
+  agent: string;
+  source?: string;
+  transcriptSource?: string;
+  resumeSessionId?: string;
+  sessionId?: string;
+}
+
+export interface DockEntryLookupInput extends DockEntryLookupSession {
+  repoId: string;
+  wtPath: string;
+  source: string;
+}
+
+export function dockEntryExistsInLoadedRepos(
+  repos: readonly DockEntryLookupRepo[],
+  entry: DockEntryLookupInput,
+): boolean {
+  const repo = repos.find((r) => r.id === entry.repoId);
+  const wt = repo?.worktrees?.find((w) => w.path === entry.wtPath);
+  if (!wt) return false;
+
+  if (SYNTHETIC_SOURCE_PREFIXES.some((p) => entry.source.startsWith(p))) {
+    return true;
+  }
+
+  const entryKeys = sessionSurfaceKeys(entry);
+  return (wt.agents ?? []).some((agent) =>
+    sessionSurfaceKeys(agent).some((key) => entryKeys.includes(key)),
+  );
 }
