@@ -131,18 +131,6 @@ describe("activity tail startup", () => {
     );
   });
 
-  test("agent detection shares in-flight scans and a short completed-result cache", () => {
-    expect(SERVER_TS).toContain("let agentsInflight");
-    expect(SERVER_TS).toContain("const AGENTS_CACHE_MS");
-    expect(SERVER_TS).toContain("let agentsCache");
-    const fnBody = SERVER_TS.match(
-      /async function sharedDetectAgents[\s\S]*?\n\}/,
-    )?.[0];
-    expect(fnBody, "sharedDetectAgents not found").toBeTruthy();
-    expect(fnBody).toContain("const now = Date.now()");
-    expect(fnBody).toContain("now - agentsCache.at < AGENTS_CACHE_MS");
-    expect(fnBody).toContain("agentsCache = { at: Date.now(), value }");
-  });
 });
 
 // ---------------------------------------------------------------------------

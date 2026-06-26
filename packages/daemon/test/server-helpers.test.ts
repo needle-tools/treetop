@@ -1197,4 +1197,16 @@ describe("rewriteTempWorkspaceAttachmentRefs", () => {
       "/tmp/ws-copy/attachments/pasted-content.txt",
     );
   });
+
+  test("rewrites stale previous-temp attachment paths to the current temp workspace", () => {
+    expect(
+      rewriteTempWorkspaceAttachmentRefs(
+        '{"path":"/tmp/treetop-temp-workspaces/default-123456-789/attachments/paste.txt"}',
+        "/Users/me/supergit/workspaces/default",
+        "/tmp/treetop-temp-workspaces/default-987654-321",
+      ),
+    ).toBe(
+      '{"path":"/tmp/treetop-temp-workspaces/default-987654-321/attachments/paste.txt"}',
+    );
+  });
 });

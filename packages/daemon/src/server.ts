@@ -58,6 +58,7 @@ import {
   type FileDiffKind,
 } from "./git";
 import { createLimiter } from "./concurrency";
+import { createStaleWhileRevalidateCache } from "./async-cache";
 import { $, type ServerWebSocket } from "bun";
 import {
   detectAgents,
@@ -1497,33 +1498,25 @@ let claudeTopSessionsCache: {
 } = { at: 0, value: null };
 
 // detectAgents() walks ~/.claude + ~/.codex + workspaceStorage and is often
-// the slowest part of /api/repos in a long-lived dashboard. We still want new
-// agent sessions to appear quickly, so this is not a long-lived semantic cache:
-// it is a short "burst absorber" for the pattern visible in prod logs where
-// visible-fetch, fs_change, and UI refreshes trigger several repo enriches in a
-// few seconds. In-flight coalescing handles true concurrency; this TTL handles
-// near-concurrency without making a newly-created session stale for more than a
-// heartbeat.
+// the slowest part of /api/repos in a long-lived dashboard. The first scan
+// blocks so the initial page has real agent rows; later expired reads reuse the
+// last good snapshot and refresh in the background. That keeps periodic
+// filesystem sweeps from holding the repo stream hostage.
 import type { AgentSession } from "./agents";
 const AGENTS_CACHE_MS = Number(process.env.SUPERGIT_AGENTS_CACHE_MS ?? 10_000);
-let agentsInflight: Promise<AgentSession[]> | null = null;
-let agentsCache: { at: number; value: AgentSession[] } | null = null;
+const agentsCache = createStaleWhileRevalidateCache<AgentSession[]>({
+  ttlMs: AGENTS_CACHE_MS,
+  load: () => detectAgents(WORKSPACE_PATH),
+  onRefreshError: (err) => {
+    console.warn(
+      "supergit daemon: background detectAgents refresh failed",
+      err,
+    );
+  },
+});
 
 async function sharedDetectAgents(): Promise<AgentSession[]> {
-  const now = Date.now();
-  if (agentsCache && now - agentsCache.at < AGENTS_CACHE_MS) {
-    return agentsCache.value;
-  }
-  if (agentsInflight) return agentsInflight;
-  agentsInflight = detectAgents(WORKSPACE_PATH)
-    .then((value) => {
-      agentsCache = { at: Date.now(), value };
-      return value;
-    })
-    .finally(() => {
-      agentsInflight = null;
-    });
-  return agentsInflight;
+  return agentsCache.get();
 }
 
 // Per-worktree git-status cache. Keyed by worktree path + selected remote;

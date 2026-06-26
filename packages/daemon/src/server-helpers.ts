@@ -55,6 +55,16 @@ function trimTrailingPathSeparators(path: string): string {
   return path.replace(/[\\/]+$/, "");
 }
 
+function pathParent(path: string): string {
+  const trimmed = trimTrailingPathSeparators(path);
+  const slash = Math.max(trimmed.lastIndexOf("/"), trimmed.lastIndexOf("\\"));
+  return slash > 0 ? trimmed.slice(0, slash) : "";
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
 const ATTACHMENT_REF_RE = /supergit:\/\/attachment\/([A-Za-z0-9_-]+)/g;
 
 function encodeBase64Url(value: string): string {
@@ -76,6 +86,8 @@ export function rewriteTempWorkspaceAttachmentRefs(
 ): string {
   const source = trimTrailingPathSeparators(sourceWorkspace);
   const target = trimTrailingPathSeparators(targetWorkspace);
+  const sourceBase = basename(source);
+  const targetParent = pathParent(target);
   const sourceBackslash = `${source.replace(/\//g, "\\")}\\attachments\\`;
   const targetBackslash = `${target.replace(/\//g, "\\")}\\attachments\\`;
   const pairs = [
@@ -92,6 +104,16 @@ export function rewriteTempWorkspaceAttachmentRefs(
   let next = content;
   for (const [from, to] of pairs) {
     if (from !== to) next = next.split(from).join(to);
+  }
+  if (sourceBase && targetParent && target.startsWith(`${targetParent}/`)) {
+    const previousTempAttachmentRe = new RegExp(
+      `${escapeRegExp(targetParent.replace(/\\/g, "/"))}/${escapeRegExp(sourceBase)}-\\d+-\\d+/attachments/`,
+      "g",
+    );
+    next = next.replace(
+      previousTempAttachmentRe,
+      `${target.replace(/\\/g, "/")}/attachments/`,
+    );
   }
   next = next.replace(ATTACHMENT_REF_RE, (raw, payload: string) => {
     const decoded = decodeBase64Url(payload);
