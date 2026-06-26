@@ -71,11 +71,7 @@
   import Popover from "./Popover.svelte";
   import EventsPopover from "./EventsPopover.svelte";
   import DebugPanel from "./DebugPanel.svelte";
-  import {
-    colVisibility,
-    markOffscreenUntilMeasured,
-    syncOffscreenClass,
-  } from "./col-visibility";
+  import { colVisibility, syncOffscreenClass } from "./col-visibility";
   import { fetchOllamaModels } from "./ollama-models";
   import { randomUUID } from "./random-id";
   import Tooltip from "./Tooltip.svelte";
@@ -7113,7 +7109,6 @@
   ) {
     if (!rowVisibilityObserver) return {};
     rowNodeMeta.set(node, params);
-    markOffscreenUntilMeasured(node, "row-offscreen");
     rowVisibilityObserver.observe(node);
     return {
       update(next: { repoId: string; rowKey: string }) {

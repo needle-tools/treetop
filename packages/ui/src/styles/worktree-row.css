@@ -919,11 +919,7 @@ button.branch-button:hover {
   .status-badge-ahead-danger,
   .status-badge-ahead-danger.pulsate {
     animation: none;
-    background: color-mix(
-      in srgb,
-      var(--error-bg) 55%,
-      var(--error-text) 45%
-    );
+    background: color-mix(in srgb, var(--error-bg) 55%, var(--error-text) 45%);
   }
   .status-badge-ahead::before,
   .status-badge-ahead::after,
@@ -1536,14 +1532,6 @@ body.platform-windows .sessions-strip::-webkit-scrollbar-thumb:active {
   /* Anchor the drag-drop preview pseudos (::before / ::after) so the
      dashed insertion line lines up with the column edges. */
   position: relative;
-  contain: layout style paint;
-  /* Session columns stay mounted so terminals, transcripts, drafts, and
-     scroll state survive, but dock navigation often scrolls past dozens of
-     heavy columns. `content-visibility:auto` lets Chromium skip painting and
-     descendant layout for columns outside the viewport while preserving each
-     column's own box for strip/page scroll math. */
-  content-visibility: auto;
-  contain-intrinsic-size: 80ch 500px;
   transition: outline-color 0.25s ease-out;
   outline: 2px solid transparent;
   outline-offset: 2px;

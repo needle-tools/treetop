@@ -23,20 +23,8 @@ export const VISIBILITY_ROOT_MARGIN_PX = 300;
 
 interface OffscreenClassTarget {
   classList: {
-    add: (name: string) => void;
     toggle: (name: string, force?: boolean) => boolean;
   };
-}
-
-/** Pessimistically de-promote animations before IntersectionObserver's first
- * async callback. The observer immediately removes this class again for
- * actually visible nodes, but offscreen restored columns/rows don't get one
- * critical first-frame layerization pass with every animation alive. */
-export function markOffscreenUntilMeasured(
-  node: OffscreenClassTarget,
-  className: string,
-): void {
-  node.classList.add(className);
 }
 
 export function syncOffscreenClass(
@@ -77,7 +65,6 @@ export function elementNearViewport(
 
 export function colVisibility(node: HTMLElement) {
   if (typeof IntersectionObserver === "undefined") return {};
-  markOffscreenUntilMeasured(node, COL_OFFSCREEN_CLASS);
   const io = new IntersectionObserver(
     (entries) => {
       for (const entry of entries) {

@@ -17,7 +17,6 @@
  */
 import { describe, expect, test } from "bun:test";
 import {
-  markOffscreenUntilMeasured,
   rectNearViewport,
   shouldPauseColumn,
   syncOffscreenClass,
@@ -73,9 +72,6 @@ describe("offscreen class helpers", () => {
       classes,
       node: {
         classList: {
-          add(name: string) {
-            classes.add(name);
-          },
           toggle(name: string, force?: boolean) {
             const shouldHave = force ?? !classes.has(name);
             if (shouldHave) classes.add(name);
@@ -87,17 +83,8 @@ describe("offscreen class helpers", () => {
     };
   }
 
-  test("marks a node offscreen until IntersectionObserver reports reality", () => {
-    const t = target();
-
-    markOffscreenUntilMeasured(t.node, "row-offscreen");
-
-    expect(t.classes.has("row-offscreen")).toBe(true);
-  });
-
   test("syncs the class from observer intersection state", () => {
     const t = target();
-    markOffscreenUntilMeasured(t.node, "col-offscreen");
 
     syncOffscreenClass(t.node, "col-offscreen", true);
     expect(t.classes.has("col-offscreen")).toBe(false);
