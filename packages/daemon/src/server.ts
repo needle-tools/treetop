@@ -4755,11 +4755,16 @@ const server = Bun.serve<TermWsData, never>({
         // installed via node version managers are found even when the
         // daemon's PATH doesn't include them.
         const candidates = ["claude", "codex", "ollama"];
-        const installed: { name: string; path: string }[] = [];
-        for (const name of candidates) {
-          const path = await resolveAgentBinary(name);
-          if (path) installed.push({ name, path });
-        }
+        const resolved = await Promise.all(
+          candidates.map(async (name) => ({
+            name,
+            path: await resolveAgentBinary(name),
+          })),
+        );
+        const installed = resolved.filter(
+          (entry): entry is { name: string; path: string } =>
+            entry.path !== null,
+        );
         return json({ installed });
       }
 
