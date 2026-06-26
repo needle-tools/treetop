@@ -110,6 +110,65 @@
   export let messageMotionSources: Map<string, ComposerMotionRect> = new Map();
   export let onMessageMotionDone: (id: string) => void = () => {};
 
+  const MEDIA_IMAGE_ROOT_MARGIN = "300px 0px";
+
+  function lazyTranscriptImage(
+    node: HTMLImageElement,
+    params: { src: string; root: HTMLElement | null },
+  ) {
+    let observer: IntersectionObserver | null = null;
+    let loadedSrc = "";
+
+    const stop = () => {
+      observer?.disconnect();
+      observer = null;
+    };
+    const load = (src: string) => {
+      stop();
+      if (loadedSrc === src && node.getAttribute("src") === src) return;
+      loadedSrc = src;
+      node.src = src;
+    };
+    const watch = (next: { src: string; root: HTMLElement | null }) => {
+      stop();
+      if (!next.src) {
+        loadedSrc = "";
+        node.removeAttribute("src");
+        return;
+      }
+      if (
+        loadedSrc === next.src &&
+        node.getAttribute("src") === next.src
+      )
+        return;
+      loadedSrc = "";
+      node.removeAttribute("src");
+      if (typeof IntersectionObserver === "undefined") {
+        load(next.src);
+        return;
+      }
+      observer = new IntersectionObserver(
+        (entries) => {
+          if (entries.some((entry) => entry.isIntersecting)) load(next.src);
+        },
+        {
+          root: next.root,
+          rootMargin: MEDIA_IMAGE_ROOT_MARGIN,
+          threshold: 0,
+        },
+      );
+      observer.observe(node);
+    };
+
+    watch(params);
+    return {
+      update(next: { src: string; root: HTMLElement | null }) {
+        watch(next);
+      },
+      destroy: stop,
+    };
+  }
+
   let liveNowIso = new Date().toISOString();
   let liveClock: ReturnType<typeof setInterval> | null = null;
   let openMediaBlocks: NormalizedBlock[] = [];
@@ -901,7 +960,7 @@
     title={label}
   >
     <img
-      src={src}
+      use:lazyTranscriptImage={{ src, root: messagesEl }}
       alt={label}
       draggable="false"
       loading="lazy"
