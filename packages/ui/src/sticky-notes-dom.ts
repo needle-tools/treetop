@@ -181,6 +181,22 @@ function isNonLayoutVisibilityClassMutation(record: MutationRecordLike): boolean
   return true;
 }
 
+function closestTarget(target: MutationTargetLike | null, selector: string) {
+  const el =
+    target && typeof target.closest === "function"
+      ? target
+      : target?.parentElement;
+  return el && typeof el.closest === "function" ? el.closest(selector) : null;
+}
+
+function isSessionStripChildMutation(record: MutationRecordLike): boolean {
+  if (record.type !== "childList") return false;
+  return (
+    !!closestTarget(record.target, ".sessions-strip") ||
+    !!closestTarget(record.target, ".session-col")
+  );
+}
+
 /** True when a MutationObserver batch can change sticky-note anchor
  *  geometry. Drops known decorative visibility/flash class churn before
  *  it schedules a full note reposition pass; keeps the safe default for
@@ -191,6 +207,7 @@ export function mutationsAffectStickyNoteLayout(
   if (records.length === 0) return true;
   if (mutationsAllInsideTerminal(records)) return false;
   for (const record of records) {
+    if (isSessionStripChildMutation(record)) continue;
     if (!isNonLayoutVisibilityClassMutation(record)) return true;
   }
   return false;

@@ -191,6 +191,13 @@ describe("mutationsAffectStickyNoteLayout", () => {
     target(className, (sel) => sel === "[data-wt-row]");
   const col = (className: string) =>
     target(className, (sel) => sel === ".session-col");
+  const sessionStrip = {
+    closest: (sel: string) => (sel === ".sessions-strip" ? {} : null),
+  };
+  const insideSessionCol = {
+    closest: (sel: string) =>
+      sel === ".sessions-strip" || sel === ".session-col" ? {} : null,
+  };
 
   test("ignores column visibility and flash classes that do not move note anchors", () => {
     expect(
@@ -201,6 +208,15 @@ describe("mutationsAffectStickyNoteLayout", () => {
           oldValue: "session-col",
           target: col("session-col col-offscreen session-col-flash"),
         },
+      ]),
+    ).toBe(false);
+  });
+
+  test("ignores session-strip child churn that cannot move note anchors", () => {
+    expect(
+      mutationsAffectStickyNoteLayout([
+        { type: "childList", target: sessionStrip },
+        { type: "childList", target: insideSessionCol },
       ]),
     ).toBe(false);
   });

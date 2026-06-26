@@ -2849,9 +2849,10 @@
     // No scroll listener — the layer is `position: absolute` at the
     // document's top-left, so notes inside it are part of the document
     // flow and scroll natively on the compositor without any JS
-    // bookkeeping. Resize still needs a tick because the row positions
-    // relative to the document change when the viewport resizes.
-    window.addEventListener("resize", scheduleLayoutTick);
+    // bookkeeping. Window/main resize only changes anchor positions;
+    // per-note ResizeObserver owns row-margin recompute when rendered
+    // note geometry itself changes.
+    window.addEventListener("resize", scheduleTick);
     window.addEventListener("pointermove", onWindowPointerMove);
     window.addEventListener("mousemove", onWindowMouseMove);
     window.addEventListener("dragover", onWindowDragOver);
@@ -2885,8 +2886,11 @@
     }
     // ResizeObserver on <main> covers viewport-resizing the dashboard
     // (sidebar collapse, devtools open) where children shift without
-    // attribute changes.
-    resizeObs = new ResizeObserver(scheduleLayoutTick);
+    // attribute changes. It deliberately avoids dirtying row margins:
+    // opening session columns can resize <main> many times, but sticky
+    // margin need is driven by note size/visibility, not horizontal
+    // strip child churn.
+    resizeObs = new ResizeObserver(scheduleTick);
     if (main) resizeObs.observe(main);
 
     // Per-note ResizeObserver: fires when a note's textarea grows /
@@ -2901,7 +2905,7 @@
   onDestroy(() => {
     _unregisterLayer();
     _unregisterFlyRestore();
-    window.removeEventListener("resize", scheduleLayoutTick);
+    window.removeEventListener("resize", scheduleTick);
     window.removeEventListener("pointermove", onWindowPointerMove);
     window.removeEventListener("mousemove", onWindowMouseMove);
     window.removeEventListener("dragover", onWindowDragOver);
