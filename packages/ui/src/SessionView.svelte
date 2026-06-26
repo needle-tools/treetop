@@ -4784,6 +4784,16 @@
        which sessions are read-only at a glance. */
     color: color-mix(in srgb, var(--text-1) 50%, transparent);
   }
+  /* Inline code + code blocks have their own explicit colors and
+     backgrounds (set in VisualTranscript / Markdown), so the parent
+     `color` dim doesn't reach them. Mute them explicitly so the
+     read-only state reads as uniformly faded. */
+  .session.stopped-transcript-surface :global(.messages code),
+  .session.stopped-transcript-surface :global(.messages pre) {
+    color: color-mix(in srgb, var(--text-1) 50%, transparent);
+    background: color-mix(in srgb, var(--surface-2) 40%, transparent);
+    border-color: color-mix(in srgb, var(--surface-3) 35%, transparent);
+  }
   .session.terminal-transcript-surface :global(header),
   .session.terminal-transcript-surface :global(button),
   .session.terminal-transcript-surface :global(input),
