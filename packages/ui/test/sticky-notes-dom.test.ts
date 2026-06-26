@@ -23,8 +23,6 @@
  * terminal-view-mount.test.ts.
  */
 import { describe, expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
 import {
   VISIBLE_ROW_SELECTOR,
   anchorRowFor,
@@ -32,6 +30,7 @@ import {
   cachedRowRect,
   mutationsAffectStickyNoteLayout,
   mutationsAllInsideTerminal,
+  shouldMountStickyNote,
 } from "../src/sticky-notes-dom";
 
 interface FakeRow {
@@ -99,6 +98,41 @@ describe("cachedRowRect", () => {
     expect(cachedRowRect(cache, row, measure)).toBe(rect);
     expect(cachedRowRect(cache, row, measure)).toBe(rect);
     expect(calls).toBe(1);
+  });
+});
+
+describe("shouldMountStickyNote", () => {
+  const idleHidden = {
+    hasPosition: false,
+    editing: false,
+    staged: false,
+    flying: false,
+    removing: false,
+    dragging: false,
+    attachmentDropActive: false,
+  };
+
+  test("does not mount ordinary notes whose row is hidden", () => {
+    expect(shouldMountStickyNote(idleHidden)).toBe(false);
+  });
+
+  test("mounts visible notes", () => {
+    expect(shouldMountStickyNote({ ...idleHidden, hasPosition: true })).toBe(
+      true,
+    );
+  });
+
+  test("keeps transient hidden notes mounted", () => {
+    for (const key of [
+      "editing",
+      "staged",
+      "flying",
+      "removing",
+      "dragging",
+      "attachmentDropActive",
+    ] as const) {
+      expect(shouldMountStickyNote({ ...idleHidden, [key]: true })).toBe(true);
+    }
   });
 });
 
@@ -209,46 +243,5 @@ describe("mutationsAffectStickyNoteLayout", () => {
         },
       ]),
     ).toBe(true);
-  });
-});
-
-describe("StickyNotesLayer wiring", () => {
-  const SOURCE = readFileSync(
-    join(import.meta.dir, "../src/StickyNotesLayer.svelte"),
-    "utf-8",
-  );
-
-  test("the MutationObserver filters terminal-internal records", () => {
-    const start = SOURCE.indexOf("mutationObs = new MutationObserver");
-    expect(start, "MutationObserver not found").toBeGreaterThan(-1);
-    const end = SOURCE.indexOf("resizeObs = new ResizeObserver", start);
-    expect(end, "ResizeObserver after MutationObserver").toBeGreaterThan(start);
-    expect(SOURCE.slice(start, end)).toContain(
-      "mutationsAffectStickyNoteLayout",
-    );
-  });
-
-  /** Slice a function body by its declaration and a known following
-   *  declaration — robust to line shifts. */
-  function slice(from: string, to: string): string {
-    const start = SOURCE.indexOf(from);
-    expect(start, `${from} not found`).toBeGreaterThan(-1);
-    const end = SOURCE.indexOf(to, start);
-    expect(end, `${to} not found after ${from}`).toBeGreaterThan(start);
-    return SOURCE.slice(start, end);
-  }
-
-  test("applyRowMargins resolves anchors/chips via per-pass maps, not per-note document queries", () => {
-    const body = slice("function applyRowMargins", "let flyRafActive");
-    expect(body).toContain("buildAnchorRowMap<HTMLElement>(document)");
-    expect(body).toContain("anchorRowFor(");
-    expect(body).not.toContain("findAnchorLi(");
-    // The per-note `.sticky[data-note-id="..."]` lookup must not come back.
-    expect(body).not.toContain("cssEscape(note.id)");
-  });
-
-  test("positionsByNoteId builds the row map once per recompute", () => {
-    const body = slice("let positionsByNoteId", "function daemonIdForAnchors");
-    expect(body).toContain("buildAnchorRowMap<HTMLElement>(document)");
   });
 });

@@ -71,6 +71,31 @@ export function cachedRowRect<T, Rect>(
   return rect;
 }
 
+export interface StickyNoteMountState {
+  hasPosition: boolean;
+  editing: boolean;
+  staged: boolean;
+  flying: boolean;
+  removing: boolean;
+  dragging: boolean;
+  attachmentDropActive: boolean;
+}
+
+/** Hidden/folded-row notes do not need a mounted Svelte component or
+ *  DOM subtree. Keep them mounted only while transient local state
+ *  would be harmful to tear down mid-interaction. */
+export function shouldMountStickyNote(state: StickyNoteMountState): boolean {
+  return (
+    state.hasPosition ||
+    state.editing ||
+    state.staged ||
+    state.flying ||
+    state.removing ||
+    state.dragging ||
+    state.attachmentDropActive
+  );
+}
+
 /** Loose shape of MutationRecord.target: elements expose closest(),
  *  text nodes reach their element via parentElement. */
 export interface MutationTargetLike {

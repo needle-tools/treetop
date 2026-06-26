@@ -143,6 +143,7 @@
     buildAnchorRowMap,
     cachedRowRect,
     mutationsAffectStickyNoteLayout,
+    shouldMountStickyNote,
   } from "./sticky-notes-dom";
   import { getDaemonKV } from "./daemon-kv";
   import { relativeAge } from "./mention-providers";
@@ -2929,55 +2930,66 @@
 <div class="sticky-layer" aria-hidden={notes.length === 0} bind:this={layerEl}>
   {#each notes as note (note.id)}
     {@const pos = positionsByNoteId[note.id]}
-    <!-- Render the host even when the row is folded (`pos === null`)
-         and just hide it with display: none. Conditionally rendering
-         would unmount StickyNote, which loses the user's in-flight
-         edit state — collapsing then expanding a row would yank the
-         newest sticky back into edit mode because StickyNote's
-         `onMount` re-reads `startEditing` against a stale
-         editingId. Hiding instead of unmounting preserves the
-         local edit state. -->
-    <div
-      class="sticky-host"
-      class:hidden={!pos}
-      class:flying={!!flyingNotes[note.id]}
-      class:removing={removingIds.has(note.id)}
-      style="z-index: {zIndexById[note.id] ?? 1000};"
-    >
-      <StickyNote
-        {note}
-        x={pos?.x ?? 0}
-        y={pos?.y ?? 0}
-        tilt={tiltFor(note.id)}
-        rotation={offsets[note.id]?.rotation ?? 0}
-        grabXFrac={offsets[note.id]?.grabXFrac ?? 0}
-        grabYFrac={offsets[note.id]?.grabYFrac ?? 0}
-        emojiScale={offsets[note.id]?.emojiScale ?? 1}
-        attachmentDropAvailable={attachmentDropAvailableById[note.id] ?? false}
-        attachmentDropActive={attachmentDropNoteId === note.id}
-        attachmentDropSourceActive={!!attachmentDropNoteId &&
-          (draggingPinnedNoteId === note.id ||
-            attachmentDragSourceNoteId === note.id)}
-        startEditing={editingId === note.id}
-        removeIfEmpty={!!staging[note.id]}
-        flying={!!flyingNotes[note.id]}
-        {repos}
-        {onCommandLinkOpen}
-        {onCommandLinkEdit}
-        {runningCommandIds}
-        {commandUrls}
-        on:move={handleMove}
-        on:save={handleSave}
-        on:remove={handleRemove}
-        on:focus={handleFocus}
-        on:reassign={handleReassign}
-        on:rotate={handleRotate}
-        on:scale={handleScale}
-        on:grab={handleGrab}
-        on:dragdrop={handleDragDrop}
-        on:dragcancel={handleDragCancel}
-      />
-    </div>
+    {@const stickyEditing = editingId === note.id}
+    {@const stickyStaged = !!staging[note.id]}
+    {@const stickyFlying = !!flyingNotes[note.id]}
+    {@const stickyRemoving = removingIds.has(note.id)}
+    {@const stickyDragging = draggingPinnedNoteId === note.id}
+    {@const stickyAttachmentDrop =
+      attachmentDropNoteId === note.id ||
+      attachmentDropCandidateNoteId === note.id ||
+      attachmentDragSourceNoteId === note.id}
+    {#if shouldMountStickyNote({
+      hasPosition: !!pos,
+      editing: stickyEditing,
+      staged: stickyStaged,
+      flying: stickyFlying,
+      removing: stickyRemoving,
+      dragging: stickyDragging,
+      attachmentDropActive: stickyAttachmentDrop,
+    })}
+      <div
+        class="sticky-host"
+        class:hidden={!pos}
+        class:flying={stickyFlying}
+        class:removing={stickyRemoving}
+        style="z-index: {zIndexById[note.id] ?? 1000};"
+      >
+        <StickyNote
+          {note}
+          x={pos?.x ?? 0}
+          y={pos?.y ?? 0}
+          tilt={tiltFor(note.id)}
+          rotation={offsets[note.id]?.rotation ?? 0}
+          grabXFrac={offsets[note.id]?.grabXFrac ?? 0}
+          grabYFrac={offsets[note.id]?.grabYFrac ?? 0}
+          emojiScale={offsets[note.id]?.emojiScale ?? 1}
+          attachmentDropAvailable={attachmentDropAvailableById[note.id] ?? false}
+          attachmentDropActive={attachmentDropNoteId === note.id}
+          attachmentDropSourceActive={!!attachmentDropNoteId &&
+            (draggingPinnedNoteId === note.id ||
+              attachmentDragSourceNoteId === note.id)}
+          startEditing={stickyEditing}
+          removeIfEmpty={stickyStaged}
+          flying={stickyFlying}
+          {repos}
+          {onCommandLinkOpen}
+          {onCommandLinkEdit}
+          {runningCommandIds}
+          {commandUrls}
+          on:move={handleMove}
+          on:save={handleSave}
+          on:remove={handleRemove}
+          on:focus={handleFocus}
+          on:reassign={handleReassign}
+          on:rotate={handleRotate}
+          on:scale={handleScale}
+          on:grab={handleGrab}
+          on:dragdrop={handleDragDrop}
+          on:dragcancel={handleDragCancel}
+        />
+      </div>
+    {/if}
   {/each}
 </div>
 
