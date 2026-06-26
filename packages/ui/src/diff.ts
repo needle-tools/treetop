@@ -27,6 +27,7 @@ export interface DiffLine {
 const META_RE =
   /^(index|new file|deleted file|old mode|new mode|similarity index|rename from|rename to|copy from|copy to|Binary files) /;
 const COMMIT_META_RE = /^(Author|AuthorDate|Commit|CommitDate|Date|Merge):/;
+const APPLY_PATCH_FILE_RE = /^\*\*\* (Add|Update|Delete) File: /;
 
 export function classifyLine(line: string): DiffLine {
   if (line.startsWith("# untracked files"))
@@ -37,6 +38,7 @@ export function classifyLine(line: string): DiffLine {
   if (COMMIT_META_RE.test(line)) return { kind: "commit-meta", text: line };
 
   if (line.startsWith("diff --git")) return { kind: "file", text: line };
+  if (APPLY_PATCH_FILE_RE.test(line)) return { kind: "file", text: line };
   if (line.startsWith("@@")) return { kind: "hunk", text: line };
   if (line.startsWith("+++") || line.startsWith("---"))
     return { kind: "meta", text: line };

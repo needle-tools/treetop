@@ -4,6 +4,7 @@
   import DOMPurify from "dompurify";
   import { apiUrl } from "./api";
   import { isLocalFileMarkdownHref } from "./open-url";
+  import Diff from "./Diff.svelte";
   import LoadingSpinner from "./LoadingSpinner.svelte";
   import ToolIcon from "./ToolIcon.svelte";
   import { formatAbsoluteTimeTitle } from "./display-helpers";
@@ -1169,8 +1170,8 @@
                 <span class="work-file-del">-{file.deletions}</span>
               {/if}
             </summary>
-            <div class="md work-file-raw">
-              {@html markdownCodeBlockHtml(file.raw, "diff")}
+            <div class="work-file-raw">
+              <Diff text={file.raw} label="diff" copyable compact />
             </div>
           </details>
         {:else}

@@ -11,6 +11,12 @@ describe("classifyLine", () => {
     expect(classifyLine("diff --git a/foo b/foo").kind).toBe("file");
   });
 
+  test("classifies apply_patch file headers", () => {
+    expect(classifyLine("*** Add File: src/new.ts").kind).toBe("file");
+    expect(classifyLine("*** Update File: src/App.svelte").kind).toBe("file");
+    expect(classifyLine("*** Delete File: src/old.ts").kind).toBe("file");
+  });
+
   test("classifies meta lines including --- / +++", () => {
     expect(classifyLine("index abc..def 100644").kind).toBe("meta");
     expect(classifyLine("new file mode 100644").kind).toBe("meta");
