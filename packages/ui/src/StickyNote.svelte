@@ -2660,7 +2660,7 @@
         class:sticky-photo-frame-transparent={attachment.hasAlpha}
       >
         <img
-          src={`/api/image?path=${encodeURIComponent(attachment.path)}`}
+          src={`/api/image?path=${encodeURIComponent(attachment.path)}${mode === "media" ? "" : "&max=320"}`}
           alt={attachment.filename ?? "Attached image"}
           draggable={mode === "media" ? "true" : "false"}
           loading="lazy"

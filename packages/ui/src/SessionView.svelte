@@ -2577,7 +2577,7 @@
 
   function composerImageUrl(attachment: ImageInlineAttachment): string {
     return apiUrl(
-      `/api/image?path=${encodeURIComponent(attachment.path)}`,
+      `/api/image?path=${encodeURIComponent(attachment.path)}&max=320`,
       daemonId,
     );
   }

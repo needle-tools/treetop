@@ -3060,13 +3060,19 @@ const server = Bun.serve<TermWsData, never>({
         // Serve a local image file referenced from a Claude session message
         // (e.g. "[Image: source: /var/folders/.../shot.png]"). The validation
         // + lookup lives in serveImage() so it's unit-testable.
-        const result = await serveImage(url.searchParams.get("path"));
+        const max = url.searchParams.get("max");
+        const result = await serveImage(url.searchParams.get("path"), {
+          maxSide: max === null ? undefined : Number(max),
+        });
         if (result.status !== 200) {
           return json({ error: result.error }, { status: result.status });
         }
-        return new Response(result.file, {
+        return new Response("bytes" in result ? result.bytes : result.file, {
           headers: {
             ...CORS,
+            ...(result.status === 200 && "mimeType" in result
+              ? { "Content-Type": result.mimeType }
+              : {}),
             "Cache-Control": "public, max-age=300",
           },
         });

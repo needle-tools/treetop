@@ -247,7 +247,7 @@
       /\[Image:\s*source:\s*([^\]]+?\.(?:png|jpe?g|gif|webp|svg|bmp))\s*\]/gi,
       (_match, filePath) => {
         const url = apiUrl(
-          `/api/image?path=${encodeURIComponent(filePath.trim())}`,
+          `/api/image?path=${encodeURIComponent(filePath.trim())}&max=${TRANSCRIPT_THUMB_MAX_SIDE}`,
           daemonId,
         );
         return `![pasted image](${url})`;
@@ -717,8 +717,11 @@
     options: { thumbnail?: boolean } = {},
   ): string | undefined {
     if (block.path && block.mediaKind === "image") {
+      const path = `/api/image?path=${encodeURIComponent(block.path)}`;
       return apiUrl(
-        `/api/image?path=${encodeURIComponent(block.path)}`,
+        options.thumbnail
+          ? appendQueryParam(path, "max", String(TRANSCRIPT_THUMB_MAX_SIDE))
+          : path,
         daemonId,
       );
     }
