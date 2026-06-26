@@ -3697,17 +3697,11 @@
         // Center horizontally in the visible strip.
         target = colOffsetInStrip - (stripRect.width - colRect.width) / 2;
       }
-      animateValue({
-        from: strip.scrollLeft,
-        to: Math.max(
-          0,
-          Math.min(target, strip.scrollWidth - strip.clientWidth),
-        ),
-        duration: DOCK_SCROLL_MS,
-        apply: (v) => {
-          strip.scrollLeft = v;
-        },
-      });
+      const fromX = strip.scrollLeft;
+      const toX = Math.max(
+        0,
+        Math.min(target, strip.scrollWidth - strip.clientWidth),
+      );
       // Also vertically center the column in the viewport so a click
       // on a side-dock dot brings the row into view, not just the
       // (already laid out but possibly off-screen) column. Use the
@@ -3718,17 +3712,26 @@
       const anchor = (col.closest(".row-body") as HTMLElement | null) ?? col;
       const aRect = anchor.getBoundingClientRect();
       const maxY = document.documentElement.scrollHeight - window.innerHeight;
+      const fromY = window.scrollY;
+      const toY = centerScrollTarget(
+        aRect.top,
+        aRect.height,
+        window.innerHeight,
+        fromY,
+        maxY,
+      );
       animateValue({
-        from: window.scrollY,
-        to: centerScrollTarget(
-          aRect.top,
-          aRect.height,
-          window.innerHeight,
-          window.scrollY,
-          maxY,
-        ),
+        from: 0,
+        to: 1,
         duration: DOCK_SCROLL_MS,
-        apply: (v) => window.scrollTo(0, v),
+        apply: (t) => {
+          if (Math.abs(toX - fromX) > 0.5) {
+            strip.scrollLeft = fromX + (toX - fromX) * t;
+          }
+          if (Math.abs(toY - fromY) > 0.5) {
+            window.scrollTo(0, fromY + (toY - fromY) * t);
+          }
+        },
       });
       col.classList.add("session-col-flash");
       setTimeout(() => col.classList.remove("session-col-flash"), 2000);
