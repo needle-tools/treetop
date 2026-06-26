@@ -1926,7 +1926,7 @@
       next.splice(insertAt, 0, entry);
       openSessionsByWt = { ...openSessionsByWt, [wtPath]: next };
       scrollNewColIntoView(wtPath, liveSource);
-      void load();
+      void load("codex-app-start");
     } catch (e) {
       addToast({
         kind: "warning",
@@ -1997,7 +1997,7 @@
       // by the OllamaTranscriptView render branch's ollamaMeta lookup
       // on a subsequent reload (the immediate render uses the override
       // above).
-      void load();
+      void load("ollama-start");
     } catch (e) {
       console.error("openNewOllamaChat:", e);
     }
@@ -2738,7 +2738,7 @@
       // transient session will still be promoted on the next
       // wake-up load() (registered via onResume).
       if (isUiIdle()) return;
-      void load();
+      void load("transient-discovery");
     }, TRANSIENT_DISCOVERY_POLL_MS);
   } else if (!hasTransientDiscoverySessions && newSessionPollTimer) {
     clearInterval(newSessionPollTimer);
@@ -3881,8 +3881,24 @@
    *  here. Without the wrapper an `fs_change` storm or two mutations
    *  landing in the same tick would issue concurrent /api/repos NDJSON
    *  streams that race each other writing into `repos`. */
-  const load = singleFlight(() =>
+  function loadReasonLabel(reason: string | undefined): string {
+    const raw =
+      reason ??
+      new Error().stack
+        ?.split("\n")
+        .find((line) => line.includes("App.svelte"))
+        ?.trim() ??
+      "unknown";
+    return raw
+      .replace(/^at\s+/, "")
+      .replace(/\?.*$/, "")
+      .replace(/[^a-zA-Z0-9_.:-]+/g, "-")
+      .slice(0, 80);
+  }
+
+  const load = singleFlight((reason?: string) =>
     timeAsync("load", async () => {
+      const loadReason = loadReasonLabel(reason);
       loading = true;
       loadingSlow = false;
       loadingTotal = 0;
@@ -4135,9 +4151,10 @@
         }
         const totalMs = performance.now() - tStart;
         record("load.total", totalMs);
+        record(`load.reason.${loadReason}`, totalMs);
         if (totalMs > 200) {
           console.log(
-            `[load] slow: ${totalMs.toFixed(0)}ms ` +
+            `[load] slow ${loadReason}: ${totalMs.toFixed(0)}ms ` +
               `(manifest=${tManifest.toFixed(0)}ms firstRepo=${tFirstRepo.toFixed(0)}ms repos=${repoCount})`,
           );
         }
@@ -4160,7 +4177,7 @@
       }
       fsChangeKey = nextFsChangeKey;
       if (nextWtSummaryByPath) wtSummaryByPath = nextWtSummaryByPath;
-      void load();
+      void load("fs-change-batch");
     },
   });
 
@@ -5763,7 +5780,8 @@
     } catch {
       return;
     }
-    if (changeKindRequiresReposReload(payload.kind)) void load();
+    if (changeKindRequiresReposReload(payload.kind))
+      void load(`remote-sse:${payload.kind ?? "unknown"}`);
     if (
       payload.kind === "note_create" ||
       payload.kind === "note_update" ||
@@ -5853,7 +5871,7 @@
           changeKindRequiresReposReload(payload.kind) &&
           payload.kind !== "fs_change"
         ) {
-          void load();
+          void load(`sse:${payload.kind ?? "unknown"}`);
         }
         // A remote daemon was added/removed (registry edit, provision, or
         // uninstall success). load() re-reads /api/daemons and re-fans-out,
@@ -5861,7 +5879,7 @@
         // independent of the add/uninstall dialog's lifecycle. These are rare
         // user-driven events, so the load() cost is a non-issue.
         else if (changeKindRequiresDaemonsReload(payload.kind)) {
-          void load();
+          void load(`daemon:${payload.kind ?? "unknown"}`);
         }
 
         // Daemon-side FS-change broadcast: `{ kind: "fs_change", path }`.
@@ -7169,7 +7187,7 @@
     // Persist the page scroll offset as the user scrolls, and restore it
     // once the initial load's repos have streamed in (see SCROLL_KEY).
     window.addEventListener("scroll", scrollSaver.trigger, { passive: true });
-    void load().then(() => {
+    void load("mount").then(() => {
       restoreScrollPosition();
       // Re-run shell restore now that load() has populated `remoteDaemons`,
       // so each remote box's open shells are fetched + merged in (the
@@ -7279,10 +7297,19 @@
     // keystroke's Layerize walks a smaller compositor tree (perf.md: Layerize
     // storm during typing). Toggles `body.is-typing`.
     const uninstallTyping = installTypingTracker();
+    const RESUME_LOAD_DELAY_MS = 800;
+    let resumeLoadTimer: ReturnType<typeof setTimeout> | null = null;
+    function scheduleResumeLoad(): void {
+      if (resumeLoadTimer) return;
+      resumeLoadTimer = setTimeout(() => {
+        resumeLoadTimer = null;
+        void load("resume");
+      }, RESUME_LOAD_DELAY_MS);
+    }
     const unsubResume = onResume(() => {
-      // User came back; refresh once so the stale-while-idle window
-      // doesn't show outdated data.
-      void load();
+      // User came back because they interacted. Let that interaction render
+      // first, then refresh stale dashboard state in the background.
+      scheduleResumeLoad();
     });
     const nowTimer = setInterval(() => {
       nowMs = Date.now();
@@ -7340,6 +7367,7 @@
       unsubToasts();
       unsubFocus();
       unsubResume();
+      if (resumeLoadTimer) clearTimeout(resumeLoadTimer);
       uninstallIdle();
       uninstallTyping();
       clearInterval(nowTimer);

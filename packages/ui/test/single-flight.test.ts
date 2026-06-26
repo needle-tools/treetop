@@ -61,6 +61,31 @@ describe("singleFlight", () => {
     expect(second).toBe(2);
   });
 
+  test("forwards arguments to the run that wins the flight", async () => {
+    const args: string[] = [];
+    let resolveInner: (v: string) => void = () => {};
+    const inner = (reason: string): Promise<string> => {
+      args.push(reason);
+      if (args.length > 1) return Promise.resolve(reason);
+      return new Promise((res) => {
+        resolveInner = res;
+      });
+    };
+
+    const sf = singleFlight(inner);
+    const first = sf("initial");
+    const second = sf("coalesced");
+
+    expect(first).toBe(second);
+    expect(args).toEqual(["initial"]);
+
+    resolveInner("done");
+    expect(await second).toBe("done");
+
+    expect(await sf("next")).toBe("next");
+    expect(args).toEqual(["initial", "next"]);
+  });
+
   test("a new call starts a fresh run after the previous one rejects", async () => {
     let started = 0;
     let rejectInner: (e: Error) => void = () => {};

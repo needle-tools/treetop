@@ -17,11 +17,13 @@
  *  - A rejection does not poison the wrapper — a one-time failure
  *    must not wedge every future call into the same rejected promise.
  */
-export function singleFlight<T>(fn: () => Promise<T>): () => Promise<T> {
+export function singleFlight<Args extends unknown[], T>(
+  fn: (...args: Args) => Promise<T>,
+): (...args: Args) => Promise<T> {
   let inFlight: Promise<T> | null = null;
-  return () => {
+  return (...args: Args) => {
     if (inFlight) return inFlight;
-    const p = fn();
+    const p = fn(...args);
     inFlight = p;
     p.then(
       () => {
