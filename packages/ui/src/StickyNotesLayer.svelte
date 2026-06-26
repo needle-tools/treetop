@@ -2634,7 +2634,6 @@
   }
 
   let mutationObs: MutationObserver | null = null;
-  let resizeObs: ResizeObserver | null = null;
   /** Per-note ResizeObserver: notes grow/shrink while the user types
    *  in edit mode, and the row's padding-bottom must follow. We track
    *  observed elements separately so we can untrack stale ones in
@@ -2884,15 +2883,6 @@
         attributeFilter: ["class", "data-wt-row"],
       });
     }
-    // ResizeObserver on <main> covers viewport-resizing the dashboard
-    // (sidebar collapse, devtools open) where children shift without
-    // attribute changes. It deliberately avoids dirtying row margins:
-    // opening session columns can resize <main> many times, but sticky
-    // margin need is driven by note size/visibility, not horizontal
-    // strip child churn.
-    resizeObs = new ResizeObserver(scheduleTick);
-    if (main) resizeObs.observe(main);
-
     // Per-note ResizeObserver: fires when a note's textarea grows /
     // shrinks under edits. The afterUpdate pass owns the actual
     // padding write, so this just kicks the tick.
@@ -2915,7 +2905,6 @@
     window.removeEventListener("dblclick", onWindowDoubleClick);
     window.removeEventListener("paste", onWindowPaste);
     mutationObs?.disconnect();
-    resizeObs?.disconnect();
     noteResizeObs?.disconnect();
     observedNoteEls.clear();
     // Tell the rAF loop to exit on its next frame.
