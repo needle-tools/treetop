@@ -9,6 +9,7 @@
  * input→output assertions added as part of the extraction PR).
  */
 
+import { Buffer } from "node:buffer";
 import { existsSync } from "node:fs";
 import { basename } from "node:path";
 import type { AttachmentKind, LinkTarget } from "./notes";
@@ -26,6 +27,91 @@ const READONLY_POST_ALLOWLIST = new Set([
 export interface ReadonlyRouteDecision {
   allowed: boolean;
   reason?: string;
+}
+
+export interface DebugAnalyzeInstance {
+  workspace: string;
+  port: number;
+  temporaryWorkspace: boolean;
+  sourceWorkspace: string | null;
+  readonly: boolean;
+  sideInstance: boolean;
+}
+
+export function debugAnalyzeInstance(args: {
+  workspace: string;
+  port: number;
+  temporaryWorkspace: boolean;
+  sourceWorkspace: string | null;
+  readonly: boolean;
+}): DebugAnalyzeInstance {
+  return {
+    ...args,
+    sideInstance: args.temporaryWorkspace || args.readonly,
+  };
+}
+
+function trimTrailingPathSeparators(path: string): string {
+  return path.replace(/[\\/]+$/, "");
+}
+
+const ATTACHMENT_REF_RE = /supergit:\/\/attachment\/([A-Za-z0-9_-]+)/g;
+
+function encodeBase64Url(value: string): string {
+  return Buffer.from(value, "utf8").toString("base64url");
+}
+
+function decodeBase64Url(value: string): string | null {
+  try {
+    return Buffer.from(value, "base64url").toString("utf8");
+  } catch {
+    return null;
+  }
+}
+
+export function rewriteTempWorkspaceAttachmentRefs(
+  content: string,
+  sourceWorkspace: string,
+  targetWorkspace: string,
+): string {
+  const source = trimTrailingPathSeparators(sourceWorkspace);
+  const target = trimTrailingPathSeparators(targetWorkspace);
+  const sourceBackslash = `${source.replace(/\//g, "\\")}\\attachments\\`;
+  const targetBackslash = `${target.replace(/\//g, "\\")}\\attachments\\`;
+  const pairs = [
+    [
+      `${source.replace(/\\/g, "/")}/attachments/`,
+      `${target.replace(/\\/g, "/")}/attachments/`,
+    ],
+    [sourceBackslash, targetBackslash],
+    [
+      sourceBackslash.replace(/\\/g, "\\\\"),
+      targetBackslash.replace(/\\/g, "\\\\"),
+    ],
+  ] as const;
+  let next = content;
+  for (const [from, to] of pairs) {
+    if (from !== to) next = next.split(from).join(to);
+  }
+  next = next.replace(ATTACHMENT_REF_RE, (raw, payload: string) => {
+    const decoded = decodeBase64Url(payload);
+    if (!decoded) return raw;
+    try {
+      const attachment = JSON.parse(decoded) as { path?: unknown };
+      if (typeof attachment.path !== "string") return raw;
+      const rewrittenPath = rewriteTempWorkspaceAttachmentRefs(
+        attachment.path,
+        sourceWorkspace,
+        targetWorkspace,
+      );
+      if (rewrittenPath === attachment.path) return raw;
+      attachment.path = rewrittenPath;
+      return `supergit://attachment/${encodeBase64Url(JSON.stringify(attachment))}`;
+    } catch {
+      return raw;
+    }
+  });
+  return next;
 }
 
 export function envFlag(value: string | undefined): boolean {

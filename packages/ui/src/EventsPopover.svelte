@@ -131,7 +131,7 @@
     analyzeBusy = true;
     analyzeError = "";
     try {
-      const res = await fetch(apiUrl("/api/debug/analyze"), {
+      const res = await fetch(apiUrl("/api/debug/analyze?instance=1"), {
         cache: "no-cache",
       });
       const body = await res.json().catch(() => null);
@@ -139,7 +139,7 @@
         throw new Error(
           body && typeof body.error === "string"
             ? body.error
-            : `/api/debug/analyze: ${res.status}`,
+            : `/api/debug/analyze?instance=1: ${res.status}`,
         );
       }
       analyzeJson = JSON.stringify(body, null, 2);

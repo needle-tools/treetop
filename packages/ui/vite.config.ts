@@ -2,7 +2,13 @@ import { defineConfig } from "vite";
 import { svelte } from "@sveltejs/vite-plugin-svelte";
 import { PRODUCT_NAME } from "../../product";
 
-export default defineConfig({
+function envFlag(value: string | undefined): boolean {
+  if (value === undefined) return false;
+  const normalized = value.trim().toLowerCase();
+  return normalized === "1" || normalized === "true" || normalized === "yes";
+}
+
+export default defineConfig(() => ({
   plugins: [
     svelte(),
     // Inject the product name into index.html's <title> from the shared
@@ -41,4 +47,7 @@ export default defineConfig({
       },
     },
   },
-});
+  build: {
+    sourcemap: envFlag(process.env.TREETOP_BUILD_SOURCEMAPS),
+  },
+}));

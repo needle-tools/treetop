@@ -6,6 +6,7 @@ import {
   dirname,
   basename,
   relative,
+  extname,
 } from "node:path";
 import {
   homedir,
@@ -161,6 +162,8 @@ import {
   envFlag,
   readonlyRouteDecision,
   shouldCopyTempWorkspaceRelativePath,
+  debugAnalyzeInstance,
+  rewriteTempWorkspaceAttachmentRefs,
 } from "./server-helpers";
 import {
   normalizeRemote,
@@ -225,6 +228,37 @@ function shouldCopyTempWorkspaceEntry(sourceRoot: string, sourcePath: string) {
   return shouldCopyTempWorkspaceRelativePath(relative(sourceRoot, sourcePath));
 }
 
+const TEMP_WORKSPACE_TEXT_EXTENSIONS = new Set([".json", ".jsonl", ".md"]);
+
+async function rewriteTempWorkspaceMetadataRefs(
+  source: string,
+  target: string,
+): Promise<void> {
+  const visit = async (dir: string): Promise<void> => {
+    const entries = await readdir(dir, { withFileTypes: true });
+    await Promise.all(
+      entries.map(async (entry) => {
+        const path = join(dir, entry.name);
+        if (entry.isDirectory()) {
+          if (entry.name === "attachments") return;
+          await visit(path);
+          return;
+        }
+        if (
+          !entry.isFile() ||
+          !TEMP_WORKSPACE_TEXT_EXTENSIONS.has(extname(entry.name))
+        ) {
+          return;
+        }
+        const raw = await readFile(path, "utf-8");
+        const next = rewriteTempWorkspaceAttachmentRefs(raw, source, target);
+        if (next !== raw) await fsWriteFile(path, next);
+      }),
+    );
+  };
+  await visit(target);
+}
+
 async function prepareTempWorkspaceCopy(source: string): Promise<string> {
   const st = statSync(source);
   if (!st.isDirectory()) {
@@ -244,6 +278,7 @@ async function prepareTempWorkspaceCopy(source: string): Promise<string> {
     recursive: true,
     filter: (src) => shouldCopyTempWorkspaceEntry(source, src),
   });
+  await rewriteTempWorkspaceMetadataRefs(source, target);
   return target;
 }
 
@@ -2890,10 +2925,22 @@ const server = Bun.serve<TermWsData, never>({
         });
         const totalMs = Math.round(performance.now() - startedAt);
         record("debug-analyze", totalMs);
+        const includeInstance = url.searchParams.get("instance") === "1";
         const report = {
           generatedAt: new Date().toISOString(),
           durationMs: totalMs,
           workspace: WORKSPACE_PATH,
+          ...(includeInstance
+            ? {
+                instance: debugAnalyzeInstance({
+                  workspace: WORKSPACE_PATH,
+                  port: PORT,
+                  temporaryWorkspace: TEMP_WORKSPACE_MODE,
+                  sourceWorkspace: TEMP_WORKSPACE_SOURCE,
+                  readonly: READONLY_MODE,
+                }),
+              }
+            : {}),
           pid: process.pid,
           requestRate,
           probes: {

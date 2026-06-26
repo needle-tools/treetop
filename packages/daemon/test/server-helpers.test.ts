@@ -5,6 +5,7 @@
  */
 
 import { test, expect, describe } from "bun:test";
+import { Buffer } from "node:buffer";
 import {
   stripThinkingArtifacts,
   defaultLoginShell,
@@ -24,6 +25,8 @@ import {
   envFlag,
   readonlyRouteDecision,
   shouldCopyTempWorkspaceRelativePath,
+  debugAnalyzeInstance,
+  rewriteTempWorkspaceAttachmentRefs,
 } from "../src/server-helpers";
 
 // ---------------------------------------------------------------------------
@@ -1031,6 +1034,48 @@ describe("read-only daemon route policy", () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// Debug analyze instance identity
+// ---------------------------------------------------------------------------
+describe("debugAnalyzeInstance", () => {
+  test("marks temporary workspace copies as side instances", () => {
+    expect(
+      debugAnalyzeInstance({
+        workspace: "/tmp/treetop-copy",
+        port: 17777,
+        temporaryWorkspace: true,
+        sourceWorkspace: "/Users/me/supergit/workspaces/default",
+        readonly: false,
+      }),
+    ).toEqual({
+      workspace: "/tmp/treetop-copy",
+      port: 17777,
+      temporaryWorkspace: true,
+      sourceWorkspace: "/Users/me/supergit/workspaces/default",
+      readonly: false,
+      sideInstance: true,
+    });
+  });
+
+  test("marks normal writable prod as the primary instance", () => {
+    expect(
+      debugAnalyzeInstance({
+        workspace: "/Users/me/supergit/workspaces/default",
+        port: 27787,
+        temporaryWorkspace: false,
+        sourceWorkspace: null,
+        readonly: false,
+      }),
+    ).toMatchObject({
+      port: 27787,
+      temporaryWorkspace: false,
+      sourceWorkspace: null,
+      readonly: false,
+      sideInstance: false,
+    });
+  });
+});
+
 describe("temporary workspace copy policy", () => {
   test("copies persisted workspace data", () => {
     expect(shouldCopyTempWorkspaceRelativePath("repos.json")).toBe(true);
@@ -1057,5 +1102,71 @@ describe("temporary workspace copy policy", () => {
       false,
     );
     expect(shouldCopyTempWorkspaceRelativePath("repos.json.tmp")).toBe(false);
+  });
+});
+
+describe("rewriteTempWorkspaceAttachmentRefs", () => {
+  function attachmentRef(payload: object): string {
+    return `supergit://attachment/${Buffer.from(JSON.stringify(payload), "utf8").toString("base64url")}`;
+  }
+
+  function decodeAttachmentRef(ref: string): { path: string } {
+    const payload = ref.match(/supergit:\/\/attachment\/([A-Za-z0-9_-]+)/)?.[1];
+    if (!payload) throw new Error("missing attachment payload");
+    return JSON.parse(Buffer.from(payload, "base64url").toString("utf8")) as {
+      path: string;
+    };
+  }
+
+  test("rewrites copied attachment paths to the temporary workspace", () => {
+    expect(
+      rewriteTempWorkspaceAttachmentRefs(
+        '{"path":"/source/ws/attachments/paste.txt"}',
+        "/source/ws",
+        "/tmp/ws-copy",
+      ),
+    ).toBe('{"path":"/tmp/ws-copy/attachments/paste.txt"}');
+  });
+
+  test("keeps non-attachment workspace references unchanged", () => {
+    expect(
+      rewriteTempWorkspaceAttachmentRefs(
+        '{"workspace":"/source/ws","repo":"/source/ws-repo"}',
+        "/source/ws",
+        "/tmp/ws-copy",
+      ),
+    ).toBe('{"workspace":"/source/ws","repo":"/source/ws-repo"}');
+  });
+
+  test("rewrites Windows-style attachment paths too", () => {
+    expect(
+      rewriteTempWorkspaceAttachmentRefs(
+        String.raw`{"path":"C:\\source\\ws\\attachments\\paste.txt"}`,
+        String.raw`C:\source\ws`,
+        String.raw`D:\tmp\ws-copy`,
+      ),
+    ).toBe(String.raw`{"path":"D:\\tmp\\ws-copy\\attachments\\paste.txt"}`);
+  });
+
+  test("rewrites attachment paths inside supergit attachment links", () => {
+    const ref = attachmentRef({
+      kind: "text",
+      path: "/source/ws/attachments/pasted-content.txt",
+      filename: "pasted-content.txt",
+    });
+
+    const rewritten = rewriteTempWorkspaceAttachmentRefs(
+      `[Pasted Content](${ref})`,
+      "/source/ws",
+      "/tmp/ws-copy",
+    );
+    const rewrittenRef = rewritten.match(
+      /supergit:\/\/attachment\/[A-Za-z0-9_-]+/,
+    )?.[0];
+
+    expect(rewrittenRef).toBeTruthy();
+    expect(decodeAttachmentRef(rewrittenRef!).path).toBe(
+      "/tmp/ws-copy/attachments/pasted-content.txt",
+    );
   });
 });
