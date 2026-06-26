@@ -115,7 +115,10 @@
     requestSessionPollNow,
     type BatchSessionPatch,
   } from "./session-poll";
-  import { canResumeVisualSurface } from "./session-source-routing";
+  import {
+    canResumeVisualSurface,
+    shouldMountTerminalView,
+  } from "./session-source-routing";
   import {
     codexEventItemId,
     codexEventThreadIdForSession,
@@ -779,7 +782,8 @@
 
   function sessionElementNearViewport(): boolean {
     if (!sessionEl) return true;
-    return elementNearViewport(sessionEl) && sessionAncestorsNearViewport();
+    if (!sessionAncestorsNearViewport()) return false;
+    return elementNearViewport(sessionEl);
   }
 
   function syncSessionViewportState(): void {
@@ -1350,7 +1354,8 @@
         })),
       });
     }
-    const effectiveSurface = mode === "terminal" ? "terminal" : transcriptSurface;
+    const effectiveSurface =
+      mode === "terminal" ? "terminal" : transcriptSurface;
     const surfaceItems: SessionMenuItem[] = [
       {
         kind: "submenu",
@@ -1503,7 +1508,9 @@
     ].join(":");
   }
 
-  function visualMessagesTailKey(messages: readonly NormalizedMessage[]): string {
+  function visualMessagesTailKey(
+    messages: readonly NormalizedMessage[],
+  ): string {
     return messages
       .map((message) =>
         [
@@ -1566,8 +1573,7 @@
       requestAnimationFrame(() => {
         const current = messagesEl;
         if (!current) return;
-        const mayFollow =
-          firstRender || canApplyVisualTailFollow(pauseSeq);
+        const mayFollow = firstRender || canApplyVisualTailFollow(pauseSeq);
         if (shouldStickMessages && mayFollow) scrollToEnd(current);
 
         for (const body of liveWorkBodies()) {
@@ -1586,7 +1592,9 @@
           if (settled && shouldStickMessages && mayFollowSettled)
             scrollToEnd(settled);
           for (const body of liveWorkBodies()) {
-            const previous = liveBodyStates.find((state) => state.body === body);
+            const previous = liveBodyStates.find(
+              (state) => state.body === body,
+            );
             if (
               mayFollowSettled &&
               (previous?.shouldStick ?? shouldStickMessages)
@@ -1738,9 +1746,10 @@
   let codexWarningsExpanded = false;
   let composerWarnings: string[] = [];
   let editingCodexQueueId: string | null = null;
-  let editingCodexQueueDraft:
-    | { text: string; attachments: ImageInlineAttachment[] }
-    | null = null;
+  let editingCodexQueueDraft: {
+    text: string;
+    attachments: ImageInlineAttachment[];
+  } | null = null;
   let draggingCodexQueueId: string | null = null;
   let codexQueueDropBeforeId: string | null = null;
   let codexQueueDropAtEnd = false;
@@ -2159,9 +2168,7 @@
       codexStringParam(container, "media_type");
     const sourceRef = path ?? url;
     const kind = mediaKindFromEvidence(type, mimeType, sourceRef);
-    const methodLooksRelevant = /(?:image|media|artifact|file)$/i.test(
-      method,
-    );
+    const methodLooksRelevant = /(?:image|media|artifact|file)$/i.test(method);
     const hasImageEvidence =
       kind === "image" ||
       type.toLowerCase().includes("image") ||
@@ -2426,7 +2433,10 @@
     }
     if (event.method === "turn/plan/updated") {
       flushCodexDeltaPatches();
-      upsertCodexPlan(`codex-turn-plan-${event.turnId ?? "plan"}`, event.params);
+      upsertCodexPlan(
+        `codex-turn-plan-${event.turnId ?? "plan"}`,
+        event.params,
+      );
       return;
     }
     if (event.method === "error" || event.method === "warning") {
@@ -2485,9 +2495,7 @@
       const existingToolUse = messages[existingIndex]?.blocks.find(
         (block) => block.type === "tool_use",
       );
-      const existingQuality = codexToolInputQuality(
-        existingToolUse?.toolInput,
-      );
+      const existingQuality = codexToolInputQuality(existingToolUse?.toolInput);
       if (existingQuality > inputQuality) return;
     }
     const block: NormalizedBlock = {
@@ -2676,7 +2684,9 @@
     if (notePayload) return notePayload.body;
     const plain = dt.getData("text/plain");
     if (!plain || !plain.includes("supergit://attachment/")) return "";
-    return parseInlineAttachments(plain).some((part) => part.kind === "attachment")
+    return parseInlineAttachments(plain).some(
+      (part) => part.kind === "attachment",
+    )
       ? plain
       : "";
   }
@@ -2685,8 +2695,7 @@
     if (!dt) return false;
     const types = Array.from(dt.types ?? []);
     return (
-      types.includes(INLINE_ATTACHMENT_DRAG_MIME) ||
-      types.includes("text/html")
+      types.includes(INLINE_ATTACHMENT_DRAG_MIME) || types.includes("text/html")
     );
   }
 
@@ -3249,23 +3258,15 @@
     finishCodexQueueEdit(true);
   }
 
-  function saveCodexQueuedMessage(id: string | null = editingCodexQueueId): void {
+  function saveCodexQueuedMessage(
+    id: string | null = editingCodexQueueId,
+  ): void {
     if (!id) return;
-    if (
-      !canSaveCodexQueueEdit(
-        inputText,
-        composerAttachments,
-      )
-    )
-      return;
-    codexQueuedMessages = updateCodexQueuedMessage(
-      codexQueuedMessages,
-      id,
-      {
-        text: inputText,
-        attachments: composerAttachments,
-      },
-    );
+    if (!canSaveCodexQueueEdit(inputText, composerAttachments)) return;
+    codexQueuedMessages = updateCodexQueuedMessage(codexQueuedMessages, id, {
+      text: inputText,
+      attachments: composerAttachments,
+    });
     codexQueueBlocked = false;
     finishCodexQueueEdit(true);
   }
@@ -3277,11 +3278,7 @@
   }
 
   function reorderCodexQueueItem(id: string, beforeId: string | null): void {
-    const next = reorderCodexQueuedMessage(
-      codexQueuedMessages,
-      id,
-      beforeId,
-    );
+    const next = reorderCodexQueuedMessage(codexQueuedMessages, id, beforeId);
     if (next === codexQueuedMessages) return;
     codexQueuedMessages = next;
     codexQueueBlocked = false;
@@ -3619,8 +3616,7 @@
     lastFocusComposerSeq = focusComposerSeq;
     void focusComposerInput();
   }
-  $: showComposerTray =
-    codexVisualAppSurface && codexRequests.length > 0;
+  $: showComposerTray = codexVisualAppSurface && codexRequests.length > 0;
   $: if (codexQueuedMessages.length === 0 && codexQueueExpanded) {
     codexQueueExpanded = false;
   }
@@ -3632,12 +3628,11 @@
     codexWarningsExpanded = false;
   }
 
-  $: composerPlaceholder =
-    editingCodexQueueId
-      ? "Edit queued message…"
-      : agent === "codex"
-        ? "Message Codex…"
-        : `Message ${model || "Ollama"}…`;
+  $: composerPlaceholder = editingCodexQueueId
+    ? "Edit queued message…"
+    : agent === "codex"
+      ? "Message Codex…"
+      : `Message ${model || "Ollama"}…`;
 
   async function focusComposerInput(): Promise<void> {
     await tick();
@@ -3916,7 +3911,9 @@
       showEndInRead={codexVisualAppCanStop}
       {disposing}
       {awaitingInput}
-      working={mode === "terminal" ? working : codexVisualAppSurface && codexRunning}
+      working={mode === "terminal"
+        ? working
+        : codexVisualAppSurface && codexRunning}
       loadedMessageCount={session?.messages.length}
       {totalMessageCount}
       {contextTokens}
@@ -4193,11 +4190,11 @@
       class:sticky-photo-frame-transparent={hasAlpha}
       title={label}
     >
-      <img src={src} alt={label} draggable="false" />
+      <img {src} alt={label} draggable="false" />
     </span>
   {/snippet}
 
-  {#if mode === "terminal" && effectiveSessionId && effectiveSessionCwd}
+  {#if shouldMountTerminalView( { mode, hasSessionId: !!effectiveSessionId, hasCwd: !!effectiveSessionCwd, nearViewport: columnNearViewport }, )}
     <TerminalView
       cmd={agent === "codex"
         ? [
@@ -4258,6 +4255,8 @@
         void load();
       }}
     />
+  {:else if mode === "terminal"}
+    <div class="session-body-deferred" aria-hidden="true"></div>
   {:else if mode === "read" && !renderReadBody}
     <div class="session-body-deferred" aria-hidden="true"></div>
   {:else if error}
@@ -4279,10 +4278,10 @@
       {transcriptSurface}
       {ollamaStreamingIdx}
       bind:messagesEl
-      onMessagesEnter={onMessagesEnter}
-      onMessagesLeave={onMessagesLeave}
-      onMessagesWheel={onMessagesWheel}
-      onMessagesScroll={onMessagesScroll}
+      {onMessagesEnter}
+      {onMessagesLeave}
+      {onMessagesWheel}
+      {onMessagesScroll}
       active={visualTranscriptActive}
       showLiveThinkingLine={codexVisualAppSurface && codexRunning}
       messageMotionSources={composerMessageMotionSources}
@@ -4499,7 +4498,8 @@
                   {:else}
                     <button
                       type="button"
-                      on:click={() => mergeCodexQueuedMessageIntoPrevious(item.id)}
+                      on:click={() =>
+                        mergeCodexQueuedMessageIntoPrevious(item.id)}
                       disabled={itemIndex === 0 || !!editingCodexQueueId}
                       title="Merge into previous queued message"
                       aria-label="Merge into previous queued message">⇡</button
@@ -4621,137 +4621,141 @@
             {/if}
           </div>
         {/if}
-      <div class="composer-box" bind:this={composerMotionSourceEl}>
-        <textarea
-          class="composer-input"
-          bind:this={composerInputEl}
-          bind:value={inputText}
-          placeholder={composerPlaceholder}
-          rows="2"
-          on:keydown={onComposerKey}
-          on:paste={onComposerPaste}
-          on:dragover={onComposerDragOver}
-          on:drop={onComposerDrop}
-          disabled={sending && agent !== "codex" && !ollamaAbort}
-        ></textarea>
-      </div>
-      <div class="composer-footer">
-        <div class="composer-send-wrap">
-          {#if agent === "codex" && (codexLatestPlan || codexQueuedMessages.length)}
-            <div class="composer-indicators">
-              {#if codexLatestPlan}
-                <button
-                  type="button"
-                  class="codex-composer-badge"
-                  class:expanded={codexPlanExpanded}
-                  on:click={toggleCodexPlanPane}
-                  title={codexPlanExpanded ? "Collapse todo" : "Show todo"}
-                  aria-label={codexPlanExpanded ? "Collapse todo" : "Show todo"}
-                >
-                  {codexPlanBadgeLabel(codexLatestPlan)}
-                </button>
-              {/if}
-              {#if codexQueuedMessages.length}
-                <button
-                  type="button"
-                  class="codex-composer-badge"
-                  class:expanded={codexQueueExpanded}
-                  bind:this={composerQueueTargetEl}
-                  on:click={toggleCodexQueuePane}
-                  title={codexQueueExpanded
-                    ? "Collapse queued messages"
-                    : "Show queued messages"}
-                  aria-label={codexQueueExpanded
-                    ? "Collapse queued messages"
-                    : "Show queued messages"}
-                >
-                  Queue: {codexQueuedMessages.length}
-                </button>
-              {/if}
-            </div>
-          {/if}
-          {#if editingCodexQueueId}
-            <button
-              type="button"
-              class="composer-send composer-save-queue"
-              on:click={() => saveCodexQueuedMessage()}
-              disabled={!canSaveCodexQueueEdit(inputText, composerAttachments) ||
-                composerUploadingImages > 0}
-              title="Save queued message (Enter)"
-              aria-label="Save queued message"
-            >
-              ✓
-            </button>
-            <button
-              type="button"
-              class="composer-send composer-cancel-queue"
-              on:click={cancelEditCodexQueuedMessage}
-              title="Cancel queued message edit"
-              aria-label="Cancel queued message edit"
-            >
-              ×
-            </button>
-          {:else if sending && agent === "ollama"}
-            <button
-              type="button"
-              class="composer-send is-sending"
-              on:click={stopOllamaStream}
-              title="Stop generating"
-              aria-label="Stop"
-            >
-              ◼
-            </button>
-          {:else if codexRunning && agent === "codex"}
-            {#if codexActiveTurnId && composerCanSend}
+        <div class="composer-box" bind:this={composerMotionSourceEl}>
+          <textarea
+            class="composer-input"
+            bind:this={composerInputEl}
+            bind:value={inputText}
+            placeholder={composerPlaceholder}
+            rows="2"
+            on:keydown={onComposerKey}
+            on:paste={onComposerPaste}
+            on:dragover={onComposerDragOver}
+            on:drop={onComposerDrop}
+            disabled={sending && agent !== "codex" && !ollamaAbort}
+          ></textarea>
+        </div>
+        <div class="composer-footer">
+          <div class="composer-send-wrap">
+            {#if agent === "codex" && (codexLatestPlan || codexQueuedMessages.length)}
+              <div class="composer-indicators">
+                {#if codexLatestPlan}
+                  <button
+                    type="button"
+                    class="codex-composer-badge"
+                    class:expanded={codexPlanExpanded}
+                    on:click={toggleCodexPlanPane}
+                    title={codexPlanExpanded ? "Collapse todo" : "Show todo"}
+                    aria-label={codexPlanExpanded
+                      ? "Collapse todo"
+                      : "Show todo"}
+                  >
+                    {codexPlanBadgeLabel(codexLatestPlan)}
+                  </button>
+                {/if}
+                {#if codexQueuedMessages.length}
+                  <button
+                    type="button"
+                    class="codex-composer-badge"
+                    class:expanded={codexQueueExpanded}
+                    bind:this={composerQueueTargetEl}
+                    on:click={toggleCodexQueuePane}
+                    title={codexQueueExpanded
+                      ? "Collapse queued messages"
+                      : "Show queued messages"}
+                    aria-label={codexQueueExpanded
+                      ? "Collapse queued messages"
+                      : "Show queued messages"}
+                  >
+                    Queue: {codexQueuedMessages.length}
+                  </button>
+                {/if}
+              </div>
+            {/if}
+            {#if editingCodexQueueId}
               <button
                 type="button"
-                class="composer-send composer-steer"
-                on:click={() => void steerCodexMessage()}
-                disabled={composerUploadingImages > 0}
-                title="Steer the running Codex turn"
-                aria-label="Steer Codex"
+                class="composer-send composer-save-queue"
+                on:click={() => saveCodexQueuedMessage()}
+                disabled={!canSaveCodexQueueEdit(
+                  inputText,
+                  composerAttachments,
+                ) || composerUploadingImages > 0}
+                title="Save queued message (Enter)"
+                aria-label="Save queued message"
               >
-                ↩
+                ✓
+              </button>
+              <button
+                type="button"
+                class="composer-send composer-cancel-queue"
+                on:click={cancelEditCodexQueuedMessage}
+                title="Cancel queued message edit"
+                aria-label="Cancel queued message edit"
+              >
+                ×
+              </button>
+            {:else if sending && agent === "ollama"}
+              <button
+                type="button"
+                class="composer-send is-sending"
+                on:click={stopOllamaStream}
+                title="Stop generating"
+                aria-label="Stop"
+              >
+                ◼
+              </button>
+            {:else if codexRunning && agent === "codex"}
+              {#if codexActiveTurnId && composerCanSend}
+                <button
+                  type="button"
+                  class="composer-send composer-steer"
+                  on:click={() => void steerCodexMessage()}
+                  disabled={composerUploadingImages > 0}
+                  title="Steer the running Codex turn"
+                  aria-label="Steer Codex"
+                >
+                  ↩
+                </button>
+              {/if}
+              <button
+                type="button"
+                class="composer-send"
+                on:click={() => void sendMessage()}
+                disabled={!composerCanSend || composerUploadingImages > 0}
+                title="Queue for the next Codex turn"
+                aria-label="Queue Codex message"
+              >
+                ↑
+              </button>
+              <button
+                type="button"
+                class="composer-send is-sending"
+                on:click={() => void stopCodexTurn()}
+                title="Stop Codex"
+                aria-label="Stop Codex"
+              >
+                ◼
+              </button>
+            {:else}
+              <button
+                type="button"
+                class="composer-send"
+                on:click={() => void sendMessage()}
+                disabled={!composerCanSend ||
+                  composerUploadingImages > 0 ||
+                  (sending && agent !== "codex")}
+                title={agent === "codex" && codexActiveTurnId
+                  ? "Steer the running Codex turn"
+                  : "Send (Enter). Shift+Enter for newline."}
+                aria-label="Send"
+              >
+                {sending ? "…" : "↑"}
               </button>
             {/if}
-            <button
-              type="button"
-              class="composer-send"
-              on:click={() => void sendMessage()}
-              disabled={!composerCanSend || composerUploadingImages > 0}
-              title="Queue for the next Codex turn"
-              aria-label="Queue Codex message"
-            >
-              ↑
-            </button>
-            <button
-              type="button"
-              class="composer-send is-sending"
-              on:click={() => void stopCodexTurn()}
-              title="Stop Codex"
-              aria-label="Stop Codex"
-            >
-              ◼
-            </button>
-          {:else}
-            <button
-              type="button"
-              class="composer-send"
-              on:click={() => void sendMessage()}
-              disabled={!composerCanSend ||
-                composerUploadingImages > 0 ||
-                (sending && agent !== "codex")}
-              title={agent === "codex" && codexActiveTurnId
-                ? "Steer the running Codex turn"
-                : "Send (Enter). Shift+Enter for newline."}
-              aria-label="Send"
-            >
-              {sending ? "…" : "↑"}
-            </button>
-          {/if}
+          </div>
         </div>
       </div>
-    </div>
     </div>
   {/if}
   {#if openComposerAttachment && openComposerAttachmentIndex !== null}
@@ -4857,12 +4861,14 @@
        No margin-top here: the parent .sessions-strip already provides
        its own spacing from the row above. Let the panel's min/max drive
        the row height just like TerminalView's .terminal-wrap does. */
-    flex: 1 1 calc(
+    flex: 1 1 calc(var(--session-body-min-height) + var(--session-head-height));
+    height: 100%;
+    max-height: calc(
+      var(--session-body-max-height) + var(--session-head-height)
+    );
+    min-height: calc(
       var(--session-body-min-height) + var(--session-head-height)
     );
-    height: 100%;
-    max-height: calc(var(--session-body-max-height) + var(--session-head-height));
-    min-height: calc(var(--session-body-min-height) + var(--session-head-height));
     box-sizing: border-box;
     display: flex;
     flex-direction: column;
@@ -5685,7 +5691,8 @@
     flex: 0 0 auto;
     height: 1.55rem;
     max-width: 8rem;
-    border: 1px solid color-mix(in srgb, var(--status-clean) 42%, var(--surface-3));
+    border: 1px solid
+      color-mix(in srgb, var(--status-clean) 42%, var(--surface-3));
     border-radius: 999px;
     background: color-mix(in srgb, var(--surface-1) 86%, transparent);
     color: var(--text-2);

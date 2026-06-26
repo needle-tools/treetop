@@ -30,6 +30,7 @@ import {
   cachedRowRect,
   mutationsAffectStickyNoteLayout,
   mutationsAllInsideTerminal,
+  shouldMeasureStickyRowMargins,
   shouldMountStickyNote,
 } from "../src/sticky-notes-dom";
 
@@ -78,7 +79,11 @@ describe("anchorRowFor", () => {
 
   test("resolves the first worktree anchor that has a visible row", () => {
     expect(
-      anchorRowFor(rows, ["worktree:/gone", "worktree:/wt-b", "worktree:/wt-a"]),
+      anchorRowFor(rows, [
+        "worktree:/gone",
+        "worktree:/wt-b",
+        "worktree:/wt-a",
+      ]),
     ).toBe(rows.get("/wt-b")!);
   });
 
@@ -140,6 +145,17 @@ describe("shouldMountStickyNote", () => {
   });
 });
 
+describe("shouldMeasureStickyRowMargins", () => {
+  test("skips row-map work when no note components rendered", () => {
+    expect(shouldMeasureStickyRowMargins(12, 0)).toBe(false);
+  });
+
+  test("measures only when stored notes have rendered stickies", () => {
+    expect(shouldMeasureStickyRowMargins(0, 1)).toBe(false);
+    expect(shouldMeasureStickyRowMargins(1, 1)).toBe(true);
+  });
+});
+
 describe("mutationsAllInsideTerminal", () => {
   const insideXterm = {
     closest: (sel: string) => (sel === ".xterm-host" ? {} : null),
@@ -157,7 +173,10 @@ describe("mutationsAllInsideTerminal", () => {
 
   test("false as soon as one record escapes the terminal", () => {
     expect(
-      mutationsAllInsideTerminal([{ target: insideXterm }, { target: outside }]),
+      mutationsAllInsideTerminal([
+        { target: insideXterm },
+        { target: outside },
+      ]),
     ).toBe(false);
   });
 
@@ -170,15 +189,18 @@ describe("mutationsAllInsideTerminal", () => {
 
   test("unresolvable or empty batches are NOT treated as terminal-internal (safe: tick)", () => {
     expect(mutationsAllInsideTerminal([{ target: null }])).toBe(false);
-    expect(mutationsAllInsideTerminal([{ target: { parentElement: null } }])).toBe(
-      false,
-    );
+    expect(
+      mutationsAllInsideTerminal([{ target: { parentElement: null } }]),
+    ).toBe(false);
     expect(mutationsAllInsideTerminal([])).toBe(false);
   });
 });
 
 describe("mutationsAffectStickyNoteLayout", () => {
-  function target(className: string, matchesSelector: (sel: string) => boolean) {
+  function target(
+    className: string,
+    matchesSelector: (sel: string) => boolean,
+  ) {
     return {
       className,
       getAttribute: (name: string) => (name === "class" ? className : null),
@@ -253,7 +275,9 @@ describe("mutationsAffectStickyNoteLayout", () => {
       ]),
     ).toBe(true);
     expect(
-      mutationsAffectStickyNoteLayout([{ type: "childList", target: row("row") }]),
+      mutationsAffectStickyNoteLayout([
+        { type: "childList", target: row("row") },
+      ]),
     ).toBe(true);
   });
 

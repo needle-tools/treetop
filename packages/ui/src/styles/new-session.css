@@ -48,6 +48,11 @@
   }
 }
 
+.new-session-col .session-body-deferred {
+  flex: 1 1 auto;
+  min-height: 28rem;
+}
+
 /* Fullscreen: the browser paints a black backdrop by default; we
    drop the rounded corners + border so the column fills it cleanly.
    xterm's FitAddon reacts to the size change via TerminalView's

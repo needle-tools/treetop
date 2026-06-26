@@ -19,7 +19,7 @@
    *     "— TUI" otherwise
    *   - the Dispose button shows only for shell columns
    */
-  import { createEventDispatcher } from "svelte";
+  import { createEventDispatcher, onDestroy, onMount } from "svelte";
   import TerminalView from "./TerminalView.svelte";
   import { type SessionMenuItem } from "./SessionMenu.svelte";
   import SessionHeader from "./SessionHeader.svelte";
@@ -31,6 +31,12 @@
     effortIcon,
   } from "./claude-session-menu";
   import type { SshSessionInfo } from "./file-browser-utils";
+  import { elementNearViewport } from "./col-visibility";
+  import { apiWsUrl } from "./api";
+  import {
+    shouldHoldOffscreenAttachedTerminal,
+    shouldMountNewSessionTerminal,
+  } from "./session-source-routing";
 
   type AgentKind = "claude" | "codex" | "copilot" | "ollama" | "shell";
 
@@ -230,6 +236,147 @@
   ] satisfies SessionMenuItem[];
 
   let sshSession: SshSessionInfo | null = null;
+  let colEl: HTMLElement | null = null;
+  let nearViewport = false;
+  let visibilityObs: IntersectionObserver | null = null;
+  let ancestorVisibilityObs: MutationObserver | null = null;
+  let mounted = false;
+  let holdWs: WebSocket | null = null;
+  let holdTermId: string | undefined;
+
+  $: terminalMounted = shouldMountNewSessionTerminal({
+    hasCwd: !!cwd,
+    nearViewport,
+  });
+
+  $: syncTerminalHold(
+    mounted &&
+      shouldHoldOffscreenAttachedTerminal({ attachTermId, terminalMounted })
+      ? attachTermId
+      : undefined,
+  );
+
+  function ancestorsNearViewport(): boolean {
+    if (!colEl) return true;
+    const col = colEl.closest(".session-col");
+    const row = colEl.closest(".row");
+    return (
+      !col?.classList.contains("col-offscreen") &&
+      !row?.classList.contains("row-offscreen")
+    );
+  }
+
+  function syncViewportState(): void {
+    const next =
+      !!colEl && ancestorsNearViewport() && elementNearViewport(colEl);
+    if (nearViewport !== next) nearViewport = next;
+  }
+
+  function closeTerminalHold(): void {
+    const ws = holdWs;
+    holdWs = null;
+    holdTermId = undefined;
+    if (!ws) return;
+    ws.onopen = ws.onmessage = ws.onerror = ws.onclose = null;
+    if (
+      ws.readyState === WebSocket.CONNECTING ||
+      ws.readyState === WebSocket.OPEN
+    ) {
+      ws.close(1000, "terminal view mounted");
+    }
+  }
+
+  function syncTerminalHold(termId: string | undefined): void {
+    if (!termId) {
+      closeTerminalHold();
+      return;
+    }
+    if (
+      holdWs &&
+      holdTermId === termId &&
+      holdWs.readyState !== WebSocket.CLOSING &&
+      holdWs.readyState !== WebSocket.CLOSED
+    ) {
+      return;
+    }
+    closeTerminalHold();
+    const proto = location.protocol === "https:" ? "wss:" : "ws:";
+    const ws = new WebSocket(
+      apiWsUrl(
+        `/api/terminals/${encodeURIComponent(termId)}/io`,
+        location.host,
+        proto,
+        daemonId,
+      ),
+    );
+    holdWs = ws;
+    holdTermId = termId;
+    ws.onopen = () => {
+      ws.send(
+        JSON.stringify({ type: "visibility", visible: false, drain: false }),
+      );
+    };
+    ws.onmessage = (event) => {
+      if (typeof event.data !== "string") return;
+      try {
+        const parsed = JSON.parse(event.data);
+        if (
+          parsed?.type === "state" &&
+          typeof parsed.awaitingInput === "boolean"
+        ) {
+          dispatch("awaitingChange", { awaiting: parsed.awaitingInput });
+        }
+      } catch {
+        // Ignore output/accounting frames; this socket only prevents grace-reap
+        // while the expensive terminal renderer is deferred offscreen.
+      }
+    };
+    ws.onclose = () => {
+      if (holdWs !== ws) return;
+      holdWs = null;
+      holdTermId = undefined;
+    };
+  }
+
+  onMount(() => {
+    mounted = true;
+    if (!colEl || typeof IntersectionObserver === "undefined") {
+      nearViewport = true;
+      return;
+    }
+    visibilityObs = new IntersectionObserver(() => syncViewportState(), {
+      root: null,
+      rootMargin: "300px",
+      threshold: 0,
+    });
+    visibilityObs.observe(colEl);
+    if (typeof MutationObserver !== "undefined") {
+      ancestorVisibilityObs = new MutationObserver(syncViewportState);
+      const col = colEl.closest(".session-col");
+      const row = colEl.closest(".row");
+      col &&
+        ancestorVisibilityObs.observe(col, {
+          attributes: true,
+          attributeFilter: ["class"],
+        });
+      row &&
+        ancestorVisibilityObs.observe(row, {
+          attributes: true,
+          attributeFilter: ["class"],
+        });
+    }
+    syncViewportState();
+    requestAnimationFrame(syncViewportState);
+  });
+
+  onDestroy(() => {
+    mounted = false;
+    closeTerminalHold();
+    visibilityObs?.disconnect();
+    visibilityObs = null;
+    ancestorVisibilityObs?.disconnect();
+    ancestorVisibilityObs = null;
+  });
 
   async function saveAsLink(triggerRect: DOMRect): Promise<void> {
     if (!wtPath) return;
@@ -250,7 +397,11 @@
   }
 </script>
 
-<div class="session new-session-col" class:awaiting-input={awaiting}>
+<div
+  class="session new-session-col"
+  class:awaiting-input={awaiting}
+  bind:this={colEl}
+>
   <SessionHeader
     {agent}
     agentLabel={pillLabel}
@@ -297,36 +448,41 @@
     }}
   />
 
-  <TerminalView
-    {cmd}
-    {cwd}
-    {agent}
-    {procName}
-    {attachTermId}
-    {resumeFromTermId}
-    sessionSource={source}
-    {initialPrompt}
-    {prefillCmd}
-    {daemonId}
-    onSpawn={(id) => dispatch("spawn", { id })}
-    onAwaitingChange={(next) => dispatch("awaitingChange", { awaiting: next })}
-    onWorkingChange={(next) => dispatch("workingChange", { working: next })}
-    onSshChange={(ssh) => {
-      sshSession = ssh;
-      if (ssh?.cwd) dispatch("sshCwd", { cwd: ssh.cwd });
-    }}
-    onExit={() => {
-      /* Deliberately NOT closing the column on PTY exit. Some agents
-         (notably `codex`) restart themselves after an in-place update —
-         they exit, then a fresh process spawns. If we auto-disposed
-         here, the user would lose the new process and the update
-         notice. Instead we leave the column open showing the final
-         output; the user dismisses via the × in the header. We do
-         bubble an exit event up so the side dock can shrink the
-         row's dot to mark the session as ended. */
-      dispatch("exit");
-    }}
-  />
+  {#if terminalMounted}
+    <TerminalView
+      {cmd}
+      {cwd}
+      {agent}
+      {procName}
+      {attachTermId}
+      {resumeFromTermId}
+      sessionSource={source}
+      {initialPrompt}
+      {prefillCmd}
+      {daemonId}
+      onSpawn={(id) => dispatch("spawn", { id })}
+      onAwaitingChange={(next) =>
+        dispatch("awaitingChange", { awaiting: next })}
+      onWorkingChange={(next) => dispatch("workingChange", { working: next })}
+      onSshChange={(ssh) => {
+        sshSession = ssh;
+        if (ssh?.cwd) dispatch("sshCwd", { cwd: ssh.cwd });
+      }}
+      onExit={() => {
+        /* Deliberately NOT closing the column on PTY exit. Some agents
+           (notably `codex`) restart themselves after an in-place update —
+           they exit, then a fresh process spawns. If we auto-disposed
+           here, the user would lose the new process and the update
+           notice. Instead we leave the column open showing the final
+           output; the user dismisses via the × in the header. We do
+           bubble an exit event up so the side dock can shrink the
+           row's dot to mark the session as ended. */
+        dispatch("exit");
+      }}
+    />
+  {:else}
+    <div class="session-body-deferred" aria-hidden="true"></div>
+  {/if}
 </div>
 
 <!-- All styling lives in packages/ui/src/styles/new-session.css. -->

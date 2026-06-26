@@ -81,6 +81,34 @@ export interface LiveAgentTerminal {
   exitedAt?: string;
 }
 
+export function shouldMountTerminalView(args: {
+  mode: "read" | "terminal";
+  hasSessionId: boolean;
+  hasCwd: boolean;
+  nearViewport: boolean;
+}): boolean {
+  return (
+    args.mode === "terminal" &&
+    args.hasSessionId &&
+    args.hasCwd &&
+    args.nearViewport
+  );
+}
+
+export function shouldMountNewSessionTerminal(args: {
+  hasCwd: boolean;
+  nearViewport: boolean;
+}): boolean {
+  return args.hasCwd && args.nearViewport;
+}
+
+export function shouldHoldOffscreenAttachedTerminal(args: {
+  attachTermId: string | undefined;
+  terminalMounted: boolean;
+}): boolean {
+  return !!args.attachTermId && !args.terminalMounted;
+}
+
 // ---------------------------------------------------------------------------
 // resolveTermId
 //
@@ -161,7 +189,9 @@ export function openSessionHasLiveTerminal(
   }
 
   if (session.mode !== "terminal") return false;
-  return !!session.attachTermId && options.liveTerminalIds.has(session.attachTermId);
+  return (
+    !!session.attachTermId && options.liveTerminalIds.has(session.attachTermId)
+  );
 }
 
 export function openSessionHasDockActivity(
@@ -228,7 +258,10 @@ export function reconcileLiveAgentTerminals(
     for (const wt of repo.worktrees ?? []) {
       for (const agent of wt.agents ?? []) {
         if (!agent.sessionId) continue;
-        sessionIdByWtAndSource.set(`${wt.path}\0${agent.source}`, agent.sessionId);
+        sessionIdByWtAndSource.set(
+          `${wt.path}\0${agent.source}`,
+          agent.sessionId,
+        );
       }
     }
   }
@@ -238,7 +271,8 @@ export function reconcileLiveAgentTerminals(
   for (const [wtPath, sessions] of Object.entries(byWt)) {
     let nextSessions: OpenSession[] | null = null;
     sessions.forEach((s, index) => {
-      if (s.agent === "shell" || s.agent === "files" || s.agent === "history") return;
+      if (s.agent === "shell" || s.agent === "files" || s.agent === "history")
+        return;
       const sessionId =
         s.resumeSessionId ??
         s.preassignedSessionId ??
@@ -286,10 +320,7 @@ export function normalizeSessionForOpen(
     .flatMap((r) => r.worktrees ?? [])
     .find((w) => w.path === wtPath);
   const agents = wt?.agents ?? [];
-  if (
-    !s.resumeSessionId &&
-    (s.agent === "claude" || s.agent === "codex")
-  ) {
+  if (!s.resumeSessionId && (s.agent === "claude" || s.agent === "codex")) {
     const match = agents.find(
       (a) => a.agent === s.agent && a.source === s.source && a.sessionId,
     );
@@ -312,8 +343,7 @@ export function normalizeSessionForOpen(
   if (!termId) return s;
   const match = agents.find(
     (a) =>
-      a.agent === "ollama" &&
-      (a.sessionId === termId || a.source === s.source),
+      a.agent === "ollama" && (a.sessionId === termId || a.source === s.source),
   );
   return {
     agent: "ollama",

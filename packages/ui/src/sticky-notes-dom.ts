@@ -96,6 +96,13 @@ export function shouldMountStickyNote(state: StickyNoteMountState): boolean {
   );
 }
 
+export function shouldMeasureStickyRowMargins(
+  noteCount: number,
+  renderedStickyCount: number,
+): boolean {
+  return noteCount > 0 && renderedStickyCount > 0;
+}
+
 /** Loose shape of MutationRecord.target: elements expose closest(),
  *  text nodes reach their element via parentElement. */
 export interface MutationTargetLike {
@@ -131,10 +138,7 @@ type MutationRecordLike = {
   target: MutationTargetLike | null;
 };
 
-const COL_NON_LAYOUT_CLASSES = new Set([
-  "col-offscreen",
-  "session-col-flash",
-]);
+const COL_NON_LAYOUT_CLASSES = new Set(["col-offscreen", "session-col-flash"]);
 
 function classTokens(value: string): Set<string> {
   return new Set(value.split(/\s+/).filter(Boolean));
@@ -160,7 +164,9 @@ function changedClassTokens(oldValue: string, newValue: string): Set<string> {
   return changed;
 }
 
-function isNonLayoutVisibilityClassMutation(record: MutationRecordLike): boolean {
+function isNonLayoutVisibilityClassMutation(
+  record: MutationRecordLike,
+): boolean {
   if (record.type !== "attributes" || record.attributeName !== "class") {
     return false;
   }

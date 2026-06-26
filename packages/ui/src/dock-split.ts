@@ -75,3 +75,10 @@ export function splitDockEntries<T extends SplittableDockEntry>(
     bottom: visible.slice(bestEnd),
   };
 }
+
+export function shouldMeasureDockBackdrop(
+  showLabels: boolean,
+  dotCount: number,
+): boolean {
+  return showLabels && dotCount > 0;
+}

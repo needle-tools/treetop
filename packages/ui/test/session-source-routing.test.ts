@@ -23,6 +23,9 @@ import {
   openSessionHasDockActivity,
   openSessionHasLiveTerminal,
   reconcileLiveAgentTerminals,
+  shouldHoldOffscreenAttachedTerminal,
+  shouldMountNewSessionTerminal,
+  shouldMountTerminalView,
   type AgentSession,
   type ShellRecord,
   type OpenSession,
@@ -39,22 +42,22 @@ import {
 
 describe("resolveTermId", () => {
   test("__attached__:shell:<termId> → returns termId from suffix", () => {
-    expect(
-      resolveTermId({ source: "__attached__:shell:abc123" }, {}),
-    ).toBe("abc123");
+    expect(resolveTermId({ source: "__attached__:shell:abc123" }, {})).toBe(
+      "abc123",
+    );
   });
 
   test("__attached__:claude:<termId> → returns termId (any agent suffix)", () => {
-    expect(
-      resolveTermId({ source: "__attached__:claude:xyz789" }, {}),
-    ).toBe("xyz789");
+    expect(resolveTermId({ source: "__attached__:claude:xyz789" }, {})).toBe(
+      "xyz789",
+    );
   });
 
   test("__new__:<key> in newTermIds → returns the mapped termId", () => {
     const newTermIds = { "__new__:shell:1": "term-42" };
-    expect(
-      resolveTermId({ source: "__new__:shell:1" }, newTermIds),
-    ).toBe("term-42");
+    expect(resolveTermId({ source: "__new__:shell:1" }, newTermIds)).toBe(
+      "term-42",
+    );
   });
 
   test("__new__:<key> NOT in newTermIds → returns undefined", () => {
@@ -76,18 +79,16 @@ describe("resolveTermId", () => {
   });
 
   test("__new__: prefix but empty newTermIds map → undefined", () => {
-    expect(
-      resolveTermId({ source: "__new__:claude:" }, {}),
-    ).toBeUndefined();
+    expect(resolveTermId({ source: "__new__:claude:" }, {})).toBeUndefined();
   });
 
   // Edge: .split(":").pop() on a source with many colons returns last segment
   test("__attached__: with colons in the termId-like segment → last split wins", () => {
     // This matches the real code: s.source.split(":").pop()
     // So "__attached__:shell:foo:bar" would give "bar"
-    expect(
-      resolveTermId({ source: "__attached__:shell:foo:bar" }, {}),
-    ).toBe("bar");
+    expect(resolveTermId({ source: "__attached__:shell:foo:bar" }, {})).toBe(
+      "bar",
+    );
   });
 });
 
@@ -108,43 +109,71 @@ describe("isOpenInWt", () => {
 
   test("source present in the worktree → true", () => {
     expect(
-      isOpenInWt("/home/user/project", "/ws/.claude/sessions/abc.jsonl", openSessionsByWt),
+      isOpenInWt(
+        "/home/user/project",
+        "/ws/.claude/sessions/abc.jsonl",
+        openSessionsByWt,
+      ),
     ).toBe(true);
   });
 
   test("shell source present → true", () => {
     expect(
-      isOpenInWt("/home/user/project", "__attached__:shell:term1", openSessionsByWt),
+      isOpenInWt(
+        "/home/user/project",
+        "__attached__:shell:term1",
+        openSessionsByWt,
+      ),
     ).toBe(true);
   });
 
   test("ollama transcript source present → true", () => {
     expect(
-      isOpenInWt("/home/user/project", "__transcript__:ollama:olm1", openSessionsByWt),
+      isOpenInWt(
+        "/home/user/project",
+        "__transcript__:ollama:olm1",
+        openSessionsByWt,
+      ),
     ).toBe(true);
   });
 
   test("source not in the worktree → false", () => {
     expect(
-      isOpenInWt("/home/user/project", "__attached__:shell:term999", openSessionsByWt),
+      isOpenInWt(
+        "/home/user/project",
+        "__attached__:shell:term999",
+        openSessionsByWt,
+      ),
     ).toBe(false);
   });
 
   test("correct source but wrong worktree path → false", () => {
     expect(
-      isOpenInWt("/home/user/project2", "/ws/.claude/sessions/abc.jsonl", openSessionsByWt),
+      isOpenInWt(
+        "/home/user/project2",
+        "/ws/.claude/sessions/abc.jsonl",
+        openSessionsByWt,
+      ),
     ).toBe(false);
   });
 
   test("worktree path absent from map → false (treated as empty list)", () => {
     expect(
-      isOpenInWt("/nonexistent/wt", "__attached__:shell:term1", openSessionsByWt),
+      isOpenInWt(
+        "/nonexistent/wt",
+        "__attached__:shell:term1",
+        openSessionsByWt,
+      ),
     ).toBe(false);
   });
 
   test("empty session list for worktree → false", () => {
     expect(
-      isOpenInWt("/home/user/project2", "/ws/.claude/sessions/abc.jsonl", openSessionsByWt),
+      isOpenInWt(
+        "/home/user/project2",
+        "/ws/.claude/sessions/abc.jsonl",
+        openSessionsByWt,
+      ),
     ).toBe(false);
   });
 });
@@ -152,7 +181,9 @@ describe("isOpenInWt", () => {
 describe("moveSessionStateKey", () => {
   test("moves a transient state value from synthetic source to canonical source", () => {
     const before = { "__new__:claude:abc": true, other: false };
-    expect(moveSessionStateKey(before, "__new__:claude:abc", "/real.jsonl")).toEqual({
+    expect(
+      moveSessionStateKey(before, "__new__:claude:abc", "/real.jsonl"),
+    ).toEqual({
       "/real.jsonl": true,
       other: false,
     });
@@ -163,21 +194,25 @@ describe("moveSessionStateKey", () => {
       "__new__:claude:abc": true,
       "/real.jsonl": false,
     };
-    expect(moveSessionStateKey(before, "__new__:claude:abc", "/real.jsonl")).toEqual({
+    expect(
+      moveSessionStateKey(before, "__new__:claude:abc", "/real.jsonl"),
+    ).toEqual({
       "/real.jsonl": false,
     });
   });
 
   test("returns the same object when there is no old key to move", () => {
     const before = { "/real.jsonl": true };
-    expect(moveSessionStateKey(before, "__new__:claude:abc", "/real.jsonl")).toBe(
-      before,
-    );
+    expect(
+      moveSessionStateKey(before, "__new__:claude:abc", "/real.jsonl"),
+    ).toBe(before);
   });
 
   test("no-ops when source and destination are identical", () => {
     const before = { "/real.jsonl": true };
-    expect(moveSessionStateKey(before, "/real.jsonl", "/real.jsonl")).toBe(before);
+    expect(moveSessionStateKey(before, "/real.jsonl", "/real.jsonl")).toBe(
+      before,
+    );
   });
 });
 
@@ -503,7 +538,10 @@ describe("normalizeSessionForOpen", () => {
   // ---- Pass-through cases ----
 
   test("non-ollama agent with no matching session id → returned unchanged", () => {
-    const s: OpenSession = { agent: "claude", source: "/ws/.claude/sessions/x.jsonl" };
+    const s: OpenSession = {
+      agent: "claude",
+      source: "/ws/.claude/sessions/x.jsonl",
+    };
     expect(normalizeSessionForOpen(wtPath, s, repos)).toBe(s);
   });
 
@@ -526,7 +564,10 @@ describe("normalizeSessionForOpen", () => {
         ],
       },
     ];
-    const s: OpenSession = { agent: "claude", source: "/ws/.claude/sessions/x.jsonl" };
+    const s: OpenSession = {
+      agent: "claude",
+      source: "/ws/.claude/sessions/x.jsonl",
+    };
     const result = normalizeSessionForOpen(wtPath, s, localRepos);
     expect(result).toEqual({
       agent: "claude",
@@ -563,7 +604,10 @@ describe("normalizeSessionForOpen", () => {
   });
 
   test("ollama but source starts with __transcript__: → returned unchanged", () => {
-    const s: OpenSession = { agent: "ollama", source: "__transcript__:ollama:tid-abc" };
+    const s: OpenSession = {
+      agent: "ollama",
+      source: "__transcript__:ollama:tid-abc",
+    };
     expect(normalizeSessionForOpen(wtPath, s, repos)).toBe(s);
   });
 
@@ -573,27 +617,39 @@ describe("normalizeSessionForOpen", () => {
   });
 
   test("ollama but source starts with __attached__: → returned unchanged", () => {
-    const s: OpenSession = { agent: "ollama", source: "__attached__:ollama:tid-abc" };
+    const s: OpenSession = {
+      agent: "ollama",
+      source: "__attached__:ollama:tid-abc",
+    };
     expect(normalizeSessionForOpen(wtPath, s, repos)).toBe(s);
   });
 
   // ---- Translation cases ----
 
   test("ollama JSONL source → translates to __transcript__:ollama:<termId>", () => {
-    const s: OpenSession = { agent: "ollama", source: "/workspace/ollama/tid-abc.jsonl" };
+    const s: OpenSession = {
+      agent: "ollama",
+      source: "/workspace/ollama/tid-abc.jsonl",
+    };
     const result = normalizeSessionForOpen(wtPath, s, repos);
     expect(result.source).toBe("__transcript__:ollama:tid-abc");
     expect(result.agent).toBe("ollama");
   });
 
   test("ollama JSONL with matching agent → ollamaModel is populated from model field", () => {
-    const s: OpenSession = { agent: "ollama", source: "/workspace/ollama/tid-abc.jsonl" };
+    const s: OpenSession = {
+      agent: "ollama",
+      source: "/workspace/ollama/tid-abc.jsonl",
+    };
     const result = normalizeSessionForOpen(wtPath, s, repos);
     expect(result.ollamaModel).toBe("llama3.2:3b");
   });
 
   test("ollama JSONL with no matching agent in agents list → ollamaModel is undefined", () => {
-    const s: OpenSession = { agent: "ollama", source: "/workspace/ollama/tid-unknown.jsonl" };
+    const s: OpenSession = {
+      agent: "ollama",
+      source: "/workspace/ollama/tid-unknown.jsonl",
+    };
     const result = normalizeSessionForOpen(wtPath, s, repos);
     expect(result.source).toBe("__transcript__:ollama:tid-unknown");
     expect(result.ollamaModel).toBeUndefined();
@@ -620,7 +676,10 @@ describe("normalizeSessionForOpen", () => {
         ],
       },
     ];
-    const s: OpenSession = { agent: "ollama", source: "/workspace/ollama/tid-src.jsonl" };
+    const s: OpenSession = {
+      agent: "ollama",
+      source: "/workspace/ollama/tid-src.jsonl",
+    };
     const result = normalizeSessionForOpen(wtPath, s, localRepos);
     // termId derived from basename: tid-src
     expect(result.source).toBe("__transcript__:ollama:tid-src");
@@ -648,7 +707,10 @@ describe("normalizeSessionForOpen", () => {
         ],
       },
     ];
-    const s: OpenSession = { agent: "ollama", source: "/workspace/ollama/tid-xyz.jsonl" };
+    const s: OpenSession = {
+      agent: "ollama",
+      source: "/workspace/ollama/tid-xyz.jsonl",
+    };
     const result = normalizeSessionForOpen(wtPath, s, localRepos);
     expect(result.ollamaModel).toBe("My Ollama Chat");
   });
@@ -662,7 +724,10 @@ describe("normalizeSessionForOpen", () => {
   });
 
   test("worktree not found in repos → still translates source, ollamaModel undefined", () => {
-    const s: OpenSession = { agent: "ollama", source: "/workspace/ollama/tid-abc.jsonl" };
+    const s: OpenSession = {
+      agent: "ollama",
+      source: "/workspace/ollama/tid-abc.jsonl",
+    };
     // wrong worktree path
     const result = normalizeSessionForOpen("/nonexistent/wt", s, repos);
     expect(result.source).toBe("__transcript__:ollama:tid-abc");
@@ -671,7 +736,10 @@ describe("normalizeSessionForOpen", () => {
 
   test("Windows-style path separator (backslash) → basename extracted correctly", () => {
     // The real regex is /[\\/]/ so it handles both separators
-    const s: OpenSession = { agent: "ollama", source: "C:\\workspace\\ollama\\tid-win.jsonl" };
+    const s: OpenSession = {
+      agent: "ollama",
+      source: "C:\\workspace\\ollama\\tid-win.jsonl",
+    };
     const result = normalizeSessionForOpen(wtPath, s, repos);
     expect(result.source).toBe("__transcript__:ollama:tid-win");
   });
@@ -689,49 +757,41 @@ describe("normalizeSessionForOpen", () => {
 describe("dismissIfShell — decision logic", () => {
   test("non-shell agent → null (nothing to dismiss)", () => {
     // source "/ws/x.jsonl" doesn't match any shell prefix → null
-    expect(
-      shellSourceToDismiss("/ws/x.jsonl", {}),
-    ).toBeNull();
+    expect(shellSourceToDismiss("/ws/x.jsonl", {})).toBeNull();
   });
 
   test("files agent → null (not a shell)", () => {
     // source "__files__:/some/path" doesn't match any shell prefix → null
-    expect(
-      shellSourceToDismiss("__files__:/some/path", {}),
-    ).toBeNull();
+    expect(shellSourceToDismiss("__files__:/some/path", {})).toBeNull();
   });
 
   test("shell + __attached__:shell:<id> → returns the source itself", () => {
-    expect(
-      shellSourceToDismiss("__attached__:shell:term1", {}),
-    ).toBe("__attached__:shell:term1");
+    expect(shellSourceToDismiss("__attached__:shell:term1", {})).toBe(
+      "__attached__:shell:term1",
+    );
   });
 
   test("shell + __transcript__:shell:<id> → returns the source itself", () => {
-    expect(
-      shellSourceToDismiss("__transcript__:shell:term99", {}),
-    ).toBe("__transcript__:shell:term99");
+    expect(shellSourceToDismiss("__transcript__:shell:term99", {})).toBe(
+      "__transcript__:shell:term99",
+    );
   });
 
   test("shell + __new__:shell: with termId in map → returns __attached__:shell:<termId>", () => {
     const newTermIds = { "__new__:shell:1": "term-mapped" };
-    expect(
-      shellSourceToDismiss("__new__:shell:1", newTermIds),
-    ).toBe("__attached__:shell:term-mapped");
+    expect(shellSourceToDismiss("__new__:shell:1", newTermIds)).toBe(
+      "__attached__:shell:term-mapped",
+    );
   });
 
   test("shell + __new__:shell: NOT in map → null (no termId known, nothing to dismiss)", () => {
-    expect(
-      shellSourceToDismiss("__new__:shell:missing", {}),
-    ).toBeNull();
+    expect(shellSourceToDismiss("__new__:shell:missing", {})).toBeNull();
   });
 
   test("shell + unknown source form → null (real code falls through without action)", () => {
     // A shell source that doesn't start with __attached__:, __transcript__:, or __new__:
     // The real function does nothing in that case → decision is null.
-    expect(
-      shellSourceToDismiss("/some/bare/path", {}),
-    ).toBeNull();
+    expect(shellSourceToDismiss("/some/bare/path", {})).toBeNull();
   });
 });
 
@@ -893,6 +953,95 @@ describe("canResumeVisualSurface", () => {
         liveAppSurface: false,
         sessionId: "thread-1",
         hasVisualResume: true,
+      }),
+    ).toBe(false);
+  });
+});
+
+describe("shouldMountTerminalView", () => {
+  test("mounts live terminal UI only for complete terminal columns near the viewport", () => {
+    expect(
+      shouldMountTerminalView({
+        mode: "terminal",
+        hasSessionId: true,
+        hasCwd: true,
+        nearViewport: true,
+      }),
+    ).toBe(true);
+  });
+
+  test("defers offscreen terminal UI without changing terminal mode", () => {
+    expect(
+      shouldMountTerminalView({
+        mode: "terminal",
+        hasSessionId: true,
+        hasCwd: true,
+        nearViewport: false,
+      }),
+    ).toBe(false);
+  });
+
+  test("does not mount without a resumable session and cwd", () => {
+    expect(
+      shouldMountTerminalView({
+        mode: "terminal",
+        hasSessionId: false,
+        hasCwd: true,
+        nearViewport: true,
+      }),
+    ).toBe(false);
+    expect(
+      shouldMountTerminalView({
+        mode: "terminal",
+        hasSessionId: true,
+        hasCwd: false,
+        nearViewport: true,
+      }),
+    ).toBe(false);
+  });
+});
+
+describe("shouldMountNewSessionTerminal", () => {
+  test("mounts transient terminal UI only near the viewport", () => {
+    expect(
+      shouldMountNewSessionTerminal({ hasCwd: true, nearViewport: true }),
+    ).toBe(true);
+    expect(
+      shouldMountNewSessionTerminal({ hasCwd: true, nearViewport: false }),
+    ).toBe(false);
+  });
+
+  test("requires a cwd to spawn or attach", () => {
+    expect(
+      shouldMountNewSessionTerminal({ hasCwd: false, nearViewport: true }),
+    ).toBe(false);
+  });
+});
+
+describe("shouldHoldOffscreenAttachedTerminal", () => {
+  test("holds an attached PTY when its terminal renderer is deferred", () => {
+    expect(
+      shouldHoldOffscreenAttachedTerminal({
+        attachTermId: "term-1",
+        terminalMounted: false,
+      }),
+    ).toBe(true);
+  });
+
+  test("does not hold once the terminal renderer is mounted", () => {
+    expect(
+      shouldHoldOffscreenAttachedTerminal({
+        attachTermId: "term-1",
+        terminalMounted: true,
+      }),
+    ).toBe(false);
+  });
+
+  test("does not hold unspawned synthetic columns", () => {
+    expect(
+      shouldHoldOffscreenAttachedTerminal({
+        attachTermId: undefined,
+        terminalMounted: false,
       }),
     ).toBe(false);
   });

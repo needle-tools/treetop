@@ -129,11 +129,10 @@
 <script lang="ts">
   import { onMount, onDestroy, afterUpdate, tick as svelteTick } from "svelte";
   import { apiUrl } from "./api";
-  import {
-    daemonIdForWorktreePath,
-    daemonIdForRepoId,
-  } from "./repo-fanout";
-  import StickyNote, { type NoteShape as NoteShapeBase } from "./StickyNote.svelte";
+  import { daemonIdForWorktreePath, daemonIdForRepoId } from "./repo-fanout";
+  import StickyNote, {
+    type NoteShape as NoteShapeBase,
+  } from "./StickyNote.svelte";
   /** Layer-local extension: carries the in-memory `daemonId` tag (not
    *  persisted) so every mutation can route to the owning daemon. */
   type NoteShape = NoteShapeBase & { daemonId?: string };
@@ -143,6 +142,7 @@
     buildAnchorRowMap,
     cachedRowRect,
     mutationsAffectStickyNoteLayout,
+    shouldMeasureStickyRowMargins,
     shouldMountStickyNote,
   } from "./sticky-notes-dom";
   import { getDaemonKV } from "./daemon-kv";
@@ -418,10 +418,7 @@
    *  The note re-appears the moment the row is expanded / toggled
    *  back on (MutationObserver kicks a tick on the class change). */
   function findAnchorLi(note: NoteShape): HTMLElement | null {
-    return anchorRowFor(
-      buildAnchorRowMap<HTMLElement>(document),
-      note.anchors,
-    );
+    return anchorRowFor(buildAnchorRowMap<HTMLElement>(document), note.anchors);
   }
 
   function visibleWorktreeRows(): HTMLElement[] {
@@ -1304,7 +1301,10 @@
         "file",
         filename ? new File([shrunk], filename, { type: shrunk.type }) : shrunk,
       );
-      const res = await fetch(apiUrl("/api/attach"), { method: "POST", body: form });
+      const res = await fetch(apiUrl("/api/attach"), {
+        method: "POST",
+        body: form,
+      });
       if (!res.ok) return null;
       const { path } = (await res.json()) as { path: string };
       return makeImageAttachmentRef({
@@ -1329,13 +1329,16 @@
   ): Promise<void> {
     if (note.kind === "link" || note.kind === "emoji") return;
     try {
-      const res = await fetch(apiUrl(`/api/notes/${encodeURIComponent(note.id)}`, note.daemonId), {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          body: appendInlineAttachmentRef(note.body, raw),
-        }),
-      });
+      const res = await fetch(
+        apiUrl(`/api/notes/${encodeURIComponent(note.id)}`, note.daemonId),
+        {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            body: appendInlineAttachmentRef(note.body, raw),
+          }),
+        },
+      );
       if (!res.ok) return;
       const updated = (await res.json()) as NoteShape;
       updated.daemonId = note.daemonId;
@@ -1652,13 +1655,19 @@
         (a) => !a.startsWith("worktree:") && !a.startsWith("repo:"),
       );
       try {
-        const res = await fetch(apiUrl(`/api/notes/${encodeURIComponent(source.id)}`, source.daemonId), {
-          method: "PUT",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            anchors: [target.anchor, ...auxiliaryAnchors],
-          }),
-        });
+        const res = await fetch(
+          apiUrl(
+            `/api/notes/${encodeURIComponent(source.id)}`,
+            source.daemonId,
+          ),
+          {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              anchors: [target.anchor, ...auxiliaryAnchors],
+            }),
+          },
+        );
         if (!res.ok) return;
         const updated = (await res.json()) as NoteShape;
         updated.daemonId = source.daemonId;
@@ -1685,21 +1694,30 @@
       updatedSource.daemonId = source.daemonId;
       notes = notes.map((n) => (n.id === updatedSource.id ? updatedSource : n));
 
-      const createRes = await fetch(apiUrl("/api/notes", createTargetDaemonId), {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          ...notePayloadForInlineAttachment(payload.raw, payload.attachment),
-          anchors: [target.anchor],
-          tags: source.tags,
-        }),
-      });
-      if (!createRes.ok) {
-        await fetch(apiUrl(`/api/notes/${encodeURIComponent(source.id)}`, source.daemonId), {
-          method: "PUT",
+      const createRes = await fetch(
+        apiUrl("/api/notes", createTargetDaemonId),
+        {
+          method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ body: source.body }),
-        }).catch(() => {});
+          body: JSON.stringify({
+            ...notePayloadForInlineAttachment(payload.raw, payload.attachment),
+            anchors: [target.anchor],
+            tags: source.tags,
+          }),
+        },
+      );
+      if (!createRes.ok) {
+        await fetch(
+          apiUrl(
+            `/api/notes/${encodeURIComponent(source.id)}`,
+            source.daemonId,
+          ),
+          {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ body: source.body }),
+          },
+        ).catch(() => {});
         notes = notes.map((n) => (n.id === source.id ? source : n));
         return;
       }
@@ -1737,11 +1755,17 @@
         : moveInlineAttachmentRefToEnd(source.body, payload.raw);
       if (nextBody === source.body) return;
       try {
-        const res = await fetch(apiUrl(`/api/notes/${encodeURIComponent(source.id)}`, source.daemonId), {
-          method: "PUT",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ body: nextBody }),
-        });
+        const res = await fetch(
+          apiUrl(
+            `/api/notes/${encodeURIComponent(source.id)}`,
+            source.daemonId,
+          ),
+          {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ body: nextBody }),
+          },
+        );
         if (!res.ok) return;
         const updated = (await res.json()) as NoteShape;
         updated.daemonId = source.daemonId;
@@ -1767,7 +1791,10 @@
 
     try {
       const targetRes = await fetch(
-        apiUrl(`/api/notes/${encodeURIComponent(targetNote.id)}`, targetNote.daemonId),
+        apiUrl(
+          `/api/notes/${encodeURIComponent(targetNote.id)}`,
+          targetNote.daemonId,
+        ),
         {
           method: "PUT",
           headers: { "Content-Type": "application/json" },
@@ -1780,22 +1807,37 @@
       notes = notes.map((n) => (n.id === updatedTarget.id ? updatedTarget : n));
 
       if (sourceIsStandalone) {
-        const res = await fetch(apiUrl(`/api/notes/${encodeURIComponent(source.id)}`, source.daemonId), {
-          method: "DELETE",
-        });
+        const res = await fetch(
+          apiUrl(
+            `/api/notes/${encodeURIComponent(source.id)}`,
+            source.daemonId,
+          ),
+          {
+            method: "DELETE",
+          },
+        );
         if (!res.ok) {
-          await fetch(apiUrl(`/api/notes/${encodeURIComponent(targetNote.id)}`, targetNote.daemonId), {
-            method: "PUT",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ body: targetNote.body }),
-          }).catch(() => {});
+          await fetch(
+            apiUrl(
+              `/api/notes/${encodeURIComponent(targetNote.id)}`,
+              targetNote.daemonId,
+            ),
+            {
+              method: "PUT",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ body: targetNote.body }),
+            },
+          ).catch(() => {});
           notes = notes.map((n) => (n.id === targetNote.id ? targetNote : n));
           return;
         }
         notes = notes.filter((n) => n.id !== source.id);
       } else {
         const sourceRes = await fetch(
-          apiUrl(`/api/notes/${encodeURIComponent(source.id)}`, source.daemonId),
+          apiUrl(
+            `/api/notes/${encodeURIComponent(source.id)}`,
+            source.daemonId,
+          ),
           {
             method: "PUT",
             headers: { "Content-Type": "application/json" },
@@ -1803,11 +1845,17 @@
           },
         );
         if (!sourceRes.ok) {
-          await fetch(apiUrl(`/api/notes/${encodeURIComponent(targetNote.id)}`, targetNote.daemonId), {
-            method: "PUT",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ body: targetNote.body }),
-          }).catch(() => {});
+          await fetch(
+            apiUrl(
+              `/api/notes/${encodeURIComponent(targetNote.id)}`,
+              targetNote.daemonId,
+            ),
+            {
+              method: "PUT",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ body: targetNote.body }),
+            },
+          ).catch(() => {});
           notes = notes.map((n) => (n.id === targetNote.id ? targetNote : n));
           return;
         }
@@ -1966,11 +2014,17 @@
       if (e.detail.target !== undefined) putBody.target = e.detail.target;
       if (e.detail.secret !== undefined) putBody.secret = e.detail.secret;
       const savingNote = notes.find((n) => n.id === e.detail.id);
-      const res = await fetch(apiUrl(`/api/notes/${encodeURIComponent(e.detail.id)}`, savingNote?.daemonId), {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(putBody),
-      });
+      const res = await fetch(
+        apiUrl(
+          `/api/notes/${encodeURIComponent(e.detail.id)}`,
+          savingNote?.daemonId,
+        ),
+        {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(putBody),
+        },
+      );
       if (!res.ok) return;
       const updated = (await res.json()) as NoteShape;
       updated.daemonId = savingNote?.daemonId;
@@ -2006,9 +2060,12 @@
     const isStaging = !!staging[id];
     if (isStaging) {
       try {
-        await fetch(apiUrl(`/api/notes/${encodeURIComponent(id)}`, note.daemonId), {
-          method: "DELETE",
-        });
+        await fetch(
+          apiUrl(`/api/notes/${encodeURIComponent(id)}`, note.daemonId),
+          {
+            method: "DELETE",
+          },
+        );
       } catch {}
       notes = notes.filter((n) => n.id !== id);
       const next = { ...staging };
@@ -2024,9 +2081,12 @@
     removingIds = new Set([...removingIds, id]);
     await new Promise((r) => setTimeout(r, 320));
     try {
-      const res = await fetch(apiUrl(`/api/notes/${encodeURIComponent(id)}`, note.daemonId), {
-        method: "DELETE",
-      });
+      const res = await fetch(
+        apiUrl(`/api/notes/${encodeURIComponent(id)}`, note.daemonId),
+        {
+          method: "DELETE",
+        },
+      );
       if (!res.ok) {
         // Server refused — roll back the animation so the note
         // re-materializes rather than getting stuck invisible.
@@ -2301,13 +2361,16 @@
     if (note.kind === "link" || note.kind === "emoji") return;
     const raw = makeLinkAttachmentRef({ target });
     try {
-      const res = await fetch(apiUrl(`/api/notes/${encodeURIComponent(note.id)}`, note.daemonId), {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          body: appendInlineAttachmentRef(note.body, raw),
-        }),
-      });
+      const res = await fetch(
+        apiUrl(`/api/notes/${encodeURIComponent(note.id)}`, note.daemonId),
+        {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            body: appendInlineAttachmentRef(note.body, raw),
+          }),
+        },
+      );
       if (!res.ok) return;
       const updated = (await res.json()) as NoteShape;
       updated.daemonId = note.daemonId;
@@ -2508,11 +2571,17 @@
         },
       );
       if (!sourceRes.ok) {
-        await fetch(apiUrl(`/api/notes/${encodeURIComponent(target.id)}`, target.daemonId), {
-          method: "PUT",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ body: target.body }),
-        }).catch(() => {});
+        await fetch(
+          apiUrl(
+            `/api/notes/${encodeURIComponent(target.id)}`,
+            target.daemonId,
+          ),
+          {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ body: target.body }),
+          },
+        ).catch(() => {});
         notes = notes.map((n) => (n.id === target.id ? target : n));
         return;
       }
@@ -2534,13 +2603,16 @@
       (a) => !a.startsWith("worktree:") && !a.startsWith("repo:"),
     );
     try {
-      const res = await fetch(apiUrl(`/api/notes/${encodeURIComponent(note.id)}`, note.daemonId), {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          anchors: [rowTarget.anchor, ...auxiliaryAnchors],
-        }),
-      });
+      const res = await fetch(
+        apiUrl(`/api/notes/${encodeURIComponent(note.id)}`, note.daemonId),
+        {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            anchors: [rowTarget.anchor, ...auxiliaryAnchors],
+          }),
+        },
+      );
       if (!res.ok) return;
       const updated = (await res.json()) as NoteShape;
       updated.daemonId = note.daemonId;
@@ -2571,11 +2643,14 @@
       );
       const nextAnchors = [e.detail.anchor, ...others];
       try {
-        const res = await fetch(apiUrl(`/api/notes/${encodeURIComponent(note.id)}`, note.daemonId), {
-          method: "PUT",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ anchors: nextAnchors }),
-        });
+        const res = await fetch(
+          apiUrl(`/api/notes/${encodeURIComponent(note.id)}`, note.daemonId),
+          {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ anchors: nextAnchors }),
+          },
+        );
         if (!res.ok) return;
         const updated = (await res.json()) as NoteShape;
         updated.daemonId = note.daemonId;
@@ -2664,7 +2739,14 @@
    *  note's textarea, which we'd otherwise miss). */
   function applyRowMargins(): void {
     if (!layerEl) return;
-    if (notes.length === 0) {
+    const stickiesById = new Map<string, HTMLElement>();
+    for (const el of layerEl.querySelectorAll<HTMLElement>(
+      ".sticky[data-note-id]",
+    )) {
+      const id = el.dataset.noteId;
+      if (id !== undefined && !stickiesById.has(id)) stickiesById.set(id, el);
+    }
+    if (!shouldMeasureStickyRowMargins(notes.length, stickiesById.size)) {
       for (const li of marginedRows) li.style.marginBottom = "";
       marginedRows.clear();
       for (const el of observedNoteEls) noteResizeObs?.unobserve(el);
@@ -2680,13 +2762,6 @@
     // share it. All reads happen in this loop, all margin writes after
     // it, so the pass forces at most one reflow.
     const rows = buildAnchorRowMap<HTMLElement>(document);
-    const stickiesById = new Map<string, HTMLElement>();
-    for (const el of layerEl.querySelectorAll<HTMLElement>(
-      ".sticky[data-note-id]",
-    )) {
-      const id = el.dataset.noteId;
-      if (id !== undefined && !stickiesById.has(id)) stickiesById.set(id, el);
-    }
     const liRects = new Map<HTMLElement, DOMRect>();
     for (const note of notes) {
       // Don't reserve row space for staged notes — they're floating
@@ -2932,15 +3007,7 @@
       attachmentDropNoteId === note.id ||
       attachmentDropCandidateNoteId === note.id ||
       attachmentDragSourceNoteId === note.id}
-    {#if shouldMountStickyNote({
-      hasPosition: !!pos,
-      editing: stickyEditing,
-      staged: stickyStaged,
-      flying: stickyFlying,
-      removing: stickyRemoving,
-      dragging: stickyDragging,
-      attachmentDropActive: stickyAttachmentDrop,
-    })}
+    {#if shouldMountStickyNote( { hasPosition: !!pos, editing: stickyEditing, staged: stickyStaged, flying: stickyFlying, removing: stickyRemoving, dragging: stickyDragging, attachmentDropActive: stickyAttachmentDrop }, )}
       <div
         class="sticky-host"
         class:hidden={!pos}
@@ -2957,7 +3024,8 @@
           grabXFrac={offsets[note.id]?.grabXFrac ?? 0}
           grabYFrac={offsets[note.id]?.grabYFrac ?? 0}
           emojiScale={offsets[note.id]?.emojiScale ?? 1}
-          attachmentDropAvailable={attachmentDropAvailableById[note.id] ?? false}
+          attachmentDropAvailable={attachmentDropAvailableById[note.id] ??
+            false}
           attachmentDropActive={attachmentDropNoteId === note.id}
           attachmentDropSourceActive={!!attachmentDropNoteId &&
             (draggingPinnedNoteId === note.id ||

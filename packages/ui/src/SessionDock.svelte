@@ -21,7 +21,7 @@
     type DockWorktreeStatus,
   } from "./RepoStatusPreview.svelte";
   import StatusBadge from "./StatusBadge.svelte";
-  import { splitDockEntries } from "./dock-split";
+  import { shouldMeasureDockBackdrop, splitDockEntries } from "./dock-split";
   import { GIT_AHEAD, GIT_BEHIND } from "./icons";
   import {
     fetchPreviewItems,
@@ -193,9 +193,7 @@
    *  wave next to its boundary. */
   $: repoStatusMap = new Map(
     dockRepoStatuses
-      .filter(
-        (s) => s.ahead > 0 || s.behind > 0 || dockDirtyOf(s) > 0,
-      )
+      .filter((s) => s.ahead > 0 || s.behind > 0 || dockDirtyOf(s) > 0)
       .map((s) => [s.repoId, s]),
   );
 
@@ -288,7 +286,7 @@
     const dots = dockEl.querySelectorAll<HTMLElement>(
       ".dock-dot, .dock-toggle",
     );
-    if (dots.length === 0) {
+    if (!shouldMeasureDockBackdrop(showLabels, dots.length)) {
       backdropEl.style.display = "none";
       return;
     }
@@ -706,7 +704,9 @@
    *    20h-7d  — calendar sheet icon
    *    7d+     — snowflake icon
    *  Older stuff goes graphical; recent stuff stays readable. */
-  function fuzzyTime(iso?: string):
+  function fuzzyTime(
+    iso?: string,
+  ):
     | { kind: "text"; text: string; fresh: boolean }
     | { kind: "icon"; icon: "calendar" | "snowflake" }
     | null {
@@ -718,7 +718,11 @@
     const days = ms / (24 * 60 * 60 * 1000);
     if (minutes < 1) return { kind: "text", text: "just now", fresh: true };
     if (minutes < 60) {
-      return { kind: "text", text: `${Math.floor(minutes)}m`, fresh: minutes < 30 };
+      return {
+        kind: "text",
+        text: `${Math.floor(minutes)}m`,
+        fresh: minutes < 30,
+      };
     }
     if (hours < 20) {
       const h = Math.floor(hours);
@@ -791,8 +795,7 @@
           <span
             class="dock-dot dock-repo-arrow"
             style:--arrow-color={brightenIfDark(rs?.repoColor)}
-            on:mouseenter={(ev) =>
-              onArrowEnter(ev, rs?.repoId ?? e.repoId)}
+            on:mouseenter={(ev) => onArrowEnter(ev, rs?.repoId ?? e.repoId)}
             on:click={() =>
               dispatch("scrollToRepo", { repoId: rs?.repoId ?? e.repoId })}
           >
@@ -800,14 +803,12 @@
               {#if rs?.ahead}<svg
                   class="dock-arrow-glyph dock-arrow-up"
                   viewBox="0 0 12 12"
-                  aria-hidden="true"
-                  ><path d={GIT_AHEAD} /></svg
+                  aria-hidden="true"><path d={GIT_AHEAD} /></svg
                 >{/if}
               {#if rs?.behind}<svg
                   class="dock-arrow-glyph dock-arrow-down"
                   viewBox="0 0 12 12"
-                  aria-hidden="true"
-                  ><path d={GIT_BEHIND} /></svg
+                  aria-hidden="true"><path d={GIT_BEHIND} /></svg
                 >{/if}
               {#if dirtyCount && !rs?.ahead && !rs?.behind}<DirtyGlyph />{/if}
             </span>
@@ -820,10 +821,7 @@
                     danger={rs.aheadDanger}
                   />{/if}
                 {#if rs?.behind}<StatusBadge compact behind={rs.behind} />{/if}
-                {#if dirtyCount}<StatusBadge
-                    compact
-                    dirty={dirtyCount}
-                  />{/if}
+                {#if dirtyCount}<StatusBadge compact dirty={dirtyCount} />{/if}
               </span>
             </span>
           </span>
@@ -880,7 +878,10 @@
               <span class="dock-label-title">{sessionNameFor(e)}</span>
             {/if}
             {#if e.ioDebugLabel}
-              <span class="dock-io-debug-label io-debug-chip" title="Terminal inbound throughput">
+              <span
+                class="dock-io-debug-label io-debug-chip"
+                title="Terminal inbound throughput"
+              >
                 {e.ioDebugLabel}
               </span>
             {/if}
@@ -896,18 +897,57 @@
                   {#if ft.kind === "text"}
                     {ft.text}
                   {:else}
-                    <span class="dock-time-hover">{relTime(freshestTimestamp(e))}</span>
+                    <span class="dock-time-hover"
+                      >{relTime(freshestTimestamp(e))}</span
+                    >
                     {#if ft.icon === "calendar"}
                       <svg viewBox="0 0 16 16" aria-hidden="true">
-                        <rect x="2.5" y="3" width="11" height="11" rx="1.2" fill="none" stroke="currentColor" stroke-width="1.5" />
-                        <line x1="2.5" y1="6.5" x2="13.5" y2="6.5" stroke="currentColor" stroke-width="1.5" />
-                        <line x1="6" y1="1.5" x2="6" y2="4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
-                        <line x1="10" y1="1.5" x2="10" y2="4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
+                        <rect
+                          x="2.5"
+                          y="3"
+                          width="11"
+                          height="11"
+                          rx="1.2"
+                          fill="none"
+                          stroke="currentColor"
+                          stroke-width="1.5"
+                        />
+                        <line
+                          x1="2.5"
+                          y1="6.5"
+                          x2="13.5"
+                          y2="6.5"
+                          stroke="currentColor"
+                          stroke-width="1.5"
+                        />
+                        <line
+                          x1="6"
+                          y1="1.5"
+                          x2="6"
+                          y2="4"
+                          stroke="currentColor"
+                          stroke-width="1.5"
+                          stroke-linecap="round"
+                        />
+                        <line
+                          x1="10"
+                          y1="1.5"
+                          x2="10"
+                          y2="4"
+                          stroke="currentColor"
+                          stroke-width="1.5"
+                          stroke-linecap="round"
+                        />
                       </svg>
                     {:else}
                       <!-- Snowflake: 6-arm star with side branches. -->
                       <svg viewBox="0 0 16 16" aria-hidden="true">
-                        <g stroke="currentColor" stroke-width="1.3" stroke-linecap="round" fill="none">
+                        <g
+                          stroke="currentColor"
+                          stroke-width="1.3"
+                          stroke-linecap="round"
+                          fill="none"
+                        >
                           <line x1="8" y1="1.5" x2="8" y2="14.5" />
                           <line x1="2.4" y1="4.75" x2="13.6" y2="11.25" />
                           <line x1="2.4" y1="11.25" x2="13.6" y2="4.75" />
@@ -966,8 +1006,7 @@
           <span
             class="dock-dot dock-repo-arrow"
             style:--arrow-color={brightenIfDark(rs?.repoColor)}
-            on:mouseenter={(ev) =>
-              onArrowEnter(ev, rs?.repoId ?? e.repoId)}
+            on:mouseenter={(ev) => onArrowEnter(ev, rs?.repoId ?? e.repoId)}
             on:click={() =>
               dispatch("scrollToRepo", { repoId: rs?.repoId ?? e.repoId })}
           >
@@ -975,14 +1014,12 @@
               {#if rs?.ahead}<svg
                   class="dock-arrow-glyph dock-arrow-up"
                   viewBox="0 0 12 12"
-                  aria-hidden="true"
-                  ><path d={GIT_AHEAD} /></svg
+                  aria-hidden="true"><path d={GIT_AHEAD} /></svg
                 >{/if}
               {#if rs?.behind}<svg
                   class="dock-arrow-glyph dock-arrow-down"
                   viewBox="0 0 12 12"
-                  aria-hidden="true"
-                  ><path d={GIT_BEHIND} /></svg
+                  aria-hidden="true"><path d={GIT_BEHIND} /></svg
                 >{/if}
               {#if dirtyCount && !rs?.ahead && !rs?.behind}<DirtyGlyph />{/if}
             </span>
@@ -995,10 +1032,7 @@
                     danger={rs.aheadDanger}
                   />{/if}
                 {#if rs?.behind}<StatusBadge compact behind={rs.behind} />{/if}
-                {#if dirtyCount}<StatusBadge
-                    compact
-                    dirty={dirtyCount}
-                  />{/if}
+                {#if dirtyCount}<StatusBadge compact dirty={dirtyCount} />{/if}
               </span>
             </span>
           </span>
@@ -1055,7 +1089,10 @@
               <span class="dock-label-title">{sessionNameFor(e)}</span>
             {/if}
             {#if e.ioDebugLabel}
-              <span class="dock-io-debug-label io-debug-chip" title="Terminal inbound throughput">
+              <span
+                class="dock-io-debug-label io-debug-chip"
+                title="Terminal inbound throughput"
+              >
                 {e.ioDebugLabel}
               </span>
             {/if}
@@ -1071,18 +1108,57 @@
                   {#if ft.kind === "text"}
                     {ft.text}
                   {:else}
-                    <span class="dock-time-hover">{relTime(freshestTimestamp(e))}</span>
+                    <span class="dock-time-hover"
+                      >{relTime(freshestTimestamp(e))}</span
+                    >
                     {#if ft.icon === "calendar"}
                       <svg viewBox="0 0 16 16" aria-hidden="true">
-                        <rect x="2.5" y="3" width="11" height="11" rx="1.2" fill="none" stroke="currentColor" stroke-width="1.5" />
-                        <line x1="2.5" y1="6.5" x2="13.5" y2="6.5" stroke="currentColor" stroke-width="1.5" />
-                        <line x1="6" y1="1.5" x2="6" y2="4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
-                        <line x1="10" y1="1.5" x2="10" y2="4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
+                        <rect
+                          x="2.5"
+                          y="3"
+                          width="11"
+                          height="11"
+                          rx="1.2"
+                          fill="none"
+                          stroke="currentColor"
+                          stroke-width="1.5"
+                        />
+                        <line
+                          x1="2.5"
+                          y1="6.5"
+                          x2="13.5"
+                          y2="6.5"
+                          stroke="currentColor"
+                          stroke-width="1.5"
+                        />
+                        <line
+                          x1="6"
+                          y1="1.5"
+                          x2="6"
+                          y2="4"
+                          stroke="currentColor"
+                          stroke-width="1.5"
+                          stroke-linecap="round"
+                        />
+                        <line
+                          x1="10"
+                          y1="1.5"
+                          x2="10"
+                          y2="4"
+                          stroke="currentColor"
+                          stroke-width="1.5"
+                          stroke-linecap="round"
+                        />
                       </svg>
                     {:else}
                       <!-- Snowflake: 6-arm star with side branches. -->
                       <svg viewBox="0 0 16 16" aria-hidden="true">
-                        <g stroke="currentColor" stroke-width="1.3" stroke-linecap="round" fill="none">
+                        <g
+                          stroke="currentColor"
+                          stroke-width="1.3"
+                          stroke-linecap="round"
+                          fill="none"
+                        >
                           <line x1="8" y1="1.5" x2="8" y2="14.5" />
                           <line x1="2.4" y1="4.75" x2="13.6" y2="11.25" />
                           <line x1="2.4" y1="11.25" x2="13.6" y2="4.75" />
@@ -1130,16 +1206,15 @@
             {#if rs.ahead}<svg
                 class="dock-arrow-glyph dock-arrow-up"
                 viewBox="0 0 12 12"
-                aria-hidden="true"
-                ><path d={GIT_AHEAD} /></svg
+                aria-hidden="true"><path d={GIT_AHEAD} /></svg
               >{/if}
             {#if rs.behind}<svg
                 class="dock-arrow-glyph dock-arrow-down"
                 viewBox="0 0 12 12"
-                aria-hidden="true"
-                ><path d={GIT_BEHIND} /></svg
+                aria-hidden="true"><path d={GIT_BEHIND} /></svg
               >{/if}
-            {#if dirtyCount && showInactive && !rs.ahead && !rs.behind}<DirtyGlyph />{/if}
+            {#if dirtyCount && showInactive && !rs.ahead && !rs.behind}<DirtyGlyph
+              />{/if}
           </span>
           <span class="dock-label">
             <span class="dock-label-repo">{rs.repoName}</span>
@@ -1887,15 +1962,41 @@
      smooth s-curve; hold segments stay frozen via `step-end` so
      they don't try to interpolate. */
   @keyframes dock-shell-step {
-    0%   { transform: rotate(0deg);   animation-timing-function: cubic-bezier(.5, 0, .5, 1); }
-    20%  { transform: rotate(90deg);  animation-timing-function: step-end; }
-    25%  { transform: rotate(90deg);  animation-timing-function: cubic-bezier(.5, 0, .5, 1); }
-    45%  { transform: rotate(180deg); animation-timing-function: step-end; }
-    50%  { transform: rotate(180deg); animation-timing-function: cubic-bezier(.5, 0, .5, 1); }
-    70%  { transform: rotate(270deg); animation-timing-function: step-end; }
-    75%  { transform: rotate(270deg); animation-timing-function: cubic-bezier(.5, 0, .5, 1); }
-    95%  { transform: rotate(360deg); animation-timing-function: step-end; }
-    100% { transform: rotate(360deg); }
+    0% {
+      transform: rotate(0deg);
+      animation-timing-function: cubic-bezier(0.5, 0, 0.5, 1);
+    }
+    20% {
+      transform: rotate(90deg);
+      animation-timing-function: step-end;
+    }
+    25% {
+      transform: rotate(90deg);
+      animation-timing-function: cubic-bezier(0.5, 0, 0.5, 1);
+    }
+    45% {
+      transform: rotate(180deg);
+      animation-timing-function: step-end;
+    }
+    50% {
+      transform: rotate(180deg);
+      animation-timing-function: cubic-bezier(0.5, 0, 0.5, 1);
+    }
+    70% {
+      transform: rotate(270deg);
+      animation-timing-function: step-end;
+    }
+    75% {
+      transform: rotate(270deg);
+      animation-timing-function: cubic-bezier(0.5, 0, 0.5, 1);
+    }
+    95% {
+      transform: rotate(360deg);
+      animation-timing-function: step-end;
+    }
+    100% {
+      transform: rotate(360deg);
+    }
   }
   @keyframes dock-spin {
     to {

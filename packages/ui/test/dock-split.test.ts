@@ -1,5 +1,9 @@
 import { describe, expect, test } from "bun:test";
-import { splitDockEntries, type SplittableDockEntry } from "../src/dock-split";
+import {
+  shouldMeasureDockBackdrop,
+  splitDockEntries,
+  type SplittableDockEntry,
+} from "../src/dock-split";
 
 function entry(
   repoId: string,
@@ -148,5 +152,16 @@ describe("splitDockEntries", () => {
       "s1",
       "s2",
     ]);
+  });
+});
+
+describe("shouldMeasureDockBackdrop", () => {
+  test("does not measure while labels are hidden", () => {
+    expect(shouldMeasureDockBackdrop(false, 50)).toBe(false);
+  });
+
+  test("measures only when visible and non-empty", () => {
+    expect(shouldMeasureDockBackdrop(true, 0)).toBe(false);
+    expect(shouldMeasureDockBackdrop(true, 1)).toBe(true);
   });
 });
