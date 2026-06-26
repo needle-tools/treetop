@@ -100,7 +100,7 @@ describe("shouldReuseWorktreeDetailsCache", () => {
     expect(
       shouldReuseWorktreeDetailsCache({
         cachedAtMs,
-        nowMs: cachedAtMs + 29_999,
+        nowMs: cachedAtMs + 120_000,
       }),
     ).toBe(true);
   });
@@ -111,7 +111,7 @@ describe("shouldReuseWorktreeDetailsCache", () => {
     expect(
       shouldReuseWorktreeDetailsCache({
         cachedAtMs,
-        nowMs: cachedAtMs + 30_001,
+        nowMs: cachedAtMs + 600_001,
       }),
     ).toBe(false);
   });

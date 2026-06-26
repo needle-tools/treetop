@@ -157,7 +157,11 @@ export function readonlyRouteDecision(
   };
 }
 
-const WORKTREE_DETAILS_CACHE_MS = 30_000;
+// Worktree git details are invalidated by the fs watcher when a worktree
+// changes. Time expiry is only a missed-watch safety net; keep it comfortably
+// longer than the UI's 30s visible-fetch cadence so the heartbeat does not
+// force a full git fan-out across every unchanged worktree.
+const WORKTREE_DETAILS_CACHE_MS = 10 * 60_000;
 
 export function shouldReuseWorktreeDetailsCache(args: {
   cachedAtMs: number;
