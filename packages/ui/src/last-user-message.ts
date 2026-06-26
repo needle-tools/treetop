@@ -1526,6 +1526,64 @@ function itemSignature<B extends MessageBlock, M extends Message<B>>(
   ].join("\u0002");
 }
 
+function sameBlockReferences<B extends MessageBlock>(
+  a: readonly B[],
+  b: readonly B[],
+): boolean {
+  if (a === b) return true;
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i += 1) {
+    if (a[i] !== b[i]) return false;
+  }
+  return true;
+}
+
+function sameEntryReferences<B extends MessageBlock, M extends Message<B>>(
+  a: VisualWorkEntry<B, M>,
+  b: VisualWorkEntry<B, M>,
+): boolean {
+  return (
+    a.message === b.message &&
+    a.messageIndex === b.messageIndex &&
+    sameBlockReferences(a.blocks, b.blocks)
+  );
+}
+
+function sameItemReferences<B extends MessageBlock, M extends Message<B>>(
+  a: VisualTranscriptItem<B, M>,
+  b: VisualTranscriptItem<B, M>,
+): boolean {
+  if (a.kind !== b.kind) return false;
+  if (a.kind === "message" && b.kind === "message") {
+    return (
+      a.message === b.message &&
+      a.messageIndex === b.messageIndex &&
+      sameBlockReferences(a.blocks, b.blocks)
+    );
+  }
+  if (a.kind === "marker" && b.kind === "marker") {
+    return (
+      sameEntryReferences(a.entry, b.entry) &&
+      a.markerBlock === b.markerBlock &&
+      a.markerKind === b.markerKind &&
+      a.markerLabel === b.markerLabel
+    );
+  }
+  if (a.kind !== "work" || b.kind !== "work") return false;
+  if (
+    a.startedAt !== b.startedAt ||
+    a.endedAt !== b.endedAt ||
+    a.open !== b.open ||
+    a.entries.length !== b.entries.length
+  ) {
+    return false;
+  }
+  for (let i = 0; i < a.entries.length; i += 1) {
+    if (!sameEntryReferences(a.entries[i]!, b.entries[i]!)) return false;
+  }
+  return true;
+}
+
 export function getVisualWorkEntryKey<
   B extends MessageBlock,
   M extends Message<B>,
@@ -1587,6 +1645,7 @@ export function reuseStableVisualTranscriptItems<
     const key = getVisualTranscriptItemKey(item, index);
     const previousItem = previousByKey.get(key);
     if (!previousItem) return item;
+    if (sameItemReferences(previousItem, item)) return previousItem;
     if (itemSignature(previousItem) === itemSignature(item)) {
       return previousItem;
     }
@@ -1601,7 +1660,11 @@ export function reuseStableVisualTranscriptItems<
     let reusedAny = false;
     const entries = item.entries.map((entry) => {
       const previousEntry = previousEntriesByKey.get(getVisualWorkEntryKey(entry));
-      if (previousEntry && entrySignature(previousEntry) === entrySignature(entry)) {
+      if (
+        previousEntry &&
+        (sameEntryReferences(previousEntry, entry) ||
+          entrySignature(previousEntry) === entrySignature(entry))
+      ) {
         reusedAny = true;
         return previousEntry;
       }

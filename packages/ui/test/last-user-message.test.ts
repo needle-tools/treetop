@@ -824,6 +824,47 @@ describe("reuseStableVisualTranscriptItems", () => {
     expect(next[1].entries[0]).toBe(previous[1].entries[0]);
     expect(next[1].entries[1]).not.toBe(previous[1].entries[1]);
   });
+
+  it("skips expensive signatures for unchanged message object references", () => {
+    const user = msg("user", "profile this", "2026-06-19T10:00:00.000Z");
+    const toolUse: Message = {
+      id: "heavy-tool-use",
+      role: "assistant",
+      timestamp: "2026-06-19T10:00:01.000Z",
+      blocks: [
+        {
+          type: "tool_use",
+          toolName: "apply_patch",
+          toolInput: {
+            patch: "x".repeat(200_000),
+          },
+        },
+      ],
+    };
+    const previous = buildVisualTranscriptItems([user, toolUse], {
+      active: true,
+    });
+    const nextRaw = buildVisualTranscriptItems([user, toolUse], {
+      active: true,
+    });
+
+    const stringify = JSON.stringify;
+    let stringifyCalls = 0;
+    JSON.stringify = ((value: unknown) => {
+      stringifyCalls += 1;
+      return stringify(value);
+    }) as typeof JSON.stringify;
+    let next: ReturnType<typeof buildVisualTranscriptItems>;
+    try {
+      next = reuseStableVisualTranscriptItems(previous, nextRaw);
+    } finally {
+      JSON.stringify = stringify;
+    }
+
+    expect(next![0]).toBe(previous[0]);
+    expect(next![1]).toBe(previous[1]);
+    expect(stringifyCalls).toBe(0);
+  });
 });
 
 describe("withoutDuplicateOptimisticUserMessages", () => {
