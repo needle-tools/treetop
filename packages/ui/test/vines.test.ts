@@ -15,6 +15,7 @@ import {
   type Panel,
   type SourceAges,
 } from "../src/vines/vine-core";
+import { mutationsAffectVinesLayout } from "../src/vines/vines-overlay";
 
 function panel(source: string, cx: number, group?: string): Panel {
   return { source, group, cx, left: cx - 50, right: cx + 50, top: 0, bottom: 300 };
@@ -186,5 +187,42 @@ describe("geometry", () => {
     const lower = avg(ls.slice(0, mid).map((l) => l.light));
     const upper = avg(ls.slice(mid).map((l) => l.light));
     expect(upper).toBeGreaterThan(lower);
+  });
+});
+
+describe("mutationsAffectVinesLayout", () => {
+  const strip = {
+    matches: (sel: string) => sel === ".sessions-strip",
+    querySelector: () => null,
+  };
+  const sessionBody = {
+    matches: () => false,
+    querySelector: () => null,
+  };
+  const rowAddedWithStrip = {
+    matches: () => false,
+    querySelector: (sel: string) => (sel === ".sessions-strip" ? strip : null),
+  };
+
+  test("resyncs when a sessions strip itself changes children", () => {
+    expect(
+      mutationsAffectVinesLayout([{ target: strip, addedNodes: [], removedNodes: [] }]),
+    ).toBe(true);
+  });
+
+  test("resyncs when a newly added subtree contains a sessions strip", () => {
+    expect(
+      mutationsAffectVinesLayout([
+        { target: sessionBody, addedNodes: [rowAddedWithStrip], removedNodes: [] },
+      ]),
+    ).toBe(true);
+  });
+
+  test("ignores arbitrary deep session mutations", () => {
+    expect(
+      mutationsAffectVinesLayout([
+        { target: sessionBody, addedNodes: [{}, {}], removedNodes: [] },
+      ]),
+    ).toBe(false);
   });
 });

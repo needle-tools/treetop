@@ -42,7 +42,7 @@ const STEM_GRAD_ID = "vine-stem-grad";
 
 const QUERY = (() => {
   try {
-    return new URLSearchParams(location.search);
+    return new URLSearchParams(globalThis.location?.search ?? "");
   } catch {
     return new URLSearchParams();
   }
@@ -70,6 +70,38 @@ interface StripState {
   svg: SVGSVGElement;
   nodes: Map<string, VineNodes>;
   setPosition: boolean;
+}
+
+type MutationLike = Pick<MutationRecord, "target" | "addedNodes" | "removedNodes">;
+
+function nodeMatches(node: unknown, selector: string): boolean {
+  const maybeElement = node as Element | null | undefined;
+  return typeof maybeElement?.matches === "function" && maybeElement.matches(selector);
+}
+
+function nodeContainsStrip(node: unknown): boolean {
+  if (nodeMatches(node, STRIP_SELECTOR)) return true;
+  const maybeElement = node as Element | null | undefined;
+  return (
+    typeof maybeElement?.querySelector === "function" &&
+    maybeElement.querySelector(STRIP_SELECTOR) !== null
+  );
+}
+
+function nodeListContainsStrip(nodes: ArrayLike<unknown>): boolean {
+  for (let i = 0; i < nodes.length; i++) {
+    if (nodeContainsStrip(nodes[i])) return true;
+  }
+  return false;
+}
+
+export function mutationsAffectVinesLayout(records: MutationLike[]): boolean {
+  for (const record of records) {
+    if (nodeMatches(record.target, STRIP_SELECTOR)) return true;
+    if (nodeListContainsStrip(record.addedNodes)) return true;
+    if (nodeListContainsStrip(record.removedNodes)) return true;
+  }
+  return false;
 }
 
 /** Grow to (nearly) the full panel height — a little headroom so the top
@@ -326,7 +358,9 @@ export function createVinesOverlay(): { destroy: () => void } {
 
   const ro = new ResizeObserver(queueSync);
   ro.observe(document.body);
-  const mo = new MutationObserver(queueSync);
+  const mo = new MutationObserver((records) => {
+    if (mutationsAffectVinesLayout(records)) queueSync();
+  });
   mo.observe(document.body, { childList: true, subtree: true });
   window.addEventListener("resize", queueSync, { passive: true });
   // Persist on every exit path so startup restores the exact last size
