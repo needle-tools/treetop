@@ -4326,7 +4326,10 @@
       play(repos.length === 0 ? "folder-add-first" : "folder-add");
       newlyAddedRepoPaths.add(path);
       await load();
-      await scrollToNewRepo();
+      // Focus the freshly added repo — in zen this jumps zen to it, otherwise
+      // it scrolls the row into view and flashes it (see focusRepoRow).
+      projectsMenuOpen = false;
+      await focusRepoRow(added.id);
     } catch (e) {
       error = e instanceof Error ? e.message : String(e);
     } finally {
@@ -4587,6 +4590,12 @@
    *  state CTA (top of screen) and the footer CTA (bottom of long
    *  list). */
   let importFlipUp = false;
+  /** Which trigger owns the currently-open import popover. The same
+   *  `importSessionsOpen` state backs three triggers (empty-state CTA,
+   *  footer CTA, and the Projects dropdown row), and in the populated
+   *  view the footer CTA and the dropdown row coexist in the DOM — so we
+   *  gate each `{#if}` on this discriminator to render exactly one. */
+  let importMenuSource: "inline" | "projects" = "inline";
 
   async function openImportSessions() {
     importSessionsOpen = true;
@@ -4608,10 +4617,16 @@
     }
   }
 
-  function toggleImportSessions(e: MouseEvent) {
-    if (importSessionsOpen) {
+  function toggleImportSessions(
+    e: MouseEvent,
+    source: "inline" | "projects" = "inline",
+  ) {
+    // Re-clicking the same trigger closes; clicking a different trigger
+    // re-targets the popover to it.
+    if (importSessionsOpen && importMenuSource === source) {
       importSessionsOpen = false;
     } else {
+      importMenuSource = source;
       // Decide flip direction from the click event's button before
       // we render the popover, so the dropdown opens upward if the
       // button is in the lower half of the viewport.
@@ -4655,7 +4670,10 @@
       await load();
       // Close the popover when the list is empty — nothing left to do.
       if (importSuggestions.length === 0) importSessionsOpen = false;
-      await scrollToNewRepo();
+      // Focus the freshly added repo — zen jumps to it, otherwise the row
+      // scrolls into view and flashes (see focusRepoRow).
+      projectsMenuOpen = false;
+      await focusRepoRow(added.id);
     } catch (e) {
       importError = e instanceof Error ? e.message : String(e);
     } finally {
@@ -5507,17 +5525,6 @@
     el.classList.add("row-focus-flash");
     // Cover the 1s animation-delay + 0.8s animation before removing.
     setTimeout(() => el.classList.remove("row-focus-flash"), 2000);
-  }
-
-  async function focusAddFolderFooter(): Promise<void> {
-    projectsMenuOpen = false;
-    await tick();
-    await tick();
-    const el = document.querySelector(
-      ".add-folder-footer",
-    ) as HTMLElement | null;
-    if (!el) return;
-    el.scrollIntoView({ behavior: "smooth", block: "center" });
   }
 
   /** Remove a worktree (the directory + git's per-worktree state slot).
@@ -7563,17 +7570,159 @@
                 <button
                   class="projects-row projects-add-folder-row"
                   on:click={() => {
-                    void focusAddFolderFooter();
+                    projectsMenuOpen = false;
+                    void pickAndAdd();
                   }}
                 >
                   <span class="projects-plus" aria-hidden="true">+</span>
                   <span class="projects-name">Add Folder</span>
                 </button>
               </li>
+              <li class="projects-import-item">
+                <button
+                  class="projects-row projects-add-folder-row"
+                  on:click|stopPropagation={(e) => {
+                    projectsMenuOpen = false;
+                    toggleImportSessions(e, "projects");
+                  }}
+                  aria-haspopup="menu"
+                  aria-expanded={importSessionsOpen &&
+                    importMenuSource === "projects"}
+                >
+                  <span class="projects-plus" aria-hidden="true">
+                    <svg
+                      width="11"
+                      height="11"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      stroke-width="2"
+                      stroke-linecap="round"
+                      stroke-linejoin="round"
+                      aria-hidden="true"
+                    >
+                      <path d="M12 3v12" />
+                      <path d="M7 10l5 5 5-5" />
+                      <path d="M5 21h14" />
+                    </svg>
+                  </span>
+                  <span class="projects-name">Open from sessions</span>
+                </button>
+              </li>
             </ul>
           </Popover>
         {/if}
       </div>
+
+      <!-- "Open from sessions" popover. A menubar-level sibling of the
+         Projects dropdown — deliberately NOT nested inside it. Two
+         reasons: the projects popover scrolls long lists via
+         overflow:auto (which would clip a child popover), and keeping
+         it outside `.projects-anchor` means the projects menu's
+         hover-open / hover-close handlers never fight it across the
+         button↔popover gap. It carries `.import-sessions-anchor` so
+         handleDocClick's outside-click test keeps it open while you
+         interact, and `importMenuSource` gates it against the inline
+         (footer / empty-state) copy that shares the same state. -->
+      {#if importSessionsOpen && importMenuSource === "projects"}
+        <div class="import-sessions-anchor projects-sessions-anchor">
+          <Popover variant="actions" extraClass="projects-sessions-popover">
+            <svelte:fragment slot="head">
+              <div class="import-search-head">
+                <input
+                  type="search"
+                  class="import-search-input"
+                  bind:value={importQuery}
+                  placeholder="Folders from detected sessions"
+                  aria-label="Filter folders from detected sessions"
+                  use:focusOnMount
+                  on:click|stopPropagation
+                  on:keydown|stopPropagation
+                />
+                {#if importQuery.trim()}
+                  <span class="import-search-count"
+                    >{importFiltered.length}/{importSuggestions.length}</span
+                  >
+                {/if}
+              </div>
+            </svelte:fragment>
+            {#if importLoading}
+              <div class="import-empty">
+                <LoadingSpinner size="0.85rem" label="Scanning sessions" />
+                <span>scanning sessions…</span>
+              </div>
+            {:else if importError}
+              <div class="import-empty import-error">{importError}</div>
+            {:else if importFiltered.length === 0}
+              <div class="import-empty muted">
+                {#if importQuery.trim()}
+                  No folders match.
+                {:else}
+                  No new folders to suggest — every detected session's cwd is
+                  already in the dashboard.
+                {/if}
+              </div>
+            {:else}
+              <ul class="import-list">
+                {#each importFiltered as sug (sug.path)}
+                  {@const busy = importAdding.has(sug.path)}
+                  <li>
+                    <button
+                      type="button"
+                      class="import-row"
+                      class:busy
+                      disabled={busy}
+                      on:click={() => addRepoFromSuggestion(sug.path)}
+                      title={`Add ${sug.path} to the dashboard`}
+                    >
+                      <span class="import-row-main">
+                        {#if busy}
+                          <span class="import-row-name"
+                            ><LoadingSpinner size="0.75rem" /> Importing…</span
+                          >
+                        {:else}
+                          <span class="import-row-name">{sug.name}</span>
+                        {/if}
+                        <span class="import-row-path muted small"
+                          >{sug.path}</span
+                        >
+                        {#if sug.repoUrl}
+                          <span class="import-row-url muted small"
+                            >{sug.repoUrl}</span
+                          >
+                        {/if}
+                      </span>
+                      <span class="import-row-meta">
+                        <span class="import-row-count">
+                          <span
+                            class="import-row-agents-icons"
+                            aria-hidden="true"
+                          >
+                            {#each sug.agents as agent (agent)}
+                              <AgentIcon {agent} size={14} />
+                            {/each}
+                          </span>
+                          <span>
+                            {sug.sessionCount} session{sug.sessionCount === 1
+                              ? ""
+                              : "s"}
+                          </span>
+                        </span>
+                        <span class="import-row-time muted small">
+                          {formatRelativeTime(sug.lastActive)}
+                        </span>
+                        <span class="import-row-agents-names muted small">
+                          {sug.agents.join(", ")}
+                        </span>
+                      </span>
+                    </button>
+                  </li>
+                {/each}
+              </ul>
+            {/if}
+          </Popover>
+        </div>
+      {/if}
 
       <ProcessList
         bind:this={processListRef}
@@ -8169,7 +8318,7 @@
             class="add-folder-cta"
             on:click|stopPropagation={toggleImportSessions}
             aria-haspopup="menu"
-            aria-expanded={importSessionsOpen}
+            aria-expanded={importSessionsOpen && importMenuSource === "inline"}
             title="Suggest folders to add based on detected AI agent sessions"
           >
             <svg
@@ -8190,7 +8339,7 @@
             </svg>
             <span>Import from sessions</span>
           </button>
-          {#if importSessionsOpen}
+          {#if importSessionsOpen && importMenuSource === "inline"}
             <Popover variant="actions" extraClass="import-sessions-popover">
               <svelte:fragment slot="head">
                 <div class="import-search-head">
@@ -10966,7 +11115,7 @@
             </svg>
             <span>Import from sessions</span>
           </button>
-          {#if importSessionsOpen}
+          {#if importSessionsOpen && importMenuSource === "inline"}
             <Popover variant="actions" extraClass="import-sessions-popover">
               <svelte:fragment slot="head">
                 <div class="import-search-head">

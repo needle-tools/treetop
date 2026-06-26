@@ -782,6 +782,35 @@
   font-weight: 400;
   font-size: 0.72rem;
 }
+
+/* "Open from sessions" launched from the Projects dropdown. Same content
+   as `.import-sessions-popover` but it does NOT reuse that class: the
+   import variant hard-centres itself with `left:50% + margin-left`, which
+   would double up against the `.menubar .actions-popover` translate-centre
+   rule and shove the popover a full width off-anchor. Here we let the
+   menubar rule do the centring and only set size + head styling. */
+.projects-sessions-anchor {
+  position: relative;
+  display: inline-flex;
+}
+.projects-sessions-popover {
+  width: 560px;
+  max-width: 92vw;
+  max-height: calc(100vh - 160px);
+}
+.projects-sessions-popover .popover-head {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  text-transform: none;
+  letter-spacing: 0;
+  font-size: 0.8rem;
+  color: var(--text-1);
+}
+.projects-sessions-popover .popover-head .small {
+  font-weight: 400;
+  font-size: 0.72rem;
+}
 .import-search-head {
   display: flex;
   align-items: center;

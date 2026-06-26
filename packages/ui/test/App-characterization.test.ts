@@ -291,13 +291,23 @@ describe("duplicateRepoNotice", () => {
 // ---------------------------------------------------------------------------
 
 describe("Projects menu", () => {
-  test("renders a bottom Add Folder entry that scrolls to the footer CTA section", () => {
-    expect(APP_SOURCE).toContain("function focusAddFolderFooter");
+  test("Add Folder opens the picker immediately and there's an Open from sessions entry", () => {
     expect(APP_SOURCE).toContain("projects-add-folder-row");
     expect(APP_SOURCE).toContain("<span class=\"projects-plus\"");
     expect(APP_SOURCE).toContain("<span class=\"projects-name\">Add Folder</span>");
-    expect(APP_SOURCE).toContain("void focusAddFolderFooter()");
-    expect(APP_SOURCE).toContain(".add-folder-footer");
+    // Add Folder now launches the native folder picker right away instead
+    // of scrolling down to the footer CTA.
+    expect(APP_SOURCE).toContain("void pickAndAdd()");
+    // The dead scroll-to-footer helper is gone with it.
+    expect(APP_SOURCE).not.toContain("focusAddFolderFooter");
+    // New sibling entry reuses the import-sessions popover, scoped to the
+    // dropdown via importMenuSource so it doesn't double-render with the
+    // inline (footer / empty-state) copy.
+    expect(APP_SOURCE).toContain(
+      "<span class=\"projects-name\">Open from sessions</span>",
+    );
+    expect(APP_SOURCE).toContain("toggleImportSessions(e, \"projects\")");
+    expect(APP_SOURCE).toContain("projects-sessions-popover");
   });
 });
 
