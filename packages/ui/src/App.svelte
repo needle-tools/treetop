@@ -38,6 +38,7 @@
   import { openUrl } from "./open-url";
   import { createResizeCoalescer } from "./terminal-resize";
   import { restoreScrollAfterDelay } from "./scroll-restore";
+  import { msSinceScroll, SCROLL_QUIET_MS } from "./scroll-activity";
   import { animateValue, centerScrollTarget } from "./scroll-util";
   import { singleFlight } from "./single-flight";
   import { record, time, timeAsync } from "./timings";
@@ -6956,6 +6957,7 @@
     visibleRows: Set<string>;
     debounceTimer: ReturnType<typeof setTimeout> | null;
     intervalTimer: ReturnType<typeof setInterval> | null;
+    quietTimer: ReturnType<typeof setTimeout> | null;
   };
   const repoFetchStates = new Map<string, RepoVisibleFetchState>();
   const rowNodeMeta = new WeakMap<
@@ -6969,6 +6971,16 @@
     // dominant source of the daemon's "idle 20% CPU" before this gate.
     // On resume we fire load() once which catches up via cache.
     if (isUiIdle()) return;
+    const quietInMs = SCROLL_QUIET_MS - msSinceScroll();
+    if (quietInMs > 0) {
+      const s = ensureRepoFetchState(repoId);
+      if (s.visibleRows.size === 0 || s.quietTimer !== null) return;
+      s.quietTimer = setTimeout(() => {
+        s.quietTimer = null;
+        void fetchVisibleRepo(repoId);
+      }, quietInMs + 20);
+      return;
+    }
     try {
       await fetch(apiUrl("/api/fetch", daemonIdForRepoId(repos, repoId)), {
         method: "POST",
@@ -6987,7 +6999,12 @@
   function ensureRepoFetchState(repoId: string): RepoVisibleFetchState {
     let s = repoFetchStates.get(repoId);
     if (!s) {
-      s = { visibleRows: new Set(), debounceTimer: null, intervalTimer: null };
+      s = {
+        visibleRows: new Set(),
+        debounceTimer: null,
+        intervalTimer: null,
+        quietTimer: null,
+      };
       repoFetchStates.set(repoId, s);
     }
     return s;
@@ -7021,6 +7038,10 @@
     if (s.intervalTimer !== null) {
       clearInterval(s.intervalTimer);
       s.intervalTimer = null;
+    }
+    if (s.quietTimer !== null) {
+      clearTimeout(s.quietTimer);
+      s.quietTimer = null;
     }
   }
 
