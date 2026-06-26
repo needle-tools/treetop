@@ -66,8 +66,10 @@ describe("buildAnchorRowMap", () => {
     expect(map.get("/dup")).toBe(first);
   });
 
-  test("visible-row selector excludes offscreen rows", () => {
-    expect(VISIBLE_ROW_SELECTOR).toContain(":not(.row-offscreen)");
+  test("anchor-row selector keeps offscreen rows in layout", () => {
+    expect(VISIBLE_ROW_SELECTOR).not.toContain("row-offscreen");
+    expect(VISIBLE_ROW_SELECTOR).toContain(":not(.row-folded)");
+    expect(VISIBLE_ROW_SELECTOR).toContain(":not(.row-notes-hidden)");
   });
 });
 
@@ -221,7 +223,7 @@ describe("mutationsAffectStickyNoteLayout", () => {
       sel === ".sessions-strip" || sel === ".session-col" ? {} : null,
   };
 
-  test("ignores column visibility and flash classes that do not move note anchors", () => {
+  test("ignores visibility and flash classes that do not move note anchors", () => {
     expect(
       mutationsAffectStickyNoteLayout([
         {
@@ -229,6 +231,16 @@ describe("mutationsAffectStickyNoteLayout", () => {
           attributeName: "class",
           oldValue: "session-col",
           target: col("session-col col-offscreen session-col-flash"),
+        },
+      ]),
+    ).toBe(false);
+    expect(
+      mutationsAffectStickyNoteLayout([
+        {
+          type: "attributes",
+          attributeName: "class",
+          oldValue: "row",
+          target: row("row row-offscreen"),
         },
       ]),
     ).toBe(false);
@@ -244,16 +256,6 @@ describe("mutationsAffectStickyNoteLayout", () => {
   });
 
   test("keeps scheduling for note-layout row classes and structural mutations", () => {
-    expect(
-      mutationsAffectStickyNoteLayout([
-        {
-          type: "attributes",
-          attributeName: "class",
-          oldValue: "row",
-          target: row("row row-offscreen"),
-        },
-      ]),
-    ).toBe(true);
     expect(
       mutationsAffectStickyNoteLayout([
         {
