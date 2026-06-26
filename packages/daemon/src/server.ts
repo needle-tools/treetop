@@ -477,8 +477,6 @@ const PROCESS_REPO_LIST_TIMEOUT_MS = 1_500;
 const PROCESS_SAMPLE_TIMEOUT_MS = 1_500;
 const PROCESS_SAMPLE_TTL_MS = 750;
 const PROCESS_WORKTREE_TIMEOUT_MS = 1_000;
-const PROCESS_EXTERNAL_ROWS_TIMEOUT_MS =
-  EXTERNAL_SCAN_TIMEOUT_MS + PROCESS_WORKTREE_TIMEOUT_MS;
 const PROCESS_ROUTE_SLOW_MS = 1_000;
 const PROCESS_EXTERNAL_SLOW_MS = 1_000;
 let lastProcessSamples = new Map<number, ProcUsage>();
@@ -4663,25 +4661,20 @@ const server = Bun.serve<TermWsData, never>({
           };
         });
         // External rows come from a throttled full-machine scan (see
-        // externalProcessRows) so a fast poll doesn't re-enumerate every
-        // process twice. TUI rows above are always fresh.
+        // externalProcessRows). Do not await that scan on the route:
+        // opening Procs should show fresh TUI rows immediately and reuse
+        // the last external snapshot while the slow repo/process scan
+        // refreshes in the background.
         let externalRows = lastExternalProcessRows;
         const externalStarted = Date.now();
-        try {
-          externalRows = await withTimeout(
-            externalProcessRows(),
-            PROCESS_EXTERNAL_ROWS_TIMEOUT_MS,
-            "external process rows",
-          );
-        } catch (err) {
+        void externalProcessRows().catch((err) => {
           console.warn(
             `supergit daemon: /api/processes external rows skipped — ${
               err instanceof Error ? err.message : String(err)
             }`,
           );
-        } finally {
-          externalMs = Date.now() - externalStarted;
-        }
+        });
+        externalMs = Date.now() - externalStarted;
         const rows = [...tuis, ...externalRows];
         const totalMs = Date.now() - routeStarted;
         if (totalMs > PROCESS_ROUTE_SLOW_MS) {
