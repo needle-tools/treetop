@@ -71,7 +71,11 @@
   import Popover from "./Popover.svelte";
   import EventsPopover from "./EventsPopover.svelte";
   import DebugPanel from "./DebugPanel.svelte";
-  import { colVisibility } from "./col-visibility";
+  import {
+    colVisibility,
+    markOffscreenUntilMeasured,
+    syncOffscreenClass,
+  } from "./col-visibility";
   import { fetchOllamaModels } from "./ollama-models";
   import { randomUUID } from "./random-id";
   import Tooltip from "./Tooltip.svelte";
@@ -7063,9 +7067,10 @@
               // collapse the row's layout box and feed StickyNotesLayer's
               // getBoundingClientRect math a wrong height. This keeps the
               // box intact and only stops the animation work.
-              (entry.target as HTMLElement).classList.toggle(
+              syncOffscreenClass(
+                entry.target as HTMLElement,
                 "row-offscreen",
-                !entry.isIntersecting,
+                entry.isIntersecting,
               );
               const meta = rowNodeMeta.get(entry.target);
               if (!meta) continue;
@@ -7095,6 +7100,7 @@
   ) {
     if (!rowVisibilityObserver) return {};
     rowNodeMeta.set(node, params);
+    markOffscreenUntilMeasured(node, "row-offscreen");
     rowVisibilityObserver.observe(node);
     return {
       update(next: { repoId: string; rowKey: string }) {
