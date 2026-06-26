@@ -29,6 +29,7 @@ import {
   VISIBLE_ROW_SELECTOR,
   anchorRowFor,
   buildAnchorRowMap,
+  cachedRowRect,
   mutationsAffectStickyNoteLayout,
   mutationsAllInsideTerminal,
 } from "../src/sticky-notes-dom";
@@ -81,6 +82,23 @@ describe("anchorRowFor", () => {
   test("ignores non-worktree anchors and returns null when nothing matches", () => {
     expect(anchorRowFor(rows, ["repo:xyz", "worktree:/gone"])).toBeNull();
     expect(anchorRowFor(rows, [])).toBeNull();
+  });
+});
+
+describe("cachedRowRect", () => {
+  test("measures a row once per cache and reuses the same rect", () => {
+    const row = { dataset: { wtRow: "/wt-a" } };
+    const rect = { bottom: 10, width: 20 };
+    const cache = new Map<typeof row, typeof rect>();
+    let calls = 0;
+    const measure = () => {
+      calls++;
+      return rect;
+    };
+
+    expect(cachedRowRect(cache, row, measure)).toBe(rect);
+    expect(cachedRowRect(cache, row, measure)).toBe(rect);
+    expect(calls).toBe(1);
   });
 });
 

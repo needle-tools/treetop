@@ -141,6 +141,7 @@
   import {
     anchorRowFor,
     buildAnchorRowMap,
+    cachedRowRect,
     mutationsAffectStickyNoteLayout,
   } from "./sticky-notes-dom";
   import { getDaemonKV } from "./daemon-kv";
@@ -855,6 +856,13 @@
   function screenPosFor(
     note: NoteShape,
     rows: Map<string, HTMLElement>,
+    rowRects: Map<HTMLElement, DOMRect>,
+    bounds: {
+      scrollX: number;
+      scrollY: number;
+      maxX: number;
+      viewportRight: number;
+    },
   ): { x: number; y: number } | null {
     // Staged notes float beneath the "+" button until the user commits
     // text (or discards via Esc / click-outside). docX/docY were
@@ -868,8 +876,7 @@
     const st = staging[note.id];
     if (st) {
       const w = note.kind === "link" ? LINK_W : NOTE_W;
-      const viewportRight = window.scrollX + window.innerWidth - 8;
-      const maxX = Math.max(0, viewportRight - w);
+      const maxX = Math.max(0, bounds.viewportRight - w);
       return { x: Math.min(Math.max(0, st.docX), maxX), y: st.docY };
     }
     // Mid-fly: ease-out cubic between captured from/to.
@@ -884,7 +891,7 @@
     }
     const li = anchorRowFor(rows, note.anchors);
     if (!li) return null;
-    const r = li.getBoundingClientRect();
+    const r = cachedRowRect(rowRects, li, (row) => row.getBoundingClientRect());
     const off = offsets[note.id];
     // Resolution order for the horizontal offset:
     //   1. offsetXFrac    — preferred; scales with row width on resize.
@@ -909,10 +916,9 @@
     // natively with the page. Translating viewport-relative rects to
     // doc-relative is just `+ window.scrollX/Y` since getBoundingClientRect
     // is viewport-relative.
-    const docLeft = r.left + window.scrollX;
-    const docBottom = r.bottom + window.scrollY;
-    const maxX = Math.max(0, document.documentElement.scrollWidth - NOTE_W - 4);
-    const x = Math.min(Math.max(0, docLeft + offsetX), maxX);
+    const docLeft = r.left + bounds.scrollX;
+    const docBottom = r.bottom + bounds.scrollY;
+    const x = Math.min(Math.max(0, docLeft + offsetX), bounds.maxX);
     // Default Y tucks the note's top under the row's bottom edge by
     // NOTE_OVERLAP px — that's where the "tape" pseudo-element sits.
     // offsetY adds the small per-note wiggle the user can drag.
@@ -952,7 +958,14 @@
     // every tick (scroll/resize/mutation), so a per-note document-wide
     // querySelector here was a measurable chunk of the reposition cost.
     const rows = buildAnchorRowMap<HTMLElement>(document);
-    for (const n of notes) next[n.id] = screenPosFor(n, rows);
+    const rowRects = new Map<HTMLElement, DOMRect>();
+    const bounds = {
+      scrollX: window.scrollX,
+      scrollY: window.scrollY,
+      maxX: Math.max(0, document.documentElement.scrollWidth - NOTE_W - 4),
+      viewportRight: window.scrollX + window.innerWidth - 8,
+    };
+    for (const n of notes) next[n.id] = screenPosFor(n, rows, rowRects, bounds);
     positionsByNoteId = next;
   }
 
@@ -2679,11 +2692,9 @@
       }
       nowObserved.add(stickyEl);
       const stickyRect = stickyEl.getBoundingClientRect();
-      let liRect = liRects.get(li);
-      if (!liRect) {
-        liRect = li.getBoundingClientRect();
-        liRects.set(li, liRect);
-      }
+      const liRect = cachedRowRect(liRects, li, (row) =>
+        row.getBoundingClientRect(),
+      );
       // Margin so the next row's top sits at `note.bottom + safety`.
       // Extra-safety = max(0, offsetY): the further the user has
       // dragged a note *down* from its baseline, the bigger the gap

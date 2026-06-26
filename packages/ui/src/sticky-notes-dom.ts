@@ -58,6 +58,19 @@ export function anchorRowFor<T>(
   return null;
 }
 
+/** Read a row rect at most once during a single layout pass. */
+export function cachedRowRect<T, Rect>(
+  rects: Map<T, Rect>,
+  row: T,
+  measure: (row: T) => Rect,
+): Rect {
+  const cached = rects.get(row);
+  if (cached) return cached;
+  const rect = measure(row);
+  rects.set(row, rect);
+  return rect;
+}
+
 /** Loose shape of MutationRecord.target: elements expose closest(),
  *  text nodes reach their element via parentElement. */
 export interface MutationTargetLike {
