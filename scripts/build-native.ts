@@ -18,8 +18,10 @@
 
 import { $ } from "bun";
 import { resolve, join, relative } from "node:path";
-import { rm, mkdir, cp, readdir, writeFile } from "node:fs/promises";
+import { rm, mkdir, cp, readdir, writeFile, mkdtemp } from "node:fs/promises";
 import { existsSync } from "node:fs";
+import { createServer } from "node:net";
+import { homedir, tmpdir } from "node:os";
 import { installPayloadPathspec } from "../packages/daemon/src/provision";
 
 const ROOT = resolve(import.meta.dir, "..");
@@ -37,6 +39,28 @@ const isWin = process.platform === "win32";
 const exe = isWin ? ".exe" : "";
 
 console.log(`\n=== supergit native build (${platform}) ===\n`);
+
+async function findAvailablePort(): Promise<string> {
+  return await new Promise((resolve, reject) => {
+    const server = createServer();
+    server.unref();
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", () => {
+      const address = server.address();
+      const port =
+        address && typeof address === "object" ? address.port : undefined;
+      server.close((err) => {
+        if (err) {
+          reject(err);
+        } else if (port) {
+          resolve(String(port));
+        } else {
+          reject(new Error("could not allocate smoke-test port"));
+        }
+      });
+    });
+  });
+}
 
 // ── 1. Build UI ──────────────────────────────────────────────────────
 console.log("1/6  Building UI…");
@@ -219,7 +243,17 @@ if (isWin) {
 }
 
 // ── 6. Smoke test (headless, flat binary) ────────────────────────────
-const smokePort = "17779";
+const smokePort =
+  process.env.SUPERGIT_NATIVE_SMOKE_PORT ?? (await findAvailablePort());
+const smokeWorkspaceSource = join(
+  homedir(),
+  "supergit",
+  "workspaces",
+  "default",
+);
+const smokeWorkspaceBase = await mkdtemp(
+  join(tmpdir(), "treetop-native-smoke-"),
+);
 console.log(`6/6  Smoke test on :${smokePort}…`);
 
 const cleanEnv: Record<string, string> = {};
@@ -228,19 +262,41 @@ for (const [k, v] of Object.entries(process.env)) {
   if (v != null) cleanEnv[k] = v;
 }
 cleanEnv.SUPERGIT_PORT = smokePort;
+cleanEnv.SUPERGIT_BIND = "127.0.0.1";
+cleanEnv.TREETOP_TEMP_WORKSPACE_FROM = smokeWorkspaceSource;
+cleanEnv.TREETOP_TEMP_WORKSPACE_DIR = smokeWorkspaceBase;
 
 const daemon = Bun.spawn([binaryPath], {
   env: cleanEnv,
   stdout: "pipe",
   stderr: "pipe",
 });
+const stdoutText = new Response(daemon.stdout).text();
+const stderrText = new Response(daemon.stderr).text();
 
 let ok = true;
+let daemonExitCode: number | null | undefined;
+const daemonExited = daemon.exited.then((code) => {
+  daemonExitCode = code;
+  return code;
+});
+let daemonStopped = false;
+async function stopDaemon(): Promise<void> {
+  if (daemonStopped) return;
+  daemonStopped = true;
+  daemon.kill();
+  await daemonExited;
+}
 try {
   // Wait for daemon to be ready (retries for up to 10s)
   let ready = false;
   for (let i = 0; i < 20 && !ready; i++) {
     await Bun.sleep(500);
+    if (daemonExitCode !== undefined) {
+      throw new Error(
+        `Daemon exited during smoke test with code ${daemonExitCode}`,
+      );
+    }
     try {
       const r = await fetch(`http://localhost:${smokePort}/api/debug/mem`, {
         signal: AbortSignal.timeout(2000),
@@ -266,10 +322,14 @@ try {
   console.log("     ✓ API + UI respond correctly");
 } catch (err) {
   console.error(`     ✗ Smoke test failed: ${err}`);
+  await stopDaemon();
+  const [stdout, stderr] = await Promise.all([stdoutText, stderrText]);
+  if (stdout.trim()) console.error(stdout.trim());
+  if (stderr.trim()) console.error(stderr.trim());
   ok = false;
 } finally {
-  daemon.kill();
-  await daemon.exited;
+  await stopDaemon();
+  await rm(smokeWorkspaceBase, { recursive: true, force: true });
 }
 
 // ── Summary ──────────────────────────────────────────────────────────
@@ -294,7 +354,9 @@ if (isMac && existsSync(APP)) {
   console.log(`\n  Double-click ${APP} or run:`);
   console.log(`    open ${APP}\n`);
 } else {
-  console.log(`\n  Next: run \`electrobun build --env=stable\` to wrap the flat layout into a native app bundle.\n`);
+  console.log(
+    `\n  Next: run \`electrobun build --env=stable\` to wrap the flat layout into a native app bundle.\n`,
+  );
 }
 
 if (!ok) process.exit(1);
