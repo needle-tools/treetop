@@ -4190,7 +4190,13 @@
       class:sticky-photo-frame-transparent={hasAlpha}
       title={label}
     >
-      <img {src} alt={label} draggable="false" />
+      <img
+        {src}
+        alt={label}
+        draggable="false"
+        loading="lazy"
+        decoding="async"
+      />
     </span>
   {/snippet}
 
@@ -4832,6 +4838,7 @@
                 src={composerImageUrl(openComposerAttachment)}
                 alt={inlineAttachmentLabel(openComposerAttachment)}
                 draggable="true"
+                decoding="async"
               />
             </span>
           </div>
