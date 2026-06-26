@@ -158,6 +158,7 @@
     filterToExistingSessions,
     hideVisibleWorktree,
     isSessionForeignToWorktree,
+    openSessionRenderKey,
     rememberedSessionSurface,
     reconcileOpenSessionsWithSurfacePreferences,
     sessionMatchesKnownKeys,
@@ -2938,6 +2939,9 @@
      *  migrates to SessionView mid-flight. Set during the source swap
      *  so SessionView reattaches instead of spawning a duplicate. */
     attachTermId?: string;
+    /** UI-only key that keeps a mounted column alive when its persisted
+     *  source is canonicalized (e.g. shell `__new__` → `__attached__`). */
+    renderKey?: string;
     /** Explicit shell command for a plain terminal column, stamped by
      *  openNewTerminalInWt when the box offered >1 shell (Windows:
      *  PowerShell vs CMD). cmdForOpenSession prefers it over the
@@ -10299,7 +10303,7 @@
                          padding-right here — horizontally scrolling flex
                          containers drop it — so a real flex item gives
                          the last column the same breathing room. -->
-                        {#each visibleSessions as s, i (s.source)}
+                        {#each visibleSessions as s, i (openSessionRenderKey(s))}
                           <div
                             class="session-col"
                             class:session-col-filtered={stripFilter &&
@@ -10651,7 +10655,12 @@
                                           openSessionsByWt[wt.path] ?? []
                                         ).map((x) =>
                                           x.source === s.source
-                                            ? { ...x, source: attachedSource }
+                                            ? {
+                                                ...x,
+                                                source: attachedSource,
+                                                renderKey:
+                                                  x.renderKey ?? x.source,
+                                              }
                                             : x,
                                         ),
                                       };

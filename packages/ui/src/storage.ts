@@ -284,6 +284,10 @@ export interface PersistedSession {
    *  after a daemon restart now self-heals via TerminalView's spawn
    *  fallback. */
   attachTermId?: string;
+  /** Optional UI-only key used to preserve a mounted strip column across a
+   *  source canonicalization in the current page. Deliberately not restored
+   *  by `sanitizeSession`; reloads should key by the persisted source. */
+  renderKey?: string;
 }
 
 export function sessionSurfaceKeys(session: {
@@ -647,6 +651,13 @@ export function filterToExistingSessions(
     if (keep) seen.add(s.source);
     return keep;
   });
+}
+
+export function openSessionRenderKey(session: {
+  source: string;
+  renderKey?: string;
+}): string {
+  return session.renderKey ?? session.source;
 }
 
 export function isSessionForeignToWorktree(

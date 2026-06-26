@@ -19,6 +19,7 @@ import {
   isLiveCodexAppSource,
   isForeignToWorktree,
   isSessionForeignToWorktree,
+  openSessionRenderKey,
   reconcileOpenSessionsWithSurfacePreferences,
   resolveTitleSource,
   sessionMatchesKnownKeys,
@@ -1682,6 +1683,35 @@ describe("setSessionAttachTermId", () => {
     expect(store.load()).toEqual({
       "/wt": [{ agent: "claude", source: SOURCE }],
     });
+  });
+
+  test("renderKey is dropped on load (only stabilizes current-page mounts)", () => {
+    const m = new MemStore();
+    const store = new OpenSessionsStore(m, "supergit:openSessions-render-key");
+    store.save({
+      "/wt": [
+        {
+          agent: "shell",
+          source: "__attached__:shell:t_live",
+          renderKey: "__new__:shell:synthetic",
+        },
+      ],
+    });
+    expect(store.load()).toEqual({
+      "/wt": [{ agent: "shell", source: "__attached__:shell:t_live" }],
+    });
+  });
+
+  test("openSessionRenderKey prefers the transient render key", () => {
+    expect(
+      openSessionRenderKey({
+        source: "__attached__:shell:t_live",
+        renderKey: "__new__:shell:synthetic",
+      }),
+    ).toBe("__new__:shell:synthetic");
+    expect(openSessionRenderKey({ source: "__attached__:shell:t_live" })).toBe(
+      "__attached__:shell:t_live",
+    );
   });
 });
 
