@@ -83,6 +83,10 @@
   } from "./claude-session-menu";
   import { getDaemonKV } from "./daemon-kv";
   import { openSummarize, activeSummarize } from "./summarize-dialog";
+  import {
+    invalidateCachedSessionSummary,
+    loadCachedSessionSummary,
+  } from "./summary-queue";
   import { shouldAutoSummarizeTui } from "./tui-auto-summary";
   import { openRepair } from "./repair-session-dialog";
   import { openShare } from "./share-session-dialog";
@@ -536,34 +540,15 @@
     const targetSource = sessionFileSource;
     try {
       const qs = new URLSearchParams({ source: targetSource });
-      const res = await fetch(
+      const body = await loadCachedSessionSummary(
+        targetSource,
         apiUrl(`/api/sessions/summarize?${qs.toString()}`),
       );
-      if (!res.ok) {
-        // Race: `source` could have changed while in flight.
-        if (targetSource === sessionFileSource) {
-          summarySnippet = "";
-          summaryModel = "";
-          summaryTitle = "";
-          summaryTotalMessages = 0;
-        }
-        return;
-      }
-      const body = (await res.json()) as {
-        summary?: {
-          body?: string;
-          frontmatter?: {
-            model?: string;
-            totalMessages?: number;
-            title?: string;
-          };
-        } | null;
-      };
       if (targetSource !== sessionFileSource) return;
-      summarySnippet = body.summary?.body?.trim() ?? "";
-      summaryModel = body.summary?.frontmatter?.model ?? "";
-      summaryTitle = body.summary?.frontmatter?.title ?? "";
-      summaryTotalMessages = body.summary?.frontmatter?.totalMessages ?? 0;
+      summarySnippet = body?.summary?.body?.trim() ?? "";
+      summaryModel = body?.summary?.frontmatter?.model ?? "";
+      summaryTitle = body?.summary?.frontmatter?.title ?? "";
+      summaryTotalMessages = body?.summary?.frontmatter?.totalMessages ?? 0;
       summarySource = targetSource;
     } catch {
       if (targetSource === sessionFileSource) {
@@ -760,10 +745,12 @@
           }
         }
       }
+      invalidateCachedSessionSummary(targetSource);
       await refreshSummary();
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       showSummarizeNotice(`Summarise failed: ${msg}`);
+      invalidateCachedSessionSummary(targetSource);
       await refreshSummary();
     } finally {
       summaryRefreshing = false;
@@ -792,6 +779,7 @@
   $: {
     const cur = $activeSummarize;
     if (!cur && prevDialogSource === sessionFileSource) {
+      invalidateCachedSessionSummary(sessionFileSource);
       void refreshSummary();
     }
     prevDialogSource = cur?.source ?? null;
@@ -3665,10 +3653,6 @@
     else closeCodexEventStream();
   }
 
-  $: if (codexVisualAppSurface && session?.cwd) {
-    void loadCodexModels(session.cwd);
-  }
-
   $: if (
     liveCodexApp &&
     !codexRunning &&
@@ -3837,6 +3821,10 @@
       {starred}
       {onToggleStar}
       onTitleSaved={(next) => onManualTitleSaved(next)}
+      onSettingsOpen={() => {
+        if (codexVisualAppSurface && session?.cwd)
+          void loadCodexModels(session.cwd);
+      }}
       onResume={resumeCurrentSurface}
       onEndSession={mode === "read" && codexVisualAppSurface
         ? stopCodexVisualAppSession

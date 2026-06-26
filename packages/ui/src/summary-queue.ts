@@ -50,6 +50,86 @@ export function enqueueSummary(job: SummaryJob): () => void {
   };
 }
 
+export interface CachedSessionSummary {
+  body?: string;
+  frontmatter?: {
+    model?: string;
+    totalMessages?: number;
+    title?: string;
+  };
+}
+
+interface SessionSummaryResponse {
+  summary?: CachedSessionSummary | null;
+}
+
+type SessionSummaryFetch = (
+  input: string | URL | Request,
+  init?: RequestInit,
+) => Promise<Response>;
+
+const SESSION_SUMMARY_CONCURRENCY = 2;
+const sessionSummaryCache = new Map<string, SessionSummaryResponse | null>();
+const sessionSummaryInFlight = new Map<
+  string,
+  Promise<SessionSummaryResponse | null>
+>();
+const sessionSummaryQueue: (() => void)[] = [];
+let activeSessionSummaryReads = 0;
+
+function runSessionSummaryRead<T>(job: () => Promise<T>): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const start = () => {
+      activeSessionSummaryReads += 1;
+      job().then(resolve, reject).finally(() => {
+        activeSessionSummaryReads = Math.max(0, activeSessionSummaryReads - 1);
+        sessionSummaryQueue.shift()?.();
+      });
+    };
+    if (activeSessionSummaryReads < SESSION_SUMMARY_CONCURRENCY) start();
+    else sessionSummaryQueue.push(start);
+  });
+}
+
+export function invalidateCachedSessionSummary(source: string): void {
+  sessionSummaryCache.delete(source);
+  sessionSummaryInFlight.delete(source);
+}
+
+export function __resetSessionSummaryLookupForTests(): void {
+  sessionSummaryCache.clear();
+  sessionSummaryInFlight.clear();
+  sessionSummaryQueue.length = 0;
+  activeSessionSummaryReads = 0;
+}
+
+export function loadCachedSessionSummary(
+  source: string,
+  url: string,
+  fetchImpl: SessionSummaryFetch = globalThis.fetch.bind(globalThis),
+): Promise<SessionSummaryResponse | null> {
+  if (sessionSummaryCache.has(source)) {
+    return Promise.resolve(sessionSummaryCache.get(source) ?? null);
+  }
+  const inFlight = sessionSummaryInFlight.get(source);
+  if (inFlight) return inFlight;
+
+  const promise = runSessionSummaryRead(async () => {
+    const res = await fetchImpl(url);
+    if (!res.ok) return null;
+    const body = (await res.json().catch(() => null)) as
+      | SessionSummaryResponse
+      | null;
+    const result = body && typeof body === "object" ? body : null;
+    sessionSummaryCache.set(source, result);
+    return result;
+  }).finally(() => {
+    sessionSummaryInFlight.delete(source);
+  });
+  sessionSummaryInFlight.set(source, promise);
+  return promise;
+}
+
 async function pump(): Promise<void> {
   if (running) return;
   running = true;

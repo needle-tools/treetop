@@ -126,6 +126,7 @@
    *  agent sessions (claude/codex/copilot/ollama). */
   export let starred: boolean = false;
   export let onToggleStar: () => void = () => {};
+  export let onSettingsOpen: () => void = () => {};
 
   // Callbacks
   export let onTitleSaved: (next: string) => void = () => {};
@@ -249,6 +250,7 @@
     return group.options.find((o) => o.selected)?.value;
   }
   function openSettings() {
+    onSettingsOpen();
     const next: Record<string, string> = {};
     for (const g of agentSettings) {
       const v = currentValue(g);

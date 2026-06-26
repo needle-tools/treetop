@@ -15,7 +15,12 @@
  */
 
 import { test, expect, describe } from "bun:test";
-import { enqueueSummary } from "../src/summary-queue";
+import {
+  __resetSessionSummaryLookupForTests,
+  enqueueSummary,
+  invalidateCachedSessionSummary,
+  loadCachedSessionSummary,
+} from "../src/summary-queue";
 
 /** Resolve after the current macrotask queue drains — enough for the
  *  microtask-scheduled pump plus any awaited deferreds to settle. */
@@ -141,5 +146,78 @@ describe("enqueueSummary", () => {
     });
     await tick();
     expect(second).toBe(true);
+  });
+});
+
+describe("loadCachedSessionSummary", () => {
+  test("coalesces concurrent reads for the same source", async () => {
+    __resetSessionSummaryLookupForTests();
+    let resolveRead!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      resolveRead = resolve;
+    });
+    const calls: string[] = [];
+    const fetchImpl = (async (url: string | URL | Request) => {
+      calls.push(String(url));
+      await gate;
+      return new Response(JSON.stringify({ summary: { body: "cached" } }));
+    }) as typeof fetch;
+
+    const a = loadCachedSessionSummary("source-a", "/summary/a", fetchImpl);
+    const b = loadCachedSessionSummary("source-a", "/summary/a", fetchImpl);
+    await Promise.resolve();
+
+    expect(calls).toEqual(["/summary/a"]);
+    resolveRead();
+    expect(await a).toEqual({ summary: { body: "cached" } });
+    expect(await b).toEqual({ summary: { body: "cached" } });
+  });
+
+  test("caps different-source cached summary reads", async () => {
+    __resetSessionSummaryLookupForTests();
+    const resolvers: (() => void)[] = [];
+    const started: string[] = [];
+    const fetchImpl = (async (url: string | URL | Request) => {
+      started.push(String(url));
+      await new Promise<void>((resolve) => resolvers.push(resolve));
+      return new Response(JSON.stringify({ summary: null }));
+    }) as typeof fetch;
+
+    const a = loadCachedSessionSummary("a", "/summary/a", fetchImpl);
+    const b = loadCachedSessionSummary("b", "/summary/b", fetchImpl);
+    const c = loadCachedSessionSummary("c", "/summary/c", fetchImpl);
+    await Promise.resolve();
+
+    expect(started).toEqual(["/summary/a", "/summary/b"]);
+    resolvers.shift()?.();
+    await a;
+    await Promise.resolve();
+    expect(started).toEqual(["/summary/a", "/summary/b", "/summary/c"]);
+
+    resolvers.splice(0).forEach((resolve) => resolve());
+    await Promise.all([b, c]);
+  });
+
+  test("caches successful reads until invalidated", async () => {
+    __resetSessionSummaryLookupForTests();
+    let calls = 0;
+    const fetchImpl = (async () => {
+      calls += 1;
+      return new Response(JSON.stringify({ summary: { body: `v${calls}` } }));
+    }) as typeof fetch;
+
+    expect(
+      await loadCachedSessionSummary("source-a", "/summary/a", fetchImpl),
+    ).toEqual({ summary: { body: "v1" } });
+    expect(
+      await loadCachedSessionSummary("source-a", "/summary/a", fetchImpl),
+    ).toEqual({ summary: { body: "v1" } });
+    expect(calls).toBe(1);
+
+    invalidateCachedSessionSummary("source-a");
+    expect(
+      await loadCachedSessionSummary("source-a", "/summary/a", fetchImpl),
+    ).toEqual({ summary: { body: "v2" } });
+    expect(calls).toBe(2);
   });
 });

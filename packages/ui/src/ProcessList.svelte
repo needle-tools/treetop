@@ -327,15 +327,15 @@
     }
   }
 
-  const SLOW_MS = 10_000;
+  const SLOW_MS = 60_000;
   // Open-panel cadence. Each poll spawns a PowerShell + perf-counter pass on
   // Windows, so 2s was self-inflicted load that inflated the very CPU number
   // we display. The shown CPU% is a 30s trailing average (CPU_AVG_WINDOW_MS),
   // so 5s sampling granularity is plenty — it just costs less to watch.
   const FAST_MS = 5_000;
-  function startPolling(intervalMs: number) {
+  function startPolling(intervalMs: number, immediate = true) {
     if (pollTimer) clearInterval(pollTimer);
-    void refresh();
+    if (immediate) void refresh();
     pollTimer = setInterval(refresh, intervalMs);
   }
   function stopPolling() {
@@ -347,7 +347,7 @@
   }
   function toggle() {
     open = !open;
-    startPolling(open ? FAST_MS : SLOW_MS);
+    startPolling(open ? FAST_MS : SLOW_MS, open);
   }
   async function sendTerm(p: TuiProc) {
     if (p.kind !== "external") {
@@ -504,18 +504,18 @@
     const source = procSource(p);
     if (!source) return;
     open = false;
-    startPolling(SLOW_MS);
+    startPolling(SLOW_MS, false);
     dispatch("focusSession", { source });
   }
 
   export function closeIfOpen() {
     if (open) {
       open = false;
-      startPolling(SLOW_MS);
+      startPolling(SLOW_MS, false);
     }
   }
 
-  onMount(() => startPolling(SLOW_MS));
+  onMount(() => startPolling(SLOW_MS, false));
   onDestroy(() => stopPolling());
 </script>
 
