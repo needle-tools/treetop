@@ -10,8 +10,8 @@
  *
  * STICKING: each vine SVG is injected INTO its `.sessions-strip` and
  * positioned in the strip's CONTENT coordinates, so it scrolls natively
- * with the panels (no float). We only re-measure on layout changes and on
- * the tick — never on scroll.
+ * with the panels (no float). We only re-measure on layout changes; growth
+ * ticks reuse cached geometry and never measure layout.
  *
  * Perf: pointer-events:none; seconds-apart tick (no rAF loop); composited
  * CSS leaf sway; no cursor interaction; the only app-DOM touch is setting
@@ -70,6 +70,12 @@ interface StripState {
   svg: SVGSVGElement;
   nodes: Map<string, VineNodes>;
   setPosition: boolean;
+}
+
+interface StripSnapshot {
+  liveStrips: Set<HTMLElement>;
+  presentSources: string[];
+  perStrip: { strip: HTMLElement; panels: Panel[] }[];
 }
 
 type MutationLike = Pick<MutationRecord, "target" | "addedNodes" | "removedNodes">;
@@ -171,6 +177,7 @@ export function createVinesOverlay(): { destroy: () => void } {
 
   let store: SourceAges = load();
   const strips = new Map<HTMLElement, StripState>();
+  const panelCache = new Map<HTMLElement, Panel[]>();
   const seeded = new Set<string>();
   let lastTick = Date.now();
   let lastSave = Date.now();
@@ -224,7 +231,7 @@ export function createVinesOverlay(): { destroy: () => void } {
     strips.delete(strip);
   }
 
-  function syncAndGrow(accrueDt: number) {
+  function snapshotFromLayout(): StripSnapshot {
     const liveStrips = new Set<HTMLElement>();
     const presentSources: string[] = [];
     const perStrip: { strip: HTMLElement; panels: Panel[] }[] = [];
@@ -232,9 +239,37 @@ export function createVinesOverlay(): { destroy: () => void } {
     for (const strip of document.querySelectorAll<HTMLElement>(STRIP_SELECTOR)) {
       const panels = panelsForStrip(strip);
       liveStrips.add(strip);
+      panelCache.set(strip, panels);
       perStrip.push({ strip, panels });
       for (const p of panels) presentSources.push(p.source);
     }
+    for (const strip of [...panelCache.keys()]) {
+      if (!liveStrips.has(strip)) panelCache.delete(strip);
+    }
+    return { liveStrips, presentSources, perStrip };
+  }
+
+  function snapshotFromCache(): StripSnapshot {
+    const liveStrips = new Set<HTMLElement>();
+    const presentSources: string[] = [];
+    const perStrip: { strip: HTMLElement; panels: Panel[] }[] = [];
+
+    for (const [strip, panels] of panelCache) {
+      if (!strip.isConnected) {
+        panelCache.delete(strip);
+        continue;
+      }
+      liveStrips.add(strip);
+      perStrip.push({ strip, panels });
+      for (const p of panels) presentSources.push(p.source);
+    }
+    return { liveStrips, presentSources, perStrip };
+  }
+
+  function syncAndGrow(accrueDt: number, measureLayout: boolean) {
+    const { liveStrips, presentSources, perStrip } = measureLayout
+      ? snapshotFromLayout()
+      : snapshotFromCache();
 
     // Demo pre-seed: make a session look already-aged the first time seen.
     if (PRESEED > 0) {
@@ -263,7 +298,7 @@ export function createVinesOverlay(): { destroy: () => void } {
 
     if (DEBUG) {
       console.info(
-        `[vines] strips=${perStrip.length} sources=${presentSources.length} vines=${totalVines}`,
+        `[vines] strips=${perStrip.length} sources=${presentSources.length} vines=${totalVines} measured=${measureLayout}`,
       );
     }
   }
@@ -337,7 +372,7 @@ export function createVinesOverlay(): { destroy: () => void } {
     syncQueued = true;
     requestAnimationFrame(() => {
       syncQueued = false;
-      if (!destroyed) syncAndGrow(0);
+      if (!destroyed) syncAndGrow(0, true);
     });
   }
 
@@ -349,7 +384,7 @@ export function createVinesOverlay(): { destroy: () => void } {
         ? Math.min(now - lastTick, DT_CLAMP_MS)
         : 0;
     lastTick = now;
-    syncAndGrow(dt);
+    syncAndGrow(dt, false);
     if (now - lastSave > SAVE_EVERY_MS) {
       save(store);
       lastSave = now;
@@ -374,7 +409,7 @@ export function createVinesOverlay(): { destroy: () => void } {
   };
   document.addEventListener("visibilitychange", onVisibility);
 
-  syncAndGrow(0);
+  syncAndGrow(0, true);
 
   return {
     destroy() {
