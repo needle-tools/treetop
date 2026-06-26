@@ -953,20 +953,25 @@
     void offsets;
     void staging;
     void flyingNotes;
-    const next: Record<string, { x: number; y: number } | null> = {};
-    // One row-snapshot query for the whole pass — this block re-runs on
-    // every tick (scroll/resize/mutation), so a per-note document-wide
-    // querySelector here was a measurable chunk of the reposition cost.
-    const rows = buildAnchorRowMap<HTMLElement>(document);
-    const rowRects = new Map<HTMLElement, DOMRect>();
-    const bounds = {
-      scrollX: window.scrollX,
-      scrollY: window.scrollY,
-      maxX: Math.max(0, document.documentElement.scrollWidth - NOTE_W - 4),
-      viewportRight: window.scrollX + window.innerWidth - 8,
-    };
-    for (const n of notes) next[n.id] = screenPosFor(n, rows, rowRects, bounds);
-    positionsByNoteId = next;
+    if (notes.length === 0 && Object.keys(positionsByNoteId).length > 0) {
+      positionsByNoteId = {};
+    } else if (notes.length > 0) {
+      const next: Record<string, { x: number; y: number } | null> = {};
+      // One row-snapshot query for the whole pass — this block re-runs on
+      // every tick (scroll/resize/mutation), so a per-note document-wide
+      // querySelector here was a measurable chunk of the reposition cost.
+      const rows = buildAnchorRowMap<HTMLElement>(document);
+      const rowRects = new Map<HTMLElement, DOMRect>();
+      const bounds = {
+        scrollX: window.scrollX,
+        scrollY: window.scrollY,
+        maxX: Math.max(0, document.documentElement.scrollWidth - NOTE_W - 4),
+        viewportRight: window.scrollX + window.innerWidth - 8,
+      };
+      for (const n of notes)
+        next[n.id] = screenPosFor(n, rows, rowRects, bounds);
+      positionsByNoteId = next;
+    }
   }
 
   /** Which daemon owns the thing this note is anchored to (undefined =
@@ -2659,6 +2664,13 @@
    *  note's textarea, which we'd otherwise miss). */
   function applyRowMargins(): void {
     if (!layerEl) return;
+    if (notes.length === 0) {
+      for (const li of marginedRows) li.style.marginBottom = "";
+      marginedRows.clear();
+      for (const el of observedNoteEls) noteResizeObs?.unobserve(el);
+      observedNoteEls.clear();
+      return;
+    }
     const need = new Map<HTMLElement, number>();
     const nowObserved = new Set<Element>();
     // This runs from afterUpdate — i.e. on every reactive render — so
