@@ -5,6 +5,53 @@ Started after Chrome Helper sat at 70-100% CPU with the tab in focus
 and a few sessions/worktrees on screen. Updated as we apply fixes and
 re-record traces.
 
+## Perf-goal run contract
+
+Any broad performance goal run must leave behind evidence, not just a
+series of plausible commits. Use `plans/perf-goal.json` as the append-only
+run log. Each candidate commit needs:
+
+- the exact scenario measured (`cold-start`, `dock-same-item-repeat`,
+  `dock-random-navigation`, `open-column`, `terminal-start`, `image-paste`,
+  `notes-heavy-scroll`, `events-analyze`, `idle-visible`, `typing-visible`);
+- before/after numbers from the same workspace copy, browser, viewport,
+  and build mode;
+- the commit hash, files touched, and a short hypothesis;
+- a pass/fail verdict based on the metric delta and the UX guardrails
+  below;
+- links or paths to trace/console/network artifacts when available.
+
+Measure these families on every broad run:
+
+- **Interaction latency:** click-to-settle p50/p95/max, long tasks,
+  dropped/late animation frames, and whether repeated navigation to the
+  same item is idempotent.
+- **Main-thread cost:** Chrome trace totals for Scripting, Rendering,
+  StyleRecalc, Layout, Paint, PaintImage, Layerize, UpdateLayer, and max
+  task duration.
+- **Compositor/animation cost:** active animation count by group,
+  layer count / Layerize per second, and DebugPanel marker segments
+  (`all`, `dock-arrows`, `sleep-z`, `working-pill`, etc.).
+- **Network/API pressure:** request rate, in-flight max, route p50/p95/max,
+  cancelled/pending requests, and response bytes for `/api/repos`,
+  `/api/sessions/batch`, `/api/events`, `/api/terminals`, `/api/shells`,
+  `/api/messages`, `/api/notes`, `/api/image`, and `/api/debug/analyze`
+  when present.
+- **Daemon/process health:** daemon RSS/heap, event-loop delay, child
+  process count, terminal helper queues, PTY first-output time, and
+  terminal WebSocket backpressure/backlog.
+- **Correctness/visual guardrails:** no blank panes, no lost terminal or
+  visual sessions, no broken image paste/preview, no note/sticker
+  mis-anchoring, no scroll-position drift, no missing file-link handling,
+  and no visible animation/affordance removal unless the UX change is
+  explicitly requested.
+
+Do not count a commit as a perf win if it only removes, pauses, hides, or
+dims a visible feature/animation. If a run proposes gating visible work,
+the JSON entry must prove the gate is invisible at the point of use (for
+example, offscreen-only with a browser smoke check showing the animation is
+already running before it enters view).
+
 ## TL;DR
 
 Three perf traces taken over ~24 hours, ~4-9 seconds each on the prod
@@ -100,10 +147,10 @@ In commit order. Each links to the rationale in the diff.
       is fully offscreen; (b) hard-cap: only the first ~20 rows get
       the pulse, the rest get a static dim border. (a) is more
       principled; (b) is a 4-line change.
-- [ ] **Reconsider the `.idle` pulse altogether.** Static dim border
-      is already a clear visual cue. The pulse adds liveness but at
-      a continuous compositor cost. Worth a UX call: is the pulse
-      pulling weight or is it ambient decoration?
+- [ ] **Optimize the `.idle` pulse without removing it.** The pulse is a
+      visible liveness affordance. Perf work may make it cheaper or gate it
+      only while truly offscreen, but removing/dimming it is a UX regression
+      unless explicitly requested.
 - [ ] **Audit the layer count.** Open DevTools → Rendering →
       Layer borders on a populated dashboard and count the green
       borders. If it's in the hundreds, that's the Layerize budget

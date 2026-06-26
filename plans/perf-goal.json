@@ -1,0 +1,85 @@
+{
+  "schemaVersion": 1,
+  "updatedAt": "2026-06-26",
+  "artifactPurpose": "Append-only evidence log for broad Treetop performance goal runs.",
+  "runRequirements": {
+    "sameRunBeforeAfter": true,
+    "sameWorkspaceCopy": true,
+    "sameBrowserViewportAndBuildMode": true,
+    "commitRequiresMeasuredScenario": true,
+    "visibleUxRemovalIsRegression": true
+  },
+  "metricCatalog": {
+    "interactionLatency": [
+      "clickToSettleMs.p50",
+      "clickToSettleMs.p95",
+      "clickToSettleMs.max",
+      "longTasks.count",
+      "longTasks.maxMs",
+      "animationFrames.dropped",
+      "scroll.sameTargetIdempotent"
+    ],
+    "mainThreadTrace": [
+      "scriptingMs",
+      "renderingMs",
+      "styleRecalcMs",
+      "layoutMs",
+      "paintMs",
+      "paintImageMs",
+      "layerizeMs",
+      "updateLayerMs",
+      "maxTaskMs"
+    ],
+    "animationAndCompositor": [
+      "runningAnimations.total",
+      "runningAnimations.byGroup",
+      "layers.total",
+      "layerizePerSecond",
+      "debugMarkerSegments"
+    ],
+    "apiPressure": [
+      "requestsPerSecond.total",
+      "requestsPerSecond.byRoute",
+      "inFlight.max",
+      "routeLatencyMs.p50",
+      "routeLatencyMs.p95",
+      "routeLatencyMs.max",
+      "cancelledRequests.count",
+      "pendingRequests.maxAgeMs",
+      "responseBytes.byRoute"
+    ],
+    "daemonHealth": [
+      "rssBytes",
+      "heapUsedBytes",
+      "eventLoopDelayMs.p95",
+      "eventLoopDelayMs.max",
+      "childProcesses.count",
+      "terminalFirstOutputMs",
+      "terminalWsBackpressure.count",
+      "terminalWsBacklogBytes"
+    ]
+  },
+  "guardrails": [
+    "No blank session panes or terminal panes.",
+    "No lost or stopped terminal/visual sessions.",
+    "No image paste, preview, or media endpoint regression.",
+    "No note or sticker anchor drift; large note lanes are allowed.",
+    "Repeated navigation to the same sidebar/dock item must be idempotent.",
+    "File links from transcripts open the project file, not a browser URL.",
+    "Visible model-pill, dock/sidebar, status, awaiting, and sleep animations remain visible unless explicitly removed by product decision.",
+    "No new polling or fallback path without proving the existing golden path cannot serve the use case."
+  ],
+  "scenarios": [
+    "cold-start",
+    "dock-same-item-repeat",
+    "dock-random-navigation",
+    "open-column",
+    "terminal-start",
+    "image-paste",
+    "notes-heavy-scroll",
+    "events-analyze",
+    "idle-visible",
+    "typing-visible"
+  ],
+  "runs": []
+}
