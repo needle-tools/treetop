@@ -1275,6 +1275,13 @@ export function sessionCacheStats(): {
   };
 }
 
+function withManualTitle(
+  session: NormalizedSession,
+  manualTitle: string | undefined,
+): NormalizedSession {
+  return manualTitle ? { ...session, manualTitle } : session;
+}
+
 function injectManualTitle(
   jsonNoTitle: string,
   manualTitle: string | undefined,
@@ -1533,21 +1540,23 @@ async function tailParseSessionFileForCache(
 }
 
 /**
- * Return the /api/session response body as a JSON string, using a tail-based
- * parsed-session cache.
+ * Return the /api/session response body plus the parsed session, using a
+ * tail-based parsed-session cache. Batch callers use `session` to compute
+ * hashes/patches without reparsing the JSON body they are about to send.
  */
-export async function getSessionResponseJson(
+async function getSessionResponseData(
   agent: AgentKind,
   path: string,
   manualTitle?: string,
-): Promise<{ body: string; etag: string }> {
+): Promise<{ body: string; etag: string; session: NormalizedSession }> {
   const st = await stat(path).catch(() => null);
   if (!st) {
+    const session = emptySession(agent);
     const body = injectManualTitle(
-      JSON.stringify(emptySession(agent)),
+      JSON.stringify(session),
       manualTitle,
     );
-    return { body, etag: `"0-0"` };
+    return { body, etag: `"0-0"`, session: withManualTitle(session, manualTitle) };
   }
   const etag = `"${st.mtimeMs}-${st.size}"`;
 
@@ -1566,6 +1575,7 @@ export async function getSessionResponseJson(
     return {
       body: injectManualTitle(JSON.stringify(parsed), manualTitle),
       etag,
+      session: withManualTitle(parsed, manualTitle),
     };
   }
 
@@ -1580,7 +1590,11 @@ export async function getSessionResponseJson(
     !hasOrphanedTrimHead(cached.parsed)
   ) {
     touch(path, cached);
-    return { body: injectManualTitle(cached.jsonNoTitle, manualTitle), etag };
+    return {
+      body: injectManualTitle(cached.jsonNoTitle, manualTitle),
+      etag,
+      session: withManualTitle(cached.parsed, manualTitle),
+    };
   }
 
   // Cache hit, file grew: incremental append. We don't gate on mtimeMs here
@@ -1611,6 +1625,7 @@ export async function getSessionResponseJson(
         return {
           body: injectManualTitle(cached.jsonNoTitle, manualTitle),
           etag,
+          session: withManualTitle(cached.parsed, manualTitle),
         };
       } finally {
         await fh.close();
@@ -1632,7 +1647,20 @@ export async function getSessionResponseJson(
     jsonNoTitle,
   });
   evictLRU();
-  return { body: injectManualTitle(jsonNoTitle, manualTitle), etag };
+  return {
+    body: injectManualTitle(jsonNoTitle, manualTitle),
+    etag,
+    session: withManualTitle(parsed, manualTitle),
+  };
+}
+
+export async function getSessionResponseJson(
+  agent: AgentKind,
+  path: string,
+  manualTitle?: string,
+): Promise<{ body: string; etag: string }> {
+  const { body, etag } = await getSessionResponseData(agent, path, manualTitle);
+  return { body, etag };
 }
 
 /** One source's outcome in a `/api/sessions/batch` response. Mirrors the
@@ -1776,16 +1804,19 @@ export async function getSessionsBatchResults(
           }
         }
 
-        const { body, etag: full } = await getSessionResponseJson(
+        const {
+          body,
+          etag: full,
+          session,
+        } = await getSessionResponseData(
           agent,
           source,
           getTitle(source),
         );
         if (etag && etag === full) return { source, status: 304, etag: full };
-        const parsed = JSON.parse(body) as NormalizedSession;
-        const hashes = messageHashes(parsed.messages);
+        const hashes = messageHashes(session.messages);
         if (etag) {
-          const patch = patchFromCursor(parsed, hashes, messageCursor);
+          const patch = patchFromCursor(session, hashes, messageCursor);
           if (patch) return { source, status: 206, etag: full, ...patch };
         }
         return { source, status: 200, etag: full, body, messageHashes: hashes };

@@ -1565,6 +1565,40 @@ describe("getSessionsBatchResults", () => {
     expect((second as { body?: string }).body).toBeUndefined();
   });
 
+  test("cached no-etag request returns hashes without reparsing the response body", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "supergit-batch-"));
+    const a = join(dir, "a.jsonl");
+    await writeFile(a, claudeLine("aaa", "2026-05-12T01:00:00Z") + "\n");
+
+    const [first] = await getSessionsBatchResults(
+      [{ source: a }],
+      agentClaude,
+      noTitle,
+    );
+    expect(first.status).toBe(200);
+
+    const parse = JSON.parse;
+    let parseCalls = 0;
+    JSON.parse = ((text: string) => {
+      parseCalls += 1;
+      return parse(text);
+    }) as typeof JSON.parse;
+    let second: Awaited<ReturnType<typeof getSessionsBatchResults>>[number];
+    try {
+      [second] = await getSessionsBatchResults(
+        [{ source: a }],
+        agentClaude,
+        noTitle,
+      );
+    } finally {
+      JSON.parse = parse;
+    }
+
+    expect(second!.status).toBe(200);
+    expect(second!.status === 200 && second!.messageHashes).toHaveLength(1);
+    expect(parseCalls).toBe(0);
+  });
+
   test("stale etag after append returns 200 with the new body", async () => {
     const dir = await mkdtemp(join(tmpdir(), "supergit-batch-"));
     const a = join(dir, "a.jsonl");
