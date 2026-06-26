@@ -1530,14 +1530,13 @@ const worktreeDetailsCache = new Map<
   { at: number; value: WorktreeDetails }
 >();
 
-// Cap concurrent cold getWorktreeDetails (git subprocess + parse) across
-// the whole daemon. /api/repos enrich fans out over every worktree of
-// every repo at once; on a cold cache (e.g. just after a restart) that
-// herd spiked RSS into the GBs and stalled the event loop, starving PTY
-// spawns. Cache hits bypass this entirely — only the actual git work is
-// gated. 8 keeps throughput high while bounding the peak.
-const WORKTREE_DETAILS_CONCURRENCY = 8;
-const worktreeDetailLimit = createLimiter(WORKTREE_DETAILS_CONCURRENCY);
+// Cap concurrent cold git subprocesses across the whole daemon. /api/repos
+// enrich fans out over every repo/worktree at once; on a cold cache (e.g.
+// just after a restart) that herd spiked RSS into the GBs and stalled the
+// event loop, starving PTY spawns. Cache hits bypass this entirely — only
+// actual git work is gated. 8 keeps throughput high while bounding the peak.
+const REPOS_GIT_CONCURRENCY = 8;
+const reposGitLimit = createLimiter(REPOS_GIT_CONCURRENCY);
 
 function worktreeDetailsCacheKey(
   wtPath: string,
@@ -1610,7 +1609,7 @@ async function onWorktreeFsChange(wtPath: string): Promise<void> {
   let details: WorktreeDetails;
   const selectedRemote = selectedRemoteForCachedWorktree(wtPath);
   try {
-    details = await worktreeDetailLimit(() =>
+    details = await reposGitLimit(() =>
       selectedRemote
         ? getWorktreeDetails(wtPath, { remote: selectedRemote })
         : getWorktreeDetails(wtPath),
@@ -1847,8 +1846,8 @@ function reposNDJSONFresh(
                 // agents only after git finishes so the overlap is real.
                 const [[worktrees, remotes], titled] = await Promise.all([
                   Promise.all([
-                    listWorktrees(repo.path),
-                    listRemotes(repo.path),
+                    reposGitLimit(() => listWorktrees(repo.path)),
+                    reposGitLimit(() => listRemotes(repo.path)),
                   ]),
                   titledP,
                 ]);
@@ -1865,7 +1864,7 @@ function reposNDJSONFresh(
                       selectedRemote,
                     );
                     if (!details) {
-                      details = await worktreeDetailLimit(() =>
+                      details = await reposGitLimit(() =>
                         selectedRemote
                           ? getWorktreeDetails(wt.path, {
                               remote: selectedRemote,

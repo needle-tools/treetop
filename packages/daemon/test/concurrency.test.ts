@@ -1,10 +1,9 @@
 /**
  * createLimiter caps how many async tasks run at once. /api/repos enrich
- * used to fire getWorktreeDetails (git subprocess + output parse) for
- * every worktree across every repo simultaneously on a cold cache — a
- * thundering herd that spiked daemon RSS to multiple GB and stalled the
- * event loop (starving terminal spawns). Gating the cold git ops through
- * a shared limiter flattens that peak while preserving throughput.
+ * used to fire cold git subprocesses for every repo/worktree simultaneously
+ * on a cold cache — a thundering herd that spiked daemon RSS to multiple GB
+ * and stalled the event loop (starving terminal spawns). Gating the cold git
+ * ops through a shared limiter flattens that peak while preserving throughput.
  */
 
 import { test, expect, describe } from "bun:test";

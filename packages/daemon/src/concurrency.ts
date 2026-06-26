@@ -1,13 +1,12 @@
 /**
  * A tiny promise-concurrency limiter (pLimit-style, no dependency).
  *
- * `/api/repos` enrich fans out getWorktreeDetails — a git subprocess plus
- * output parsing — for every worktree of every repo at once. On a cold
- * cache (e.g. right after a daemon restart) that's a thundering herd:
- * dozens-to-hundreds of concurrent git spawns + large output buffers,
+ * `/api/repos` enrich fans out git work across every repo/worktree at once.
+ * On a cold cache (e.g. right after a daemon restart) that's a thundering
+ * herd: dozens-to-hundreds of concurrent git spawns + large output buffers,
  * which spiked daemon RSS into the GBs and stalled the single event loop
- * long enough to starve PTY spawns. Routing the cold git ops through one
- * shared limiter caps the peak while keeping throughput high.
+ * long enough to starve PTY spawns. Routing cold git ops through one shared
+ * limiter caps the peak while keeping throughput high.
  */
 
 /**
