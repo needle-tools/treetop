@@ -1536,6 +1536,7 @@ body.platform-windows .sessions-strip::-webkit-scrollbar-thumb:active {
   /* Anchor the drag-drop preview pseudos (::before / ::after) so the
      dashed insertion line lines up with the column edges. */
   position: relative;
+  contain: layout style;
   transition: outline-color 0.25s ease-out;
   outline: 2px solid transparent;
   outline-offset: 2px;

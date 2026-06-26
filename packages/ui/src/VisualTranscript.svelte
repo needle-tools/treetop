@@ -1550,6 +1550,7 @@
     min-height: 0;
     max-height: none;
     overflow: auto;
+    contain: layout paint style;
     display: flex;
     flex-direction: column;
     gap: 0.4rem;
