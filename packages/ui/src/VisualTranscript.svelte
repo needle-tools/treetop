@@ -797,7 +797,13 @@
     class:sticky-photo-frame-transparent={hasAlpha}
     title={label}
   >
-    <img src={src} alt={label} draggable="false" />
+    <img
+      src={src}
+      alt={label}
+      draggable="false"
+      loading="lazy"
+      decoding="async"
+    />
   </span>
 {/snippet}
 

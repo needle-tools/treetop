@@ -2663,6 +2663,8 @@
           src={`/api/image?path=${encodeURIComponent(attachment.path)}`}
           alt={attachment.filename ?? "Attached image"}
           draggable={mode === "media" ? "true" : "false"}
+          loading="lazy"
+          decoding="async"
           on:error={() => markAttachmentMissing(attachment.path)}
         />
       </span>
@@ -2955,6 +2957,8 @@
           src={appIconUrl(appIconName)}
           alt={appIconName}
           draggable="false"
+          loading="lazy"
+          decoding="async"
         />
       {:else}{note.body}{/if}</span
     >
