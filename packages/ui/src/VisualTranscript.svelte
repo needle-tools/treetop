@@ -115,6 +115,7 @@
   let openMediaBlocks: NormalizedBlock[] = [];
   let openMediaIndex = -1;
   let expandedThinkingWorkKeys = new Set<string>();
+  let openWorkFoldoutKeys = new Set<string>();
   let openWorkEntryKeys = new Set<string>();
   const MARKDOWN_CACHE_LIMIT = 500;
   const markdownCache = new Map<string, string>();
@@ -722,6 +723,25 @@
     return `${workKey}\u0000${getVisualWorkDisplayEntryKey(displayEntry)}`;
   }
 
+  function setWorkFoldoutBodyRendered(workKey: string, open: boolean): void {
+    if (open) {
+      if (!openWorkFoldoutKeys.has(workKey)) {
+        openWorkFoldoutKeys = new Set([...openWorkFoldoutKeys, workKey]);
+      }
+      return;
+    }
+    if (!openWorkFoldoutKeys.has(workKey)) return;
+    const next = new Set(openWorkFoldoutKeys);
+    next.delete(workKey);
+    openWorkFoldoutKeys = next;
+  }
+
+  function onWorkFoldoutToggle(event: Event, workKey: string): void {
+    const details = event.currentTarget as HTMLDetailsElement | null;
+    if (!details) return;
+    setWorkFoldoutBodyRendered(workKey, details.open);
+  }
+
   function setWorkEntryBodyRendered(entryKey: string, open: boolean): void {
     if (open) {
       if (!openWorkEntryKeys.has(entryKey)) {
@@ -1209,6 +1229,7 @@
           class="work-foldout"
           class:work-foldout-live={item.open && !item.endedAt}
           open={item.open}
+          on:toggle={(event) => onWorkFoldoutToggle(event, workKey)}
         >
           <summary>
             <span>{workDurationLabel(item, liveNowIso)}</span>
@@ -1219,7 +1240,8 @@
               {workCountLabel(workSummary.steps, workSummary.compactions)}
             </span>
           </summary>
-          <div class="work-foldout-body" on:wheel|capture={handOffNestedWheel}>
+          {#if item.open || openWorkFoldoutKeys.has(workKey)}
+            <div class="work-foldout-body" on:wheel|capture={handOffNestedWheel}>
             {#each buildVisualWorkDisplayEntries(item.entries) as displayEntry (getVisualWorkDisplayEntryKey(displayEntry))}
               {@const entry = displayEntry.entry}
               {#if isPlainAssistantWorkText(entry)}
@@ -1377,7 +1399,8 @@
             {#if isLiveTailWork(item, itemIndex)}
               {@render renderLiveThinkingLine()}
             {/if}
-          </div>
+            </div>
+          {/if}
         </details>
       </li>
     {:else if item.kind === "marker"}
