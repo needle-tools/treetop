@@ -376,7 +376,13 @@
     typeof location !== "undefined" &&
     new URLSearchParams(location.search).has("debugPin");
   let pinnedRevealed = FORCE_PIN;
-  const PIN_REVEAL_HOTSPOT_PX = 120;
+  /** Vertical fraction of the session column within which the pin reveals.
+   *  Generous on purpose: the summary / last-message overlay should appear
+   *  whenever the cursor is anywhere near the top of the column (reading the
+   *  header), not only when it's parked in the tiny top-right corner above
+   *  the overlay. A previous pass shrank this to a fixed 120px corner square,
+   *  which made the overlay nearly impossible to surface. */
+  const PIN_REVEAL_RATIO = 0.5;
   /** Hide-only debounce. The pin shows instantly when the cursor
    *  enters the top zone, but lingers for 300ms after leaving so
    *  small excursions (or micro-movements past the threshold while
@@ -411,16 +417,10 @@
     if (!sessionEl) return;
     const r = sessionEl.getBoundingClientRect();
     if (r.width <= 0 || r.height <= 0) return;
-    const x = ev.clientX - r.left;
     const y = ev.clientY - r.top;
-    const hotspotWidth = Math.min(PIN_REVEAL_HOTSPOT_PX, r.width);
-    const hotspotHeight = Math.min(PIN_REVEAL_HOTSPOT_PX, r.height);
-    setPinRevealed(
-      x >= r.width - hotspotWidth &&
-        x <= r.width &&
-        y >= 0 &&
-        y <= hotspotHeight,
-    );
+    // Reveal whenever the cursor sits in the top fraction of the column —
+    // i.e. anywhere near the header — not just the top-right corner.
+    setPinRevealed(y >= 0 && y <= r.height * PIN_REVEAL_RATIO);
   }
   function onSessionMouseLeave(): void {
     setPinRevealed(false);
