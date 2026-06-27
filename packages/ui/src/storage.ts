@@ -697,6 +697,32 @@ export function isForeignToWorktree(
   return !knownSources.has(source);
 }
 
+/**
+ * Whether the activity dock should hide a session as "foreign" to its
+ * worktree. Like {@link isSessionForeignToWorktree}, but a session backed by a
+ * LIVE PTY is never hidden.
+ *
+ * Why the live-TUI exception: `knownSources` comes from the daemon's
+ * per-worktree agent scan, which is deferred at startup for perf (bounded cold
+ * git/agent fanout). Until a worktree's scan lands, its `knownSources` is empty
+ * and every restored agent session there looks foreign — so the dock dropped
+ * them until the user scrolled the row into view and triggered the scan. But a
+ * live terminal is only ever attached to a session whose PTY cwd matches the
+ * worktree (see reconcileLiveAgentTerminals), so it is authoritative proof the
+ * session belongs here and should light its dock dot immediately.
+ */
+export function dockSessionHiddenAsForeign(
+  session: Pick<
+    PersistedSession,
+    "agent" | "source" | "resumeSessionId" | "transcriptSource"
+  >,
+  knownSources: ReadonlySet<string>,
+  opts: { isLiveTui: boolean },
+): boolean {
+  if (opts.isLiveTui) return false;
+  return isSessionForeignToWorktree(session, knownSources);
+}
+
 /** Build the cmd[] supergit should hand to a `TerminalView` mounted in
  *  a transient (`__new__:` / `__attached__:`) column.
  *

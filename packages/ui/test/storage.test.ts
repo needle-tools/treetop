@@ -19,6 +19,7 @@ import {
   isLiveCodexAppSource,
   isForeignToWorktree,
   isSessionForeignToWorktree,
+  dockSessionHiddenAsForeign,
   openSessionRenderKey,
   reconcileOpenSessionsWithSurfacePreferences,
   resolveTitleSource,
@@ -752,6 +753,55 @@ describe("isForeignToWorktree", () => {
           transcriptSource: "/Users/me/.codex/sessions/current-path.jsonl",
         },
         new Set(["/Users/me/.codex/sessions/current-path.jsonl"]),
+      ),
+    ).toBe(false);
+  });
+});
+
+describe("dockSessionHiddenAsForeign", () => {
+  // Regression: at startup the per-worktree agent scan is deferred (perf), so
+  // `knownSources` is empty for a worktree until its agents finish scanning.
+  // A restored agent session would then be judged "foreign" and dropped from
+  // the activity dock until the user scrolled the row into view. But a session
+  // with a LIVE PTY (cwd-matched to this worktree during reconcile) is
+  // authoritative proof it belongs here — it must show in the dock eagerly,
+  // before the scan converges.
+  const realSession = {
+    agent: "claude" as const,
+    source:
+      "/Users/me/.claude/projects/-Users-me-git-supergit/7081c9db.jsonl",
+  };
+
+  test("a live TUI is never hidden, even with an empty known set", () => {
+    expect(
+      dockSessionHiddenAsForeign(realSession, new Set<string>(), {
+        isLiveTui: true,
+      }),
+    ).toBe(false);
+  });
+
+  test("a non-live session absent from the known set is still hidden", () => {
+    expect(
+      dockSessionHiddenAsForeign(realSession, new Set<string>(), {
+        isLiveTui: false,
+      }),
+    ).toBe(true);
+  });
+
+  test("a non-live session present in the known set is not hidden", () => {
+    expect(
+      dockSessionHiddenAsForeign(realSession, new Set([realSession.source]), {
+        isLiveTui: false,
+      }),
+    ).toBe(false);
+  });
+
+  test("a non-live synthetic session is never hidden", () => {
+    expect(
+      dockSessionHiddenAsForeign(
+        { agent: "claude", source: "__new__:claude:abc" },
+        new Set<string>(),
+        { isLiveTui: false },
       ),
     ).toBe(false);
   });

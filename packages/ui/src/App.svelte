@@ -161,7 +161,7 @@
     effectiveVisibleWorktrees,
     filterToExistingSessions,
     hideVisibleWorktree,
-    isSessionForeignToWorktree,
+    dockSessionHiddenAsForeign,
     openSessionRenderKey,
     rememberedSessionSurface,
     reconcileOpenSessionsWithSurfacePreferences,
@@ -6476,14 +6476,6 @@
           }
           const rowKey = `${repo.id}|${wt.path}`;
           for (const s of opens) {
-            // Skip real (file-backed) sessions the daemon doesn't associate
-            // with THIS worktree. A session whose JSONL belongs to another
-            // repo but got filed under this worktree's open-sessions list
-            // would otherwise render as a phantom dot labelled with this
-            // worktree's branch (e.g. a needle-logs-view session showing as
-            // "supergit main"). The sessions-strip already drops these via
-            // filterToExistingSessions; this is the same per-worktree gate.
-            if (isSessionForeignToWorktree(s, knownSources)) continue;
             // Live TUI means the column can point at an actual live PTY
             // from `/api/terminals`. Persisted terminal mode alone is only
             // a surface preference, not proof that the agent is still
@@ -6493,6 +6485,20 @@
               newTermIds,
               transientExited,
             });
+            // Skip real (file-backed) sessions the daemon doesn't associate
+            // with THIS worktree. A session whose JSONL belongs to another
+            // repo but got filed under this worktree's open-sessions list
+            // would otherwise render as a phantom dot labelled with this
+            // worktree's branch (e.g. a needle-logs-view session showing as
+            // "supergit main"). The sessions-strip already drops these via
+            // filterToExistingSessions; this is the same per-worktree gate.
+            // A live TUI is exempt: its PTY cwd is reconcile-matched to this
+            // worktree, so it is authoritative even before the deferred
+            // per-worktree agent scan has populated `knownSources` — without
+            // the exemption, restored agents stay absent from the dock until
+            // their row is scrolled into view and the scan lands.
+            if (dockSessionHiddenAsForeign(s, knownSources, { isLiveTui }))
+              continue;
             // Utility panels (file browser, git history) are browsing
             // views, not sessions — skip them in the activity dock.
             // Agent and shell sessions appear regardless of mode
