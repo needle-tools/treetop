@@ -26,7 +26,7 @@ Symptom owner: Marcel. Investigated 2026-06-27.
 | 5 | TUI scrollback truncated / can't scroll up when returning from a zen session | 🔲 open (note only) | — |
 | 9 | Switch repo (zen or not) → return → agent was NOT working; re-sending revives it | 🔲 open (triage) | — |
 | 6 | Dirty state doesn't update in the git/folder column | ✅ fixed (verify) | max-wait batcher (uncommitted) |
-| 7 | Paste truncates large clipboard content | 🔲 open (triage) | — |
+| 7 | Paste truncates large clipboard content (into a TUI) | ✅ fixed (verify) | throttled chunking (uncommitted) |
 | 8 | Vines don't reposition when a column is added/removed | ✅ fixed (verify) | settle-loop (uncommitted) |
 
 ---
@@ -259,14 +259,34 @@ Quickest live check: switch away from a working TUI, watch `daemon.log` for a
 PTY reap / grace-timer fire on that termId, and `/api/terminals` for whether
 the ownerId PTY survives the switch.
 
-## 7. Paste truncates large clipboard content — OPEN (triage)
+## 7. Paste truncates large clipboard content (into a TUI) — FIXED (verify)
 
 **Symptom (2026-06-27):** copying a large blob (e.g. the full `/api/terminals`
-JSON) and pasting only yields a truncated tail. Unclear yet whether it's
-supergit's composer/clipboard handling or an upstream paste path. Triage:
-check the paste handler (composer + sticky notes), any size cap on pasted text,
-and `image-shrink`/attachment interception that might swallow large text.
-Lower priority; not obviously tied to the offscreen-deferral cluster.
+JSON) from elsewhere and pasting **into a claude/codex TUI column** lands
+truncated.
+
+**Root cause:** supergit's transport chain is lossless end-to-end —
+`xterm.paste(text)` → one `onData` → one `ws.send` → daemon `handle.write(buf)`
+(no cap) → helper `term.write()`. The loss is at the **TUI input boundary**:
+the whole blob is written to the pty in one shot, and when the agent drains its
+input slower than the bytes arrive the kernel pty input buffer overflows and
+silently drops the overflow. The note-attachment paste path already dodged this
+by throttling (`pasteChunks`, one chunk at a time); the plain-text path didn't.
+
+**Fix (uncommitted):** large text pastes now stream as one bracketed paste
+whose body is chunked + throttled so the receiver keeps up. Pure helpers in
+`terminal-image-paste.ts` — `shouldThrottlePaste` (code-point count vs
+`PASTE_THROTTLE_THRESHOLD_CODEPOINTS = 8192`) and `chunkPasteBody`
+(`PASTE_CHUNK_CODEPOINTS = 2048`, splits on code-point boundaries so a
+surrogate pair is never cut → lossless `join("")`), TDD-tested in
+`terminal-image-paste.test.ts`. `TerminalView.onPaste` routes only large
+pastes through `sendThrottledTextPaste` (small pastes keep the untouched
+single-shot `xterm.paste`); bracketing is applied only when the app has
+bracketed-paste mode on, and the stream stops if the socket drops mid-paste.
+
+> Tuning note: the chunk size / `PASTE_CHUNK_DELAY_MS = 8` are first-pass
+> values. If a live repro still truncates, lower the chunk size or raise the
+> delay — the structure (chunk + await between writes) is the fix.
 
 > Note: prod daemon for Marcel's installed app is on **:27788** (not the
 > CLAUDE.md default `:27787`). Read-only API diagnostics from a sandboxed

@@ -14,7 +14,12 @@
   import "@xterm/xterm/css/xterm.css";
   import LoadingOverlay from "./LoadingOverlay.svelte";
   import { shrinkImageBlob } from "./image-shrink";
-  import { resolveImagePasteBehavior } from "./terminal-image-paste";
+  import {
+    resolveImagePasteBehavior,
+    shouldThrottlePaste,
+    chunkPasteBody,
+    PASTE_CHUNK_DELAY_MS,
+  } from "./terminal-image-paste";
   import { writeClipboard } from "./clipboard-write";
   import {
     isTerminalMouseReport,
@@ -1952,8 +1957,38 @@
     if (text && xterm) {
       e.preventDefault();
       e.stopPropagation();
-      xterm.paste(text);
+      // A big paste written in one shot can outrun the TUI's input drain and
+      // overflow the pty buffer → the paste lands truncated. Chunk + throttle
+      // large text so the receiver keeps up; small pastes keep the untouched
+      // single-shot path. Falls back to xterm.paste when the socket isn't open
+      // (xterm buffers it until the WS reconnects).
+      if (ws?.readyState === WebSocket.OPEN && shouldThrottlePaste(text)) {
+        void sendThrottledTextPaste(text);
+      } else {
+        xterm.paste(text);
+      }
     }
+  }
+
+  /** Deliver a large text paste as one bracketed paste whose body is streamed
+   *  in throttled chunks (see terminal-image-paste.ts). Bracketing is only
+   *  applied when the app has bracketed-paste mode on (DECSET 2004) — sending
+   *  the `\x1b[200~` wrapper into a shell that hasn't enabled it would insert
+   *  a literal `200~`. */
+  async function sendThrottledTextPaste(text: string): Promise<void> {
+    const bracketed =
+      (xterm as unknown as { modes?: { bracketedPasteMode?: boolean } })?.modes
+        ?.bracketedPasteMode === true;
+    const chunks = chunkPasteBody(text);
+    if (bracketed) sendTerminalInput("\x1b[200~");
+    for (let i = 0; i < chunks.length; i++) {
+      // Socket dropped mid-paste (unmount / reconnect) — stop rather than
+      // silently lose the remainder into a closed WS.
+      if (!sendTerminalInput(chunks[i]!)) return;
+      if (i < chunks.length - 1)
+        await new Promise((r) => setTimeout(r, PASTE_CHUNK_DELAY_MS));
+    }
+    if (bracketed) sendTerminalInput("\x1b[201~");
   }
 
   /** Press "1" + Enter to choose Claude's "Exit and fix manually", so the
