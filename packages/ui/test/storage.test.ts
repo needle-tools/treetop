@@ -796,6 +796,18 @@ describe("dockSessionHiddenAsForeign", () => {
     ).toBe(false);
   });
 
+  test("a user-opened terminal session (resume) is never hidden, even unscanned", () => {
+    // The 34 persisted terminal-mode TUIs must show at startup before any PTY
+    // exists and before the deferred agent scan lands.
+    expect(
+      dockSessionHiddenAsForeign(
+        { ...realSession, resumeSessionId: "sess-123" },
+        new Set<string>(),
+        { isLiveTui: false, isRestorableTui: true },
+      ),
+    ).toBe(false);
+  });
+
   test("a non-live synthetic session is never hidden", () => {
     expect(
       dockSessionHiddenAsForeign(

@@ -710,6 +710,13 @@ export function isForeignToWorktree(
  * live terminal is only ever attached to a session whose PTY cwd matches the
  * worktree (see reconcileLiveAgentTerminals), so it is authoritative proof the
  * session belongs here and should light its dock dot immediately.
+ *
+ * The `isRestorableTui` exception covers the same gap before any PTY exists: a
+ * session the user explicitly opened as a terminal (persisted `mode:"terminal"`
+ * with a `resumeSessionId`) is unambiguously theirs for this worktree, so it
+ * must show in the dock at startup even before the agent scan lands and before
+ * its PTY has been (re-)spawned. Without this, all the user's terminal-mode
+ * TUIs stay hidden until each worktree row is scrolled into view.
  */
 export function dockSessionHiddenAsForeign(
   session: Pick<
@@ -717,9 +724,9 @@ export function dockSessionHiddenAsForeign(
     "agent" | "source" | "resumeSessionId" | "transcriptSource"
   >,
   knownSources: ReadonlySet<string>,
-  opts: { isLiveTui: boolean },
+  opts: { isLiveTui: boolean; isRestorableTui?: boolean },
 ): boolean {
-  if (opts.isLiveTui) return false;
+  if (opts.isLiveTui || opts.isRestorableTui) return false;
   return isSessionForeignToWorktree(session, knownSources);
 }
 

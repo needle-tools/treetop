@@ -91,6 +91,35 @@ Confirmed scenario with Marcel: happens on a **plain UI reload (daemon alive,
 `/api/terminals` populated)**, i.e. a real regression — not just the
 post-reinstall no-PTYs case.
 
+### Deeper finding (2026-06-27, after rebuild): startup with no PTYs
+
+After a daemon restart (reinstall), there are **no live agent PTYs** — the
+helper dies with the daemon. `prefs.json` has **169 open sessions: 135 read,
+34 terminal-mode** (all with `resumeSessionId`), across ~20 worktrees. At
+startup those 34 are (a) **hidden** from the dock — the "foreign" filter trips
+because the per-worktree agent scan is deferred (`knownSources` empty) — and
+(b) have **no PTY** until their column mounts (click/scroll re-spawns
+`claude --resume`, confirmed via screenshots + `createdAt` timestamps). So
+`d0de330` only covers the daemon-alive reload; the post-restart case needs
+more. Marcel chose **show-all + background stagger-spawn**.
+
+`.row-body` for folded/offscreen rows stays mounted via `display:none`
+(App ~3668), so SessionView components are mounted for all 169 sessions — only
+the xterm (`TerminalView`) is deferred. So once a session gets an
+`attachTermId`, its existing hold socket keeps the PTY alive; no new hold
+plumbing needed.
+
+- **Part A — visibility (DONE, uncommitted):** `dockSessionHiddenAsForeign`
+  gains an `isRestorableTui` exemption (mode `terminal` + `resumeSessionId`);
+  App passes it. The 34 now show in the dock at startup (idle, before any PTY),
+  independent of the deferred scan. TDD test added.
+- **Part B — background stagger-spawn (TODO):** after first load, enqueue the
+  terminal-mode sessions lacking a live PTY and `POST /api/terminals`
+  (`claude --resume <id>`, cwd, `ownerId = resumeSessionId`) ~2–3/sec, setting
+  `attachTermId` on each spawn so the dot flips active and the mounted
+  SessionView's hold socket keeps it alive. Must guard against the
+  column-mount path double-spawning (in-flight set keyed by source).
+
 ### Earlier partial step
 
 `3b47599` exempted live TUIs from the "foreign" dock filter

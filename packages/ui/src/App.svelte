@@ -6517,10 +6517,19 @@
             // filterToExistingSessions; this is the same per-worktree gate.
             // A live TUI is exempt: its PTY cwd is reconcile-matched to this
             // worktree, so it is authoritative even before the deferred
-            // per-worktree agent scan has populated `knownSources` — without
-            // the exemption, restored agents stay absent from the dock until
-            // their row is scrolled into view and the scan lands.
-            if (dockSessionHiddenAsForeign(s, knownSources, { isLiveTui }))
+            // per-worktree agent scan has populated `knownSources`. A session
+            // the user explicitly opened as a terminal (mode + resumeSessionId)
+            // is likewise theirs for this worktree and must show at startup
+            // before its PTY is (re-)spawned — without these exemptions,
+            // restored agents stay absent from the dock until their row is
+            // scrolled into view and the scan lands.
+            const isRestorableTui = s.mode === "terminal" && !!s.resumeSessionId;
+            if (
+              dockSessionHiddenAsForeign(s, knownSources, {
+                isLiveTui,
+                isRestorableTui,
+              })
+            )
               continue;
             // Utility panels (file browser, git history) are browsing
             // views, not sessions — skip them in the activity dock.
