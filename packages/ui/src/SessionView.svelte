@@ -843,6 +843,10 @@
       awaitingInput = awaiting;
       onAwaitingChange(awaiting);
     },
+    onWorking: (w) => {
+      working = w;
+      onWorkingChange(w);
+    },
   });
 
   function holdConnect(termId: string): HoldSocket {

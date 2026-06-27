@@ -142,6 +142,46 @@ describe("createTerminalHold", () => {
     expect(seen).toEqual([true]);
   });
 
+  test("a working state frame is surfaced via onWorking (dock activity spinner)", () => {
+    const seenWorking: boolean[] = [];
+    const sockets: FakeSocket[] = [];
+    const hold = createTerminalHold({
+      connect: () => {
+        const s = new FakeSocket();
+        sockets.push(s);
+        return s;
+      },
+      onWorking: (w) => seenWorking.push(w),
+    });
+    hold.sync("term-1");
+    sockets[0]!.open();
+    sockets[0]!.message(JSON.stringify({ type: "state", working: true }));
+    sockets[0]!.message(JSON.stringify({ type: "state", working: false }));
+    expect(seenWorking).toEqual([true, false]);
+  });
+
+  test("an awaiting-only edge frame does not clear the working spinner", () => {
+    const seenAwaiting: boolean[] = [];
+    const seenWorking: boolean[] = [];
+    const sockets: FakeSocket[] = [];
+    const hold = createTerminalHold({
+      connect: () => {
+        const s = new FakeSocket();
+        sockets.push(s);
+        return s;
+      },
+      onAwaiting: (a) => seenAwaiting.push(a),
+      onWorking: (w) => seenWorking.push(w),
+    });
+    hold.sync("term-1");
+    sockets[0]!.open();
+    // The daemon emits awaiting-clear frames with no `working` field — those
+    // must not be read as "working: false".
+    sockets[0]!.message(JSON.stringify({ type: "state", awaitingInput: false }));
+    expect(seenAwaiting).toEqual([false]);
+    expect(seenWorking).toEqual([]);
+  });
+
   test("output / non-JSON / unrelated frames are ignored without throwing", () => {
     const seen: boolean[] = [];
     const { hold, sockets } = harness(undefined, (a) => seen.push(a));

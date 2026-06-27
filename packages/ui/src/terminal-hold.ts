@@ -52,6 +52,12 @@ export interface TerminalHoldDeps {
    *  socket (so the dock keeps its "needs input" badge accurate even while
    *  the renderer is deferred). */
   onAwaiting?: (awaiting: boolean) => void;
+  /** Surfaced when the daemon reports a working edge (it computes `working`
+   *  from PTY output activity and broadcasts it precisely so the dock can
+   *  animate the activity spinner for off-screen / backgrounded sessions —
+   *  see node-pty-backend.ts). Fired only when the frame carries `working`,
+   *  so an awaiting-only edge frame doesn't spuriously clear the spinner. */
+  onWorking?: (working: boolean) => void;
   /** Should the daemon keep draining the PTY (i.e. keep the agent running)?
    *  Re-read on every send. Defaults to always-true: a held agent keeps
    *  working while off-screen. The host wires this to `!document.hidden` so a
@@ -117,12 +123,14 @@ export function createTerminalHold(deps: TerminalHoldDeps): TerminalHold {
         const parsed = JSON.parse(event.data) as {
           type?: unknown;
           awaitingInput?: unknown;
+          working?: unknown;
         };
-        if (
-          parsed?.type === "state" &&
-          typeof parsed.awaitingInput === "boolean"
-        ) {
+        if (parsed?.type !== "state") return;
+        if (typeof parsed.awaitingInput === "boolean") {
           deps.onAwaiting?.(parsed.awaitingInput);
+        }
+        if (typeof parsed.working === "boolean") {
+          deps.onWorking?.(parsed.working);
         }
       } catch {
         // Output / accounting frames aren't JSON state; this socket only

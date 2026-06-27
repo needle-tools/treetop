@@ -251,6 +251,7 @@
     connect: holdConnect,
     shouldDrain: () => typeof document === "undefined" || !document.hidden,
     onAwaiting: (awaiting) => dispatch("awaitingChange", { awaiting }),
+    onWorking: (working) => dispatch("workingChange", { working }),
   });
 
   function holdConnect(termId: string): HoldSocket {
