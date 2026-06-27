@@ -9777,6 +9777,15 @@
                   ></span>
                 {/if}
                 <code class="wt-path">{wt.path}</code>
+              {:else if !Array.isArray(repo.worktrees)}
+                <!-- Skeleton from the manifest — its git fan-out hasn't
+                   streamed in yet (worktrees is still undefined; an enriched
+                   repo with genuinely none has worktrees: []). Show a centered
+                   loading state instead of a misleading "no worktrees". -->
+                <span class="repo-row-loading">
+                  <span class="popover-spinner" aria-hidden="true"></span>
+                  loading {repoName(repo)}
+                </span>
               {:else}
                 <code class="wt-path">{repo.path}</code>
                 <span class="branch warn">no worktrees</span>

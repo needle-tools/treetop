@@ -319,6 +319,26 @@
   color: var(--text-muted);
 }
 
+/* Loading state for a repo row whose git fan-out hasn't streamed in yet
+   (manifest skeleton). Fills the row and centres the spinner + label both
+   axes so it reads as "still loading this repo" rather than "no worktrees".
+   The shared .popover-spinner carries inline-flow margins/baseline nudges we
+   don't want inside this flex row, so neutralise them. */
+.repo-row-loading {
+  flex: 1;
+  min-width: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.45rem;
+  font-size: 0.78rem;
+  color: var(--text-muted);
+}
+.repo-row-loading .popover-spinner {
+  margin-left: 0;
+  vertical-align: baseline;
+}
+
 /* Remote-daemon prefix INSIDE the repo-name chip: the daemon name as a
    URL-style scheme, so a remote repo reads like an address
    (e.g. needle-playground://  home). Inherits the chip's own foreground
