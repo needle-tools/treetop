@@ -15,7 +15,10 @@ import {
   type Panel,
   type SourceAges,
 } from "../src/vines/vine-core";
-import { mutationsAffectVinesLayout } from "../src/vines/vines-overlay";
+import {
+  mutationsAffectVinesLayout,
+  mutationsAddOrRemoveVinesColumns,
+} from "../src/vines/vines-overlay";
 
 function panel(source: string, cx: number, group?: string): Panel {
   return { source, group, cx, left: cx - 50, right: cx + 50, top: 0, bottom: 300 };
@@ -240,6 +243,75 @@ describe("mutationsAffectVinesLayout", () => {
     expect(
       mutationsAffectVinesLayout([
         { target: sessionBody, addedNodes: [{}, {}], removedNodes: [] },
+      ]),
+    ).toBe(false);
+  });
+});
+
+describe("mutationsAddOrRemoveVinesColumns", () => {
+  // A column add/remove (childList change on the strip, or a strip-bearing row
+  // added/removed) animates over ~220ms (animate:flip + width transition), so
+  // it needs a re-measure that spans the animation — not a one-shot sync at the
+  // pre-animation layout. Attribute/class changes don't animate the strip, so
+  // they are NOT treated as add/remove here.
+  const strip = {
+    matches: (sel: string) => sel === ".sessions-strip",
+    querySelector: () => null,
+  };
+  const sessionBody = { matches: () => false, querySelector: () => null };
+  const rowAddedWithStrip = {
+    matches: () => false,
+    querySelector: (sel: string) => (sel === ".sessions-strip" ? strip : null),
+  };
+  const rowWithStrip = {
+    matches: (sel: string) => sel === ".row",
+    querySelector: (sel: string) => (sel === ".sessions-strip" ? strip : null),
+  };
+
+  test("true when a column is added/removed (childList on the strip)", () => {
+    expect(
+      mutationsAddOrRemoveVinesColumns([
+        { type: "childList", target: strip, addedNodes: [{}], removedNodes: [] },
+      ]),
+    ).toBe(true);
+    expect(
+      mutationsAddOrRemoveVinesColumns([
+        { type: "childList", target: strip, addedNodes: [], removedNodes: [{}] },
+      ]),
+    ).toBe(true);
+  });
+
+  test("true when a strip-bearing row is added", () => {
+    expect(
+      mutationsAddOrRemoveVinesColumns([
+        {
+          type: "childList",
+          target: sessionBody,
+          addedNodes: [rowAddedWithStrip],
+          removedNodes: [],
+        },
+      ]),
+    ).toBe(true);
+  });
+
+  test("false for an attribute/class change around a strip", () => {
+    expect(
+      mutationsAddOrRemoveVinesColumns([
+        {
+          type: "attributes",
+          attributeName: "class",
+          target: rowWithStrip,
+          addedNodes: [],
+          removedNodes: [],
+        },
+      ]),
+    ).toBe(false);
+  });
+
+  test("false for unrelated deep child mutations", () => {
+    expect(
+      mutationsAddOrRemoveVinesColumns([
+        { type: "childList", target: sessionBody, addedNodes: [{}], removedNodes: [] },
       ]),
     ).toBe(false);
   });

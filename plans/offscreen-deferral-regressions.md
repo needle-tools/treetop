@@ -26,6 +26,7 @@ Symptom owner: Marcel. Investigated 2026-06-27.
 | 5 | TUI scrollback truncated / can't scroll up when returning from a zen session | 🔲 open (note only) | — |
 | 6 | Dirty state doesn't update in the git/folder column | ✅ fixed (verify) | max-wait batcher (uncommitted) |
 | 7 | Paste truncates large clipboard content | 🔲 open (triage) | — |
+| 8 | Vines don't reposition when a column is added/removed | ✅ fixed (verify) | settle-loop (uncommitted) |
 
 ---
 
@@ -196,6 +197,27 @@ Lower priority; not obviously tied to the offscreen-deferral cluster.
 > shell can't reach it; inspect `<workspace>/prefs.json`,
 > `<workspace>/active-terminals.json` (shells only), and
 > `<workspace>/daemon.log` directly instead.
+
+## 8. Vines don't reposition on column add/remove — FIXED (verify)
+
+**Symptom (2026-06-27):** the decorative vines between session columns don't
+move when a TUI/terminal/entry is added or removed.
+
+**Root cause:** adding/removing a `.session-col` slides the siblings via
+`animate:flip` (220ms) + a width transition (`App.svelte` ~1798). The vines
+overlay re-measures *once*, on the childList MutationObserver callback (a single
+`requestAnimationFrame`), which samples the **pre-animation** layout. Nothing
+re-measures as the columns slide, so the vines stay stranded until an unrelated
+event (resize/scroll) happens to re-measure. (`.session-col` IS a direct child
+of `.sessions-strip`, so the mutation *does* fire — it's purely the one-shot
+timing.) Not strictly from the perf pass, but in the same family.
+
+**Fix (uncommitted):** `vines-overlay.ts` — for childList add/remove mutations
+(new pure predicate `mutationsAddOrRemoveVinesColumns`, TDD-tested), run a
+**settle loop** that re-measures each frame for `LAYOUT_SETTLE_MS = 260` ms so
+the vines track the moving columns and land on the final layout. Attribute/
+class changes keep the cheap one-shot `queueSync`. Settle RAF is cancelled on
+destroy.
 
 ## Testing note
 

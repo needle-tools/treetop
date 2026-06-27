@@ -120,6 +120,23 @@ export function mutationsAffectVinesLayout(records: MutationLike[]): boolean {
   return false;
 }
 
+/** Subset of {@link mutationsAffectVinesLayout}: a column was added/removed
+ *  (a childList change on a strip) or a strip-bearing row entered/left. These
+ *  animate over ~220ms (`animate:flip` + width transition), so they need a
+ *  re-measure that spans the animation rather than one snapshot at its start.
+ *  Attribute/class changes are excluded — they don't slide the columns. */
+export function mutationsAddOrRemoveVinesColumns(
+  records: MutationLike[],
+): boolean {
+  for (const record of records) {
+    if (record.type !== undefined && record.type !== "childList") continue;
+    if (nodeMatches(record.target, STRIP_SELECTOR)) return true;
+    if (nodeListContainsStrip(record.addedNodes)) return true;
+    if (nodeListContainsStrip(record.removedNodes)) return true;
+  }
+  return false;
+}
+
 /** Grow to (nearly) the full panel height — a little headroom so the top
  *  leaves aren't clipped by the strip's overflow. */
 function vineMaxHeight(v: RenderVine): number {
@@ -417,6 +434,29 @@ export function createVinesOverlay(): { destroy: () => void } {
     });
   }
 
+  // Adding/removing a column slides the siblings via `animate:flip` + a width
+  // transition over ~220ms. A single post-mutation measure samples the
+  // pre-animation layout, leaving the vines stranded at the old positions
+  // until some unrelated event re-measures. Re-measure each frame across the
+  // animation window so the vines track the moving columns and settle on the
+  // final layout.
+  const LAYOUT_SETTLE_MS = 260;
+  let settleDeadline = 0;
+  let settleRaf: number | null = null;
+  function settleStep() {
+    settleRaf = null;
+    if (destroyed) return;
+    syncAndGrow(0, true);
+    if (Date.now() < settleDeadline) {
+      settleRaf = requestAnimationFrame(settleStep);
+    }
+  }
+  function queueLayoutSettle() {
+    if (destroyed) return;
+    settleDeadline = Date.now() + LAYOUT_SETTLE_MS;
+    if (settleRaf === null) settleRaf = requestAnimationFrame(settleStep);
+  }
+
   const tick = setInterval(() => {
     if (destroyed) return;
     const now = Date.now();
@@ -435,7 +475,8 @@ export function createVinesOverlay(): { destroy: () => void } {
   const ro = new ResizeObserver(queueSync);
   ro.observe(document.body);
   const mo = new MutationObserver((records) => {
-    if (mutationsAffectVinesLayout(records)) queueSync();
+    if (mutationsAddOrRemoveVinesColumns(records)) queueLayoutSettle();
+    else if (mutationsAffectVinesLayout(records)) queueSync();
   });
   mo.observe(document.body, {
     childList: true,
@@ -462,6 +503,10 @@ export function createVinesOverlay(): { destroy: () => void } {
     destroy() {
       destroyed = true;
       clearInterval(tick);
+      if (settleRaf !== null) {
+        cancelAnimationFrame(settleRaf);
+        settleRaf = null;
+      }
       ro.disconnect();
       mo.disconnect();
       window.removeEventListener("resize", queueSync as EventListener);
