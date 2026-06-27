@@ -117,8 +117,11 @@
   } from "./session-poll";
   import {
     canResumeVisualSurface,
+    shouldHoldOffscreenAttachedTerminal,
     shouldMountTerminalView,
   } from "./session-source-routing";
+  import { apiWsUrl } from "./api";
+  import { createTerminalHold, type HoldSocket } from "./terminal-hold";
   import {
     codexEventItemId,
     codexEventThreadIdForSession,
@@ -825,6 +828,56 @@
         });
     }
   }
+
+  // While an attached agent column is scrolled off-screen (or hidden behind
+  // zen mode) its TerminalView renderer is deferred — see
+  // shouldMountTerminalView. Without a live subscriber the daemon's 60s grace
+  // timer reaps the PTY and the session dies + drops out of the dock. This
+  // hold socket keeps a muted subscriber alive (and, while the tab is visible,
+  // keeps the agent running) until the renderer remounts on reveal. Mirrors
+  // NewSessionCol's hold for transient columns.
+  const terminalHold = createTerminalHold({
+    connect: holdConnect,
+    shouldDrain: () => typeof document === "undefined" || !document.hidden,
+    onAwaiting: (awaiting) => {
+      awaitingInput = awaiting;
+      onAwaitingChange(awaiting);
+    },
+  });
+
+  function holdConnect(termId: string): HoldSocket {
+    const proto = location.protocol === "https:" ? "wss:" : "ws:";
+    // A browser WebSocket structurally provides the HoldSocket surface; the
+    // DOM's MessageEvent-typed onmessage just isn't assignable under strict
+    // function types, so bridge across it explicitly.
+    return new WebSocket(
+      apiWsUrl(
+        `/api/terminals/${encodeURIComponent(termId)}/io`,
+        location.host,
+        proto,
+        daemonId,
+      ),
+    ) as unknown as HoldSocket;
+  }
+
+  function refreshTerminalHold(): void {
+    terminalHold.refresh();
+  }
+
+  $: terminalHold.sync(
+    mounted &&
+      shouldHoldOffscreenAttachedTerminal({
+        attachTermId,
+        terminalMounted: shouldMountTerminalView({
+          mode,
+          hasSessionId: !!effectiveSessionId,
+          hasCwd: !!effectiveSessionCwd,
+          nearViewport: columnNearViewport,
+        }),
+      })
+      ? attachTermId
+      : undefined,
+  );
 
   // Re-fetch after the transcript body is present + whenever its source changes.
   // Initial transcript hydration is batched by session-poll.ts; summary lookups
@@ -3849,11 +3902,19 @@
     mounted = true;
     observeSessionVisibility();
     window.addEventListener(STAGE_PROMPT_EVENT, onStagePrompt);
+    // Backgrounding the tab should mute a held PTY; foregrounding resumes it.
+    if (typeof document !== "undefined") {
+      document.addEventListener("visibilitychange", refreshTerminalHold);
+    }
     syncSessionPollRegistration();
   });
 
   onDestroy(() => {
     window.removeEventListener(STAGE_PROMPT_EVENT, onStagePrompt);
+    if (typeof document !== "undefined") {
+      document.removeEventListener("visibilitychange", refreshTerminalHold);
+    }
+    terminalHold.close();
     if (unregisterPoll) unregisterPoll();
     unregisterPoll = null;
     registeredPollKey = "";

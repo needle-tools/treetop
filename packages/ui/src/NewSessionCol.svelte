@@ -33,6 +33,7 @@
   import type { SshSessionInfo } from "./file-browser-utils";
   import { elementNearViewport } from "./col-visibility";
   import { apiWsUrl } from "./api";
+  import { createTerminalHold, type HoldSocket } from "./terminal-hold";
   import {
     shouldHoldOffscreenAttachedTerminal,
     shouldMountNewSessionTerminal,
@@ -241,15 +242,42 @@
   let visibilityObs: IntersectionObserver | null = null;
   let ancestorVisibilityObs: MutationObserver | null = null;
   let mounted = false;
-  let holdWs: WebSocket | null = null;
-  let holdTermId: string | undefined;
+
+  // Keeps an attached PTY alive (and running) while its TerminalView renderer
+  // is deferred off-screen — see terminal-hold.ts. Drain follows tab
+  // visibility so a backgrounded tab still mutes; merely scrolling the column
+  // off-screen leaves the agent working.
+  const terminalHold = createTerminalHold({
+    connect: holdConnect,
+    shouldDrain: () => typeof document === "undefined" || !document.hidden,
+    onAwaiting: (awaiting) => dispatch("awaitingChange", { awaiting }),
+  });
+
+  function holdConnect(termId: string): HoldSocket {
+    const proto = location.protocol === "https:" ? "wss:" : "ws:";
+    // A browser WebSocket structurally provides the HoldSocket surface; the
+    // DOM's MessageEvent-typed onmessage just isn't assignable under strict
+    // function types, so bridge across it explicitly.
+    return new WebSocket(
+      apiWsUrl(
+        `/api/terminals/${encodeURIComponent(termId)}/io`,
+        location.host,
+        proto,
+        daemonId,
+      ),
+    ) as unknown as HoldSocket;
+  }
+
+  function refreshTerminalHold(): void {
+    terminalHold.refresh();
+  }
 
   $: terminalMounted = shouldMountNewSessionTerminal({
     hasCwd: !!cwd,
     nearViewport,
   });
 
-  $: syncTerminalHold(
+  $: terminalHold.sync(
     mounted &&
       shouldHoldOffscreenAttachedTerminal({ attachTermId, terminalMounted })
       ? attachTermId
@@ -272,74 +300,13 @@
     if (nearViewport !== next) nearViewport = next;
   }
 
-  function closeTerminalHold(): void {
-    const ws = holdWs;
-    holdWs = null;
-    holdTermId = undefined;
-    if (!ws) return;
-    ws.onopen = ws.onmessage = ws.onerror = ws.onclose = null;
-    if (
-      ws.readyState === WebSocket.CONNECTING ||
-      ws.readyState === WebSocket.OPEN
-    ) {
-      ws.close(1000, "terminal view mounted");
-    }
-  }
-
-  function syncTerminalHold(termId: string | undefined): void {
-    if (!termId) {
-      closeTerminalHold();
-      return;
-    }
-    if (
-      holdWs &&
-      holdTermId === termId &&
-      holdWs.readyState !== WebSocket.CLOSING &&
-      holdWs.readyState !== WebSocket.CLOSED
-    ) {
-      return;
-    }
-    closeTerminalHold();
-    const proto = location.protocol === "https:" ? "wss:" : "ws:";
-    const ws = new WebSocket(
-      apiWsUrl(
-        `/api/terminals/${encodeURIComponent(termId)}/io`,
-        location.host,
-        proto,
-        daemonId,
-      ),
-    );
-    holdWs = ws;
-    holdTermId = termId;
-    ws.onopen = () => {
-      ws.send(
-        JSON.stringify({ type: "visibility", visible: false, drain: false }),
-      );
-    };
-    ws.onmessage = (event) => {
-      if (typeof event.data !== "string") return;
-      try {
-        const parsed = JSON.parse(event.data);
-        if (
-          parsed?.type === "state" &&
-          typeof parsed.awaitingInput === "boolean"
-        ) {
-          dispatch("awaitingChange", { awaiting: parsed.awaitingInput });
-        }
-      } catch {
-        // Ignore output/accounting frames; this socket only prevents grace-reap
-        // while the expensive terminal renderer is deferred offscreen.
-      }
-    };
-    ws.onclose = () => {
-      if (holdWs !== ws) return;
-      holdWs = null;
-      holdTermId = undefined;
-    };
-  }
-
   onMount(() => {
     mounted = true;
+    // A backgrounded tab should mute the held PTY; foreground should resume
+    // it. The drain value is recomputed in terminalHold.refresh().
+    if (typeof document !== "undefined") {
+      document.addEventListener("visibilitychange", refreshTerminalHold);
+    }
     if (!colEl || typeof IntersectionObserver === "undefined") {
       nearViewport = true;
       return;
@@ -371,7 +338,10 @@
 
   onDestroy(() => {
     mounted = false;
-    closeTerminalHold();
+    if (typeof document !== "undefined") {
+      document.removeEventListener("visibilitychange", refreshTerminalHold);
+    }
+    terminalHold.close();
     visibilityObs?.disconnect();
     visibilityObs = null;
     ancestorVisibilityObs?.disconnect();
