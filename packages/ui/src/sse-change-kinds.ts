@@ -119,6 +119,13 @@ export interface FsChangeBatcher {
 
 export function createFsChangeBatcher(opts: {
   delayMs: number;
+  /** Upper bound on how long a path can sit pending during a continuous
+   *  burst. The trailing `delayMs` timer resets on every push, so without
+   *  this a never-quiet stream of fs_change (many active TUIs / dev servers
+   *  writing < delayMs apart) would keep deferring the flush forever and the
+   *  worktree dirty state would stall. When set, the batcher flushes at least
+   *  once per `maxDelayMs` even while the burst continues. */
+  maxDelayMs?: number;
   onFlush: (paths: string[]) => void;
   setTimer?: (fn: () => void, ms: number) => unknown;
   clearTimer?: (handle: unknown) => void;
@@ -129,14 +136,23 @@ export function createFsChangeBatcher(opts: {
     ((handle) => clearTimeout(handle as ReturnType<typeof setTimeout>));
   const pending = new Set<string>();
   let timer: unknown = null;
+  let maxTimer: unknown = null;
   let timerToken = 0;
 
-  const flush = () => {
-    timerToken++;
+  const clearTimers = () => {
     if (timer !== null) {
       clearTimer(timer);
       timer = null;
     }
+    if (maxTimer !== null) {
+      clearTimer(maxTimer);
+      maxTimer = null;
+    }
+  };
+
+  const flush = () => {
+    timerToken++;
+    clearTimers();
     if (pending.size === 0) return;
     const paths = [...pending];
     pending.clear();
@@ -152,13 +168,15 @@ export function createFsChangeBatcher(opts: {
         if (token !== timerToken) return;
         flush();
       }, opts.delayMs);
+      // Arm the max-wait guard once per burst (not reset per push) so a
+      // never-quiet stream still flushes every `maxDelayMs`.
+      if (opts.maxDelayMs && maxTimer === null) {
+        maxTimer = setTimer(flush, opts.maxDelayMs);
+      }
     },
     flush,
     dispose() {
-      if (timer !== null) {
-        clearTimer(timer);
-        timer = null;
-      }
+      clearTimers();
       pending.clear();
     },
   };

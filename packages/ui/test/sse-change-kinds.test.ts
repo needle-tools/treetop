@@ -211,6 +211,46 @@ describe("createFsChangeBatcher", () => {
     expect(flushed).toEqual([["/wt/a", "/wt/b", "/wt/c"]]);
   });
 
+  test("max-wait forces a flush during a continuous burst that never goes quiet", () => {
+    // Regression: with only a trailing debounce, nonstop fs_change (many active
+    // TUIs / dev servers writing < delayMs apart) keeps resetting the timer, so
+    // it never fires and the worktree dirty state stalls. A max-wait guard must
+    // flush at least once per maxDelayMs even while the burst continues.
+    const timers: Array<{ fn: () => void; ms: number; id: number }> = [];
+    const cleared = new Set<number>();
+    let nextId = 0;
+    const flushed: string[][] = [];
+    const batcher = createFsChangeBatcher({
+      delayMs: 250,
+      maxDelayMs: 2000,
+      onFlush: (paths) => flushed.push(paths),
+      setTimer: (fn, ms) => {
+        const id = nextId++;
+        timers.push({ fn, ms, id });
+        return id;
+      },
+      clearTimer: (h) => cleared.add(h as number),
+    });
+
+    batcher.push("/wt/a");
+    batcher.push("/wt/b");
+    batcher.push("/wt/c");
+
+    // The trailing (250ms) timer keeps being cleared/reset and never fires.
+    // The max-wait (2000ms) timer is armed once and is NOT reset per push.
+    const maxTimers = timers.filter((t) => t.ms === 2000);
+    expect(maxTimers).toHaveLength(1);
+    const maxTimer = maxTimers[0]!;
+    expect(cleared.has(maxTimer.id)).toBe(false);
+
+    maxTimer.fn();
+    expect(flushed).toEqual([["/wt/a", "/wt/b", "/wt/c"]]);
+
+    // A fresh burst after the forced flush arms a new max-wait timer.
+    batcher.push("/wt/d");
+    expect(timers.filter((t) => t.ms === 2000)).toHaveLength(2);
+  });
+
   test("flushes synchronously and clears the pending timer", () => {
     let clearCount = 0;
     const flushed: string[][] = [];

@@ -4220,8 +4220,13 @@
   );
 
   const FS_CHANGE_BATCH_MS = 250;
+  // Upper bound so a never-quiet fs_change stream (many active TUIs / dev
+  // servers writing < 250ms apart) can't starve the trailing debounce and
+  // freeze the worktree dirty state — flush at least every 2s during a burst.
+  const FS_CHANGE_MAX_BATCH_MS = 2000;
   const fsChangeBatcher = createFsChangeBatcher({
     delayMs: FS_CHANGE_BATCH_MS,
+    maxDelayMs: FS_CHANGE_MAX_BATCH_MS,
     onFlush(paths) {
       const nextFsChangeKey = { ...fsChangeKey };
       let nextWtSummaryByPath: typeof wtSummaryByPath | null = null;

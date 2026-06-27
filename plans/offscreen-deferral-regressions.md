@@ -24,7 +24,7 @@ Symptom owner: Marcel. Investigated 2026-06-27.
 | 3 | Dock dot shows no working **spinner** for background agents | ✅ fixed | `3932349` |
 | 4 | At startup, live TUIs don't show as active in the dock until scrolled to | ✅ fixed (verify) | `3b47599` + dock-gating fix (uncommitted) |
 | 5 | TUI scrollback truncated / can't scroll up when returning from a zen session | 🔲 open (note only) | — |
-| 6 | Dirty state doesn't update in the git/folder column | 🔲 open (triage) | — |
+| 6 | Dirty state doesn't update in the git/folder column | ✅ fixed (verify) | max-wait batcher (uncommitted) |
 | 7 | Paste truncates large clipboard content | 🔲 open (triage) | — |
 
 ---
@@ -158,17 +158,27 @@ path (`scheduleRevealReconcile` / `paintBufferedTerminalOutput` / fit-on-open)
 and backlog sizing in `terminal-backlog.ts`. Likely a side effect of the
 `4d61ab6` unmount-on-offscreen change. Also captured as a memory note.
 
-## 6. Dirty state not updating in the git/folder column — OPEN (triage)
+## 6. Dirty state not updating in the git/folder column — FIXED (verify)
 
 **Symptom (2026-06-27, screenshot):** the dirty/changed-files indicator in the
-repo/worktree (folder) column doesn't update. Suspected regression.
+repo/worktree (folder) column doesn't update.
 
-**Triage TODO:** check whether the dirty count comes from a deferred/visibility-
-gated path (the perf pass also bounded git fanout and gated work on visibility —
-`fs_change` → `/api/repos` refresh, `RepoStatusPreview`/`DirtyGlyph`, the
-worktree watcher debounce in `d15910e` "Debounce filesystem refresh bursts").
-Confirm whether off-screen rows stop receiving dirty updates, or whether the
-daemon stopped broadcasting them.
+**Root cause:** `d15910e` "Debounce filesystem refresh bursts" made the UI
+fs_change batcher (`createFsChangeBatcher`, `App.svelte` ~4223) a **pure
+trailing-edge debounce** (`delayMs: 250`). It's a single global timer fed by
+every worktree's `fs_change`; each push resets it, so it only fires after the
+stream goes quiet for 250 ms. With many active TUIs / dev servers (e.g. the
+`npm run testrunner` shells in `active-terminals.json`) writing files < 250 ms
+apart, the burst never goes quiet → the timer never fires → `load("fs-change-
+batch")` never runs → dirty state freezes. The old leading-edge batcher flushed
+periodically during a burst, masking this.
+
+**Fix (uncommitted):** add a **max-wait** guard to `createFsChangeBatcher`
+(`maxDelayMs`), armed once per burst (not reset per push), so it flushes at
+least every `FS_CHANGE_MAX_BATCH_MS = 2000` ms even during nonstop fs activity —
+keeping the burst-coalescing win while guaranteeing dirty refreshes. Pure +
+TDD-tested in `sse-change-kinds.test.ts` (the new test fails on the old
+trailing-only batcher).
 
 ---
 
