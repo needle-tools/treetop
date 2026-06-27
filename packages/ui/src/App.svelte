@@ -4032,23 +4032,41 @@
         // canonical workspace order (manifest seeds order, `onRepo` does
         // in-place updates by id). Reassigning would reorder the dashboard
         // on every refresh.
-        await reposStream;
+        // Mark live TUIs active in the dock as soon as /api/terminals is in —
+        // BEFORE awaiting the (cold, bounded) repos stream. reconcile's
+        // resumeSessionId→ownerId match needs no repo data, so gating this on
+        // the full stream meant the dock showed nothing as active until every
+        // repo finished enriching — the user saw dots appear only as they
+        // scrolled (mounting a column populated activity the other way).
+        let liveTerms: any[] | null = null;
         if (liveTermsResp && liveTermsResp.ok) {
-          const liveTerms = await timeAsync("load.terminals-json", () =>
+          const parsed = await timeAsync("load.terminals-json", () =>
             liveTermsResp.json().catch(() => []),
           );
-          if (Array.isArray(liveTerms)) {
+          if (Array.isArray(parsed)) {
+            liveTerms = parsed;
             liveTerminalIds = new Set(
-              liveTerms
+              parsed
                 .filter((t) => !t?.exitedAt && typeof t?.id === "string")
                 .map((t) => t.id),
             );
             openSessionsByWt = reconcileLiveAgentTerminals(
               openSessionsByWt,
               repos,
-              liveTerms,
+              parsed,
             ) as typeof openSessionsByWt;
           }
+        }
+        await reposStream;
+        // Re-reconcile once every worktree's agents have streamed in, so
+        // sessions matchable only via the per-worktree agent scan (no
+        // persisted resumeSessionId) also attach to their live PTY.
+        if (liveTerms) {
+          openSessionsByWt = reconcileLiveAgentTerminals(
+            openSessionsByWt,
+            repos,
+            liveTerms,
+          ) as typeof openSessionsByWt;
         }
         // Fan out to any registered remote daemons. Each contributes its
         // repos (tagged with its daemonId) into the merged `repos` array,
