@@ -22,8 +22,9 @@ Symptom owner: Marcel. Investigated 2026-06-27.
 | 1 | Active TUIs stop / vanish from dock ~1 min after switching away (zen / scroll) | ✅ fixed | `3de74db` |
 | 2 | Backgrounded agent is muted/paused (stalls) instead of running | ✅ fixed | `3de74db` |
 | 3 | Dock dot shows no working **spinner** for background agents | ✅ fixed | `3932349` |
-| 4 | At startup, live TUIs don't show as active in the dock until scrolled to | ✅ fixed (verify) | `3b47599` + dock-gating fix (uncommitted) |
+| 4 | At startup, live TUIs don't show as active in the dock until scrolled to | ✅ fixed (verify) | `3b47599` + Part A `ccad40f` + Part B stagger-spawn (uncommitted) |
 | 5 | TUI scrollback truncated / can't scroll up when returning from a zen session | 🔲 open (note only) | — |
+| 9 | Switch repo (zen or not) → return → agent was NOT working; re-sending revives it | 🔲 open (triage) | — |
 | 6 | Dirty state doesn't update in the git/folder column | ✅ fixed (verify) | max-wait batcher (uncommitted) |
 | 7 | Paste truncates large clipboard content | 🔲 open (triage) | — |
 | 8 | Vines don't reposition when a column is added/removed | ✅ fixed (verify) | settle-loop (uncommitted) |
@@ -113,12 +114,26 @@ plumbing needed.
   gains an `isRestorableTui` exemption (mode `terminal` + `resumeSessionId`);
   App passes it. The 34 now show in the dock at startup (idle, before any PTY),
   independent of the deferred scan. TDD test added.
-- **Part B — background stagger-spawn (TODO):** after first load, enqueue the
-  terminal-mode sessions lacking a live PTY and `POST /api/terminals`
-  (`claude --resume <id>`, cwd, `ownerId = resumeSessionId`) ~2–3/sec, setting
+- **Part B — background stagger-spawn (DONE, uncommitted):** after first load,
+  enqueue the terminal-mode sessions lacking a live PTY and `POST /api/terminals`
+  (`claude --resume <id>`, cwd, `ownerId = resumeSessionId`) ~2.5/sec, setting
   `attachTermId` on each spawn so the dot flips active and the mounted
-  SessionView's hold socket keeps it alive. Must guard against the
-  column-mount path double-spawning (in-flight set keyed by source).
+  SessionView's hold socket keeps it alive. Guards against the column-mount
+  path double-spawning via a `bgSpawnInFlight` set keyed by source PLUS a
+  1.5s start grace so onscreen columns mount and self-exclude (their `onSpawn`
+  sets `attachTermId` + marks the id live) before the loop begins.
+  - Pure selection logic = `selectSessionsForBackgroundSpawn`
+    (`session-source-routing.ts`), TDD-tested in
+    `session-source-routing.test.ts` (9 cases: picks restorable terminal
+    sessions, forwards model/effort, codex too, skips live/in-flight/
+    column-spawned/read-mode/shells, cross-worktree order). The side-effecting
+    half (`ensureBackgroundTuiSpawn` / `spawnNextBackgroundTui` /
+    `spawnBackgroundTui`, `App.svelte`) drains until empty for
+    `BG_SPAWN_IDLE_STOP_TICKS` then stops; restarted only by a fresh mount
+    (gated by `bgSpawnStarted`). Knobs: `BG_SPAWN_INTERVAL_MS=400`,
+    `BG_SPAWN_START_GRACE_MS=1500`.
+  - Wiring verified by `bun test` (selection) + the built app (spawn POST /
+    dock dot). Not yet rebuilt/committed.
 
 ### Earlier partial step
 
@@ -211,6 +226,38 @@ TDD-tested in `sse-change-kinds.test.ts` (the new test fails on the old
 trailing-only batcher).
 
 ---
+
+## 9. Agent stops working after a repo switch — OPEN (triage)
+
+**Symptom (2026-06-27, Marcel):** working in repo A's TUI, switch to repo B
+(in zen *or* not), come back to A → claude was **not** doing anything (idle, no
+dock spinner). Re-sending a prompt revives it and the dot then shows activity
+(screenshot: `Sketching… 34s · still thinking with high effort`). So the dock
+dot was *truthful* — there genuinely was no work in flight. The agent had
+stopped (or its PTY was reaped) while A's column was offscreen.
+
+**This is the #1/#2 family, not a dock-display bug.** `3de74db`'s hold socket
+is supposed to (a) keep the offscreen PTY past the 60s daemon grace and (b)
+keep it *draining* (not muted) while the tab is visible. The repeatable
+failure means a gap in that coverage for the **zen/repo-switch** transition.
+
+**Suspects to check (needs the live app — can't reach prod :27788 from the
+sandbox):**
+1. Does `terminalHold.sync(...)` actually arm when zen masks repo A's row?
+   The gate is `mounted && shouldHoldOffscreenAttachedTerminal({attachTermId,
+   terminalMounted})`. If the masked row's `columnNearViewport` doesn't flip
+   to false (IntersectionObserver vs the zen display:none mask, or the
+   ancestor MutationObserver missing the class that hides it), the hold never
+   arms → last subscriber is the unmounting TerminalView → PTY grace-reaped.
+2. Race on unmount: TerminalView's io WS closes as the column unmounts; if the
+   hold WS connect lags, is there a > grace window with zero subscribers?
+3. `shouldDrain` is `!document.hidden`. Switching repos keeps the tab visible,
+   so the hold should drain — but confirm the daemon isn't muting on the
+   *handover* (the `drain:false` default the #2 fix removed).
+
+Quickest live check: switch away from a working TUI, watch `daemon.log` for a
+PTY reap / grace-timer fire on that termId, and `/api/terminals` for whether
+the ownerId PTY survives the switch.
 
 ## 7. Paste truncates large clipboard content — OPEN (triage)
 

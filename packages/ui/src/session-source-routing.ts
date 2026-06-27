@@ -58,6 +58,10 @@ export interface OpenSession {
   ollamaModel?: string;
   contextFilePath?: string;
   attachTermId?: string;
+  /** Claude model/effort overrides picked from the session header; passed
+   *  through to a `claude --resume … --model/--effort` spawn. */
+  claudeModel?: string;
+  claudeEffort?: string;
   /** Explicit shell command for a plain terminal column, stamped by the
    *  new-session picker when the box offers >1 shell (Windows: PowerShell
    *  vs CMD). Overrides the daemon's default shell in cmdForOpenSession. */
@@ -292,6 +296,70 @@ export function reconcileLiveAgentTerminals(
     if (nextSessions) next[wtPath] = nextSessions;
   }
   return changed ? next : byWt;
+}
+
+// ---------------------------------------------------------------------------
+// selectSessionsForBackgroundSpawn
+//
+// After a daemon restart the helper dies with the daemon, so every
+// persisted `mode:"terminal"` agent session loses its PTY. Their columns
+// stay mounted (`.row-body` is `display:none`, not unmounted) but the
+// xterm/TerminalView is deferred until the column scrolls into view —
+// so the dock dot only lights once the user reaches the column, which
+// re-spawns `claude --resume`. To make live TUIs active at startup we
+// eagerly re-spawn those PTYs in the background (caller staggers them),
+// then stamp `attachTermId` so the mounted SessionView's hold socket
+// keeps each one alive.
+//
+// This is the pure selection half: which restorable sessions still need a
+// background spawn right now. A session qualifies when it's a resumable
+// agent (claude/codex) in terminal mode with a `resumeSessionId`, and it
+// has NO live PTY yet — neither an `attachTermId` that's currently live,
+// nor a column-spawned PTY (`newTermIds[source]`), nor an in-flight
+// background spawn (`inFlight`). As spawns land (attachTermId set +
+// liveTerminalIds grows) candidates drop out, so calling this each tick
+// converges without double-spawning.
+// ---------------------------------------------------------------------------
+
+export interface BackgroundSpawnCandidate {
+  wtPath: string;
+  source: string;
+  agent: "claude" | "codex";
+  resumeSessionId: string;
+  claudeModel?: string;
+  claudeEffort?: string;
+}
+
+export function selectSessionsForBackgroundSpawn(
+  byWt: Record<string, OpenSession[]>,
+  options: {
+    liveTerminalIds: ReadonlySet<string>;
+    inFlight: ReadonlySet<string>;
+    newTermIds: Record<string, string>;
+  },
+): BackgroundSpawnCandidate[] {
+  const out: BackgroundSpawnCandidate[] = [];
+  for (const [wtPath, sessions] of Object.entries(byWt)) {
+    for (const s of sessions) {
+      if (s.agent !== "claude" && s.agent !== "codex") continue;
+      if (s.mode !== "terminal") continue;
+      if (!s.resumeSessionId) continue;
+      // Already (or about to be) backed by a PTY — skip.
+      if (s.attachTermId && options.liveTerminalIds.has(s.attachTermId))
+        continue;
+      if (options.newTermIds[s.source]) continue;
+      if (options.inFlight.has(s.source)) continue;
+      out.push({
+        wtPath,
+        source: s.source,
+        agent: s.agent,
+        resumeSessionId: s.resumeSessionId,
+        ...(s.claudeModel ? { claudeModel: s.claudeModel } : {}),
+        ...(s.claudeEffort ? { claudeEffort: s.claudeEffort } : {}),
+      });
+    }
+  }
+  return out;
 }
 
 // ---------------------------------------------------------------------------

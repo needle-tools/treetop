@@ -23,6 +23,7 @@ import {
   openSessionHasDockActivity,
   openSessionHasLiveTerminal,
   reconcileLiveAgentTerminals,
+  selectSessionsForBackgroundSpawn,
   shouldHoldOffscreenAttachedTerminal,
   shouldMountNewSessionTerminal,
   shouldMountTerminalView,
@@ -315,6 +316,153 @@ describe("reconcileLiveAgentTerminals", () => {
         },
       ]),
     ).toBe(before);
+  });
+});
+
+describe("selectSessionsForBackgroundSpawn", () => {
+  const wtPath = "/repo/needle-cloud";
+  const otherWt = "/repo/fastvid";
+  const restorable = (
+    source: string,
+    extra: Partial<OpenSession> = {},
+  ): OpenSession => ({
+    agent: "claude",
+    source,
+    mode: "terminal",
+    resumeSessionId: source,
+    ...extra,
+  });
+
+  test("picks a terminal-mode session with a resumeSessionId and no live PTY", () => {
+    const byWt: Record<string, OpenSession[]> = {
+      [wtPath]: [restorable("sid-a")],
+    };
+    expect(
+      selectSessionsForBackgroundSpawn(byWt, {
+        liveTerminalIds: new Set(),
+        inFlight: new Set(),
+        newTermIds: {},
+      }),
+    ).toEqual([
+      {
+        wtPath,
+        source: "sid-a",
+        agent: "claude",
+        resumeSessionId: "sid-a",
+      },
+    ]);
+  });
+
+  test("forwards claude model/effort overrides", () => {
+    const byWt: Record<string, OpenSession[]> = {
+      [wtPath]: [
+        restorable("sid-a", { claudeModel: "opus", claudeEffort: "high" }),
+      ],
+    };
+    expect(
+      selectSessionsForBackgroundSpawn(byWt, {
+        liveTerminalIds: new Set(),
+        inFlight: new Set(),
+        newTermIds: {},
+      })[0],
+    ).toMatchObject({ claudeModel: "opus", claudeEffort: "high" });
+  });
+
+  test("resumes codex sessions too", () => {
+    const byWt: Record<string, OpenSession[]> = {
+      [wtPath]: [restorable("sid-cx", { agent: "codex" })],
+    };
+    expect(
+      selectSessionsForBackgroundSpawn(byWt, {
+        liveTerminalIds: new Set(),
+        inFlight: new Set(),
+        newTermIds: {},
+      })[0]?.agent,
+    ).toBe("codex");
+  });
+
+  test("skips sessions already attached to a live PTY", () => {
+    const byWt: Record<string, OpenSession[]> = {
+      [wtPath]: [restorable("sid-a", { attachTermId: "t_live" })],
+    };
+    expect(
+      selectSessionsForBackgroundSpawn(byWt, {
+        liveTerminalIds: new Set(["t_live"]),
+        inFlight: new Set(),
+        newTermIds: {},
+      }),
+    ).toEqual([]);
+  });
+
+  test("re-spawns a session whose persisted attachTermId is dead", () => {
+    const byWt: Record<string, OpenSession[]> = {
+      [wtPath]: [restorable("sid-a", { attachTermId: "t_dead" })],
+    };
+    expect(
+      selectSessionsForBackgroundSpawn(byWt, {
+        liveTerminalIds: new Set(["t_other"]),
+        inFlight: new Set(),
+        newTermIds: {},
+      }),
+    ).toHaveLength(1);
+  });
+
+  test("skips a source whose column already spawned its own PTY", () => {
+    const byWt: Record<string, OpenSession[]> = {
+      [wtPath]: [restorable("sid-a")],
+    };
+    expect(
+      selectSessionsForBackgroundSpawn(byWt, {
+        liveTerminalIds: new Set(),
+        inFlight: new Set(),
+        newTermIds: { "sid-a": "t_col_spawned" },
+      }),
+    ).toEqual([]);
+  });
+
+  test("skips sources already in flight (no double spawn)", () => {
+    const byWt: Record<string, OpenSession[]> = {
+      [wtPath]: [restorable("sid-a")],
+    };
+    expect(
+      selectSessionsForBackgroundSpawn(byWt, {
+        liveTerminalIds: new Set(),
+        inFlight: new Set(["sid-a"]),
+        newTermIds: {},
+      }),
+    ).toEqual([]);
+  });
+
+  test("ignores read-mode sessions, shells, and sessions without a resume id", () => {
+    const byWt: Record<string, OpenSession[]> = {
+      [wtPath]: [
+        { agent: "claude", source: "read-a", resumeSessionId: "read-a" }, // no mode
+        restorable("noresume", { resumeSessionId: undefined }),
+        { agent: "shell", source: "shell-a", mode: "terminal" },
+        { agent: "files", source: "files-a", mode: "terminal" },
+      ],
+    };
+    expect(
+      selectSessionsForBackgroundSpawn(byWt, {
+        liveTerminalIds: new Set(),
+        inFlight: new Set(),
+        newTermIds: {},
+      }),
+    ).toEqual([]);
+  });
+
+  test("collects restorable sessions across worktrees in iteration order", () => {
+    const byWt: Record<string, OpenSession[]> = {
+      [wtPath]: [restorable("sid-a"), restorable("sid-b")],
+      [otherWt]: [restorable("sid-c")],
+    };
+    expect(
+      selectSessionsForBackgroundSpawn(byWt, {
+        liveTerminalIds: new Set(),
+        inFlight: new Set(),
+        newTermIds: {},
+      }).map((c) => c.source),
+    ).toEqual(["sid-a", "sid-b", "sid-c"]);
   });
 });
 

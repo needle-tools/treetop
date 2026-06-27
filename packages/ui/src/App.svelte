@@ -8,6 +8,8 @@
     openSessionHasLiveTerminal,
     openSessionHasDockActivity,
     reconcileLiveAgentTerminals,
+    selectSessionsForBackgroundSpawn,
+    type BackgroundSpawnCandidate,
   } from "./session-source-routing";
   import {
     createUnreadPulseManager,
@@ -2821,6 +2823,133 @@
       }
     }
     if (promoted) openSessionsByWt = next;
+  }
+
+  // ----------------------------------------------------------------------
+  // Background TUI stagger-spawn (offscreen-deferral regression #4, Part B)
+  //
+  // After a daemon restart the PTY helper dies with it, so every persisted
+  // `mode:"terminal"` agent session loses its live PTY. Their columns stay
+  // mounted (`.row-body` is `display:none`, not unmounted) but TerminalView
+  // is deferred until the column scrolls into view — so the dock dot only
+  // lights once the user reaches a column, which re-spawns `claude --resume`
+  // on mount. To show live TUIs as active at startup, eagerly re-spawn those
+  // PTYs in the background at a gentle cadence (NOT a thundering herd), then
+  // stamp `attachTermId` so the already-mounted SessionView's hold socket
+  // keeps each one alive and the dock dot flips active immediately.
+  //
+  // Selection (which sources still need a spawn) is the pure, unit-tested
+  // `selectSessionsForBackgroundSpawn`; this owns the side effects: a
+  // per-source in-flight guard (so we never double-spawn), the POST, and
+  // the optimistic state stamp on success. Onscreen columns mount and spawn
+  // themselves (their `onSpawn` sets attachTermId + marks the id live), so
+  // the initial grace below lets those exclude themselves before we start —
+  // avoiding a duplicate `claude --resume` for the same session.
+  const BG_SPAWN_INTERVAL_MS = 400; // ~2.5 spawns/sec
+  const BG_SPAWN_START_GRACE_MS = 1_500; // let onscreen columns mount first
+  const BG_SPAWN_IDLE_STOP_TICKS = 6; // stop after this many empty ticks
+  let bgSpawnTimer: ReturnType<typeof setInterval> | null = null;
+  let bgSpawnStarted = false;
+  let bgSpawnInFlight: Set<string> = new Set();
+  let bgSpawnIdleTicks = 0;
+
+  /** Kick off the staggered background spawner once, after the initial
+   *  load. Idempotent — safe to call from every `load("mount")` resolve. */
+  function ensureBackgroundTuiSpawn(): void {
+    if (bgSpawnStarted) return;
+    bgSpawnStarted = true;
+    setTimeout(() => {
+      if (bgSpawnTimer) return;
+      bgSpawnTimer = setInterval(
+        () => void spawnNextBackgroundTui(),
+        BG_SPAWN_INTERVAL_MS,
+      );
+    }, BG_SPAWN_START_GRACE_MS);
+  }
+
+  function stopBackgroundTuiSpawn(): void {
+    if (bgSpawnTimer) clearInterval(bgSpawnTimer);
+    bgSpawnTimer = null;
+  }
+
+  function spawnNextBackgroundTui(): void {
+    const candidates = selectSessionsForBackgroundSpawn(openSessionsByWt, {
+      liveTerminalIds,
+      inFlight: bgSpawnInFlight,
+      newTermIds,
+    });
+    if (candidates.length === 0) {
+      // Drain finished (and nothing landing) → stop the timer. A later
+      // reload's `ensureBackgroundTuiSpawn` is gated by `bgSpawnStarted`,
+      // so this only stops the one startup pass.
+      if (++bgSpawnIdleTicks >= BG_SPAWN_IDLE_STOP_TICKS && !bgSpawnInFlight.size)
+        stopBackgroundTuiSpawn();
+      return;
+    }
+    bgSpawnIdleTicks = 0;
+    void spawnBackgroundTui(candidates[0]!);
+  }
+
+  async function spawnBackgroundTui(
+    c: BackgroundSpawnCandidate,
+  ): Promise<void> {
+    bgSpawnInFlight = new Set(bgSpawnInFlight).add(c.source);
+    try {
+      const cmd =
+        c.agent === "codex"
+          ? ["codex", "resume", c.resumeSessionId]
+          : [
+              "claude",
+              "--resume",
+              c.resumeSessionId,
+              "--allow-dangerously-skip-permissions",
+              ...(c.claudeModel ? ["--model", c.claudeModel] : []),
+              ...(c.claudeEffort ? ["--effort", c.claudeEffort] : []),
+            ];
+      const daemonId = daemonIdForWorktreePath(repos, c.wtPath);
+      const res = await fetch(apiUrl("/api/terminals", daemonId), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          cmd,
+          cwd: c.wtPath,
+          // Floor size; SessionView's TerminalView re-fits once it mounts.
+          cols: 80,
+          rows: 24,
+          ownerId: c.resumeSessionId,
+          procName: `supergit-tui-${c.resumeSessionId.slice(0, 8)}-${c.agent}`,
+        }),
+      });
+      if (!res.ok) return;
+      const body = (await res.json().catch(() => null)) as {
+        id?: string;
+      } | null;
+      const id = body?.id;
+      if (typeof id !== "string") return;
+      // Stamp the live PTY onto the session so (a) the dock dot reads active
+      // via the liveTerminalIds path and (b) the mounted SessionView's hold
+      // socket reattaches to this PTY instead of spawning a duplicate.
+      markTerminalLive(id);
+      newTermIds = { ...newTermIds, [c.source]: id };
+      const list = openSessionsByWt[c.wtPath];
+      if (list) {
+        openSessionsByWt = {
+          ...openSessionsByWt,
+          [c.wtPath]: list.map((s) =>
+            s.source === c.source
+              ? { ...s, mode: "terminal" as const, attachTermId: id }
+              : s,
+          ),
+        };
+      }
+    } catch {
+      // best-effort — the candidate is reconsidered on the next tick
+      // (still in `inFlight` until the finally clears it).
+    } finally {
+      const next = new Set(bgSpawnInFlight);
+      next.delete(c.source);
+      bgSpawnInFlight = next;
+    }
   }
 
   function repoName(repo: Repo): string {
@@ -7194,6 +7323,7 @@
     rowVisibilityObserver?.disconnect();
     for (const repoId of repoFetchStates.keys()) stopVisibleFetchLoop(repoId);
     repoFetchStates.clear();
+    stopBackgroundTuiSpawn();
   });
 
   let daemonBuildTime: string | null = null;
@@ -7267,6 +7397,9 @@
     window.addEventListener("scroll", scrollSaver.trigger, { passive: true });
     void load("mount").then(() => {
       restoreScrollPosition();
+      // Re-spawn live PTYs for restored terminal-mode sessions in the
+      // background so their dock dots light at startup (regression #4 B).
+      ensureBackgroundTuiSpawn();
       // Re-run shell restore now that load() has populated `remoteDaemons`,
       // so each remote box's open shells are fetched + merged in (the
       // onMount pass above only saw the local daemon).
