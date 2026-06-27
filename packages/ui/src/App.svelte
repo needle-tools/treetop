@@ -775,6 +775,12 @@
     zenRowKey = exiting ? null : key;
     notesShownInZen = false;
     resetZenMenu();
+    if (!exiting) {
+      // Entering zen on this row → it's the active worktree; give its dirty
+      // state the priority refresh poll.
+      const wtPath = key.split("|").slice(1).join("|");
+      if (wtPath) activeWorktreePath = wtPath;
+    }
     if (exiting) {
       const wtPath = key.split("|").slice(1).join("|");
       if (wtPath) tick().then(() => jumpToWorktreeRow(wtPath));
@@ -1074,7 +1080,16 @@
     const src = col.getAttribute("data-session-source");
     if (!src) return;
     startReadGrace(src);
+    // Remember which worktree the user is actively in so its git/dirty state
+    // gets the priority refresh poll (see startActiveWorktreePoll) — otherwise
+    // a busy background repo can starve its dirty badge for tens of seconds.
+    const wt = col.closest("[data-wt-row]")?.getAttribute("data-wt-row");
+    if (wt) activeWorktreePath = wt;
   }
+  /** Worktree the user is currently interacting with (focused column, or the
+   *  zen row). Polled every few seconds via /api/worktree-details so its dirty
+   *  state stays live independent of the shared enrich queue. */
+  let activeWorktreePath: string | null = null;
   function handleFocusOutForUnread(ev: FocusEvent): void {
     const t = ev.target as Element | null;
     if (!t) return;
@@ -2950,6 +2965,37 @@
       next.delete(c.source);
       bgSpawnInFlight = next;
     }
+  }
+
+  // ----------------------------------------------------------------------
+  // Active-worktree priority refresh poll (dirty-state starvation fix)
+  //
+  // With many repos open, chatty background repos (dev servers firing fs_change)
+  // saturate the daemon's shared git limiter, so a quiet repo's dirty badge can
+  // lag ~30s. The daemon now (a) coalesces per-worktree recomputes so the herd
+  // can't monopolize the limiter, and (b) exposes /api/worktree-details on a
+  // dedicated priority lane. This poll hits that lane every few seconds for the
+  // worktree the user is actually in, so its dirty/ahead state stays live
+  // regardless of how busy everything else is. The daemon recompute broadcasts
+  // an fs_change, which the existing SSE handler folds into the dashboard.
+  const ACTIVE_WT_POLL_MS = 5_000;
+  let activeWtPollTimer: ReturnType<typeof setInterval> | null = null;
+  function startActiveWorktreePoll(): void {
+    if (activeWtPollTimer) return;
+    activeWtPollTimer = setInterval(() => {
+      const wt = activeWorktreePath;
+      if (!wt || isUiIdle()) return;
+      void fetch(
+        apiUrl(
+          `/api/worktree-details?path=${encodeURIComponent(wt)}`,
+          daemonIdForWorktreePath(repos, wt),
+        ),
+      ).catch(() => {});
+    }, ACTIVE_WT_POLL_MS);
+  }
+  function stopActiveWorktreePoll(): void {
+    if (activeWtPollTimer) clearInterval(activeWtPollTimer);
+    activeWtPollTimer = null;
   }
 
   function repoName(repo: Repo): string {
@@ -7324,6 +7370,7 @@
     for (const repoId of repoFetchStates.keys()) stopVisibleFetchLoop(repoId);
     repoFetchStates.clear();
     stopBackgroundTuiSpawn();
+    stopActiveWorktreePoll();
   });
 
   let daemonBuildTime: string | null = null;
@@ -7392,6 +7439,7 @@
     // blinking while they're already looking at it.
     document.addEventListener("focusin", handleFocusInForUnread);
     document.addEventListener("focusout", handleFocusOutForUnread);
+    startActiveWorktreePoll();
     // Persist the page scroll offset as the user scrolls, and restore it
     // once the initial load's repos have streamed in (see SCROLL_KEY).
     window.addEventListener("scroll", scrollSaver.trigger, { passive: true });

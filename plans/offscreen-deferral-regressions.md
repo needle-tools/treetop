@@ -25,6 +25,8 @@ Symptom owner: Marcel. Investigated 2026-06-27.
 | 4 | At startup, live TUIs don't show as active in the dock until scrolled to | ✅ fixed (verify) | `3b47599` + Part A `ccad40f` + Part B stagger-spawn (uncommitted) |
 | 5 | TUI scrollback truncated / can't scroll up when returning from a zen session | 🔲 open (note only) | — |
 | 9 | Switch repo (zen or not) → return → agent was NOT working; re-sending revives it | 🔲 open (triage) | — |
+| 10 | Multi-line paste into a TUI submits at the first newline (bracketed paste lost on reattach) | 🔲 open (high) | — |
+| 11 | Dirty state takes ~30s to update with many repos open (git-limiter starvation) | ✅ fixed (verify) | coalesce + priority lane (uncommitted) |
 | 6 | Dirty state doesn't update in the git/folder column | ✅ fixed (verify) | max-wait batcher (uncommitted) |
 | 7 | Paste truncates large clipboard content (into a TUI) | ✅ fixed (verify) | throttled chunking (uncommitted) |
 | 8 | Vines don't reposition when a column is added/removed | ✅ fixed (verify) | settle-loop (uncommitted) |
@@ -258,6 +260,80 @@ sandbox):**
 Quickest live check: switch away from a working TUI, watch `daemon.log` for a
 PTY reap / grace-timer fire on that termId, and `/api/terminals` for whether
 the ownerId PTY survives the switch.
+
+## 11. Dirty state slow to update with many repos open — FIXED (verify)
+
+**Symptom (2026-06-27, Marcel):** after committing in `treetop`, the dashboard
+still showed `~4` (dirty) for ~30s even though the repo was clean. Worse with
+many repos open.
+
+**Root cause:** NOT query latency — a single `git status` is ms. It's
+**starvation** on the shared git limiter. Both the `/api/repos` enrich and the
+per-change recompute (`onWorktreeFsChange`) run through one
+`reposGitLimit = createLimiter(8)` (server.ts). Repos with active TUIs /
+dev servers fire `fs_change` every watcher debounce (~300ms); each took a
+limiter slot, saturating all 8. A quiet repo's single recompute (the one
+commit) queued behind dozens → tens of seconds stale.
+
+**Fix (uncommitted):**
+- **Coalesce per-worktree recomputes** — `planWorktreeRecompute`
+  (`worktree-refresh-plan.ts`, TDD'd) bounds each worktree to one recompute per
+  `FS_RECOMPUTE_MIN_INTERVAL_MS = 2500` plus a single trailing run, so a chatty
+  worktree can no longer monopolize the limiter and the queue drains fast.
+- **Priority lane for the focused worktree** — a separate
+  `reposGitPriorityLimit = createLimiter(2)` and a `GET /api/worktree-details?path=`
+  route that recomputes on it (never blocked by the herd), patches the repos
+  cache, and broadcasts. The UI polls it every `ACTIVE_WT_POLL_MS = 5000` for
+  the worktree the user is in (focused column / zen row → `activeWorktreePath`),
+  so that repo's dirty/ahead state stays live regardless of contention.
+
+Net: chatty repos can't block, everyone updates faster (~the coalesce
+interval), and the repo you're actually in refreshes every 5s no matter what.
+
+## 10. Multi-line paste into a TUI submits at the first newline — OPEN (high)
+
+**Symptom (2026-06-27, Marcel — frustrating):** pasting multi-line text into a
+claude TUI, e.g.
+
+```
+Welcher Buchung
+fehlt der Beleg? <rest of paste>
+```
+
+sends/executes at the first `\n` — only "Welcher Buchung" reaches the prompt,
+the rest is lost (or runs as separate input). Reproduces on small pastes too,
+so it's the plain-text `xterm.paste(text)` path, independent of #7's throttling.
+
+**This is bracketed paste not being applied.** With DECSET 2004 active, a paste
+is wrapped `\x1b[200~…\x1b[201~` and the app inserts newlines literally instead
+of executing each line. `xterm.paste()` only wraps when xterm has *seen* the
+app enable bracketed paste (`\x1b[?2004h`). If that enable sequence never
+reaches xterm, every pasted `\n` is a submit.
+
+**SGR filter exonerated (2026-06-27):** ruled out `terminals/sgr-remap.ts` —
+`UserBoxRemap.transform` passes `\x1b[?2004h` / `\x1b[?2004l` through verbatim,
+whole AND split at every chunk boundary (verified directly). So the enable
+sequence isn't being eaten in the output stream.
+
+**Prime suspect now — reattach loses the bracketed-paste mode (offscreen-deferral
+cluster):** switching away unmounts the column (`4d61ab6`); switching back mounts
+a BRAND-NEW xterm `Terminal` that reattaches to the still-live PTY. On reattach
+the daemon replays only the recent scrollback (`REPLAY_CAP = 256KB`,
+node-pty-backend.ts). claude sends `\x1b[?2004h` once, early, when its prompt
+first arms — almost certainly OUTSIDE that 256KB tail. So the fresh xterm never
+sees the enable, `bracketedPasteMode` defaults false, and `xterm.paste()` sends
+the paste unbracketed → claude executes at the first `\r` (xterm converts paste
+`\n`→`\r`). Explains why it bites after navigating around (which Marcel does a
+lot) and why small pastes are affected too.
+
+**Fix options:** (a) track DEC private-mode state per PTY in the daemon (at
+least bracketed-paste 2004; ideally also application-cursor-keys 1, alt-screen
+1049, etc.) and re-assert it at the head of the reattach replay so a remounted
+xterm restores modes; (b) cheaper stopgap — in `TerminalView.onPaste`, when the
+pasted text is multi-line, force-wrap it in `\x1b[200~…\x1b[201~` ourselves
+rather than trusting xterm's mode flag (risk: a TUI that genuinely has
+bracketed paste OFF would see literal `200~`). (a) is the correct fix and fixes
+a whole class of mode-loss-on-reattach bugs, not just paste.
 
 ## 7. Paste truncates large clipboard content (into a TUI) — FIXED (verify)
 

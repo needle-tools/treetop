@@ -89,6 +89,7 @@ import { handleMcp, mcpServerInfo, type JsonRpcRequest } from "./mcp";
 import * as inflight from "./inflight";
 import { pingSubscribers } from "./sse-heartbeat";
 import { changeKindInvalidatesRepos } from "./sse-change-kinds";
+import { planWorktreeRecompute } from "./worktree-refresh-plan";
 import {
   terminalBackend,
   detectAgentLabel,
@@ -1538,6 +1539,34 @@ const worktreeDetailsCache = new Map<
 const REPOS_GIT_CONCURRENCY = 8;
 const reposGitLimit = createLimiter(REPOS_GIT_CONCURRENCY);
 
+// A small, separate lane for refreshing the ONE worktree the user is actively
+// interacting with (focused TUI / hovered row / dock click). The shared
+// `reposGitLimit` above gets saturated by chatty background repos (dev servers
+// firing fs_change continuously), which starves the focused repo's dirty badge.
+// Keeping the priority refresh on its own slots means it never queues behind
+// the herd — the UI polls it every few seconds so the focused repo stays live
+// regardless of how busy everything else is.
+const reposGitPriorityLimit = createLimiter(2);
+
+// Per-worktree coalescing state for fs_change-driven recomputes. Bounds each
+// worktree to one recompute per FS_RECOMPUTE_MIN_INTERVAL_MS (+ a trailing run)
+// so a chatty worktree can't monopolize `reposGitLimit`. See planWorktreeRecompute.
+const FS_RECOMPUTE_MIN_INTERVAL_MS = 2_500;
+interface WtRecomputeRuntime {
+  lastRunAtMs: number | null;
+  inFlight: boolean;
+  trailingTimer: ReturnType<typeof setTimeout> | null;
+}
+const wtRecomputeState = new Map<string, WtRecomputeRuntime>();
+function wtRuntimeFor(wtPath: string): WtRecomputeRuntime {
+  let s = wtRecomputeState.get(wtPath);
+  if (!s) {
+    s = { lastRunAtMs: null, inFlight: false, trailingTimer: null };
+    wtRecomputeState.set(wtPath, s);
+  }
+  return s;
+}
+
 function worktreeDetailsCacheKey(
   wtPath: string,
   remote?: string | null,
@@ -1605,11 +1634,18 @@ function selectedRemoteForCachedWorktree(wtPath: string): string | null {
 // change-kind gating was added to kill. Patching the one row that changed
 // keeps badges live for ~free. Patch before broadcast so the UI's follow-up
 // /api/repos GET sees the fresh row instead of racing the recompute.
-async function onWorktreeFsChange(wtPath: string): Promise<void> {
+// Recompute one worktree's git state and splice it into the cached /api/repos
+// payload, THEN broadcast. `limit` selects the lane: the shared herd limiter
+// for background fs_change recomputes, or the priority lane for the focused
+// worktree's poll (so it never queues behind chatty repos).
+async function recomputeWorktreeDetails(
+  wtPath: string,
+  limit: <T>(fn: () => Promise<T>) => Promise<T>,
+): Promise<WorktreeDetails | null> {
   let details: WorktreeDetails;
   const selectedRemote = selectedRemoteForCachedWorktree(wtPath);
   try {
-    details = await reposGitLimit(() =>
+    details = await limit(() =>
       selectedRemote
         ? getWorktreeDetails(wtPath, { remote: selectedRemote })
         : getWorktreeDetails(wtPath),
@@ -1620,7 +1656,7 @@ async function onWorktreeFsChange(wtPath: string): Promise<void> {
     invalidateWorktreeDetails(wtPath);
     invalidateReposCache();
     broadcast("change", { kind: "fs_change", path: wtPath });
-    return;
+    return null;
   }
   worktreeDetailsCache.set(worktreeDetailsCacheKey(wtPath, selectedRemote), {
     at: Date.now(),
@@ -1634,6 +1670,48 @@ async function onWorktreeFsChange(wtPath: string): Promise<void> {
     );
   }
   broadcast("change", { kind: "fs_change", path: wtPath });
+  return details;
+}
+
+// fs-watcher reaction, coalesced. A chatty worktree (dev server writing files)
+// fires this every watcher debounce window; without coalescing each call takes
+// a `reposGitLimit` slot and starves quiet repos' dirty badges. planWorktreeRecompute
+// bounds each worktree to one recompute per FS_RECOMPUTE_MIN_INTERVAL_MS plus a
+// single trailing run to capture whatever changed during the cooldown.
+function onWorktreeFsChange(wtPath: string): void {
+  const s = wtRuntimeFor(wtPath);
+  const plan = planWorktreeRecompute(
+    {
+      lastRunAtMs: s.lastRunAtMs,
+      inFlight: s.inFlight,
+      hasPendingTrailing: s.trailingTimer !== null,
+    },
+    Date.now(),
+    FS_RECOMPUTE_MIN_INTERVAL_MS,
+  );
+  if (plan.action === "skip") return;
+  if (plan.action === "schedule-trailing") {
+    s.trailingTimer = setTimeout(() => {
+      s.trailingTimer = null;
+      onWorktreeFsChange(wtPath);
+    }, plan.delayMs);
+    return;
+  }
+  void runWorktreeRecompute(wtPath, reposGitLimit);
+}
+
+async function runWorktreeRecompute(
+  wtPath: string,
+  limit: <T>(fn: () => Promise<T>) => Promise<T>,
+): Promise<WorktreeDetails | null> {
+  const s = wtRuntimeFor(wtPath);
+  s.inFlight = true;
+  s.lastRunAtMs = Date.now();
+  try {
+    return await recomputeWorktreeDetails(wtPath, limit);
+  } finally {
+    s.inFlight = false;
+  }
 }
 
 function ndjsonHeaders(cors: Record<string, string>): Record<string, string> {
@@ -3630,6 +3708,23 @@ const server = Bun.serve<TermWsData, never>({
           json,
           parseSelectedRemotesParam(url.searchParams.get("selectedRemotes")),
         );
+      }
+
+      // Priority refresh for a single worktree — the UI polls this every few
+      // seconds for the worktree the user is actively in, so its dirty/ahead
+      // badges stay live even when chatty background repos saturate the shared
+      // git limiter. Runs on the dedicated priority lane, recomputes, patches
+      // the /api/repos cache, broadcasts, and returns the fresh details.
+      if (url.pathname === "/api/worktree-details" && req.method === "GET") {
+        const wtPath = url.searchParams.get("path");
+        if (!wtPath) return json({ error: "path required" }, { status: 400 });
+        const details = await runWorktreeRecompute(
+          wtPath,
+          reposGitPriorityLimit,
+        );
+        if (!details)
+          return json({ error: "recompute failed" }, { status: 502 });
+        return json({ path: wtPath, details });
       }
 
       if (url.pathname === "/api/worktrees" && req.method === "GET") {
