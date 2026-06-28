@@ -19,7 +19,18 @@ rather than in scattered new files. Notably:
   perf findings and open work, including the **cold-start enrich storm**
   (restart "terminal won't connect" / RSS spike) and its fixes + tuning
   knobs (`WORKTREE_DETAILS_CONCURRENCY`, `STARTUP_FETCH_GRACE_MS`,
-  `MAX_SPAWN_ATTEMPTS`).
+  `MAX_SPAWN_ATTEMPTS`). **Before any perf optimization, read its
+  "2026-06-26 broad perf pass" section.** The hard-won rule, because it
+  caused a wave of regressions: *when you stop doing work for
+  offscreen/hidden things, gate the **cost** but keep the **box and the
+  subscription**.* The cost you remove is usually load-bearing — unmounting
+  destroys geometry other code measures (anchor drift), deferring a renderer
+  reaps the resource it owned (PTY death; needs a "hold" socket), state that
+  arrived before the replay window is lost on reattach (terminal modes), and
+  long cache TTLs go stale (dirty badges). Render a placeholder that preserves
+  geometry, keep a cheap hold-connection for anything with a server-side
+  lifecycle, and only `contain`/`content-visibility` where nothing reads the
+  box. Visible animation is product, not waste.
 
 ## What supergit is
 A multi-repo, multi-agent, worktree-first git dashboard. The workspace is itself

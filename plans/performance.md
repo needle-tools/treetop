@@ -69,6 +69,98 @@ Net wins so far: Paint **45% → 11%**, PaintImage events **3156 → 0**.
 Net regression: Layerize **6% → 39%** — fixing one moved cost to the
 compositor's layer-tree management.
 
+## The 2026-06-26 broad perf pass — what worked, what regressed, the rules
+
+A 65-commit pass (`dd83850`…`2692e9d`) made Treetop "truly much better" but also
+caused a wave of regressions we then spent days fixing (see
+[offscreen-deferral-regressions.md](./offscreen-deferral-regressions.md)). This
+section distills the durable lessons so we get the wins next time without the
+regressions.
+
+### What actually moved the needle
+
+**UI (renderer):**
+- **Visibility-gating** — defer render / poll / image-decode / summary fetch for
+  offscreen columns and rows. `4d61ab6` (the big one: 48 columns → 1 mounted
+  xterm at startup, zero startup long tasks), `5663d62`, `5de3a40`, `6acbfa8`,
+  `e8bfe8d`, `7e15fe0`.
+- **Lazy-mount collapsed UI** — `<details>` bodies / work foldouts render only
+  when open. `eefeb75`, `d612aff`.
+- **Layout containment** — `contain: layout paint style` + `content-visibility`
+  on *contained leaf* subtrees (markdown code frames). `eba02e7`, `ab658ba`.
+- **Avoid forced reflow** — write-only scroll (`scrollTop = 1e9`, let the
+  browser clamp) instead of read-then-write inside rAF/observers. `314b42c`,
+  `d06e3ec`.
+- **Cache across remount + short-circuit on identity** — poller body/etag LRU,
+  daemon returns pre-parsed session so the client skips `JSON.parse`, reference
+  equality before expensive `JSON.stringify` signatures. `b283da2`, `d7125e9`,
+  `ce47651`, `82da3f2`.
+
+**Daemon:**
+- **One shared concurrency limiter for cold fanout** — unbounded `Promise.all`
+  over git/FS work is a thundering herd that spikes RSS to GBs and stalls the
+  single event loop, starving PTY spawns. `createLimiter(8)`. `f96f1f5`,
+  `3b527c0`.
+- **Make speculative work conditional** — don't run git/IO eagerly "for the
+  happy path" when it usually errors; gate on cheap predicates already in hand
+  (e.g. only fetch ahead-log when `ahead>0`). `dd83850`.
+- **Never block a route on a slow background scan** — serve last-good
+  immediately, refresh async: fire-and-forget (`5fda982`) or
+  stale-while-revalidate (`15324c4`, new `async-cache.ts`).
+- **TTL is a safety net, not the invalidator** — when an fs-watcher already
+  invalidates, push the time-TTL long (30s → 10min) so heartbeat polls don't
+  re-trigger the whole fanout. `4537cae`, `ec622b4`.
+- **Debounce trailing, not leading; respect the client's connection budget.**
+  `d15910e`, `0ba526f`.
+
+### The regression pattern (read this before the next perf pass)
+
+**Every "stop doing work for offscreen/hidden things" optimization broke
+something that *relied on* that work.** The cost you remove is often
+load-bearing:
+
+- **Unmounting offscreen things destroys geometry that other code measures.**
+  Excluding offscreen rows/notes from the layout (`ffaaea0`, `538cae9`) broke
+  sticky-note anchor positioning → notes drift on scroll. Fixed by keeping them
+  in the anchor layout (`70045c2`, `dc79e63`).
+- **`content-visibility:auto` on a subtree whose box is read elsewhere gives it
+  synthetic geometry** → wrong scroll targets / anchors. Safe on contained
+  leaves, *not* on session columns whose scroll math is read. (`afa1ca4`
+  reverted by `dc79e63`.)
+- **Deferring the renderer kills the resource lifecycle it owned.** Unmounting
+  `TerminalView` dropped the last WS subscriber → daemon grace-reaped the PTY →
+  agents died offscreen. Mitigation: a muted **"hold" socket** that keeps the
+  subscription alive while the expensive renderer is unmounted (`4d61ab6`, then
+  the hold-socket fixes in `3de74db`).
+- **Mode/state that arrived before the replay window is lost on reattach.** A
+  remounted xterm only gets the recent scrollback, so a TUI's early
+  `\x1b[?2004h` (bracketed paste) was gone → multi-line paste submits at the
+  first newline (#10). Fix: track + re-assert DEC private modes on reattach.
+- **Cache/SWR/long-TTL trade freshness for latency** → stale dirty/ahead badges,
+  late-appearing sessions, stale-on-first-open. The 30s→10min worktree TTL plus
+  a saturated git limiter is exactly the "dirty badge stale ~30s with many
+  repos" bug (#11); fixed with per-worktree coalescing + a priority lane.
+- **"Idle/decorative" animations are real liveness cues, not waste.** Killing
+  them (agent-pill pulse, dock-arrow bounce) read as the app being frozen
+  (`e8a2cda` restored them).
+
+### Rules for the next pass
+1. **Gate the cost, keep the box and the subscription.** Render a placeholder
+   div that preserves geometry; keep a cheap "hold" connection for anything
+   with a server-side lifecycle (PTY, etag, modes).
+2. **If you unmount it, ask what *measured* it** — anchors, scroll math, vines,
+   dock backdrop. Keep those inputs alive.
+3. **`contain`/`content-visibility` only on subtrees whose box nothing reads.**
+4. **Cache freshness needs a correctness test on the invalidation path** — the
+   only cache commits that didn't regress are the ones that tested staleness.
+5. **A long TTL assumes the watcher never misses; pair it with a priority/poll
+   path for the thing the user is looking at.**
+6. **Treat visible animation as product** (`perf-goal.json` codifies this:
+   dimming a visible animation is a regression, not a win).
+7. **Make gating decisions pure + tested** (`shouldMountStickyNote`,
+   `nextCachedSessionSummaryRequest`, `planWorktreeRecompute`,
+   `selectSessionsForBackgroundSpawn`).
+
 ## Mechanics — what each Chrome phase actually costs
 
 Useful background for anyone touching the always-on chrome:
