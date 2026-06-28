@@ -1222,6 +1222,21 @@ button.branch-button:hover {
   flex-direction: row;
   gap: 1.4rem;
   align-items: flex-start;
+  /* Anchor the inline refresh spinner without disturbing the columns. */
+  position: relative;
+}
+/* Small inline "refreshing" spinner shown while a hovered git-status tooltip
+   re-fetches — the existing changed-files list stays visible (we no longer
+   blank it to "Loading…"). Floats in the corner over the columns; in the
+   "clean" state it sits inline after the label. */
+.wt-tt-refresh-spinner {
+  margin-left: 0.4rem;
+}
+.wt-tt-refresh-spinner-float {
+  position: absolute;
+  top: 0;
+  right: 0;
+  margin-left: 0;
 }
 .wt-tt-col {
   display: flex;

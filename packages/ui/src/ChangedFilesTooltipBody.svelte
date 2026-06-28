@@ -42,6 +42,17 @@
   }
 
   export let summary: WtSummaryLike | "loading" | undefined;
+  /** Retain the last successfully-loaded summary so a re-fetch (which flips
+   *  `summary` back to "loading" on hover) keeps showing the existing
+   *  changed-files list with a small inline spinner, instead of blanking the
+   *  whole tooltip to "Loading…". Only the very first load (no prior data)
+   *  shows the bare "Loading…". */
+  let lastGoodSummary: WtSummaryLike | undefined;
+  $: if (summary && summary !== "loading") lastGoodSummary = summary;
+  $: shownSummary =
+    summary && summary !== "loading" ? summary : lastGoodSummary;
+  $: refreshing =
+    (summary === undefined || summary === "loading") && !!lastGoodSummary;
   /** Absolute path to the worktree on disk. When provided, file rows
    *  become hover triggers for a per-file diff popup. When omitted
    *  (older callers), rows render as static text — backwards-safe. */
@@ -283,13 +294,25 @@
   }
 </script>
 
-{#if summary === undefined || summary === "loading"}
+{#if !shownSummary}
   <span class="muted small">Loading…</span>
-{:else if summary.staged.length === 0 && summary.unstaged.length === 0 && summary.untracked.length === 0}
+{:else if shownSummary.staged.length === 0 && shownSummary.unstaged.length === 0 && shownSummary.untracked.length === 0}
   <span class="muted small">clean</span>
+  {#if refreshing}
+    <span
+      class="popover-spinner wt-tt-refresh-spinner"
+      aria-label="Refreshing"
+    ></span>
+  {/if}
 {:else}
-  {@const p = plan(summary)}
+  {@const p = plan(shownSummary)}
   <div class="wt-tt-cols">
+    {#if refreshing}
+      <span
+        class="popover-spinner wt-tt-refresh-spinner wt-tt-refresh-spinner-float"
+        aria-label="Refreshing"
+      ></span>
+    {/if}
     {#each p.columns as col}
       <div class="wt-tt-col">
         <div class="wt-tt-section-head">{col.label}</div>
