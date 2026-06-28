@@ -26,6 +26,7 @@ import {
   CLAUDE_USER_BOX_THEME,
   themeFromRepoColor,
 } from "./sgr-remap";
+import { DecPrivateModeTracker } from "../dec-private-modes";
 
 const REPLAY_CAP = 256 * 1024; // 256KB scrollback per terminal
 // A PTY is "working" while it has emitted a byte within this window. Matches
@@ -64,6 +65,11 @@ interface InternalTerm {
    *  the box's truecolour SGR sequences. Undefined for shells and other
    *  agents — their bytes pass through unchanged. */
   remap?: UserBoxRemap;
+  /** Tracks the PTY's DEC private-mode state (bracketed paste, cursor keys,
+   *  mouse, …) so a client reattaching after the column unmounted can have
+   *  those modes re-asserted — the original enable is usually older than the
+   *  replayed scrollback. See dec-private-modes.ts. */
+  decModes: DecPrivateModeTracker;
   /** When this PTY is a zsh shell, the temp ZDOTDIR we built for it
    *  (a `.zshrc` that sources the user's real one then adds history
    *  hardening). Cleaned up on exit. Undefined for non-zsh PTYs. */
@@ -395,6 +401,10 @@ export class NodePtyBackend implements PtyBackend {
         // in the replay buffer or reaches any client, so the rewrite is
         // applied exactly once and identically for every subscriber.
         if (t.remap) buf = t.remap.transform(buf);
+        // Remember DEC private-mode toggles (bracketed paste, etc.) so a
+        // reattaching client can have them re-asserted after the scrollback
+        // replay — the enable is usually older than the replayed tail.
+        t.decModes.observe(buf);
         t.lastOutputAt = new Date().toISOString();
         this.appendBuffer(t, buf);
         for (const s of t.subs) s.onData(buf);
@@ -517,6 +527,7 @@ export class NodePtyBackend implements PtyBackend {
       awaitingInput: false,
       configError: null,
       working: false,
+      decModes: new DecPrivateModeTracker(),
     };
     // Claude paints its user-message box with truecolour SGR the xterm
     // theme can't reach (see sgr-remap.ts) — attach a stream filter that
@@ -647,6 +658,13 @@ export class NodePtyBackend implements PtyBackend {
         // Replay the recent scrollback first so a re-attaching client
         // sees the agent's recent output before live frames stream in.
         if (t.bufferBytes > 0) sub.onData(this.concatBuffer(t));
+        // Then re-assert DEC private modes the TUI enabled earlier than the
+        // replayed window (e.g. bracketed paste). Without this, a fresh xterm
+        // mounted on reattach defaults them off — issue #10: pasted newlines
+        // submit instead of inserting. Sent only to this new subscriber; live
+        // ones already hold the correct modes.
+        const reassert = t.decModes.reassertBytes();
+        if (reassert.length > 0) sub.onData(reassert);
         // Deliver current state so a freshly-attached client immediately
         // knows whether to outline the panel AND whether a config-error
         // pill is live. Sending configError here is what makes the pill

@@ -25,7 +25,7 @@ Symptom owner: Marcel. Investigated 2026-06-27.
 | 4 | At startup, live TUIs don't show as active in the dock until scrolled to | ✅ fixed (verify) | `3b47599` + Part A `ccad40f` + Part B stagger-spawn (uncommitted) |
 | 5 | TUI scrollback truncated / can't scroll up when returning from a zen session | 🔲 open (note only) | — |
 | 9 | Switch repo (zen or not) → return → agent was NOT working; re-sending revives it | 🔲 open (triage) | — |
-| 10 | Multi-line paste into a TUI submits at the first newline (bracketed paste lost on reattach) | 🔲 open (high) | — |
+| 10 | Multi-line paste into a TUI submits at the first newline (bracketed paste lost on reattach) | ✅ fixed (verify) | DEC private-mode re-assert (uncommitted) |
 | 11 | Dirty state takes ~30s to update with many repos open (git-limiter starvation) | ✅ fixed (verify) | coalesce + priority lane (uncommitted) |
 | 6 | Dirty state doesn't update in the git/folder column | ✅ fixed (verify) | max-wait batcher (uncommitted) |
 | 7 | Paste truncates large clipboard content (into a TUI) | ✅ fixed (verify) | throttled chunking (uncommitted) |
@@ -326,14 +326,26 @@ the paste unbracketed → claude executes at the first `\r` (xterm converts past
 `\n`→`\r`). Explains why it bites after navigating around (which Marcel does a
 lot) and why small pastes are affected too.
 
-**Fix options:** (a) track DEC private-mode state per PTY in the daemon (at
-least bracketed-paste 2004; ideally also application-cursor-keys 1, alt-screen
-1049, etc.) and re-assert it at the head of the reattach replay so a remounted
-xterm restores modes; (b) cheaper stopgap — in `TerminalView.onPaste`, when the
-pasted text is multi-line, force-wrap it in `\x1b[200~…\x1b[201~` ourselves
-rather than trusting xterm's mode flag (risk: a TUI that genuinely has
-bracketed paste OFF would see literal `200~`). (a) is the correct fix and fixes
-a whole class of mode-loss-on-reattach bugs, not just paste.
+**Fix (uncommitted) — option (a), daemon mode-state re-assert:** the daemon now
+tracks each PTY's DEC private-mode state and re-asserts it to a client right
+after the scrollback replay on reattach, so a remounted xterm restores the modes
+the TUI enabled before the replay window. Fixes a whole class of
+mode-loss-on-reattach bugs, not just paste.
+
+- Pure tracker `dec-private-modes.ts` (`DecPrivateModeTracker`, 13 TDD cases):
+  scans output for `ESC [ ? <Pm> h|l`, tracks a curated sticky allowlist
+  (`1, 7, 25, 1000, 1002, 1003, 1004, 1006, 2004`), handles CSI split across
+  chunk boundaries (bounded carry), ignores DEC mode *queries* (`?2004$p`), and
+  deliberately EXCLUDES alt-screen / cursor-save (re-asserting those would
+  scramble the screen-content replay). `reassertBytes()` emits the current state.
+- Wired into `node-pty-backend.ts`: `InternalTerm.decModes`, fed each output
+  chunk (post-remap) in the `data` handler, and `sub.onData(reassertBytes())`
+  appended after the scrollback replay in `subscribe` (sent only to the new
+  subscriber; live ones already hold the right modes).
+- Considered the cheaper stopgap (force-wrap in `TerminalView.onPaste`) but the
+  daemon fix is correct and broader; skipped it. Needs live verification:
+  navigate away from a TUI + back, then paste multi-line text — it should insert
+  newlines, not submit at the first one.
 
 ## 7. Paste truncates large clipboard content (into a TUI) — FIXED (verify)
 
