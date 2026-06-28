@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { join } from "node:path";
 import {
   CodexAppServerAdapter,
   CodexAppServerRpc,
@@ -586,7 +587,10 @@ describe("ClaudeCliAdapter", () => {
     expect(run.pid).toBe(3131);
     exited.resolve(0);
     await run.exited;
-    expect(unlinked).toEqual(["/repo/bun.lockb"]);
+    // The adapter builds this path with path.join, so the separator is
+    // OS-native (backslashes on Windows CI). Build the expected value the same
+    // way instead of hard-coding forward slashes.
+    expect(unlinked).toEqual([join("/repo", "bun.lockb")]);
   });
 
   test("requires a session id for Claude resume sends", () => {

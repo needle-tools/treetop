@@ -1,0 +1,20 @@
+# The codebase is authored with LF line endings. Force LF on checkout for all
+# text/source files so the Windows CI runner doesn't get CRLF — several tests
+# read source files and assert on multi-line snippets, which silently break when
+# the working copy has `\r\n`. Windows shell scripts keep CRLF.
+*.ts   text eol=lf
+*.tsx  text eol=lf
+*.js   text eol=lf
+*.mjs  text eol=lf
+*.cjs  text eol=lf
+*.svelte text eol=lf
+*.json text eol=lf
+*.css  text eol=lf
+*.html text eol=lf
+*.md   text eol=lf
+*.yml  text eol=lf
+*.yaml text eol=lf
+*.sh   text eol=lf
+
+*.bat  text eol=crlf
+*.cmd  text eol=crlf
