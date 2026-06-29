@@ -1,6 +1,6 @@
 # Treetop
 
-[![tests](https://github.com/needle-tools/treetop/actions/workflows/test.yml/badge.svg)](https://github.com/needle-tools/treetop/actions/workflows/test.yml)
+[![tests](https://github.com/needle-tools/treetop/actions/workflows/test.yml/badge.svg)](https://github.com/needle-tools/treetop/actions/workflows/test.yml) [![release](https://github.com/needle-tools/treetop/actions/workflows/release.yml/badge.svg)](https://github.com/needle-tools/treetop/actions/workflows/release.yml)
 
 ### You were built for this jungle.
 
