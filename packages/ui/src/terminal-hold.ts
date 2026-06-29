@@ -20,9 +20,25 @@
  * It never paints, so `visible` is always false (there is no xterm to draw
  * into); the daemon replays backlog when the real renderer remounts on reveal.
  *
+ * RESILIENCE (the bug this revision fixes): the hold socket is the only thing
+ * keeping an offscreen PTY alive, but WebView2 aggressively suspends and drops
+ * background WebSockets when the app is minimized / the screen is locked, and
+ * an idle socket can be idle-closed by the server. The first version did not
+ * reconnect — once the socket dropped, nothing revived it and the daemon's
+ * grace timer reaped the PTY (the user returned to a silently-stopped terminal,
+ * no info). So now:
+ *   - an *unexpected* close (while we still intend to hold the id) schedules a
+ *     reconnect with capped exponential backoff;
+ *   - `refresh()` (wired to visibilitychange) reconnects a dropped socket
+ *     immediately, so coming back from a lock recovers promptly; and
+ *   - an optional heartbeat re-sends the visibility frame on an interval to
+ *     keep an otherwise-silent hold from being idle-closed in the first place.
+ * A deliberate release (`sync(undefined)` / `close()` / switching id) never
+ * reconnects.
+ *
  * The socket protocol is the terminal `/api/terminals/:id/io` WS, same as
- * TerminalView. DOM-free by construction (a `connect` factory and a
- * `shouldDrain` predicate are injected) so it is unit-testable.
+ * TerminalView. DOM-free by construction (a `connect` factory, a `shouldDrain`
+ * predicate, and the timer functions are injected) so it is unit-testable.
  */
 
 /** WebSocket.readyState values, named so this module needs no global. */
@@ -63,6 +79,18 @@ export interface TerminalHoldDeps {
    *  working while off-screen. The host wires this to `!document.hidden` so a
    *  backgrounded tab still mutes. */
   shouldDrain?: () => boolean;
+  /** Schedule a one-shot timer (reconnect backoff + heartbeat). Injected for
+   *  tests; defaults to setTimeout. */
+  schedule?: (fn: () => void, ms: number) => unknown;
+  /** Cancel a scheduled timer. Defaults to clearTimeout. */
+  unschedule?: (handle: unknown) => void;
+  /** Base delay for reconnect backoff (ms); doubles per consecutive failure,
+   *  capped at 30s. Defaults to 1000. */
+  reconnectBaseMs?: number;
+  /** If set (> 0), re-send the visibility frame every `heartbeatMs` while the
+   *  socket is open, so an otherwise-silent hold isn't idle-closed. Off by
+   *  default; the host (SessionView) opts in. */
+  heartbeatMs?: number;
 }
 
 export interface TerminalHold {
@@ -70,7 +98,8 @@ export interface TerminalHold {
    *  is already held over a live socket. */
   sync(termId: string | undefined): void;
   /** Re-send the visibility frame (call after a `visibilitychange` so a
-   *  drain flip reaches the daemon without reconnecting). No-op when idle. */
+   *  drain flip reaches the daemon without reconnecting). If the socket has
+   *  dropped while we still intend to hold the id, reconnects immediately. */
   refresh(): void;
   /** Release the hold and tear the socket down. */
   close(): void;
@@ -78,9 +107,38 @@ export interface TerminalHold {
   heldTermId(): string | undefined;
 }
 
+const RECONNECT_CAP_MS = 30_000;
+
 export function createTerminalHold(deps: TerminalHoldDeps): TerminalHold {
+  const schedule =
+    deps.schedule ?? ((fn: () => void, ms: number) => setTimeout(fn, ms));
+  const unschedule =
+    deps.unschedule ??
+    ((h: unknown) => clearTimeout(h as ReturnType<typeof setTimeout>));
+  const reconnectBaseMs = deps.reconnectBaseMs ?? 1000;
+  const heartbeatMs = deps.heartbeatMs ?? 0;
+
   let ws: HoldSocket | null = null;
-  let termId: string | undefined;
+  /** The id we currently *intend* to hold. Survives socket drops (that's how a
+   *  reconnect knows to re-establish); cleared only on a deliberate release. */
+  let intendedId: string | undefined;
+  let reconnectHandle: unknown = null;
+  let heartbeatHandle: unknown = null;
+  let attempts = 0;
+
+  function clearReconnect(): void {
+    if (reconnectHandle !== null) {
+      unschedule(reconnectHandle);
+      reconnectHandle = null;
+    }
+  }
+
+  function clearHeartbeat(): void {
+    if (heartbeatHandle !== null) {
+      unschedule(heartbeatHandle);
+      heartbeatHandle = null;
+    }
+  }
 
   function sendVisibility(): void {
     if (!ws || ws.readyState !== HOLD_WS.OPEN) return;
@@ -88,10 +146,32 @@ export function createTerminalHold(deps: TerminalHoldDeps): TerminalHold {
     ws.send(JSON.stringify({ type: "visibility", visible: false, drain }));
   }
 
-  function close(): void {
-    const s = ws;
-    ws = null;
-    termId = undefined;
+  function scheduleHeartbeat(): void {
+    if (!heartbeatMs) return;
+    clearHeartbeat();
+    heartbeatHandle = schedule(() => {
+      heartbeatHandle = null;
+      if (!ws || ws.readyState !== HOLD_WS.OPEN) return;
+      sendVisibility();
+      scheduleHeartbeat();
+    }, heartbeatMs);
+  }
+
+  function scheduleReconnect(): void {
+    if (intendedId === undefined) return;
+    if (reconnectHandle !== null) return;
+    const delay = Math.min(reconnectBaseMs * 2 ** attempts, RECONNECT_CAP_MS);
+    attempts += 1;
+    reconnectHandle = schedule(() => {
+      reconnectHandle = null;
+      if (intendedId === undefined) return;
+      connect(intendedId);
+    }, delay);
+  }
+
+  /** Detach a socket's handlers and close it without triggering our own
+   *  reconnect (handlers are nulled first, so its `onclose` never fires). */
+  function teardownSocket(s: HoldSocket | null): void {
     if (!s) return;
     s.onopen = s.onmessage = s.onerror = s.onclose = null;
     if (s.readyState === HOLD_WS.CONNECTING || s.readyState === HOLD_WS.OPEN) {
@@ -99,24 +179,16 @@ export function createTerminalHold(deps: TerminalHoldDeps): TerminalHold {
     }
   }
 
-  function sync(next: string | undefined): void {
-    if (!next) {
-      close();
-      return;
-    }
-    if (
-      ws &&
-      termId === next &&
-      ws.readyState !== HOLD_WS.CLOSING &&
-      ws.readyState !== HOLD_WS.CLOSED
-    ) {
-      return;
-    }
-    close();
-    const s = deps.connect(next);
+  function connect(id: string): void {
+    clearReconnect();
+    const s = deps.connect(id);
     ws = s;
-    termId = next;
-    s.onopen = () => sendVisibility();
+    s.onopen = () => {
+      if (ws !== s) return;
+      attempts = 0; // a successful connection resets backoff
+      sendVisibility();
+      scheduleHeartbeat();
+    };
     s.onmessage = (event) => {
       if (typeof event.data !== "string") return;
       try {
@@ -140,14 +212,74 @@ export function createTerminalHold(deps: TerminalHoldDeps): TerminalHold {
     s.onclose = () => {
       if (ws !== s) return;
       ws = null;
-      termId = undefined;
+      clearHeartbeat();
+      // Unexpected drop while we still intend to hold this id → reconnect.
+      // A deliberate release nulls intendedId (and this handler) first, so
+      // this only fires for genuine drops.
+      if (intendedId === id) scheduleReconnect();
     };
+  }
+
+  function close(): void {
+    clearReconnect();
+    clearHeartbeat();
+    attempts = 0;
+    const s = ws;
+    ws = null;
+    intendedId = undefined;
+    teardownSocket(s);
+  }
+
+  function sync(next: string | undefined): void {
+    if (!next) {
+      close();
+      return;
+    }
+    // Already held over a live socket → nothing to do.
+    if (
+      ws &&
+      intendedId === next &&
+      ws.readyState !== HOLD_WS.CLOSING &&
+      ws.readyState !== HOLD_WS.CLOSED
+    ) {
+      return;
+    }
+    // Switching to a different id: tear down the old socket and reset backoff.
+    // (Reviving the *same* id after a drop falls through with the old socket
+    // already null, so there's nothing to tear down.)
+    if (intendedId !== next) {
+      clearReconnect();
+      clearHeartbeat();
+      attempts = 0;
+      const old = ws;
+      ws = null;
+      teardownSocket(old);
+    }
+    intendedId = next;
+    connect(next);
+  }
+
+  function refresh(): void {
+    if (intendedId === undefined) return;
+    // Socket dropped while we were away (lock/minimize): reconnect now rather
+    // than waiting out the backoff, so reveal recovers promptly.
+    if (
+      !ws ||
+      ws.readyState === HOLD_WS.CLOSED ||
+      ws.readyState === HOLD_WS.CLOSING
+    ) {
+      clearReconnect();
+      attempts = 0;
+      connect(intendedId);
+      return;
+    }
+    sendVisibility();
   }
 
   return {
     sync,
-    refresh: sendVisibility,
+    refresh,
     close,
-    heldTermId: () => termId,
+    heldTermId: () => intendedId,
   };
 }

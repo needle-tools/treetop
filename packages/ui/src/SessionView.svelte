@@ -839,6 +839,11 @@
   const terminalHold = createTerminalHold({
     connect: holdConnect,
     shouldDrain: () => typeof document === "undefined" || !document.hidden,
+    // Re-send the muted visibility frame periodically so an otherwise-silent
+    // hold (an idle agent emitting nothing) isn't idle-closed and then reaped
+    // while the column sits off-screen / in zen mode. Comfortably under the
+    // daemon's 60s grace and a typical WS idle timeout.
+    heartbeatMs: 25_000,
     onAwaiting: (awaiting) => {
       awaitingInput = awaiting;
       onAwaitingChange(awaiting);

@@ -51,11 +51,19 @@ class FakeSocket implements HoldSocket {
   }
 }
 
+interface FakeTimer {
+  fn: () => void;
+  ms: number;
+  cancelled: boolean;
+}
+
 function harness(
   shouldDrain?: () => boolean,
   onAwaiting?: (a: boolean) => void,
+  opts?: { heartbeatMs?: number },
 ) {
   const sockets: FakeSocket[] = [];
+  const timers: FakeTimer[] = [];
   const hold = createTerminalHold({
     connect: (termId) => {
       const s = new FakeSocket();
@@ -65,8 +73,24 @@ function harness(
     },
     shouldDrain,
     onAwaiting,
+    schedule: (fn, ms) => {
+      const t: FakeTimer = { fn, ms, cancelled: false };
+      timers.push(t);
+      return t;
+    },
+    unschedule: (h) => {
+      (h as FakeTimer).cancelled = true;
+    },
+    reconnectBaseMs: 1000,
+    heartbeatMs: opts?.heartbeatMs,
   });
-  return { hold, sockets };
+  // Fire all currently-pending (non-cancelled) timers, FIFO. New timers
+  // scheduled during firing stay pending for the next call.
+  function fireTimers(): void {
+    const pending = timers.splice(0).filter((t) => !t.cancelled);
+    for (const t of pending) t.fn();
+  }
+  return { hold, sockets, timers, fireTimers };
 }
 
 function lastVisibility(s: FakeSocket): { visible: boolean; drain: boolean } {
@@ -195,14 +219,103 @@ describe("createTerminalHold", () => {
     expect(seen).toEqual([]);
   });
 
-  test("a server-side close clears internal state so a later sync reconnects", () => {
+  test("an unexpected server close auto-reconnects (the PTY must not be reaped)", () => {
+    const { hold, sockets, fireTimers } = harness();
+    hold.sync("term-1");
+    sockets[0]!.open();
+    sockets[0]!.serverClose();
+    // The hold is still intended — losing the socket must not release it.
+    expect(hold.heldTermId()).toBe("term-1");
+    // A reconnect is scheduled; firing it opens a fresh socket to the same id.
+    fireTimers();
+    expect(sockets).toHaveLength(2);
+    expect((sockets[1] as FakeSocket & { termId: string }).termId).toBe(
+      "term-1",
+    );
+    // And the new socket resumes the muted subscription on open.
+    sockets[1]!.open();
+    expect(lastVisibility(sockets[1]!).visible).toBe(false);
+  });
+
+  test("a deliberate close() does not reconnect", () => {
+    const { hold, sockets, fireTimers } = harness();
+    hold.sync("term-1");
+    sockets[0]!.open();
+    hold.close();
+    fireTimers();
+    expect(sockets).toHaveLength(1);
+    expect(hold.heldTermId()).toBeUndefined();
+  });
+
+  test("releasing via sync(undefined) does not reconnect on the trailing close", () => {
+    const { hold, sockets, fireTimers } = harness();
+    hold.sync("term-1");
+    sockets[0]!.open();
+    hold.sync(undefined);
+    // A real WebSocket fires onclose after .close(); that must not revive it.
+    sockets[0]!.serverClose();
+    fireTimers();
+    expect(sockets).toHaveLength(1);
+    expect(hold.heldTermId()).toBeUndefined();
+  });
+
+  test("switching id does not reconnect the old socket when it later closes", () => {
+    const { hold, sockets, fireTimers } = harness();
+    hold.sync("term-1");
+    sockets[0]!.open();
+    hold.sync("term-2");
+    // The old socket's delayed onclose must not schedule a reconnect to term-1.
+    sockets[0]!.serverClose();
+    fireTimers();
+    const ids = sockets.map(
+      (s) => (s as FakeSocket & { termId: string }).termId,
+    );
+    expect(ids).toEqual(["term-1", "term-2"]);
+    expect(hold.heldTermId()).toBe("term-2");
+  });
+
+  test("refresh() reconnects immediately when the socket has dropped (resume from lock)", () => {
     const { hold, sockets } = harness();
     hold.sync("term-1");
     sockets[0]!.open();
     sockets[0]!.serverClose();
-    expect(hold.heldTermId()).toBeUndefined();
-    hold.sync("term-1");
+    // Coming back into view: refresh must reconnect right away, without
+    // waiting for the backoff timer to fire.
+    hold.refresh();
     expect(sockets).toHaveLength(2);
+    expect(hold.heldTermId()).toBe("term-1");
+  });
+
+  test("reconnect backoff grows on consecutive drops, resets after a success", () => {
+    const { hold, sockets, timers, fireTimers } = harness();
+    hold.sync("term-1");
+    sockets[0]!.open();
+
+    sockets[0]!.serverClose();
+    const firstDelay = timers.filter((t) => !t.cancelled).at(-1)!.ms;
+    fireTimers(); // reconnect attempt #2 created (still CONNECTING, never opened)
+    sockets[1]!.serverClose();
+    const secondDelay = timers.filter((t) => !t.cancelled).at(-1)!.ms;
+    expect(secondDelay).toBeGreaterThan(firstDelay);
+
+    // A successful open resets the backoff for the next drop.
+    fireTimers();
+    sockets[2]!.open();
+    sockets[2]!.serverClose();
+    const afterSuccessDelay = timers.filter((t) => !t.cancelled).at(-1)!.ms;
+    expect(afterSuccessDelay).toBe(firstDelay);
+  });
+
+  test("heartbeat re-sends the visibility frame to keep an idle hold warm", () => {
+    const { hold, sockets, fireTimers } = harness(undefined, undefined, {
+      heartbeatMs: 25_000,
+    });
+    hold.sync("term-1");
+    sockets[0]!.open();
+    const before = sockets[0]!.sent.length;
+    fireTimers(); // fire the heartbeat
+    expect(sockets[0]!.sent.length).toBeGreaterThan(before);
+    expect(lastVisibility(sockets[0]!).visible).toBe(false);
   });
 
   test("close() tears down an open hold", () => {

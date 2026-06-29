@@ -250,6 +250,9 @@
   const terminalHold = createTerminalHold({
     connect: holdConnect,
     shouldDrain: () => typeof document === "undefined" || !document.hidden,
+    // Keep an otherwise-silent hold warm so it isn't idle-closed and reaped
+    // while off-screen — see SessionView's hold for the rationale.
+    heartbeatMs: 25_000,
     onAwaiting: (awaiting) => dispatch("awaitingChange", { awaiting }),
     onWorking: (working) => dispatch("workingChange", { working }),
   });
