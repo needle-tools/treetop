@@ -613,10 +613,17 @@ export async function scanClaudeUserMessages(
   if (mtimeMs !== undefined) {
     const cached = claudeUserScanCache.get(path);
     if (cached && cached.mtimeMs === mtimeMs) {
-      // LRU touch.
-      claudeUserScanCache.delete(path);
-      claudeUserScanCache.set(path, cached);
-      return cached.result;
+      // mtime matched, but on coarse-resolution filesystems (Windows, some
+      // network mounts) two rapid appends can share an mtime. Only trust the
+      // cache when the byte size also matches; otherwise fall through to the
+      // incremental read below so appended lines aren't dropped.
+      const st = await stat(path).catch(() => null);
+      if (!st || !cached.fullScanDone || st.size === cached.offset) {
+        // LRU touch.
+        claudeUserScanCache.delete(path);
+        claudeUserScanCache.set(path, cached);
+        return cached.result;
+      }
     }
     // File grew since last scan — read only the new bytes.
     if (cached && cached.fullScanDone) {
