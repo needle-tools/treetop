@@ -1,5 +1,7 @@
 # Treetop
 
+[![tests](https://github.com/needle-tools/treetop/actions/workflows/test.yml/badge.svg)](https://github.com/needle-tools/treetop/actions/workflows/test.yml)
+
 ### You were built for this jungle.
 
 <img width="1536" height="1024" alt="image" src="https://github.com/user-attachments/assets/01a3ce2f-1c09-44b1-acab-d478a6a4226e" />
