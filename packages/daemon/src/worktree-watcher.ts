@@ -108,14 +108,26 @@ const GIT_DIR_INTERESTING = new Set([
   "ORIG_HEAD",
 ]);
 
-function shouldIgnore(filename: string): boolean {
+export function shouldIgnore(filename: string): boolean {
   // `filename` is the path relative to the watched root. Normalise to
   // forward-slash segments so the check works on Windows too.
   const parts = filename.split(sep).flatMap((p) => p.split("/"));
   if (parts.some((p) => IGNORED_SEGMENTS.has(p))) return true;
   const gitIdx = parts.indexOf(".git");
   if (gitIdx === -1) return false;
-  const inside = parts.slice(gitIdx + 1);
+  let inside = parts.slice(gitIdx + 1);
+  if (inside.length === 0) return true;
+  // Submodule git dirs live at `.git/modules/<name>/...` (and nest as
+  // `.git/modules/<outer>/modules/<inner>/...`). A submodule's HEAD / index /
+  // refs change when you commit / checkout / `git submodule update` inside it,
+  // which is exactly when the PARENT worktree's view of that submodule (its
+  // dirty badge) changes. Strip the `modules/<name>` prefix(es) so the same
+  // interesting-file logic below applies to a submodule's git dir as to the
+  // top-level one — otherwise these were blanket-ignored and the parent's
+  // dirty badge stayed stuck after the submodule went clean.
+  while (inside.length >= 2 && inside[0] === "modules") {
+    inside = inside.slice(2);
+  }
   if (inside.length === 0) return true;
   // git takes a `<name>.lock` for every write — index.lock, HEAD.lock,
   // refs/heads/main.lock — and unlinks it on commit. The "real" write

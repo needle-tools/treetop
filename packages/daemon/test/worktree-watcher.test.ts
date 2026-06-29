@@ -2,7 +2,7 @@ import { test, expect, describe } from "bun:test";
 import { mkdtemp, writeFile, mkdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { watchWorktree } from "../src/worktree-watcher";
+import { watchWorktree, shouldIgnore } from "../src/worktree-watcher";
 
 async function tempDir(): Promise<string> {
   return mkdtemp(join(tmpdir(), "supergit-watch-test-"));
@@ -252,6 +252,46 @@ describe("watchWorktree", () => {
       stop();
       await rm(dir, { recursive: true, force: true });
     }
+  });
+
+  // A submodule's real git dir lives at `.git/modules/<name>/` in the parent
+  // worktree. When you commit / checkout / `git submodule update` INSIDE a
+  // submodule, git writes that dir's HEAD / index / refs — and that's exactly
+  // when the parent's view of the submodule (and its dirty badge) changes. The
+  // watcher must let those through, the same as it does for the top-level
+  // .git/, or the parent's dirty badge stays stuck after the submodule goes
+  // clean (the daemon never recomputes; only the on-demand tooltip is fresh).
+  describe("shouldIgnore — submodule git dirs (.git/modules/<name>/...)", () => {
+    test("fires for a submodule's HEAD / index / refs writes", () => {
+      expect(shouldIgnore(".git/modules/usd-viewer/HEAD")).toBe(false);
+      expect(shouldIgnore(".git/modules/usd-viewer/index")).toBe(false);
+      expect(shouldIgnore(".git/modules/usd-viewer/packed-refs")).toBe(false);
+      expect(shouldIgnore(".git/modules/usd-viewer/refs/heads/main")).toBe(
+        false,
+      );
+    });
+
+    test("fires for a nested submodule's HEAD", () => {
+      expect(shouldIgnore(".git/modules/outer/modules/inner/HEAD")).toBe(false);
+    });
+
+    test("still ignores chatty / uninteresting writes in a submodule git dir", () => {
+      expect(shouldIgnore(".git/modules/usd-viewer/objects/ab/cdef")).toBe(true);
+      expect(shouldIgnore(".git/modules/usd-viewer/HEAD.lock")).toBe(true);
+      expect(shouldIgnore(".git/modules/usd-viewer/index.lock")).toBe(true);
+      expect(shouldIgnore(".git/modules/usd-viewer/config")).toBe(true);
+      expect(shouldIgnore(".git/modules/usd-viewer/logs/HEAD")).toBe(true);
+    });
+
+    test("top-level .git/ behavior is unchanged", () => {
+      expect(shouldIgnore(".git/HEAD")).toBe(false);
+      expect(shouldIgnore(".git/index")).toBe(false);
+      expect(shouldIgnore(".git/refs/heads/main")).toBe(false);
+      expect(shouldIgnore(".git/index.lock")).toBe(true);
+      expect(shouldIgnore(".git/objects/ab/cdef")).toBe(true);
+      expect(shouldIgnore("src/main.ts")).toBe(false);
+      expect(shouldIgnore("node_modules/foo/index.js")).toBe(true);
+    });
   });
 
   test("stop() prevents future onChange calls", async () => {
