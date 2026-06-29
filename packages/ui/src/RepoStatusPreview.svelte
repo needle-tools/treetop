@@ -47,6 +47,9 @@
 
   export let worktrees: DockWorktreeStatus[] = [];
   export let wtSummaries: Record<string, WtSummaryLike | "loading"> = {};
+  /** Worktrees whose summary is being refreshed in place (data still shown) —
+   *  drives the inline spinner in the changed-files body. */
+  export let refreshingPaths: Record<string, boolean> = {};
 
   /** Same subject clamp as App.svelte's worktree-row tooltip so
    *  long commit subjects don't blow out the column. */
@@ -151,6 +154,7 @@
             summary={s}
             worktreePath={wt.path}
             daemonId={wt.daemonId}
+            refreshing={!!refreshingPaths[wt.path]}
           />
         </div>
       {/if}

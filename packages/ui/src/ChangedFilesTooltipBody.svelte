@@ -51,8 +51,14 @@
   $: if (summary && summary !== "loading") lastGoodSummary = summary;
   $: shownSummary =
     summary && summary !== "loading" ? summary : lastGoodSummary;
-  $: refreshing =
-    (summary === undefined || summary === "loading") && !!lastGoodSummary;
+  /** External refresh-in-flight flag from the host (the summary value stays
+   *  real data during an in-place refresh, so the internal "loading" check
+   *  alone wouldn't catch it). OR'd with the internal first-stale case. */
+  export let refreshing = false;
+  $: showRefreshSpinner =
+    !!shownSummary &&
+    (refreshing ||
+      ((summary === undefined || summary === "loading") && !!lastGoodSummary));
   /** Absolute path to the worktree on disk. When provided, file rows
    *  become hover triggers for a per-file diff popup. When omitted
    *  (older callers), rows render as static text — backwards-safe. */
@@ -298,7 +304,7 @@
   <span class="muted small">Loading…</span>
 {:else if shownSummary.staged.length === 0 && shownSummary.unstaged.length === 0 && shownSummary.untracked.length === 0}
   <span class="muted small">clean</span>
-  {#if refreshing}
+  {#if showRefreshSpinner}
     <span
       class="popover-spinner wt-tt-refresh-spinner"
       aria-label="Refreshing"
@@ -307,7 +313,7 @@
 {:else}
   {@const p = plan(shownSummary)}
   <div class="wt-tt-cols">
-    {#if refreshing}
+    {#if showRefreshSpinner}
       <span
         class="popover-spinner wt-tt-refresh-spinner wt-tt-refresh-spinner-float"
         aria-label="Refreshing"

@@ -4404,16 +4404,20 @@
     maxDelayMs: FS_CHANGE_MAX_BATCH_MS,
     onFlush(paths) {
       const nextFsChangeKey = { ...fsChangeKey };
-      let nextWtSummaryByPath: typeof wtSummaryByPath | null = null;
+      let nextWtSummaryStale: typeof wtSummaryStale | null = null;
       for (const wtPath of paths) {
         nextFsChangeKey[wtPath] = (nextFsChangeKey[wtPath] ?? 0) + 1;
+        // Mark the cached summary stale rather than deleting it, so an open
+        // (or next-hovered) tooltip/dock preview keeps showing the prior
+        // changed-files list and refreshes it in place instead of blanking to
+        // "Loading…". loadWtSummary refetches stale entries on the next hover.
         if (wtSummaryByPath[wtPath]) {
-          nextWtSummaryByPath ??= { ...wtSummaryByPath };
-          delete nextWtSummaryByPath[wtPath];
+          nextWtSummaryStale ??= { ...wtSummaryStale };
+          nextWtSummaryStale[wtPath] = true;
         }
       }
       fsChangeKey = nextFsChangeKey;
-      if (nextWtSummaryByPath) wtSummaryByPath = nextWtSummaryByPath;
+      if (nextWtSummaryStale) wtSummaryStale = nextWtSummaryStale;
       void load("fs-change-batch");
     },
   });
@@ -6422,20 +6426,32 @@
    *  20; this trims further to keep the hover overlay glanceable. */
   const COMMIT_TOOLTIP_LIMIT = 10;
   let wtSummaryByPath: Record<string, WtSummary | "loading"> = {};
+  /** Worktrees whose cached summary is known-stale (an fs_change landed) but
+   *  still worth showing until a hover refreshes it in place. We mark stale
+   *  instead of deleting so the tooltip/dock preview keeps showing the prior
+   *  changed-files list rather than blanking to "Loading…". */
+  let wtSummaryStale: Record<string, boolean> = {};
+  /** Worktrees with a refresh fetch in flight that already have data shown —
+   *  drives a small inline spinner alongside the existing content. */
+  let wtSummaryRefreshing: Record<string, boolean> = {};
 
   async function loadWtSummary(
     path: string,
     opts: { force?: boolean } = {},
   ): Promise<void> {
-    // Without `force`, skip if we already have data (or a fetch in
-    // flight). With `force`, refetch in place: keep the existing data
-    // visible — don't flip to "loading" — so an open tooltip refreshes
-    // contents without flickering through an empty state. The
-    // fs_change SSE handler is what passes `force`; first-hover paths
-    // go through the cached fast path.
-    if (!opts.force && wtSummaryByPath[path]) return;
-    if (!wtSummaryByPath[path]) {
+    const cur = wtSummaryByPath[path];
+    const stale = !!wtSummaryStale[path];
+    // A fetch is already in flight for this path — don't pile on.
+    if (cur === "loading" || wtSummaryRefreshing[path]) return;
+    // Fresh cached data and no reason to refetch → serve it instantly.
+    if (!opts.force && cur && !stale) return;
+    if (!cur) {
+      // First load, no prior data — the only time we show a bare "Loading…".
       wtSummaryByPath = { ...wtSummaryByPath, [path]: "loading" };
+    } else {
+      // Refresh in place: keep the existing content visible and flag a spinner
+      // instead of flickering through an empty state.
+      wtSummaryRefreshing = { ...wtSummaryRefreshing, [path]: true };
     }
     try {
       const qs = new URLSearchParams({ path });
@@ -6458,11 +6474,22 @@
       }
       const data = (await res.json()) as WtSummary;
       wtSummaryByPath = { ...wtSummaryByPath, [path]: data };
+      if (wtSummaryStale[path]) {
+        const next = { ...wtSummaryStale };
+        delete next[path];
+        wtSummaryStale = next;
+      }
     } catch {
       if (wtSummaryByPath[path] === "loading") {
         const next = { ...wtSummaryByPath };
         delete next[path];
         wtSummaryByPath = next;
+      }
+    } finally {
+      if (wtSummaryRefreshing[path]) {
+        const next = { ...wtSummaryRefreshing };
+        delete next[path];
+        wtSummaryRefreshing = next;
       }
     }
   }
@@ -9190,6 +9217,7 @@
                           summary={wtSummaryByPath[wt.path]}
                           worktreePath={wt.path}
                           daemonId={daemonIdForWorktreePath(repos, wt.path)}
+                          refreshing={!!wtSummaryRefreshing[wt.path]}
                         />
                       </span>
                     </Tooltip>
@@ -11545,6 +11573,7 @@
   {dockRepoStatuses}
   {dockRepoWorktrees}
   wtSummaries={wtSummaryByPath}
+  wtRefreshing={wtSummaryRefreshing}
   loadWtSummary={(path) => void loadWtSummary(path)}
   zen={zenRowKey !== null}
   on:pick={(e) => void onDockPick(e.detail)}

@@ -129,6 +129,8 @@
    *  arrow-row preview can render commit lists + file lists without
    *  re-fetching. */
   export let wtSummaries: Record<string, unknown> = {};
+  /** Worktrees with an in-place summary refresh in flight → inline spinner. */
+  export let wtRefreshing: Record<string, boolean> = {};
   /** Trigger function — called on arrow-row hover for each worktree
    *  in the hovered repo so the host can lazy-load the summary that
    *  feeds {wtSummaries}. No-op when omitted. */
@@ -1262,6 +1264,7 @@
         <RepoStatusPreview
           worktrees={dockRepoWorktrees[hoveredRepoId] ?? []}
           {wtSummaries}
+          refreshingPaths={wtRefreshing}
         />
       </aside>
     {/if}
