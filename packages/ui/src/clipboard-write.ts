@@ -29,6 +29,36 @@ export interface ClipboardWriteDeps {
   warn?: (message: string) => void;
 }
 
+/**
+ * Decode the payload of an OSC 52 clipboard-write sequence
+ * (`ESC ] 52 ; <selection> ; <base64> BEL`) into the text it carries.
+ *
+ * `data` is what xterm's OSC handler receives — everything after `52;`,
+ * e.g. `"c;SGVsbG8="`. The first field is the selection target (c, p, …)
+ * which we don't distinguish; the second is base64 of the UTF-8 bytes.
+ *
+ * Returns null for a read request (`<selection>;?`), an empty payload, or
+ * malformed base64 — callers should skip the clipboard write in those cases
+ * rather than overwrite the clipboard with junk. We deliberately ignore read
+ * requests so a TUI can't exfiltrate the user's clipboard back over the PTY.
+ */
+export function decodeOsc52(data: string): string | null {
+  const sep = data.indexOf(";");
+  if (sep === -1) return null;
+  const payload = data.slice(sep + 1);
+  if (payload === "" || payload === "?") return null;
+  let binary: string;
+  try {
+    binary = atob(payload);
+  } catch {
+    return null;
+  }
+  // OSC 52 base64 wraps UTF-8 bytes; decode them back to a proper string so
+  // non-ASCII (accents, emoji, box-drawing) survives the round-trip.
+  const bytes = Uint8Array.from(binary, (ch) => ch.charCodeAt(0));
+  return new TextDecoder().decode(bytes);
+}
+
 export function writeClipboard(text: string, deps: ClipboardWriteDeps): void {
   if (!text) return;
   // 1. In-gesture synchronous path first — the route WebView2 reliably

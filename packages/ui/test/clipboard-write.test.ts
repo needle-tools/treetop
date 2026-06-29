@@ -1,5 +1,44 @@
 import { test, expect, describe } from "bun:test";
-import { writeClipboard } from "../src/clipboard-write";
+import { writeClipboard, decodeOsc52 } from "../src/clipboard-write";
+
+/**
+ * decodeOsc52 turns a TUI's OSC 52 clipboard-write payload into text.
+ * This is the mechanism Claude Code (and other TUIs) use to copy-on-select:
+ * they emit `ESC ] 52 ; c ; <base64> BEL` and expect the terminal emulator
+ * to put it on the OS clipboard. xterm.js drops OSC 52 by default, so
+ * supergit decodes it here and routes it through writeClipboard.
+ */
+describe("decodeOsc52", () => {
+  test("decodes a base64 clipboard payload", () => {
+    // "c;" + btoa("Hello")
+    expect(decodeOsc52("c;SGVsbG8=")).toBe("Hello");
+  });
+
+  test("decodes the primary-selection target too", () => {
+    expect(decodeOsc52("p;SGk=")).toBe("Hi");
+  });
+
+  test("round-trips non-ASCII (UTF-8 bytes, not latin1)", () => {
+    // "café" as UTF-8 (c3 a9 for é) base64-encoded.
+    expect(decodeOsc52("c;Y2Fmw6k=")).toBe("café");
+  });
+
+  test("read request (selection;?) returns null — never leak the clipboard", () => {
+    expect(decodeOsc52("c;?")).toBeNull();
+  });
+
+  test("empty payload returns null", () => {
+    expect(decodeOsc52("c;")).toBeNull();
+  });
+
+  test("missing separator returns null", () => {
+    expect(decodeOsc52("garbage")).toBeNull();
+  });
+
+  test("malformed base64 returns null instead of throwing", () => {
+    expect(decodeOsc52("c;@@@not-base64@@@")).toBeNull();
+  });
+});
 
 /**
  * Behavioral contract for the terminal clipboard-write decision.

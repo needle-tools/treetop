@@ -20,7 +20,7 @@
     chunkPasteBody,
     PASTE_CHUNK_DELAY_MS,
   } from "./terminal-image-paste";
-  import { writeClipboard } from "./clipboard-write";
+  import { writeClipboard, decodeOsc52 } from "./clipboard-write";
   import {
     isTerminalMouseReport,
     joinSelectionRows,
@@ -1278,6 +1278,19 @@
     );
     xterm.open(containerEl);
     logTerminalStartup("xterm-opened");
+    // OSC 52 clipboard writes. TUIs like Claude Code copy-on-select by
+    // emitting `ESC ] 52 ; c ; <base64> BEL` and showing "copied N chars to
+    // clipboard" — but xterm drops OSC 52 by default, so without this the
+    // text never reaches the OS clipboard (the TUI just *thinks* it did).
+    // We decode it and route through copyToClipboard, which the recent
+    // selection gesture's transient activation lets land on the clipboard.
+    // Read requests (`c;?`) decode to null and are ignored so a TUI can't
+    // read the user's clipboard back over the PTY.
+    xterm.parser.registerOscHandler(52, (data) => {
+      const text = decodeOsc52(data);
+      if (text) copyToClipboard(text);
+      return true;
+    });
     repaintRenderDisposable = xterm.onRender(handleTerminalRender);
     // Defer the initial fit to rAF so the flex parent has settled its
     // layout. A synchronous fit.fit() here races the browser's layout
