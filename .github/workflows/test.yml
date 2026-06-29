@@ -10,7 +10,7 @@ jobs:
     runs-on: [self-hosted, Windows, X64, nuc]
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - uses: oven-sh/setup-bun@v2
         with:
@@ -25,12 +25,24 @@ jobs:
       - name: Coverage report
         run: bun test --coverage packages/
 
-      # No-op when DISCORD_WEBHOOK isn't configured (e.g. forks). Git Bash is
-      # present on the self-hosted Windows runner (see release.yml).
+  # Report the test result to Discord from a GitHub-hosted runner. The
+  # self-hosted Windows runner has no bash on PATH (only PowerShell 5.1),
+  # so the bash-based notify can't run there — release.yml's notify job
+  # uses the same ubuntu-latest split. No-op when DISCORD_WEBHOOK isn't
+  # configured (e.g. forks).
+  notify:
+    needs: test
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: .bun-version
+
       - name: Notify Discord
-        if: always()
-        continue-on-error: true
-        shell: bash
         env:
           DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
         run: |
@@ -38,7 +50,7 @@ jobs:
           commit_url="${{ github.server_url }}/${{ github.repository }}/commit/${{ github.sha }}"
           bun run scripts/notify-discord.ts \
             --title "Tests" \
-            --status "${{ job.status }}" \
+            --status "${{ needs.test.result }}" \
             --url "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
             --details "Branch \`${{ github.ref_name }}\` · ${{ github.event_name }} · commit [\`${sha:0:7}\`](${commit_url})" \
             --context "${{ github.workflow }} #${{ github.run_number }}"
