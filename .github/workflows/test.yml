@@ -45,12 +45,18 @@ jobs:
       - name: Notify Discord
         env:
           DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+          ACTOR: ${{ github.actor }}
         run: |
           sha="${{ github.sha }}"
           commit_url="${{ github.server_url }}/${{ github.repository }}/commit/${{ github.sha }}"
+          commit_msg=$(git log -1 --pretty=%B)
           bun run scripts/notify-discord.ts \
             --title "Tests" \
             --status "${{ needs.test.result }}" \
             --url "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
-            --details "Branch \`${{ github.ref_name }}\` · ${{ github.event_name }} · commit [\`${sha:0:7}\`](${commit_url})" \
+            --author "$ACTOR" \
+            --author-url "${{ github.server_url }}/$ACTOR" \
+            --author-icon "${{ github.server_url }}/$ACTOR.png" \
+            --commit "$commit_msg" \
+            --details "Branch \`${{ github.ref_name }}\` · ${{ github.event_name }} · [\`${sha:0:7}\`](${commit_url})" \
             --context "${{ github.workflow }} #${{ github.run_number }}"

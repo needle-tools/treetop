@@ -38,7 +38,7 @@ jobs:
       # The build script otherwise pops Finder/Explorer at the end.
       SUPERGIT_BUILD_OPEN_OUTPUT: "0"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - uses: oven-sh/setup-bun@v2
         with:
@@ -106,7 +106,7 @@ jobs:
     outputs:
       tag: ${{ steps.tag.outputs.tag }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Download built artifacts
         uses: actions/download-artifact@v4
@@ -146,7 +146,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - uses: oven-sh/setup-bun@v2
         with:
@@ -155,6 +155,7 @@ jobs:
       - name: Notify Discord
         env:
           DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+          ACTOR: ${{ github.actor }}
         run: |
           status=success
           if [ "${{ needs.build.result }}" != "success" ] || [ "${{ needs.release.result }}" != "success" ]; then
@@ -163,9 +164,21 @@ jobs:
           tag="${{ needs.release.outputs.tag }}"
           sha="${{ github.sha }}"
           commit_url="${{ github.server_url }}/${{ github.repository }}/commit/${{ github.sha }}"
-          bun run scripts/notify-discord.ts \
-            --title "Treetop release ${tag:-(failed)}" \
-            --status "$status" \
-            --url "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
-            --details "build: ${{ needs.build.result }} · release: ${{ needs.release.result }} · commit [\`${sha:0:7}\`](${commit_url})" \
+          release_url="${{ github.server_url }}/${{ github.repository }}/releases/tag/${tag}"
+          commit_msg=$(git log -1 --pretty=%B)
+          args=(
+            --title "Treetop release ${tag:-(failed)}"
+            --status "$status"
+            --url "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+            --author "$ACTOR"
+            --author-url "${{ github.server_url }}/$ACTOR"
+            --author-icon "${{ github.server_url }}/$ACTOR.png"
+            --commit "$commit_msg"
+            --details "build: ${{ needs.build.result }} · release: ${{ needs.release.result }} · [\`${sha:0:7}\`](${commit_url})"
             --context "${{ github.workflow }} #${{ github.run_number }}"
+          )
+          # Only the successful release has a published page to link to.
+          if [ "$status" = "success" ] && [ -n "$tag" ]; then
+            args+=(--field "📦 Release=[${tag}](${release_url})")
+          fi
+          bun run scripts/notify-discord.ts "${args[@]}"

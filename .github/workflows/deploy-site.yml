@@ -23,7 +23,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - uses: oven-sh/setup-bun@v2
         with:
@@ -57,12 +57,18 @@ jobs:
         if: failure()
         env:
           DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+          ACTOR: ${{ github.actor }}
         run: |
           sha="${{ github.sha }}"
           commit_url="${{ github.server_url }}/${{ github.repository }}/commit/${{ github.sha }}"
+          commit_msg=$(git log -1 --pretty=%B)
           bun run scripts/notify-discord.ts \
             --title "Treetop site deploy" \
             --status "${{ job.status }}" \
             --url "${{ steps.deploy.outputs.url || format('{0}/{1}/actions/runs/{2}', github.server_url, github.repository, github.run_id) }}" \
-            --details "Branch \`${{ github.ref_name }}\` · commit [\`${sha:0:7}\`](${commit_url})" \
+            --author "$ACTOR" \
+            --author-url "${{ github.server_url }}/$ACTOR" \
+            --author-icon "${{ github.server_url }}/$ACTOR.png" \
+            --commit "$commit_msg" \
+            --details "Branch \`${{ github.ref_name }}\` · [\`${sha:0:7}\`](${commit_url})" \
             --context "${{ github.workflow }} #${{ github.run_number }}"
