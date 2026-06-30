@@ -112,6 +112,53 @@ describe("singleFlight", () => {
     expect(ok).toBe(99);
   });
 
+  test("abandons a hung in-flight call once it outlives maxPendingMs", async () => {
+    // The wedge this guards against: a fetch that stalls while the machine
+    // sleeps never settles, so without a staleness bound every later
+    // caller receives the same dead promise and the dashboard never
+    // refreshes until a full reload. With maxPendingMs set, a caller that
+    // arrives after the in-flight call has outlived the bound starts a
+    // fresh run instead.
+    let started = 0;
+    let now = 1000;
+    const clock = () => now;
+    const inner = (): Promise<number> => {
+      started += 1;
+      // First call hangs forever; later calls resolve to their ordinal.
+      if (started === 1) return new Promise<number>(() => {});
+      return Promise.resolve(started);
+    };
+    const sf = singleFlight(inner, { maxPendingMs: 30_000, clock });
+
+    const hung = sf();
+    expect(started).toBe(1);
+
+    // Still within the bound → coalesce onto the hung promise.
+    now = 1000 + 30_000;
+    expect(sf()).toBe(hung);
+    expect(started).toBe(1);
+
+    // Past the bound → abandon the hung call and start fresh.
+    now = 1000 + 30_001;
+    const fresh = sf();
+    expect(started).toBe(2);
+    expect(fresh).not.toBe(hung);
+    expect(await fresh).toBe(2);
+  });
+
+  test("without maxPendingMs, an in-flight call coalesces indefinitely", () => {
+    let started = 0;
+    const inner = (): Promise<number> => {
+      started += 1;
+      return new Promise<number>(() => {});
+    };
+    const sf = singleFlight(inner);
+    const a = sf();
+    const b = sf();
+    expect(a).toBe(b);
+    expect(started).toBe(1);
+  });
+
   test("does not collapse calls that arrive after settle but in the same tick", async () => {
     // Guards a subtle bug: if the wrapper cleared `inFlight` via
     // .then() inside the same microtask the inner resolved, a caller

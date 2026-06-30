@@ -4397,6 +4397,13 @@
         }
       }
     }),
+    // Bound how long a stalled load can be shared. A /api/repos fetch that
+    // hangs while the machine sleeps never settles; without this the
+    // singleFlight wrapper would hand that dead promise to every later
+    // caller (onResume's catch-up load included), so dirty/ahead badges
+    // stayed frozen until a full page reload. A real load finishes in well
+    // under 30s, so this only ever trips on a wedged one.
+    { maxPendingMs: 30_000 },
   );
 
   const FS_CHANGE_BATCH_MS = 250;
@@ -7578,7 +7585,37 @@
     if (!import.meta.env.DEV) {
       window.addEventListener("beforeunload", handleBeforeUnload);
     }
-    const unsubStream = subscribeToStream();
+    // The SSE stream can go silently dead after the OS sleeps/locks: the
+    // socket half-opens, the browser keeps EventSource.readyState === OPEN
+    // and never fires `error`, so it never auto-reconnects — live pushes
+    // (dirty/ahead badges, new sessions) just stop until a manual reload.
+    // Tear it down and resubscribe when the user returns (tab visible
+    // again) or the network comes back; resubscribing runs onopen → load()
+    // so the dashboard also catches up on whatever was missed. A short
+    // dedupe window collapses the visibility+online+focus burst that fires
+    // together on wake into a single reconnect.
+    let streamUnsub = subscribeToStream();
+    let lastStreamReconnectMs = Date.now();
+    const reconnectStream = (): void => {
+      const nowReconnect = Date.now();
+      if (nowReconnect - lastStreamReconnectMs < 2000) return;
+      lastStreamReconnectMs = nowReconnect;
+      streamUnsub();
+      streamUnsub = subscribeToStream();
+    };
+    const onVisibleReconnect = (): void => {
+      // Only on the hidden→visible edge; quick same-tab focus changes don't
+      // background the stream, so don't churn a reconnect on those.
+      if (typeof document !== "undefined" && document.hidden) return;
+      reconnectStream();
+    };
+    document.addEventListener("visibilitychange", onVisibleReconnect);
+    window.addEventListener("online", reconnectStream);
+    const unsubStream = () => {
+      document.removeEventListener("visibilitychange", onVisibleReconnect);
+      window.removeEventListener("online", reconnectStream);
+      streamUnsub();
+    };
     // UI-idle gate: pauses visible-fetch + newSessionPoll while the tab
     // is hidden or the user hasn't interacted in the last 10 s. Avoids
     // the 15-20% daemon CPU pulse from background git fetches when
