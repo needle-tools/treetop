@@ -4,8 +4,10 @@ import {
   readFile,
   writeFile,
   access,
+  link,
   rename,
   unlink,
+  readdir,
 } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { $ } from "bun";
@@ -245,8 +247,69 @@ export interface RemoteDaemonInput {
 const REPOS_FILE = "repos.json";
 const SESSION_TITLES_FILE = "session-titles.json";
 const PREFS_FILE = "prefs.json";
+const OPEN_SESSIONS_PREF_KEY = "supergit:openSessions";
+const OPEN_SESSIONS_BACKUP_DIR = "supergit_openSessions";
 const REMOTE_DAEMONS_FILE = "remote-daemons.json";
 const DEFAULT_REMOTE_DAEMON_PORT = 7777;
+
+function backupTimestamp(date = new Date()): string {
+  return date.toISOString().replace(/:/g, "-").replace(".", "-");
+}
+
+async function writeJsonFileAtomic(
+  path: string,
+  value: unknown,
+): Promise<void> {
+  const tmp = `${path}.tmp-${randomUUID()}`;
+  await writeFile(tmp, JSON.stringify(value, null, 2));
+  await rename(tmp, path);
+}
+
+async function writeJsonFileIfAbsentAtomic(
+  path: string,
+  value: unknown,
+): Promise<void> {
+  const tmp = `${path}.tmp-${randomUUID()}`;
+  await writeFile(tmp, JSON.stringify(value, null, 2));
+  try {
+    await link(tmp, path);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
+  } finally {
+    try {
+      await unlink(tmp);
+    } catch {}
+  }
+}
+
+async function uniqueJsonPath(dir: string, basename: string): Promise<string> {
+  let candidate = join(dir, `${basename}.json`);
+  for (let i = 1; ; i++) {
+    try {
+      await access(candidate);
+    } catch {
+      return candidate;
+    }
+    candidate = join(dir, `${basename}-${i}.json`);
+  }
+}
+
+async function pruneJsonFiles(dir: string, keep: number): Promise<void> {
+  let names: string[];
+  try {
+    names = await readdir(dir);
+  } catch {
+    return;
+  }
+  const jsonFiles = names
+    .filter((name) => name.endsWith(".json"))
+    .sort((a, b) => b.localeCompare(a));
+  for (const stale of jsonFiles.slice(keep)) {
+    try {
+      await unlink(join(dir, stale));
+    } catch {}
+  }
+}
 
 async function resolveGitToplevel(dir: string): Promise<string> {
   try {
@@ -856,6 +919,12 @@ export class Workspace {
     patch: Record<string, string | null>,
   ): Promise<Record<string, string>> {
     const current = await this.getPrefs();
+    if (
+      Object.prototype.hasOwnProperty.call(patch, OPEN_SESSIONS_PREF_KEY) &&
+      typeof current[OPEN_SESSIONS_PREF_KEY] === "string"
+    ) {
+      await this.backupOpenSessionsPref(current[OPEN_SESSIONS_PREF_KEY]);
+    }
     for (const [k, v] of Object.entries(patch)) {
       if (v === null) delete current[k];
       else current[k] = v;
@@ -865,5 +934,44 @@ export class Workspace {
       JSON.stringify(current, null, 2),
     );
     return current;
+  }
+
+  private async backupOpenSessionsPref(raw: string): Promise<void> {
+    const parsed = JSON.parse(raw);
+    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed))
+      throw new Error("supergit:openSessions is not a JSON object");
+
+    const root = join(
+      this.path,
+      ".supergit",
+      "backups",
+      "prefs",
+      OPEN_SESSIONS_BACKUP_DIR,
+    );
+    const latestDir = join(root, "latest");
+    const hourlyDir = join(root, "hourly");
+    const dailyDir = join(root, "daily");
+    await mkdir(latestDir, { recursive: true });
+    await mkdir(hourlyDir, { recursive: true });
+    await mkdir(dailyDir, { recursive: true });
+
+    const now = new Date();
+    const timestamp = backupTimestamp(now);
+    await writeJsonFileAtomic(
+      await uniqueJsonPath(latestDir, timestamp),
+      parsed,
+    );
+    await writeJsonFileIfAbsentAtomic(
+      join(hourlyDir, `${timestamp.slice(0, 13)}.json`),
+      parsed,
+    );
+    await writeJsonFileIfAbsentAtomic(
+      join(dailyDir, `${timestamp.slice(0, 10)}.json`),
+      parsed,
+    );
+
+    await pruneJsonFiles(latestDir, 5);
+    await pruneJsonFiles(hourlyDir, 24);
+    await pruneJsonFiles(dailyDir, 7);
   }
 }

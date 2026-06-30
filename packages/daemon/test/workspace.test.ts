@@ -776,6 +776,105 @@ describe("Workspace", () => {
     expect(result).toEqual({ a: "1", b: "3", c: "4" });
   });
 
+  test("patchPrefs backs up replaced openSessions as parsed JSON files", async () => {
+    const dir = await tempDir();
+    const ws = await Workspace.open(dir);
+    const first = {
+      "/wt": [{ agent: "codex", source: "/sessions/one.jsonl" }],
+    };
+    const second = {
+      "/wt": [{ agent: "codex", source: "/sessions/two.jsonl" }],
+    };
+    const third = {
+      "/wt": [{ agent: "codex", source: "/sessions/three.jsonl" }],
+    };
+
+    await ws.patchPrefs({ "supergit:openSessions": JSON.stringify(first) });
+    await ws.patchPrefs({ "supergit:openSessions": JSON.stringify(second) });
+    await ws.patchPrefs({ "supergit:openSessions": JSON.stringify(third) });
+
+    const root = join(
+      dir,
+      ".supergit",
+      "backups",
+      "prefs",
+      "supergit_openSessions",
+    );
+    const latestFiles = await readdir(join(root, "latest"));
+    const hourlyFiles = await readdir(join(root, "hourly"));
+    const dailyFiles = await readdir(join(root, "daily"));
+
+    expect(latestFiles).toHaveLength(2);
+    expect(hourlyFiles).toHaveLength(1);
+    expect(dailyFiles).toHaveLength(1);
+    expect(latestFiles[0]!).toMatch(
+      /^\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-\d{3}Z(?:-\d+)?\.json$/,
+    );
+    expect(hourlyFiles[0]!).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}\.json$/);
+    expect(dailyFiles[0]!).toMatch(/^\d{4}-\d{2}-\d{2}\.json$/);
+
+    const latestBackups = await Promise.all(
+      latestFiles.map((name) =>
+        readFile(join(root, "latest", name), "utf-8").then(JSON.parse),
+      ),
+    );
+    expect(latestBackups).toContainEqual(first);
+    expect(latestBackups).toContainEqual(second);
+    expect(
+      JSON.parse(
+        await readFile(join(root, "hourly", hourlyFiles[0]!), "utf-8"),
+      ),
+    ).toEqual(first);
+    expect(
+      JSON.parse(await readFile(join(root, "daily", dailyFiles[0]!), "utf-8")),
+    ).toEqual(first);
+  });
+
+  test("openSessions backups keep only latest five, hourly 24, and daily 7", async () => {
+    const dir = await tempDir();
+    const ws = await Workspace.open(dir);
+    const root = join(
+      dir,
+      ".supergit",
+      "backups",
+      "prefs",
+      "supergit_openSessions",
+    );
+    await mkdir(join(root, "hourly"), { recursive: true });
+    await mkdir(join(root, "daily"), { recursive: true });
+    for (let i = 0; i < 30; i++) {
+      await writeFile(
+        join(
+          root,
+          "hourly",
+          `2026-05-${String(i + 1).padStart(2, "0")}T00.json`,
+        ),
+        "{}",
+      );
+    }
+    for (let i = 0; i < 10; i++) {
+      await writeFile(
+        join(root, "daily", `2026-05-${String(i + 1).padStart(2, "0")}.json`),
+        "{}",
+      );
+    }
+
+    await ws.patchPrefs({
+      "supergit:openSessions": JSON.stringify({ "/wt": [] }),
+    });
+    for (let i = 0; i < 8; i++) {
+      await ws.patchPrefs({
+        "supergit:openSessions": JSON.stringify({
+          "/wt": [{ agent: "codex", source: `/sessions/${i}.jsonl` }],
+        }),
+      });
+    }
+
+    expect(await readdir(join(root, "latest"))).toHaveLength(5);
+    expect(await readdir(join(root, "hourly"))).toHaveLength(24);
+    expect(await readdir(join(root, "daily"))).toHaveLength(7);
+  });
+
   test("patchPrefs with null deletes a key", async () => {
     const ws = await Workspace.open(await tempDir());
     await ws.patchPrefs({ a: "1", b: "2" });
