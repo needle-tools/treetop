@@ -1265,15 +1265,43 @@ describe("detectConfigError", () => {
     expect(result!.file).toBe("C:\\Users\\marce\\.claude.json");
   });
 
+  test("detects lowercase 'Configuration error' heading", () => {
+    // Claude Code changed the heading from "Configuration Error" to
+    // "Configuration error" (lowercase e) — the detector must be
+    // case-insensitive or the Repair pill silently stops appearing.
+    const [buf, len] = bufferFrom(
+      "Configuration error\n\n" +
+        "The configuration file at C:\\Users\\marce\\.claude.json contains invalid JSON.\n\n" +
+        "JSON Parse error: Unable to parse JSON string\n\n" +
+        "Choose an option:\n❯ 1. Exit and fix manually\n",
+    );
+    const result = detectConfigError(buf, len);
+    expect(result).not.toBeNull();
+    expect(result!.file).toBe("C:\\Users\\marce\\.claude.json");
+  });
+
   test("detects Unix-style path", () => {
     const [buf, len] = bufferFrom(
       "Configuration Error\n" +
         "The configuration file at /home/user/.claude.json contains invalid JSON.\n" +
-        "JSON Parse error: foo",
+        "JSON Parse error: foo\nChoose an option:\n  1. Exit and fix manually\n",
     );
     const result = detectConfigError(buf, len);
     expect(result).not.toBeNull();
     expect(result!.file).toBe("/home/user/.claude.json");
+  });
+
+  test("ignores the error string when the interactive menu is absent", () => {
+    // An agent merely PRINTING the modal text (prose, source, grep output —
+    // e.g. a session working on supergit itself) must NOT latch the Repair
+    // pill onto a healthy terminal. The genuine modal always renders a
+    // choice menu; without one, this is just text flowing past.
+    const [buf, len] = bufferFrom(
+      "Here's the bug: Claude shows 'Configuration Error' when the " +
+        "configuration file at C:\\Users\\marce\\.claude.json contains invalid JSON.\n" +
+        "We detect that and offer a Repair button.\n",
+    );
+    expect(detectConfigError(buf, len)).toBeNull();
   });
 
   test("returns null for normal output", () => {

@@ -566,6 +566,12 @@
    *  pill stays visible with a spinner + confirmation instead of just
    *  vanishing on click. Reset whenever the underlying error clears. */
   let configAction: ConfigActionState | null = null;
+  /** File of a config error the user has dismissed on THIS client. The
+   *  daemon holds the error sticky and re-asserts it on every state frame,
+   *  so a plain `configError = null` would be undone next frame; we remember
+   *  the dismissed file and suppress the pill for it. A genuinely new error
+   *  (different file) clears this and surfaces again. */
+  let dismissedConfigFile: string | null = null;
   let exitInfo: { code: number; signal?: string } | null = null;
   let sawExitFrame = false;
   let focused = false;
@@ -1044,6 +1050,7 @@
               // drop the pill so it doesn't linger on the exited view.
               configError = null;
               configAction = null;
+              dismissedConfigFile = null;
               onExit(exitInfo);
             } else if (obj?.type === "state") {
               onAwaitingChange(obj.awaitingInput === true);
@@ -1056,8 +1063,13 @@
                 setCurrentWorking(obj.working);
               }
               configError = obj.configError ?? null;
-              // Error gone (or replaced) → drop any stale action feedback.
-              if (!configError) configAction = null;
+              // Error gone (or replaced) → drop any stale action feedback and
+              // let a future re-trigger of a previously-dismissed file surface
+              // again (the dismiss guard only suppresses the active file).
+              if (!configError) {
+                configAction = null;
+                dismissedConfigFile = null;
+              }
             } else if (obj?.type === "io" && typeof obj.rxBytes === "number") {
               recordHiddenRx(obj.rxBytes);
             }
@@ -2047,11 +2059,20 @@
     if (ok) sendConfigExitChoice();
   }
 
-  async function configErrorDismiss(): Promise<void> {
+  function configErrorDismiss(): void {
     if (!configError || configAction?.phase === "pending") return;
-    configAction = startConfigAction("dismiss");
-    sendConfigExitChoice();
-    configAction = settleConfigAction(configAction, true);
+    // Benign: just hide the pill on this client. It used to send "1\r"
+    // (Claude's "Exit and fix manually") into the PTY — which on a
+    // FALSE-POSITIVE pill (an agent merely printed the error text) would
+    // disrupt or exit a perfectly healthy session. Dismiss now writes
+    // nothing to the terminal; it only suppresses the pill. The daemon
+    // keeps the error sticky and re-asserts it each state frame, so we
+    // remember the dismissed file (dismissedConfigFile) and hide the pill
+    // for it. A genuinely new error (different file) still surfaces, and a
+    // real one is still fixable via Repair or directly in the TUI.
+    dismissedConfigFile = configError.file;
+    configError = null;
+    configAction = null;
   }
 
   const CONFIG_BUTTONS: {
@@ -2166,7 +2187,7 @@
     role="presentation"
   ></div>
 
-  {#if configError}
+  {#if configError && configError.file !== dismissedConfigFile}
     <div class="config-error-pill" class:busy={configAction !== null}>
       <span class="config-error-label"
         >Config error: {configError.file.split(/[\\/]/).pop()}</span

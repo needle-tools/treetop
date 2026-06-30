@@ -99,7 +99,21 @@ const AWAITING_INPUT_PATTERNS: RegExp[] = [
 ];
 
 const CONFIG_ERROR_RE =
-  /Configuration Error[\s\S]*?file at\s+(.+?)\s+contains invalid JSON/;
+  /Configuration Error[\s\S]*?file at\s+(.+?)\s+contains invalid JSON/i;
+
+/** The genuine Claude/Codex config-error modal is INTERACTIVE — it always
+ *  renders a choice menu beneath the message. Requiring one of these markers
+ *  in the same scanned tail stops an agent that merely PRINTS the error
+ *  string (in prose, source, or grep output — e.g. a session working on
+ *  supergit itself) from latching the Repair pill onto a healthy terminal.
+ *  The real modal renders atomically, so the menu is present on first
+ *  detection; nextStickyConfigError then holds the pill across later repaints
+ *  that scroll the menu out of the byte-tail window. Several markers are
+ *  accepted (case-insensitive) so a wording tweak to any single line can't
+ *  silently disable detection — the lesson from the heading going
+ *  Error→error, which broke detection until the `i` flag above. */
+const CONFIG_ERROR_MENU_RE =
+  /Choose an option|Exit and fix manually|Reset with default/i;
 
 /** Strip common ANSI/terminal escape sequences from a chunk so the
  *  prompt-pattern regexes can match the plain text. We don't try to
@@ -147,7 +161,8 @@ export function detectConfigError(
 ): { file: string } | null {
   const text = getTailText(buffer, bufferBytes);
   const m = CONFIG_ERROR_RE.exec(text);
-  return m ? { file: m[1]!.trim() } : null;
+  if (!m || !CONFIG_ERROR_MENU_RE.test(text)) return null;
+  return { file: m[1]!.trim() };
 }
 
 /**
