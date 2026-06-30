@@ -7717,6 +7717,28 @@
     );
     if (targetRepo) {
       const rowKey = `${targetRepo.id}|${targetWtPath}`;
+      // In zen mode every other row is hidden (display:none), so revealing
+      // and scrolling a session column in a *different* worktree is a no-op —
+      // the column never enters the DOM and the querySelector below returns
+      // null, so "Go to session" silently does nothing. Re-point zen at the
+      // target worktree's row (restoring its visibility first), mirroring
+      // switchZenToRepo, so navigation actually lands.
+      if (zenRowKey !== null && zenRowKey !== rowKey) {
+        const visible = effectiveVisibleWorktrees(
+          repoPrefsKey(targetRepo),
+          (targetRepo.worktrees ?? []).map((w) => w.path),
+          visibleWorktreesByRepo,
+        );
+        if (!visible.includes(targetWtPath)) {
+          visibleWorktreesByRepo = {
+            ...visibleWorktreesByRepo,
+            [repoPrefsKey(targetRepo)]: [...visible, targetWtPath],
+          };
+        }
+        zenRowKey = rowKey;
+        notesShownInZen = false;
+        resetZenMenu();
+      }
       if (rowFolded[rowKey]) {
         rowFolded = { ...rowFolded, [rowKey]: false };
         if (!rowHasBeenShown[rowKey]) {
