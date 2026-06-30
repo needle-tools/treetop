@@ -345,6 +345,11 @@
      *  name renders so the user can tell repos apart at a glance. */
     color?: string;
     worktrees: Worktree[];
+    /** True only while this is a manifest skeleton whose git fan-out
+     *  hasn't streamed in yet. Drives the row's loading spinner (vs. a
+     *  misleading "no worktrees" — both have worktrees: []). Cleared
+     *  when the enriched `repo` line upserts over the skeleton. */
+    pending?: boolean;
     /** Git remotes for this repo (empty for non-git folders). */
     remotes?: RemoteRef[];
     /** User-defined "open in <X>" links (Coolify dashboards, staging
@@ -9805,10 +9810,11 @@
                   ></span>
                 {/if}
                 <code class="wt-path">{wt.path}</code>
-              {:else if !Array.isArray(repo.worktrees)}
+              {:else if repo.pending || !Array.isArray(repo.worktrees)}
                 <!-- Skeleton from the manifest — its git fan-out hasn't
-                   streamed in yet (worktrees is still undefined; an enriched
-                   repo with genuinely none has worktrees: []). Show a centered
+                   streamed in yet (repo.pending is set; both a skeleton and
+                   an enriched-but-genuinely-empty repo have worktrees: [],
+                   so the flag is what tells them apart). Show a centered
                    loading state instead of a misleading "no worktrees". -->
                 <span class="repo-row-loading">
                   <span class="popover-spinner" aria-hidden="true"></span>

@@ -23,6 +23,12 @@ export interface NdjsonRepo {
   daemonId?: string;
   worktrees: unknown[];
   remotes?: unknown[];
+  /** True only on manifest skeletons — the repo's git fan-out hasn't
+   *  streamed in yet. Lets the row renderer show a loading spinner
+   *  instead of a misleading "no worktrees" badge (both states have
+   *  worktrees: []). Enriched `repo` lines from the daemon never set
+   *  it, so the upsert clears it once real data lands. */
+  pending?: boolean;
   [key: string]: unknown;
 }
 
@@ -40,8 +46,8 @@ export interface ParseNDJSONOpts {
  * Parse a batch of complete NDJSON lines from the /api/repos stream.
  *
  * - `manifest` message: maps `msg.repos` → skeleton NdjsonRepo[] (empty
- *   worktrees/remotes arrays, order preserved, optional color forwarded,
- *   daemonId injected when provided) → calls `onManifest`.
+ *   worktrees/remotes arrays, `pending: true`, order preserved, optional
+ *   color forwarded, daemonId injected when provided) → calls `onManifest`.
  * - `repo` message: calls `onRepo(msg.repo)` (with daemonId injected).
  * - Malformed / JSON-parse-error lines are skipped silently.
  * - Unknown message types are ignored.
@@ -85,6 +91,7 @@ export function parseNDJSONLines(
           color: m.color,
           worktrees: [],
           remotes: [],
+          pending: true,
           ...(daemonId ? { daemonId } : {}),
         }));
         onManifest?.(skeletons);

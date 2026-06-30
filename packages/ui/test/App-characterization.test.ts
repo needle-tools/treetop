@@ -819,6 +819,20 @@ describe("fetchReposNDJSON stream-parsing logic", () => {
     }
   });
 
+  test("manifest skeletons are flagged pending; enriched repos are not", () => {
+    // The `pending` flag is how the row renderer tells an un-enriched
+    // skeleton (show a loading spinner) apart from a genuinely empty
+    // enriched repo (show "no worktrees"). Both have worktrees: [].
+    let skeletons: RepoSkeleton[] = [];
+    const enriched: RepoFull[] = [];
+    parseNDJSONLines([manifestLine, repoALine], {
+      onManifest: (s) => (skeletons = s),
+      onRepo: (r) => enriched.push(r),
+    });
+    for (const s of skeletons) expect(s.pending).toBe(true);
+    expect(enriched[0]!.pending).toBeUndefined();
+  });
+
   test("manifest skeletons carry the optional color field", () => {
     let skeletons: RepoSkeleton[] = [];
     parseNDJSONLines([manifestLine], { onManifest: (s) => (skeletons = s) });
