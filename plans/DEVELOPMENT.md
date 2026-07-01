@@ -107,6 +107,36 @@ identity, invites, keys, and remote cache. Repo paths inside `repos.json` still
 point at the real repos, so commands launched in terminals can still affect
 real files and git state.
 
+For persistent scenario workspaces, use a named side instance:
+
+```sh
+npm run dev -- --workspace perf-scroll
+```
+
+This uses `$HOME/supergit/workspaces/perf-scroll`, creating it if it does not
+exist and reusing it when it does. The workspace is editable by default, has
+its own prefs/backups/logs, and starts with side-instance behavior (peer
+discovery, auto-fetch, and `.claude.json` repair disabled). Use
+`http://localhost:17779`.
+
+To seed a missing named workspace from the main workspace:
+
+```sh
+npm run dev -- --workspace perf-scroll --copy-from-main
+```
+
+To inspect without allowing workspace/repo mutations:
+
+```sh
+npm run dev -- --workspace perf-scroll --readonly
+```
+
+Run a second side workspace by choosing another port pair:
+
+```sh
+npm run dev -- --workspace perf-images --port 17877 --ui-port 17879
+```
+
 ## The point
 
 The goal isn't "the AI wrote tests" — AI can write bad tests too. The goal

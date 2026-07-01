@@ -291,7 +291,10 @@ const WORKSPACE_PATH = TEMP_WORKSPACE_SOURCE
   : REQUESTED_WORKSPACE_PATH;
 const TEMP_WORKSPACE_MODE = TEMP_WORKSPACE_SOURCE !== null;
 const READONLY_MODE = envFlag(process.env.TREETOP_READONLY);
-const SIDE_INSTANCE_MODE = READONLY_MODE || TEMP_WORKSPACE_MODE;
+const EXPLICIT_SIDE_INSTANCE_MODE = envFlag(process.env.TREETOP_SIDE_INSTANCE);
+const SIDE_INSTANCE_MODE =
+  EXPLICIT_SIDE_INSTANCE_MODE || READONLY_MODE || TEMP_WORKSPACE_MODE;
+const WORKSPACE_LABEL = process.env.TREETOP_WORKSPACE_LABEL?.trim() || null;
 const INSTANCE_RUNTIME_PATH = process.env.TREETOP_RUNTIME_DIR
   ? resolve(process.env.TREETOP_RUNTIME_DIR)
   : process.env.TREETOP_LOG_DIR
@@ -1075,6 +1078,12 @@ if (TEMP_WORKSPACE_SOURCE) {
 }
 if (READONLY_MODE) {
   console.log("supergit daemon: read-only mode enabled (TREETOP_READONLY=1)");
+}
+if (EXPLICIT_SIDE_INSTANCE_MODE) {
+  console.log("supergit daemon: side-instance mode enabled");
+}
+if (WORKSPACE_LABEL) {
+  console.log(`supergit daemon: workspace label = ${WORKSPACE_LABEL}`);
 }
 if (INSTANCE_RUNTIME_PATH !== WORKSPACE_PATH) {
   console.log(`supergit daemon: instance runtime = ${INSTANCE_RUNTIME_PATH}`);
@@ -2792,6 +2801,8 @@ const server = Bun.serve<TermWsData, never>({
           workspace: WORKSPACE_PATH,
           temporaryWorkspace: TEMP_WORKSPACE_MODE,
           sourceWorkspace: TEMP_WORKSPACE_SOURCE,
+          sideInstance: SIDE_INSTANCE_MODE,
+          workspaceLabel: WORKSPACE_LABEL,
           totalMemBytes: totalmem(),
           localIp: findLocalIp(),
           port: PORT,
@@ -3012,6 +3023,8 @@ const server = Bun.serve<TermWsData, never>({
                   temporaryWorkspace: TEMP_WORKSPACE_MODE,
                   sourceWorkspace: TEMP_WORKSPACE_SOURCE,
                   readonly: READONLY_MODE,
+                  sideInstance: SIDE_INSTANCE_MODE,
+                  workspaceLabel: WORKSPACE_LABEL,
                 }),
               }
             : {}),

@@ -36,6 +36,7 @@ export interface DebugAnalyzeInstance {
   sourceWorkspace: string | null;
   readonly: boolean;
   sideInstance: boolean;
+  workspaceLabel?: string | null;
 }
 
 export function debugAnalyzeInstance(args: {
@@ -44,10 +45,17 @@ export function debugAnalyzeInstance(args: {
   temporaryWorkspace: boolean;
   sourceWorkspace: string | null;
   readonly: boolean;
+  sideInstance?: boolean;
+  workspaceLabel?: string | null;
 }): DebugAnalyzeInstance {
   return {
-    ...args,
-    sideInstance: args.temporaryWorkspace || args.readonly,
+    workspace: args.workspace,
+    port: args.port,
+    temporaryWorkspace: args.temporaryWorkspace,
+    sourceWorkspace: args.sourceWorkspace,
+    readonly: args.readonly,
+    sideInstance: args.sideInstance ?? (args.temporaryWorkspace || args.readonly),
+    workspaceLabel: args.workspaceLabel,
   };
 }
 

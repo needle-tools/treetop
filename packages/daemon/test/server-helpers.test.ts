@@ -1102,6 +1102,28 @@ describe("debugAnalyzeInstance", () => {
       sideInstance: false,
     });
   });
+
+  test("marks explicit named workspaces as side instances", () => {
+    expect(
+      debugAnalyzeInstance({
+        workspace: "/Users/me/supergit/workspaces/perf-scroll",
+        port: 17777,
+        temporaryWorkspace: false,
+        sourceWorkspace: null,
+        readonly: false,
+        sideInstance: true,
+        workspaceLabel: "perf-scroll",
+      }),
+    ).toEqual({
+      workspace: "/Users/me/supergit/workspaces/perf-scroll",
+      port: 17777,
+      temporaryWorkspace: false,
+      sourceWorkspace: null,
+      readonly: false,
+      sideInstance: true,
+      workspaceLabel: "perf-scroll",
+    });
+  });
 });
 
 describe("temporary workspace copy policy", () => {

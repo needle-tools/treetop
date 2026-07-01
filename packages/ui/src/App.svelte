@@ -7416,6 +7416,25 @@
   let daemonVersion: string | null = null;
   let temporaryWorkspace = false;
   let temporaryWorkspaceSource: string | null = null;
+  let sideInstance = false;
+  let workspaceLabel: string | null = null;
+  let readonlyWorkspace = false;
+  $: workspaceBadgeText = temporaryWorkspace
+    ? "TEMP WORKSPACE"
+    : workspaceLabel
+      ? `WORKSPACE ${workspaceLabel}`
+      : readonlyWorkspace
+        ? "READ ONLY"
+        : null;
+  $: workspaceBadgeTitle = temporaryWorkspace
+    ? temporaryWorkspaceSource
+      ? `Temporary workspace copied from ${temporaryWorkspaceSource}`
+      : "Temporary workspace"
+    : workspaceLabel
+      ? `Side workspace ${workspaceLabel}${readonlyWorkspace ? " (read-only)" : ""}`
+      : readonlyWorkspace
+        ? "Read-only workspace"
+        : "";
 
   /** Fetch system memory from the daemon (via /api/health) so the TUI
    *  hot/warm thresholds scale to a fraction of total RAM. Static for
@@ -7431,6 +7450,9 @@
         version?: unknown;
         temporaryWorkspace?: unknown;
         sourceWorkspace?: unknown;
+        sideInstance?: unknown;
+        workspaceLabel?: unknown;
+        readonly?: unknown;
       };
       if (typeof body.totalMemBytes === "number" && body.totalMemBytes > 0) {
         systemMemBytes = body.totalMemBytes;
@@ -7444,6 +7466,12 @@
       temporaryWorkspace = body.temporaryWorkspace === true;
       temporaryWorkspaceSource =
         typeof body.sourceWorkspace === "string" ? body.sourceWorkspace : null;
+      sideInstance = body.sideInstance === true;
+      workspaceLabel =
+        typeof body.workspaceLabel === "string" && body.workspaceLabel
+          ? body.workspaceLabel
+          : null;
+      readonlyWorkspace = body.readonly === true;
     } catch {
       // best-effort — we fall back to TUI_*_MEM_FALLBACK byte ceilings.
     }
@@ -7843,14 +7871,12 @@
        JS-positioned fixed tooltips anchored inside). Per-button
        popovers still anchor to their own `.actions-anchor`. -->
   <div class="menubar-stack" class:zen-menu-armed={zenMenuArmed}>
-    {#if temporaryWorkspace}
+    {#if workspaceBadgeText && (temporaryWorkspace || sideInstance || readonlyWorkspace)}
       <div
         class="temp-workspace-badge"
-        title={temporaryWorkspaceSource
-          ? `Temporary workspace copied from ${temporaryWorkspaceSource}`
-          : "Temporary workspace"}
+        title={workspaceBadgeTitle}
       >
-        TEMP WORKSPACE
+        {workspaceBadgeText}
       </div>
     {/if}
     <nav class="menubar" aria-label="Workspace actions">
