@@ -10895,11 +10895,8 @@
                                   )}
                                   cwd={shellResumeCwd[s.source] ?? wt.path}
                                   procName={`supergit-tui-new-${s.agent}`}
-                                  attachTermId={s.source.startsWith(
-                                    "__attached__:",
-                                  )
-                                    ? s.source.split(":").pop()
-                                    : undefined}
+                                  attachTermId={resolveTermId(s, newTermIds) ??
+                                    s.attachTermId}
                                   resumeFromTermId={shellResumeFromTermId[
                                     s.source
                                   ]}
@@ -10942,6 +10939,14 @@
                                     })}
                                   on:spawn={(e) => {
                                     markTerminalLive(e.detail.id);
+                                    const withAttach = setSessionAttachTermId(
+                                      openSessionsByWt,
+                                      wt.path,
+                                      s.source,
+                                      e.detail.id,
+                                    );
+                                    if (withAttach !== openSessionsByWt)
+                                      openSessionsByWt = withAttach;
                                     // Capture the daemon-assigned termId for
                                     // every `__new__:` source (any agent) so
                                     // disposeNewSessionColumn can DELETE
