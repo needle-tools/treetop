@@ -79,9 +79,10 @@ describe("seedWorkspaceIfMissing", () => {
       await expect(
         readFile(join(target, "daemon.log"), "utf-8"),
       ).rejects.toThrow();
-      expect(await readFile(join(target, "notes.json"), "utf-8")).toContain(
-        join(target, "attachments", "paste.txt"),
-      );
+      const copiedNotes = JSON.parse(
+        await readFile(join(target, "notes.json"), "utf-8"),
+      ) as { path?: string };
+      expect(copiedNotes.path).toBe(join(target, "attachments", "paste.txt"));
     } finally {
       await rm(root, { recursive: true, force: true });
     }
