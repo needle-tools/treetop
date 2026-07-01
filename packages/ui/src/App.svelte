@@ -954,6 +954,7 @@
    *  PTY frames). Drives the rotating-gradient border on the agent pill. */
   let transientWorking: Record<string, boolean> = {};
   let liveTerminalIds: ReadonlySet<string> = new Set();
+  let initialTerminalSnapshotReady = false;
   function markTerminalLive(id: string): void {
     liveTerminalIds = new Set([...liveTerminalIds, id]);
   }
@@ -2787,16 +2788,18 @@
     let next = openSessionsByWt;
     for (const [wtPath, sessions] of Object.entries(next)) {
       for (const s of sessions) {
-        if (!s.source.startsWith("__new__:") || !s.resumeSessionId) continue;
+        if (!s.source.startsWith("__new__:")) continue;
+        const sessionId = s.resumeSessionId ?? s.preassignedSessionId;
+        if (!sessionId) continue;
         for (const repo of repoList) {
           for (const wt of repo.worktrees ?? []) {
             if (wt.path !== wtPath) continue;
             const match = (wt.agents ?? []).find(
               (a: { agent: string; sessionId?: string; source: string }) =>
-                a.agent === s.agent && a.sessionId === s.resumeSessionId,
+                a.agent === s.agent && a.sessionId === sessionId,
             );
             if (!match) continue;
-            const termId = newTermIds[s.source];
+            const termId = newTermIds[s.source] ?? s.attachTermId;
             next = {
               ...next,
               [wtPath]: next[wtPath]!.map((x) =>
@@ -2804,6 +2807,7 @@
                   ? {
                       ...x,
                       source: match.source,
+                      resumeSessionId: sessionId,
                       mode: "terminal" as const,
                       attachTermId: termId,
                     }
@@ -3110,10 +3114,10 @@
     sessionId?: string;
     /** Optional. UUID generated when this column was opened via the
      *  "+ new session" button, passed as `claude --session-id <uuid>`
-     *  on spawn to force a fresh conversation. Once `resumeSessionId`
-     *  is stamped (the activity tail surfaced the real agent-side id —
-     *  same UUID, just observed via JSONL) the resume path takes
-     *  over. Claude-only; codex has no equivalent flag. */
+     *  on spawn to force a fresh conversation. This is not enough to
+     *  use `claude --resume`: `resumeSessionId` takes over only after
+     *  the activity tail has surfaced the real JSONL-backed session.
+     *  Claude-only; codex has no equivalent flag. */
     preassignedSessionId?: string;
     /** Optional. `"terminal"` means SessionView should hydrate into live
      *  terminal output on remount. This is process state, not the
@@ -4237,6 +4241,7 @@
             ) as typeof openSessionsByWt;
           }
         }
+        if (!initialTerminalSnapshotReady) initialTerminalSnapshotReady = true;
         await reposStream;
         // Re-reconcile once every worktree's agents have streamed in, so
         // sessions matchable only via the per-worktree agent scan (no
@@ -4380,6 +4385,7 @@
       } catch (e) {
         error = e instanceof Error ? e.message : String(e);
       } finally {
+        if (!initialTerminalSnapshotReady) initialTerminalSnapshotReady = true;
         loading = false;
         loadingSlow = false;
         if (loadingSlowTimer) {
@@ -10921,8 +10927,14 @@
                                   )}
                                   cwd={shellResumeCwd[s.source] ?? wt.path}
                                   procName={`supergit-tui-new-${s.agent}`}
+                                  ownerId={s.agent === "shell"
+                                    ? undefined
+                                    : (s.resumeSessionId ??
+                                      s.preassignedSessionId ??
+                                      s.source)}
                                   attachTermId={resolveTermId(s, newTermIds) ??
                                     s.attachTermId}
+                                  spawnReady={initialTerminalSnapshotReady}
                                   resumeFromTermId={shellResumeFromTermId[
                                     s.source
                                   ]}
@@ -10983,35 +10995,6 @@
                                         [s.source]: e.detail.id,
                                       };
                                       markTransientDiscovery(s.source);
-                                    }
-                                    // Claude with a preassignedSessionId: by
-                                    // this point claude has been exec'd with
-                                    // `--session-id <uuid>` and has created
-                                    // the JSONL. Promote the preassigned id to
-                                    // resumeSessionId so a reload spawns
-                                    // `claude --resume <uuid>` instead of
-                                    // re-passing `--session-id` (which now
-                                    // errors with "Session ID is already in
-                                    // use"). The activity-tail stamping does
-                                    // the same thing eventually, but it's
-                                    // racy — the user can reload faster than
-                                    // the SSE event arrives.
-                                    if (
-                                      s.source.startsWith("__new__:claude:") &&
-                                      s.preassignedSessionId &&
-                                      !s.resumeSessionId
-                                    ) {
-                                      const sid = s.preassignedSessionId;
-                                      openSessionsByWt = {
-                                        ...openSessionsByWt,
-                                        [wt.path]: (
-                                          openSessionsByWt[wt.path] ?? []
-                                        ).map((x) =>
-                                          x.source === s.source
-                                            ? { ...x, resumeSessionId: sid }
-                                            : x,
-                                        ),
-                                      };
                                     }
                                     // SHELLS only: also swap the persisted
                                     // source from `__new__:shell:<random>` to
@@ -11237,6 +11220,7 @@
                                       claudeEffort: e,
                                     })}
                                   attachTermId={s.attachTermId}
+                                  spawnReady={initialTerminalSnapshotReady}
                                   manualTitleOverride={agentMeta?.manualTitle ??
                                     newSessionTitles[titleSource] ??
                                     newSessionTitles[s.source]}

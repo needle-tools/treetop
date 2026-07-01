@@ -284,6 +284,90 @@ describe("reconcileLiveAgentTerminals", () => {
     expect(after[wtPath]?.[0]?.attachTermId).toBe("t_live_fastvid");
   });
 
+  test("reattaches a preassigned but not-yet-discovered claude session", () => {
+    const before: Record<string, OpenSession[]> = {
+      [wtPath]: [
+        {
+          agent: "claude",
+          source: "__new__:claude:client-key",
+          preassignedSessionId: "11111111-2222-3333-4444-555555555555",
+        },
+      ],
+    };
+    const after = reconcileLiveAgentTerminals(before, repos, [
+      {
+        id: "t_live_claude",
+        ownerId: "11111111-2222-3333-4444-555555555555",
+        cwd: wtPath,
+        agent: "claude",
+      },
+    ]);
+
+    expect(after[wtPath]?.[0]).toMatchObject({
+      agent: "claude",
+      source: "__new__:claude:client-key",
+      mode: "terminal",
+      attachTermId: "t_live_claude",
+      preassignedSessionId: "11111111-2222-3333-4444-555555555555",
+    });
+    expect(after[wtPath]?.[0]?.resumeSessionId).toBeUndefined();
+  });
+
+  test("reattaches a not-yet-discovered codex session by synthetic owner", () => {
+    const before: Record<string, OpenSession[]> = {
+      [wtPath]: [
+        {
+          agent: "codex",
+          source: "__new__:codex:client-key",
+        },
+      ],
+    };
+    const after = reconcileLiveAgentTerminals(before, repos, [
+      {
+        id: "t_live_codex",
+        ownerId: "__new__:codex:client-key",
+        cwd: wtPath,
+        agent: "codex",
+      },
+    ]);
+
+    expect(after[wtPath]?.[0]).toMatchObject({
+      agent: "codex",
+      source: "__new__:codex:client-key",
+      mode: "terminal",
+      attachTermId: "t_live_codex",
+    });
+    expect(after[wtPath]?.[0]?.resumeSessionId).toBeUndefined();
+  });
+
+  test("reattaches a stamped codex transient whose live PTY still has the synthetic owner", () => {
+    const before: Record<string, OpenSession[]> = {
+      [wtPath]: [
+        {
+          agent: "codex",
+          source: "__new__:codex:client-key",
+          resumeSessionId: "codex-real-session",
+        },
+      ],
+    };
+    const after = reconcileLiveAgentTerminals(before, repos, [
+      {
+        id: "t_live_codex",
+        ownerId: "__new__:codex:client-key",
+        cwd: wtPath,
+        agent: "codex",
+      },
+    ]);
+
+    expect(after[wtPath]?.[0]).toMatchObject({
+      agent: "codex",
+      source: "__new__:codex:client-key",
+      resumeSessionId: "codex-real-session",
+      mode: "terminal",
+      attachTermId: "t_live_codex",
+    });
+  });
+
   test("does not attach a terminal from another worktree", () => {
     const before: Record<string, OpenSession[]> = {
       [wtPath]: [{ agent: "codex", source }],
@@ -1114,6 +1198,7 @@ describe("shouldMountTerminalView", () => {
         hasSessionId: true,
         hasCwd: true,
         nearViewport: true,
+        spawnReady: true,
       }),
     ).toBe(true);
   });
@@ -1125,6 +1210,7 @@ describe("shouldMountTerminalView", () => {
         hasSessionId: true,
         hasCwd: true,
         nearViewport: false,
+        spawnReady: true,
       }),
     ).toBe(false);
   });
@@ -1136,6 +1222,7 @@ describe("shouldMountTerminalView", () => {
         hasSessionId: false,
         hasCwd: true,
         nearViewport: true,
+        spawnReady: true,
       }),
     ).toBe(false);
     expect(
@@ -1144,6 +1231,19 @@ describe("shouldMountTerminalView", () => {
         hasSessionId: true,
         hasCwd: false,
         nearViewport: true,
+        spawnReady: true,
+      }),
+    ).toBe(false);
+  });
+
+  test("waits for the initial terminal snapshot before resuming", () => {
+    expect(
+      shouldMountTerminalView({
+        mode: "terminal",
+        hasSessionId: true,
+        hasCwd: true,
+        nearViewport: true,
+        spawnReady: false,
       }),
     ).toBe(false);
   });
@@ -1152,16 +1252,38 @@ describe("shouldMountTerminalView", () => {
 describe("shouldMountNewSessionTerminal", () => {
   test("mounts transient terminal UI only near the viewport", () => {
     expect(
-      shouldMountNewSessionTerminal({ hasCwd: true, nearViewport: true }),
+      shouldMountNewSessionTerminal({
+        hasCwd: true,
+        nearViewport: true,
+        spawnReady: true,
+      }),
     ).toBe(true);
     expect(
-      shouldMountNewSessionTerminal({ hasCwd: true, nearViewport: false }),
+      shouldMountNewSessionTerminal({
+        hasCwd: true,
+        nearViewport: false,
+        spawnReady: true,
+      }),
     ).toBe(false);
   });
 
   test("requires a cwd to spawn or attach", () => {
     expect(
-      shouldMountNewSessionTerminal({ hasCwd: false, nearViewport: true }),
+      shouldMountNewSessionTerminal({
+        hasCwd: false,
+        nearViewport: true,
+        spawnReady: true,
+      }),
+    ).toBe(false);
+  });
+
+  test("waits for the initial terminal snapshot before spawning", () => {
+    expect(
+      shouldMountNewSessionTerminal({
+        hasCwd: true,
+        nearViewport: true,
+        spawnReady: false,
+      }),
     ).toBe(false);
   });
 });

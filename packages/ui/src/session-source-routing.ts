@@ -90,20 +90,23 @@ export function shouldMountTerminalView(args: {
   hasSessionId: boolean;
   hasCwd: boolean;
   nearViewport: boolean;
+  spawnReady: boolean;
 }): boolean {
   return (
     args.mode === "terminal" &&
     args.hasSessionId &&
     args.hasCwd &&
-    args.nearViewport
+    args.nearViewport &&
+    args.spawnReady
   );
 }
 
 export function shouldMountNewSessionTerminal(args: {
   hasCwd: boolean;
   nearViewport: boolean;
+  spawnReady: boolean;
 }): boolean {
-  return args.hasCwd && args.nearViewport;
+  return args.hasCwd && args.nearViewport && args.spawnReady;
 }
 
 export function shouldHoldOffscreenAttachedTerminal(args: {
@@ -277,13 +280,15 @@ export function reconcileLiveAgentTerminals(
     sessions.forEach((s, index) => {
       if (s.agent === "shell" || s.agent === "files" || s.agent === "history")
         return;
-      const sessionId =
-        s.resumeSessionId ??
-        s.preassignedSessionId ??
-        sessionIdByWtAndSource.get(`${wtPath}\0${s.source}`);
-      if (!sessionId) return;
-      const live = liveByOwner.get(sessionId);
+      const ownerIds = [
+        s.resumeSessionId,
+        s.preassignedSessionId,
+        sessionIdByWtAndSource.get(`${wtPath}\0${s.source}`),
+        s.source.startsWith("__new__:") ? s.source : undefined,
+      ].filter((id): id is string => typeof id === "string" && id.length > 0);
+      const live = ownerIds.map((id) => liveByOwner.get(id)).find(Boolean);
       if (!live || live.cwd !== wtPath) return;
+      if (live.agent !== s.agent) return;
       if (s.attachTermId === live.id && s.mode === "terminal") return;
       if (!nextSessions) nextSessions = sessions.slice();
       nextSessions[index] = {

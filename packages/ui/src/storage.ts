@@ -737,8 +737,10 @@ export function dockSessionHiddenAsForeign(
  *
  *  For agent TUIs the rule is:
  *  - **no `resumeSessionId`** (the brand-new spawn, JSONL not yet on
- *    disk): the bare agent CLI. Claude/Codex will mint their own
- *    session id and start writing it.
+ *    disk): start a fresh agent CLI. Claude may carry a
+ *    `preassignedSessionId`, in which case we pass
+ *    `claude --session-id <uuid>` until the activity tail proves the
+ *    transcript exists.
  *  - **`resumeSessionId` stamped** (the activity tail has surfaced the
  *    real session id, either earlier in this tab or persisted from a
  *    prior tab/before-reload): `claude --resume <sid>
@@ -925,10 +927,22 @@ export function stampDiscoveredSessionIdWithDetail(
   );
   if (alreadyClaimed) return { byWt, stampedSource: null };
   const prefix = `__new__:${ev.agent}:`;
-  const idx = list.findIndex(
+  const idxByPreassigned = list.findIndex(
     (s) =>
-      s.agent === ev.agent && s.source.startsWith(prefix) && !s.resumeSessionId,
+      s.agent === ev.agent &&
+      s.source.startsWith(prefix) &&
+      !s.resumeSessionId &&
+      s.preassignedSessionId === ev.sessionId,
   );
+  const idx =
+    idxByPreassigned >= 0
+      ? idxByPreassigned
+      : list.findIndex(
+          (s) =>
+            s.agent === ev.agent &&
+            s.source.startsWith(prefix) &&
+            !s.resumeSessionId,
+        );
   if (idx === -1) return { byWt, stampedSource: null };
   const target = list[idx]!;
   const next = list.slice();

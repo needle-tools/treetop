@@ -49,10 +49,20 @@
   export let cmd: string[];
   export let cwd: string;
   export let procName: string;
+  /** Durable owner key used by /api/terminals to reattach after refresh.
+   *  For detected sessions this is the provider session id; for still-new
+   *  agent TUIs it is the synthetic `__new__:` source (or Claude's
+   *  preassigned session id). */
+  export let ownerId: string | undefined = undefined;
   /** When this column reattached to an existing daemon-side PTY (e.g.
    *  after a UI reload), `attachTermId` carries the existing id and
    *  TerminalView skips the spawn POST. */
   export let attachTermId: string | undefined = undefined;
+  /** False during page bootstrap until App.svelte has reconciled the
+   *  first /api/terminals snapshot. Without this, a refreshed visible
+   *  __new__ agent column can spawn a replacement before it learns the
+   *  still-live PTY id. */
+  export let spawnReady = true;
   /** When this shell column is a Resume of a past shell, the prior
    *  termId. Forwarded to TerminalView, which sends it in the spawn
    *  POST so the daemon pre-seeds the new shell's JSONL with the prior
@@ -279,6 +289,7 @@
   $: terminalMounted = shouldMountNewSessionTerminal({
     hasCwd: !!cwd,
     nearViewport,
+    spawnReady,
   });
 
   $: terminalHold.sync(
@@ -428,6 +439,7 @@
       {cwd}
       {agent}
       {procName}
+      {ownerId}
       {attachTermId}
       {resumeFromTermId}
       sessionSource={source}

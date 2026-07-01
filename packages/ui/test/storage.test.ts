@@ -953,6 +953,25 @@ describe("cmdForOpenSession", () => {
     ]);
   });
 
+  test("live but undiscovered preassigned claude column still uses --session-id, not --resume", () => {
+    // A page refresh can reattach a live PTY by preassignedSessionId before
+    // Claude has written/discovered the JSONL. The term being live is not
+    // proof that `claude --resume <uuid>` will succeed yet.
+    expect(
+      cmdForOpenSession(
+        {
+          agent: "claude",
+          preassignedSessionId: "11111111-2222-3333-4444-555555555555",
+        },
+        "/bin/zsh",
+      ),
+    ).toEqual([
+      "claude",
+      "--session-id",
+      "11111111-2222-3333-4444-555555555555",
+    ]);
+  });
+
   test("claude with both resumeSessionId and preassignedSessionId prefers --resume", () => {
     // Once the activity tail has stamped a real resumeSessionId, that
     // wins over the preassigned id — the user resumed an existing
@@ -1221,6 +1240,41 @@ describe("stampDiscoveredSessionId", () => {
     });
     // Doesn't mutate the input map.
     expect(before["/wt"]![0]!.resumeSessionId).toBeUndefined();
+  });
+
+  test("prefers the matching preassigned claude column over an earlier transient", () => {
+    const before: Record<string, PersistedSession[]> = {
+      "/wt": [
+        {
+          agent: "claude",
+          source: "__new__:claude:first",
+          preassignedSessionId: "sid-first",
+        },
+        {
+          agent: "claude",
+          source: "__new__:claude:second",
+          preassignedSessionId: SID,
+        },
+      ],
+    };
+    const after = stampDiscoveredSessionId(before, {
+      agent: "claude",
+      cwd: "/wt",
+      sessionId: SID,
+    });
+    expect(after["/wt"]).toEqual([
+      {
+        agent: "claude",
+        source: "__new__:claude:first",
+        preassignedSessionId: "sid-first",
+      },
+      {
+        agent: "claude",
+        source: "__new__:claude:second",
+        preassignedSessionId: SID,
+        resumeSessionId: SID,
+      },
+    ]);
   });
 
   test("returns the same reference when nothing matched (no churn)", () => {

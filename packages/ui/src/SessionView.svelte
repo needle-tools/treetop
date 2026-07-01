@@ -274,6 +274,11 @@
    *  daemon-side terminal. Used when a transient `__new__:` column
    *  migrates to SessionView while the PTY is still alive. */
   export let attachTermId: string | undefined = undefined;
+  /** False during page bootstrap until App.svelte has reconciled the
+   *  first /api/terminals snapshot. Terminal-mode sessions are still
+   *  rendered, but their TerminalView must not spawn `agent resume` before
+   *  the parent has had a chance to provide a live attachTermId. */
+  export let spawnReady = true;
   /** Resting-state line cap for the read-mode summary snippet pill.
    *  The pill hover-expands to 50vh same as the TUI pin; this prop
    *  controls the at-rest cap. Default 6 so a ~300-char one-paragraph
@@ -882,6 +887,7 @@
           hasSessionId: !!effectiveSessionId,
           hasCwd: !!effectiveSessionCwd,
           nearViewport: columnNearViewport,
+          spawnReady,
         }),
       })
       ? attachTermId
@@ -4270,7 +4276,7 @@
     </span>
   {/snippet}
 
-  {#if shouldMountTerminalView( { mode, hasSessionId: !!effectiveSessionId, hasCwd: !!effectiveSessionCwd, nearViewport: columnNearViewport }, )}
+  {#if shouldMountTerminalView( { mode, hasSessionId: !!effectiveSessionId, hasCwd: !!effectiveSessionCwd, nearViewport: columnNearViewport, spawnReady }, )}
     <TerminalView
       cmd={agent === "codex"
         ? [
