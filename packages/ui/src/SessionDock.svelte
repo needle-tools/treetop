@@ -1318,7 +1318,6 @@
     display: flex;
     flex-direction: column;
     align-items: stretch;
-    gap: 0.15rem;
     padding: 0.15rem 0.5rem;
     overflow: hidden;
     pointer-events: none;
