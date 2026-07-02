@@ -64,6 +64,12 @@
   import { flip } from "svelte/animate";
   import TerminalView from "./TerminalView.svelte";
   import VisualTranscript from "./VisualTranscript.svelte";
+  import {
+    isNearVisualScrollEnd,
+    shouldFollowNewLiveWorkBody,
+    shouldFollowVisualTail,
+    VISUAL_TAIL_FOLLOW_NEAR_PX,
+  } from "./visual-tail-follow";
   import LoadingOverlay from "./LoadingOverlay.svelte";
   import LoadingSpinner from "./LoadingSpinner.svelte";
   import { type SessionMenuItem } from "./SessionMenu.svelte";
@@ -96,15 +102,17 @@
   import { ICONS } from "./icons";
   import {
     applyVisualTranscriptDeltaPatches,
-    buildVisualTranscriptItems,
+    formatVisualWorkDuration,
     hasCanonicalUserMessageMatchingOptimistic,
     lastUserMessageBurst,
     lastUserMessageWithContext as buildLastUserMessageWithContext,
+    latestVisualGoal,
     latestVisualPlan,
     mergeVisualSessionMessages,
-    reuseStableVisualTranscriptItems,
+    updateVisualTranscriptItems,
     visualPlanFromPayload,
     withOptimisticUserMessageIntent,
+    type VisualGoal,
     type VisualPlan,
     type VisualPlanItem,
     type VisualTranscriptDeltaPatch,
@@ -124,9 +132,12 @@
   import { createTerminalHold, type HoldSocket } from "./terminal-hold";
   import {
     codexEventItemId,
+    codexAppHistoryMessagesFromThread,
     codexEventThreadIdForSession,
+    codexLiveMessagesFromEvent,
     codexLiveToolUseFromEvent,
     codexToolInputQuality,
+    mergeCodexAppHistoryMessages,
     subscribeCodexEvents,
     type CodexAppEvent,
     type CodexEventStreamState,
@@ -309,6 +320,7 @@
       | "ide_context"
       | "system_reminder"
       | "command"
+      | "goal"
       | "marker";
     text?: string;
     toolName?: string;
@@ -316,6 +328,12 @@
     toolUseId?: string;
     explanation?: string;
     planItems?: VisualPlanItem[];
+    goalObjective?: string;
+    goalStatus?: string;
+    goalTokensUsed?: number;
+    goalTimeUsedSeconds?: number;
+    goalUpdatedAt?: number;
+    goalThreadId?: string;
     tagName?: string;
     mediaKind?: "image" | "file" | "artifact";
     mimeType?: string;
@@ -336,12 +354,21 @@
      *  (e.g. `gemma4:latest`). */
     author?: string;
   }
+  interface NormalizedGoal {
+    objective?: string;
+    status?: string;
+    tokensUsed?: number;
+    timeUsedSeconds?: number;
+    updatedAt?: number;
+    threadId?: string;
+  }
   interface NormalizedSession {
     agent: string;
     cwd: string;
     sessionId: string;
     startedAt?: string;
     endedAt?: string;
+    goal?: NormalizedGoal;
     messages: NormalizedMessage[];
     manualTitle?: string;
   }
@@ -471,6 +498,7 @@
     if (msgCursorSettled) {
       if (ev.deltaY < 0) setVisualTailFollowPaused(true);
       else if (ev.deltaY > 0) updateVisualTailFollowIntent();
+      if (ev.deltaY < 0) maybeRequestOlderVisualHistory();
       return;
     }
     // Horizontal-dominant wheels (trackpad swipes across the sessions
@@ -484,9 +512,22 @@
   }
   function onMessagesScroll(): void {
     updateVisualTailFollowIntent();
+    maybeRequestOlderVisualHistory();
   }
   let lastLoadedAt = 0;
   let pollCount = 0;
+  const DEFAULT_VISUAL_HISTORY_MESSAGES = 100;
+  const VISUAL_HISTORY_MESSAGES_STEP = 100;
+  const MAX_VISUAL_HISTORY_MESSAGES = 2_000;
+  let visualHistoryMinMessages = DEFAULT_VISUAL_HISTORY_MESSAGES;
+  let visualHistoryRequestInFlight = false;
+  let visualHistorySourceKey = "";
+  let codexAppHistoryLoadedThread = "";
+  let visualHistoryScrollAnchor: {
+    el: HTMLElement;
+    scrollHeight: number;
+    scrollTop: number;
+  } | null = null;
   let inputText = "";
   let sending = false;
   let sendError = "";
@@ -1133,16 +1174,29 @@
     NormalizedBlock,
     NormalizedMessage
   >[] = [];
-  $: visualTranscriptItems = renderReadBody
-    ? reuseStableVisualTranscriptItems(
-        visualTranscriptItems,
-        buildVisualTranscriptItems(visualSessionMessages, {
-          active: visualTranscriptActive,
-        }),
-      )
-    : [];
+  let previousVisualSessionMessages: NormalizedMessage[] = [];
+  let previousVisualTranscriptActive: boolean | undefined;
+  $: if (renderReadBody) {
+    visualTranscriptItems = updateVisualTranscriptItems({
+      previousMessages: previousVisualSessionMessages,
+      previousItems: visualTranscriptItems,
+      previousActive: previousVisualTranscriptActive,
+      messages: visualSessionMessages,
+      active: visualTranscriptActive,
+    });
+    previousVisualSessionMessages = visualSessionMessages;
+    previousVisualTranscriptActive = visualTranscriptActive;
+  } else {
+    visualTranscriptItems = [];
+    previousVisualSessionMessages = [];
+    previousVisualTranscriptActive = undefined;
+  }
   $: codexLatestPlan = renderReadBody
     ? latestVisualPlan(visualSessionMessages)
+    : null;
+  $: codexLatestGoal = renderReadBody
+    ? (visualGoalFromSessionGoal(session?.goal) ??
+      latestVisualGoal(visualSessionMessages))
     : null;
 
   /** Build the shell command we'd hand to an external terminal to
@@ -1543,21 +1597,33 @@
   let visualTailKey = "";
   let visualTailFollowPaused = false;
   let visualTailFollowPauseSeq = 0;
-  const TAIL_FOLLOW_NEAR_PX = 64;
+  let visualTailMessagesEl: HTMLElement | null = null;
+  let visualTailLayoutObserver: ResizeObserver | null = null;
 
   function isNearScrollEnd(el: HTMLElement): boolean {
-    return (
-      el.scrollHeight - el.scrollTop - el.clientHeight <= TAIL_FOLLOW_NEAR_PX
-    );
+    return isNearVisualScrollEnd(el, VISUAL_TAIL_FOLLOW_NEAR_PX);
   }
 
-  function liveWorkBodies(): HTMLElement[] {
+  function hasUsableScrollLayout(el: HTMLElement): boolean {
+    const rect = el.getBoundingClientRect();
+    return rect.width > 0 && rect.height > 0;
+  }
+
+  interface LiveWorkBody {
+    body: HTMLElement;
+    key: string;
+  }
+
+  function liveWorkBodies(): LiveWorkBody[] {
     return messagesEl
       ? Array.from(
           messagesEl.querySelectorAll<HTMLElement>(
             ".work-foldout-live > .work-foldout-body",
           ),
-        )
+        ).map((body, index) => ({
+          body,
+          key: body.dataset.workKey ?? `live:${index}`,
+        }))
       : [];
   }
 
@@ -1597,6 +1663,19 @@
     el.scrollTop = 1_000_000_000;
   }
 
+  function visualTranscriptHasActiveSelection(): boolean {
+    if (!messagesEl) return false;
+    const selection = window.getSelection?.();
+    if (!selection || selection.isCollapsed || selection.rangeCount === 0)
+      return false;
+    const anchor = selection.anchorNode;
+    const focus = selection.focusNode;
+    return (
+      (!!anchor && messagesEl.contains(anchor)) ||
+      (!!focus && messagesEl.contains(focus))
+    );
+  }
+
   function resetVisualTailFollow(): void {
     hasRenderedOnce = false;
     visualTailKey = "";
@@ -1620,20 +1699,52 @@
     return visualTailFollowPauseSeq === seq && !visualTailFollowPaused;
   }
 
+  function waitForVisualTailLayout(opts: { force?: boolean }): void {
+    const el = messagesEl;
+    if (!el) return;
+    visualTailLayoutObserver?.disconnect();
+    visualTailLayoutObserver = null;
+    if (typeof ResizeObserver === "undefined") {
+      requestAnimationFrame(() => scheduleVisualTailFollow(opts));
+      return;
+    }
+    visualTailLayoutObserver = new ResizeObserver(() => {
+      const current = messagesEl;
+      if (!current || !hasUsableScrollLayout(current)) return;
+      visualTailLayoutObserver?.disconnect();
+      visualTailLayoutObserver = null;
+      scheduleVisualTailFollow(opts);
+    });
+    visualTailLayoutObserver.observe(el);
+  }
+
   function scheduleVisualTailFollow(opts: { force?: boolean } = {}): void {
     const el = messagesEl;
     if (!el) return;
     const force = opts.force === true;
     const firstRender = !hasRenderedOnce;
+    if (firstRender && !hasUsableScrollLayout(el)) {
+      waitForVisualTailLayout(opts);
+      return;
+    }
     const pauseSeq = visualTailFollowPauseSeq;
-    const shouldStickMessages =
-      force || firstRender || (!visualTailFollowPaused && isNearScrollEnd(el));
+    const selecting = visualTranscriptHasActiveSelection();
+    const shouldStickMessages = shouldFollowVisualTail({
+      force,
+      firstRender,
+      paused: visualTailFollowPaused,
+      nearEnd: isNearScrollEnd(el),
+      selecting,
+    });
     const liveBodyStates = liveWorkBodies().map((body) => ({
-      body,
-      shouldStick:
-        force ||
-        firstRender ||
-        (!visualTailFollowPaused && isNearScrollEnd(body)),
+      key: body.key,
+      shouldStick: shouldFollowVisualTail({
+        force,
+        firstRender,
+        paused: visualTailFollowPaused,
+        nearEnd: isNearScrollEnd(body.body),
+        selecting,
+      }),
     }));
     hasRenderedOnce = true;
 
@@ -1644,9 +1755,15 @@
         const mayFollow = firstRender || canApplyVisualTailFollow(pauseSeq);
         if (shouldStickMessages && mayFollow) scrollToEnd(current);
 
-        for (const body of liveWorkBodies()) {
-          const previous = liveBodyStates.find((state) => state.body === body);
-          if (mayFollow && (previous?.shouldStick ?? shouldStickMessages)) {
+        for (const { body, key } of liveWorkBodies()) {
+          const previous = liveBodyStates.find((state) => state.key === key);
+          if (
+            mayFollow &&
+            shouldFollowNewLiveWorkBody({
+              previousShouldStick: previous?.shouldStick,
+              parentShouldStick: shouldStickMessages,
+            })
+          ) {
             scrollToEnd(body);
           }
         }
@@ -1659,13 +1776,16 @@
             firstRender || canApplyVisualTailFollow(pauseSeq);
           if (settled && shouldStickMessages && mayFollowSettled)
             scrollToEnd(settled);
-          for (const body of liveWorkBodies()) {
+          for (const { body, key } of liveWorkBodies()) {
             const previous = liveBodyStates.find(
-              (state) => state.body === body,
+              (state) => state.key === key,
             );
             if (
               mayFollowSettled &&
-              (previous?.shouldStick ?? shouldStickMessages)
+              shouldFollowNewLiveWorkBody({
+                previousShouldStick: previous?.shouldStick,
+                parentShouldStick: shouldStickMessages,
+              })
             ) {
               scrollToEnd(body);
             }
@@ -1679,6 +1799,99 @@
     setVisualTailFollowPaused(false);
     scheduleVisualTailFollow({ force: true });
   }
+
+  function resetVisualHistoryWindow(): void {
+    visualHistoryMinMessages = DEFAULT_VISUAL_HISTORY_MESSAGES;
+    visualHistoryRequestInFlight = false;
+    visualHistoryScrollAnchor = null;
+  }
+
+  function maxVisualHistoryMessages(): number {
+    const total =
+      typeof totalMessageCount === "number" && totalMessageCount > 0
+        ? totalMessageCount
+        : MAX_VISUAL_HISTORY_MESSAGES;
+    return Math.min(MAX_VISUAL_HISTORY_MESSAGES, Math.max(total, 0));
+  }
+
+  function canRequestOlderVisualHistory(): boolean {
+    if (!session || !messagesEl) return false;
+    if (codexVisualAppSurface) {
+      const threadId = effectiveSessionId;
+      return !!threadId && codexAppHistoryLoadedThread !== threadId;
+    }
+    if (!sessionPollSource) return false;
+    if (codexVisualAppSurface && codexActiveTurnId !== null) return false;
+    const total = maxVisualHistoryMessages();
+    if (visualHistoryMinMessages >= total) return false;
+    if (totalMessageCount && session.messages.length >= totalMessageCount)
+      return false;
+    return true;
+  }
+
+  function maybeRequestOlderVisualHistory(): void {
+    const el = messagesEl;
+    if (!el || visualHistoryRequestInFlight) return;
+    if (el.scrollTop > 180) return;
+    if (!canRequestOlderVisualHistory()) return;
+    if (codexVisualAppSurface) {
+      visualHistoryRequestInFlight = true;
+      visualHistoryScrollAnchor = {
+        el,
+        scrollHeight: el.scrollHeight,
+        scrollTop: el.scrollTop,
+      };
+      setVisualTailFollowPaused(true);
+      void loadCodexAppThreadHistory().finally(() => {
+        visualHistoryRequestInFlight = false;
+      });
+      return;
+    }
+    const total = maxVisualHistoryMessages();
+    const next = Math.min(
+      total,
+      Math.max(
+        visualHistoryMinMessages + VISUAL_HISTORY_MESSAGES_STEP,
+        (session?.messages.length ?? 0) + VISUAL_HISTORY_MESSAGES_STEP,
+      ),
+    );
+    if (next <= visualHistoryMinMessages) return;
+    visualHistoryMinMessages = next;
+    visualHistoryRequestInFlight = true;
+    visualHistoryScrollAnchor = {
+      el,
+      scrollHeight: el.scrollHeight,
+      scrollTop: el.scrollTop,
+    };
+    setVisualTailFollowPaused(true);
+    void requestSessionPollNow().finally(() => {
+      visualHistoryRequestInFlight = false;
+    });
+  }
+
+  function preserveVisualHistoryScrollAnchor(): void {
+    const anchor = visualHistoryScrollAnchor;
+    if (!anchor) return;
+    visualHistoryScrollAnchor = null;
+    requestAnimationFrame(() => {
+      if (messagesEl !== anchor.el) return;
+      const delta = anchor.el.scrollHeight - anchor.scrollHeight;
+      if (delta <= 0) return;
+      anchor.el.scrollTop = anchor.scrollTop + delta;
+    });
+  }
+
+  $: {
+    const key = codexVisualAppSurface
+      ? `codex-app:${effectiveSessionId ?? ""}`
+      : (sessionPollSource ?? "");
+    if (key !== visualHistorySourceKey) {
+      visualHistorySourceKey = key;
+      resetVisualHistoryWindow();
+      codexAppHistoryLoadedThread = "";
+    }
+  }
+
   /** ETag from the last /api/session response. Sent as If-None-Match on
    *  subsequent polls so the daemon can return 304 when the session file
    *  hasn't changed — skips body transfer, JSON.parse, and all downstream
@@ -1696,6 +1909,7 @@
       codexOptimisticUserMessages,
     );
     session = { ...next, messages: [...messages] };
+    preserveVisualHistoryScrollAnchor();
     if (codexOptimisticUserMessages.length > 0) {
       codexOptimisticUserMessages = codexOptimisticUserMessages.filter(
         (message) =>
@@ -1737,6 +1951,42 @@
         .slice(oldStart, oldEnd)
         .concat(messages as NormalizedMessage[]),
     });
+  }
+
+  async function loadCodexAppThreadHistory(): Promise<void> {
+    const threadId = effectiveSessionId;
+    const cwd = effectiveSessionCwd;
+    if (!threadId || !cwd || !session) return;
+    const targetThreadId = threadId;
+    const qs = new URLSearchParams({ threadId, cwd });
+    try {
+      const res = await fetch(
+        apiUrl(`/api/codex-app/thread?${qs.toString()}`, daemonId),
+      );
+      const body = (await res.json().catch(() => null)) as {
+        thread?: unknown;
+        error?: string;
+      } | null;
+      if (!res.ok) throw new Error(body?.error ?? `HTTP ${res.status}`);
+      if (!body?.thread || effectiveSessionId !== targetThreadId || !session)
+        return;
+      flushCodexDeltaPatches();
+      const historyMessages = codexAppHistoryMessagesFromThread(
+        body.thread,
+      ) as NormalizedMessage[];
+      session = {
+        ...session,
+        messages: mergeCodexAppHistoryMessages(
+          historyMessages,
+          session.messages,
+        ) as NormalizedMessage[],
+      };
+      codexAppHistoryLoadedThread = targetThreadId;
+      preserveVisualHistoryScrollAnchor();
+    } catch (e) {
+      sendError = e instanceof Error ? e.message : String(e);
+      preserveVisualHistoryScrollAnchor();
+    }
   }
 
   async function load() {
@@ -1810,6 +2060,7 @@
   let codexQueueDraining = false;
   let codexQueueBlocked = false;
   let codexQueueExpanded = false;
+  let codexGoalExpanded = false;
   let codexPlanExpanded = false;
   let codexWarningsExpanded = false;
   let composerWarnings: string[] = [];
@@ -1822,6 +2073,10 @@
   let codexQueueDropBeforeId: string | null = null;
   let codexQueueDropAtEnd = false;
   let codexLiveLastActivityIso: string | undefined = undefined;
+  let codexGoalBusy = false;
+  let codexGoalEditing = false;
+  let codexGoalDraft = "";
+  let codexGoalLoadKey = "";
   let codexQueueHydratedKey = "";
   let codexModels: CodexModelInfo[] = [];
   let codexModelsKey = "";
@@ -1901,6 +2156,19 @@
       startedAt: new Date().toISOString(),
       messages: [],
     };
+  }
+
+  $: {
+    const key =
+      liveCodexApp && effectiveSessionId && effectiveSessionCwd
+        ? `${effectiveSessionId}\0${effectiveSessionCwd}`
+        : "";
+    if (key && key !== codexGoalLoadKey) {
+      codexGoalLoadKey = key;
+      void loadCodexGoal();
+    } else if (!key) {
+      codexGoalLoadKey = "";
+    }
   }
 
   $: if (liveCodexApp) {
@@ -2371,7 +2639,9 @@
 
     if (event.kind === "request") {
       flushCodexDeltaPatches();
-      upsertCodexToolUseFromRequest(event);
+      upsertCodexLiveMessages(
+        codexLiveMessagesFromEvent(event) as NormalizedMessage[],
+      );
       codexRequests = [
         ...codexRequests.filter((r) => r.id !== event.id),
         event,
@@ -2379,16 +2649,30 @@
       awaitingInput = true;
       return;
     }
-    const liveToolUse = codexLiveToolUseFromEvent(event);
-    if (liveToolUse && !event.method.endsWith("/outputDelta")) {
+    const liveMessages = codexLiveMessagesFromEvent(
+      event,
+    ) as NormalizedMessage[];
+    const hasLiveMarker = liveMessages.some((message) =>
+      message.blocks.some((block) => block.type === "marker"),
+    );
+    if (hasLiveMarker) {
       flushCodexDeltaPatches();
-      upsertCodexToolUse(
-        liveToolUse.id,
-        liveToolUse.toolName,
-        liveToolUse.toolInput,
-        liveToolUse.toolUseId,
-        liveToolUse.inputQuality,
-      );
+      upsertCodexLiveMessages(liveMessages);
+      codexActiveTurnId = null;
+      sending = false;
+      awaitingInput = false;
+      if (pendingTimer) {
+        clearTimeout(pendingTimer);
+        pendingTimer = null;
+      }
+      return;
+    }
+    if (liveMessages.length > 0 && !event.method.endsWith("/outputDelta")) {
+      flushCodexDeltaPatches();
+      upsertCodexLiveMessages(liveMessages);
+      if (event.method === "item/started" || event.method === "item/completed") {
+        return;
+      }
     }
 
     if (event.method === "turn/started") {
@@ -2462,6 +2746,7 @@
       event.method === "item/fileChange/outputDelta"
     ) {
       const itemId = codexEventItemId(event);
+      const liveToolUse = codexLiveToolUseFromEvent(event);
       if (liveToolUse) {
         upsertCodexToolUse(
           liveToolUse.id,
@@ -2469,6 +2754,12 @@
           liveToolUse.toolInput,
           liveToolUse.toolUseId,
           liveToolUse.inputQuality,
+          liveToolUse.mediaBlock ? [liveToolUse.mediaBlock] : [],
+          {
+            approvalPolicy: liveToolUse.approvalPolicy,
+            approvalDecision: liveToolUse.approvalDecision,
+            sandboxPolicy: liveToolUse.sandboxPolicy,
+          },
         );
       }
       queueCodexBlockDelta(
@@ -2487,16 +2778,6 @@
       return;
     }
     if (event.method === "item/fileChange/patchUpdated") {
-      flushCodexDeltaPatches();
-      if (liveToolUse) {
-        upsertCodexToolUse(
-          liveToolUse.id,
-          liveToolUse.toolName,
-          liveToolUse.toolInput,
-          liveToolUse.toolUseId,
-          liveToolUse.inputQuality,
-        );
-      }
       return;
     }
     if (event.method === "turn/plan/updated") {
@@ -2505,6 +2786,16 @@
         `codex-turn-plan-${event.turnId ?? "plan"}`,
         event.params,
       );
+      return;
+    }
+    if (event.method === "thread/goal/updated") {
+      flushCodexDeltaPatches();
+      upsertCodexGoal(event.params.goal ?? event.params);
+      return;
+    }
+    if (event.method === "thread/goal/cleared") {
+      flushCodexDeltaPatches();
+      clearCodexGoalBlock();
       return;
     }
     if (event.method === "error" || event.method === "warning") {
@@ -2549,12 +2840,73 @@
     session = { ...session, messages };
   }
 
+  function upsertCodexLiveMessages(incoming: NormalizedMessage[]): void {
+    if (!session || incoming.length === 0) return;
+    const messages = [...session.messages];
+    for (const message of incoming) {
+      const existingIndex =
+        message.id !== undefined
+          ? messages.findIndex((candidate) => candidate.id === message.id)
+          : -1;
+      if (
+        existingIndex >= 0 &&
+        shouldKeepExistingCodexLiveMessage(messages[existingIndex]!, message)
+      ) {
+        continue;
+      }
+      if (existingIndex >= 0) {
+        messages[existingIndex] = message;
+      } else {
+        messages.push(message);
+      }
+    }
+    session = { ...session, messages };
+  }
+
+  function shouldKeepExistingCodexLiveMessage(
+    existing: NormalizedMessage,
+    incoming: NormalizedMessage,
+  ): boolean {
+    const incomingToolUse = incoming.blocks.find(
+      (block) => block.type === "tool_use",
+    );
+    if (incomingToolUse) {
+      const existingToolUse = existing.blocks.find(
+        (block) => block.type === "tool_use",
+      );
+      if (
+        codexToolInputQuality(existingToolUse?.toolInput) >
+        codexToolInputQuality(incomingToolUse.toolInput)
+      ) {
+        return true;
+      }
+    }
+    const incomingResultText = incoming.blocks
+      .filter((block) => block.type === "tool_result")
+      .map((block) => block.text ?? "")
+      .join("");
+    if (incomingResultText !== "") {
+      const existingResultText = existing.blocks
+        .filter((block) => block.type === "tool_result")
+        .map((block) => block.text ?? "")
+        .join("");
+      if (existingResultText.trim() && !incomingResultText.trim()) return true;
+      if (existingResultText.length > incomingResultText.length) return true;
+    }
+    return false;
+  }
+
   function upsertCodexToolUse(
     id: string,
     toolName: string,
     toolInput: unknown,
     toolUseId?: string,
     inputQuality = codexToolInputQuality(toolInput),
+    extraBlocks: NormalizedBlock[] = [],
+    toolMeta: Pick<
+      NormalizedBlock,
+      "approvalPolicy" | "approvalDecision" | "sandboxPolicy"
+    > = {},
   ): void {
     if (!session) return;
     const messages = [...session.messages];
@@ -2571,34 +2923,233 @@
       toolName,
       toolInput,
       toolUseId,
+      ...(toolMeta.approvalPolicy
+        ? { approvalPolicy: toolMeta.approvalPolicy }
+        : {}),
+      ...(toolMeta.approvalDecision
+        ? { approvalDecision: toolMeta.approvalDecision }
+        : {}),
+      ...(toolMeta.sandboxPolicy
+        ? { sandboxPolicy: toolMeta.sandboxPolicy }
+        : {}),
     };
+    const blocks = [block, ...extraBlocks];
     if (existingIndex >= 0) {
       messages[existingIndex] = {
         ...messages[existingIndex]!,
-        blocks: [block],
+        blocks,
       };
     } else {
       messages.push({
         id,
         role: "assistant",
         timestamp: new Date().toISOString(),
-        blocks: [block],
+        blocks,
       });
     }
     session = { ...session, messages };
   }
 
-  function upsertCodexToolUseFromRequest(event: CodexAppEvent): void {
-    const liveToolUse = codexLiveToolUseFromEvent(event);
-    if (liveToolUse) {
-      upsertCodexToolUse(
-        liveToolUse.id,
-        liveToolUse.toolName,
-        liveToolUse.toolInput,
-        liveToolUse.toolUseId,
-        liveToolUse.inputQuality,
-      );
+  function codexGoalBlockFromUnknown(goal: unknown): NormalizedBlock | null {
+    if (!goal || typeof goal !== "object") return null;
+    const record = goal as Record<string, unknown>;
+    const objective =
+      typeof record.objective === "string" && record.objective.trim()
+        ? record.objective.trim()
+        : undefined;
+    const status =
+      typeof record.status === "string" && record.status.trim()
+        ? record.status.trim()
+        : undefined;
+    if (!objective && !status) return null;
+    return {
+      type: "goal",
+      goalObjective: objective,
+      goalStatus: status,
+      goalTokensUsed:
+        typeof record.tokensUsed === "number" ? record.tokensUsed : undefined,
+      goalTimeUsedSeconds:
+        typeof record.timeUsedSeconds === "number"
+          ? record.timeUsedSeconds
+          : undefined,
+      goalUpdatedAt:
+        typeof record.updatedAt === "number" ? record.updatedAt : undefined,
+      goalThreadId:
+        typeof record.threadId === "string" ? record.threadId : undefined,
+    };
+  }
+
+  function codexGoalStateFromBlock(block: NormalizedBlock): NormalizedGoal {
+    return {
+      objective: block.goalObjective,
+      status: block.goalStatus,
+      tokensUsed: block.goalTokensUsed,
+      timeUsedSeconds: block.goalTimeUsedSeconds,
+      updatedAt: block.goalUpdatedAt,
+      threadId: block.goalThreadId,
+    };
+  }
+
+  function visualGoalFromSessionGoal(
+    goal: NormalizedGoal | undefined,
+  ): VisualGoal | undefined {
+    if (!goal) return undefined;
+    const objective = goal.objective?.trim() || undefined;
+    const status = goal.status?.trim() || undefined;
+    if (!objective && !status) return undefined;
+    return {
+      objective: objective ?? "Active thread goal",
+      status: status ?? "active",
+      tokensUsed: goal.tokensUsed,
+      timeUsedSeconds: goal.timeUsedSeconds,
+      updatedAt: goal.updatedAt,
+      threadId: goal.threadId,
+    };
+  }
+
+  function upsertCodexGoal(goal: unknown): void {
+    if (!session) return;
+    const block = codexGoalBlockFromUnknown(goal);
+    if (!block) {
+      clearCodexGoalBlock();
+      return;
     }
+    const id = `codex-goal-${block.goalThreadId ?? effectiveSessionId ?? "thread"}`;
+    const messages = session.messages.filter(
+      (message) =>
+        !message.blocks.some((existing) => existing.type === "goal") ||
+        message.id === id,
+    );
+    const existingIndex = messages.findIndex((m) => m.id === id);
+    const next = {
+      id,
+      role: "system",
+      timestamp: new Date().toISOString(),
+      blocks: [block],
+    } satisfies NormalizedMessage;
+    if (existingIndex >= 0) {
+      messages[existingIndex] = next;
+    } else {
+      messages.push(next);
+    }
+    session = { ...session, goal: codexGoalStateFromBlock(block), messages };
+  }
+
+  function clearCodexGoalBlock(): void {
+    if (!session) return;
+    let changed = false;
+    const messages = session.messages
+      .map((message) => {
+        const blocks = message.blocks.filter((block) => block.type !== "goal");
+        if (blocks.length !== message.blocks.length) changed = true;
+        return { ...message, blocks };
+      })
+      .filter((message) => message.blocks.length > 0);
+    if (!changed && !session.goal) return;
+    session = { ...session, goal: undefined, messages };
+    codexGoalEditing = false;
+    codexGoalDraft = "";
+  }
+
+  async function loadCodexGoal(): Promise<void> {
+    if (!effectiveSessionId || !effectiveSessionCwd) return;
+    try {
+      const qs = new URLSearchParams({
+        threadId: effectiveSessionId,
+        cwd: effectiveSessionCwd,
+      });
+      const res = await fetch(
+        apiUrl(`/api/codex-app/goal?${qs.toString()}`, daemonId),
+      );
+      const body = (await res.json().catch(() => null)) as {
+        goal?: unknown;
+        error?: string;
+      } | null;
+      if (!res.ok) throw new Error(body?.error ?? `HTTP ${res.status}`);
+      if (body?.goal) {
+        upsertCodexGoal(body.goal);
+      } else {
+        clearCodexGoalBlock();
+      }
+    } catch (e) {
+      console.warn("supergit: failed to load Codex goal", {
+        error: e instanceof Error ? e.message : String(e),
+      });
+    }
+  }
+
+  async function updateCodexGoal(fields: {
+    objective?: string;
+    status?: string;
+  }): Promise<void> {
+    if (!effectiveSessionId || !effectiveSessionCwd || codexGoalBusy) return;
+    codexGoalBusy = true;
+    sendError = "";
+    try {
+      const res = await fetch(apiUrl("/api/codex-app/goal", daemonId), {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          threadId: effectiveSessionId,
+          cwd: effectiveSessionCwd,
+          ...fields,
+        }),
+      });
+      const body = (await res.json().catch(() => null)) as {
+        goal?: unknown;
+        error?: string;
+      } | null;
+      if (!res.ok) throw new Error(body?.error ?? `HTTP ${res.status}`);
+      if (body?.goal) upsertCodexGoal(body.goal);
+      codexGoalEditing = false;
+      codexGoalDraft = "";
+    } catch (e) {
+      sendError = e instanceof Error ? e.message : String(e);
+    } finally {
+      codexGoalBusy = false;
+    }
+  }
+
+  async function clearCodexGoal(): Promise<void> {
+    if (!effectiveSessionId || !effectiveSessionCwd || codexGoalBusy) return;
+    codexGoalBusy = true;
+    sendError = "";
+    try {
+      const res = await fetch(apiUrl("/api/codex-app/goal", daemonId), {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          threadId: effectiveSessionId,
+          cwd: effectiveSessionCwd,
+        }),
+      });
+      const body = (await res.json().catch(() => null)) as {
+        error?: string;
+      } | null;
+      if (!res.ok) throw new Error(body?.error ?? `HTTP ${res.status}`);
+      clearCodexGoalBlock();
+      codexGoalExpanded = false;
+    } catch (e) {
+      sendError = e instanceof Error ? e.message : String(e);
+    } finally {
+      codexGoalBusy = false;
+    }
+  }
+
+  function startCodexGoalEdit(goal: VisualGoal): void {
+    codexGoalDraft = goal.objective;
+    codexGoalEditing = true;
+  }
+
+  function cancelCodexGoalEdit(): void {
+    codexGoalEditing = false;
+    codexGoalDraft = "";
+  }
+
+  function saveCodexGoalEdit(): void {
+    const objective = codexGoalDraft.trim();
+    if (!objective) return;
+    void updateCodexGoal({ objective });
   }
 
   function codexPlanFromParams(params: unknown): VisualPlan | undefined {
@@ -3124,8 +3675,8 @@
         }
         const dx = source.x - target.left;
         const dy = source.y - target.top;
-        const sx = Math.max(0.2, Math.min(2.6, source.width / target.width));
-        const sy = Math.max(0.28, Math.min(2.2, source.height / target.height));
+        const sx = Math.max(0.72, Math.min(1, source.width / target.width));
+        const sy = Math.max(0.72, Math.min(1, source.height / target.height));
         node.style.transformOrigin = "top left";
         node.style.willChange = "transform, opacity";
         node
@@ -3691,6 +4242,9 @@
   $: if (!codexLatestPlan && codexPlanExpanded) {
     codexPlanExpanded = false;
   }
+  $: if (!codexLatestGoal && codexGoalExpanded) {
+    codexGoalExpanded = false;
+  }
   $: composerWarnings = sendError ? [sendError] : [];
   $: if (composerWarnings.length === 0 && codexWarningsExpanded) {
     codexWarningsExpanded = false;
@@ -3734,6 +4288,35 @@
     return `Todo: ${plan.completed}/${plan.total}`;
   }
 
+  function codexGoalBadgeLabel(goal: VisualGoal | undefined): string {
+    if (!goal) return "Goal";
+    if (goal.status && goal.status !== "active") {
+      return `Goal: ${codexGoalStatusLabel(goal.status)}`;
+    }
+    return "Goal";
+  }
+
+  function codexGoalStatusLabel(status: string): string {
+    if (status === "active") return "Active";
+    if (status === "paused") return "Paused";
+    if (status === "blocked") return "Blocked";
+    if (status === "usageLimited" || status === "usage_limited") {
+      return "Usage limited";
+    }
+    if (status === "budgetLimited" || status === "budget_limited") {
+      return "Budget limited";
+    }
+    if (status === "complete" || status === "completed") return "Complete";
+    return status.replace(/_/g, " ");
+  }
+
+  function codexGoalTimeLabel(seconds: number | undefined): string {
+    if (typeof seconds !== "number" || !Number.isFinite(seconds)) return "";
+    const start = new Date(0).toISOString();
+    const end = new Date(Math.max(0, seconds) * 1000).toISOString();
+    return formatVisualWorkDuration(start, end) ?? "";
+  }
+
   function codexPlanStatusLabel(status: string): string {
     if (status === "completed") return "Done";
     if (status === "in_progress") return "Doing";
@@ -3750,14 +4333,27 @@
   function toggleCodexPlanPane(): void {
     codexPlanExpanded = !codexPlanExpanded;
     if (codexPlanExpanded) {
+      codexGoalExpanded = false;
       codexQueueExpanded = false;
       codexWarningsExpanded = false;
+    }
+  }
+
+  function toggleCodexGoalPane(): void {
+    codexGoalExpanded = !codexGoalExpanded;
+    if (codexGoalExpanded) {
+      codexPlanExpanded = false;
+      codexQueueExpanded = false;
+      codexWarningsExpanded = false;
+    } else {
+      cancelCodexGoalEdit();
     }
   }
 
   function toggleCodexQueuePane(): void {
     codexQueueExpanded = !codexQueueExpanded;
     if (codexQueueExpanded) {
+      codexGoalExpanded = false;
       codexPlanExpanded = false;
       codexWarningsExpanded = false;
     }
@@ -3766,6 +4362,7 @@
   function toggleCodexWarningsPane(): void {
     codexWarningsExpanded = !codexWarningsExpanded;
     if (codexWarningsExpanded) {
+      codexGoalExpanded = false;
       codexPlanExpanded = false;
       codexQueueExpanded = false;
     }
@@ -3830,6 +4427,10 @@
   //     pinned near the bottom. This includes the nested live "Worked for…"
   //     scroller; live deltas inside that foldout need to tail like a TUI.
   $: if (messagesEl) {
+    if (messagesEl !== visualTailMessagesEl) {
+      visualTailMessagesEl = messagesEl;
+      resetVisualTailFollow();
+    }
     const nextTailKey = visualMessagesTailKey(visualSessionMessages);
     if (nextTailKey !== visualTailKey) {
       visualTailKey = nextTailKey;
@@ -3871,6 +4472,7 @@
       source: sessionPollSource,
       daemonId,
       getSessionId: () => session?.sessionId,
+      getMinMessages: () => visualHistoryMinMessages,
       shouldPollSession: () =>
         sessionElementNearViewport() &&
         ollamaStreamingIdx === null &&
@@ -3925,6 +4527,8 @@
   });
 
   onDestroy(() => {
+    visualTailLayoutObserver?.disconnect();
+    visualTailLayoutObserver = null;
     window.removeEventListener(STAGE_PROMPT_EVENT, onStagePrompt);
     if (typeof document !== "undefined") {
       document.removeEventListener("visibilitychange", refreshTerminalHold);
@@ -4484,6 +5088,116 @@
           {/each}
         </div>
       {/if}
+      {#if agent === "codex" && codexLatestGoal && codexGoalExpanded}
+        <div class="codex-goal-pane" aria-label="Codex goal">
+          <div class="codex-goal-head">
+            <span
+              class="codex-goal-status"
+              class:paused={codexLatestGoal.status === "paused"}
+              class:blocked={codexLatestGoal.status === "blocked"}
+              class:complete={codexLatestGoal.status === "complete" ||
+                codexLatestGoal.status === "completed"}
+            >
+              {codexGoalStatusLabel(codexLatestGoal.status)}
+            </span>
+            {#if codexGoalTimeLabel(codexLatestGoal.timeUsedSeconds)}
+              <span class="codex-goal-meta">
+                {codexGoalTimeLabel(codexLatestGoal.timeUsedSeconds)}
+              </span>
+            {/if}
+            {#if typeof codexLatestGoal.tokensUsed === "number"}
+              <span class="codex-goal-meta">
+                {Math.round(codexLatestGoal.tokensUsed / 1000)}k tokens
+              </span>
+            {/if}
+          </div>
+          {#if codexGoalEditing}
+            <textarea
+              class="codex-goal-editor"
+              bind:value={codexGoalDraft}
+              rows="3"
+              on:keydown={(e) => {
+                if (e.key === "Escape") {
+                  e.preventDefault();
+                  cancelCodexGoalEdit();
+                }
+                if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+                  e.preventDefault();
+                  saveCodexGoalEdit();
+                }
+              }}
+            ></textarea>
+          {:else}
+            <div class="codex-goal-objective">{codexLatestGoal.objective}</div>
+          {/if}
+          <div class="codex-goal-actions">
+            {#if codexGoalEditing}
+              <button
+                type="button"
+                class="codex-goal-action primary"
+                disabled={codexGoalBusy || !codexGoalDraft.trim()}
+                on:click={saveCodexGoalEdit}
+                title="Save goal objective"
+                aria-label="Save goal objective">Save</button
+              >
+              <button
+                type="button"
+                class="codex-goal-action"
+                disabled={codexGoalBusy}
+                on:click={cancelCodexGoalEdit}
+                title="Cancel goal edit"
+                aria-label="Cancel goal edit">Cancel</button
+              >
+            {:else}
+              <button
+                type="button"
+                class="codex-goal-action"
+                disabled={codexGoalBusy}
+                on:click={() => startCodexGoalEdit(codexLatestGoal)}
+                title="Edit goal objective"
+                aria-label="Edit goal objective">Edit</button
+              >
+              {#if codexLatestGoal.status === "paused"}
+                <button
+                  type="button"
+                  class="codex-goal-action primary"
+                  disabled={codexGoalBusy}
+                  on:click={() => void updateCodexGoal({ status: "active" })}
+                  title="Resume goal"
+                  aria-label="Resume goal">Resume</button
+                >
+              {:else if codexLatestGoal.status !== "complete" && codexLatestGoal.status !== "completed"}
+                <button
+                  type="button"
+                  class="codex-goal-action"
+                  disabled={codexGoalBusy}
+                  on:click={() => void updateCodexGoal({ status: "paused" })}
+                  title="Pause goal"
+                  aria-label="Pause goal">Pause</button
+                >
+              {/if}
+              {#if codexLatestGoal.status !== "complete" && codexLatestGoal.status !== "completed"}
+                <button
+                  type="button"
+                  class="codex-goal-action"
+                  disabled={codexGoalBusy}
+                  on:click={() => void updateCodexGoal({ status: "complete" })}
+                  title="Mark goal complete"
+                  aria-label="Mark goal complete">Complete</button
+                >
+              {/if}
+              <button
+                type="button"
+                class="codex-goal-action danger"
+                disabled={codexGoalBusy}
+                on:click={() => void clearCodexGoal()}
+                title="Clear goal"
+                aria-label="Clear goal">Clear</button
+              >
+            {/if}
+          </div>
+        </div>
+      {/if}
       {#if agent === "codex" && codexLatestPlan && codexPlanExpanded}
         <div class="codex-plan-pane" aria-label="Codex plan">
           {#if codexLatestPlan.explanation}
@@ -4717,43 +5431,57 @@
             disabled={sending && agent !== "codex" && !ollamaAbort}
           ></textarea>
         </div>
+        {#if agent === "codex" && (codexLatestGoal || codexLatestPlan || codexQueuedMessages.length)}
+          <div class="composer-indicators">
+            {#if codexLatestGoal}
+              <button
+                type="button"
+                class="codex-composer-badge goal"
+                class:expanded={codexGoalExpanded}
+                on:click={toggleCodexGoalPane}
+                title={codexGoalExpanded ? "Collapse goal" : "Show goal"}
+                aria-label={codexGoalExpanded
+                  ? "Collapse goal"
+                  : "Show goal"}
+              >
+                {codexGoalBadgeLabel(codexLatestGoal)}
+              </button>
+            {/if}
+            {#if codexLatestPlan}
+              <button
+                type="button"
+                class="codex-composer-badge"
+                class:expanded={codexPlanExpanded}
+                on:click={toggleCodexPlanPane}
+                title={codexPlanExpanded ? "Collapse todo" : "Show todo"}
+                aria-label={codexPlanExpanded
+                  ? "Collapse todo"
+                  : "Show todo"}
+              >
+                {codexPlanBadgeLabel(codexLatestPlan)}
+              </button>
+            {/if}
+            {#if codexQueuedMessages.length}
+              <button
+                type="button"
+                class="codex-composer-badge"
+                class:expanded={codexQueueExpanded}
+                bind:this={composerQueueTargetEl}
+                on:click={toggleCodexQueuePane}
+                title={codexQueueExpanded
+                  ? "Collapse queued messages"
+                  : "Show queued messages"}
+                aria-label={codexQueueExpanded
+                  ? "Collapse queued messages"
+                  : "Show queued messages"}
+              >
+                Queue: {codexQueuedMessages.length}
+              </button>
+            {/if}
+          </div>
+        {/if}
         <div class="composer-footer">
           <div class="composer-send-wrap">
-            {#if agent === "codex" && (codexLatestPlan || codexQueuedMessages.length)}
-              <div class="composer-indicators">
-                {#if codexLatestPlan}
-                  <button
-                    type="button"
-                    class="codex-composer-badge"
-                    class:expanded={codexPlanExpanded}
-                    on:click={toggleCodexPlanPane}
-                    title={codexPlanExpanded ? "Collapse todo" : "Show todo"}
-                    aria-label={codexPlanExpanded
-                      ? "Collapse todo"
-                      : "Show todo"}
-                  >
-                    {codexPlanBadgeLabel(codexLatestPlan)}
-                  </button>
-                {/if}
-                {#if codexQueuedMessages.length}
-                  <button
-                    type="button"
-                    class="codex-composer-badge"
-                    class:expanded={codexQueueExpanded}
-                    bind:this={composerQueueTargetEl}
-                    on:click={toggleCodexQueuePane}
-                    title={codexQueueExpanded
-                      ? "Collapse queued messages"
-                      : "Show queued messages"}
-                    aria-label={codexQueueExpanded
-                      ? "Collapse queued messages"
-                      : "Show queued messages"}
-                  >
-                    Queue: {codexQueuedMessages.length}
-                  </button>
-                {/if}
-              </div>
-            {/if}
             {#if editingCodexQueueId}
               <button
                 type="button"
@@ -5185,6 +5913,7 @@
     flex: 0 0 auto;
   }
   .composer {
+    position: relative;
     width: 100%;
     min-height: 6.4rem;
     border: 1px solid color-mix(in srgb, var(--surface-3) 72%, transparent);
@@ -5231,6 +5960,7 @@
   }
   .codex-queue-pane,
   .codex-warning-pane,
+  .codex-goal-pane,
   .codex-plan-pane {
     position: absolute;
     right: 0;
@@ -5250,9 +5980,118 @@
     left: auto;
     width: min(100%, 34rem);
   }
+  .codex-goal-pane {
+    left: auto;
+    width: min(100%, 34rem);
+  }
   .codex-warning-pane {
     left: auto;
     width: min(100%, 34rem);
+  }
+  .codex-goal-head {
+    display: flex;
+    align-items: center;
+    gap: 0.35rem;
+    min-width: 0;
+    margin-bottom: 0.35rem;
+  }
+  .codex-goal-status {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    height: 1.35rem;
+    padding: 0 0.48rem;
+    border-radius: 999px;
+    border: 1px solid color-mix(in srgb, var(--status-clean) 48%, var(--surface-3));
+    color: var(--text-1);
+    background: color-mix(in srgb, var(--status-clean) 18%, transparent);
+    font-size: 0.68rem;
+    font-weight: 700;
+    line-height: 1;
+  }
+  .codex-goal-status.paused {
+    border-color: color-mix(in srgb, var(--text-muted) 52%, var(--surface-3));
+    background: color-mix(in srgb, var(--surface-1) 78%, transparent);
+    color: var(--text-2);
+  }
+  .codex-goal-status.blocked {
+    border-color: color-mix(in srgb, var(--status-dirty) 58%, var(--surface-3));
+    background: color-mix(in srgb, var(--status-dirty) 16%, transparent);
+  }
+  .codex-goal-status.complete {
+    border-color: color-mix(in srgb, var(--text-muted) 42%, var(--surface-3));
+    background: color-mix(in srgb, var(--surface-1) 86%, transparent);
+    color: var(--text-2);
+  }
+  .codex-goal-meta {
+    min-width: 0;
+    color: var(--text-muted);
+    font-size: 0.68rem;
+    line-height: 1;
+    white-space: nowrap;
+  }
+  .codex-goal-objective {
+    color: var(--text-1);
+    font-size: 0.74rem;
+    line-height: 1.35;
+    white-space: pre-wrap;
+  }
+  .codex-goal-editor {
+    width: 100%;
+    min-width: 0;
+    resize: vertical;
+    border: 1px solid color-mix(in srgb, var(--surface-3) 86%, transparent);
+    border-radius: var(--radius-sm);
+    background: color-mix(in srgb, var(--surface-1) 92%, transparent);
+    color: var(--text-1);
+    padding: 0.45rem 0.5rem;
+    font: inherit;
+    font-size: 0.74rem;
+    line-height: 1.35;
+  }
+  .codex-goal-editor:focus {
+    outline: 1px solid color-mix(in srgb, var(--status-clean) 58%, transparent);
+    outline-offset: 1px;
+  }
+  .codex-goal-actions {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 0.35rem;
+    margin-top: 0.45rem;
+  }
+  .codex-goal-action {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 1.5rem;
+    padding: 0 0.55rem;
+    border: 1px solid color-mix(in srgb, var(--surface-3) 86%, transparent);
+    border-radius: var(--radius-sm);
+    background: color-mix(in srgb, var(--surface-1) 80%, transparent);
+    color: var(--text-2);
+    font: inherit;
+    font-size: 0.68rem;
+    font-weight: 700;
+    line-height: 1;
+    cursor: pointer;
+  }
+  .codex-goal-action:hover:not(:disabled),
+  .codex-goal-action:focus-visible {
+    color: var(--text-1);
+    border-color: color-mix(in srgb, var(--status-clean) 58%, var(--surface-3));
+    outline: none;
+  }
+  .codex-goal-action.primary {
+    border-color: color-mix(in srgb, var(--status-clean) 56%, var(--surface-3));
+  }
+  .codex-goal-action.danger {
+    border-color: color-mix(in srgb, var(--error-text) 38%, var(--surface-3));
+  }
+  .codex-goal-action:disabled {
+    opacity: 0.45;
+    cursor: default;
   }
   .composer-box,
   .composer-footer {
@@ -5738,7 +6577,6 @@
     min-width: 0;
   }
   .composer-send-wrap {
-    position: relative;
     display: flex;
     align-items: center;
     justify-content: flex-end;
@@ -5746,14 +6584,17 @@
   }
   .composer-indicators {
     position: absolute;
-    right: 0;
-    bottom: calc(100% + 0.35rem);
+    right: 3.2rem;
+    bottom: 0.62rem;
     display: flex;
     align-items: center;
     justify-content: flex-end;
     gap: 0.25rem;
     min-height: 1.55rem;
     max-width: min(22rem, calc(100vw - 2rem));
+  }
+  .composer.wide-actions .composer-indicators {
+    right: 7.45rem;
   }
   .composer-warning-indicators {
     position: absolute;
@@ -5805,6 +6646,13 @@
   .codex-composer-badge.warning {
     border-color: color-mix(in srgb, var(--error-text) 46%, var(--surface-3));
     color: var(--error-text);
+  }
+  .codex-composer-badge.goal {
+    border-color: color-mix(in srgb, var(--status-dirty) 46%, var(--surface-3));
+  }
+  .codex-composer-badge.goal:hover,
+  .codex-composer-badge.goal.expanded {
+    border-color: color-mix(in srgb, var(--status-dirty) 62%, var(--surface-3));
   }
   .codex-composer-badge.warning:hover,
   .codex-composer-badge.warning.expanded {

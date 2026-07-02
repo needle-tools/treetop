@@ -41,7 +41,11 @@
   import { createResizeCoalescer } from "./terminal-resize";
   import { restoreScrollAfterDelay } from "./scroll-restore";
   import { msSinceScroll, SCROLL_QUIET_MS } from "./scroll-activity";
-  import { animateValue, centerScrollTarget } from "./scroll-util";
+  import {
+    animateValue,
+    centerScrollTarget,
+    stickScrollerToBottom,
+  } from "./scroll-util";
   import { singleFlight } from "./single-flight";
   import { record, time, timeAsync } from "./timings";
   import {
@@ -474,16 +478,7 @@
   }
 
   function focusOpenSessionColumn(source: string): void {
-    const wasFocused = focusedSource === source;
     focusedSource = source;
-    if (!wasFocused) {
-      requestAnimationFrame(() => {
-        const col = document.querySelector<HTMLElement>(
-          `.session-col[data-session-source="${CSS.escape(source)}"]`,
-        );
-        if (col) stickSessionColumnToTail(col);
-      });
-    }
   }
 
   // The unique row key (repoId + worktree path) whose repo-edit popover
@@ -3844,7 +3839,10 @@
     const colEl = stripEl?.querySelector(
       `.session-col[data-session-source="${CSS.escape(entry.source)}"]`,
     );
-    if (colEl) return;
+    if (colEl) {
+      stickSessionColumnToTail(colEl as HTMLElement);
+      return;
+    }
     if (!dockEntryExistsInLoadedRepos(repos, entry)) {
       const label = entry.manualTitle ?? entry.title ?? "this session";
       addToast({
@@ -3954,28 +3952,6 @@
    *  `.messages` itself wouldn't fire (the container is capped at
    *  max-height: 50vh); the children are where the height changes
    *  actually land. */
-  function stickScrollerToBottom(scroller: HTMLElement): void {
-    let raf = 0;
-    const stick = () => {
-      if (raf) return;
-      raf = requestAnimationFrame(() => {
-        raf = 0;
-        // Let the browser clamp. Reading scrollHeight here forced layout,
-        // and doing that inside ResizeObserver can trip RO loop warnings.
-        scroller.scrollTop = 1_000_000_000;
-      });
-    };
-    stick();
-    const ro = new ResizeObserver(stick);
-    for (const child of Array.from(scroller.children)) {
-      ro.observe(child as Element);
-    }
-    setTimeout(() => {
-      if (raf) cancelAnimationFrame(raf);
-      ro.disconnect();
-    }, 1500);
-  }
-
   function stickSessionColumnToTail(col: HTMLElement): void {
     const messages = col.querySelector<HTMLElement>(".messages");
     if (messages) stickScrollerToBottom(messages);
