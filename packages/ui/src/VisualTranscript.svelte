@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onDestroy } from "svelte";
+  import { onDestroy, tick } from "svelte";
   import { marked } from "marked";
   import DOMPurify from "dompurify";
   import { apiUrl } from "./api";
@@ -10,18 +10,29 @@
   import { formatAbsoluteTimeTitle } from "./display-helpers";
   import {
     buildVisualWorkDisplayEntries,
+    buildVisibleVisualWorkDisplayEntries,
     cleanVisualToolResultText,
     cleanVisualUserText,
+    formatVisualDurationSeconds,
     formatVisualWorkDuration,
     getVisualTranscriptItemKey,
     getVisualWorkDisplayEntryKey,
     visualFileEditSummaryForBlock,
+    visualObservedProcessOutput,
     visualPlanFromBlock,
+    visualPathPreviewTargets,
     visualThinkingSummary,
     visualToolCallPayloadLanguage,
     visualToolCallPayloadText,
-    visualToolLauncherLabel,
+    visualToolApprovalBadge,
+    visualToolEnvAssignments,
+    visualToolEnvSummaryLabel,
+    visualToolEnvTooltipText,
+    visualToolInlineScript,
+    visualToolInlineScriptLanguageLabel,
+    visualToolPreviewParts,
     visualToolPreviewText,
+    visualToolRemoteHostLabel,
     visualWorkSummary,
     visualUserImageAttachments,
     type VisualFileEditSummary,
@@ -31,6 +42,11 @@
     type VisualWorkEntry,
   } from "./last-user-message";
   import { markdownCodeBlockHtml } from "./markdown-code";
+  import {
+    captureScrollSnapshot,
+    restoreScrollSnapshot,
+    type ScrollSnapshotEntry,
+  } from "./scroll-util";
 
   type Agent = "claude" | "codex" | "copilot" | "ollama";
 
@@ -45,11 +61,15 @@
       | "ide_context"
       | "system_reminder"
       | "command"
+      | "goal"
       | "marker";
     text?: string;
     toolName?: string;
     toolInput?: unknown;
     toolUseId?: string;
+    approvalPolicy?: string;
+    approvalDecision?: string;
+    sandboxPolicy?: string;
     explanation?: string;
     planItems?: VisualPlanItem[];
     tagName?: string;
@@ -178,6 +198,7 @@
   let expandedThinkingWorkKeys = new Set<string>();
   let openWorkFoldoutKeys = new Set<string>();
   let openWorkEntryKeys = new Set<string>();
+  let pendingDetailsScrollAnchor: DetailsScrollAnchor | null = null;
   const MARKDOWN_CACHE_LIMIT = 500;
   const markdownCache = new Map<string, string>();
   const TIME_TITLE_CACHE_LIMIT = 1000;
@@ -188,6 +209,13 @@
     y: number;
     width: number;
     height: number;
+  }
+
+  interface DetailsScrollAnchor {
+    summary: HTMLElement;
+    container: HTMLElement | null;
+    top: number;
+    snapshot: ScrollSnapshotEntry[];
   }
 
   $: openMediaBlock =
@@ -384,8 +412,8 @@
         }
         const dx = source.x - target.left;
         const dy = source.y - target.top;
-        const sx = Math.max(0.16, Math.min(2.4, source.width / target.width));
-        const sy = Math.max(0.28, Math.min(2.2, source.height / target.height));
+        const sx = Math.max(0.72, Math.min(1, source.width / target.width));
+        const sy = Math.max(0.72, Math.min(1, source.height / target.height));
         node.style.transformOrigin = "top left";
         node.style.willChange = "transform, opacity, filter";
         node
@@ -446,6 +474,48 @@
     return s.length > 200 ? s.slice(0, 200) + "…" : s;
   }
 
+  type VisualPreviewPathPart = Extract<
+    ReturnType<typeof visualToolPreviewParts>[number],
+    { kind: "path" }
+  >;
+
+  function stripPreviewPathRange(path: string): string {
+    return path.trim().replace(/:\d+(?:-\d+)?$/, "");
+  }
+
+  function isAbsolutePreviewPath(path: string): boolean {
+    return (
+      path.startsWith("/") ||
+      path.startsWith("\\\\") ||
+      /^[A-Za-z]:[\\/]/.test(path)
+    );
+  }
+
+  function resolvePreviewPath(path: string): string {
+    const clean = stripPreviewPathRange(path);
+    if (!clean) return "";
+    if (isAbsolutePreviewPath(clean) || !sessionCwd) return clean;
+    const base = sessionCwd.replace(/[\\/]+$/g, "");
+    return `${base}/${clean.replace(/^[\\/]+/g, "")}`;
+  }
+
+  async function openPreviewPath(
+    part: VisualPreviewPathPart,
+    remoteHost: string | undefined,
+    event: MouseEvent,
+  ): Promise<void> {
+    event.preventDefault();
+    event.stopPropagation();
+    if (remoteHost) return;
+    const path = resolvePreviewPath(part.path);
+    if (!path) return;
+    await fetch(apiUrl("/api/open", daemonId), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path, app: "files" }),
+    }).catch(() => {});
+  }
+
   function workDurationLabel(
     item: Extract<
       VisualTranscriptItem<NormalizedBlock, NormalizedMessage>,
@@ -462,8 +532,18 @@
     return duration ? `${prefix} for ${duration}` : prefix;
   }
 
-  function workCountLabel(steps: number, compactions: number): string {
-    const parts = [`${steps} ${steps === 1 ? "step" : "steps"}`];
+  function workCountLabel(
+    steps: number,
+    compactions: number,
+    steerings: number,
+  ): string {
+    const parts: string[] = [];
+    if (steps > 0 || (steerings === 0 && compactions === 0)) {
+      parts.push(`${steps} ${steps === 1 ? "step" : "steps"}`);
+    }
+    if (steerings > 0) {
+      parts.push(`${steerings} ${steerings === 1 ? "steering" : "steerings"}`);
+    }
     if (compactions > 0) {
       parts.push(
         `${compactions} ${compactions === 1 ? "compaction" : "compactions"}`,
@@ -476,8 +556,48 @@
     if (seconds === undefined || !Number.isFinite(seconds)) return undefined;
     if (seconds <= 0) return undefined;
     if (seconds < 1) return `${Math.max(1, Math.round(seconds * 1000))}ms`;
-    if (seconds < 10) return `${seconds.toFixed(1)}s`;
-    return `${Math.round(seconds)}s`;
+    return formatVisualDurationSeconds(seconds);
+  }
+
+  function elapsedDurationSince(
+    startedAt: string | undefined,
+    nowIso: string,
+  ): string | undefined {
+    if (!startedAt) return undefined;
+    const start = Date.parse(startedAt);
+    const now = Date.parse(nowIso);
+    if (Number.isNaN(start) || Number.isNaN(now)) return undefined;
+    if (now - start < 1000) return undefined;
+    return formatVisualWorkDuration(startedAt, nowIso);
+  }
+
+  function toolRunningDurationLabel(
+    item: Extract<
+      VisualTranscriptItem<NormalizedBlock, NormalizedMessage>,
+      { kind: "work" }
+    >,
+    entry: VisualWorkEntry<NormalizedBlock, NormalizedMessage>,
+    resultEntry: VisualWorkEntry<NormalizedBlock, NormalizedMessage> | undefined,
+    observedProcessOutput: ReturnType<typeof visualObservedProcessOutput>,
+    nowIso: string,
+  ): string | undefined {
+    if (!item.open || item.endedAt) return undefined;
+
+    if (
+      observedProcessOutput?.wallTimeSeconds !== undefined &&
+      resultEntry?.message.timestamp
+    ) {
+      const resultAt = Date.parse(resultEntry.message.timestamp);
+      if (!Number.isNaN(resultAt)) {
+        const startedAt = new Date(
+          resultAt - observedProcessOutput.wallTimeSeconds * 1000,
+        ).toISOString();
+        return elapsedDurationSince(startedAt, nowIso);
+      }
+    }
+
+    if (resultEntry) return undefined;
+    return elapsedDurationSince(entry.message.timestamp, nowIso);
   }
 
   function visualTextForBlock(
@@ -656,6 +776,22 @@
     return text.replace(/\s+/g, " ").trim();
   }
 
+  function workEntryToolIconName(
+    block: NormalizedBlock,
+    preview: string,
+  ): string | undefined {
+    if (/^Stop process(?:es)?\b/.test(preview)) return "process_end";
+    if (/^Check port(?:s)?\b/.test(preview)) return "port_check";
+    if (/^Delete (?:file|folder|path)\b/.test(preview)) {
+      return "filesystem_delete";
+    }
+    if (/^Create (?:file|folder|path)\b/.test(preview)) {
+      return "filesystem_create";
+    }
+    if (/^Fetch\b/.test(preview)) return "fetch";
+    return block.toolName;
+  }
+
   function toolUsesInlineCommandLabel(block: NormalizedBlock): boolean {
     if (!workEntryToolPreview(block)) return false;
     const name = (block.toolName ?? "").toLowerCase();
@@ -703,6 +839,7 @@
   function workMarkerIcon(kind: VisualMarkerKind | undefined): string {
     if (kind === "complete") return "✓";
     if (kind === "compacted") return "⇥";
+    if (kind === "failed") return "!";
     if (kind === "aborted") return "!";
     return "•";
   }
@@ -816,10 +953,91 @@
     openWorkFoldoutKeys = next;
   }
 
+  function scrollContainersForDetailsSummary(summary: HTMLElement): HTMLElement[] {
+    const containers: HTMLElement[] = [];
+    const workBody = summary.closest<HTMLElement>(".work-foldout-body");
+    if (workBody) {
+      containers.push(workBody);
+    }
+    if (messagesEl) {
+      containers.push(messagesEl);
+    }
+    return containers;
+  }
+
+  function primaryScrollContainerForDetailsSummary(
+    summary: HTMLElement,
+  ): HTMLElement | null {
+    const workBody = summary.closest<HTMLElement>(".work-foldout-body");
+    if (workBody && workBody.scrollHeight > workBody.clientHeight + 1) {
+      return workBody;
+    }
+    return messagesEl;
+  }
+
+  function captureDetailsScrollAnchor(summary: HTMLElement | null): void {
+    if (!summary) return;
+    const containers = scrollContainersForDetailsSummary(summary);
+    if (containers.length === 0) return;
+    pendingDetailsScrollAnchor = {
+      summary,
+      container: primaryScrollContainerForDetailsSummary(summary),
+      top: summary.getBoundingClientRect().top,
+      snapshot: captureScrollSnapshot(containers),
+    };
+  }
+
+  function captureDetailsToggleIntent(event: Event): void {
+    if (event instanceof KeyboardEvent) {
+      if (event.key !== "Enter" && event.key !== " ") return;
+    }
+    const details = event.currentTarget as HTMLDetailsElement | null;
+    const summary = (event.target as Element | null)?.closest<HTMLElement>(
+      "summary",
+    );
+    if (!details || !summary || summary.parentElement !== details) return;
+    captureDetailsScrollAnchor(summary);
+  }
+
+  function preserveDetailsToggleScroll(node: HTMLDetailsElement) {
+    node.addEventListener("pointerdown", captureDetailsToggleIntent, true);
+    node.addEventListener("click", captureDetailsToggleIntent, true);
+    node.addEventListener("keydown", captureDetailsToggleIntent, true);
+    return {
+      destroy() {
+        node.removeEventListener("pointerdown", captureDetailsToggleIntent, true);
+        node.removeEventListener("click", captureDetailsToggleIntent, true);
+        node.removeEventListener("keydown", captureDetailsToggleIntent, true);
+      },
+    };
+  }
+
+  function applyDetailsScrollAnchor(anchor: DetailsScrollAnchor): void {
+    if (!anchor.summary.isConnected) return;
+    restoreScrollSnapshot(anchor.snapshot);
+    const delta = anchor.summary.getBoundingClientRect().top - anchor.top;
+    if (Math.abs(delta) < 0.5) return;
+    if (!anchor.container?.isConnected) return;
+    anchor.container.scrollTop += delta;
+  }
+
+  function restoreDetailsScrollAnchor(): void {
+    const anchor = pendingDetailsScrollAnchor;
+    pendingDetailsScrollAnchor = null;
+    if (!anchor) return;
+    void tick().then(() => {
+      requestAnimationFrame(() => {
+        applyDetailsScrollAnchor(anchor);
+        requestAnimationFrame(() => applyDetailsScrollAnchor(anchor));
+      });
+    });
+  }
+
   function onWorkFoldoutToggle(event: Event, workKey: string): void {
     const details = event.currentTarget as HTMLDetailsElement | null;
     if (!details) return;
     setWorkFoldoutBodyRendered(workKey, details.open);
+    restoreDetailsScrollAnchor();
   }
 
   function setWorkEntryBodyRendered(entryKey: string, open: boolean): void {
@@ -850,6 +1068,7 @@
       workEntryRenderKey(workKey, displayEntry),
       details.open,
     );
+    restoreDetailsScrollAnchor();
     if (
       !details.open ||
       !item.open ||
@@ -969,6 +1188,96 @@
   </span>
 {/snippet}
 
+{#snippet renderToolEnvBadges(block: NormalizedBlock)}
+  {@const env = visualToolEnvAssignments(block)}
+  {@const summary = visualToolEnvSummaryLabel(block)}
+  {#if env.length > 0}
+    <span
+      class="tool-env-summary"
+      title={visualToolEnvTooltipText(block)}
+      aria-label={`Environment adjustments: ${visualToolEnvTooltipText(block)}`}
+    >
+      <span class="tool-env-summary-chip">{summary}</span>
+      <span class="tool-env-popover" role="tooltip">
+        {#each env as item (`${item.name}=${item.value}`)}
+          <span class="tool-env-badge" title={`${item.name}=${item.value}`}>
+            <span class="tool-env-key">{item.name}</span>
+            <span class="tool-env-value">{item.value}</span>
+          </span>
+        {/each}
+      </span>
+    </span>
+  {/if}
+{/snippet}
+
+{#snippet renderToolApprovalBadge(block: NormalizedBlock)}
+  {@const approval = visualToolApprovalBadge(block)}
+  {#if approval}
+    <span
+      class={`work-tool-approval ${approval.tone}`}
+      title={approval.title}
+      aria-label={approval.title}
+    >
+      {approval.label}
+    </span>
+  {/if}
+{/snippet}
+
+{#snippet renderPreviewPathChip(part: VisualPreviewPathPart, remoteHost: string | undefined)}
+  <button
+    type="button"
+    class="work-preview-path"
+    class:remote={!!remoteHost}
+    title={remoteHost
+      ? `${part.path}${part.range} on ${remoteHost}`
+      : `Open ${resolvePreviewPath(part.path)}`}
+    aria-label={remoteHost ? `${part.text} on ${remoteHost}` : `Open ${part.text}`}
+    aria-disabled={!!remoteHost}
+    on:click={(event) => openPreviewPath(part, remoteHost, event)}
+  >
+    {part.text}
+  </button>
+{/snippet}
+
+{#snippet renderToolPreview(block: NormalizedBlock, preview: string, remoteHost: string | undefined)}
+  {@const parts = visualToolPreviewParts(block)}
+  <span class="work-tool-preview" title={preview}>
+    {#if parts.length > 0}
+      {#each parts as part, i (`${part.kind}:${part.text}:${i}`)}
+        {#if part.kind === "path"}
+          {@render renderPreviewPathChip(part, remoteHost)}
+        {:else}
+          <span>{part.text}</span>
+        {/if}
+      {/each}
+    {:else}
+      {preview}
+    {/if}
+  </span>
+{/snippet}
+
+{#snippet renderRemoteHostBadge(remoteHost: string | undefined)}
+  {#if remoteHost}
+    <span class="work-remote-host" title={`Remote host ${remoteHost}`}>
+      <svg
+        class="work-remote-host-icon"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        stroke-width="2"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+        aria-hidden="true"
+      >
+        <rect x="3" y="4" width="18" height="12" rx="2" />
+        <path d="M8 20h8" />
+        <path d="M12 16v4" />
+      </svg>
+      <span>{remoteHost}</span>
+    </span>
+  {/if}
+{/snippet}
+
 {#snippet renderImageAttachmentFrame(
   src: string,
   label: string,
@@ -1065,8 +1374,11 @@
         </div>
       {/if}
     {:else if b.type === "tool_use"}
+      {@const remoteHost = visualToolRemoteHostLabel(b)}
       <div class="block tool-use">
-        <ToolIcon name={b.toolName} badge={visualToolLauncherLabel(b)} />
+        <ToolIcon name={b.toolName} />
+        {@render renderRemoteHostBadge(remoteHost)}
+        {@render renderToolEnvBadges(b)}
         <span class="tool-name">{b.toolName ?? "tool"}</span>
         <code class="tool-input" title={inputPreview(b.toolInput)}>
           {inputPreview(b.toolInput)}
@@ -1149,20 +1461,25 @@
 {/snippet}
 
 {#snippet renderFileEditSummary(summary: VisualFileEditSummary)}
+  {@const pathParts = visualPathPreviewTargets(summary.files.map((file) => file.path))}
   <div class="work-file-edits">
     <div class="work-file-edits-title">
       <span class="work-file-edits-icon" aria-hidden="true">✎</span>
       <span>{summary.title}</span>
     </div>
     <div class="work-file-edit-list">
-      {#each summary.files as file}
+      {#each summary.files as file, fileIndex}
+        {@const pathPart = pathParts[fileIndex] ?? {
+          kind: "path" as const,
+          text: fileEditBasename(file.path),
+          path: file.path,
+          range: "",
+        }}
         {#if file.raw}
           <details class="work-file-edit-detail">
             <summary class="work-file-edit-row">
               <span class="work-file-action">{fileEditActionLabel(file.action)}</span>
-              <span class="work-file-path" title={file.path}>
-                {fileEditBasename(file.path)}
-              </span>
+              {@render renderPreviewPathChip(pathPart, undefined)}
               {#if file.additions !== undefined}
                 <span class="work-file-add">+{file.additions}</span>
               {/if}
@@ -1177,9 +1494,7 @@
         {:else}
           <div class="work-file-edit-row">
             <span class="work-file-action">{fileEditActionLabel(file.action)}</span>
-            <span class="work-file-path" title={file.path}>
-              {fileEditBasename(file.path)}
-            </span>
+            {@render renderPreviewPathChip(pathPart, undefined)}
             {#if file.additions !== undefined}
               <span class="work-file-add">+{file.additions}</span>
             {/if}
@@ -1229,6 +1544,7 @@
       {/if}
     {:else if b.type === "tool_use"}
       {@const inputCode = visualToolCallPayloadText(b)}
+      {@const inlineScript = visualToolInlineScript(b)}
       {#if inputCode}
         <div class="md work-tool-code">
           <div class="work-tool-output-label">
@@ -1242,6 +1558,17 @@
       {:else}
         <div class="work-tool-empty-text">
           {b.toolName ?? "tool"} input: no payload
+        </div>
+      {/if}
+      {#if inlineScript}
+        <div class="md work-tool-code work-tool-script">
+          <div class="work-tool-output-label">
+            {inlineScript.title}
+          </div>
+          {@html markdownCodeBlockHtml(
+            inlineScript.code,
+            inlineScript.language,
+          )}
         </div>
       {/if}
     {:else if b.type === "tool_result"}
@@ -1259,15 +1586,32 @@
         </div>
       {/if}
     {:else if b.type === "media"}
-      {@const src = mediaSourceUrl(b)}
-      <div class="work-step-detail">
-        <span class="tag-label">{b.mediaKind ?? "artifact"}</span>
-        {#if src}
-          <a href={src} target="_blank" rel="noopener noreferrer">
-            {mediaLabel(b)}
-          </a>
+      {@const src = mediaSourceUrl(b, { thumbnail: true })}
+      <div class="work-step-detail work-media-detail">
+        {#if b.mediaKind === "image" && src}
+          <button
+            type="button"
+            class="media-image-open work-media-image-open"
+            title={`Open ${mediaLabel(b)}`}
+            aria-label={`Open ${mediaLabel(b)}`}
+            on:click={() => openMediaViewer([b], 0)}
+          >
+            {@render renderImageAttachmentFrame(
+              src,
+              b.alt ?? mediaLabel(b),
+              !!b.hasAlpha,
+              "media-photo-frame",
+            )}
+          </button>
         {:else}
-          <span>{mediaLabel(b)}</span>
+          <span class="tag-label">{b.mediaKind ?? "artifact"}</span>
+          {#if src}
+            <a href={src} target="_blank" rel="noopener noreferrer">
+              {mediaLabel(b)}
+            </a>
+          {:else}
+            <span>{mediaLabel(b)}</span>
+          {/if}
         {/if}
       </div>
     {:else if b.type === "ide_context"}
@@ -1310,21 +1654,40 @@
         <details
           class="work-foldout"
           class:work-foldout-live={item.open && !item.endedAt}
-          open={item.open}
+          class:work-foldout-aborted={item.terminalMarkerKind === "aborted"}
+          class:work-foldout-failed={item.terminalMarkerKind === "failed"}
+          open={item.open || openWorkFoldoutKeys.has(workKey)}
+          use:preserveDetailsToggleScroll
           on:toggle={(event) => onWorkFoldoutToggle(event, workKey)}
         >
-          <summary>
-            <span>{workDurationLabel(item, liveNowIso)}</span>
-            {#if item.open && !item.endedAt}
+          <summary
+            on:click|capture={(event) =>
+              captureDetailsScrollAnchor(event.currentTarget)}
+          >
+            {#if item.terminalMarkerKind}
+              <span class="work-summary-marker-icon" aria-hidden="true">
+                {workMarkerIcon(item.terminalMarkerKind)}
+              </span>
+            {/if}
+            <span>{item.terminalMarkerLabel ?? workDurationLabel(item, liveNowIso)}</span>
+            {#if item.open && !item.endedAt && !item.terminalMarkerKind}
               {@render renderLiveDots()}
             {/if}
             <span class="work-count">
-              {workCountLabel(workSummary.steps, workSummary.compactions)}
+              {workCountLabel(
+                workSummary.steps,
+                workSummary.compactions,
+                workSummary.steerings,
+              )}
             </span>
           </summary>
           {#if item.open || openWorkFoldoutKeys.has(workKey)}
-            <div class="work-foldout-body" on:wheel|capture={handOffNestedWheel}>
-            {#each buildVisualWorkDisplayEntries(item.entries) as displayEntry (getVisualWorkDisplayEntryKey(displayEntry))}
+            <div
+              class="work-foldout-body"
+              data-work-key={workKey}
+              on:wheel|capture={handOffNestedWheel}
+            >
+            {#each buildVisibleVisualWorkDisplayEntries(item) as displayEntry (getVisualWorkDisplayEntryKey(displayEntry))}
               {@const entry = displayEntry.entry}
               {#if isPlainAssistantWorkText(entry)}
                 <div class="work-entry-inline">
@@ -1340,6 +1703,7 @@
                   class:complete={displayEntry.markerKind === "complete"}
                   class:started={displayEntry.markerKind === "started"}
                   class:compacted={displayEntry.markerKind === "compacted"}
+                  class:failed={displayEntry.markerKind === "failed"}
                   class:aborted={displayEntry.markerKind === "aborted"}
                   title={markerBlock.text}
                 >
@@ -1357,9 +1721,35 @@
                   {/if}
                 </div>
               {:else}
-                {@const toolBlock = workEntryToolUseBlock(entry)}
-                {@const editSummary = workEntryFileEditSummary(entry)}
-                {@const resultMeta = toolResultMeta(displayEntry.pairedResult)}
+                {@const pairedToolUseBlock = displayEntry.pairedToolUse
+                  ? workEntryToolUseBlock(displayEntry.pairedToolUse)
+                  : undefined}
+                {@const toolBlock = workEntryToolUseBlock(entry) ?? pairedToolUseBlock}
+                {@const editSummary =
+                  workEntryFileEditSummary(entry) ??
+                  (displayEntry.pairedToolUse
+                    ? workEntryFileEditSummary(displayEntry.pairedToolUse)
+                    : undefined)}
+                {@const visibleResultEntry = entry.blocks.some(
+                  (block) => block.type === "tool_result",
+                )
+                  ? entry
+                  : displayEntry.pairedResult}
+                {@const visibleResultBlock = workEntryToolResultBlock(
+                  visibleResultEntry,
+                )}
+                {@const observedProcessOutput = visualObservedProcessOutput(
+                  toolBlock,
+                  visibleResultBlock,
+                )}
+                {@const toolElapsedDuration = toolRunningDurationLabel(
+                  item,
+                  entry,
+                  visibleResultEntry,
+                  observedProcessOutput,
+                  liveNowIso,
+                )}
+                {@const resultMeta = toolResultMeta(visibleResultEntry)}
                 {@const toolPreview = toolBlock ? workEntryToolPreview(toolBlock) : ""}
                 {@const entryBlock = entry.blocks[0]}
                 {@const resultBlock = workEntryToolResultBlock(entry)}
@@ -1369,26 +1759,64 @@
                   workKey,
                   displayEntry,
                 )}
-                <details
-                  class="work-entry"
-                  open={forceOpenThinkingEntry(workKey, entry)}
-                  use:workEntryBodyVisibility={{
-                    item,
-                    workKey,
-                    displayEntry,
-                    entry,
-                  }}
-                  on:toggle={(event) =>
-                    onWorkEntryToggle(
-                      event,
+                {#if isSteeredUserMessage(entry.message)}
+                  <div class="work-steering-user-message">
+                    <div class="work-steering-user-bubble">
+                      <span class="user-intent-chip steered" title="Sent as steering">
+                        steered
+                      </span>
+                      {@render renderMessageBlocks(
+                        displayBlocksForMessage(entry.blocks, "user"),
+                        entry.message,
+                        -1,
+                      )}
+                    </div>
+                  </div>
+                {:else}
+                  <details
+                    class="work-entry"
+                    open={forceOpenThinkingEntry(workKey, entry) ||
+                      openWorkEntryKeys.has(entryRenderKey)}
+                    use:preserveDetailsToggleScroll
+                    use:workEntryBodyVisibility={{
                       item,
                       workKey,
                       displayEntry,
                       entry,
-                    )}
-                >
-                  <summary>
-                    {#if toolBlock}
+                    }}
+                    on:toggle={(event) =>
+                      onWorkEntryToggle(
+                        event,
+                        item,
+                        workKey,
+                        displayEntry,
+                        entry,
+                      )}
+                  >
+                  <summary
+                    on:click|capture={(event) =>
+                      captureDetailsScrollAnchor(event.currentTarget)}
+                  >
+                    {#if observedProcessOutput}
+                      <span class="work-tool-chip">
+                        <ToolIcon name="write_stdin" />
+                        <span>{observedProcessOutput.title}</span>
+                      </span>
+                      <span
+                        class="work-tool-preview work-process-output-preview"
+                        title={observedProcessOutput.preview}
+                      >
+                        {observedProcessOutput.preview}
+                      </span>
+                      {#if toolElapsedDuration || observedProcessOutput.wallTimeSeconds !== undefined}
+                        <span class="work-tool-meta">
+                          {toolElapsedDuration ??
+                            formatToolWallTime(observedProcessOutput.wallTimeSeconds)}
+                        </span>
+                      {/if}
+                    {:else if toolBlock}
+                      {@const remoteHost = visualToolRemoteHostLabel(toolBlock)}
+                      {@const scriptLanguage = visualToolInlineScriptLanguageLabel(toolBlock)}
                       {#if editSummary}
                         <span class="work-tool-chip icon-only file-edit">
                           <span class="work-file-edits-icon" aria-hidden="true">✎</span>
@@ -1399,13 +1827,19 @@
                           class:icon-only={toolUsesInlineCommandLabel(toolBlock)}
                         >
                           <ToolIcon
-                            name={toolBlock.toolName}
-                            badge={visualToolLauncherLabel(toolBlock)}
+                            name={workEntryToolIconName(toolBlock, toolPreview)}
                           />
+                          {@render renderToolEnvBadges(toolBlock)}
                           {#if !toolUsesInlineCommandLabel(toolBlock)}
                             <span>{toolBlock.toolName ?? "tool"}</span>
                           {/if}
                         </span>
+                        {@render renderRemoteHostBadge(remoteHost)}
+                        {#if scriptLanguage}
+                          <span class="work-tool-chip work-code-language-badge">
+                            <span>{scriptLanguage}</span>
+                          </span>
+                        {/if}
                       {/if}
                       {#if editSummary}
                         <span
@@ -1415,12 +1849,19 @@
                           {editSummary.title}
                         </span>
                       {:else if toolPreview}
-                        <span class="work-tool-preview" title={toolPreview}>
-                          {toolPreview}
-                        </span>
+                        {@render renderToolPreview(toolBlock, toolPreview, remoteHost)}
                       {/if}
-                      {#if resultMeta}
-                        <span class="work-tool-meta">{resultMeta}</span>
+                      {@render renderToolApprovalBadge(toolBlock)}
+                      {#if toolElapsedDuration}
+                        <span class="work-tool-meta">{toolElapsedDuration}</span>
+                      {:else if resultMeta}
+                        <span class="work-tool-meta">
+                          {entryBlock?.type === "tool_result"
+                            ? `ended · ${resultMeta}`
+                            : resultMeta}
+                        </span>
+                      {:else if entryBlock?.type === "tool_result"}
+                        <span class="work-tool-meta">ended</span>
                       {/if}
                     {:else if entryBlock?.type === "thinking"}
                       <span class="work-tool-chip icon-only work-thinking-chip">
@@ -1436,6 +1877,15 @@
                       <span class="work-tool-chip">
                         <ToolIcon name={resultBlock?.toolName ?? "tool_result"} />
                         <span>{collapsedTitle}</span>
+                      </span>
+                      {#if collapsedPreview}
+                        <span class="work-tool-preview" title={collapsedPreview}>
+                          {collapsedPreview}
+                        </span>
+                      {/if}
+                    {:else if isSteeredUserMessage(entry.message)}
+                      <span class="work-tool-chip work-steering-chip">
+                        <span>Steering</span>
                       </span>
                       {#if collapsedPreview}
                         <span class="work-tool-preview" title={collapsedPreview}>
@@ -1463,14 +1913,29 @@
                     <div class="work-entry-body" on:wheel|capture={handOffNestedWheel}>
                       {#if editSummary}
                         {@render renderFileEditSummary(editSummary)}
-                        <details class="work-raw-tool-details">
-                          <summary>Raw tool input/output</summary>
+                        <details
+                          class="work-raw-tool-details"
+                          use:preserveDetailsToggleScroll
+                          on:toggle={restoreDetailsScrollAnchor}
+                        >
+                          <summary
+                            on:click|capture={(event) =>
+                              captureDetailsScrollAnchor(event.currentTarget)}
+                          >
+                            Raw tool input/output
+                          </summary>
+                          {#if displayEntry.pairedToolUse}
+                            {@render renderWorkEntryBlocks(displayEntry.pairedToolUse.blocks)}
+                          {/if}
                           {@render renderWorkEntryBlocks(entry.blocks)}
                           {#if displayEntry.pairedResult}
                             {@render renderWorkEntryBlocks(displayEntry.pairedResult.blocks)}
                           {/if}
                         </details>
                       {:else}
+                        {#if displayEntry.pairedToolUse}
+                          {@render renderWorkEntryBlocks(displayEntry.pairedToolUse.blocks)}
+                        {/if}
                         {@render renderWorkEntryBlocks(entry.blocks)}
                         {#if displayEntry.pairedResult}
                           {@render renderWorkEntryBlocks(displayEntry.pairedResult.blocks)}
@@ -1478,7 +1943,8 @@
                       {/if}
                     </div>
                   {/if}
-                </details>
+                  </details>
+                {/if}
               {/if}
             {/each}
             {#if isLiveTailWork(item, itemIndex)}
@@ -1495,6 +1961,7 @@
           class:complete={item.markerKind === "complete"}
           class:started={item.markerKind === "started"}
           class:compacted={item.markerKind === "compacted"}
+          class:failed={item.markerKind === "failed"}
           class:aborted={item.markerKind === "aborted"}
           title={item.markerBlock.text}
         >
@@ -1781,21 +2248,25 @@
     text-transform: uppercase;
     letter-spacing: 0;
   }
-  .msg.user-message .block.text {
+  .msg.user-message .block.text,
+  .work-steering-user-bubble .block.text {
     padding: 0.45rem 0.7rem;
     border-radius: 1rem;
     background: color-mix(in srgb, var(--surface-3) 62%, var(--surface-1));
     border: 1px solid color-mix(in srgb, var(--surface-3) 80%, transparent);
     text-align: left;
   }
-  .msg.user-message .media-block {
+  .msg.user-message .media-block,
+  .work-steering-user-bubble .media-block {
     margin: 0;
     max-width: min(16rem, 100%);
   }
-  .msg.user-message .media-photo-frame img {
+  .msg.user-message .media-photo-frame img,
+  .work-steering-user-bubble .media-photo-frame img {
     max-height: 7.2rem;
   }
-  .msg.user-message .media-block figcaption {
+  .msg.user-message .media-block figcaption,
+  .work-steering-user-bubble .media-block figcaption {
     display: none;
   }
   .msg.assistant-response {
@@ -1889,6 +2360,26 @@
   .work-foldout[open] > summary {
     color: var(--text-1);
   }
+  .work-foldout.work-foldout-aborted > summary {
+    border-color: color-mix(in srgb, var(--danger, #e5707a) 34%, var(--surface-3));
+    background: color-mix(in srgb, var(--danger, #e5707a) 10%, transparent);
+    color: color-mix(in srgb, var(--danger, #e5707a) 72%, var(--text-1));
+  }
+  .work-foldout.work-foldout-failed > summary {
+    border-color: color-mix(in srgb, var(--error-text, #ffaaaa) 42%, var(--surface-3));
+    background: color-mix(in srgb, var(--error-bg, #3f1f1f) 48%, transparent);
+    color: var(--error-text, #ffaaaa);
+  }
+  .work-summary-marker-icon {
+    display: inline-grid;
+    place-items: center;
+    width: 0.92rem;
+    height: 0.92rem;
+    border-radius: 999px;
+    background: color-mix(in srgb, currentColor 16%, transparent);
+    font-size: 0.66rem;
+    line-height: 1;
+  }
   .work-foldout > summary::-webkit-details-marker,
   .work-entry > summary::-webkit-details-marker {
     display: none;
@@ -1897,6 +2388,9 @@
   .work-entry > summary::before {
     content: "▸";
     display: inline-block;
+    flex: 0 0 0.74rem;
+    width: 0.74rem;
+    text-align: center;
     line-height: 1;
     color: var(--text-faint);
     font-size: 0.7rem;
@@ -1943,6 +2437,39 @@
     min-width: 0;
     max-width: 100%;
   }
+  .work-steering-user-message {
+    display: flex;
+    justify-content: flex-end;
+    min-width: 0;
+    max-width: 100%;
+    padding: 0.12rem 0;
+  }
+  .work-steering-user-bubble {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 0.35rem;
+    width: fit-content;
+    max-width: 80%;
+    min-width: 0;
+  }
+  .work-steering-user-bubble .media-strip {
+    justify-content: flex-end;
+  }
+  .messages.terminal-transcript .work-steering-user-message {
+    display: block;
+    padding: 0.2rem 0.25rem;
+  }
+  .messages.terminal-transcript .work-steering-user-bubble {
+    display: block;
+    max-width: none;
+    width: auto;
+  }
+  .messages.terminal-transcript .work-steering-user-bubble .block.text {
+    padding: 0;
+    border: 0;
+    background: transparent;
+  }
   .marker-row {
     display: flex;
     justify-content: center;
@@ -1983,6 +2510,11 @@
     border-color: color-mix(in srgb, var(--danger, #e5707a) 34%, var(--surface-3));
     background: color-mix(in srgb, var(--danger, #e5707a) 10%, transparent);
     color: color-mix(in srgb, var(--danger, #e5707a) 72%, var(--text-1));
+  }
+  .work-marker-pill.failed {
+    border-color: color-mix(in srgb, var(--error-text, #ffaaaa) 42%, var(--surface-3));
+    background: color-mix(in srgb, var(--error-bg, #3f1f1f) 48%, transparent);
+    color: var(--error-text, #ffaaaa);
   }
   .work-marker-icon {
     display: inline-grid;
@@ -2037,20 +2569,184 @@
   .work-tool-chip.icon-only {
     padding: 0.14rem 0.32rem;
   }
+  .work-tool-chip.icon-only.file-edit,
+  .work-tool-chip.icon-only.work-thinking-chip {
+    justify-content: center;
+    width: 1.52rem;
+    height: 1.52rem;
+    padding: 0;
+  }
   .work-tool-chip.file-edit {
     color: var(--text-muted);
   }
   .work-thinking-chip {
-    color: color-mix(in srgb, var(--text-muted) 88%, var(--brand));
+    color: var(--text-muted);
   }
   .work-thinking-chip .thinking-icon {
     width: 0.86rem;
     height: 0.86rem;
     margin: 0;
   }
+  .work-tool-chip.file-edit .work-file-edits-icon {
+    display: inline-grid;
+    place-items: center;
+    width: 0.86rem;
+    height: 0.86rem;
+    color: currentColor;
+    font-size: 0.78rem;
+    line-height: 1;
+  }
   .work-tool-chip span {
     flex: 0 0 auto;
     white-space: nowrap;
+  }
+  .work-code-language-badge {
+    gap: 0.24rem;
+    max-width: 7.5rem;
+    min-width: 0;
+    height: 1.24rem;
+    padding: 0 0.34rem;
+    border-color: color-mix(in srgb, var(--surface-3) 46%, transparent);
+    background: color-mix(in srgb, var(--surface-1) 42%, transparent);
+    color: var(--text-faint);
+    font-size: 0.62rem;
+    line-height: 1;
+  }
+  .work-code-language-badge :global(svg) {
+    flex: 0 0 auto;
+    width: 0.78rem;
+    height: 0.78rem;
+  }
+  .work-code-language-badge span {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .work-remote-host {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.24rem;
+    flex: 0 0 auto;
+    max-width: none;
+    min-width: max-content;
+    height: 1.24rem;
+    padding: 0 0.34rem;
+    border: 1px solid color-mix(in srgb, var(--surface-3) 46%, transparent);
+    border-radius: 999px;
+    background: color-mix(in srgb, var(--surface-1) 42%, transparent);
+    color: var(--text-faint);
+    font-family:
+      ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono",
+      "Courier New", monospace;
+    font-size: 0.62rem;
+    line-height: 1;
+    white-space: nowrap;
+  }
+  .work-remote-host-icon {
+    flex: 0 0 auto;
+    width: 0.78rem;
+    height: 0.78rem;
+  }
+  .work-remote-host span {
+    flex: 0 0 auto;
+    overflow: visible;
+    text-overflow: clip;
+    white-space: nowrap;
+  }
+  .tool-env-summary {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    flex: 0 0 auto;
+    min-width: 0;
+  }
+  .tool-env-summary-chip {
+    display: inline-flex;
+    align-items: center;
+    flex: 0 0 auto;
+    white-space: nowrap;
+    color: var(--text-muted);
+    font-family:
+      ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono",
+      "Courier New", monospace;
+    font-size: 0.7rem;
+    line-height: 1.1;
+  }
+  .tool-env-popover {
+    position: absolute;
+    left: 0;
+    bottom: calc(100% + 0.34rem);
+    z-index: 40;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    gap: 0.24rem;
+    width: max-content;
+    max-width: min(28rem, 72vw);
+    padding: 0.38rem;
+    border: 1px solid color-mix(in srgb, var(--surface-3) 72%, transparent);
+    border-radius: 0.5rem;
+    background: color-mix(in srgb, var(--surface-2) 96%, black 4%);
+    box-shadow: 0 0.65rem 1.8rem rgba(0, 0, 0, 0.34);
+    opacity: 0;
+    pointer-events: none;
+    transform: translateY(0.18rem);
+    transition:
+      opacity 120ms ease,
+      transform 120ms ease;
+  }
+  .tool-env-summary:hover .tool-env-popover {
+    opacity: 1;
+    transform: translateY(0);
+  }
+  .tool-env-badge {
+    display: inline-flex;
+    align-items: stretch;
+    flex: 0 0 auto;
+    max-width: 11rem;
+    overflow: hidden;
+    border: 1px solid color-mix(in srgb, var(--surface-3) 70%, transparent);
+    border-radius: 0.38rem;
+    background: color-mix(in srgb, var(--surface-1) 78%, transparent);
+    color: var(--text-muted);
+    font-family:
+      ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono",
+      "Courier New", monospace;
+    font-size: 0.64rem;
+    line-height: 1.1;
+    white-space: nowrap;
+  }
+  .tool-env-key,
+  .tool-env-value {
+    display: inline-block;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    padding: 0.11rem 0.24rem 0.12rem;
+  }
+  .work-tool-chip .tool-env-key,
+  .work-tool-chip .tool-env-value {
+    flex-basis: auto;
+  }
+  .tool-env-key {
+    flex: 0 1 auto;
+    max-width: 5.5rem;
+    color: var(--text-2);
+    background: color-mix(in srgb, var(--surface-3) 42%, transparent);
+    border-right: 1px solid
+      color-mix(in srgb, var(--surface-3) 58%, transparent);
+    font-weight: 650;
+  }
+  .tool-env-value {
+    flex: 1 1 auto;
+    max-width: 5.5rem;
+    color: var(--text-faint);
+  }
+  .tool-env-popover .tool-env-badge {
+    max-width: 26rem;
+  }
+  .tool-env-popover .tool-env-key,
+  .tool-env-popover .tool-env-value {
+    max-width: 13rem;
   }
   .work-thinking-preview {
     font-family: inherit;
@@ -2058,24 +2754,6 @@
   }
   .work-tool-preview {
     flex: 1 1 auto;
-    min-width: 4rem;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    color: var(--text-faint);
-    font-family:
-      ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono",
-      "Courier New", monospace;
-    font-size: 0.7rem;
-  }
-  .work-entry[open] > summary .work-tool-preview {
-    display: none;
-  }
-  .work-file-edit-preview {
-    color: var(--text-muted);
-  }
-  .work-tool-meta {
-    flex: 0 1 auto;
     min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -2085,6 +2763,81 @@
       ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono",
       "Courier New", monospace;
     font-size: 0.7rem;
+  }
+  .work-preview-path {
+    display: inline;
+    max-width: 100%;
+    margin: 0 -0.06rem;
+    padding: 0.07rem 0.16rem 0.08rem;
+    border: 1px solid transparent;
+    border-radius: 999px;
+    background: transparent;
+    color: inherit;
+    font: inherit;
+    line-height: inherit;
+    text-align: left;
+    white-space: inherit;
+    cursor: pointer;
+  }
+  .work-preview-path:hover,
+  .work-preview-path:focus-visible {
+    border-color: color-mix(in srgb, var(--accent) 36%, transparent);
+    background: color-mix(in srgb, var(--accent) 18%, transparent);
+    color: var(--text-1);
+    outline: none;
+  }
+  .work-preview-path.remote,
+  .work-preview-path[aria-disabled="true"] {
+    cursor: default;
+  }
+  .work-preview-path.remote:hover,
+  .work-preview-path.remote:focus-visible,
+  .work-preview-path[aria-disabled="true"]:hover,
+  .work-preview-path[aria-disabled="true"]:focus-visible {
+    border-color: color-mix(in srgb, var(--surface-3) 40%, transparent);
+    background: color-mix(in srgb, var(--surface-2) 34%, transparent);
+    color: inherit;
+  }
+  .work-file-edit-preview {
+    color: var(--text-muted);
+  }
+  .work-thinking-preview {
+    color: var(--text-muted);
+  }
+  .work-tool-meta {
+    flex: 0 0 auto;
+    min-width: max-content;
+    overflow: visible;
+    text-overflow: clip;
+    white-space: nowrap;
+    color: var(--text-faint);
+    font-family:
+      ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono",
+      "Courier New", monospace;
+    font-size: 0.7rem;
+  }
+  .work-tool-approval {
+    flex: 0 0 auto;
+    min-width: max-content;
+    padding: 0.08rem 0.42rem;
+    border: 1px solid color-mix(in srgb, var(--surface-4) 55%, transparent);
+    border-radius: 999px;
+    color: var(--text-faint);
+    background: color-mix(in srgb, var(--surface-2) 70%, transparent);
+    font-size: 0.66rem;
+    font-weight: 650;
+    line-height: 1.25;
+    white-space: nowrap;
+  }
+  .work-tool-approval.approved {
+    border-color: color-mix(in srgb, var(--success, #58d68d) 45%, transparent);
+    color: color-mix(in srgb, var(--success, #58d68d) 82%, white 18%);
+    background: color-mix(in srgb, var(--success, #58d68d) 12%, transparent);
+  }
+  .work-tool-approval.denied {
+    border-color: color-mix(in srgb, var(--danger, #ff6b7a) 45%, transparent);
+    color: color-mix(in srgb, var(--danger, #ff6b7a) 82%, white 18%);
+    background: color-mix(in srgb, var(--danger, #ff6b7a) 12%, transparent);
   }
   .work-entry-time {
     display: none;
@@ -2160,13 +2913,6 @@
   .work-file-action {
     flex: 0 0 auto;
     color: var(--text-muted);
-  }
-  .work-file-path {
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    color: var(--accent, #6aa9ff);
   }
   .work-file-add,
   .work-file-del {
@@ -2451,6 +3197,9 @@
   .tool-name {
     color: var(--text-2);
     flex: 0 0 auto;
+  }
+  .block.tool-use .tool-env-summary {
+    margin-right: -0.1rem;
   }
   .tool-input {
     color: var(--text-muted);

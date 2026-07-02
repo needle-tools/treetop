@@ -66,3 +66,149 @@ export function centerScrollTarget(
     currentScrollY + anchorTop - (viewportHeight - anchorHeight) / 2;
   return Math.max(0, Math.min(target, maxScrollY));
 }
+
+export interface ScrollSnapshotEntry {
+  el: HTMLElement;
+  scrollTop: number;
+  scrollLeft: number;
+}
+
+/**
+ * Capture scroll offsets for one or more nested scroll containers before a
+ * disclosure/layout mutation. Restoring the snapshot keeps a click-to-expand
+ * interaction from being interpreted as permission to yank the reader to a
+ * different part of the transcript.
+ */
+export function captureScrollSnapshot(
+  elements: readonly (HTMLElement | null | undefined)[],
+): ScrollSnapshotEntry[] {
+  const seen = new Set<HTMLElement>();
+  const out: ScrollSnapshotEntry[] = [];
+  for (const el of elements) {
+    if (!el || seen.has(el)) continue;
+    seen.add(el);
+    out.push({
+      el,
+      scrollTop: el.scrollTop,
+      scrollLeft: el.scrollLeft,
+    });
+  }
+  return out;
+}
+
+export function restoreScrollSnapshot(
+  snapshot: readonly ScrollSnapshotEntry[],
+): void {
+  for (const entry of snapshot) {
+    if (!entry.el.isConnected) continue;
+    entry.el.scrollTop = entry.scrollTop;
+    entry.el.scrollLeft = entry.scrollLeft;
+  }
+}
+
+export interface StickScrollerToBottomOpts {
+  /** How long to keep following delayed content growth. */
+  durationMs?: number;
+  raf?: (cb: () => void) => number;
+  cancelRaf?: (id: number) => void;
+  setTimeout?: (cb: () => void, ms: number) => ReturnType<typeof setTimeout>;
+  clearTimeout?: (id: ReturnType<typeof setTimeout>) => void;
+  ResizeObserver?: typeof ResizeObserver;
+  MutationObserver?: typeof MutationObserver;
+}
+
+const activeTailSticks = new WeakMap<HTMLElement, () => void>();
+
+/**
+ * Temporarily park a scroll container at its tail while late content
+ * hydrates. Used when a session column is revealed/focused: markdown,
+ * images, and async transcript hydration can add or resize children after
+ * the initial "go to bottom" frame.
+ *
+ * The helper stops when the user clearly takes over via wheel/touch/pointer
+ * or when `durationMs` elapses.
+ */
+export function stickScrollerToBottom(
+  scroller: HTMLElement,
+  opts: StickScrollerToBottomOpts = {},
+): () => void {
+  activeTailSticks.get(scroller)?.();
+
+  const raf =
+    opts.raf ??
+    ((cb: () => void) =>
+      requestAnimationFrame(() => {
+        cb();
+      }));
+  const cancelRaf = opts.cancelRaf ?? cancelAnimationFrame;
+  const setTimer = opts.setTimeout ?? setTimeout;
+  const clearTimer = opts.clearTimeout ?? clearTimeout;
+  const ResizeObserverCtor = opts.ResizeObserver ?? globalThis.ResizeObserver;
+  const MutationObserverCtor =
+    opts.MutationObserver ?? globalThis.MutationObserver;
+  const durationMs = opts.durationMs ?? 4000;
+
+  let done = false;
+  let rafId = 0;
+  const observed = new WeakSet<Element>();
+
+  const stick = () => {
+    if (done || rafId) return;
+    rafId = raf(() => {
+      rafId = 0;
+      if (done) return;
+      scroller.scrollTop = 1_000_000_000;
+    });
+  };
+
+  const ro = ResizeObserverCtor
+    ? new ResizeObserverCtor(() => {
+        stick();
+      })
+    : null;
+
+  const observeElement = (el: Element) => {
+    if (!ro || observed.has(el)) return;
+    observed.add(el);
+    ro.observe(el);
+  };
+
+  const observeChildren = () => {
+    observeElement(scroller);
+    for (const child of Array.from(scroller.children)) observeElement(child);
+  };
+
+  observeChildren();
+
+  const mo = MutationObserverCtor
+    ? new MutationObserverCtor(() => {
+        observeChildren();
+        stick();
+      })
+    : null;
+  mo?.observe(scroller, { childList: true, subtree: true });
+
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const stop = () => {
+    if (done) return;
+    done = true;
+    if (rafId) cancelRaf(rafId);
+    ro?.disconnect();
+    mo?.disconnect();
+    if (timer !== undefined) clearTimer(timer);
+    scroller.removeEventListener("wheel", stop, true);
+    scroller.removeEventListener("touchstart", stop, true);
+    scroller.removeEventListener("pointerdown", stop, true);
+    scroller.removeEventListener("keydown", stop, true);
+    if (activeTailSticks.get(scroller) === stop) activeTailSticks.delete(scroller);
+  };
+
+  timer = setTimer(stop, durationMs);
+  activeTailSticks.set(scroller, stop);
+  scroller.addEventListener("wheel", stop, { capture: true, passive: true });
+  scroller.addEventListener("touchstart", stop, { capture: true, passive: true });
+  scroller.addEventListener("pointerdown", stop, true);
+  scroller.addEventListener("keydown", stop, true);
+  stick();
+  return stop;
+}
