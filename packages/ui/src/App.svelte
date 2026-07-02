@@ -3808,9 +3808,18 @@
         };
       }
     }
-    if (zenRowKey && zenRowKey !== entry.rowKey) {
+    const zenSwitched = zenRowKey !== null && zenRowKey !== entry.rowKey;
+    if (zenSwitched) {
       zenRowKey = entry.rowKey;
       notesShownInZen = false;
+      // Zen mode hides non-focused rows with `display: none`. The
+      // just-revealed row needs a Svelte flush + a paint before its
+      // strip/column has valid getBoundingClientRect values —
+      // otherwise scrollToAndFlashSession measures zeros and no-ops.
+      await tick();
+      await new Promise<void>((resolve) =>
+        requestAnimationFrame(() => resolve()),
+      );
     }
     revealSession(entry.rowKey, entry.wtPath, {
       agent: entry.agent,
