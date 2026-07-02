@@ -84,6 +84,30 @@ export interface CodexTurnOverrides {
   summary?: string;
 }
 
+export type CodexGoalStatus =
+  | "active"
+  | "paused"
+  | "blocked"
+  | "usageLimited"
+  | "budgetLimited"
+  | "complete";
+
+export interface CodexThreadGoal {
+  threadId?: string;
+  goalId?: string;
+  objective?: string;
+  status?: CodexGoalStatus | string;
+  tokenBudget?: number | null;
+  tokensUsed?: number;
+  timeUsedSeconds?: number;
+  createdAt?: number;
+  updatedAt?: number;
+}
+
+export interface CodexThreadReadResult {
+  thread: JsonObject;
+}
+
 function defaultSpawn(cwd: string): CodexAppServerProcess {
   const proc = Bun.spawn({
     cmd: ["codex", "app-server"],
@@ -283,6 +307,57 @@ export class CodexAppServerAdapter implements NativeAgentAdapter {
     await rpc.request("turn/interrupt", { threadId, turnId: activeTurnId });
   }
 
+  async getGoal(threadId: string, cwd: string): Promise<CodexThreadGoal | null> {
+    const rpc = await this.ensureRpc(cwd);
+    await this.ensureThreadLoaded(rpc, threadId, cwd);
+    const result = await rpc.request("thread/goal/get", { threadId });
+    return codexGoalFromResult(result);
+  }
+
+  async setGoal(req: {
+    threadId: string;
+    cwd: string;
+    objective?: string | null;
+    status?: CodexGoalStatus | string | null;
+    tokenBudget?: number | null;
+  }): Promise<CodexThreadGoal | null> {
+    const rpc = await this.ensureRpc(req.cwd);
+    await this.ensureThreadLoaded(rpc, req.threadId, req.cwd);
+    const result = await rpc.request(
+      "thread/goal/set",
+      cleanObject({
+        threadId: req.threadId,
+        objective:
+          typeof req.objective === "string" ? req.objective : req.objective,
+        status: typeof req.status === "string" ? req.status : req.status,
+        tokenBudget:
+          typeof req.tokenBudget === "number" ? req.tokenBudget : req.tokenBudget,
+      }),
+    );
+    return codexGoalFromResult(result);
+  }
+
+  async clearGoal(threadId: string, cwd: string): Promise<void> {
+    const rpc = await this.ensureRpc(cwd);
+    await this.ensureThreadLoaded(rpc, threadId, cwd);
+    await rpc.request("thread/goal/clear", { threadId });
+  }
+
+  async readThread(req: {
+    threadId: string;
+    cwd: string;
+    includeTurns?: boolean;
+  }): Promise<CodexThreadReadResult> {
+    const rpc = await this.ensureRpc(req.cwd);
+    const result = await rpc.request("thread/read", {
+      threadId: req.threadId,
+      includeTurns: req.includeTurns !== false,
+    });
+    const thread = nestedObject(result, ["thread"]);
+    if (!thread) throw new Error("codex app-server did not return thread");
+    return { thread };
+  }
+
   respondToRequest(
     id: string | number,
     response: CodexAppServerRequestResponse,
@@ -390,6 +465,24 @@ function nestedString(obj: unknown, path: string[]): string | undefined {
   return typeof cur === "string" ? cur : undefined;
 }
 
+function nestedObject(obj: unknown, path: string[]): JsonObject | undefined {
+  let cur: unknown = obj;
+  for (const key of path) {
+    if (!cur || typeof cur !== "object") return undefined;
+    cur = (cur as Record<string, unknown>)[key];
+  }
+  return cur && typeof cur === "object" ? (cur as JsonObject) : undefined;
+}
+
+function nestedNumber(obj: unknown, path: string[]): number | undefined {
+  let cur: unknown = obj;
+  for (const key of path) {
+    if (!cur || typeof cur !== "object") return undefined;
+    cur = (cur as Record<string, unknown>)[key];
+  }
+  return typeof cur === "number" && Number.isFinite(cur) ? cur : undefined;
+}
+
 function textInput(text: string): JsonObject[] {
   return [{ type: "text", text, text_elements: [] }];
 }
@@ -404,6 +497,34 @@ function cleanObject(obj: JsonObject): JsonObject {
     if (value !== undefined && value !== null) out[key] = value;
   }
   return out;
+}
+
+function codexGoalFromResult(result: JsonObject): CodexThreadGoal | null {
+  const goal =
+    nestedObject(result, ["goal"]) ??
+    nestedObject(result, ["threadGoal"]) ??
+    nestedObject(result, ["thread", "goal"]);
+  if (!goal) return null;
+  const tokenBudget =
+    typeof goal.tokenBudget === "number" || goal.tokenBudget === null
+      ? goal.tokenBudget
+      : undefined;
+  return {
+    threadId: cleanString(goal.threadId),
+    goalId: cleanString(goal.goalId),
+    objective: cleanString(goal.objective),
+    status: cleanString(goal.status),
+    tokenBudget,
+    tokensUsed:
+      nestedNumber(goal, ["tokensUsed"]) ?? nestedNumber(goal, ["tokens_used"]),
+    timeUsedSeconds:
+      nestedNumber(goal, ["timeUsedSeconds"]) ??
+      nestedNumber(goal, ["time_used_seconds"]),
+    createdAt:
+      nestedNumber(goal, ["createdAt"]) ?? nestedNumber(goal, ["createdAtMs"]),
+    updatedAt:
+      nestedNumber(goal, ["updatedAt"]) ?? nestedNumber(goal, ["updatedAtMs"]),
+  };
 }
 
 function trim<T>(arr: T[], limit: number): void {

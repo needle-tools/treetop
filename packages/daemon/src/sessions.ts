@@ -20,6 +20,7 @@ export type NormalizedBlockKind =
   /** Assistant's extended thinking blocks (internal reasoning). */
   | "thinking"
   | "plan"
+  | "goal"
   | "tool_use"
   | "tool_result"
   /** Image/file artifact produced by or supplied to an agent. */
@@ -52,8 +53,19 @@ export interface NormalizedBlock {
   /** plan only. */
   explanation?: string;
   planItems?: NormalizedPlanItem[];
+  /** goal only. */
+  goalObjective?: string;
+  goalStatus?: string;
+  goalTokensUsed?: number;
+  goalTimeUsedSeconds?: number;
+  goalUpdatedAt?: number;
+  goalThreadId?: string;
   /** Links a tool_result back to the tool_use that produced it. */
   toolUseId?: string;
+  /** Command/file approval metadata captured for the turn that launched this tool. */
+  approvalPolicy?: string;
+  approvalDecision?: string;
+  sandboxPolicy?: string;
   /** For ide_context / system_reminder / command: the tag name, e.g. "ide_opened_file". */
   tagName?: string;
   /** media only. */
@@ -225,6 +237,75 @@ function inlineDataHash(url: string): string {
   return createHash("sha256").update(url).digest("hex");
 }
 
+function rawBase64ImageDataUrl(
+  value: string | undefined,
+  mimeType = "image/png",
+): string | undefined {
+  const compact = value?.replace(/\s+/g, "");
+  if (!compact || compact.length < 16) return undefined;
+  if (!/^[A-Za-z0-9+/]+={0,2}$/.test(compact)) return undefined;
+  return `data:${mimeType};base64,${compact}`;
+}
+
+function imageGenerationToolUseId(
+  raw: Record<string, unknown>,
+): string | undefined {
+  return (
+    stringProp(raw, "call_id") ??
+    stringProp(raw, "callId") ??
+    stringProp(raw, "id")
+  );
+}
+
+function imageGenerationMediaBlock(
+  raw: Record<string, unknown>,
+): NormalizedBlock | null {
+  const type = stringProp(raw, "type");
+  if (!type || !/image.*(?:call|generation|end)/i.test(type)) return null;
+  const path =
+    stringProp(raw, "path") ??
+    stringProp(raw, "file_path") ??
+    stringProp(raw, "filePath") ??
+    stringProp(raw, "savedPath");
+  const mimeType =
+    stringProp(raw, "mime_type") ??
+    stringProp(raw, "mimeType") ??
+    "image/png";
+  const toolUseId = imageGenerationToolUseId(raw);
+  const block: NormalizedBlock = {
+    type: "media",
+    mediaKind: "image",
+    mimeType,
+    title: "Generated image",
+    alt: "Generated image",
+    toolName: type,
+    ...(toolUseId ? { toolUseId } : {}),
+  };
+  if (path) {
+    const title = mediaTitleFromPath(path);
+    return { ...block, path, title, alt: title };
+  }
+  const dataUrl = rawBase64ImageDataUrl(
+    stringProp(raw, "result") ?? stringProp(raw, "b64_json"),
+    mimeType,
+  );
+  if (!dataUrl) return null;
+  return {
+    ...block,
+    text: `[${mimeType} data stored in source transcript]`,
+    inlineDataHash: inlineDataHash(dataUrl),
+  };
+}
+
+function imageGenerationToolInput(raw: Record<string, unknown>): unknown {
+  const input: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(raw)) {
+    if (key === "result" || key === "b64_json" || key === "output") continue;
+    input[key] = value;
+  }
+  return clipToolInput(input);
+}
+
 function mediaBlockFromContent(
   raw: Record<string, unknown>,
 ): NormalizedBlock | null {
@@ -303,6 +384,28 @@ function mediaBlockFromContent(
   return block;
 }
 
+function mediaTitleFromPath(path: string): string {
+  return path.split(/[\\/]/).filter(Boolean).at(-1) ?? path;
+}
+
+function viewImageMediaBlockFromInput(input: unknown): NormalizedBlock | null {
+  if (!input || typeof input !== "object") return null;
+  const record = input as Record<string, unknown>;
+  const path = stringProp(record, "path");
+  if (!path) return null;
+  const title =
+    stringProp(record, "title") ??
+    stringProp(record, "name") ??
+    mediaTitleFromPath(path);
+  return {
+    type: "media",
+    mediaKind: "image",
+    path,
+    title,
+    alt: title,
+  };
+}
+
 function attachSessionInlineMediaUrls(
   session: NormalizedSession,
   source: string,
@@ -363,7 +466,15 @@ function findInlineDataUrlByHash(value: unknown, hash: string): string | null {
     return null;
   }
   if (value && typeof value === "object") {
-    for (const item of Object.values(value as Record<string, unknown>)) {
+    const record = value as Record<string, unknown>;
+    const imageDataUrl = rawBase64ImageDataUrl(
+      stringProp(record, "result") ?? stringProp(record, "b64_json"),
+      stringProp(record, "mime_type") ?? stringProp(record, "mimeType"),
+    );
+    if (imageDataUrl && inlineDataHash(imageDataUrl) === hash) {
+      return imageDataUrl;
+    }
+    for (const item of Object.values(record)) {
       const found = findInlineDataUrlByHash(item, hash);
       if (found) return found;
     }
@@ -393,7 +504,15 @@ export async function readSessionInlineMedia(
   const scanLine = async (
     line: string,
   ): Promise<SessionInlineMediaResult | null> => {
-    if (!line || !line.includes("data:")) return null;
+    if (
+      !line ||
+      (!line.includes("data:") &&
+        !line.includes("image_generation") &&
+        !line.includes("imageGeneration") &&
+        !line.includes("b64_json"))
+    ) {
+      return null;
+    }
     let obj: unknown;
     try {
       obj = JSON.parse(line);
@@ -665,6 +784,10 @@ function codexTextBlocks(text: string): NormalizedBlock[] {
 function codexVisibleUserText(text: string): string {
   let visible = text;
   visible = visible.replace(
+    /<goal_context\b[^>]*>[\s\S]*?<\/goal_context>/g,
+    "",
+  );
+  visible = visible.replace(
     /<environment_context>[\s\S]*?<\/environment_context>/g,
     "",
   );
@@ -677,6 +800,43 @@ function codexVisibleUserText(text: string): string {
   if (/^#\s+(AGENTS|CLAUDE)\.md instructions\b/i.test(trimmed)) return "";
   if (/^#\s+(Instructions|Context|System)\b/i.test(trimmed)) return "";
   return trimmed;
+}
+
+function codexGoalBlockFromToolOutput(output: string): NormalizedBlock | null {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(output);
+  } catch {
+    return null;
+  }
+  if (!parsed || typeof parsed !== "object") return null;
+  const goal = (parsed as Record<string, unknown>).goal;
+  if (!goal || typeof goal !== "object") return null;
+  const record = goal as Record<string, unknown>;
+  const objective =
+    typeof record.objective === "string" && record.objective.trim()
+      ? record.objective.trim()
+      : undefined;
+  const status =
+    typeof record.status === "string" && record.status.trim()
+      ? record.status.trim()
+      : undefined;
+  if (!objective && !status) return null;
+  return {
+    type: "goal",
+    goalObjective: objective,
+    goalStatus: status,
+    goalTokensUsed:
+      typeof record.tokensUsed === "number" ? record.tokensUsed : undefined,
+    goalTimeUsedSeconds:
+      typeof record.timeUsedSeconds === "number"
+        ? record.timeUsedSeconds
+        : undefined,
+    goalUpdatedAt:
+      typeof record.updatedAt === "number" ? record.updatedAt : undefined,
+    goalThreadId:
+      typeof record.threadId === "string" ? record.threadId : undefined,
+  };
 }
 
 function codexEventMarker(payload: Record<string, unknown>): string | null {
@@ -722,6 +882,16 @@ const codexToolNamesBySession = new WeakMap<
   Map<string, string>
 >();
 
+interface CodexTurnContext {
+  approvalPolicy?: string;
+  sandboxPolicy?: string;
+}
+
+const codexTurnContextsBySession = new WeakMap<
+  NormalizedSession,
+  CodexTurnContext
+>();
+
 function codexToolNames(out: NormalizedSession): Map<string, string> {
   let names = codexToolNamesBySession.get(out);
   if (!names) {
@@ -746,6 +916,46 @@ function codexToolNameForResult(
 ): string | undefined {
   if (typeof id !== "string" || !id) return undefined;
   return codexToolNames(out).get(id);
+}
+
+function rememberCodexTurnContext(
+  out: NormalizedSession,
+  payload: unknown,
+): void {
+  if (!payload || typeof payload !== "object") return;
+  const record = payload as Record<string, unknown>;
+  const approvalPolicy =
+    typeof record.approval_policy === "string"
+      ? record.approval_policy
+      : undefined;
+  const sandboxPolicy = codexSandboxPolicyLabel(record.sandbox_policy);
+  if (!approvalPolicy && !sandboxPolicy) return;
+  codexTurnContextsBySession.set(out, {
+    approvalPolicy,
+    sandboxPolicy,
+  });
+}
+
+function codexToolApprovalFields(
+  out: NormalizedSession,
+  toolName: string | undefined,
+): Partial<NormalizedBlock> {
+  if (toolName !== "exec_command" && toolName !== "apply_patch") return {};
+  const context = codexTurnContextsBySession.get(out);
+  if (!context) return {};
+  return {
+    ...(context.approvalPolicy
+      ? { approvalPolicy: context.approvalPolicy }
+      : {}),
+    ...(context.sandboxPolicy ? { sandboxPolicy: context.sandboxPolicy } : {}),
+  };
+}
+
+function codexSandboxPolicyLabel(value: unknown): string | undefined {
+  if (typeof value === "string" && value.trim()) return value.trim();
+  if (!value || typeof value !== "object") return undefined;
+  const type = (value as Record<string, unknown>).type;
+  return typeof type === "string" && type.trim() ? type.trim() : undefined;
 }
 
 /** Per-line Codex parser, used by the batch + tail variants. */
@@ -800,6 +1010,13 @@ function parseCodexJsonlLine(line: string, out: NormalizedSession): void {
           ? codexToolInput(p.arguments)
           : clipToolInput(p.input);
       rememberCodexToolName(out, p.call_id, name);
+      if (
+        name === "get_goal" ||
+        name === "create_goal" ||
+        name === "update_goal"
+      ) {
+        return;
+      }
       if (name === "update_plan") {
         const plan = normalizePlanFromUnknown(input);
         if (plan) {
@@ -822,6 +1039,8 @@ function parseCodexJsonlLine(line: string, out: NormalizedSession): void {
           return;
         }
       }
+      const viewImageMedia =
+        name === "view_image" ? viewImageMediaBlockFromInput(input) : null;
       pushSessionMessage(
         out,
         "assistant",
@@ -831,7 +1050,9 @@ function parseCodexJsonlLine(line: string, out: NormalizedSession): void {
             toolName: name,
             toolInput: input,
             toolUseId: typeof p.call_id === "string" ? p.call_id : undefined,
+            ...codexToolApprovalFields(out, name),
           },
+          ...(viewImageMedia ? [viewImageMedia] : []),
         ],
         ts,
       );
@@ -842,6 +1063,18 @@ function parseCodexJsonlLine(line: string, out: NormalizedSession): void {
       p.type === "custom_tool_call_output"
     ) {
       const text = typeof p.output === "string" ? p.output : "";
+      const toolName = codexToolNameForResult(out, p.call_id);
+      if (
+        toolName === "get_goal" ||
+        toolName === "create_goal" ||
+        toolName === "update_goal"
+      ) {
+        const goal = codexGoalBlockFromToolOutput(text);
+        if (goal) {
+          pushSessionMessage(out, "system", [goal], ts);
+        }
+        return;
+      }
       pushSessionMessage(
         out,
         "tool",
@@ -849,7 +1082,7 @@ function parseCodexJsonlLine(line: string, out: NormalizedSession): void {
           {
             type: "tool_result",
             text: clipText(text),
-            toolName: codexToolNameForResult(out, p.call_id),
+            toolName,
             toolUseId: typeof p.call_id === "string" ? p.call_id : undefined,
           },
         ],
@@ -881,23 +1114,38 @@ function parseCodexJsonlLine(line: string, out: NormalizedSession): void {
       typeof p.type === "string" &&
       /image.*(?:call|generation)/i.test(p.type)
     ) {
-      const media = mediaBlockFromContent(p);
+      const toolName = p.type;
+      const toolUseId = imageGenerationToolUseId(p);
+      rememberCodexToolName(out, toolUseId, toolName);
+      pushSessionMessage(
+        out,
+        "assistant",
+        [
+          {
+            type: "tool_use",
+            toolName,
+            toolInput: imageGenerationToolInput(p),
+            toolUseId,
+          },
+        ],
+        ts,
+      );
+      const media = imageGenerationMediaBlock(p) ?? mediaBlockFromContent(p);
       if (media && (media.path || media.url || media.mimeType)) {
-        pushSessionMessage(out, "assistant", [media], ts);
-      } else {
         pushSessionMessage(
           out,
-          "assistant",
+          "tool",
           [
             {
-              type: "tool_use",
-              toolName: p.type,
-              toolInput: clipToolInput(p),
-              toolUseId: typeof p.call_id === "string" ? p.call_id : undefined,
+              type: "tool_result",
+              text: "Generated image",
+              toolName,
+              toolUseId,
             },
           ],
           ts,
         );
+        pushSessionMessage(out, "assistant", [media], ts);
       }
       return;
     }
@@ -992,7 +1240,11 @@ function parseCodexJsonlLine(line: string, out: NormalizedSession): void {
     }
     return;
   }
-  if (obj.type === "event_msg" || obj.type === "turn_context") {
+  if (obj.type === "turn_context") {
+    rememberCodexTurnContext(out, obj.payload);
+    return;
+  }
+  if (obj.type === "event_msg") {
     // Non-message metadata events — skip rendering.
     return;
   }
@@ -1153,10 +1405,9 @@ export async function parseSessionFile(
  * tail so cache size is ~MAX_CACHED × MAX_CACHED_MESSAGES × per-message
  * bytes, not O(disk file size)).
  *
- * Trade-off: callers (the SPA) lose scroll-back beyond the trimmed window.
- * The UI doesn't yet ask for older messages on demand, so this is a
- * deliberate cap rather than a perceived limitation — and well worth it
- * vs. multi-GB daemon RSS.
+ * Trade-off: callers get a bounded window by default. The SPA can ask for a
+ * wider bounded window on explicit scroll-back; we still never full-parse
+ * arbitrarily large histories just because a column is mounted.
  *
  * Tail-append: when a file grows we read only the new bytes since
  * `cached.size`, parse them with the per-line helpers, and push them onto
@@ -1174,6 +1425,7 @@ export async function parseSessionFile(
  */
 const MAX_CACHED = 256;
 const MAX_CACHED_MESSAGES = 100;
+const MAX_REQUESTED_MESSAGES = 2_000;
 /** Per-block text cap. Claude `tool_result` blocks routinely contain full
  *  file contents (~90 KB each) — they balloon the cache far beyond what
  *  the chat view actually needs to display. We clip each block's `text`
@@ -1187,6 +1439,9 @@ interface SessionCacheEntry {
   /** Number of bytes from the file we have already parsed into `parsed`. */
   size: number;
   parsed: NormalizedSession;
+  /** Message window this cache entry was trimmed to. Scroll-back requests can
+   *  widen one entry without changing the default window for every column. */
+  maxMessages: number;
   /** Suffix of the last read that didn't end with a newline. Prepended to
    *  the next chunk so a JSONL line split across two reads still parses. */
   partialLine: string;
@@ -1280,6 +1535,14 @@ function evictLRU(): void {
   }
 }
 
+function normalizeRequestedMessages(minMessages: number | undefined): number {
+  if (!Number.isFinite(minMessages)) return MAX_CACHED_MESSAGES;
+  return Math.max(
+    MAX_CACHED_MESSAGES,
+    Math.min(MAX_REQUESTED_MESSAGES, Math.ceil(minMessages ?? 0)),
+  );
+}
+
 /** Parse a chunk of JSONL into `out` in place. The chunk is split on '\n';
  *  if the chunk does not end in '\n', the trailing partial line is returned
  *  so the caller can prepend it to the next chunk. */
@@ -1306,11 +1569,14 @@ function appendChunk(
  *  turn, with no assistant response yet. Agent logs can emit hundreds of tiny
  *  tool messages after one prompt; slicing only the last N messages would hand
  *  the UI orphan tool rows with no user bubble to group under. */
-function trimMessages(session: NormalizedSession): void {
+function trimMessages(
+  session: NormalizedSession,
+  maxMessages: number = MAX_CACHED_MESSAGES,
+): void {
   const count = session.messages.length;
-  if (count <= MAX_CACHED_MESSAGES) return;
+  if (count <= maxMessages) return;
 
-  const cappedStart = count - MAX_CACHED_MESSAGES;
+  const cappedStart = count - maxMessages;
 
   let containingTurnStart = -1;
   for (let i = cappedStart; i >= 0; i--) {
@@ -1342,11 +1608,14 @@ function trimMessages(session: NormalizedSession): void {
   session.messages = session.messages.slice(start);
 }
 
-function tailNeedsMoreHistory(session: NormalizedSession): boolean {
+function tailNeedsMoreHistory(
+  session: NormalizedSession,
+  maxMessages: number = MAX_CACHED_MESSAGES,
+): boolean {
   if (hasOrphanedPrefix(session)) return true;
   const count = session.messages.length;
-  if (count <= MAX_CACHED_MESSAGES) return false;
-  const cappedStart = count - MAX_CACHED_MESSAGES;
+  if (count <= maxMessages) return false;
+  const cappedStart = count - maxMessages;
   for (let i = cappedStart; i >= 0; i--) {
     if (session.messages[i]?.role === "user") return false;
   }
@@ -1363,8 +1632,11 @@ function hasOrphanedPrefix(session: NormalizedSession): boolean {
   return prefix.some((m) => m.role === "assistant" || m.role === "tool");
 }
 
-function hasOrphanedTrimHead(session: NormalizedSession): boolean {
-  if (session.messages.length < MAX_CACHED_MESSAGES) return false;
+function hasOrphanedTrimHead(
+  session: NormalizedSession,
+  maxMessages: number = MAX_CACHED_MESSAGES,
+): boolean {
+  if (session.messages.length < maxMessages) return false;
   const firstUserIndex = session.messages.findIndex((m) => m.role === "user");
   if (firstUserIndex <= 0) return false;
   return session.messages
@@ -1496,11 +1768,12 @@ async function tailParseSessionFileForCache(
   agent: AgentKind,
   path: string,
   fileSize: number,
+  maxMessages: number = MAX_CACHED_MESSAGES,
 ): Promise<NormalizedSession> {
   let tailBytes = Math.min(TAIL_BYTES, fileSize);
   while (true) {
     const parsed = await tailParseSessionFile(agent, path, tailBytes);
-    if (!tailNeedsMoreHistory(parsed)) return parsed;
+    if (!tailNeedsMoreHistory(parsed, maxMessages)) return parsed;
     if (tailBytes >= fileSize || tailBytes >= MAX_TAIL_BYTES) return parsed;
     tailBytes = Math.min(tailBytes * 2, fileSize, MAX_TAIL_BYTES);
   }
@@ -1515,7 +1788,9 @@ async function getSessionResponseData(
   agent: AgentKind,
   path: string,
   manualTitle?: string,
+  minMessages?: number,
 ): Promise<{ body: string; etag: string; session: NormalizedSession }> {
+  const maxMessages = normalizeRequestedMessages(minMessages);
   const st = await stat(path).catch(() => null);
   if (!st) {
     const session = emptySession(agent);
@@ -1538,7 +1813,7 @@ async function getSessionResponseData(
   if (agent === "ollama") {
     const text = await readFile(path, "utf-8").catch(() => "");
     const parsed = parseOllamaJsonl(text);
-    trimMessages(parsed);
+    trimMessages(parsed, maxMessages);
     attachSessionInlineMediaUrls(parsed, path);
     return {
       body: injectManualTitle(JSON.stringify(parsed), manualTitle),
@@ -1555,7 +1830,8 @@ async function getSessionResponseData(
     cached &&
     cached.mtimeMs === st.mtimeMs &&
     cached.size === st.size &&
-    !hasOrphanedTrimHead(cached.parsed)
+    cached.maxMessages >= maxMessages &&
+    !hasOrphanedTrimHead(cached.parsed, cached.maxMessages)
   ) {
     touch(path, cached);
     return {
@@ -1572,8 +1848,9 @@ async function getSessionResponseData(
   if (
     cached &&
     st.size > cached.size &&
+    cached.maxMessages >= maxMessages &&
     agent !== "copilot" &&
-    !hasOrphanedTrimHead(cached.parsed)
+    !hasOrphanedTrimHead(cached.parsed, cached.maxMessages)
   ) {
     const fh = await open(path, "r").catch(() => null);
     if (fh) {
@@ -1586,7 +1863,7 @@ async function getSessionResponseData(
         cached.partialLine = newPartial;
         cached.size = st.size;
         cached.mtimeMs = st.mtimeMs;
-        trimMessages(cached.parsed);
+        trimMessages(cached.parsed, cached.maxMessages);
         attachSessionInlineMediaUrls(cached.parsed, path);
         cached.jsonNoTitle = JSON.stringify(cached.parsed);
         touch(path, cached);
@@ -1603,14 +1880,20 @@ async function getSessionResponseData(
 
   // Cache miss, or file shrank/got rewritten: tail-read only the last
   // TAIL_BYTES and parse those lines.
-  const parsed = await tailParseSessionFileForCache(agent, path, st.size);
-  trimMessages(parsed);
+  const parsed = await tailParseSessionFileForCache(
+    agent,
+    path,
+    st.size,
+    maxMessages,
+  );
+  trimMessages(parsed, maxMessages);
   attachSessionInlineMediaUrls(parsed, path);
   const jsonNoTitle = JSON.stringify(parsed);
   sessionCache.set(path, {
     mtimeMs: st.mtimeMs,
     size: st.size,
     parsed,
+    maxMessages,
     partialLine: "",
     jsonNoTitle,
   });
@@ -1626,9 +1909,23 @@ export async function getSessionResponseJson(
   agent: AgentKind,
   path: string,
   manualTitle?: string,
+  minMessages?: number,
 ): Promise<{ body: string; etag: string }> {
-  const { body, etag } = await getSessionResponseData(agent, path, manualTitle);
+  const { body, etag } = await getSessionResponseData(
+    agent,
+    path,
+    manualTitle,
+    minMessages,
+  );
   return { body, etag };
+}
+
+function cachedSessionCanSatisfy(
+  path: string,
+  minMessages: number | undefined,
+): boolean {
+  const cached = sessionCache.get(path);
+  return !!cached && cached.maxMessages >= normalizeRequestedMessages(minMessages);
 }
 
 /** One source's outcome in a `/api/sessions/batch` response. Mirrors the
@@ -1752,23 +2049,35 @@ export async function getSessionsBatchResults(
     source: string;
     etag?: string;
     messageCursor?: BatchSessionCursor[];
+    minMessages?: number;
   }[],
   resolveAgent: (source: string) => AgentKind | null,
   getTitle: (source: string) => string | undefined,
 ): Promise<BatchSessionResult[]> {
   return Promise.all(
     items.map(
-      async ({ source, etag, messageCursor }): Promise<BatchSessionResult> => {
+      async ({
+        source,
+        etag,
+        messageCursor,
+        minMessages,
+      }): Promise<BatchSessionResult> => {
         const agent = resolveAgent(source);
         if (!agent) return { source, status: 403 };
 
         // Quick stat ETag: skip the parse entirely when the file is unchanged.
         // Matches getSessionResponseJson's `"<mtimeMs>-<size>"` scheme.
+        const cacheAlreadySatisfiesRequest = cachedSessionCanSatisfy(
+          source,
+          minMessages,
+        );
         if (etag) {
           const st = await stat(source).catch(() => null);
           if (st) {
             const quick = `"${st.mtimeMs}-${st.size}"`;
-            if (etag === quick) return { source, status: 304, etag: quick };
+            if (etag === quick && cacheAlreadySatisfiesRequest) {
+              return { source, status: 304, etag: quick };
+            }
           }
         }
 
@@ -1776,8 +2085,15 @@ export async function getSessionsBatchResults(
           body,
           etag: full,
           session,
-        } = await getSessionResponseData(agent, source, getTitle(source));
-        if (etag && etag === full) return { source, status: 304, etag: full };
+        } = await getSessionResponseData(
+          agent,
+          source,
+          getTitle(source),
+          minMessages,
+        );
+        if (etag && etag === full && cacheAlreadySatisfiesRequest) {
+          return { source, status: 304, etag: full };
+        }
         const hashes = messageHashes(session.messages);
         if (etag) {
           const patch = patchFromCursor(session, hashes, messageCursor);

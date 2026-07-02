@@ -649,6 +649,109 @@ describe("parseCodexJsonl", () => {
     ]);
   });
 
+  test("renders completed Codex image generation calls as tool output media", () => {
+    const bytes = Buffer.from("image bytes");
+    const result = bytes.toString("base64");
+    const dataUrl = `data:image/png;base64,${result}`;
+    const hash = createHash("sha256").update(dataUrl).digest("hex");
+    const line = JSON.stringify({
+      timestamp: "2026-07-02T15:42:10.077Z",
+      type: "response_item",
+      payload: {
+        type: "image_generation_call",
+        callId: "ig-1",
+        status: "generating",
+        result,
+      },
+    });
+
+    const session = parseCodexJsonl(line);
+
+    expect(session.messages).toEqual([
+      {
+        role: "assistant",
+        timestamp: "2026-07-02T15:42:10.077Z",
+        blocks: [
+          {
+            type: "tool_use",
+            toolName: "image_generation_call",
+            toolInput: {
+              type: "image_generation_call",
+              callId: "ig-1",
+              status: "generating",
+            },
+            toolUseId: "ig-1",
+          },
+        ],
+      },
+      {
+        role: "tool",
+        timestamp: "2026-07-02T15:42:10.077Z",
+        blocks: [
+          {
+            type: "tool_result",
+            text: "Generated image",
+            toolName: "image_generation_call",
+            toolUseId: "ig-1",
+          },
+        ],
+      },
+      {
+        role: "assistant",
+        timestamp: "2026-07-02T15:42:10.077Z",
+        blocks: [
+          {
+            type: "media",
+            mediaKind: "image",
+            mimeType: "image/png",
+            title: "Generated image",
+            alt: "Generated image",
+            toolName: "image_generation_call",
+            toolUseId: "ig-1",
+            text: "[image/png data stored in source transcript]",
+            inlineDataHash: hash,
+          },
+        ],
+      },
+    ]);
+  });
+
+  test("renders Codex view_image tool calls as visible media", () => {
+    const text = JSON.stringify({
+      timestamp: "2026-06-25T12:00:00.000Z",
+      type: "response_item",
+      payload: {
+        type: "function_call",
+        name: "view_image",
+        arguments: JSON.stringify({
+          path: "/tmp/asset-preview.png",
+          detail: "high",
+        }),
+        call_id: "call-view-image",
+      },
+    });
+    const session = parseCodexJsonl(text);
+
+    expect(session.messages[0]?.blocks).toEqual([
+      {
+        type: "tool_use",
+        toolName: "view_image",
+        toolInput: {
+          path: "/tmp/asset-preview.png",
+          detail: "high",
+        },
+        toolUseId: "call-view-image",
+      },
+      {
+        type: "media",
+        mediaKind: "image",
+        path: "/tmp/asset-preview.png",
+        title: "asset-preview.png",
+        alt: "asset-preview.png",
+      },
+    ]);
+  });
+
   test("splits Codex protocol markers out of assistant output text", () => {
     const text = JSON.stringify({
       type: "response_item",
@@ -1010,6 +1113,49 @@ describe("getSessionResponseJson cache", () => {
     }
   });
 
+  test("exposes Codex generated image result data as compact session media URLs", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "supergit-session-cache-"));
+    const path = join(dir, "session.jsonl");
+    const bytes = Buffer.from("generated image bytes");
+    const result = bytes.toString("base64");
+    const dataUrl = `data:image/png;base64,${result}`;
+    const hash = createHash("sha256").update(dataUrl).digest("hex");
+    await writeFile(
+      path,
+      JSON.stringify({
+        timestamp: "2026-07-02T15:42:10.077Z",
+        type: "response_item",
+        payload: {
+          type: "image_generation_call",
+          callId: "ig-1",
+          status: "generating",
+          result,
+        },
+      }) + "\n",
+    );
+
+    const body = await getSessionResponseJson("codex", path);
+    expect(body).not.toContain(result);
+    const session = JSON.parse(body);
+    expect(session.messages[2]?.blocks[0]).toEqual({
+      type: "media",
+      mediaKind: "image",
+      mimeType: "image/png",
+      title: "Generated image",
+      alt: "Generated image",
+      toolName: "image_generation_call",
+      toolUseId: "ig-1",
+      url: `/api/session/media?source=${encodeURIComponent(path)}&hash=${hash}`,
+    });
+
+    const media = await readSessionInlineMedia(path, hash);
+    expect(media.status).toBe(200);
+    if (media.status === 200) {
+      expect(media.mimeType).toBe("image/png");
+      expect(Buffer.from(media.bytes)).toEqual(bytes);
+    }
+  });
+
   test("maxSide validates but returns original inline image data", async () => {
     const dir = await mkdtemp(join(tmpdir(), "supergit-session-cache-"));
     const path = join(dir, "session.jsonl");
@@ -1233,6 +1379,39 @@ describe("getSessionResponseJson cache", () => {
     expect(b.messages[98]?.blocks[0]?.text).toBe("after-1");
     // The trim still drops from the head — msg-52 is now the oldest kept.
     expect(b.messages[0]?.blocks[0]?.text).toBe("msg-52");
+  });
+
+  test("same etag can widen the returned history window on scroll-back", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "supergit-session-cache-"));
+    const path = join(dir, "session.jsonl");
+
+    const lines = Array.from({ length: 300 }, (_, i) =>
+      claudeLine(`msg-${i}`, "2026-05-12T01:00:00Z"),
+    );
+    await writeFile(path, lines.join("\n") + "\n");
+
+    const [first] = await getSessionsBatchResults(
+      [{ source: path }],
+      () => "claude",
+      () => undefined,
+    );
+    expect(first.status).toBe(200);
+    if (first.status !== 200) throw new Error("expected first full response");
+    const firstParsed = JSON.parse(first.body);
+    expect(firstParsed.messages).toHaveLength(100);
+    expect(firstParsed.messages[0]?.blocks[0]?.text).toBe("msg-200");
+
+    const [widened] = await getSessionsBatchResults(
+      [{ source: path, etag: first.etag, minMessages: 250 }],
+      () => "claude",
+      () => undefined,
+    );
+    expect(widened.status).toBe(200);
+    if (widened.status !== 200) throw new Error("expected widened body");
+    const widenedParsed = JSON.parse(widened.body);
+    expect(widenedParsed.messages).toHaveLength(250);
+    expect(widenedParsed.messages[0]?.blocks[0]?.text).toBe("msg-50");
+    expect(widenedParsed.messages.at(-1)?.blocks[0]?.text).toBe("msg-299");
   });
 
   test("keeps the old tail and widens it to include the last two user turns", async () => {

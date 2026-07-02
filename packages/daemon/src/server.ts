@@ -419,6 +419,20 @@ function codexTurnString(value: unknown): string | undefined {
   return typeof value === "string" && value.trim() ? value.trim() : undefined;
 }
 
+function codexGoalStatus(value: unknown): string | undefined {
+  if (
+    value === "active" ||
+    value === "paused" ||
+    value === "blocked" ||
+    value === "usageLimited" ||
+    value === "budgetLimited" ||
+    value === "complete"
+  ) {
+    return value;
+  }
+  return undefined;
+}
+
 /** Path to a built UI's `dist/` directory. When non-null the daemon
  *  serves static files from it for any GET that doesn't match an API
  *  route (with a SPA fallback to index.html for client-side routes).
@@ -4107,6 +4121,10 @@ const server = Bun.serve<TermWsData, never>({
           }
           return cursor.length > 0 ? cursor : undefined;
         };
+        const parseMinMessages = (value: unknown): number | undefined => {
+          if (!Number.isInteger(value)) return undefined;
+          return value > 0 ? value : undefined;
+        };
         const items = sources
           .filter(
             (s): s is Record<string, unknown> & { source: string } =>
@@ -4119,6 +4137,7 @@ const server = Bun.serve<TermWsData, never>({
             source: s.source,
             etag: typeof s.etag === "string" ? s.etag : undefined,
             messageCursor: parseCursor(s.messageCursor),
+            minMessages: parseMinMessages(s.minMessages),
           }));
         const titles = await workspace.listSessionTitles();
         const results = await getSessionsBatchResults(
@@ -4253,6 +4272,116 @@ const server = Bun.serve<TermWsData, never>({
         try {
           const models = await codexAgent.listModels(cwd);
           return json({ ok: true, models });
+        } catch (e) {
+          return json(
+            { error: e instanceof Error ? e.message : String(e) },
+            { status: 500 },
+          );
+        }
+      }
+
+      if (url.pathname === "/api/codex-app/goal" && req.method === "GET") {
+        const threadId = url.searchParams.get("threadId") || "";
+        const cwd = url.searchParams.get("cwd") || WORKSPACE_PATH;
+        if (!threadId) {
+          return json({ error: "threadId required" }, { status: 400 });
+        }
+        try {
+          const goal = await codexAgent.getGoal(threadId, cwd);
+          return json({ ok: true, goal });
+        } catch (e) {
+          return json(
+            { error: e instanceof Error ? e.message : String(e) },
+            { status: 500 },
+          );
+        }
+      }
+
+      if (url.pathname === "/api/codex-app/goal" && req.method === "PATCH") {
+        const body = (await req.json().catch(() => null)) as {
+          threadId?: unknown;
+          cwd?: unknown;
+          objective?: unknown;
+          status?: unknown;
+          tokenBudget?: unknown;
+        } | null;
+        const threadId =
+          typeof body?.threadId === "string" && body.threadId
+            ? body.threadId
+            : "";
+        const cwd = typeof body?.cwd === "string" && body.cwd ? body.cwd : "";
+        if (!threadId || !cwd) {
+          return json({ error: "threadId and cwd required" }, { status: 400 });
+        }
+        const objective =
+          typeof body?.objective === "string" ? body.objective.trim() : undefined;
+        const status = codexGoalStatus(body?.status);
+        const tokenBudget =
+          typeof body?.tokenBudget === "number" &&
+          Number.isInteger(body.tokenBudget) &&
+          body.tokenBudget > 0
+            ? body.tokenBudget
+            : undefined;
+        if (!objective && !status && tokenBudget === undefined) {
+          return json(
+            { error: "objective, status, or tokenBudget required" },
+            { status: 400 },
+          );
+        }
+        try {
+          const goal = await codexAgent.setGoal({
+            threadId,
+            cwd,
+            objective,
+            status,
+            tokenBudget,
+          });
+          return json({ ok: true, goal });
+        } catch (e) {
+          return json(
+            { error: e instanceof Error ? e.message : String(e) },
+            { status: 500 },
+          );
+        }
+      }
+
+      if (url.pathname === "/api/codex-app/goal" && req.method === "DELETE") {
+        const body = (await req.json().catch(() => null)) as {
+          threadId?: unknown;
+          cwd?: unknown;
+        } | null;
+        const threadId =
+          typeof body?.threadId === "string" && body.threadId
+            ? body.threadId
+            : "";
+        const cwd = typeof body?.cwd === "string" && body.cwd ? body.cwd : "";
+        if (!threadId || !cwd) {
+          return json({ error: "threadId and cwd required" }, { status: 400 });
+        }
+        try {
+          await codexAgent.clearGoal(threadId, cwd);
+          return json({ ok: true });
+        } catch (e) {
+          return json(
+            { error: e instanceof Error ? e.message : String(e) },
+            { status: 500 },
+          );
+        }
+      }
+
+      if (url.pathname === "/api/codex-app/thread" && req.method === "GET") {
+        const threadId = url.searchParams.get("threadId") || "";
+        const cwd = url.searchParams.get("cwd") || WORKSPACE_PATH;
+        if (!threadId) {
+          return json({ error: "threadId required" }, { status: 400 });
+        }
+        try {
+          const result = await codexAgent.readThread({
+            threadId,
+            cwd,
+            includeTurns: true,
+          });
+          return json({ ok: true, thread: result.thread });
         } catch (e) {
           return json(
             { error: e instanceof Error ? e.message : String(e) },

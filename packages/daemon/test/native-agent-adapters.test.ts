@@ -470,6 +470,178 @@ describe("CodexAppServerAdapter", () => {
     await interrupt;
   });
 
+  test("reads Codex app-server thread turns through thread/read", async () => {
+    const fake = fakeCodexProcess();
+    const adapter = new CodexAppServerAdapter({ spawn: () => fake.proc });
+
+    const read = adapter.readThread({
+      threadId: "thr_existing",
+      cwd: "/repo",
+      includeTurns: true,
+    });
+    await waitFor(() => fake.writes[0], "initialize request");
+    fake.enqueue({ id: 0, result: {} });
+
+    await waitFor(() => fake.writes[2], "thread read request");
+    expect(parseWrite(fake.writes, 2)).toEqual({
+      id: 1,
+      method: "thread/read",
+      params: { threadId: "thr_existing", includeTurns: true },
+    });
+    fake.enqueue({
+      id: 1,
+      result: {
+        thread: {
+          id: "thr_existing",
+          turns: [
+            {
+              id: "turn_1",
+              status: "completed",
+              itemsView: "full",
+              items: [
+                {
+                  id: "user_1",
+                  type: "userMessage",
+                  content: [{ type: "text", text: "older context" }],
+                },
+              ],
+            },
+          ],
+        },
+      },
+    });
+
+    await expect(read).resolves.toEqual({
+      thread: {
+        id: "thr_existing",
+        turns: [
+          {
+            id: "turn_1",
+            status: "completed",
+            itemsView: "full",
+            items: [
+              {
+                id: "user_1",
+                type: "userMessage",
+                content: [{ type: "text", text: "older context" }],
+              },
+            ],
+          },
+        ],
+      },
+    });
+  });
+
+  test("reads, pauses, resumes, edits, and clears Codex thread goals over app-server RPC", async () => {
+    const fake = fakeCodexProcess();
+    const adapter = new CodexAppServerAdapter({ spawn: () => fake.proc });
+
+    const goal = adapter.getGoal("thr_existing", "/repo");
+    await waitFor(() => fake.writes[0], "initialize request");
+    fake.enqueue({ id: 0, result: {} });
+    await waitFor(() => fake.writes[2], "thread resume request");
+    expect(parseWrite(fake.writes, 2)).toEqual({
+      id: 1,
+      method: "thread/resume",
+      params: { threadId: "thr_existing", cwd: "/repo" },
+    });
+    fake.enqueue({ id: 1, result: { thread: { id: "thr_existing" } } });
+
+    await waitFor(() => fake.writes[3], "goal get request");
+    expect(parseWrite(fake.writes, 3)).toEqual({
+      id: 2,
+      method: "thread/goal/get",
+      params: { threadId: "thr_existing" },
+    });
+    fake.enqueue({
+      id: 2,
+      result: {
+        goal: {
+          threadId: "thr_existing",
+          goalId: "goal_1",
+          objective: "Keep improving Treetop.",
+          status: "active",
+          tokenBudget: 12000,
+          tokensUsed: 4000,
+          timeUsedSeconds: 180,
+          updatedAt: 1782432282000,
+        },
+      },
+    });
+    await expect(goal).resolves.toEqual({
+      threadId: "thr_existing",
+      goalId: "goal_1",
+      objective: "Keep improving Treetop.",
+      status: "active",
+      tokenBudget: 12000,
+      tokensUsed: 4000,
+      timeUsedSeconds: 180,
+      createdAt: undefined,
+      updatedAt: 1782432282000,
+    });
+
+    const pause = adapter.setGoal({
+      threadId: "thr_existing",
+      cwd: "/repo",
+      status: "paused",
+    });
+    await waitFor(() => fake.writes[4], "goal pause request");
+    expect(parseWrite(fake.writes, 4)).toEqual({
+      id: 3,
+      method: "thread/goal/set",
+      params: { threadId: "thr_existing", status: "paused" },
+    });
+    fake.enqueue({
+      id: 3,
+      result: { goal: { threadId: "thr_existing", status: "paused" } },
+    });
+    await expect(pause).resolves.toMatchObject({
+      threadId: "thr_existing",
+      status: "paused",
+    });
+
+    const edit = adapter.setGoal({
+      threadId: "thr_existing",
+      cwd: "/repo",
+      objective: "Make it calm and fast.",
+      status: "active",
+    });
+    await waitFor(() => fake.writes[5], "goal edit request");
+    expect(parseWrite(fake.writes, 5)).toEqual({
+      id: 4,
+      method: "thread/goal/set",
+      params: {
+        threadId: "thr_existing",
+        objective: "Make it calm and fast.",
+        status: "active",
+      },
+    });
+    fake.enqueue({
+      id: 4,
+      result: {
+        goal: {
+          threadId: "thr_existing",
+          objective: "Make it calm and fast.",
+          status: "active",
+        },
+      },
+    });
+    await expect(edit).resolves.toMatchObject({
+      objective: "Make it calm and fast.",
+      status: "active",
+    });
+
+    const clear = adapter.clearGoal("thr_existing", "/repo");
+    await waitFor(() => fake.writes[6], "goal clear request");
+    expect(parseWrite(fake.writes, 6)).toEqual({
+      id: 5,
+      method: "thread/goal/clear",
+      params: { threadId: "thr_existing" },
+    });
+    fake.enqueue({ id: 5, result: {} });
+    await clear;
+  });
+
   test("emits a running-state event as soon as a Codex turn starts", async () => {
     const fake = fakeCodexProcess();
     const adapter = new CodexAppServerAdapter({ spawn: () => fake.proc });
