@@ -149,6 +149,50 @@ describe("createSessionPoller", () => {
     expect(gotB).toEqual(['{"v":"b"}']);
   });
 
+  test("sends a per-column requested message window for visual scroll-back", async () => {
+    let minMessages = 100;
+    const { fn, calls } = makeFetch((url) => {
+      if (url.includes("/api/sessions/batch"))
+        return jsonResponse({
+          results: [
+            {
+              source: "A",
+              status: 200,
+              etag: "a1",
+              body: '{"messages":[]}',
+              messageHashes: [],
+            },
+          ],
+        });
+      if (url.includes("/api/active-sends"))
+        return jsonResponse([], { etag: "rev-0-all" });
+      return jsonResponse({}, { status: 404 });
+    });
+    const poller = createSessionPoller({ fetchImpl: fn, isIdle: () => false });
+    poller.register({
+      source: "A",
+      getSessionId: () => undefined,
+      getMinMessages: () => minMessages,
+      onSession: noop,
+      onInflight: noop,
+    });
+
+    await poller.tick();
+    minMessages = 300;
+    await poller.tick();
+
+    const batches = calls.filter((c) => c.url.includes("/api/sessions/batch"));
+    expect(JSON.parse(batches[0]!.body as string).sources[0]).toMatchObject({
+      source: "A",
+      minMessages: 100,
+    });
+    expect(JSON.parse(batches[1]!.body as string).sources[0]).toMatchObject({
+      source: "A",
+      etag: "a1",
+      minMessages: 300,
+    });
+  });
+
   test("dispatches a session body only when it changes, and forwards the etag next tick", async () => {
     let phase = 0;
     const { fn, calls } = makeFetch((url) => {

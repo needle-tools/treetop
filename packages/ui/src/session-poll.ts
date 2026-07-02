@@ -40,6 +40,10 @@ export interface SessionPollReg {
    *  keeping active-sends state live. Used by app-server sessions while their
    *  SSE stream is already carrying the active turn. */
   shouldPollSession?: () => boolean;
+  /** Minimum number of recent messages this column wants. Defaults to the
+   *  daemon's normal lightweight tail; scroll-back can increase this for one
+   *  column without widening every open session. */
+  getMinMessages?: () => number | undefined;
   /** Called with the session JSON text whenever it changes (never for an
    *  unchanged 304), plus the ETag the daemon returned. */
   onSession: (bodyText: string, etag: string | null) => void;
@@ -209,6 +213,11 @@ export function createSessionPoller(deps: SessionPollerDeps): SessionPoller {
     return out;
   }
 
+  function minMessages(g: RegState): number | undefined {
+    const value = g.reg.getMinMessages?.();
+    return Number.isInteger(value) && value && value > 0 ? value : undefined;
+  }
+
   function applyPatchToBody(
     body: string | undefined,
     result: Extract<BatchResult, { status: 206 }>,
@@ -246,6 +255,7 @@ export function createSessionPoller(deps: SessionPollerDeps): SessionPoller {
                 source: g.reg.source,
                 etag: g.etag,
                 messageCursor: messageCursor(g),
+                minMessages: minMessages(g),
               })),
             }),
           },
