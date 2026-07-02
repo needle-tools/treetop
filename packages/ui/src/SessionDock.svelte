@@ -786,10 +786,7 @@
       aria-hidden="true"
     ></div>
 
-    <!-- Top half: dots stack from bottom-up toward the center toggle.
-         flex:1 + justify-content:flex-end keeps dots hugging the
-         toggle rather than the viewport top. -->
-    <div class="dock-half dock-top">
+    <div class="dock-scroll">
       {#each split.top as e, i (e.source)}
         {#if (i === 0 || split.top[i - 1].repoId !== e.repoId) && repoStatusMap.has(e.repoId)}
           {@const rs = repoStatusMap.get(e.repoId)}
@@ -984,7 +981,6 @@
           </span>
         </button>
       {/each}
-    </div>
 
     <button
       class="dock-toggle"
@@ -999,8 +995,6 @@
       <span class="dock-toggle-inner" class:filtering={!showInactive}></span>
     </button>
 
-    <!-- Bottom half: dots stack top-down from the toggle. -->
-    <div class="dock-half dock-bottom">
       {#each split.bottom as e, i (e.source)}
         {#if (i === 0 || split.bottom[i - 1].repoId !== e.repoId) && repoStatusMap.has(e.repoId)}
           {@const rs = repoStatusMap.get(e.repoId)}
@@ -1282,57 +1276,59 @@
   }
   .session-dock {
     position: fixed;
-    /* Full viewport height so the two .dock-half children split
-       evenly and the toggle sits at exact viewport center. The old
-       `top: 50%; translateY(-50%)` shifted when dots appeared /
-       disappeared, making the toggle jump. */
+    /* Vertically centred anchor. When the scroll column is shorter
+       than the viewport the whole dock floats centered; when it
+       overflows, max-height caps it at 100vh and the scroll column
+       takes over. The toggle isn't pinned to viewport centre any
+       more — it just sits between the top and bottom lists in the
+       scroll flow (user OK'd this trade-off for a single scrollbar). */
     left: 0;
-    top: 0;
-    bottom: 0;
+    top: 50%;
+    transform: translateY(-50%);
     z-index: 1600;
+    max-height: 100vh;
     display: flex;
     flex-direction: column;
     align-items: stretch;
     border-radius: var(--radius-md, 8px);
     background: transparent;
     border: 1px solid transparent;
-    /* The dock spans the full viewport height for centering but only
-       the dot halves / toggle / backdrop carry content — clicks on
-       the empty areas must pass through to the dashboard. Children
-       that need interaction re-enable via pointer-events: auto. */
     pointer-events: none;
     transition:
       background-color 160ms ease,
       border-color 160ms ease;
   }
-  /* Each half owns its scrollbar independently. Top stacks from
-     the bottom (dots hug the toggle); bottom stacks from the top. */
-  /* Each half takes exactly 50% of the remaining height (after the
-     toggle) so the toggle stays at viewport center. The halves
-     themselves are transparent — only the dot buttons inside get a
-     background on hover (via .show-labels). No scrollbar, no
-     overflow clipping: dots stack naturally and the half just
-     provides the flex-centering anchor. */
-  .dock-half {
-    flex: 1 1 0;
+  /* Single scrollable column with top dots + toggle + bottom dots.
+     `pointer-events: auto` re-enables interaction on the actual
+     dot column; the outer .session-dock stays pass-through so any
+     empty space (viewport corners around the shrunk-to-content
+     dock) doesn't block clicks on the dashboard behind. */
+  .dock-scroll {
     display: flex;
     flex-direction: column;
     align-items: stretch;
     padding: 0.15rem 0.5rem;
-    overflow: hidden;
-    pointer-events: none;
-    /* Above the z-index: 0 backdrop. */
+    max-height: 100vh;
+    overflow-y: auto;
+    overflow-x: visible;
+    pointer-events: auto;
     position: relative;
     z-index: 1;
+    scrollbar-width: thin;
+    scrollbar-color: transparent transparent;
   }
-  .dock-half > :global(*) {
-    pointer-events: auto;
+  .session-dock.show-labels .dock-scroll {
+    scrollbar-color: color-mix(in oklch, var(--text-muted, #9a9aa0) 40%, transparent) transparent;
   }
-  .dock-top {
-    justify-content: flex-end;
+  .dock-scroll::-webkit-scrollbar {
+    width: 5px;
   }
-  .dock-bottom {
-    justify-content: flex-start;
+  .dock-scroll::-webkit-scrollbar-thumb {
+    background: transparent;
+    border-radius: 999px;
+  }
+  .session-dock.show-labels .dock-scroll::-webkit-scrollbar-thumb {
+    background: color-mix(in oklch, var(--text-muted, #9a9aa0) 40%, transparent);
   }
   /* Faint 20%-text outline on hover so the dock's frame is
      perceptible alongside the page-bg card and revealed labels.
@@ -1415,10 +1411,10 @@
     display: inline-flex;
     align-items: center;
     justify-content: flex-start;
-    /* Same padding as dock-dot (3px 8px) PLUS the dock-half's
-       horizontal padding (0.5rem ≈ 8px) so the toggle-inner
-       centre aligns with the dot-inner centres above/below. */
-    padding: 0.2rem 8px 0.2rem calc(8px + 0.5rem);
+    /* Same padding as dock-dot so the toggle-inner centre aligns
+       with the dot-inner centres above/below. Both live directly
+       inside `.dock-scroll` now — no extra half-wrapper offset. */
+    padding: 0.2rem 8px;
     border: 0;
     background: transparent;
     cursor: pointer;
@@ -1433,8 +1429,8 @@
   /* 10px box matching dock-dot-inner so horizontal centres align.
      The visible circle is inset via border (6px visible area). */
   .dock-toggle-inner {
-    width: 10px;
-    height: 10px;
+    width: 13px;
+    height: 13px;
     border-radius: 999px;
     border: 2px solid
       color-mix(in oklch, var(--text-muted, #9a9aa0) 50%, transparent);
