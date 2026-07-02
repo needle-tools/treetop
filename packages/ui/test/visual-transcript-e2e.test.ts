@@ -10,6 +10,7 @@ import {
   buildVisualTranscriptItems,
   buildVisualWorkDisplayEntries,
   cleanVisualToolResultText,
+  latestVisualGoal,
   latestVisualPlan,
 } from "../src/last-user-message";
 
@@ -94,7 +95,9 @@ describe("visual transcript provider flow", () => {
       "message",
       "work",
       "message",
+      "message",
     ]);
+    expect(work.endedAt).toBe("2026-06-19T10:00:13.000Z");
 
     const displayEntries = buildVisualWorkDisplayEntries(work.entries);
     const commandEntry = displayEntries.find((entry) =>
@@ -103,7 +106,6 @@ describe("visual transcript provider flow", () => {
           block.type === "tool_use" && block.toolName === "exec_command",
       ),
     );
-    expect(commandEntry?.pairedResult?.blocks[0]?.toolUseId).toBe("call-1");
     expect(commandEntry?.entry.blocks[0]).toMatchObject({
       type: "tool_use",
       toolName: "exec_command",
@@ -111,6 +113,10 @@ describe("visual transcript provider flow", () => {
       toolInput: {
         cmd: 'rg "codex-app/events|Codex app" packages/ui/src',
       },
+    });
+    expect(commandEntry?.pairedResult?.blocks[0]).toMatchObject({
+      type: "tool_result",
+      toolUseId: "call-1",
     });
     expect(
       cleanVisualToolResultText(commandEntry?.pairedResult?.blocks[0]?.text),
@@ -128,6 +134,43 @@ describe("visual transcript provider flow", () => {
         markerLabel: "Task complete",
       }),
     );
+  });
+
+  test("attaches Codex turn approval context to command tools", () => {
+    const session = parseCodexJsonl(
+      jsonl([
+        {
+          timestamp: "2026-06-30T10:00:00.000Z",
+          type: "turn_context",
+          payload: {
+            turn_id: "turn-1",
+            approval_policy: "on-request",
+            sandbox_policy: { type: "workspace-write" },
+          },
+        },
+        {
+          timestamp: "2026-06-30T10:00:01.000Z",
+          type: "response_item",
+          payload: {
+            type: "function_call",
+            name: "exec_command",
+            arguments: JSON.stringify({ cmd: "bun test" }),
+            call_id: "call-approval",
+          },
+        },
+      ]),
+    );
+
+    const block = session.messages
+      .flatMap((message) => message.blocks)
+      .find((candidate) => candidate.type === "tool_use");
+
+    expect(block).toMatchObject({
+      type: "tool_use",
+      toolName: "exec_command",
+      approvalPolicy: "on-request",
+      sandboxPolicy: "workspace-write",
+    });
   });
 
   test("skips Codex protocol context when shaping visual transcript turns", () => {
@@ -219,23 +262,94 @@ describe("visual transcript provider flow", () => {
     const items = buildVisualTranscriptItems(session.messages);
 
     expect(session.messages).toHaveLength(3);
-    expect(items).toHaveLength(3);
+    expect(items).toHaveLength(2);
     expect(items[0]).toMatchObject({
       kind: "message",
       blocks: [{ type: "text", text: "Audit the print feature PR." }],
     });
     expect(items[1]).toMatchObject({
-      kind: "work",
-      entries: [
-        {
-          blocks: [{ type: "marker", text: "[Task started]" }],
-        },
-      ],
-    });
-    expect(items[2]).toMatchObject({
       kind: "message",
       blocks: [{ type: "text", text: "I’ll inspect the local diff first." }],
     });
+  });
+
+  test("surfaces Codex goal state without rendering repeated goal prompts", () => {
+    const objective = "Make the UI smooth.";
+    const session = parseCodexJsonl(
+      jsonl([
+        {
+          timestamp: "2026-06-26T00:00:00.000Z",
+          type: "response_item",
+          payload: {
+            type: "function_call",
+            name: "create_goal",
+            arguments: JSON.stringify({ objective }),
+            call_id: "goal-1",
+          },
+        },
+        {
+          timestamp: "2026-06-26T00:00:00.010Z",
+          type: "response_item",
+          payload: {
+            type: "function_call_output",
+            call_id: "goal-1",
+            output: JSON.stringify({
+              goal: {
+                threadId: "thread-1",
+                objective,
+                status: "active",
+                tokensUsed: 0,
+                timeUsedSeconds: 0,
+                updatedAt: 1782432282,
+              },
+            }),
+          },
+        },
+        {
+          timestamp: "2026-06-26T00:01:00.000Z",
+          type: "response_item",
+          payload: {
+            type: "message",
+            role: "user",
+            content: [
+              {
+                type: "input_text",
+                text: `<goal_context>
+Continue working toward the active thread goal.
+
+<objective>
+${objective}
+</objective>
+</goal_context>`,
+              },
+            ],
+          },
+        },
+        {
+          timestamp: "2026-06-26T00:02:00.000Z",
+          type: "response_item",
+          payload: {
+            type: "message",
+            role: "user",
+            content: [{ type: "input_text", text: "Now fix the sidebar." }],
+          },
+        },
+      ]),
+    );
+
+    expect(latestVisualGoal(session.messages)).toMatchObject({
+      objective,
+      status: "active",
+      tokensUsed: 0,
+      timeUsedSeconds: 0,
+      threadId: "thread-1",
+    });
+    expect(buildVisualTranscriptItems(session.messages)).toEqual([
+      expect.objectContaining({
+        kind: "message",
+        blocks: [{ type: "text", text: "Now fix the sidebar." }],
+      }),
+    ]);
   });
 
   test("keeps Codex tool output visible when the matching call is outside the retained slice", () => {

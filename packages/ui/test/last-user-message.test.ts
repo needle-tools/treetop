@@ -3,24 +3,39 @@ import {
   applyVisualTranscriptDeltaPatches,
   buildVisualWorkDisplayEntries,
   buildVisualTranscriptItems,
+  buildVisibleVisualWorkDisplayEntries,
   cleanVisualUserText,
   cleanVisualToolResultText,
+  formatVisualDurationSeconds,
   formatVisualWorkDuration,
   lastUserMessageBurst,
   lastUserMessageWithContext,
+  latestVisualGoal,
   latestVisualPlan,
   mergeVisualSessionMessages,
   reuseStableVisualTranscriptItems,
   visualPlanFromBlock,
   visualPlanFromPayload,
+  visualPathPreviewTargets,
   visualToolCallPayloadLanguage,
   visualToolCallPayloadText,
+  visualToolApprovalBadge,
   visualToolLauncherLabel,
+  visualToolPreviewParts,
   visualToolPreviewText,
+  visualToolEnvAssignments,
+  visualToolEnvSummaryLabel,
+  visualToolEnvTooltipText,
+  visualToolInlineScript,
+  visualToolInlineScriptLanguageLabel,
+  visualToolInlineScriptPreviewText,
+  visualToolRemoteHostLabel,
   visualWorkSummary,
   visualUserImageAttachments,
   visualFileEditSummaryForBlock,
+  visualObservedProcessOutput,
   visualThinkingSummary,
+  updateVisualTranscriptItems,
   withoutDuplicateOptimisticUserMessages,
   type Message,
 } from "../src/last-user-message";
@@ -60,6 +75,14 @@ describe("formatVisualWorkDuration", () => {
 
   it("formats multi-day work with day and hour units", () => {
     expect(formatVisualWorkDuration(start, "2026-06-25T14:12:05.000Z")).toBe(
+      "3d 4h 12m 5s",
+    );
+  });
+
+  it("reuses the same duration formatter for elapsed tool timers", () => {
+    expect(formatVisualDurationSeconds(1)).toBe("1s");
+    expect(formatVisualDurationSeconds(119 * 60 + 32)).toBe("1hr 59m 32s");
+    expect(formatVisualDurationSeconds(3 * 86400 + 4 * 3600 + 12 * 60 + 5)).toBe(
       "3d 4h 12m 5s",
     );
   });
@@ -129,6 +152,45 @@ describe("lastUserMessageBurst", () => {
     expect(lastUserMessageWithContext(msgs, lastUserMessageBurst(msgs))).toBe(
       "continue plz",
     );
+  });
+});
+
+describe("latestVisualGoal", () => {
+  it("uses the newest normalized goal state without requiring transcript text", () => {
+    const messages: Message[] = [
+      {
+        role: "system",
+        blocks: [
+          {
+            type: "goal",
+            goalObjective: "Make Treetop smooth.",
+            goalStatus: "active",
+            goalTokensUsed: 1000,
+          },
+        ],
+      },
+      {
+        role: "system",
+        blocks: [
+          {
+            type: "goal",
+            goalObjective: "Make Treetop smooth.",
+            goalStatus: "blocked",
+            goalTokensUsed: 2500,
+            goalTimeUsedSeconds: 125,
+          },
+        ],
+      },
+    ];
+
+    expect(latestVisualGoal(messages)).toEqual({
+      objective: "Make Treetop smooth.",
+      status: "blocked",
+      tokensUsed: 2500,
+      timeUsedSeconds: 125,
+      updatedAt: undefined,
+      threadId: undefined,
+    });
   });
 });
 
@@ -418,7 +480,7 @@ describe("buildVisualTranscriptItems", () => {
     });
   });
 
-  it("marks user messages during an open Codex task as steering", () => {
+  it("folds user messages during an open Codex task into the work round as steering", () => {
     const items = buildVisualTranscriptItems([
       msg("user", "implement this", "2026-06-19T10:00:00.000Z"),
       {
@@ -439,21 +501,221 @@ describe("buildVisualTranscriptItems", () => {
       msg("user", "new turn", "2026-06-19T10:00:08.000Z"),
     ]);
 
-    const userMessages = items
-      .filter((item) => item.kind === "message" && item.message.role === "user")
-      .map((item) => item.message);
-
-    expect(userMessages.map((message) => message.blocks[0]?.text)).toEqual([
-      "implement this",
-      "also keep it small",
-      "and add a test",
-      "new turn",
+    expect(items.map((item) => item.kind)).toEqual([
+      "message",
+      "work",
+      "message",
+      "message",
     ]);
-    expect(userMessages.map((message) => message.intent)).toEqual([
-      undefined,
-      "steer",
-      "steer",
-      undefined,
+    if (items[1]?.kind !== "work") throw new Error("expected steering work item");
+    expect(
+      items[1].entries
+        .filter((entry) => entry.message.role === "user")
+        .map((entry) => [entry.message.blocks[0]?.text, entry.message.intent]),
+    ).toEqual([
+      ["also keep it small", "steer"],
+      ["and add a test", "steer"],
+    ]);
+    expect(
+      items[1].entries.map((entry) =>
+        entry.blocks.map((block) => block.text ?? block.type).join(" "),
+      ),
+    ).toEqual([
+      "[Task started]",
+      "I’ll start.",
+      "also keep it small",
+      "Noted.",
+      "and add a test",
+      "[Task complete]",
+    ]);
+    expect(visualWorkSummary(items[1].entries)).toMatchObject({
+      steerings: 2,
+    });
+  });
+
+  it("does not surface progress responses before later steering as final answers", () => {
+    const items = buildVisualTranscriptItems([
+      msg("user", "validate externally", "2026-06-01T10:00:00.000Z"),
+      {
+        role: "system",
+        timestamp: "2026-06-01T10:00:01.000Z",
+        blocks: [{ type: "marker", text: "[Task started]" }],
+      },
+      msg(
+        "assistant",
+        "One remaining cleanup.",
+        "2026-06-20T15:09:39.000Z",
+      ),
+      msg("user", "also run tests", "2026-06-20T15:10:00.000Z"),
+      {
+        role: "assistant",
+        timestamp: "2026-06-20T15:10:20.000Z",
+        blocks: [{ type: "tool_use", toolName: "exec_command" }],
+      },
+      {
+        role: "system",
+        timestamp: "2026-06-20T15:20:30.000Z",
+        blocks: [{ type: "marker", text: "[Task complete]" }],
+      },
+      msg("assistant", "Done.", "2026-06-20T15:20:37.000Z"),
+    ]);
+
+    expect(items.map((item) => item.kind)).toEqual([
+      "message",
+      "work",
+      "message",
+    ]);
+    if (items[1]?.kind !== "work") throw new Error("expected work item");
+    expect(
+      items[1].entries.map((entry) => [
+        entry.message.role,
+        entry.message.intent,
+        entry.blocks[0]?.text ?? entry.blocks[0]?.type,
+      ]),
+    ).toEqual([
+      ["system", undefined, "[Task started]"],
+      ["assistant", undefined, "One remaining cleanup."],
+      ["user", "steer", "also run tests"],
+      ["assistant", undefined, "tool_use"],
+      ["system", undefined, "[Task complete]"],
+    ]);
+    if (items[2]?.kind !== "message") throw new Error("expected final response");
+    expect(items[2].blocks).toEqual([{ type: "text", text: "Done." }]);
+  });
+
+  it("keeps clipped progress before explicit steering inside the same work round", () => {
+    const steering = {
+      ...msg(
+        "user",
+        "Woah is this a subdivision bug?",
+        "2026-07-02T10:00:34.000Z",
+      ),
+      intent: "steer" as const,
+    };
+    const toolUse: Message = {
+      role: "assistant",
+      timestamp: "2026-07-02T10:00:37.000Z",
+      blocks: [{ type: "tool_use", toolName: "exec_command" }],
+    };
+
+    const items = buildVisualTranscriptItems(
+      [
+        msg(
+          "assistant",
+          "The helper is lower in the file than I first expected.",
+          "2026-07-02T10:00:32.000Z",
+        ),
+        steering,
+        toolUse,
+        msg(
+          "assistant",
+          "Good catch. I’m checking the authored mesh schema now.",
+          "2026-07-02T10:00:41.000Z",
+        ),
+      ],
+      { active: true },
+    );
+
+    expect(items.map((item) => item.kind)).toEqual(["work"]);
+    if (items[0]?.kind !== "work") throw new Error("expected work item");
+    expect(visualWorkSummary(items[0].entries)).toMatchObject({
+      steerings: 1,
+    });
+    expect(
+      items[0].entries.map((entry) => [
+        entry.message.role,
+        entry.message.intent,
+        entry.blocks[0]?.text ?? entry.blocks[0]?.type,
+      ]),
+    ).toEqual([
+      [
+        "assistant",
+        undefined,
+        "The helper is lower in the file than I first expected.",
+      ],
+      ["user", "steer", "Woah is this a subdivision bug?"],
+      ["assistant", undefined, "tool_use"],
+      [
+        "assistant",
+        undefined,
+        "Good catch. I’m checking the authored mesh schema now.",
+      ],
+    ]);
+  });
+
+  it("attaches later pre-user task-start markers so clarifications become steering", () => {
+    const items = buildVisualTranscriptItems([
+      msg("user", "previous request", "2026-07-02T03:54:00.000Z"),
+      {
+        role: "system",
+        timestamp: "2026-07-02T03:55:00.000Z",
+        blocks: [{ type: "marker", text: "[Task complete]" }],
+      },
+      msg("assistant", "Previous done.", "2026-07-02T03:55:09.000Z"),
+      {
+        role: "system",
+        timestamp: "2026-07-02T05:39:56.344Z",
+        blocks: [{ type: "marker", text: "[Task started]" }],
+      },
+      msg(
+        "user",
+        "OK, time for an audit",
+        "2026-07-02T05:39:56.660Z",
+      ),
+      msg(
+        "assistant",
+        "npm run check is running.",
+        "2026-07-02T05:41:45.416Z",
+      ),
+      msg(
+        "user",
+        "my question was in particular about that active goal.",
+        "2026-07-02T05:41:48.508Z",
+      ),
+      msg(
+        "assistant",
+        "Got it. I’ll answer specifically as an audit.",
+        "2026-07-02T05:42:06.403Z",
+      ),
+      {
+        role: "system",
+        timestamp: "2026-07-02T05:49:50.624Z",
+        blocks: [{ type: "marker", text: "[Task complete]" }],
+      },
+      msg("assistant", "Final audit.", "2026-07-02T05:49:50.624Z"),
+    ]);
+
+    expect(items.map((item) => item.kind)).toEqual([
+      "message",
+      "message",
+      "message",
+      "work",
+      "message",
+    ]);
+    if (items[3]?.kind !== "work") throw new Error("expected audit work item");
+    expect(visualWorkSummary(items[3].entries)).toMatchObject({
+      steerings: 1,
+    });
+    expect(
+      items[3].entries.map((entry) => [
+        entry.message.role,
+        entry.message.intent,
+        entry.blocks[0]?.text ?? entry.blocks[0]?.type,
+      ]),
+    ).toEqual([
+      ["system", undefined, "[Task started]"],
+      ["assistant", undefined, "npm run check is running."],
+      [
+        "user",
+        "steer",
+        "my question was in particular about that active goal.",
+      ],
+      [
+        "assistant",
+        undefined,
+        "Got it. I’ll answer specifically as an audit.",
+      ],
+      ["system", undefined, "[Task complete]"],
     ]);
   });
 
@@ -517,6 +779,136 @@ describe("buildVisualTranscriptItems", () => {
     ]);
   });
 
+  it("promotes an aborted steered turn to the work headline", () => {
+    const items = buildVisualTranscriptItems([
+      msg("user", "continue", "2026-06-19T10:00:00.000Z"),
+      {
+        role: "system",
+        timestamp: "2026-06-19T10:00:01.000Z",
+        blocks: [{ type: "marker", text: "[Task started]" }],
+      },
+      {
+        ...msg("user", "actually stop here", "2026-06-19T10:00:02.000Z"),
+        intent: "steer",
+      },
+      {
+        role: "system",
+        timestamp: "2026-06-19T10:00:03.000Z",
+        blocks: [
+          {
+            type: "marker",
+            text: "[Turn aborted] The user interrupted the previous turn.",
+          },
+        ],
+      },
+    ]);
+
+    expect(items.map((item) => item.kind)).toEqual(["message", "work"]);
+    if (items[1]?.kind !== "work") throw new Error("expected work item");
+    expect(items[1]).toMatchObject({
+      terminalMarkerKind: "aborted",
+      terminalMarkerLabel: "Turn aborted",
+    });
+    expect(visualWorkSummary(items[1].entries)).toEqual({
+      steps: 0,
+      compactions: 0,
+      steerings: 1,
+    });
+    expect(items[1].entries.map((entry) => entry.message.role)).toEqual([
+      "system",
+      "user",
+      "system",
+    ]);
+    expect(items[1].entries[1]!.message.intent).toBe("steer");
+    expect(
+      buildVisibleVisualWorkDisplayEntries(items[1]).map((entry) =>
+        entry.kind === "marker" ? entry.markerLabel : entry.entry.message.role,
+      ),
+    ).toEqual(["Task started", "user"]);
+  });
+
+  it("ends active work at a task-complete marker", () => {
+    const items = buildVisualTranscriptItems(
+      [
+        msg("user", "continue", "2026-06-19T10:00:00.000Z"),
+        {
+          role: "system",
+          timestamp: "2026-06-19T10:00:01.000Z",
+          blocks: [{ type: "marker", text: "[Task started]" }],
+        },
+        {
+          role: "system",
+          timestamp: "2026-06-19T10:00:15.000Z",
+          blocks: [{ type: "marker", text: "[Task complete]" }],
+        },
+      ],
+      { active: true },
+    );
+
+    expect(items.map((item) => item.kind)).toEqual(["message"]);
+  });
+
+  it("ends stale started work when a later user turn begins", () => {
+    const items = buildVisualTranscriptItems(
+      [
+        msg("user", "do the deploy", "2026-06-19T10:00:00.000Z"),
+        {
+          role: "system",
+          timestamp: "2026-06-19T10:00:01.000Z",
+          blocks: [{ type: "marker", text: "[Task started]" }],
+        },
+        msg("user", "that env file stays the same?", "2026-06-19T15:56:00.000Z"),
+        msg("assistant", "Correct.", "2026-06-19T15:56:11.000Z"),
+      ],
+      { active: false },
+    );
+
+    expect(items.map((item) => item.kind)).toEqual([
+      "message",
+      "message",
+      "message",
+    ]);
+  });
+
+  it("ends active work at an unretryable failure marker", () => {
+    const items = buildVisualTranscriptItems(
+      [
+        msg("user", "continue", "2026-06-19T10:00:00.000Z"),
+        {
+          role: "system",
+          timestamp: "2026-06-19T10:00:01.000Z",
+          blocks: [{ type: "marker", text: "[Task started]" }],
+        },
+        {
+          role: "system",
+          timestamp: "2026-06-19T10:00:15.000Z",
+          blocks: [
+            {
+              type: "marker",
+              text: "[Turn failed: Context window exceeded]",
+            },
+          ],
+        },
+      ],
+      { active: true },
+    );
+
+    expect(items.map((item) => item.kind)).toEqual(["message", "work"]);
+    expect(items[1]).toMatchObject({
+      kind: "work",
+      endedAt: "2026-06-19T10:00:15.000Z",
+      open: undefined,
+    });
+    if (items[1]?.kind !== "work") throw new Error("expected work item");
+    expect(buildVisualWorkDisplayEntries(items[1].entries)).toContainEqual(
+      expect.objectContaining({
+        kind: "marker",
+        markerKind: "failed",
+        markerLabel: "Context window full",
+      }),
+    );
+  });
+
   it("splits mixed assistant work and response blocks", () => {
     const mixed: Message = {
       role: "assistant",
@@ -563,6 +955,80 @@ describe("buildVisualTranscriptItems", () => {
     ]);
     if (items[2]?.kind !== "message") throw new Error("expected message item");
     expect(items[2].blocks).toEqual([{ type: "media", text: "generated image" }]);
+  });
+
+  it("attaches generated image media from the work range to the final response", () => {
+    const imageTool: Message = {
+      role: "assistant",
+      timestamp: "2026-07-02T15:42:10.000Z",
+      blocks: [
+        {
+          type: "tool_use",
+          toolName: "image_generation_call",
+          toolUseId: "ig-1",
+          toolInput: { prompt: "duberman" },
+        },
+      ],
+    };
+    const imageResult: Message = {
+      role: "tool",
+      timestamp: "2026-07-02T15:42:10.100Z",
+      blocks: [
+        {
+          type: "tool_result",
+          toolName: "image_generation_call",
+          toolUseId: "ig-1",
+          text: "Generated image",
+        },
+      ],
+    };
+    const imageMedia: Message = {
+      role: "assistant",
+      timestamp: "2026-07-02T15:42:10.200Z",
+      blocks: [
+        {
+          type: "media",
+          text: "generated image",
+          toolName: "image_generation_call",
+          toolUseId: "ig-1",
+        },
+      ],
+    };
+    const finalResponse = msg(
+      "assistant",
+      "Generated your Duberman image.",
+      "2026-07-02T15:42:11.000Z",
+    );
+
+    const items = buildVisualTranscriptItems([
+      msg("user", "make an image", "2026-07-02T15:40:48.000Z"),
+      imageTool,
+      imageResult,
+      imageMedia,
+      finalResponse,
+    ]);
+
+    expect(items.map((item) => item.kind)).toEqual([
+      "message",
+      "work",
+      "message",
+    ]);
+    if (items[1]?.kind !== "work") throw new Error("expected work item");
+    expect(
+      items[1].entries.some((entry) =>
+        entry.blocks.some((block) => block.type === "media"),
+      ),
+    ).toBe(true);
+    if (items[2]?.kind !== "message") throw new Error("expected message item");
+    expect(items[2].blocks).toEqual([
+      {
+        type: "media",
+        text: "generated image",
+        toolName: "image_generation_call",
+        toolUseId: "ig-1",
+      },
+      { type: "text", text: "Generated your Duberman image." },
+    ]);
   });
 
   it("folds post-response system chatter into the turn work before the final response", () => {
@@ -662,6 +1128,7 @@ describe("buildVisualTranscriptItems", () => {
     expect(visualWorkSummary(items[1].entries)).toEqual({
       steps: 2,
       compactions: 1,
+      steerings: 0,
     });
     const displayEntries = buildVisualWorkDisplayEntries(items[1].entries);
     expect(displayEntries).toContainEqual(
@@ -868,6 +1335,147 @@ describe("reuseStableVisualTranscriptItems", () => {
   });
 });
 
+describe("updateVisualTranscriptItems", () => {
+  it("rebuilds only from the affected tail user turn when a live message grows", () => {
+    const firstUser = msg("user", "fix it", "2026-06-19T10:00:00.000Z");
+    const firstAnswer = msg(
+      "assistant",
+      "Done.",
+      "2026-06-19T10:00:02.000Z",
+    );
+    const secondUser = msg("user", "continue", "2026-06-19T10:00:10.000Z");
+    const liveTool: Message = {
+      id: "tool-use",
+      role: "assistant",
+      timestamp: "2026-06-19T10:00:12.000Z",
+      blocks: [{ type: "tool_use", toolName: "exec_command" }],
+    };
+    const liveResult: Message = {
+      id: "tool-result",
+      role: "tool",
+      timestamp: "2026-06-19T10:00:13.000Z",
+      blocks: [{ type: "tool_result", text: "one" }],
+    };
+    const previousMessages = [
+      firstUser,
+      firstAnswer,
+      secondUser,
+      liveTool,
+      liveResult,
+    ];
+    const previousItems = buildVisualTranscriptItems(previousMessages, {
+      active: true,
+    });
+    const grownResult: Message = {
+      ...liveResult,
+      blocks: [{ type: "tool_result", text: "one\ntwo" }],
+    };
+
+    const next = updateVisualTranscriptItems({
+      previousMessages,
+      previousItems,
+      previousActive: true,
+      messages: [firstUser, firstAnswer, secondUser, liveTool, grownResult],
+      active: true,
+    });
+
+    expect(next[0]).toBe(previousItems[0]);
+    expect(next[1]).toBe(previousItems[1]);
+    expect(next[2]).toBe(previousItems[2]);
+    expect(next[3]).not.toBe(previousItems[3]);
+    expect(next.map((item) => item.kind)).toEqual(
+      buildVisualTranscriptItems(
+        [firstUser, firstAnswer, secondUser, liveTool, grownResult],
+        { active: true },
+      ).map((item) => item.kind),
+    );
+  });
+
+  it("keeps an appended live steering message inside the open work round", () => {
+    const user = msg(
+      "user",
+      "validate externally",
+      "2026-06-20T15:00:00.000Z",
+    );
+    const taskStarted: Message = {
+      role: "system",
+      timestamp: "2026-06-20T15:00:01.000Z",
+      blocks: [{ type: "marker", text: "[Task started]" }],
+    };
+    const progress = msg(
+      "assistant",
+      "One remaining cleanup.",
+      "2026-06-20T15:09:39.000Z",
+    );
+    const previousMessages = [user, taskStarted, progress];
+    const previousItems = buildVisualTranscriptItems(previousMessages, {
+      active: true,
+    });
+    const steering = msg(
+      "user",
+      "also run tests",
+      "2026-06-20T15:10:00.000Z",
+    );
+    const toolUse: Message = {
+      id: "test-tool-use",
+      role: "assistant",
+      timestamp: "2026-06-20T15:10:05.000Z",
+      blocks: [{ type: "tool_use", toolName: "exec_command" }],
+    };
+
+    const next = updateVisualTranscriptItems({
+      previousMessages,
+      previousItems,
+      previousActive: true,
+      messages: [...previousMessages, steering, toolUse],
+      active: true,
+    });
+
+    expect(next.map((item) => item.kind)).toEqual(["message", "work"]);
+    if (next[1]?.kind !== "work") throw new Error("expected open work item");
+    expect(
+      next[1].entries.map((entry) => [
+        entry.message.role,
+        entry.message.intent,
+        entry.blocks[0]?.text ?? entry.blocks[0]?.type,
+      ]),
+    ).toEqual([
+      ["system", undefined, "[Task started]"],
+      ["assistant", undefined, "One remaining cleanup."],
+      ["user", "steer", "also run tests"],
+      ["assistant", undefined, "tool_use"],
+    ]);
+  });
+
+  it("appends a new user turn without remaking earlier transcript items", () => {
+    const firstUser = msg("user", "fix it", "2026-06-19T10:00:00.000Z");
+    const firstAnswer = msg(
+      "assistant",
+      "Done.",
+      "2026-06-19T10:00:02.000Z",
+    );
+    const previousMessages = [firstUser, firstAnswer];
+    const previousItems = buildVisualTranscriptItems(previousMessages);
+    const secondUser = msg("user", "continue", "2026-06-19T10:00:10.000Z");
+
+    const next = updateVisualTranscriptItems({
+      previousMessages,
+      previousItems,
+      previousActive: false,
+      messages: [firstUser, firstAnswer, secondUser],
+      active: false,
+    });
+
+    expect(next[0]).toBe(previousItems[0]);
+    expect(next[1]).toBe(previousItems[1]);
+    expect(next[2]).toMatchObject({
+      kind: "message",
+      message: secondUser,
+      messageIndex: 2,
+    });
+  });
+});
+
 describe("withoutDuplicateOptimisticUserMessages", () => {
   it("replaces a local optimistic user row with the canonical transcript row", () => {
     const optimistic: Message = {
@@ -1004,6 +1612,48 @@ describe("cleanVisualToolResultText", () => {
     });
   });
 
+  it("strips Codex running process poll metadata and keeps observed output", () => {
+    expect(
+      cleanVisualToolResultText(
+        "Chunk ID: b96e6e\nWall time: 30.0028 seconds\nProcess running with session ID 55249\nOriginal token count: 2\nOutput:\n450/700\n",
+      ),
+    ).toEqual({
+      title: "Process output",
+      body: "450/700",
+      wrappedCodexChunk: true,
+      wallTimeSeconds: 30.0028,
+      originalTokenCount: 2,
+      processRunning: true,
+      processSessionId: 55249,
+    });
+  });
+
+  it("summarizes write_stdin polls as read-log rows", () => {
+    expect(
+      visualObservedProcessOutput(
+        {
+          type: "tool_use",
+          toolName: "write_stdin",
+          toolInput: {
+            session_id: 55249,
+            chars: "",
+            yield_time_ms: 30000,
+          },
+        },
+        {
+          type: "tool_result",
+          toolName: "write_stdin",
+          text: "Chunk ID: 07acea\nWall time: 30.0019 seconds\nProcess running with session ID 55249\nOriginal token count: 2\nOutput:\n500/700\n",
+        },
+      ),
+    ).toEqual({
+      title: "Read logs",
+      preview: "500/700",
+      processSessionId: 55249,
+      wallTimeSeconds: 30.0019,
+    });
+  });
+
   it("renders empty successful Codex command chunks as a quiet completion", () => {
     expect(
       cleanVisualToolResultText(
@@ -1072,6 +1722,32 @@ describe("visualThinkingSummary", () => {
 });
 
 describe("visual tool payload display helpers", () => {
+  it("shows command approval decisions as concise badges", () => {
+    expect(
+      visualToolApprovalBadge({
+        type: "tool_use",
+        toolName: "exec_command",
+        approvalDecision: "approved",
+        approvalPolicy: "on-request",
+        sandboxPolicy: "workspace-write",
+      }),
+    ).toEqual({
+      label: "approved by you",
+      title:
+        "Approval policy: on-request\nDecision: approved\nSandbox: workspace-write",
+      tone: "approved",
+    });
+
+    expect(
+      visualToolApprovalBadge({
+        type: "tool_use",
+        toolName: "exec_command",
+        approvalPolicy: "never",
+        sandboxPolicy: "danger-full-access",
+      }),
+    ).toBeUndefined();
+  });
+
   it("keeps collapsed exec_command previews readable while expanded payloads stay complete", () => {
     const block = {
       type: "tool_use",
@@ -1117,12 +1793,48 @@ describe("visual tool payload display helpers", () => {
       },
     };
 
-    expect(visualToolPreviewText(block)).toBe(
-      "Read usd-wasm/src/create.three.js:60-155",
-    );
+    expect(visualToolPreviewText(block)).toBe("Read create.three.js:60-155");
+    expect(visualToolPreviewParts(block)).toEqual([
+      { kind: "text", text: "Read " },
+      {
+        kind: "path",
+        text: "create.three.js:60-155",
+        path: "usd-wasm/src/create.three.js",
+        range: ":60-155",
+      },
+    ]);
     expect(visualToolCallPayloadText(block)).toContain(
       "/bin/zsh -lc \\\"sed -n '60,155p' usd-wasm/src/create.three.js\\\"",
     );
+  });
+
+  it("formats reusable path preview targets with parent and ambiguity context", () => {
+    expect(
+      visualPathPreviewTargets([
+        "src/routes/a/+page.svelte:1-20",
+        "src/routes/b/+page.svelte",
+        "/repo/skills/imagegen/SKILL.md",
+      ]),
+    ).toEqual([
+      {
+        kind: "path",
+        text: "a/+page.svelte:1-20",
+        path: "src/routes/a/+page.svelte",
+        range: ":1-20",
+      },
+      {
+        kind: "path",
+        text: "b/+page.svelte",
+        path: "src/routes/b/+page.svelte",
+        range: "",
+      },
+      {
+        kind: "path",
+        text: "imagegen/SKILL.md",
+        path: "/repo/skills/imagegen/SKILL.md",
+        range: "",
+      },
+    ]);
   });
 
   it("normalizes Unix shell launch wrappers before previewing commands", () => {
@@ -1138,6 +1850,283 @@ describe("visual tool payload display helpers", () => {
     expect(visualToolLauncherLabel(block)).toBe("bash");
   });
 
+  it("summarizes process cleanup commands", () => {
+    const block = {
+      type: "tool_use",
+      toolName: "exec_command",
+      toolInput: {
+        cmd: "/bin/zsh -lc 'kill 60465 60466 60467 60475 || true'",
+      },
+    };
+
+    expect(visualToolPreviewText(block)).toBe(
+      "Stop processes 60465, 60466, 60467, 60475",
+    );
+    expect(visualToolCallPayloadText(block)).toContain(
+      "kill 60465 60466 60467 60475",
+    );
+  });
+
+  it("summarizes lsof port checks without hiding the raw command", () => {
+    const processOnPort = {
+      type: "tool_use",
+      toolName: "exec_command",
+      toolInput: {
+        cmd: "lsof -ti tcp:5173 | xargs -r ps -o pid=,command= -p",
+      },
+    };
+    const listeningPort = {
+      type: "tool_use",
+      toolName: "exec_command",
+      toolInput: {
+        cmd: "lsof -nP -iTCP:5254 -sTCP:LISTEN || true",
+      },
+    };
+    const listenerScan = {
+      type: "tool_use",
+      toolName: "exec_command",
+      toolInput: {
+        cmd: "lsof -iTCP -sTCP:LISTEN -n -P | rg ':3001|:5173|:4173'",
+      },
+    };
+
+    expect(visualToolPreviewText(processOnPort)).toBe("Check port 5173");
+    expect(visualToolPreviewText(listeningPort)).toBe("Check port 5254");
+    expect(visualToolPreviewText(listenerScan)).toBe(
+      "Check ports 3001, 5173, 4173",
+    );
+    expect(visualToolCallPayloadText(processOnPort)).toContain(
+      "lsof -ti tcp:5173",
+    );
+  });
+
+  it("summarizes Windows filesystem cleanup and creation commands", () => {
+    const block = {
+      type: "tool_use",
+      toolName: "exec_command",
+      toolInput: {
+        cmd: "powershell -NoProfile -Command \"Remove-Item -Recurse -Force C:\\Users\\needle\\nextcloud-maik-test -ErrorAction SilentlyContinue; New-Item -ItemType Directory -Force C:\\Users\\needle\\nextcloud-maik-test\"",
+      },
+    };
+
+    expect(visualToolPreviewText(block)).toBe(
+      "Delete folder nextcloud-maik-test · Create folder nextcloud-maik-test",
+    );
+    expect(visualToolPreviewParts(block)).toEqual([
+      { kind: "text", text: "Delete folder " },
+      {
+        kind: "path",
+        text: "nextcloud-maik-test",
+        path: "C:\\Users\\needle\\nextcloud-maik-test",
+        range: "",
+      },
+      { kind: "text", text: " · " },
+      { kind: "text", text: "Create folder " },
+      {
+        kind: "path",
+        text: "nextcloud-maik-test",
+        path: "C:\\Users\\needle\\nextcloud-maik-test",
+        range: "",
+      },
+    ]);
+    expect(visualToolCallPayloadText(block)).toContain("Remove-Item");
+  });
+
+  it("summarizes Unix filesystem cleanup and creation commands", () => {
+    const block = {
+      type: "tool_use",
+      toolName: "exec_command",
+      toolInput: {
+        cmd: "rm -rf /tmp/supergit-test && mkdir -p /tmp/supergit-test && touch /tmp/supergit-test/ready.txt",
+      },
+    };
+
+    expect(visualToolPreviewText(block)).toBe(
+      "Delete folder supergit-test · Create folder supergit-test · Create file ready.txt",
+    );
+    expect(visualToolPreviewParts(block)).toContainEqual({
+      kind: "path",
+      text: "supergit-test",
+      path: "/tmp/supergit-test",
+      range: "",
+    });
+  });
+
+  it("keeps mkdir folder chips when a command chain has an unknown follow-up", () => {
+    const block = {
+      type: "tool_use",
+      toolName: "exec_command",
+      toolInput: {
+        cmd: "mkdir -p tests/unit/fixtures/materialx-paths/renders && magick tests/unit/fixtures/materialx-paths/source.png tests/unit/fixtures/materialx-paths/renders/output.png",
+      },
+    };
+
+    expect(visualToolPreviewText(block)).toBe(
+      "Create folder renders · magick tests/unit/fixtures/materialx-paths/source.png tests/unit/fixtures/materialx-paths/renders/output.png",
+    );
+    expect(visualToolPreviewParts(block)[1]).toEqual({
+      kind: "path",
+      text: "renders",
+      path: "tests/unit/fixtures/materialx-paths/renders",
+      range: "",
+    });
+  });
+
+  it("summarizes curl fetch commands around the URL", () => {
+    const block = {
+      type: "tool_use",
+      toolName: "exec_command",
+      toolInput: {
+        cmd: "curl -sS -D - -o /tmp/medikit-root.html --max-time 10 http://100.120.22.46:46100/medikit/auth/sign-in",
+      },
+    };
+
+    expect(visualToolPreviewText(block)).toBe(
+      "Fetch 100.120.22.46:46100/medikit/auth/sign-in to medikit-root.html",
+    );
+    expect(visualToolPreviewParts(block)).toEqual([
+      { kind: "text", text: "Fetch " },
+      { kind: "text", text: "100.120.22.46:46100/medikit/auth/sign-in" },
+      { kind: "text", text: " to " },
+      {
+        kind: "path",
+        text: "medikit-root.html",
+        path: "/tmp/medikit-root.html",
+        range: "",
+      },
+    ]);
+    expect(visualToolCallPayloadText(block)).toContain("curl -sS");
+  });
+
+  it("summarizes wget fetch commands", () => {
+    expect(
+      visualToolPreviewText({
+        type: "tool_use",
+        toolName: "exec_command",
+        toolInput: {
+          cmd: "wget --timeout 5 https://example.com/status.json",
+        },
+      }),
+    ).toBe("Fetch example.com/status.json");
+  });
+
+  it("lifts inline env assignments out of command previews", () => {
+    const block = {
+      type: "tool_use",
+      toolName: "exec_command",
+      toolInput: {
+        cmd: "PORT=5199 npm run start",
+      },
+    };
+
+    expect(visualToolPreviewText(block)).toBe("npm run start");
+    expect(visualToolEnvSummaryLabel(block)).toBe("ENV");
+    expect(visualToolEnvTooltipText(block)).toBe("PORT=5199");
+    expect(visualToolEnvAssignments(block)).toEqual([
+      { name: "PORT", value: "5199" },
+    ]);
+    expect(visualToolCallPayloadText(block)).toContain("PORT=5199");
+  });
+
+  it("lifts zsh-wrapped inline env assignments out of command previews", () => {
+    const block = {
+      type: "tool_use",
+      toolName: "exec_command",
+      toolInput: {
+        cmd: "/bin/zsh -lc 'PORT=5199 VITE_HOST=0.0.0.0 npm run start'",
+      },
+    };
+
+    expect(visualToolPreviewText(block)).toBe("npm run start");
+    expect(visualToolLauncherLabel(block)).toBe("zsh");
+    expect(visualToolEnvSummaryLabel(block)).toBe("ENV");
+    expect(visualToolEnvTooltipText(block)).toBe(
+      "PORT=5199\nVITE_HOST=0.0.0.0",
+    );
+    expect(visualToolEnvAssignments(block)).toEqual([
+      { name: "PORT", value: "5199" },
+      { name: "VITE_HOST", value: "0.0.0.0" },
+    ]);
+  });
+
+  it("lifts exported inline env assignments out of command previews", () => {
+    const block = {
+      type: "tool_use",
+      toolName: "exec_command",
+      toolInput: {
+        cmd: "export AGENT_BROWSER_SESSION=medikit-path-cookie-$(date +%s) npx --yes agent-browser open 'http://localhost:5173/medikit/auth/sign-in'",
+      },
+    };
+
+    expect(visualToolPreviewText(block)).toBe(
+      "npx --yes agent-browser open http://localhost:5173/medikit/auth/sign-in",
+    );
+    expect(visualToolEnvSummaryLabel(block)).toBe("ENV");
+    expect(visualToolEnvTooltipText(block)).toBe(
+      "AGENT_BROWSER_SESSION=medikit-path-cookie-$(date +%s)",
+    );
+    expect(visualToolEnvAssignments(block)).toEqual([
+      {
+        name: "AGENT_BROWSER_SESSION",
+        value: "medikit-path-cookie-$(date +%s)",
+      },
+    ]);
+  });
+
+  it("normalizes ssh launch wrappers before previewing remote file reads", () => {
+    const block = {
+      type: "tool_use",
+      toolName: "exec_command",
+      toolInput: {
+        cmd: "/bin/zsh -lc \"ssh -o BatchMode=yes -o ConnectTimeout=8 cloud-staging 'cd /data/coolify/applications/vk4800s4gookog480gc0g0s0 && sed -n '\\''1,40p'\\'' compose-pr-34.yaml'\"",
+      },
+    };
+
+    expect(visualToolPreviewText(block)).toBe("Read compose-pr-34.yaml:1-40");
+    expect(visualToolLauncherLabel(block)).toBe("zsh");
+    expect(visualToolRemoteHostLabel(block)).toBe("cloud-staging");
+    expect(visualToolCallPayloadText(block)).toContain("ssh -o BatchMode=yes");
+  });
+
+  it("normalizes ssh launch wrappers before previewing remote searches", () => {
+    const block = {
+      type: "tool_use",
+      toolName: "exec_command",
+      toolInput: {
+        cmd: "ssh deploy@cloud-staging 'cd /srv/app && rg -n \"needle\" packages'",
+      },
+    };
+
+    expect(visualToolPreviewText(block)).toBe('Search packages for "needle"');
+    expect(visualToolRemoteHostLabel(block)).toBe("cloud-staging");
+  });
+
+  it("normalizes docker compose exec wrappers before previewing container reads", () => {
+    const block = {
+      type: "tool_use",
+      toolName: "exec_command",
+      toolInput: {
+        cmd: "docker compose -f nextcloud/docker-compose.yaml exec -T nextcloud sh -lc \"cd /var/www/html && sed -n '450,525p' custom_apps/integration_openai/lib/Config.php\"",
+      },
+    };
+
+    expect(visualToolPreviewText(block)).toBe("Read Config.php:450-525");
+    expect(visualToolRemoteHostLabel(block)).toBe("docker nextcloud");
+  });
+
+  it("normalizes docker exec wrappers before previewing container searches", () => {
+    const block = {
+      type: "tool_use",
+      toolName: "exec_command",
+      toolInput: {
+        cmd: "docker exec -i coolify sh -lc \"grep -RIn 'tts_url' config\"",
+      },
+    };
+
+    expect(visualToolPreviewText(block)).toBe('Search config for "tts_url"');
+    expect(visualToolRemoteHostLabel(block)).toBe("docker coolify");
+  });
+
   it("summarizes combined sed reads as one readable preview", () => {
     const block = {
       type: "tool_use",
@@ -1148,8 +2137,235 @@ describe("visual tool payload display helpers", () => {
     };
 
     expect(visualToolPreviewText(block)).toBe(
-      "Read usd-wasm/src/types/hydra.d.ts:1-70, usd-wasm/src/types/bindings.d.ts:35-60",
+      "Read hydra.d.ts:1-70, bindings.d.ts:35-60",
     );
+  });
+
+  it("keeps enough parent path when read filenames are ambiguous", () => {
+    const block = {
+      type: "tool_use",
+      toolName: "exec_command",
+      toolInput: {
+        cmd: "sed -n '1,80p' src/routes/pageA/+page.svelte && sed -n '1,80p' src/routes/pageB/+page.svelte",
+      },
+    };
+
+    expect(visualToolPreviewText(block)).toBe(
+      "Read pageA/+page.svelte:1-80, pageB/+page.svelte:1-80",
+    );
+    expect(visualToolPreviewParts(block)).toEqual([
+      { kind: "text", text: "Read " },
+      {
+        kind: "path",
+        text: "pageA/+page.svelte:1-80",
+        path: "src/routes/pageA/+page.svelte",
+        range: ":1-80",
+      },
+      { kind: "text", text: ", " },
+      {
+        kind: "path",
+        text: "pageB/+page.svelte:1-80",
+        path: "src/routes/pageB/+page.svelte",
+        range: ":1-80",
+      },
+    ]);
+  });
+
+  it("keeps parent context for conventional filenames", () => {
+    const skillRead = {
+      type: "tool_use",
+      toolName: "exec_command",
+      toolInput: {
+        cmd: "sed -n '1,220p' /Users/herbst/.agents/skills/agent-browser/SKILL.md",
+      },
+    };
+    const routeRead = {
+      type: "tool_use",
+      toolName: "exec_command",
+      toolInput: {
+        cmd: "sed -n '1,90p' src/routes/dashboard/+page.svelte",
+      },
+    };
+    const packageRead = {
+      type: "tool_use",
+      toolName: "exec_command",
+      toolInput: {
+        cmd: "cat packages/ui/package.json",
+      },
+    };
+
+    expect(visualToolPreviewText(skillRead)).toBe(
+      "Read agent-browser/SKILL.md:1-220",
+    );
+    expect(visualToolPreviewParts(skillRead)).toEqual([
+      { kind: "text", text: "Read " },
+      {
+        kind: "path",
+        text: "agent-browser/SKILL.md:1-220",
+        path: "/Users/herbst/.agents/skills/agent-browser/SKILL.md",
+        range: ":1-220",
+      },
+    ]);
+    expect(visualToolPreviewText(routeRead)).toBe(
+      "Read dashboard/+page.svelte:1-90",
+    );
+    expect(visualToolPreviewText(packageRead)).toBe("Read ui/package.json");
+  });
+
+  it("summarizes mixed read and search chains without hiding the raw command", () => {
+    const block = {
+      type: "tool_use",
+      toolName: "exec_command",
+      toolInput: {
+        cmd: "sed -n '1,90p' src/conversionFamilies.ts && rg -n \"needle-engine-usdc|geometryBackend\"",
+      },
+    };
+
+    expect(visualToolPreviewText(block)).toBe(
+      'Read conversionFamilies.ts:1-90 · Search for "needle-engine-usdc|geometryBackend"',
+    );
+    expect(visualToolPreviewParts(block)).toEqual([
+      { kind: "text", text: "Read " },
+      {
+        kind: "path",
+        text: "conversionFamilies.ts:1-90",
+        path: "src/conversionFamilies.ts",
+        range: ":1-90",
+      },
+      { kind: "text", text: " · " },
+      { kind: "text", text: 'Search ' },
+      { kind: "text", text: 'for "needle-engine-usdc|geometryBackend"' },
+    ]);
+    expect(visualToolCallPayloadText(block)).toContain("sed -n");
+  });
+
+  it("ignores setup ls commands before read summaries", () => {
+    expect(
+      visualToolPreviewText({
+        type: "tool_use",
+        toolName: "exec_command",
+        toolInput: {
+          cmd: "ls scripts && sed -n '1,240p' scripts/analyze_conversions.py",
+        },
+      }),
+    ).toBe("Read analyze_conversions.py:1-240");
+  });
+
+  it("summarizes find commands with name patterns", () => {
+    expect(
+      visualToolPreviewText({
+        type: "tool_use",
+        toolName: "exec_command",
+        toolInput: {
+          cmd: "find /Users/herbst/OpenUSD-26.05-native -maxdepth 3 -type f \\( -name '*.py' -o -name '*.h' \\)",
+        },
+      }),
+    ).toBe("Find *.py, *.h in OpenUSD-26.05-native");
+    expect(
+      visualToolPreviewParts({
+        type: "tool_use",
+        toolName: "exec_command",
+        toolInput: {
+          cmd: "find /Users/herbst/OpenUSD-26.05-native -maxdepth 3 -type f \\( -name '*.py' -o -name '*.h' \\)",
+        },
+      }),
+    ).toEqual([
+      { kind: "text", text: "Find *.py, *.h in " },
+      {
+        kind: "path",
+        text: "OpenUSD-26.05-native",
+        path: "/Users/herbst/OpenUSD-26.05-native",
+        range: "",
+      },
+    ]);
+  });
+
+  it("summarizes directory inspection chains", () => {
+    expect(
+      visualToolPreviewText({
+        type: "tool_use",
+        toolName: "exec_command",
+        toolInput: {
+          cmd: "ls -lah && find . -maxdepth 2 -type f | sort",
+        },
+      }),
+    ).toBe("Read directory .");
+  });
+
+  it("surfaces inline scripts separately from the raw tool payload", () => {
+    const heredocBlock = {
+      type: "tool_use",
+      toolName: "exec_command",
+      toolInput: {
+        cmd: "python3 - <<'PY'\nimport json\nprint(json.dumps({'ok': True}))\nPY",
+      },
+    };
+
+    expect(visualToolPreviewText(heredocBlock)).toBe(
+      "import json print(json.dumps({'ok': True}))",
+    );
+    expect(visualToolInlineScriptLanguageLabel(heredocBlock)).toBe("Python");
+    expect(visualToolInlineScriptPreviewText(heredocBlock)).toBe(
+      "import json print(json.dumps({'ok': True}))",
+    );
+    expect(visualToolInlineScript(heredocBlock)).toEqual({
+      language: "python",
+      title: "Python script",
+      code: "import json\nprint(json.dumps({'ok': True}))",
+    });
+    expect(visualToolCallPayloadText(heredocBlock)).toContain("python3 -");
+
+    const evalBlock = {
+      type: "tool_use",
+      toolName: "exec_command",
+      toolInput: {
+        cmd: "node -e \"const fs = require('fs'); console.log(fs.existsSync('package.json'));\"",
+      },
+    };
+    expect(visualToolPreviewText(evalBlock)).toBe(
+      "const fs = require('fs'); console.log(fs.existsSync('package.json'));",
+    );
+    expect(visualToolInlineScriptLanguageLabel(evalBlock)).toBe("JavaScript");
+    expect(visualToolInlineScript(evalBlock)).toEqual({
+      language: "js",
+      title: "JavaScript script",
+      code: "const fs = require('fs');\nconsole.log(fs.existsSync('package.json'));",
+    });
+  });
+
+  it("summarizes browser tool calls and formats evaluate_script functions", () => {
+    const scriptBlock = {
+      type: "tool_use",
+      toolName: "evaluate_script",
+      toolInput: {
+        function:
+          "async () => {\n  const wait = (ms) => new Promise((r) => setTimeout(r, ms));\n  await wait(50);\n  return document.title;\n}",
+      },
+    };
+
+    expect(visualToolPreviewText(scriptBlock)).toBe(
+      "async () => { const wait = (ms) => new Promise((r) => setTimeout(r, ms)); await wait(50); return document.title; }",
+    );
+    expect(visualToolInlineScriptLanguageLabel(scriptBlock)).toBe("JavaScript");
+    expect(visualToolInlineScript(scriptBlock)).toEqual({
+      language: "js",
+      title: "JavaScript script",
+      code: "async () => {\n  const wait = (ms) => new Promise((r) => setTimeout(r, ms));\n  await wait(50);\n  return document.title;\n}",
+    });
+    expect(visualToolCallPayloadText(scriptBlock)).toContain(
+      '"function": "async () =>',
+    );
+
+    expect(
+      visualToolPreviewText({
+        type: "tool_use",
+        toolName: "navigate_page",
+        toolInput: {
+          type: "url",
+          url: "http://127.0.0.1:5173/?host=three&model=Gingerbread",
+        },
+      }),
+    ).toBe("Navigate to http://127.0.0.1:5173/?host=three&model=Gingerbread");
   });
 
   it("summarizes rg searches without hiding the real command", () => {
@@ -1162,7 +2378,7 @@ describe("visual tool payload display helpers", () => {
     };
 
     expect(visualToolPreviewText(block)).toBe(
-      'Search usd-wasm/src for "GetStage()"',
+      'Search src for "GetStage()"',
     );
     expect(visualToolCallPayloadText(block)).toContain("rg -n");
   });
@@ -1176,7 +2392,7 @@ describe("visual tool payload display helpers", () => {
           cmd: 'powershell.exe -NoProfile -Command "rg -n \\"GetStage\\(\\)\\" usd-wasm/src"',
         },
       }),
-    ).toBe('Search usd-wasm/src for "GetStage()"');
+    ).toBe('Search src for "GetStage()"');
 
     const cmdBlock = {
       type: "tool_use",
@@ -1186,7 +2402,7 @@ describe("visual tool payload display helpers", () => {
       },
     };
     expect(visualToolPreviewText(cmdBlock)).toBe(
-      "Read packages\\ui\\src\\last-user-message.ts",
+      "Read last-user-message.ts",
     );
     expect(visualToolLauncherLabel(cmdBlock)).toBe("cmd");
   });
@@ -1201,7 +2417,22 @@ describe("visual tool payload display helpers", () => {
     };
 
     expect(visualToolPreviewText(block)).toBe(
-      "Read src/lib/projectModel.js:414-424",
+      "Read projectModel.js:414-424",
+    );
+    expect(visualToolCallPayloadText(block)).toContain("nl -ba");
+  });
+
+  it("summarizes chained numbered line reads piped through sed", () => {
+    const block = {
+      type: "tool_use",
+      toolName: "exec_command",
+      toolInput: {
+        cmd: "nl -ba /Users/herbst/git/three.js/examples/jsm/transpiler/Transpiler.js | sed -n '1,90p'; nl -ba /Users/herbst/git/three.js/examples/jsm/transpiler/ShaderToyDecoder.js | sed -n '20,80p'",
+      },
+    };
+
+    expect(visualToolPreviewText(block)).toBe(
+      "Read Transpiler.js:1-90, ShaderToyDecoder.js:20-80",
     );
     expect(visualToolCallPayloadText(block)).toContain("nl -ba");
   });
@@ -1217,7 +2448,7 @@ describe("visual tool payload display helpers", () => {
           limit: 51,
         },
       }),
-    ).toBe("Read packages/ui/src/VisualTranscript.svelte:100-150");
+    ).toBe("Read VisualTranscript.svelte:100-150");
 
     expect(
       visualToolPreviewText({
@@ -1228,26 +2459,32 @@ describe("visual tool payload display helpers", () => {
           path: "packages/ui/src",
         },
       }),
-    ).toBe('Search packages/ui/src for "visualToolPreviewText"');
+    ).toBe('Search src for "visualToolPreviewText"');
   });
 });
 
 describe("buildVisualWorkDisplayEntries", () => {
-  it("pairs a tool use with the immediately following tool result", () => {
+  it("collapses an adjacent tool result into its tool use", () => {
     const toolUse = {
       message: {
         role: "assistant",
-        blocks: [{ type: "tool_use", text: "exec_command" }],
+        blocks: [
+          { type: "tool_use", text: "exec_command", toolUseId: "call-1" },
+        ],
       },
-      blocks: [{ type: "tool_use", text: "exec_command" }],
+      blocks: [{ type: "tool_use", text: "exec_command", toolUseId: "call-1" }],
       messageIndex: 1,
     };
     const toolResult = {
       message: {
         role: "tool",
-        blocks: [{ type: "tool_result", text: "tests passed" }],
+        blocks: [
+          { type: "tool_result", text: "tests passed", toolUseId: "call-1" },
+        ],
       },
-      blocks: [{ type: "tool_result", text: "tests passed" }],
+      blocks: [
+        { type: "tool_result", text: "tests passed", toolUseId: "call-1" },
+      ],
       messageIndex: 2,
     };
 
@@ -1258,7 +2495,60 @@ describe("buildVisualWorkDisplayEntries", () => {
     expect(entries[0]?.pairedResult).toBe(toolResult);
   });
 
-  it("pairs grouped tool results back to their tool use ids", () => {
+  it("shows read-log output at the result point without a duplicate poll-start row", () => {
+    const toolUse = {
+      message: {
+        role: "assistant",
+        blocks: [
+          {
+            type: "tool_use",
+            toolName: "write_stdin",
+            toolUseId: "call-1",
+            toolInput: { session_id: 55249, chars: "" },
+          },
+        ],
+      },
+      blocks: [
+        {
+          type: "tool_use",
+          toolName: "write_stdin",
+          toolUseId: "call-1",
+          toolInput: { session_id: 55249, chars: "" },
+        },
+      ],
+      messageIndex: 1,
+    };
+    const toolResult = {
+      message: {
+        role: "tool",
+        blocks: [
+          {
+            type: "tool_result",
+            toolName: "write_stdin",
+            toolUseId: "call-1",
+            text: "Chunk ID: 07acea\nWall time: 30.0019 seconds\nProcess running with session ID 55249\nOriginal token count: 2\nOutput:\n500/700\n",
+          },
+        ],
+      },
+      blocks: [
+        {
+          type: "tool_result",
+          toolName: "write_stdin",
+          toolUseId: "call-1",
+          text: "Chunk ID: 07acea\nWall time: 30.0019 seconds\nProcess running with session ID 55249\nOriginal token count: 2\nOutput:\n500/700\n",
+        },
+      ],
+      messageIndex: 2,
+    };
+
+    const entries = buildVisualWorkDisplayEntries([toolUse, toolResult]);
+
+    expect(entries).toHaveLength(1);
+    expect(entries[0]?.entry).toBe(toolResult);
+    expect(entries[0]?.pairedToolUse).toBe(toolUse);
+  });
+
+  it("attributes grouped tool results back to their tool use ids", () => {
     const firstToolUse = {
       message: {
         role: "assistant",
@@ -1299,14 +2589,16 @@ describe("buildVisualWorkDisplayEntries", () => {
       firstResult,
     ]);
 
-    expect(entries).toHaveLength(2);
+    expect(entries).toHaveLength(3);
     expect(entries[0]?.entry).toBe(firstToolUse);
     expect(entries[0]?.pairedResult).toBe(firstResult);
     expect(entries[1]?.entry).toBe(secondToolUse);
     expect(entries[1]?.pairedResult).toBe(secondResult);
+    expect(entries[2]?.entry).toBe(firstResult);
+    expect(entries[2]?.pairedToolUse).toBe(firstToolUse);
   });
 
-  it("carries a paired tool use name onto sparse tool results", () => {
+  it("carries a paired tool use name onto sparse delayed tool results", () => {
     const toolUse = {
       message: {
         role: "assistant",
@@ -1327,6 +2619,14 @@ describe("buildVisualWorkDisplayEntries", () => {
       ],
       messageIndex: 1,
     };
+    const interveningNote = {
+      message: {
+        role: "assistant",
+        blocks: [{ type: "text", text: "still checking" }],
+      },
+      blocks: [{ type: "text", text: "still checking" }],
+      messageIndex: 2,
+    };
     const toolResult = {
       message: {
         role: "tool",
@@ -1345,16 +2645,21 @@ describe("buildVisualWorkDisplayEntries", () => {
           toolUseId: "call-1",
         },
       ],
-      messageIndex: 2,
+      messageIndex: 3,
     };
 
-    const entries = buildVisualWorkDisplayEntries([toolUse, toolResult]);
+    const entries = buildVisualWorkDisplayEntries([
+      toolUse,
+      interveningNote,
+      toolResult,
+    ]);
 
-    expect(entries[0]?.pairedResult?.blocks[0]).toMatchObject({
+    expect(entries[2]?.entry.blocks[0]).toMatchObject({
       type: "tool_result",
       toolName: "exec_command",
       toolUseId: "call-1",
     });
+    expect(entries[2]?.pairedToolUse).toBe(toolUse);
     expect(toolResult.blocks[0]).not.toHaveProperty("toolName");
   });
 
