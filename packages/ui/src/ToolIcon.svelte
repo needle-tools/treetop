@@ -8,20 +8,27 @@
     | "edit"
     | "write"
     | "bash"
+    | "git"
     | "search"
     | "list"
+    | "test"
     | "fetch"
     | "end"
     | "create"
     | "delete"
+    | "navigate"
     | "tool";
 
   function kindFor(toolName: string): IconKind {
     const n = toolName.toLowerCase();
+    if (n.includes("evaluate_script")) return "bash";
+    if (n.includes("navigate_page") || n.includes("new_page")) return "navigate";
     if (n.includes("filesystem_create")) return "create";
     if (n.includes("filesystem_delete")) return "delete";
     if (n.includes("process_end") || n.includes("kill")) return "end";
     if (n.includes("port_check")) return "fetch";
+    if (n === "git" || n.includes("git_")) return "git";
+    if (n === "test" || n.includes("test")) return "test";
     if (n.includes("bash") || n.includes("shell") || n.includes("exec"))
       return "bash";
     if (n.includes("read")) return "read";
@@ -41,7 +48,24 @@
     return "tool";
   }
 
+  function isBrowserTool(toolName: string): boolean {
+    const n = toolName.toLowerCase();
+    return (
+      n.includes("evaluate_script") ||
+      n.includes("navigate_page") ||
+      n.includes("new_page") ||
+      n.includes("click") ||
+      n.includes("fill") ||
+      n.includes("hover") ||
+      n.includes("screenshot") ||
+      n.includes("console_message") ||
+      n.includes("network_request") ||
+      n.includes("wait_for")
+    );
+  }
+
   $: kind = kindFor(name ?? "");
+  $: browserTool = isBrowserTool(name ?? "");
 </script>
 
 <span
@@ -55,6 +79,25 @@
       ? `Launched via ${badge}`
       : undefined}
 >
+  {#if browserTool}
+    <svg
+      width="14"
+      height="14"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      stroke-width="2"
+      stroke-linecap="round"
+      stroke-linejoin="round"
+      aria-hidden="true"
+      class="tool-icon browser-icon"
+    >
+      <rect x="3" y="4" width="18" height="16" rx="2" />
+      <path d="M3 8h18" />
+      <path d="M7 6h.01" />
+      <path d="M10 6h.01" />
+    </svg>
+  {/if}
   <svg
     width="14"
     height="14"
@@ -89,6 +132,17 @@
       <!-- terminal -->
       <polyline points="4 17 10 11 4 5" />
       <line x1="12" y1="19" x2="20" y2="19" />
+    {:else if kind === "git"}
+      <!-- git branch -->
+      <circle cx="6" cy="6" r="2" />
+      <circle cx="6" cy="18" r="2" />
+      <circle cx="18" cy="12" r="2" />
+      <path d="M6 8v8" />
+      <path d="M8 6c4 0 4 6 8 6" />
+    {:else if kind === "test"}
+      <!-- check circle -->
+      <circle cx="12" cy="12" r="9" />
+      <path d="M8 12.5l2.5 2.5L16 9" />
     {:else if kind === "search"}
       <!-- magnifier -->
       <circle cx="11" cy="11" r="7" />
@@ -130,6 +184,11 @@
       <path d="M10 11v6" />
       <path d="M14 11v6" />
       <path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2" />
+    {:else if kind === "navigate"}
+      <!-- navigation arrow / page movement -->
+      <path d="M5 12h14" />
+      <path d="M13 6l6 6-6 6" />
+      <path d="M5 5v14" />
     {:else}
       <!-- generic wrench -->
       <path
@@ -174,6 +233,12 @@
   .tool-icon {
     flex: 0 0 auto;
     color: var(--text-muted);
+  }
+
+  .browser-icon {
+    width: 0.82rem;
+    height: 0.82rem;
+    opacity: 0.88;
   }
 
   .tool-icon-badge {

@@ -1,6 +1,7 @@
 export interface MessageBlock {
   type: string;
   text?: string;
+  streaming?: boolean;
   toolUseId?: string;
   toolName?: string;
   toolInput?: unknown;
@@ -618,7 +619,17 @@ export function visualToolInlineScript(
 export function visualToolInlineScriptLanguageLabel(
   block: MessageBlock | undefined,
 ): string {
-  return visualToolInlineScript(block)?.title.replace(/\s+script$/i, "") ?? "";
+  const inlineScript = visualToolInlineScript(block);
+  if (inlineScript) return inlineScriptLanguageLabel(inlineScript.language);
+  if (!block || block.type !== "tool_use") return "";
+  const command =
+    stringFromToolInputField(block.toolInput, "cmd") ??
+    stringFromToolInputField(block.toolInput, "command");
+  if (!command) return "";
+  const scriptFile = directScriptCommand(
+    normalizeLaunchedCommand(command).command,
+  );
+  return scriptFile ? inlineScriptLanguageLabel(scriptFile.language) : "";
 }
 
 export function visualToolInlineScriptPreviewText(
@@ -645,9 +656,247 @@ export function visualToolPreviewText(
     .join("");
 }
 
+export interface VisualToolResultBadge {
+  label: string;
+  tone: "neutral" | "danger" | "warning" | "success";
+  title: string;
+}
+
 export type VisualToolPreviewPart =
   | { kind: "text"; text: string }
   | { kind: "path"; text: string; path: string; range: string };
+
+export function visualToolFetchResultBadges(
+  toolUseBlock: MessageBlock | undefined,
+  toolResultBlock: MessageBlock | undefined,
+): VisualToolResultBadge[] {
+  const fetchSummaries = visualToolFetchSummaries(toolUseBlock);
+  if (fetchSummaries.length === 0) return [];
+  if (!toolResultBlock || toolResultBlock.type !== "tool_result") return [];
+  const result = cleanVisualToolResultText(toolResultBlock.text);
+  if (!result.wrappedCodexChunk) return [];
+  if (result.exitCode !== undefined && result.exitCode !== 0) {
+    return [
+      {
+        label: `exit ${result.exitCode}`,
+        tone: "danger",
+        title: result.body || "Fetch command failed",
+      },
+    ];
+  }
+  const writesToOutput = fetchSummaries.some((summary) => !!summary.output);
+  const bytes = fetchResultByteCount(result.body, { writesToOutput });
+  if (bytes !== undefined && bytes > 0) {
+    return [
+      {
+        label: formatHumanBytes(bytes),
+        tone: "neutral",
+        title: `${bytes.toLocaleString()} bytes fetched`,
+      },
+    ];
+  }
+  if (result.processRunning) return [];
+  if (writesToOutput) return [];
+  return [
+    {
+      label: "no result",
+      tone: "danger",
+      title: "Fetch command completed without visible response data",
+    },
+  ];
+}
+
+export function visualToolTestResultBadges(
+  toolUseBlock: MessageBlock | undefined,
+  toolResultBlock: MessageBlock | undefined,
+): VisualToolResultBadge[] {
+  const testSummary = visualToolTestSummary(toolUseBlock);
+  if (!testSummary) return [];
+  if (!toolResultBlock || toolResultBlock.type !== "tool_result") return [];
+  const result = cleanVisualToolResultText(toolResultBlock.text);
+  if (!result.wrappedCodexChunk) return [];
+  const counts = testResultCounts(result.body);
+  const badges: VisualToolResultBadge[] = [];
+  if (counts.failed > 0) {
+    badges.push({
+      label: `✕×${counts.failed}`,
+      tone: "danger",
+      title: `${counts.failed} ${plural(counts.failed, "test")} failed`,
+    });
+  } else if (result.exitCode !== undefined && result.exitCode !== 0) {
+    badges.push({
+      label: `exit ${result.exitCode}`,
+      tone: "danger",
+      title: "Test command failed",
+    });
+  }
+  if (counts.warnings > 0) {
+    badges.push({
+      label: `⚠×${counts.warnings}`,
+      tone: "warning",
+      title: `${counts.warnings} ${plural(counts.warnings, "warning")}`,
+    });
+  }
+  if (counts.passed > 0) {
+    badges.push({
+      label: `✓×${counts.passed}`,
+      tone: "success",
+      title: `${counts.passed} ${plural(counts.passed, "test")} passed`,
+    });
+  }
+  if (counts.skipped > 0) {
+    badges.push({
+      label: `skip×${counts.skipped}`,
+      tone: "neutral",
+      title: `${counts.skipped} ${plural(counts.skipped, "test")} skipped`,
+    });
+  }
+  if (counts.todo > 0) {
+    badges.push({
+      label: `todo×${counts.todo}`,
+      tone: "neutral",
+      title: `${counts.todo} todo ${plural(counts.todo, "test")}`,
+    });
+  }
+  return badges;
+}
+
+function visualToolTestSummary(
+  block: MessageBlock | undefined,
+): Extract<VisualCommandSummary, { kind: "test" }> | undefined {
+  if (!block || block.type !== "tool_use") return undefined;
+  const command =
+    stringFromToolInputField(block.toolInput, "cmd") ??
+    stringFromToolInputField(block.toolInput, "command");
+  if (!command) return undefined;
+  return visualCommandPreview(command).summaries.find(
+    (summary): summary is Extract<VisualCommandSummary, { kind: "test" }> =>
+      summary.kind === "test",
+  );
+}
+
+function testResultCounts(body: string): {
+  passed: number;
+  failed: number;
+  warnings: number;
+  skipped: number;
+  todo: number;
+} {
+  const summary = {
+    passed: 0,
+    failed: 0,
+    warnings: 0,
+    skipped: 0,
+    todo: 0,
+  };
+  for (const line of body.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    const failed = countFromLine(trimmed, [
+      /\b(\d+)\s+fail(?:ed|s)?\b/i,
+      /\bfailed\s+(\d+)\b/i,
+      /\b(\d+)\s+failed\b/i,
+    ]);
+    const passed = countFromLine(trimmed, [
+      /\b(\d+)\s+pass(?:ed|es)?\b/i,
+      /\bpassed\s+(\d+)\b/i,
+      /\b(\d+)\s+passed\b/i,
+    ]);
+    const warnings = countFromLine(trimmed, [
+      /\b(\d+)\s+warnings?\b/i,
+      /\bwarnings?\s+(\d+)\b/i,
+    ]);
+    const skipped = countFromLine(trimmed, [
+      /\b(\d+)\s+skip(?:ped|s)?\b/i,
+      /\bskipped\s+(\d+)\b/i,
+    ]);
+    const todo = countFromLine(trimmed, [
+      /\b(\d+)\s+todo(?:s)?\b/i,
+      /\btodos?\s+(\d+)\b/i,
+    ]);
+    if (failed !== undefined) summary.failed = Math.max(summary.failed, failed);
+    if (passed !== undefined) summary.passed = Math.max(summary.passed, passed);
+    if (warnings !== undefined) {
+      summary.warnings = Math.max(summary.warnings, warnings);
+    }
+    if (skipped !== undefined) {
+      summary.skipped = Math.max(summary.skipped, skipped);
+    }
+    if (todo !== undefined) summary.todo = Math.max(summary.todo, todo);
+  }
+  summary.failed = Math.max(summary.failed, matchCount(body, /^\s*\(fail\)/gm));
+  summary.passed = Math.max(summary.passed, matchCount(body, /^\s*\(pass\)/gm));
+  summary.skipped = Math.max(summary.skipped, matchCount(body, /^\s*\(skip\)/gm));
+  summary.todo = Math.max(summary.todo, matchCount(body, /^\s*\(todo\)/gm));
+  if (summary.warnings === 0) {
+    summary.warnings = matchCount(body, /\bwarning\b/gi);
+  }
+  return summary;
+}
+
+function countFromLine(
+  line: string,
+  patterns: readonly RegExp[],
+): number | undefined {
+  for (const pattern of patterns) {
+    const match = line.match(pattern);
+    if (!match) continue;
+    const value = Number.parseInt(match[1]!, 10);
+    if (Number.isFinite(value)) return value;
+  }
+  return undefined;
+}
+
+function matchCount(text: string, pattern: RegExp): number {
+  return [...text.matchAll(pattern)].length;
+}
+
+function plural(count: number, singular: string): string {
+  return count === 1 ? singular : `${singular}s`;
+}
+
+function visualToolFetchSummaries(
+  block: MessageBlock | undefined,
+): Extract<VisualCommandSummary, { kind: "fetch" }>[] {
+  if (!block || block.type !== "tool_use") return [];
+  const command =
+    stringFromToolInputField(block.toolInput, "cmd") ??
+    stringFromToolInputField(block.toolInput, "command");
+  if (!command) return [];
+  return visualCommandPreview(command).summaries.filter(
+    (summary): summary is Extract<VisualCommandSummary, { kind: "fetch" }> =>
+      summary.kind === "fetch",
+  );
+}
+
+function fetchResultByteCount(
+  body: string,
+  opts: { writesToOutput: boolean },
+): number | undefined {
+  const contentLength = body.match(/^content-length:\s*(\d+)\s*$/im)?.[1];
+  if (contentLength) {
+    const parsed = Number.parseInt(contentLength, 10);
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  if (opts.writesToOutput) return undefined;
+  const trimmed = body.trim();
+  if (!trimmed) return undefined;
+  return new TextEncoder().encode(trimmed).byteLength;
+}
+
+function formatHumanBytes(bytes: number): string {
+  if (!Number.isFinite(bytes) || bytes < 0) return "";
+  if (bytes < 1024) return `${bytes} B`;
+  const units = ["KB", "MB", "GB", "TB"];
+  let value = bytes / 1024;
+  let unit = units[0]!;
+  for (let index = 1; index < units.length && value >= 1024; index += 1) {
+    value /= 1024;
+    unit = units[index]!;
+  }
+  const digits = value >= 10 ? 0 : 1;
+  return `${value.toFixed(digits)} ${unit}`;
+}
 
 export function visualToolPreviewParts(
   block: MessageBlock | undefined,
@@ -812,7 +1061,7 @@ export function visualToolEnvAssignments(
     stringFromToolInputField(block.toolInput, "cmd") ??
     stringFromToolInputField(block.toolInput, "command");
   if (!command) return [];
-  return normalizeLaunchedCommand(command).env;
+  return visualCommandPreview(command).env;
 }
 
 export function visualToolEnvSummaryLabel(
@@ -829,13 +1078,68 @@ export function visualToolEnvTooltipText(
     .join("\n");
 }
 
+export function shouldShowLiveWorkTimer(opts: {
+  active: boolean;
+  open: boolean;
+  endedAt?: string;
+  tail?: boolean;
+}): boolean {
+  return opts.active && opts.open && !opts.endedAt && opts.tail !== false;
+}
+
+export function shouldShowLiveToolTimer(opts: {
+  active: boolean;
+  open: boolean;
+  endedAt?: string;
+  hasFinalResult: boolean;
+}): boolean {
+  return opts.active && opts.open && !opts.endedAt && !opts.hasFinalResult;
+}
+
 type VisualCommandSummary =
   | { kind: "read"; targets: string[] }
   | { kind: "search"; pattern: string; paths: string[] }
   | { kind: "find"; root: string; patterns: string[] }
+  | { kind: "script-file"; language: string; script: string; args: string[] }
+  | { kind: "process-check"; pattern?: string }
+  | {
+      kind: "git";
+      action:
+        | "status"
+        | "diff"
+        | "diff-stat"
+        | "diff-check"
+        | "show"
+        | "show-file"
+        | "show-file-search"
+        | "ls-files"
+        | "log"
+        | "branch"
+        | "rev-parse"
+        | "add"
+        | "commit";
+      targets: string[];
+      rev?: string;
+      pattern?: string;
+      staged?: boolean;
+    }
+  | {
+      kind: "test";
+      runner:
+        | "Bun"
+        | "Vitest"
+        | "npm"
+        | "Pytest"
+        | "Playwright"
+        | "TypeScript"
+        | "Svelte";
+      targets: string[];
+      check?: boolean;
+    }
   | { kind: "process-end"; pids: string[] }
   | { kind: "port-check"; ports: string[] }
   | { kind: "fetch"; url: string; output?: string }
+  | { kind: "image-transform"; input: string; output: string }
   | {
       kind: "filesystem";
       action: "create" | "delete";
@@ -871,7 +1175,46 @@ function visualStructuredToolPreviewParts(
       return textPreviewParts(
         `${toolName.includes("new_page") ? "Open" : "Navigate to"} ${shortUrlForPreview(url)}`,
       );
-    if (type) return textPreviewParts(`Navigate ${type}`);
+    if (type) return textPreviewParts(browserNavigationPreview(type));
+  }
+  if (
+    toolName === "list_console_messages" ||
+    toolName.endsWith(".list_console_messages")
+  ) {
+    return textPreviewParts(consoleMessagesPreview(obj));
+  }
+  if (
+    toolName === "take_screenshot" ||
+    toolName.endsWith(".take_screenshot")
+  ) {
+    const output = stringField(obj, "filePath") ?? stringField(obj, "file_path");
+    if (output) {
+      return [
+        { kind: "text", text: "Capture screenshot " },
+        ...interspersePathParts([output]),
+      ];
+    }
+    return textPreviewParts("Capture screenshot");
+  }
+  if (toolName === "take_snapshot" || toolName.endsWith(".take_snapshot")) {
+    const output = stringField(obj, "filePath") ?? stringField(obj, "file_path");
+    if (output) {
+      return [
+        { kind: "text", text: "Capture snapshot " },
+        ...interspersePathParts([output]),
+      ];
+    }
+    return textPreviewParts("Capture snapshot");
+  }
+  if (toolName === "view_image" || toolName.endsWith(".view_image")) {
+    const imagePath = stringField(obj, "path") ?? stringField(obj, "filePath");
+    if (imagePath) {
+      return [
+        { kind: "text", text: "View image " },
+        ...interspersePathParts([imagePath]),
+      ];
+    }
+    return textPreviewParts("View image");
   }
   const path = stringField(obj, "file_path") ?? stringField(obj, "path");
   if (path && /\bread\b|read_file|view_file/.test(toolName)) {
@@ -894,6 +1237,28 @@ function visualStructuredToolPreviewParts(
   }
 
   return undefined;
+}
+
+function browserNavigationPreview(type: string): string {
+  const normalized = type.toLowerCase();
+  if (normalized === "reload") return "Reload page";
+  if (normalized === "back") return "Go back";
+  if (normalized === "forward") return "Go forward";
+  return `Navigate ${type}`;
+}
+
+function consoleMessagesPreview(obj: Record<string, unknown>): string {
+  const rawTypes = Array.isArray(obj.types)
+    ? obj.types.filter((value): value is string => typeof value === "string")
+    : [];
+  const types = new Set(rawTypes.map((value) => value.toLowerCase()));
+  if (types.size === 0) return "Check console messages";
+  if (types.has("warn") && types.has("error")) {
+    return "Check console for warnings and errors";
+  }
+  if (types.has("error")) return "Check console for errors";
+  if (types.has("warn")) return "Check console for warnings";
+  return `Check console ${rawTypes.join(", ")}`;
 }
 
 function stringField(
@@ -1086,9 +1451,11 @@ function visualCommandPreview(command: string): {
   launcher?: string;
   remoteHost?: string;
   env: VisualToolEnvAssignment[];
+  summaries: VisualCommandSummary[];
 } {
   const normalized = normalizeLaunchedCommand(command);
   const unwrapped = normalized.command;
+  const env = [...normalized.env];
   const pipeSummary = summarizePipeRead(unwrapped);
   if (pipeSummary) {
     const parts = readPreviewParts(pipeSummary.targets);
@@ -1097,7 +1464,8 @@ function visualCommandPreview(command: string): {
       parts,
       launcher: normalized.launcher,
       remoteHost: normalized.remoteHost,
-      env: normalized.env,
+      env,
+      summaries: [pipeSummary],
     };
   }
   const parts = splitShellCommandChain(unwrapped);
@@ -1107,7 +1475,8 @@ function visualCommandPreview(command: string): {
       parts: [],
       launcher: normalized.launcher,
       remoteHost: normalized.remoteHost,
-      env: normalized.env,
+      env,
+      summaries: [],
     };
   }
   const meaningfulParts = parts.filter((part) => !isShellContextCommand(part));
@@ -1118,9 +1487,15 @@ function visualCommandPreview(command: string): {
       launcher: normalized.launcher,
       remoteHost: normalized.remoteHost,
       env: normalized.env,
+      summaries: [],
     };
   }
-  const summaryPairs = meaningfulParts.map((part) => ({
+  const normalizedParts = meaningfulParts.map((part) => {
+    const next = normalizeLaunchedCommand(part);
+    env.push(...next.env);
+    return next.command;
+  });
+  const summaryPairs = normalizedParts.map((part) => ({
     part,
     summary: summarizeShellCommand(part),
   }));
@@ -1139,7 +1514,8 @@ function visualCommandPreview(command: string): {
       parts,
       launcher: normalized.launcher,
       remoteHost: normalized.remoteHost,
-      env: normalized.env,
+      env,
+      summaries,
     };
   }
   if (summaries.length !== meaningfulParts.length) {
@@ -1149,6 +1525,7 @@ function visualCommandPreview(command: string): {
       launcher: normalized.launcher,
       remoteHost: normalized.remoteHost,
       env: normalized.env,
+      summaries: [],
     };
   }
 
@@ -1163,7 +1540,8 @@ function visualCommandPreview(command: string): {
       parts,
       launcher: normalized.launcher,
       remoteHost: normalized.remoteHost,
-      env: normalized.env,
+      env,
+      summaries,
     };
   }
   if (summaries.length === 1 && summaries[0]!.kind === "search") {
@@ -1174,7 +1552,8 @@ function visualCommandPreview(command: string): {
       parts,
       launcher: normalized.launcher,
       remoteHost: normalized.remoteHost,
-      env: normalized.env,
+      env,
+      summaries,
     };
   }
   if (summaries.length === 1 && summaries[0]!.kind === "find") {
@@ -1184,7 +1563,8 @@ function visualCommandPreview(command: string): {
       parts,
       launcher: normalized.launcher,
       remoteHost: normalized.remoteHost,
-      env: normalized.env,
+      env,
+      summaries,
     };
   }
   if (summaries.length === 1) {
@@ -1194,7 +1574,8 @@ function visualCommandPreview(command: string): {
       parts,
       launcher: normalized.launcher,
       remoteHost: normalized.remoteHost,
-      env: normalized.env,
+      env,
+      summaries,
     };
   }
   if (summaries.length > 1) {
@@ -1208,6 +1589,7 @@ function visualCommandPreview(command: string): {
       launcher: normalized.launcher,
       remoteHost: normalized.remoteHost,
       env: normalized.env,
+      summaries,
     };
   }
   return {
@@ -1215,7 +1597,8 @@ function visualCommandPreview(command: string): {
     parts: [],
     launcher: normalized.launcher,
     remoteHost: normalized.remoteHost,
-    env: normalized.env,
+    env,
+    summaries: [],
   };
 }
 
@@ -1263,7 +1646,31 @@ function stripInlineEnvAssignments(command: string): {
   const tokens = shellTokens(command);
   const env: VisualToolEnvAssignment[] = [];
   const startsWithExport = tokens[0] === "export";
-  let commandStart = startsWithExport ? 1 : 0;
+  const startsWithEnv = shellLauncherName(tokens[0] ?? "") === "env";
+  let commandStart = startsWithExport || startsWithEnv ? 1 : 0;
+  if (startsWithEnv) {
+    for (; commandStart < tokens.length; commandStart += 1) {
+      const token = tokens[commandStart]!;
+      if (token === "--") {
+        commandStart += 1;
+        break;
+      }
+      if (token === "-u" || token === "--unset") {
+        commandStart += 1;
+        continue;
+      }
+      if (
+        token === "-i" ||
+        token === "-0" ||
+        token === "--ignore-environment" ||
+        token === "--null" ||
+        token.startsWith("--unset=")
+      ) {
+        continue;
+      }
+      break;
+    }
+  }
   for (const token of tokens.slice(commandStart)) {
     const match = token.match(/^([A-Za-z_][A-Za-z0-9_]*)=(.*)$/);
     if (!match) break;
@@ -1517,7 +1924,21 @@ function splitShellCommandChain(command: string): string[] {
 function isShellContextCommand(command: string): boolean {
   const tokens = shellTokens(command);
   const name = tokens[0]?.split("/").pop();
-  return name === "cd" || name === "pwd" || name === "true" || name === "ls";
+  if (name === "ls") {
+    if (!lsRequestsDetails(tokens)) return true;
+    const targets = positionalPathTokens(tokens.slice(1), new Set());
+    return (
+      targets.length === 0 ||
+      (targets.length === 1 && (targets[0] === "." || targets[0] === "./"))
+    );
+  }
+  return name === "cd" || name === "pwd" || name === "true";
+}
+
+function lsRequestsDetails(tokens: string[]): boolean {
+  return tokens
+    .slice(1)
+    .some((token) => /^-[^-]*l/.test(token) || token === "--long");
 }
 
 function shellTokens(command: string): string[] {
@@ -1587,12 +2008,21 @@ function shellTokens(command: string): string[] {
 function summarizeShellCommand(command: string): VisualCommandSummary | undefined {
   const portCheck = summarizePortCheck(command);
   if (portCheck) return portCheck;
+  const processCheck = summarizeProcessCheck(command);
+  if (processCheck) return processCheck;
+  const gitShowSearch = summarizeGitShowSearch(command);
+  if (gitShowSearch) return gitShowSearch;
   const pipeRead = summarizePipeRead(command);
   if (pipeRead) return pipeRead;
   const tokens = shellTokens(command);
   if (tokens.length === 0) return undefined;
   const name = tokens[0]!.split("/").pop() ?? tokens[0]!;
   const lowerName = name.toLowerCase();
+  const test = summarizeTestCommand(tokens);
+  if (test) return test;
+  const scriptFile = directScriptCommand(command);
+  if (scriptFile) return scriptFile;
+  if (lowerName === "git") return summarizeGit(tokens);
   if (name === "kill") return summarizeKill(tokens);
   if (
     lowerName === "rm" ||
@@ -1610,7 +2040,11 @@ function summarizeShellCommand(command: string): VisualCommandSummary | undefine
     return summarizeCreate(tokens);
   if (lowerName === "curl" || lowerName === "wget")
     return summarizeFetch(tokens);
+  if (lowerName === "magick" || lowerName === "convert") {
+    return summarizeImageTransform(tokens);
+  }
   if (name === "sed") return summarizeSedRead(tokens);
+  if (lowerName === "ls" || lowerName === "dir") return summarizeLs(tokens);
   if (name === "cat" || name.toLowerCase() === "type") {
     return summarizeCatRead(tokens);
   }
@@ -1619,6 +2053,245 @@ function summarizeShellCommand(command: string): VisualCommandSummary | undefine
   }
   if (name === "find") return summarizeFind(tokens);
   return undefined;
+}
+
+function summarizeGitShowSearch(command: string): VisualCommandSummary | undefined {
+  const parts = splitShellPipeline(command);
+  if (parts.length < 2) return undefined;
+  const show = summarizeGit(shellTokens(parts[0]!));
+  if (!show || show.kind !== "git" || show.action !== "show-file") {
+    return undefined;
+  }
+  const search = summarizeSearch(shellTokens(parts[1]!));
+  if (!search) return undefined;
+  return {
+    kind: "git",
+    action: "show-file-search",
+    targets: show.targets,
+    rev: show.rev,
+    pattern: search.pattern,
+  };
+}
+
+function summarizeGit(tokens: string[]): VisualCommandSummary | undefined {
+  const subcommandIndex = gitSubcommandIndex(tokens);
+  const subcommand = tokens[subcommandIndex]?.toLowerCase();
+  if (!subcommand) return undefined;
+  if (subcommand === "status") return { kind: "git", action: "status", targets: [] };
+  if (subcommand === "diff") {
+    const targets = gitPathArgs(tokens.slice(subcommandIndex + 1));
+    const staged = tokens.includes("--cached") || tokens.includes("--staged");
+    if (tokens.includes("--check")) {
+      return { kind: "git", action: "diff-check", targets, staged };
+    }
+    if (tokens.includes("--stat") || tokens.includes("--name-status")) {
+      return { kind: "git", action: "diff-stat", targets, staged };
+    }
+    return { kind: "git", action: "diff", targets, staged };
+  }
+  if (subcommand === "show") {
+    const fileSpec = tokens
+      .slice(subcommandIndex + 1)
+      .find((token) => !token.startsWith("-") && /^[^:\s]+:.+/.test(token));
+    if (fileSpec) {
+      const [rev, ...pathParts] = fileSpec.split(":");
+      return {
+        kind: "git",
+        action: "show-file",
+        targets: [pathParts.join(":")],
+        rev,
+      };
+    }
+    const ref = tokens
+      .slice(subcommandIndex + 1)
+      .find((token) => !token.startsWith("-"));
+    return { kind: "git", action: "show", targets: ref ? [ref] : [] };
+  }
+  if (subcommand === "ls-files") {
+    return {
+      kind: "git",
+      action: "ls-files",
+      targets: gitPathArgs(tokens.slice(subcommandIndex + 1)),
+    };
+  }
+  if (subcommand === "log") return { kind: "git", action: "log", targets: [] };
+  if (subcommand === "branch") {
+    return { kind: "git", action: "branch", targets: [] };
+  }
+  if (subcommand === "rev-parse") {
+    return { kind: "git", action: "rev-parse", targets: [] };
+  }
+  if (subcommand === "add") {
+    return {
+      kind: "git",
+      action: "add",
+      targets: gitPathArgs(tokens.slice(subcommandIndex + 1)),
+    };
+  }
+  if (subcommand === "commit") {
+    return { kind: "git", action: "commit", targets: [] };
+  }
+  return undefined;
+}
+
+function gitSubcommandIndex(tokens: string[]): number {
+  for (let index = 1; index < tokens.length; index += 1) {
+    const token = tokens[index]!;
+    if (token === "-C" || token === "-c" || token === "--git-dir" || token === "--work-tree") {
+      index += 1;
+      continue;
+    }
+    if (
+      token.startsWith("-C") ||
+      token.startsWith("-c") ||
+      token.startsWith("--git-dir=") ||
+      token.startsWith("--work-tree=")
+    ) {
+      continue;
+    }
+    return index;
+  }
+  return 1;
+}
+
+function gitPathArgs(tokens: string[]): string[] {
+  const optionsWithValue = new Set([
+    "-C",
+    "--git-dir",
+    "--work-tree",
+    "--diff-filter",
+    "-G",
+    "-S",
+    "--author",
+    "--grep",
+    "--since",
+    "--until",
+    "-m",
+    "--message",
+  ]);
+  const targets: string[] = [];
+  let afterSeparator = false;
+  for (let index = 0; index < tokens.length; index += 1) {
+    const token = tokens[index]!;
+    if (token === "--") {
+      afterSeparator = true;
+      continue;
+    }
+    if (!afterSeparator && token.startsWith("-")) {
+      if (!token.includes("=") && optionsWithValue.has(token)) index += 1;
+      continue;
+    }
+    if (token.includes("|") || token.includes(">")) break;
+    targets.push(token);
+  }
+  return targets.filter((target) => target !== "." && target !== "HEAD");
+}
+
+function summarizeTestCommand(tokens: string[]): VisualCommandSummary | undefined {
+  const command = shellLauncherName(tokens[0] ?? "");
+  if (command === "bun" && tokens[1] === "test") {
+    return { kind: "test", runner: "Bun", targets: testPathArgs(tokens.slice(2)) };
+  }
+  if (
+    (command === "npm" || command === "pnpm" || command === "yarn") &&
+    tokens[1] === "test"
+  ) {
+    return { kind: "test", runner: "npm", targets: testPathArgs(tokens.slice(2)) };
+  }
+  if (
+    (command === "npm" || command === "pnpm" || command === "yarn") &&
+    tokens[1] === "run" &&
+    /^test(?::|$)/.test(tokens[2] ?? "")
+  ) {
+    return {
+      kind: "test",
+      runner: "npm",
+      targets: [tokens[2]!, ...testPathArgs(tokens.slice(3))],
+    };
+  }
+  const npxOffset =
+    command === "npx" || command === "bunx" ? skipNpxOptions(tokens, 1) : 0;
+  const npxCommand = npxOffset > 0 ? shellLauncherName(tokens[npxOffset] ?? "") : "";
+  if (npxCommand === "vitest") {
+    const start = tokens[npxOffset + 1] === "run" ? npxOffset + 2 : npxOffset + 1;
+    return { kind: "test", runner: "Vitest", targets: testPathArgs(tokens.slice(start)) };
+  }
+  if (npxCommand === "playwright" && tokens[npxOffset + 1] === "test") {
+    return {
+      kind: "test",
+      runner: "Playwright",
+      targets: testPathArgs(tokens.slice(npxOffset + 2)),
+    };
+  }
+  if (npxCommand === "tsc" || command === "tsc") {
+    return { kind: "test", runner: "TypeScript", targets: [], check: true };
+  }
+  if (npxCommand === "svelte-check" || command === "svelte-check") {
+    return { kind: "test", runner: "Svelte", targets: [], check: true };
+  }
+  const pytestIndex = tokens.findIndex(
+    (token) => shellLauncherName(token) === "pytest" || token.endsWith("/pytest"),
+  );
+  if (pytestIndex >= 0) {
+    return {
+      kind: "test",
+      runner: "Pytest",
+      targets: testPathArgs(tokens.slice(pytestIndex + 1)),
+    };
+  }
+  if (command === "python" || command === "python3") {
+    const moduleIndex = tokens.findIndex((token) => token === "-m");
+    if (moduleIndex >= 0 && tokens[moduleIndex + 1] === "pytest") {
+      return {
+        kind: "test",
+        runner: "Pytest",
+        targets: testPathArgs(tokens.slice(moduleIndex + 2)),
+      };
+    }
+  }
+  return undefined;
+}
+
+function skipNpxOptions(tokens: string[], start: number): number {
+  for (let index = start; index < tokens.length; index += 1) {
+    const token = tokens[index]!;
+    if (token === "--yes" || token === "-y" || token === "--no-install") continue;
+    if (token === "--package" || token === "-p") {
+      index += 1;
+      continue;
+    }
+    return index;
+  }
+  return 0;
+}
+
+function testPathArgs(tokens: string[]): string[] {
+  const optionsWithValue = new Set([
+    "--grep",
+    "--test-name-pattern",
+    "--project",
+    "--reporter",
+    "--config",
+    "--timeout",
+    "--testTimeout",
+    "-t",
+    "-c",
+    "-k",
+    "-m",
+  ]);
+  const targets: string[] = [];
+  for (let index = 0; index < tokens.length; index += 1) {
+    const token = tokens[index]!;
+    if (token === "--") continue;
+    if (token.includes("=") && token.startsWith("-")) continue;
+    if (token.startsWith("-")) {
+      if (optionsWithValue.has(token)) index += 1;
+      continue;
+    }
+    if (token.includes("|") || token.includes(">")) break;
+    targets.push(token);
+  }
+  return targets;
 }
 
 function summarizeKill(tokens: string[]): VisualCommandSummary | undefined {
@@ -1712,6 +2385,24 @@ function summarizeFetch(tokens: string[]): VisualCommandSummary | undefined {
   }
   if (!url) return undefined;
   return { kind: "fetch", url, output };
+}
+
+function summarizeImageTransform(
+  tokens: string[],
+): VisualCommandSummary | undefined {
+  const imagePaths = tokens
+    .slice(1)
+    .filter((token) => !token.startsWith("-") && looksLikeImagePath(token));
+  if (imagePaths.length < 2) return undefined;
+  return {
+    kind: "image-transform",
+    input: imagePaths[0]!,
+    output: imagePaths[imagePaths.length - 1]!,
+  };
+}
+
+function looksLikeImagePath(path: string): boolean {
+  return /\.(?:avif|bmp|gif|heic|jpe?g|png|tiff?|webp)$/i.test(path);
 }
 
 function summarizeRemove(tokens: string[]): VisualCommandSummary | undefined {
@@ -1944,6 +2635,34 @@ function summarizeFind(tokens: string[]): VisualCommandSummary | undefined {
   return { kind: "find", root, patterns };
 }
 
+function summarizeLs(tokens: string[]): VisualCommandSummary | undefined {
+  if (!lsRequestsDetails(tokens)) return undefined;
+  const targets = positionalPathTokens(tokens.slice(1), new Set());
+  if (targets.length === 0) {
+    return { kind: "find", root: ".", patterns: [] };
+  }
+  if (targets.length === 1 && (targets[0] === "." || targets[0] === "./")) {
+    return { kind: "find", root: ".", patterns: [] };
+  }
+  return { kind: "read", targets };
+}
+
+function summarizeProcessCheck(
+  command: string,
+): VisualCommandSummary | undefined {
+  const tokens = shellTokens(command);
+  const name = tokens[0]?.split("/").pop()?.toLowerCase();
+  if (name !== "ps") return undefined;
+  const pipeIndex = tokens.findIndex((token) => token === "|");
+  if (pipeIndex < 0) return { kind: "process-check" };
+  const filter = tokens[pipeIndex + 1]?.split("/").pop()?.toLowerCase();
+  if (filter !== "rg" && filter !== "grep") return { kind: "process-check" };
+  const pattern = tokens
+    .slice(pipeIndex + 2)
+    .find((token) => token && !token.startsWith("-"));
+  return { kind: "process-check", pattern };
+}
+
 function commandSummaryParts(
   summary: VisualCommandSummary,
 ): VisualToolPreviewPart[] {
@@ -1952,6 +2671,24 @@ function commandSummaryParts(
   if (summary.kind === "search") {
     return searchPreviewParts(summary.pattern, summary.paths);
   }
+  if (summary.kind === "script-file") {
+    return [
+      ...interspersePathParts([summary.script]),
+      ...(summary.args.length
+        ? [{ kind: "text" as const, text: ` ${summary.args.join(" ")}` }]
+        : []),
+    ];
+  }
+  if (summary.kind === "process-check") {
+    return [
+      {
+        kind: "text",
+        text: summary.pattern
+          ? `Check processes for "${readableSearchPattern(summary.pattern)}"`
+          : "Check processes",
+      },
+    ];
+  }
   if (summary.kind === "process-end") {
     const label = summary.pids.length === 1 ? "Stop process" : "Stop processes";
     return [{ kind: "text", text: `${label} ${summary.pids.join(", ")}` }];
@@ -1959,6 +2696,12 @@ function commandSummaryParts(
   if (summary.kind === "port-check") {
     const label = summary.ports.length === 1 ? "Check port" : "Check ports";
     return [{ kind: "text", text: `${label} ${summary.ports.join(", ")}` }];
+  }
+  if (summary.kind === "git") {
+    return gitSummaryParts(summary);
+  }
+  if (summary.kind === "test") {
+    return testSummaryParts(summary);
   }
   if (summary.kind === "fetch") {
     return [
@@ -1972,6 +2715,14 @@ function commandSummaryParts(
         : []),
     ];
   }
+  if (summary.kind === "image-transform") {
+    return [
+      { kind: "text", text: "Convert image " },
+      ...interspersePathParts([summary.input]),
+      { kind: "text", text: " -> " },
+      ...interspersePathParts([summary.output]),
+    ];
+  }
   if (summary.kind === "filesystem") {
     const action = summary.action === "create" ? "Create" : "Delete";
     return [
@@ -1980,6 +2731,156 @@ function commandSummaryParts(
     ];
   }
   return findPreviewParts(summary);
+}
+
+function gitSummaryParts(
+  summary: Extract<VisualCommandSummary, { kind: "git" }>,
+): VisualToolPreviewPart[] {
+  if (summary.action === "status") {
+    return [{ kind: "text", text: "Check git status" }];
+  }
+  if (summary.action === "diff-check") {
+    return [
+      {
+        kind: "text",
+        text: `${summary.staged ? "Check staged" : "Check"} diff whitespace`,
+      },
+    ];
+  }
+  if (summary.action === "diff-stat") {
+    return [
+      {
+        kind: "text",
+        text: `${summary.staged ? "Review staged" : "Review"} diff stats${summary.targets.length ? " " : ""}`,
+      },
+      ...interspersePathParts(summary.targets),
+    ];
+  }
+  if (summary.action === "diff") {
+    return [
+      {
+        kind: "text",
+        text: `${summary.staged ? "Review staged diff" : "Review diff"}${summary.targets.length ? " " : ""}`,
+      },
+      ...interspersePathParts(summary.targets),
+    ];
+  }
+  if (summary.action === "show-file-search") {
+    return [
+      { kind: "text", text: "Search " },
+      ...interspersePathParts(summary.targets),
+      { kind: "text", text: ` from ${summary.rev ?? "git"} ` },
+      { kind: "text", text: `for "${readableSearchPattern(summary.pattern ?? "")}"` },
+    ];
+  }
+  if (summary.action === "show-file") {
+    return [
+      { kind: "text", text: "Show " },
+      ...interspersePathParts(summary.targets),
+      { kind: "text", text: ` from ${summary.rev ?? "git"}` },
+    ];
+  }
+  if (summary.action === "show") {
+    return [
+      {
+        kind: "text",
+        text: `Show ${summary.targets[0] ?? "HEAD"}`,
+      },
+    ];
+  }
+  if (summary.action === "ls-files") {
+    return [
+      { kind: "text", text: "List tracked files" },
+      ...prefixedPathSuffixList(summary.targets, " in ", 2),
+    ];
+  }
+  if (summary.action === "log") {
+    return [{ kind: "text", text: "Show recent commits" }];
+  }
+  if (summary.action === "branch") {
+    return [{ kind: "text", text: "Show current branch" }];
+  }
+  if (summary.action === "rev-parse") {
+    return [{ kind: "text", text: "Show current commit" }];
+  }
+  if (summary.action === "add") {
+    return [{ kind: "text", text: "Stage" }, ...prefixedPathList(summary.targets)];
+  }
+  if (summary.action === "commit") {
+    return [{ kind: "text", text: "Commit changes" }];
+  }
+  return [];
+}
+
+function testSummaryParts(
+  summary: Extract<VisualCommandSummary, { kind: "test" }>,
+): VisualToolPreviewPart[] {
+  const checkLabel =
+    summary.runner === "TypeScript"
+      ? "Run TypeScript check"
+      : summary.runner === "Svelte"
+        ? "Run Svelte check"
+        : `Run ${summary.runner} tests`;
+  return [
+    { kind: "text", text: checkLabel },
+    ...prefixedTestTargetList(summary.targets),
+  ];
+}
+
+function prefixedTestTargetList(
+  targets: readonly string[],
+  prefix = " ",
+): VisualToolPreviewPart[] {
+  if (targets.length === 0) return [];
+  const parts: VisualToolPreviewPart[] = [{ kind: "text", text: prefix }];
+  targets.forEach((target, index) => {
+    if (index > 0) parts.push({ kind: "text", text: ", " });
+    if (looksLikePathTarget(target)) {
+      parts.push(...interspersePathParts([target]));
+    } else {
+      parts.push({ kind: "text", text: target });
+    }
+  });
+  return parts;
+}
+
+function prefixedPathSuffixList(
+  targets: readonly string[],
+  prefix: string,
+  minDepth: number,
+): VisualToolPreviewPart[] {
+  if (targets.length === 0) return [];
+  const parts: VisualToolPreviewPart[] = [{ kind: "text", text: prefix }];
+  targets.forEach((target, index) => {
+    if (index > 0) parts.push({ kind: "text", text: ", " });
+    const parsed = parsePathTarget(target);
+    const segments = pathSegments(parsed.path);
+    const depth = Math.min(Math.max(1, minDepth), segments.length);
+    parts.push({
+      kind: "path",
+      text: `${segments.slice(-depth).join("/")}${parsed.range}`,
+      path: parsed.path,
+      range: parsed.range,
+    });
+  });
+  return parts;
+}
+
+function looksLikePathTarget(target: string): boolean {
+  return (
+    target.includes("/") ||
+    target.includes("\\") ||
+    /(?:^|[.-])(?:test|spec)\./i.test(target) ||
+    /\.(?:[cm]?[jt]sx?|svelte|py|rb|go|rs|java|cs|php|mjs|cjs)$/i.test(target)
+  );
+}
+
+function prefixedPathList(
+  targets: readonly string[],
+  prefix = " ",
+): VisualToolPreviewPart[] {
+  if (targets.length === 0) return [];
+  return [{ kind: "text", text: prefix }, ...interspersePathParts(targets)];
 }
 
 function readableUrl(url: string): string {
@@ -2010,6 +2911,39 @@ function inlineScriptFromStructuredTool(
   if (!name.includes("evaluate_script")) return undefined;
   const fn = stringField(input as Record<string, unknown>, "function");
   return fn ? inlineScriptDisplay("node", fn) : undefined;
+}
+
+function directScriptCommand(
+  command: string,
+): Extract<VisualCommandSummary, { kind: "script-file" }> | undefined {
+  const tokens = shellTokens(command);
+  if (tokens.length < 2) return undefined;
+  const runtimeIndex = tokens.findIndex((token) =>
+    /^(?:python3?|node|bun|deno|swift|ruby|perl)$/.test(
+      token.split("/").pop() ?? token,
+    ),
+  );
+  if (runtimeIndex < 0) return undefined;
+  const runtime = tokens[runtimeIndex]!.split("/").pop() ?? tokens[runtimeIndex]!;
+  for (let i = runtimeIndex + 1; i < tokens.length; i += 1) {
+    const token = tokens[i]!;
+    if (token === "-c" || token === "-e" || token === "--eval") {
+      return undefined;
+    }
+    if (token.startsWith("-")) continue;
+    if (!looksLikeScriptPath(token)) continue;
+    return {
+      kind: "script-file",
+      language: inlineScriptLanguage(runtime),
+      script: token,
+      args: tokens.slice(i + 1),
+    };
+  }
+  return undefined;
+}
+
+function looksLikeScriptPath(path: string): boolean {
+  return /\.(?:[cm]?js|jsx|ts|tsx|mjs|cjs|py|rb|pl|swift)$/i.test(path);
 }
 
 function inlineScriptFromCommand(
@@ -2064,8 +2998,12 @@ function inlineScriptLanguage(runtime: string): string {
 }
 
 function inlineScriptTitle(language: string): string {
-  if (language === "js") return "JavaScript script";
-  return `${language[0]!.toUpperCase()}${language.slice(1)} script`;
+  return `${inlineScriptLanguageLabel(language)} script`;
+}
+
+function inlineScriptLanguageLabel(language: string): string {
+  if (language === "js") return "JavaScript";
+  return `${language[0]!.toUpperCase()}${language.slice(1)}`;
 }
 
 function formatInlineScript(code: string): string {
@@ -2765,16 +3703,13 @@ function userMessageFingerprint<B extends MessageBlock>(
       const anyBlock = block as B & {
         path?: string;
         url?: string;
-        mimeType?: string;
         mediaKind?: string;
       };
       if (block.type === "media") {
         return [
           "media",
           anyBlock.mediaKind ?? "",
-          anyBlock.path ?? "",
-          anyBlock.url ?? "",
-          anyBlock.mimeType ?? "",
+          anyBlock.path || anyBlock.url || "",
         ].join(":");
       }
       return `${block.type}:${block.text ?? ""}`;
@@ -3292,12 +4227,14 @@ export function buildVisualTranscriptItems<
         const firstWorkTs = entries.find((entry) =>
           timestampMs(entry.message.timestamp),
         )?.message.timestamp;
+        const shouldKeepOpen =
+          !forcedEndedAt || hasTurnMarker(entries, "complete");
         out.push({
           kind: "work",
           entries,
           startedAt: userTimestamp ?? firstWorkTs,
           endedAt: forcedEndedAt,
-          open: forcedEndedAt ? undefined : true,
+          open: shouldKeepOpen ? true : undefined,
           ...terminalMarker,
         });
       }
@@ -3379,6 +4316,14 @@ export function buildVisualTranscriptItems<
         continue;
       }
       if (nextDisplayUserIntent(messageIndex + 1) === "steer") {
+        pendingTurnPrefixEntries.push(entry);
+        messageIndex += 1;
+        continue;
+      }
+      if (
+        previousTurnAcceptsSteering &&
+        nextDisplayMessageRole(messageIndex + 1) === "user"
+      ) {
         pendingTurnPrefixEntries.push(entry);
         messageIndex += 1;
         continue;
@@ -3553,7 +4498,7 @@ export function updateVisualTranscriptItems<
   const previousTailIsOpenWork =
     previousTail?.kind === "work" && previousTail.open === true;
   const rebuildStart =
-    appendedUser && !previousTailIsOpenWork
+    appendedUser && !previousTailIsOpenWork && opts.active !== true
       ? commonPrefix
       : lastUserMessageIndexAtOrBefore(
           opts.messages,

@@ -14,6 +14,8 @@ import {
   latestVisualPlan,
   mergeVisualSessionMessages,
   reuseStableVisualTranscriptItems,
+  shouldShowLiveToolTimer,
+  shouldShowLiveWorkTimer,
   visualPlanFromBlock,
   visualPlanFromPayload,
   visualPathPreviewTargets,
@@ -26,6 +28,8 @@ import {
   visualToolEnvAssignments,
   visualToolEnvSummaryLabel,
   visualToolEnvTooltipText,
+  visualToolFetchResultBadges,
+  visualToolTestResultBadges,
   visualToolInlineScript,
   visualToolInlineScriptLanguageLabel,
   visualToolInlineScriptPreviewText,
@@ -85,6 +89,80 @@ describe("formatVisualWorkDuration", () => {
     expect(formatVisualDurationSeconds(3 * 86400 + 4 * 3600 + 12 * 60 + 5)).toBe(
       "3d 4h 12m 5s",
     );
+  });
+
+  it("shows work timers only for the active open tail", () => {
+    expect(
+      shouldShowLiveWorkTimer({
+        active: true,
+        open: true,
+      }),
+    ).toBe(true);
+    expect(
+      shouldShowLiveWorkTimer({
+        active: true,
+        open: true,
+        tail: false,
+      }),
+    ).toBe(false);
+    expect(
+      shouldShowLiveWorkTimer({
+        active: false,
+        open: true,
+      }),
+    ).toBe(false);
+    expect(
+      shouldShowLiveWorkTimer({
+        active: true,
+        open: false,
+      }),
+    ).toBe(false);
+    expect(
+      shouldShowLiveWorkTimer({
+        active: true,
+        open: true,
+        endedAt: "2026-06-22T10:00:01.000Z",
+      }),
+    ).toBe(false);
+  });
+
+  it("shows tool timers for any unresolved active tool, not only the tail", () => {
+    expect(
+      shouldShowLiveToolTimer({
+        active: true,
+        open: true,
+        hasFinalResult: false,
+      }),
+    ).toBe(true);
+    expect(
+      shouldShowLiveToolTimer({
+        active: true,
+        open: true,
+        hasFinalResult: true,
+      }),
+    ).toBe(false);
+    expect(
+      shouldShowLiveToolTimer({
+        active: false,
+        open: true,
+        hasFinalResult: false,
+      }),
+    ).toBe(false);
+    expect(
+      shouldShowLiveToolTimer({
+        active: true,
+        open: false,
+        hasFinalResult: false,
+      }),
+    ).toBe(false);
+    expect(
+      shouldShowLiveToolTimer({
+        active: true,
+        open: true,
+        endedAt: "2026-06-22T10:00:01.000Z",
+        hasFinalResult: false,
+      }),
+    ).toBe(false);
   });
 });
 
@@ -848,6 +926,42 @@ describe("buildVisualTranscriptItems", () => {
     expect(items.map((item) => item.kind)).toEqual(["message"]);
   });
 
+  it("keeps completed work expanded when no final response exists", () => {
+    const items = buildVisualTranscriptItems(
+      [
+        msg("user", "continue", "2026-06-19T10:00:00.000Z"),
+        {
+          role: "system",
+          timestamp: "2026-06-19T10:00:01.000Z",
+          blocks: [{ type: "marker", text: "[Task started]" }],
+        },
+        {
+          role: "assistant",
+          timestamp: "2026-06-19T10:00:10.000Z",
+          blocks: [{ type: "tool_use", toolName: "exec_command" }],
+        },
+        {
+          role: "system",
+          timestamp: "2026-06-19T10:00:15.000Z",
+          blocks: [{ type: "marker", text: "[Task complete]" }],
+        },
+      ],
+      { active: true },
+    );
+
+    expect(items.map((item) => item.kind)).toEqual(["message", "work"]);
+    expect(items[1]).toMatchObject({
+      kind: "work",
+      open: true,
+    });
+    if (items[1]?.kind !== "work") throw new Error("expected work item");
+    expect(items[1].entries.map((entry) => entry.blocks[0]?.type)).toEqual([
+      "marker",
+      "tool_use",
+      "marker",
+    ]);
+  });
+
   it("ends stale started work when a later user turn begins", () => {
     const items = buildVisualTranscriptItems(
       [
@@ -1447,6 +1561,71 @@ describe("updateVisualTranscriptItems", () => {
     ]);
   });
 
+  it("reclassifies preceding live progress when an active steering row is appended", () => {
+    const user = msg(
+      "user",
+      "build fixture coverage",
+      "2026-07-02T10:00:00.000Z",
+    );
+    const taskStarted: Message = {
+      role: "system",
+      timestamp: "2026-07-02T10:00:01.000Z",
+      blocks: [{ type: "marker", text: "[Task started]" }],
+    };
+    const progress = msg(
+      "assistant",
+      "I’m building the fixture set around visible final outcomes.",
+      "2026-07-02T10:00:05.000Z",
+    );
+    const previousMessages = [user, taskStarted, progress];
+    const stalePreviousItems = buildVisualTranscriptItems(previousMessages);
+    expect(stalePreviousItems.map((item) => item.kind)).toEqual([
+      "message",
+      "message",
+    ]);
+
+    const steering = msg(
+      "user",
+      "hey dude what the heck",
+      "2026-07-02T10:00:06.000Z",
+    );
+    const thinking: Message = {
+      role: "assistant",
+      timestamp: "2026-07-02T10:00:07.000Z",
+      blocks: [{ type: "thinking", text: "Exploring MaterialX implementation" }],
+    };
+
+    const next = updateVisualTranscriptItems({
+      previousMessages,
+      previousItems: stalePreviousItems,
+      previousActive: true,
+      messages: [...previousMessages, steering, thinking],
+      active: true,
+    });
+
+    expect(next.map((item) => item.kind)).toEqual(["message", "work"]);
+    if (next[1]?.kind !== "work") throw new Error("expected active work item");
+    expect(visualWorkSummary(next[1].entries)).toMatchObject({
+      steerings: 1,
+    });
+    expect(
+      next[1].entries.map((entry) => [
+        entry.message.role,
+        entry.message.intent,
+        entry.blocks[0]?.text ?? entry.blocks[0]?.type,
+      ]),
+    ).toEqual([
+      ["system", undefined, "[Task started]"],
+      [
+        "assistant",
+        undefined,
+        "I’m building the fixture set around visible final outcomes.",
+      ],
+      ["user", "steer", "hey dude what the heck"],
+      ["assistant", undefined, "Exploring MaterialX implementation"],
+    ]);
+  });
+
   it("appends a new user turn without remaking earlier transcript items", () => {
     const firstUser = msg("user", "fix it", "2026-06-19T10:00:00.000Z");
     const firstAnswer = msg(
@@ -1542,6 +1721,51 @@ describe("mergeVisualSessionMessages", () => {
       { ...canonical, intent: "steer" },
     ]);
   });
+
+  it("matches optimistic image sends to canonical app-server user rows", () => {
+    const optimistic: Message = {
+      id: "codex-optimistic-user-image",
+      role: "user",
+      timestamp: "2026-06-19T10:00:01.000Z",
+      blocks: [
+        {
+          type: "media",
+          mediaKind: "image",
+          path: "/tmp/codex-clipboard.png",
+          title: "codex-clipboard.png",
+          alt: "codex-clipboard.png",
+          mimeType: "image/png",
+          hasAlpha: false,
+        },
+        {
+          type: "text",
+          text: "Seems we can still end up with this wrong shape:",
+        },
+      ],
+    };
+    const canonical: Message = {
+      id: "codex-user-user-1",
+      role: "user",
+      timestamp: "2026-06-19T10:00:02.000Z",
+      blocks: [
+        {
+          type: "media",
+          mediaKind: "image",
+          path: "/tmp/codex-clipboard.png",
+          title: "Image",
+          alt: "Image",
+        },
+        {
+          type: "text",
+          text: "Seems we can still end up with this wrong shape:",
+        },
+      ],
+    };
+
+    expect(mergeVisualSessionMessages([canonical], [optimistic])).toEqual([
+      canonical,
+    ]);
+  });
 });
 
 describe("applyVisualTranscriptDeltaPatches", () => {
@@ -1570,8 +1794,24 @@ describe("applyVisualTranscriptDeltaPatches", () => {
         role: "tool",
         type: "tool_result",
         delta: "stdout",
-        blockFields: { toolName: "exec_command", toolUseId: "call-1" },
+        blockFields: {
+          toolName: "exec_command",
+          toolUseId: "call-1",
+          streaming: true,
+        },
         timestamp: "2026-06-21T20:00:03.000Z",
+      },
+      {
+        id: "codex-output-call-1",
+        role: "tool",
+        type: "tool_result",
+        delta: " chunk",
+        blockFields: {
+          toolName: "exec_command",
+          toolUseId: "call-1",
+          streaming: true,
+        },
+        timestamp: "2026-06-21T20:00:04.000Z",
       },
     ]);
 
@@ -1587,9 +1827,10 @@ describe("applyVisualTranscriptDeltaPatches", () => {
       blocks: [
         {
           type: "tool_result",
-          text: "stdout",
+          text: "stdout chunk",
           toolName: "exec_command",
           toolUseId: "call-1",
+          streaming: true,
         },
       ],
     });
@@ -1759,9 +2000,7 @@ describe("visual tool payload display helpers", () => {
       },
     };
 
-    expect(visualToolPreviewText(block)).toBe(
-      "bun test packages/ui/test/last-user-message.test.ts",
-    );
+    expect(visualToolPreviewText(block)).toBe("Run Bun tests last-user-message.test.ts");
     expect(visualToolCallPayloadLanguage(block)).toBe("json");
     expect(visualToolCallPayloadText(block)).toContain(
       '"workdir": "/Users/herbst/git/supergit"',
@@ -1778,7 +2017,7 @@ describe("visual tool payload display helpers", () => {
       },
     };
 
-    expect(visualToolPreviewText(block)).toBe("npm test");
+    expect(visualToolPreviewText(block)).toBe("Run npm tests");
     expect(visualToolCallPayloadText(block)).toContain(
       '"description": "run focused tests"',
     );
@@ -1846,8 +2085,204 @@ describe("visual tool payload display helpers", () => {
       },
     };
 
-    expect(visualToolPreviewText(block)).toBe("git diff --stat");
+    expect(visualToolPreviewText(block)).toBe("Review diff stats");
     expect(visualToolLauncherLabel(block)).toBe("bash");
+  });
+
+  it("summarizes common git commands around the intent and paths", () => {
+    expect(
+      visualToolPreviewText({
+        type: "tool_use",
+        toolName: "exec_command",
+        toolInput: { cmd: "git status --short" },
+      }),
+    ).toBe("Check git status");
+
+    expect(
+      visualToolPreviewText({
+        type: "tool_use",
+        toolName: "exec_command",
+        toolInput: {
+          cmd: "git diff -- packages/ui/src/SessionView.svelte packages/ui/src/codex-event-stream.ts",
+        },
+      }),
+    ).toBe("Review diff SessionView.svelte, codex-event-stream.ts");
+
+    expect(
+      visualToolPreviewParts({
+        type: "tool_use",
+        toolName: "exec_command",
+        toolInput: {
+          cmd: "git diff -- packages/ui/src/SessionView.svelte packages/ui/src/codex-event-stream.ts",
+        },
+      }),
+    ).toEqual([
+      { kind: "text", text: "Review diff " },
+      {
+        kind: "path",
+        text: "SessionView.svelte",
+        path: "packages/ui/src/SessionView.svelte",
+        range: "",
+      },
+      { kind: "text", text: ", " },
+      {
+        kind: "path",
+        text: "codex-event-stream.ts",
+        path: "packages/ui/src/codex-event-stream.ts",
+        range: "",
+      },
+    ]);
+
+    expect(
+      visualToolPreviewText({
+        type: "tool_use",
+        toolName: "exec_command",
+        toolInput: { cmd: "git diff --cached --stat" },
+      }),
+    ).toBe("Review staged diff stats");
+
+    expect(
+      visualToolPreviewText({
+        type: "tool_use",
+        toolName: "exec_command",
+        toolInput: { cmd: "git diff --check" },
+      }),
+    ).toBe("Check diff whitespace");
+
+    expect(
+      visualToolPreviewText({
+        type: "tool_use",
+        toolName: "exec_command",
+        toolInput: {
+          cmd: 'git show HEAD:packages/ui/src/SessionView.svelte | rg -n "codexAppHistoryKey"',
+        },
+      }),
+    ).toBe('Search SessionView.svelte from HEAD for "codexAppHistoryKey"');
+
+    expect(
+      visualToolPreviewText({
+        type: "tool_use",
+        toolName: "exec_command",
+        toolInput: { cmd: "git ls-files tests/fixtures | head -80" },
+      }),
+    ).toBe("List tracked files in tests/fixtures");
+
+    expect(
+      visualToolPreviewText({
+        type: "tool_use",
+        toolName: "exec_command",
+        toolInput: { cmd: "git log --oneline -5" },
+      }),
+    ).toBe("Show recent commits");
+  });
+
+  it("summarizes common test and check commands", () => {
+    expect(
+      visualToolPreviewText({
+        type: "tool_use",
+        toolName: "exec_command",
+        toolInput: {
+          cmd: "bun test packages/ui/test/codex-event-stream.test.ts --grep loads",
+        },
+      }),
+    ).toBe("Run Bun tests codex-event-stream.test.ts");
+
+    expect(
+      visualToolPreviewText({
+        type: "tool_use",
+        toolName: "exec_command",
+        toolInput: {
+          cmd: "npx vitest run src/lib/audioMix.test.js src/lib/timelineTracks.test.js",
+        },
+      }),
+    ).toBe("Run Vitest tests audioMix.test.js, timelineTracks.test.js");
+
+    expect(
+      visualToolPreviewText({
+        type: "tool_use",
+        toolName: "exec_command",
+        toolInput: {
+          cmd: "uv run --project local-models/server --group dev pytest local-models/server/tests/test_app.py",
+        },
+      }),
+    ).toBe("Run Pytest tests test_app.py");
+
+    expect(
+      visualToolPreviewText({
+        type: "tool_use",
+        toolName: "exec_command",
+        toolInput: { cmd: "npx playwright test tests/e2e/app.spec.js --project=chromium" },
+      }),
+    ).toBe("Run Playwright tests app.spec.js");
+
+    expect(
+      visualToolPreviewText({
+        type: "tool_use",
+        toolName: "exec_command",
+        toolInput: { cmd: "npx tsc --noEmit" },
+      }),
+    ).toBe("Run TypeScript check");
+
+    expect(
+      visualToolPreviewText({
+        type: "tool_use",
+        toolName: "exec_command",
+        toolInput: { cmd: "npx svelte-check --fail-on-warnings=false" },
+      }),
+    ).toBe("Run Svelte check");
+  });
+
+  it("shows test result badges from paired command output", () => {
+    const bun = {
+      type: "tool_use",
+      toolName: "exec_command",
+      toolInput: { cmd: "bun test packages/ui/test/last-user-message.test.ts" },
+    };
+    expect(
+      visualToolTestResultBadges(bun, {
+        type: "tool_result",
+        text: "Chunk ID: b1\nWall time: 0.1000 seconds\nProcess exited with code 0\nOriginal token count: 10\nOutput:\n(pass) one\n(pass) two\n(skip) later\n1 todo\n\n 2 pass\n 0 fail\n 1 skip\n 1 todo",
+      }),
+    ).toEqual([
+      { label: "✓×2", tone: "success", title: "2 tests passed" },
+      { label: "skip×1", tone: "neutral", title: "1 test skipped" },
+      { label: "todo×1", tone: "neutral", title: "1 todo test" },
+    ]);
+
+    expect(
+      visualToolTestResultBadges(
+        {
+          type: "tool_use",
+          toolName: "exec_command",
+          toolInput: { cmd: "npx vitest run src/lib/audioMix.test.js" },
+        },
+        {
+          type: "tool_result",
+          text: "Chunk ID: v1\nWall time: 0.1000 seconds\nProcess exited with code 1\nOriginal token count: 10\nOutput:\nTest Files  1 failed | 2 passed (3)\nTests  3 failed | 20 passed (23)\nWarnings  2",
+        },
+      ),
+    ).toEqual([
+      { label: "✕×3", tone: "danger", title: "3 tests failed" },
+      { label: "⚠×2", tone: "warning", title: "2 warnings" },
+      { label: "✓×20", tone: "success", title: "20 tests passed" },
+    ]);
+
+    expect(
+      visualToolTestResultBadges(
+        {
+          type: "tool_use",
+          toolName: "exec_command",
+          toolInput: { cmd: "pytest local-models/server/tests/test_app.py" },
+        },
+        {
+          type: "tool_result",
+          text: "Chunk ID: p1\nWall time: 0.1000 seconds\nProcess exited with code 0\nOriginal token count: 10\nOutput:\n================ 7 passed, 2 warnings in 1.20s ================",
+        },
+      ),
+    ).toEqual([
+      { label: "⚠×2", tone: "warning", title: "2 warnings" },
+      { label: "✓×7", tone: "success", title: "7 tests passed" },
+    ]);
   });
 
   it("summarizes process cleanup commands", () => {
@@ -1865,6 +2300,21 @@ describe("visual tool payload display helpers", () => {
     expect(visualToolCallPayloadText(block)).toContain(
       "kill 60465 60466 60467 60475",
     );
+  });
+
+  it("summarizes process inspection commands", () => {
+    const block = {
+      type: "tool_use",
+      toolName: "exec_command",
+      toolInput: {
+        cmd: "ps -axo pid,ppid,stat,etime,%cpu,%mem,command | rg 'run-three-matrix|playwright test --'",
+      },
+    };
+
+    expect(visualToolPreviewText(block)).toBe(
+      'Check processes for "run-three-matrix|playwright test --"',
+    );
+    expect(visualToolCallPayloadText(block)).toContain("ps -axo");
   });
 
   it("summarizes lsof port checks without hiding the raw command", () => {
@@ -1952,7 +2402,7 @@ describe("visual tool payload display helpers", () => {
     });
   });
 
-  it("keeps mkdir folder chips when a command chain has an unknown follow-up", () => {
+  it("keeps mkdir folder chips when a command chain has an image transform", () => {
     const block = {
       type: "tool_use",
       toolName: "exec_command",
@@ -1962,7 +2412,7 @@ describe("visual tool payload display helpers", () => {
     };
 
     expect(visualToolPreviewText(block)).toBe(
-      "Create folder renders · magick tests/unit/fixtures/materialx-paths/source.png tests/unit/fixtures/materialx-paths/renders/output.png",
+      "Create folder renders · Convert image source.png -> output.png",
     );
     expect(visualToolPreviewParts(block)[1]).toEqual({
       kind: "path",
@@ -1970,6 +2420,87 @@ describe("visual tool payload display helpers", () => {
       path: "tests/unit/fixtures/materialx-paths/renders",
       range: "",
     });
+  });
+
+  it("summarizes image conversion commands with clickable input and output paths", () => {
+    const block = {
+      type: "tool_use",
+      toolName: "exec_command",
+      toolInput: {
+        cmd: "magick /tmp/custom-nodedef-voronoi-2.png -crop 900x650+575+135 -resize 420x303 /tmp/custom-nodedef-voronoi-crop.png",
+      },
+    };
+
+    expect(visualToolPreviewText(block)).toBe(
+      "Convert image custom-nodedef-voronoi-2.png -> custom-nodedef-voronoi-crop.png",
+    );
+    expect(visualToolPreviewParts(block)).toEqual([
+      { kind: "text", text: "Convert image " },
+      {
+        kind: "path",
+        text: "custom-nodedef-voronoi-2.png",
+        path: "/tmp/custom-nodedef-voronoi-2.png",
+        range: "",
+      },
+      { kind: "text", text: " -> " },
+      {
+        kind: "path",
+        text: "custom-nodedef-voronoi-crop.png",
+        path: "/tmp/custom-nodedef-voronoi-crop.png",
+        range: "",
+      },
+    ]);
+    expect(visualToolCallPayloadText(block)).toContain("magick /tmp/custom");
+  });
+
+  it("summarizes screenshot and snapshot tools around their output files", () => {
+    expect(
+      visualToolPreviewText({
+        type: "tool_use",
+        toolName: "take_screenshot",
+        toolInput: {
+          uid: "3_34",
+          filePath: "/tmp/custom-nodedef-canvas.png",
+          format: "png",
+        },
+      }),
+    ).toBe("Capture screenshot custom-nodedef-canvas.png");
+    expect(
+      visualToolPreviewParts({
+        type: "tool_use",
+        toolName: "take_screenshot",
+        toolInput: {
+          filePath: "/tmp/custom-nodedef-canvas.png",
+        },
+      }),
+    ).toEqual([
+      { kind: "text", text: "Capture screenshot " },
+      {
+        kind: "path",
+        text: "custom-nodedef-canvas.png",
+        path: "/tmp/custom-nodedef-canvas.png",
+        range: "",
+      },
+    ]);
+    expect(
+      visualToolPreviewText({
+        type: "tool_use",
+        toolName: "take_snapshot",
+        toolInput: {
+          verbose: true,
+          filePath: "/tmp/snapshot.txt",
+        },
+      }),
+    ).toBe("Capture snapshot snapshot.txt");
+    expect(
+      visualToolPreviewText({
+        type: "tool_use",
+        toolName: "view_image",
+        toolInput: {
+          path: "/tmp/custom-nodedef-canvas.png",
+        },
+      }),
+    ).toBe("View image custom-nodedef-canvas.png");
   });
 
   it("summarizes curl fetch commands around the URL", () => {
@@ -1996,6 +2527,84 @@ describe("visual tool payload display helpers", () => {
       },
     ]);
     expect(visualToolCallPayloadText(block)).toContain("curl -sS");
+  });
+
+  it("shows fetch result size and failures from paired command output", () => {
+    const curl = {
+      type: "tool_use",
+      toolName: "exec_command",
+      toolInput: {
+        cmd: "curl -fsS https://example.com/status.json",
+      },
+    };
+
+    expect(
+      visualToolFetchResultBadges(curl, {
+        type: "tool_result",
+        text: "Chunk ID: c1\nWall time: 0.1000 seconds\nProcess exited with code 0\nOriginal token count: 1\nOutput:\n{\"ok\":true}",
+      }),
+    ).toEqual([
+      {
+        label: "11 B",
+        tone: "neutral",
+        title: "11 bytes fetched",
+      },
+    ]);
+
+    expect(
+      visualToolFetchResultBadges(curl, {
+        type: "tool_result",
+        text: "Chunk ID: c2\nWall time: 0.1000 seconds\nProcess exited with code 0\nOriginal token count: 4\nOutput:\nHTTP/1.1 200 OK\ncontent-length: 1536\n\n",
+      }),
+    ).toEqual([
+      {
+        label: "1.5 KB",
+        tone: "neutral",
+        title: "1,536 bytes fetched",
+      },
+    ]);
+
+    expect(
+      visualToolFetchResultBadges(curl, {
+        type: "tool_result",
+        text: "Chunk ID: c3\nWall time: 0.1000 seconds\nProcess exited with code 22\nOriginal token count: 0\nOutput:",
+      }),
+    ).toEqual([
+      {
+        label: "exit 22",
+        tone: "danger",
+        title: "Fetch command failed",
+      },
+    ]);
+
+    expect(
+      visualToolFetchResultBadges(curl, {
+        type: "tool_result",
+        text: "Chunk ID: c4\nWall time: 0.1000 seconds\nProcess exited with code 0\nOriginal token count: 0\nOutput:",
+      }),
+    ).toEqual([
+      {
+        label: "no result",
+        tone: "danger",
+        title: "Fetch command completed without visible response data",
+      },
+    ]);
+
+    expect(
+      visualToolFetchResultBadges(
+        {
+          type: "tool_use",
+          toolName: "exec_command",
+          toolInput: {
+            cmd: "curl -fsS -o /tmp/status.json https://example.com/status.json",
+          },
+        },
+        {
+          type: "tool_result",
+          text: "Chunk ID: c5\nWall time: 0.1000 seconds\nProcess exited with code 0\nOriginal token count: 0\nOutput:",
+        },
+      ),
+    ).toEqual([]);
   });
 
   it("summarizes wget fetch commands", () => {
@@ -2071,6 +2680,40 @@ describe("visual tool payload display helpers", () => {
         value: "medikit-path-cookie-$(date +%s)",
       },
     ]);
+  });
+
+  it("lifts env wrapper assignments out of chained command previews", () => {
+    const block = {
+      type: "tool_use",
+      toolName: "exec_command",
+      toolInput: {
+        cmd: "mkdir -p thumbnails && env PXR_PLUGINPATH_NAME=/Users/herbst/OpenUSD-26.05-native/plugin/usd PYTHONPATH=/Users/herbst/OpenUSD-26.05-native/lib/python usdrecord --imageWidth 420 --camera Camera usd-wasm/tests/fixtures/custom_geomprops.usdshade.usda usd-wasm/tests/fixtures/thumbnails/custom.png",
+      },
+    };
+
+    expect(visualToolPreviewText(block)).toBe(
+      "Create folder thumbnails · usdrecord --imageWidth 420 --camera Camera usd-wasm/tests/fixtures/custom_geomprops.usdshade.usda usd-wasm/tests/fixtures/thumbnails/custom.png",
+    );
+    expect(visualToolEnvSummaryLabel(block)).toBe("ENV");
+    expect(visualToolEnvAssignments(block)).toEqual([
+      {
+        name: "PXR_PLUGINPATH_NAME",
+        value: "/Users/herbst/OpenUSD-26.05-native/plugin/usd",
+      },
+      {
+        name: "PYTHONPATH",
+        value: "/Users/herbst/OpenUSD-26.05-native/lib/python",
+      },
+    ]);
+    expect(visualToolEnvTooltipText(block)).toBe(
+      "PXR_PLUGINPATH_NAME=/Users/herbst/OpenUSD-26.05-native/plugin/usd\nPYTHONPATH=/Users/herbst/OpenUSD-26.05-native/lib/python",
+    );
+    expect(visualToolPreviewParts(block)[1]).toEqual({
+      kind: "path",
+      text: "thumbnails",
+      path: "thumbnails",
+      range: "",
+    });
   });
 
   it("normalizes ssh launch wrappers before previewing remote file reads", () => {
@@ -2290,6 +2933,23 @@ describe("visual tool payload display helpers", () => {
         },
       }),
     ).toBe("Read directory .");
+
+    const filesBlock = {
+      type: "tool_use",
+      toolName: "exec_command",
+      toolInput: {
+        cmd: "ls -l usd-wasm/.cache/usd-three-matrix-status.json usd-wasm/tests/three-matrix/THREE-MATRIX.md",
+      },
+    };
+    expect(visualToolPreviewText(filesBlock)).toBe(
+      "Read usd-three-matrix-status.json, THREE-MATRIX.md",
+    );
+    expect(visualToolPreviewParts(filesBlock)).toContainEqual({
+      kind: "path",
+      text: "usd-three-matrix-status.json",
+      path: "usd-wasm/.cache/usd-three-matrix-status.json",
+      range: "",
+    });
   });
 
   it("surfaces inline scripts separately from the raw tool payload", () => {
@@ -2331,6 +2991,30 @@ describe("visual tool payload display helpers", () => {
       title: "JavaScript script",
       code: "const fs = require('fs');\nconsole.log(fs.existsSync('package.json'));",
     });
+
+    const directScriptBlock = {
+      type: "tool_use",
+      toolName: "exec_command",
+      toolInput: {
+        cmd: "node .codex/skills/session-understanding/scripts/scan-agent-sessions.mjs --days 1 --limit 30",
+      },
+    };
+    expect(visualToolInlineScriptLanguageLabel(directScriptBlock)).toBe(
+      "JavaScript",
+    );
+    expect(visualToolInlineScript(directScriptBlock)).toBeUndefined();
+    expect(visualToolPreviewText(directScriptBlock)).toBe(
+      "scan-agent-sessions.mjs --days 1 --limit 30",
+    );
+    expect(visualToolPreviewParts(directScriptBlock)).toEqual([
+      {
+        kind: "path",
+        text: "scan-agent-sessions.mjs",
+        path: ".codex/skills/session-understanding/scripts/scan-agent-sessions.mjs",
+        range: "",
+      },
+      { kind: "text", text: " --days 1 --limit 30" },
+    ]);
   });
 
   it("summarizes browser tool calls and formats evaluate_script functions", () => {
@@ -2366,6 +3050,34 @@ describe("visual tool payload display helpers", () => {
         },
       }),
     ).toBe("Navigate to http://127.0.0.1:5173/?host=three&model=Gingerbread");
+    expect(
+      visualToolPreviewText({
+        type: "tool_use",
+        toolName: "navigate_page",
+        toolInput: {
+          type: "reload",
+        },
+      }),
+    ).toBe("Reload page");
+    expect(
+      visualToolPreviewText({
+        type: "tool_use",
+        toolName: "list_console_messages",
+        toolInput: {
+          pageSize: 200,
+          types: ["warn", "error"],
+        },
+      }),
+    ).toBe("Check console for warnings and errors");
+    expect(
+      visualToolPreviewText({
+        type: "tool_use",
+        toolName: "list_console_messages",
+        toolInput: {
+          pageSize: 100,
+        },
+      }),
+    ).toBe("Check console messages");
   });
 
   it("summarizes rg searches without hiding the real command", () => {
@@ -2546,6 +3258,37 @@ describe("buildVisualWorkDisplayEntries", () => {
     expect(entries).toHaveLength(1);
     expect(entries[0]?.entry).toBe(toolResult);
     expect(entries[0]?.pairedToolUse).toBe(toolUse);
+  });
+
+  it("keeps write_stdin starts visible until read-log output arrives", () => {
+    const toolUse = {
+      message: {
+        role: "assistant",
+        blocks: [
+          {
+            type: "tool_use",
+            toolName: "write_stdin",
+            toolUseId: "call-1",
+            toolInput: { session_id: 55249, chars: "" },
+          },
+        ],
+      },
+      blocks: [
+        {
+          type: "tool_use",
+          toolName: "write_stdin",
+          toolUseId: "call-1",
+          toolInput: { session_id: 55249, chars: "" },
+        },
+      ],
+      messageIndex: 1,
+    };
+
+    const entries = buildVisualWorkDisplayEntries([toolUse]);
+
+    expect(entries).toHaveLength(1);
+    expect(entries[0]?.entry).toBe(toolUse);
+    expect(entries[0]?.pairedResult).toBeUndefined();
   });
 
   it("attributes grouped tool results back to their tool use ids", () => {

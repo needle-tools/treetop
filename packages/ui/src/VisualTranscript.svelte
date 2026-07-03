@@ -22,17 +22,21 @@
     visualPlanFromBlock,
     visualPathPreviewTargets,
     visualThinkingSummary,
+    shouldShowLiveToolTimer,
+    shouldShowLiveWorkTimer,
     visualToolCallPayloadLanguage,
     visualToolCallPayloadText,
     visualToolApprovalBadge,
     visualToolEnvAssignments,
     visualToolEnvSummaryLabel,
     visualToolEnvTooltipText,
+    visualToolFetchResultBadges,
     visualToolInlineScript,
     visualToolInlineScriptLanguageLabel,
     visualToolPreviewParts,
     visualToolPreviewText,
     visualToolRemoteHostLabel,
+    visualToolTestResultBadges,
     visualWorkSummary,
     visualUserImageAttachments,
     type VisualFileEditSummary,
@@ -64,6 +68,7 @@
       | "goal"
       | "marker";
     text?: string;
+    streaming?: boolean;
     toolName?: string;
     toolInput?: unknown;
     toolUseId?: string;
@@ -523,7 +528,11 @@
     >,
     nowIso: string,
   ): string | undefined {
-    const running = item.open && !item.endedAt;
+    const running = shouldShowLiveWorkTimer({
+      active,
+      open: item.open === true,
+      endedAt: item.endedAt,
+    });
     const duration = formatVisualWorkDuration(
       item.startedAt,
       running ? nowIso : item.endedAt,
@@ -581,7 +590,18 @@
     observedProcessOutput: ReturnType<typeof visualObservedProcessOutput>,
     nowIso: string,
   ): string | undefined {
-    if (!item.open || item.endedAt) return undefined;
+    const resultBlock = workEntryToolResultBlock(resultEntry);
+    const hasFinalResult = !!resultEntry && !resultBlock?.streaming;
+    if (
+      !shouldShowLiveToolTimer({
+        active,
+        open: item.open === true,
+        endedAt: item.endedAt,
+        hasFinalResult,
+      })
+    ) {
+      return undefined;
+    }
 
     if (
       observedProcessOutput?.wallTimeSeconds !== undefined &&
@@ -596,7 +616,7 @@
       }
     }
 
-    if (resultEntry) return undefined;
+    if (hasFinalResult) return undefined;
     return elapsedDurationSince(entry.message.timestamp, nowIso);
   }
 
@@ -780,6 +800,18 @@
     block: NormalizedBlock,
     preview: string,
   ): string | undefined {
+    if (
+      /^Check git\b/.test(preview) ||
+      /^Review (?:staged )?diff\b/.test(preview) ||
+      /^Search .* from \S+ for\b/.test(preview) ||
+      /^Show (?:recent commits|current branch|current commit|HEAD)\b/.test(preview) ||
+      /^List tracked files\b/.test(preview) ||
+      /^Stage\b/.test(preview) ||
+      /^Commit changes\b/.test(preview)
+    ) {
+      return "git";
+    }
+    if (/^Run .*(?:tests|check)\b/.test(preview)) return "test";
     if (/^Stop process(?:es)?\b/.test(preview)) return "process_end";
     if (/^Check port(?:s)?\b/.test(preview)) return "port_check";
     if (/^Delete (?:file|folder|path)\b/.test(preview)) {
@@ -796,7 +828,10 @@
     if (!workEntryToolPreview(block)) return false;
     const name = (block.toolName ?? "").toLowerCase();
     return (
-      name.includes("bash") || name.includes("shell") || name.includes("exec")
+      name.includes("bash") ||
+      name.includes("shell") ||
+      name.includes("exec") ||
+      name.includes("evaluate_script")
     );
   }
 
@@ -826,14 +861,29 @@
 
   function toolResultMeta(
     entry: VisualWorkEntry<NormalizedBlock, NormalizedMessage> | undefined,
+    opts: { suppressNoOutput?: boolean } = {},
   ): string {
     const result = workEntryToolResult(entry);
     if (!result?.wrappedCodexChunk) return "";
     const parts: string[] = [];
     const duration = formatToolWallTime(result.wallTimeSeconds);
     if (duration) parts.push(duration);
-    if (!result.body) parts.push("no output");
+    if (!result.body && !opts.suppressNoOutput) parts.push("no output");
     return parts.join(" · ");
+  }
+
+  function toolFetchResultBadges(
+    toolUseBlock: NormalizedBlock | undefined,
+    toolResultBlock: NormalizedBlock | undefined,
+  ): ReturnType<typeof visualToolFetchResultBadges> {
+    return visualToolFetchResultBadges(toolUseBlock, toolResultBlock);
+  }
+
+  function toolTestResultBadges(
+    toolUseBlock: NormalizedBlock | undefined,
+    toolResultBlock: NormalizedBlock | undefined,
+  ): ReturnType<typeof visualToolTestResultBadges> {
+    return visualToolTestResultBadges(toolUseBlock, toolResultBlock);
   }
 
   function workMarkerIcon(kind: VisualMarkerKind | undefined): string {
@@ -1519,9 +1569,6 @@
       <div class="work-step-detail">
         {@render renderThinkingIcon()}
         <div class="thinking-copy">
-          {#if thought.title}
-            <div class="thinking-title">{thought.title}</div>
-          {/if}
           {#if thought.body}
             <div class="tag-body md">{@html md(thought.body)}</div>
           {/if}
@@ -1650,10 +1697,16 @@
     {#if item.kind === "work"}
       {@const workKey = getVisualTranscriptItemKey(item, itemIndex)}
       {@const workSummary = visualWorkSummary(item.entries)}
+      {@const liveWorkOpen = shouldShowLiveWorkTimer({
+        active,
+        open: item.open === true,
+        endedAt: item.endedAt,
+      })}
+      {@const visibleWorkEntries = buildVisibleVisualWorkDisplayEntries(item)}
       <li class="work-row">
         <details
           class="work-foldout"
-          class:work-foldout-live={item.open && !item.endedAt}
+          class:work-foldout-live={liveWorkOpen}
           class:work-foldout-aborted={item.terminalMarkerKind === "aborted"}
           class:work-foldout-failed={item.terminalMarkerKind === "failed"}
           open={item.open || openWorkFoldoutKeys.has(workKey)}
@@ -1670,7 +1723,7 @@
               </span>
             {/if}
             <span>{item.terminalMarkerLabel ?? workDurationLabel(item, liveNowIso)}</span>
-            {#if item.open && !item.endedAt && !item.terminalMarkerKind}
+            {#if liveWorkOpen && !item.terminalMarkerKind}
               {@render renderLiveDots()}
             {/if}
             <span class="work-count">
@@ -1687,7 +1740,7 @@
               data-work-key={workKey}
               on:wheel|capture={handOffNestedWheel}
             >
-            {#each buildVisibleVisualWorkDisplayEntries(item) as displayEntry (getVisualWorkDisplayEntryKey(displayEntry))}
+            {#each visibleWorkEntries as displayEntry (getVisualWorkDisplayEntryKey(displayEntry))}
               {@const entry = displayEntry.entry}
               {#if isPlainAssistantWorkText(entry)}
                 <div class="work-entry-inline">
@@ -1749,7 +1802,18 @@
                   observedProcessOutput,
                   liveNowIso,
                 )}
-                {@const resultMeta = toolResultMeta(visibleResultEntry)}
+                {@const fetchResultBadges = toolFetchResultBadges(
+                  toolBlock,
+                  visibleResultBlock,
+                )}
+                {@const testResultBadges = toolTestResultBadges(
+                  toolBlock,
+                  visibleResultBlock,
+                )}
+                {@const resultMeta = toolResultMeta(visibleResultEntry, {
+                  suppressNoOutput:
+                    fetchResultBadges.length > 0 || testResultBadges.length > 0,
+                })}
                 {@const toolPreview = toolBlock ? workEntryToolPreview(toolBlock) : ""}
                 {@const entryBlock = entry.blocks[0]}
                 {@const resultBlock = workEntryToolResultBlock(entry)}
@@ -1852,6 +1916,28 @@
                         {@render renderToolPreview(toolBlock, toolPreview, remoteHost)}
                       {/if}
                       {@render renderToolApprovalBadge(toolBlock)}
+                      {#each fetchResultBadges as badge}
+                        <span
+                          class="work-tool-result-badge"
+                          class:danger={badge.tone === "danger"}
+                          class:warning={badge.tone === "warning"}
+                          class:success={badge.tone === "success"}
+                          title={badge.title}
+                        >
+                          {badge.label}
+                        </span>
+                      {/each}
+                      {#each testResultBadges as badge}
+                        <span
+                          class="work-tool-result-badge"
+                          class:danger={badge.tone === "danger"}
+                          class:warning={badge.tone === "warning"}
+                          class:success={badge.tone === "success"}
+                          title={badge.title}
+                        >
+                          {badge.label}
+                        </span>
+                      {/each}
                       {#if toolElapsedDuration}
                         <span class="work-tool-meta">{toolElapsedDuration}</span>
                       {:else if resultMeta}
@@ -2452,6 +2538,8 @@
     width: fit-content;
     max-width: 80%;
     min-width: 0;
+    font-size: 0.82rem;
+    line-height: normal;
   }
   .work-steering-user-bubble .media-strip {
     justify-content: flex-end;
@@ -2641,6 +2729,37 @@
     font-size: 0.62rem;
     line-height: 1;
     white-space: nowrap;
+  }
+  .work-tool-result-badge {
+    display: inline-flex;
+    align-items: center;
+    flex: 0 0 auto;
+    padding: 0.06rem 0.32rem 0.08rem;
+    border-radius: 999px;
+    border: 1px solid color-mix(in srgb, var(--surface-3) 42%, transparent);
+    background: color-mix(in srgb, var(--surface-1) 38%, transparent);
+    color: var(--text-faint);
+    font-family:
+      ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono",
+      "Courier New", monospace;
+    font-size: 0.64rem;
+    line-height: 1.1;
+    white-space: nowrap;
+  }
+  .work-tool-result-badge.danger {
+    border-color: color-mix(in srgb, var(--error-text, #ffaaaa) 38%, var(--surface-3));
+    background: color-mix(in srgb, var(--error-bg, #3f1f1f) 44%, transparent);
+    color: var(--error-text, #ffaaaa);
+  }
+  .work-tool-result-badge.warning {
+    border-color: color-mix(in srgb, #f0c36a 42%, var(--surface-3));
+    background: color-mix(in srgb, #5a3e13 40%, transparent);
+    color: #f0c36a;
+  }
+  .work-tool-result-badge.success {
+    border-color: color-mix(in srgb, #8bd37f 38%, var(--surface-3));
+    background: color-mix(in srgb, #173b22 42%, transparent);
+    color: #9ee493;
   }
   .work-remote-host-icon {
     flex: 0 0 auto;
@@ -3377,7 +3496,7 @@
     width: 0.95rem;
     height: 0.95rem;
     margin-top: 0;
-    color: color-mix(in srgb, var(--text-muted) 78%, var(--brand));
+    color: var(--text-1);
   }
   .live-thinking-dots {
     display: inline-flex;
@@ -3449,7 +3568,7 @@
     width: 1rem;
     height: 1rem;
     margin-top: 0.1rem;
-    color: color-mix(in srgb, var(--text-muted) 88%, var(--brand));
+    color: var(--text-1);
     opacity: 0.9;
   }
   .thinking-copy {

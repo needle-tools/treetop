@@ -1,0 +1,4 @@
+interface:
+  display_name: "Session Understanding"
+  short_description: "Inspect Codex, Claude, and Ollama session transcripts"
+  default_prompt: "Use $session-understanding to scan recent agent sessions and summarize command/tool patterns."

@@ -71,6 +71,17 @@ const KNOWN_EDITORS: readonly EditorSpec[] = [
 const SPECIAL_APPS = new Set(["fork", "terminal", "files"]);
 const CMD_TO_SPEC = new Map(KNOWN_EDITORS.map((e) => [e.cmd, e]));
 
+export function fallbackEditorForFailedFileManagerOpen(args: {
+  platform: NodeJS.Platform;
+  exitCode: number;
+  isRegularFile: boolean;
+}): string | undefined {
+  if (args.platform !== "darwin") return undefined;
+  if (args.exitCode === 0) return undefined;
+  if (!args.isRegularFile) return undefined;
+  return "code";
+}
+
 async function which(cmd: string): Promise<boolean> {
   const bin = process.platform === "win32" ? "where" : "which";
   const proc = Bun.spawn([bin, cmd], { stdout: "pipe", stderr: "pipe" });
@@ -394,7 +405,22 @@ export async function openIn(
   if (app === "files") {
     // Open the path in the OS file manager (Finder / Explorer / xdg).
     if (process.platform === "darwin") {
-      Bun.spawn(["open", path], { stdout: "ignore", stderr: "ignore" });
+      const proc = Bun.spawn(["open", path], {
+        stdout: "ignore",
+        stderr: "ignore",
+      });
+      const exitCode = await proc.exited;
+      const st = exitCode === 0 ? null : await stat(path).catch(() => null);
+      const fallbackEditor = fallbackEditorForFailedFileManagerOpen({
+        platform: process.platform,
+        exitCode,
+        isRegularFile: !!st?.isFile(),
+      });
+      if (fallbackEditor) {
+        const result = await openIn(path, fallbackEditor);
+        return { via: `${result.via} fallback` };
+      }
+      if (exitCode !== 0) throw new Error(`open exited ${exitCode}`);
       return { via: "Finder" };
     }
     if (process.platform === "linux") {

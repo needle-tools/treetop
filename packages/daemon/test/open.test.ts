@@ -5,6 +5,7 @@ import { basename, join } from "node:path";
 import {
   buildRestoreWindowScript,
   detectEditors,
+  fallbackEditorForFailedFileManagerOpen,
   findWorkspaceFile,
   isUrlLike,
   resetDetectEditorsCache,
@@ -151,6 +152,42 @@ describe("windowsOpenCommand", () => {
     // treat a quoted spaced path as a window title and open a blank shell.
     expect(cmd[3]).toBe("");
     expect(cmd[4]).toBe("C:\\Program Files\\app\\config.json");
+  });
+});
+
+describe("fallbackEditorForFailedFileManagerOpen", () => {
+  test("uses VSCode for regular macOS files when the default opener fails", () => {
+    expect(
+      fallbackEditorForFailedFileManagerOpen({
+        platform: "darwin",
+        exitCode: 1,
+        isRegularFile: true,
+      }),
+    ).toBe("code");
+  });
+
+  test("does not override successful opens, directories, or non-macOS platforms", () => {
+    expect(
+      fallbackEditorForFailedFileManagerOpen({
+        platform: "darwin",
+        exitCode: 0,
+        isRegularFile: true,
+      }),
+    ).toBeUndefined();
+    expect(
+      fallbackEditorForFailedFileManagerOpen({
+        platform: "darwin",
+        exitCode: 1,
+        isRegularFile: false,
+      }),
+    ).toBeUndefined();
+    expect(
+      fallbackEditorForFailedFileManagerOpen({
+        platform: "linux",
+        exitCode: 1,
+        isRegularFile: true,
+      }),
+    ).toBeUndefined();
   });
 });
 
