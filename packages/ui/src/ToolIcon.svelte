@@ -17,11 +17,15 @@
     | "create"
     | "delete"
     | "navigate"
+    | "reload"
+    | "wait"
     | "tool";
 
   function kindFor(toolName: string): IconKind {
     const n = toolName.toLowerCase();
     if (n.includes("evaluate_script")) return "bash";
+    if (n.includes("reload_page") || n.includes("reload")) return "reload";
+    if (n.includes("wait_for") || n.includes("wait")) return "wait";
     if (n.includes("navigate_page") || n.includes("new_page")) return "navigate";
     if (n.includes("filesystem_create")) return "create";
     if (n.includes("filesystem_delete")) return "delete";
@@ -51,16 +55,38 @@
   function isBrowserTool(toolName: string): boolean {
     const n = toolName.toLowerCase();
     return (
+      n.includes("browser") ||
+      n.includes("chrome_devtools") ||
+      n.includes("close_page") ||
+      n.includes("drag") ||
+      n.includes("emulate") ||
       n.includes("evaluate_script") ||
+      n.includes("fill_form") ||
+      n.includes("get_console_message") ||
+      n.includes("get_network_request") ||
+      n.includes("handle_dialog") ||
+      n.includes("lighthouse_audit") ||
+      n.includes("list_console_messages") ||
+      n.includes("list_network_requests") ||
+      n.includes("list_pages") ||
       n.includes("navigate_page") ||
+      n.includes("network_request") ||
       n.includes("new_page") ||
+      n.includes("performance_") ||
+      n.includes("press_key") ||
+      n.includes("reload_page") ||
+      n.includes("resize_page") ||
+      n.includes("select_page") ||
+      n.includes("take_heapsnapshot") ||
+      n.includes("take_screenshot") ||
+      n.includes("take_snapshot") ||
+      n.includes("type_text") ||
+      n.includes("upload_file") ||
+      n.includes("wait_for") ||
       n.includes("click") ||
       n.includes("fill") ||
       n.includes("hover") ||
-      n.includes("screenshot") ||
-      n.includes("console_message") ||
-      n.includes("network_request") ||
-      n.includes("wait_for")
+      n.includes("screenshot")
     );
   }
 
@@ -133,12 +159,10 @@
       <polyline points="4 17 10 11 4 5" />
       <line x1="12" y1="19" x2="20" y2="19" />
     {:else if kind === "git"}
-      <!-- git branch -->
-      <circle cx="6" cy="6" r="2" />
-      <circle cx="6" cy="18" r="2" />
-      <circle cx="18" cy="12" r="2" />
-      <path d="M6 8v8" />
-      <path d="M8 6c4 0 4 6 8 6" />
+      <!-- Same branch glyph as the main lane branch selector. -->
+      <path
+        d="M6 3v12M18 9a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM6 21a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM18 9c0 4-4 6-12 6"
+      />
     {:else if kind === "test"}
       <!-- check circle -->
       <circle cx="12" cy="12" r="9" />
@@ -189,6 +213,17 @@
       <path d="M5 12h14" />
       <path d="M13 6l6 6-6 6" />
       <path d="M5 5v14" />
+    {:else if kind === "reload"}
+      <!-- reload -->
+      <path d="M21 12a9 9 0 1 1-2.6-6.4" />
+      <path d="M21 4v6h-6" />
+    {:else if kind === "wait"}
+      <!-- timer / wait -->
+      <circle cx="12" cy="13" r="8" />
+      <path d="M12 13V9" />
+      <path d="M12 13l3 2" />
+      <path d="M9 2h6" />
+      <path d="M12 2v3" />
     {:else}
       <!-- generic wrench -->
       <path

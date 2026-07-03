@@ -1,6 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import {
   isNearVisualScrollEnd,
+  shouldAnchorLiveWorkTail,
   shouldFollowNewLiveWorkBody,
   shouldFollowVisualTail,
 } from "../src/visual-tail-follow";
@@ -92,6 +93,27 @@ describe("visual transcript tail following", () => {
       shouldFollowNewLiveWorkBody({
         previousShouldStick: false,
         parentShouldStick: true,
+      }),
+    ).toBe(false);
+  });
+
+  it("anchors the outer transcript on live work only while tail-following", () => {
+    expect(
+      shouldAnchorLiveWorkTail({
+        hasLiveWork: true,
+        shouldStickMessages: true,
+      }),
+    ).toBe(true);
+    expect(
+      shouldAnchorLiveWorkTail({
+        hasLiveWork: false,
+        shouldStickMessages: true,
+      }),
+    ).toBe(false);
+    expect(
+      shouldAnchorLiveWorkTail({
+        hasLiveWork: true,
+        shouldStickMessages: false,
       }),
     ).toBe(false);
   });

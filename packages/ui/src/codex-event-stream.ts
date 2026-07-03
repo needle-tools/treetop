@@ -100,6 +100,27 @@ export function codexEventThreadIdForSession(opts: {
   return opts.sessionId || undefined;
 }
 
+export function codexAppHistoryKey(
+  threadId: string | undefined,
+  cwd: string | undefined,
+): string {
+  return threadId && cwd ? `${threadId}\0${cwd}` : "";
+}
+
+export function shouldLoadCodexAppThreadHistory(opts: {
+  visualAppSurface: boolean;
+  threadId: string | undefined;
+  cwd: string | undefined;
+  hasSession: boolean;
+  loadedHistoryKey: string;
+  loadingHistoryKey: string;
+}): boolean {
+  if (!opts.visualAppSurface || !opts.hasSession) return false;
+  const key = codexAppHistoryKey(opts.threadId, opts.cwd);
+  if (!key) return false;
+  return key !== opts.loadedHistoryKey && key !== opts.loadingHistoryKey;
+}
+
 interface Hub {
   es: EventSourceLike;
   state: CodexEventStreamState;
@@ -224,12 +245,32 @@ export function codexLiveToolResultFromEvent(
         }
       : null;
   }
+  if (item.type === "mcpToolCall" || item.type === "dynamicToolCall") {
+    const result = codexGenericToolResultPayload(item);
+    return result !== undefined
+      ? {
+          id: `codex-output-${itemId}`,
+          toolName,
+          text: stringifyPayload(result),
+          toolUseId: itemId,
+        }
+      : null;
+  }
   return null;
 }
 
 export function codexLiveMarkerFromEvent(
   event: CodexAppEvent,
 ): CodexLiveMarker | null {
+  if (
+    event.method === "context_compacted" ||
+    event.params.type === "context_compacted"
+  ) {
+    return {
+      id: `codex-marker-${event.turnId ?? event.params.turnId ?? "context"}-context-${event.seq ?? event.receivedAt}`,
+      text: "[Context compacted]",
+    };
+  }
   if (event.method !== "error") return null;
   if (event.params.willRetry !== false) return null;
   const error = event.params.error;
@@ -587,7 +628,7 @@ function codexCommandExecutionResultText(
   if (output === undefined && exitCode === undefined && !completed) {
     return undefined;
   }
-  if (exitCode === undefined && durationMs === undefined) {
+  if (!completed && exitCode === undefined && durationMs === undefined) {
     return output;
   }
   const seconds =
@@ -614,7 +655,7 @@ function codexGenericToolMessages(
       extraBlocks: viewImageMedia ? [viewImageMedia] : [],
     }),
   ];
-  const result = item.result ?? item.contentItems ?? item.error;
+  const result = codexGenericToolResultPayload(item);
   if (result !== undefined && result !== null) {
     messages.push(
       codexToolResultMessage({
@@ -627,6 +668,12 @@ function codexGenericToolMessages(
     );
   }
   return messages;
+}
+
+function codexGenericToolResultPayload(
+  item: Record<string, unknown>,
+): unknown {
+  return item.result ?? item.output ?? item.contentItems ?? item.error;
 }
 
 function codexToolUseMessage(opts: {

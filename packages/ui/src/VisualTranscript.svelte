@@ -33,6 +33,8 @@
     visualToolFetchResultBadges,
     visualToolInlineScript,
     visualToolInlineScriptLanguageLabel,
+    visualToolMediaBlocks,
+    visualToolCanStillRun,
     visualToolPreviewParts,
     visualToolPreviewText,
     visualToolRemoteHostLabel,
@@ -598,6 +600,7 @@
         open: item.open === true,
         endedAt: item.endedAt,
         hasFinalResult,
+        canStillRun: visualToolCanStillRun(workEntryToolUseBlock(entry)),
       })
     ) {
       return undefined;
@@ -796,6 +799,25 @@
     return text.replace(/\s+/g, " ").trim();
   }
 
+  function workEntryToolMediaBlocks(
+    block: NormalizedBlock | undefined,
+  ): NormalizedBlock[] {
+    if (!block) return [];
+    return visualToolMediaBlocks(block).map(
+      (media): NormalizedBlock => ({
+        type: "media",
+        mediaKind: media.mediaKind === "image" ? "image" : "artifact",
+        path: media.path,
+        url: media.url,
+        title: media.title,
+        alt: media.alt,
+        mimeType: media.mimeType,
+        toolName: media.toolName,
+        toolUseId: media.toolUseId,
+      }),
+    );
+  }
+
   function workEntryToolIconName(
     block: NormalizedBlock,
     preview: string,
@@ -805,13 +827,21 @@
       /^Review (?:staged )?diff\b/.test(preview) ||
       /^Search .* from \S+ for\b/.test(preview) ||
       /^Show (?:recent commits|current branch|current commit|HEAD)\b/.test(preview) ||
+      /^Count commits\b/.test(preview) ||
       /^List tracked files\b/.test(preview) ||
       /^Stage\b/.test(preview) ||
-      /^Commit changes\b/.test(preview)
+      /^Commit changes\b/.test(preview) ||
+      /^git\b/.test(preview)
     ) {
       return "git";
     }
     if (/^Run .*(?:tests|check)\b/.test(preview)) return "test";
+    if (/^Reload page\b/.test(preview)) return "reload_page";
+    if (/^Wait for\b/.test(preview)) return "wait_for";
+    if (/^Check console\b/.test(preview)) return "list_console_messages";
+    if (/^List browser pages\b/.test(preview)) return "list_pages";
+    if (/^Emulate\b/.test(preview)) return "emulate";
+    if (/^(?:Navigate to|Open)\b/.test(preview)) return "navigate_page";
     if (/^Stop process(?:es)?\b/.test(preview)) return "process_end";
     if (/^Check port(?:s)?\b/.test(preview)) return "port_check";
     if (/^Delete (?:file|folder|path)\b/.test(preview)) {
@@ -831,7 +861,15 @@
       name.includes("bash") ||
       name.includes("shell") ||
       name.includes("exec") ||
-      name.includes("evaluate_script")
+      name.includes("evaluate_script") ||
+      name.includes("navigate_page") ||
+      name.includes("new_page") ||
+      name.includes("wait_for") ||
+      name.includes("list_console_messages") ||
+      name.includes("list_pages") ||
+      name.includes("emulate") ||
+      name.includes("take_screenshot") ||
+      name.includes("take_snapshot")
     );
   }
 
@@ -1083,9 +1121,17 @@
     });
   }
 
-  function onWorkFoldoutToggle(event: Event, workKey: string): void {
+  function onWorkFoldoutToggle(
+    event: Event,
+    workKey: string,
+    autoOpen: boolean,
+  ): void {
     const details = event.currentTarget as HTMLDetailsElement | null;
     if (!details) return;
+    if (autoOpen && details.open) {
+      restoreDetailsScrollAnchor();
+      return;
+    }
     setWorkFoldoutBodyRendered(workKey, details.open);
     restoreDetailsScrollAnchor();
   }
@@ -1349,15 +1395,10 @@
   </span>
 {/snippet}
 
-{#snippet renderMessageBlocks(
-  blocks: NormalizedBlock[],
-  m: NormalizedMessage,
-  messageIndex: number,
-)}
-  {@const userImageBlocks = m.role === "user" ? imageMediaBlocks(blocks) : []}
-  {#if userImageBlocks.length > 0}
-    <div class="block media-strip user-media-strip">
-      {#each userImageBlocks as imageBlock, imageIndex (`${imageBlock.path ?? imageBlock.url ?? "image"}:${imageIndex}`)}
+{#snippet renderInlineMediaStrip(imageBlocks: NormalizedBlock[], extraClass: string)}
+  {#if imageBlocks.length > 0}
+    <div class={`block media-strip ${extraClass}`.trim()}>
+      {#each imageBlocks as imageBlock, imageIndex (`${imageBlock.path ?? imageBlock.url ?? "image"}:${imageIndex}`)}
         {@const src = mediaSourceUrl(imageBlock, { thumbnail: true })}
         {#if src}
           <button
@@ -1365,7 +1406,7 @@
             class="media-image-open"
             title={`Open ${mediaLabel(imageBlock)}`}
             aria-label={`Open ${mediaLabel(imageBlock)}`}
-            on:click={() => openMediaViewer(userImageBlocks, imageIndex)}
+            on:click={() => openMediaViewer(imageBlocks, imageIndex)}
           >
             {@render renderImageAttachmentFrame(
               src,
@@ -1377,6 +1418,17 @@
         {/if}
       {/each}
     </div>
+  {/if}
+{/snippet}
+
+{#snippet renderMessageBlocks(
+  blocks: NormalizedBlock[],
+  m: NormalizedMessage,
+  messageIndex: number,
+)}
+  {@const userImageBlocks = m.role === "user" ? imageMediaBlocks(blocks) : []}
+  {#if userImageBlocks.length > 0}
+    {@render renderInlineMediaStrip(userImageBlocks, "user-media-strip")}
   {/if}
   {#each blocks as b, blockIndex (visualBlockRenderKey(b, blockIndex))}
     {#if m.role === "user" &&
@@ -1702,6 +1754,7 @@
         open: item.open === true,
         endedAt: item.endedAt,
       })}
+      {@const workFoldoutOpen = item.open === true || openWorkFoldoutKeys.has(workKey)}
       {@const visibleWorkEntries = buildVisibleVisualWorkDisplayEntries(item)}
       <li class="work-row">
         <details
@@ -1709,9 +1762,10 @@
           class:work-foldout-live={liveWorkOpen}
           class:work-foldout-aborted={item.terminalMarkerKind === "aborted"}
           class:work-foldout-failed={item.terminalMarkerKind === "failed"}
-          open={item.open || openWorkFoldoutKeys.has(workKey)}
+          open={workFoldoutOpen}
           use:preserveDetailsToggleScroll
-          on:toggle={(event) => onWorkFoldoutToggle(event, workKey)}
+          on:toggle={(event) =>
+            onWorkFoldoutToggle(event, workKey, item.open === true)}
         >
           <summary
             on:click|capture={(event) =>
@@ -1734,7 +1788,7 @@
               )}
             </span>
           </summary>
-          {#if item.open || openWorkFoldoutKeys.has(workKey)}
+          {#if workFoldoutOpen}
             <div
               class="work-foldout-body"
               data-work-key={workKey}
@@ -1815,6 +1869,7 @@
                     fetchResultBadges.length > 0 || testResultBadges.length > 0,
                 })}
                 {@const toolPreview = toolBlock ? workEntryToolPreview(toolBlock) : ""}
+                {@const toolMediaBlocks = workEntryToolMediaBlocks(toolBlock)}
                 {@const entryBlock = entry.blocks[0]}
                 {@const resultBlock = workEntryToolResultBlock(entry)}
                 {@const collapsedTitle = workEntryTitle(entry)}
@@ -1995,6 +2050,7 @@
                       </span>
                     {/if}
                   </summary>
+                  {@render renderInlineMediaStrip(toolMediaBlocks, "work-tool-media-strip")}
                   {#if forceOpenThinkingEntry(workKey, entry) || openWorkEntryKeys.has(entryRenderKey)}
                     <div class="work-entry-body" on:wheel|capture={handOffNestedWheel}>
                       {#if editSummary}
@@ -2668,7 +2724,7 @@
     color: var(--text-muted);
   }
   .work-thinking-chip {
-    color: var(--text-muted);
+    color: var(--text-2);
   }
   .work-thinking-chip .thinking-icon {
     width: 0.86rem;
@@ -2921,7 +2977,7 @@
     color: var(--text-muted);
   }
   .work-thinking-preview {
-    color: var(--text-muted);
+    color: var(--text-2);
   }
   .work-tool-meta {
     flex: 0 0 auto;
@@ -2976,6 +3032,13 @@
     color: var(--text-2);
     font-size: 0.78rem;
     line-height: 1.45;
+  }
+  .work-tool-media-strip {
+    margin: 0.25rem 0 0.45rem 3.05rem;
+  }
+  .work-tool-media-strip .media-image-open {
+    width: 5.2rem;
+    flex: 0 0 auto;
   }
   .work-file-edits {
     display: grid;
@@ -3475,7 +3538,7 @@
     padding: 0.25rem 0.5rem;
     background: rgba(160, 160, 160, 0.06);
     border-radius: var(--radius-sm);
-    color: var(--text-muted);
+    color: var(--text-2);
     font-size: 0.78rem;
     line-height: 1.4;
   }
@@ -3488,7 +3551,7 @@
     align-items: center;
     gap: 0.42rem;
     min-width: 0;
-    color: var(--text-muted);
+    color: var(--text-2);
     font-size: 0.82rem;
     line-height: 1.35;
   }
@@ -3577,12 +3640,12 @@
     gap: 0.18rem;
   }
   .thinking-title {
-    color: var(--text-2);
+    color: var(--text-1);
     font-weight: 650;
     font-style: normal;
   }
   .block.thinking .tag-body {
-    color: var(--text-muted);
+    color: var(--text-2);
     overflow: visible;
     text-overflow: clip;
     white-space: normal;
@@ -3602,7 +3665,7 @@
     margin-bottom: 0;
   }
   .work-step-detail .thinking-copy .tag-body {
-    color: var(--text-muted);
+    color: var(--text-2);
   }
   .work-step-detail .thinking-icon {
     margin-top: 0.18rem;

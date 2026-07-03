@@ -36,9 +36,10 @@ export interface SessionPollReg {
   /** This column's current sessionId, for slicing the global active-sends
    *  list. May be undefined before the session has loaded. */
   getSessionId: () => string | undefined;
-  /** Return false to skip this column's transcript body on a tick while still
-   *  keeping active-sends state live. Used by app-server sessions while their
-   *  SSE stream is already carrying the active turn. */
+  /** Return false to skip this column's transcript body, including cached
+   *  hydration on register, while still keeping active-sends state live. Live
+   *  app-server sessions use their own app-server history/events as the sole
+   *  message source. */
   shouldPollSession?: () => boolean;
   /** Minimum number of recent messages this column wants. Defaults to the
    *  daemon's normal lightweight tail; scroll-back can increase this for one
@@ -184,7 +185,8 @@ export function createSessionPoller(deps: SessionPollerDeps): SessionPoller {
   function register(reg: SessionPollReg): () => void {
     const key = Symbol(reg.source);
     const cacheKey = sessionCacheKey(reg.daemonId, reg.source);
-    const cached = cachedSession(cacheKey);
+    const allowSessionBody = reg.shouldPollSession?.() !== false;
+    const cached = allowSessionBody ? cachedSession(cacheKey) : undefined;
     regs.set(key, {
       reg,
       etag: cached?.etag ?? undefined,

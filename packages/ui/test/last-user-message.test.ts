@@ -33,6 +33,7 @@ import {
   visualToolInlineScript,
   visualToolInlineScriptLanguageLabel,
   visualToolInlineScriptPreviewText,
+  visualToolMediaBlocks,
   visualToolRemoteHostLabel,
   visualWorkSummary,
   visualUserImageAttachments,
@@ -161,6 +162,14 @@ describe("formatVisualWorkDuration", () => {
         open: true,
         endedAt: "2026-06-22T10:00:01.000Z",
         hasFinalResult: false,
+      }),
+    ).toBe(false);
+    expect(
+      shouldShowLiveToolTimer({
+        active: true,
+        open: true,
+        hasFinalResult: false,
+        canStillRun: false,
       }),
     ).toBe(false);
   });
@@ -2153,6 +2162,24 @@ describe("visual tool payload display helpers", () => {
       visualToolPreviewText({
         type: "tool_use",
         toolName: "exec_command",
+        toolInput: { cmd: "git rev-list --count needle/main..HEAD" },
+      }),
+    ).toBe("Count commits needle/main..HEAD");
+
+    expect(
+      visualToolPreviewText({
+        type: "tool_use",
+        toolName: "exec_command",
+        toolInput: {
+          cmd: "git rev-list --count needle/main..HEAD && git diff --check",
+        },
+      }),
+    ).toBe("Count commits needle/main..HEAD · Check diff whitespace");
+
+    expect(
+      visualToolPreviewText({
+        type: "tool_use",
+        toolName: "exec_command",
         toolInput: {
           cmd: 'git show HEAD:packages/ui/src/SessionView.svelte | rg -n "codexAppHistoryKey"',
         },
@@ -2244,9 +2271,9 @@ describe("visual tool payload display helpers", () => {
         text: "Chunk ID: b1\nWall time: 0.1000 seconds\nProcess exited with code 0\nOriginal token count: 10\nOutput:\n(pass) one\n(pass) two\n(skip) later\n1 todo\n\n 2 pass\n 0 fail\n 1 skip\n 1 todo",
       }),
     ).toEqual([
-      { label: "✓×2", tone: "success", title: "2 tests passed" },
-      { label: "skip×1", tone: "neutral", title: "1 test skipped" },
-      { label: "todo×1", tone: "neutral", title: "1 todo test" },
+      { label: "✓2", tone: "success", title: "2 tests passed" },
+      { label: "skip 1", tone: "neutral", title: "1 test skipped" },
+      { label: "todo 1", tone: "neutral", title: "1 todo test" },
     ]);
 
     expect(
@@ -2262,9 +2289,9 @@ describe("visual tool payload display helpers", () => {
         },
       ),
     ).toEqual([
-      { label: "✕×3", tone: "danger", title: "3 tests failed" },
-      { label: "⚠×2", tone: "warning", title: "2 warnings" },
-      { label: "✓×20", tone: "success", title: "20 tests passed" },
+      { label: "✕3", tone: "danger", title: "3 tests failed" },
+      { label: "⚠2", tone: "warning", title: "2 warnings" },
+      { label: "✓20", tone: "success", title: "20 tests passed" },
     ]);
 
     expect(
@@ -2280,8 +2307,8 @@ describe("visual tool payload display helpers", () => {
         },
       ),
     ).toEqual([
-      { label: "⚠×2", tone: "warning", title: "2 warnings" },
-      { label: "✓×7", tone: "success", title: "7 tests passed" },
+      { label: "⚠2", tone: "warning", title: "2 warnings" },
+      { label: "✓7", tone: "success", title: "7 tests passed" },
     ]);
   });
 
@@ -2501,6 +2528,80 @@ describe("visual tool payload display helpers", () => {
         },
       }),
     ).toBe("View image custom-nodedef-canvas.png");
+  });
+
+  it("promotes image-producing tools to inline media blocks", () => {
+    expect(
+      visualToolMediaBlocks({
+        type: "tool_use",
+        toolName: "take_screenshot",
+        toolUseId: "shot-1",
+        toolInput: {
+          uid: "3_34",
+          filePath: "/tmp/custom-nodedef-canvas.png",
+          format: "png",
+        },
+      }),
+    ).toEqual([
+      expect.objectContaining({
+        type: "media",
+        mediaKind: "image",
+        path: "/tmp/custom-nodedef-canvas.png",
+        title: "Screenshot",
+        toolName: "take_screenshot",
+        toolUseId: "shot-1",
+      }),
+    ]);
+
+    expect(
+      visualToolMediaBlocks({
+        type: "tool_use",
+        toolName: "take_snapshot",
+        toolInput: {
+          filePath: "/tmp/snapshot.txt",
+        },
+      }),
+    ).toEqual([]);
+
+    expect(
+      visualToolMediaBlocks({
+        type: "tool_use",
+        toolName: "view_image",
+        toolInput: {
+          path: "/tmp/custom-nodedef-canvas.png",
+        },
+      }),
+    ).toEqual([
+      expect.objectContaining({
+        type: "media",
+        mediaKind: "image",
+        path: "/tmp/custom-nodedef-canvas.png",
+        title: "Image",
+      }),
+    ]);
+
+    expect(
+      visualToolMediaBlocks({
+        type: "tool_use",
+        toolName: "exec_command",
+        toolInput: {
+          cmd: "magick /tmp/custom-nodedef-voronoi-2.png -crop 900x650+575+13 -resize 420x300 /tmp/custom-nodedef-crop.webp",
+        },
+      }),
+    ).toEqual([
+      expect.objectContaining({
+        type: "media",
+        mediaKind: "image",
+        path: "/tmp/custom-nodedef-voronoi-2.png",
+        title: "Input image",
+      }),
+      expect.objectContaining({
+        type: "media",
+        mediaKind: "image",
+        path: "/tmp/custom-nodedef-crop.webp",
+        title: "Output image",
+      }),
+    ]);
   });
 
   it("summarizes curl fetch commands around the URL", () => {
@@ -3078,6 +3179,31 @@ describe("visual tool payload display helpers", () => {
         },
       }),
     ).toBe("Check console messages");
+    expect(
+      visualToolPreviewText({
+        type: "tool_use",
+        toolName: "wait_for",
+        toolInput: {
+          text: ["Environment", "File", "Select or Drop File"],
+        },
+      }),
+    ).toBe("Wait for Environment, File, Select or Drop File");
+    expect(
+      visualToolPreviewText({
+        type: "tool_use",
+        toolName: "list_pages",
+        toolInput: {},
+      }),
+    ).toBe("List browser pages");
+    expect(
+      visualToolPreviewText({
+        type: "tool_use",
+        toolName: "emulate",
+        toolInput: {
+          networkConditions: "Slow 3G",
+        },
+      }),
+    ).toBe("Emulate Slow 3G");
   });
 
   it("summarizes rg searches without hiding the real command", () => {

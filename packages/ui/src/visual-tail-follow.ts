@@ -36,3 +36,10 @@ export function shouldFollowNewLiveWorkBody(opts: {
 }): boolean {
   return opts.previousShouldStick ?? opts.parentShouldStick;
 }
+
+export function shouldAnchorLiveWorkTail(opts: {
+  hasLiveWork: boolean;
+  shouldStickMessages: boolean;
+}): boolean {
+  return opts.hasLiveWork && opts.shouldStickMessages;
+}

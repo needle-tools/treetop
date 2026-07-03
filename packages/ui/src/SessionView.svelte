@@ -66,6 +66,7 @@
   import VisualTranscript from "./VisualTranscript.svelte";
   import {
     isNearVisualScrollEnd,
+    shouldAnchorLiveWorkTail,
     shouldFollowNewLiveWorkBody,
     shouldFollowVisualTail,
     VISUAL_TAIL_FOLLOW_NEAR_PX,
@@ -78,7 +79,8 @@
   import {
     claudeModelAlias,
     isLiveCodexAppSource,
-    shouldPollSessionSource,
+    resolveSessionMessageSource,
+    type SessionMessageSource,
   } from "./storage";
   import {
     claudeSessionMenuItems,
@@ -133,11 +135,13 @@
   import {
     codexEventItemId,
     codexAppHistoryMessagesFromThread,
+    codexAppHistoryKey,
     codexEventThreadIdForSession,
     codexLiveMessagesFromEvent,
     codexLiveToolUseFromEvent,
     codexToolInputQuality,
     mergeCodexAppHistoryMessages,
+    shouldLoadCodexAppThreadHistory,
     subscribeCodexEvents,
     type CodexAppEvent,
     type CodexEventStreamState,
@@ -323,6 +327,7 @@
       | "goal"
       | "marker";
     text?: string;
+    streaming?: boolean;
     toolName?: string;
     toolInput?: unknown;
     toolUseId?: string;
@@ -387,7 +392,10 @@
   let session: NormalizedSession | null = null;
   let liveCodexApp = false;
   let sessionFileSource = "";
-  let sessionPollSource = "";
+  let sessionMessageSource: SessionMessageSource = {
+    kind: "unavailable",
+    reason: "missing-transcript",
+  };
   let shouldPollTranscript = true;
   let loading = false;
   let error = "";
@@ -522,7 +530,8 @@
   let visualHistoryMinMessages = DEFAULT_VISUAL_HISTORY_MESSAGES;
   let visualHistoryRequestInFlight = false;
   let visualHistorySourceKey = "";
-  let codexAppHistoryLoadedThread = "";
+  let codexAppHistoryLoadedKey = "";
+  let codexAppHistoryLoadingKey = "";
   let visualHistoryScrollAnchor: {
     el: HTMLElement;
     scrollHeight: number;
@@ -1596,6 +1605,7 @@
   let hasRenderedOnce = false;
   let visualTailKey = "";
   let visualTailFollowPaused = false;
+  let visualTailFollowActive = false;
   let visualTailFollowPauseSeq = 0;
   let visualTailMessagesEl: HTMLElement | null = null;
   let visualTailLayoutObserver: ResizeObserver | null = null;
@@ -1663,6 +1673,26 @@
     el.scrollTop = 1_000_000_000;
   }
 
+  function scrollLiveWorkTailAnchorIntoView(el: HTMLElement): void {
+    const summary = messagesEl?.querySelector<HTMLElement>(
+      ".work-foldout-live > summary",
+    );
+    if (!summary) {
+      scrollToEnd(el);
+      return;
+    }
+    const scrollerRect = el.getBoundingClientRect();
+    const summaryRect = summary.getBoundingClientRect();
+    if (
+      summaryRect.top >= scrollerRect.top &&
+      summaryRect.bottom <= scrollerRect.bottom
+    ) {
+      return;
+    }
+    const topInset = Math.min(140, Math.max(56, scrollerRect.height * 0.18));
+    el.scrollTop += summaryRect.top - scrollerRect.top - topInset;
+  }
+
   function visualTranscriptHasActiveSelection(): boolean {
     if (!messagesEl) return false;
     const selection = window.getSelection?.();
@@ -1680,13 +1710,16 @@
     hasRenderedOnce = false;
     visualTailKey = "";
     visualTailFollowPaused = false;
+    visualTailFollowActive = false;
     visualTailFollowPauseSeq += 1;
   }
 
   function setVisualTailFollowPaused(paused: boolean): void {
-    if (visualTailFollowPaused === paused) return;
-    visualTailFollowPaused = paused;
-    visualTailFollowPauseSeq += 1;
+    if (visualTailFollowPaused !== paused) {
+      visualTailFollowPaused = paused;
+      visualTailFollowPauseSeq += 1;
+    }
+    visualTailFollowActive = !paused;
   }
 
   function updateVisualTailFollowIntent(): void {
@@ -1736,6 +1769,8 @@
       nearEnd: isNearScrollEnd(el),
       selecting,
     });
+    visualTailFollowActive =
+      shouldStickMessages && (firstRender || !visualTailFollowPaused);
     const liveBodyStates = liveWorkBodies().map((body) => ({
       key: body.key,
       shouldStick: shouldFollowVisualTail({
@@ -1753,9 +1788,22 @@
         const current = messagesEl;
         if (!current) return;
         const mayFollow = firstRender || canApplyVisualTailFollow(pauseSeq);
-        if (shouldStickMessages && mayFollow) scrollToEnd(current);
+        const currentLiveBodies = liveWorkBodies();
+        if (!mayFollow) visualTailFollowActive = false;
+        if (shouldStickMessages && mayFollow) {
+          if (
+            shouldAnchorLiveWorkTail({
+              hasLiveWork: currentLiveBodies.length > 0,
+              shouldStickMessages,
+            })
+          ) {
+            scrollLiveWorkTailAnchorIntoView(current);
+          } else {
+            scrollToEnd(current);
+          }
+        }
 
-        for (const { body, key } of liveWorkBodies()) {
+        for (const { body, key } of currentLiveBodies) {
           const previous = liveBodyStates.find((state) => state.key === key);
           if (
             mayFollow &&
@@ -1774,9 +1822,21 @@
           const settled = messagesEl;
           const mayFollowSettled =
             firstRender || canApplyVisualTailFollow(pauseSeq);
-          if (settled && shouldStickMessages && mayFollowSettled)
-            scrollToEnd(settled);
-          for (const { body, key } of liveWorkBodies()) {
+          const settledLiveBodies = liveWorkBodies();
+          if (!mayFollowSettled) visualTailFollowActive = false;
+          if (settled && shouldStickMessages && mayFollowSettled) {
+            if (
+              shouldAnchorLiveWorkTail({
+                hasLiveWork: settledLiveBodies.length > 0,
+                shouldStickMessages,
+              })
+            ) {
+              scrollLiveWorkTailAnchorIntoView(settled);
+            } else {
+              scrollToEnd(settled);
+            }
+          }
+          for (const { body, key } of settledLiveBodies) {
             const previous = liveBodyStates.find(
               (state) => state.key === key,
             );
@@ -1818,9 +1878,10 @@
     if (!session || !messagesEl) return false;
     if (codexVisualAppSurface) {
       const threadId = effectiveSessionId;
-      return !!threadId && codexAppHistoryLoadedThread !== threadId;
+      const key = codexAppHistoryKey(threadId, effectiveSessionCwd);
+      return !!key && codexAppHistoryLoadedKey !== key;
     }
-    if (!sessionPollSource) return false;
+    if (sessionMessageSource.kind !== "transcript") return false;
     if (codexVisualAppSurface && codexActiveTurnId !== null) return false;
     const total = maxVisualHistoryMessages();
     if (visualHistoryMinMessages >= total) return false;
@@ -1881,14 +1942,28 @@
     });
   }
 
+  function sessionMessageSourceHistoryKey(
+    dataSource: SessionMessageSource,
+  ): string {
+    switch (dataSource.kind) {
+      case "app-server":
+        return `app-server:${dataSource.source}`;
+      case "transcript":
+        return `transcript:${dataSource.source}`;
+      case "unavailable":
+        return `unavailable:${dataSource.reason}`;
+    }
+  }
+
   $: {
     const key = codexVisualAppSurface
       ? `codex-app:${effectiveSessionId ?? ""}`
-      : (sessionPollSource ?? "");
+      : sessionMessageSourceHistoryKey(sessionMessageSource);
     if (key !== visualHistorySourceKey) {
       visualHistorySourceKey = key;
       resetVisualHistoryWindow();
-      codexAppHistoryLoadedThread = "";
+      codexAppHistoryLoadedKey = "";
+      codexAppHistoryLoadingKey = "";
     }
   }
 
@@ -1958,6 +2033,7 @@
     const cwd = effectiveSessionCwd;
     if (!threadId || !cwd || !session) return;
     const targetThreadId = threadId;
+    const targetHistoryKey = codexAppHistoryKey(threadId, cwd);
     const qs = new URLSearchParams({ threadId, cwd });
     try {
       const res = await fetch(
@@ -1981,7 +2057,7 @@
           session.messages,
         ) as NormalizedMessage[],
       };
-      codexAppHistoryLoadedThread = targetThreadId;
+      codexAppHistoryLoadedKey = targetHistoryKey;
       preserveVisualHistoryScrollAnchor();
     } catch (e) {
       sendError = e instanceof Error ? e.message : String(e);
@@ -1990,7 +2066,7 @@
   }
 
   async function load() {
-    if (!shouldPollTranscript || !sessionPollSource) return;
+    if (sessionMessageSource.kind !== "transcript") return;
     if (loading) return;
     if (ollamaStreamingIdx !== null) return;
     loading = true;
@@ -2102,12 +2178,14 @@
   $: codexVisualAppSurface =
     liveCodexApp && visualAppEnabled && transcriptSurface === "read";
   $: sessionFileSource = liveCodexApp ? (transcriptSource ?? "") : source;
-  $: sessionPollSource = sessionFileSource || source;
-  $: titleStorageSource = sessionFileSource || source;
-  $: shouldPollTranscript = shouldPollSessionSource({
+  $: sessionMessageSource = resolveSessionMessageSource({
     agent,
-    source: sessionPollSource,
+    source,
+    transcriptSource,
+    liveAppSurface: codexVisualAppSurface,
   });
+  $: titleStorageSource = sessionFileSource || source;
+  $: shouldPollTranscript = sessionMessageSource.kind === "transcript";
   $: effectiveSessionId = resumeSessionId ?? session?.sessionId;
   $: effectiveSessionCwd = session?.cwd || wtPath;
   $: codexRunning = liveCodexApp && (sending || !!codexActiveTurnId);
@@ -2156,6 +2234,23 @@
       startedAt: new Date().toISOString(),
       messages: [],
     };
+  }
+
+  $: if (
+    shouldLoadCodexAppThreadHistory({
+      visualAppSurface: codexVisualAppSurface,
+      threadId: effectiveSessionId,
+      cwd: effectiveSessionCwd,
+      hasSession: !!session,
+      loadedHistoryKey: codexAppHistoryLoadedKey,
+      loadingHistoryKey: codexAppHistoryLoadingKey,
+    })
+  ) {
+    const key = codexAppHistoryKey(effectiveSessionId, effectiveSessionCwd);
+    codexAppHistoryLoadingKey = key;
+    void loadCodexAppThreadHistory().finally(() => {
+      if (codexAppHistoryLoadingKey === key) codexAppHistoryLoadingKey = "";
+    });
   }
 
   $: {
@@ -2773,6 +2868,7 @@
               ? "file change"
               : "exec_command",
           toolUseId: itemId,
+          streaming: true,
         },
       );
       return;
@@ -2886,6 +2982,18 @@
       .map((block) => block.text ?? "")
       .join("");
     if (incomingResultText !== "") {
+      const incomingFinalResult = incoming.blocks.some(
+        (block) => block.type === "tool_result" && !block.streaming,
+      );
+      const existingStreamingResult = existing.blocks.some(
+        (block) => block.type === "tool_result" && block.streaming,
+      );
+      const existingHasResult = existing.blocks.some(
+        (block) => block.type === "tool_result",
+      );
+      if (incomingFinalResult && existingStreamingResult) return false;
+      if (!incomingFinalResult && existingHasResult && !existingStreamingResult)
+        return true;
       const existingResultText = existing.blocks
         .filter((block) => block.type === "tool_result")
         .map((block) => block.text ?? "")
@@ -4442,14 +4550,18 @@
   // per-column setInterval: one timer + one batched request per daemon for the
   // whole dashboard, instead of ~50 req/s when 30+ columns are open (see
   // plans/performance.md "per-column session-poll storm"). The poller is
-  // idle-gated and resume-aware centrally; it dispatches non-live transcript
-  // bodies via onSession and this column's active-sends slice via onInflight.
-  // Live Codex app-server panes still need transcript-file hydration for their
-  // existing messages. They only skip body polling while an active app-server
-  // turn is streaming, so a batch response does not clobber the live event UI.
+  // idle-gated and resume-aware centrally; it dispatches transcript bodies via
+  // onSession for transcript/review panes and this column's active-sends slice
+  // via onInflight.
+  //
+  // A live Codex app-server pane is deliberately single-source: messages come
+  // from app-server thread/history APIs plus SSE events, never from the JSONL
+  // transcript poller. Mixing the two makes work ranges jump between competing
+  // clocks when steer/compaction boundaries differ.
   // `source` is keyed in App.svelte's {#each}, but `transcriptSource` may arrive
-  // after mount for live app-server rows, so registration tracks the resolved
-  // `sessionPollSource`.
+  // after mount for app-server rows. `sessionMessageSource` makes the ownership
+  // explicit: live app-server surfaces use app-server history/SSE, transcript
+  // surfaces use the JSONL/session poller. There is no mixed message source.
 
   let unregisterPoll: (() => void) | null = null;
   let mounted = false;
@@ -4457,9 +4569,13 @@
 
   function syncSessionPollRegistration(): void {
     if (!mounted) return;
+    const transcriptSource =
+      sessionMessageSource.kind === "transcript"
+        ? sessionMessageSource.source
+        : "";
     const nextKey =
-      shouldPollTranscript && sessionPollSource
-        ? `${daemonId ?? ""}\0${sessionPollSource}`
+      shouldPollTranscript && transcriptSource
+        ? `${daemonId ?? ""}\0${transcriptSource}`
         : "";
     if (nextKey === registeredPollKey) return;
     if (unregisterPoll) {
@@ -4469,21 +4585,16 @@
     registeredPollKey = nextKey;
     if (!nextKey) return;
     unregisterPoll = registerSessionPoll({
-      source: sessionPollSource,
+      source: transcriptSource,
       daemonId,
       getSessionId: () => session?.sessionId,
       getMinMessages: () => visualHistoryMinMessages,
       shouldPollSession: () =>
         sessionElementNearViewport() &&
         ollamaStreamingIdx === null &&
-        (!codexVisualAppSurface || !session || codexActiveTurnId === null),
+        !codexVisualAppSurface,
       onSession: (bodyText, etag) => {
-        // Don't clobber a live API stream mid-flight after initial hydration.
-        if (
-          ollamaStreamingIdx !== null ||
-          (codexVisualAppSurface && codexActiveTurnId !== null && session)
-        )
-          return;
+        if (ollamaStreamingIdx !== null || codexVisualAppSurface) return;
         if (bodyText === lastResponseBody) return;
         lastEtag = etag;
         lastResponseBody = bodyText;
@@ -4494,11 +4605,7 @@
         }
       },
       onSessionPatch: (patch, etag) => {
-        if (
-          ollamaStreamingIdx !== null ||
-          (codexVisualAppSurface && codexActiveTurnId !== null && session)
-        )
-          return;
+        if (ollamaStreamingIdx !== null || codexVisualAppSurface) return;
         lastEtag = etag;
         applySessionPatch(patch);
       },
@@ -4509,7 +4616,7 @@
   }
 
   $: {
-    void sessionPollSource;
+    void sessionMessageSource;
     void shouldPollTranscript;
     void daemonId;
     syncSessionPollRegistration();
@@ -4550,6 +4657,56 @@
     if (msgSettleTimer) clearTimeout(msgSettleTimer);
   });
 </script>
+
+{#snippet composerActionIcon(
+  name:
+    | "cancel"
+    | "edit"
+    | "merge-up"
+    | "queue"
+    | "remove"
+    | "run"
+    | "save"
+    | "send"
+    | "steer"
+    | "stop",
+)}
+  <svg
+    class="composer-action-icon"
+    viewBox="0 0 24 24"
+    aria-hidden="true"
+    focusable="false"
+  >
+    {#if name === "send"}
+      <path d="M12 19V5" />
+      <path d="M5 12l7-7 7 7" />
+    {:else if name === "queue"}
+      <circle cx="12" cy="4" r="1.15" />
+      <circle cx="12" cy="7.2" r="1.15" />
+      <path d="M12 20V10.5" />
+      <path d="M5 17l7-7 7 7" />
+    {:else if name === "stop"}
+      <rect x="7" y="7" width="10" height="10" rx="1.6" />
+    {:else if name === "steer"}
+      <path d="M9 7l-5 5 5 5" />
+      <path d="M5 12h9a5 5 0 0 1 5 5v1" />
+    {:else if name === "save"}
+      <path d="M5 12.5l4.2 4.2L19 7" />
+    {:else if name === "cancel" || name === "remove"}
+      <path d="M6 6l12 12" />
+      <path d="M18 6L6 18" />
+    {:else if name === "edit"}
+      <path d="M4 20h4l10.5-10.5a2.1 2.1 0 0 0-3-3L5 17v3z" />
+      <path d="M14 7l3 3" />
+    {:else if name === "merge-up"}
+      <path d="M12 20V6" />
+      <path d="M7 11l5-5 5 5" />
+      <path d="M6 4h12" />
+    {:else if name === "run"}
+      <path d="M8 5l11 7-11 7z" />
+    {/if}
+  </svg>
+{/snippet}
 
 <div
   class="session"
@@ -4949,6 +5106,11 @@
     <p class="error">{error}</p>
   {:else if loading && !session}
     <LoadingOverlay text="loading session…" />
+  {:else if codexVisualAppSurface &&
+    codexAppHistoryLoadingKey &&
+    session &&
+    session.messages.length === 0}
+    <LoadingOverlay text="loading conversation…" />
   {:else if session && session.messages.length === 0 && !showChatComposer}
     <p class="muted small">
       {liveCodexApp
@@ -5298,39 +5460,49 @@
                         mergeCodexQueuedMessageIntoPrevious(item.id)}
                       disabled={itemIndex === 0 || !!editingCodexQueueId}
                       title="Merge into previous queued message"
-                      aria-label="Merge into previous queued message">⇡</button
+                      aria-label="Merge into previous queued message"
                     >
+                      {@render composerActionIcon("merge-up")}
+                    </button>
                     <button
                       type="button"
                       on:click={() => beginEditCodexQueuedMessage(item)}
                       disabled={!!editingCodexQueueId}
                       title="Edit queued message"
-                      aria-label="Edit queued message">✎</button
+                      aria-label="Edit queued message"
                     >
+                      {@render composerActionIcon("edit")}
+                    </button>
                     {#if codexActiveTurnId}
                       <button
                         type="button"
                         on:click={() => void steerCodexQueuedMessage(item)}
                         disabled={!!editingCodexQueueId}
                         title="Send this queued message as steering now"
-                        aria-label="Steer queued message">↩</button
+                        aria-label="Steer queued message"
                       >
+                        {@render composerActionIcon("steer")}
+                      </button>
                     {:else}
                       <button
                         type="button"
                         on:click={() => void runCodexQueuedMessage(item)}
                         disabled={!!editingCodexQueueId}
                         title="Run this queued message now"
-                        aria-label="Run queued message">▶</button
+                        aria-label="Run queued message"
                       >
+                        {@render composerActionIcon("run")}
+                      </button>
                     {/if}
                     <button
                       type="button"
                       on:click={() => removeCodexQueuedMessage(item.id)}
                       disabled={!!editingCodexQueueId}
                       title="Remove queued message"
-                      aria-label="Remove queued message">×</button
+                      aria-label="Remove queued message"
                     >
+                      {@render composerActionIcon("remove")}
+                    </button>
                   {/if}
                 </div>
               </div>
@@ -5338,27 +5510,10 @@
           </div>
         </div>
       {/if}
-      {#if agent === "codex" && composerWarnings.length}
-        <div class="composer-warning-indicators">
-          <button
-            type="button"
-            class="codex-composer-badge warning"
-            class:expanded={codexWarningsExpanded}
-            on:click={toggleCodexWarningsPane}
-            title={codexWarningsExpanded
-              ? "Collapse warnings"
-              : "Show warnings"}
-            aria-label={codexWarningsExpanded
-              ? "Collapse warnings"
-              : "Show warnings"}
-          >
-            Warnings: {composerWarnings.length}
-          </button>
-        </div>
-      {/if}
       <div
         class="composer"
         class:wide-actions={agent === "codex" && codexRunning}
+        class:tail-following={visualTranscriptActive && visualTailFollowActive}
       >
         {#if agent === "codex" && (composerAttachments.length || composerUploadingImages || composerAttachmentError)}
           <div class="composer-attachments" aria-label="Message attachments">
@@ -5431,7 +5586,7 @@
             disabled={sending && agent !== "codex" && !ollamaAbort}
           ></textarea>
         </div>
-        {#if agent === "codex" && (codexLatestGoal || codexLatestPlan || codexQueuedMessages.length)}
+        {#if agent === "codex" && (codexLatestGoal || codexLatestPlan || codexQueuedMessages.length || composerWarnings.length)}
           <div class="composer-indicators">
             {#if codexLatestGoal}
               <button
@@ -5478,6 +5633,22 @@
                 Queue: {codexQueuedMessages.length}
               </button>
             {/if}
+            {#if composerWarnings.length}
+              <button
+                type="button"
+                class="codex-composer-badge warning"
+                class:expanded={codexWarningsExpanded}
+                on:click={toggleCodexWarningsPane}
+                title={codexWarningsExpanded
+                  ? "Collapse warnings"
+                  : "Show warnings"}
+                aria-label={codexWarningsExpanded
+                  ? "Collapse warnings"
+                  : "Show warnings"}
+              >
+                Warnings: {composerWarnings.length}
+              </button>
+            {/if}
           </div>
         {/if}
         <div class="composer-footer">
@@ -5494,7 +5665,7 @@
                 title="Save queued message (Enter)"
                 aria-label="Save queued message"
               >
-                ✓
+                {@render composerActionIcon("save")}
               </button>
               <button
                 type="button"
@@ -5503,7 +5674,7 @@
                 title="Cancel queued message edit"
                 aria-label="Cancel queued message edit"
               >
-                ×
+                {@render composerActionIcon("cancel")}
               </button>
             {:else if sending && agent === "ollama"}
               <button
@@ -5513,7 +5684,7 @@
                 title="Stop generating"
                 aria-label="Stop"
               >
-                ◼
+                {@render composerActionIcon("stop")}
               </button>
             {:else if codexRunning && agent === "codex"}
               {#if codexActiveTurnId && composerCanSend}
@@ -5525,7 +5696,7 @@
                   title="Steer the running Codex turn"
                   aria-label="Steer Codex"
                 >
-                  ↩
+                  {@render composerActionIcon("steer")}
                 </button>
               {/if}
               <button
@@ -5536,7 +5707,7 @@
                 title="Queue for the next Codex turn"
                 aria-label="Queue Codex message"
               >
-                ↑
+                {@render composerActionIcon("queue")}
               </button>
               <button
                 type="button"
@@ -5545,7 +5716,7 @@
                 title="Stop Codex"
                 aria-label="Stop Codex"
               >
-                ◼
+                {@render composerActionIcon("stop")}
               </button>
             {:else}
               <button
@@ -5560,7 +5731,11 @@
                   : "Send (Enter). Shift+Enter for newline."}
                 aria-label="Send"
               >
-                {sending ? "…" : "↑"}
+                {#if sending}
+                  <LoadingSpinner size="0.9rem" thickness="2px" label="Sending" />
+                {:else}
+                  {@render composerActionIcon("send")}
+                {/if}
               </button>
             {/if}
           </div>
@@ -5929,6 +6104,18 @@
   }
   .composer.wide-actions {
     padding-right: 8rem;
+  }
+  .composer.tail-following::before {
+    content: "";
+    position: absolute;
+    top: -1px;
+    left: 50%;
+    width: 1.65rem;
+    height: 2px;
+    border-radius: 999px;
+    background: color-mix(in srgb, var(--text-muted) 62%, transparent);
+    transform: translateX(-50%);
+    pointer-events: none;
   }
   .session.empty-chat-composer:not(.has-composer-error) .composer-shell {
     margin-top: auto;
@@ -6584,8 +6771,8 @@
   }
   .composer-indicators {
     position: absolute;
-    right: 3.2rem;
-    bottom: 0.62rem;
+    right: 0.7rem;
+    bottom: 0.42rem;
     display: flex;
     align-items: center;
     justify-content: flex-end;
@@ -6594,18 +6781,7 @@
     max-width: min(22rem, calc(100vw - 2rem));
   }
   .composer.wide-actions .composer-indicators {
-    right: 7.45rem;
-  }
-  .composer-warning-indicators {
-    position: absolute;
-    right: 1.25rem;
-    bottom: 0.62rem;
-    z-index: 6;
-    display: flex;
-    align-items: center;
-    justify-content: flex-end;
-    min-height: 1.55rem;
-    max-width: min(22rem, calc(100vw - 2rem));
+    right: 0.7rem;
   }
   .codex-composer-badge {
     box-sizing: border-box;
@@ -6680,6 +6856,30 @@
   .composer-send:hover:not(:disabled) {
     background: var(--text-2);
     border-color: var(--text-2);
+  }
+  .composer-action-icon {
+    display: block;
+    width: 1.05rem;
+    height: 1.05rem;
+    flex: 0 0 auto;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 2.2;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+  }
+  .composer-action-icon rect,
+  .composer-action-icon circle {
+    fill: currentColor;
+    stroke: none;
+  }
+  .codex-queue-actions .composer-action-icon {
+    width: 0.9rem;
+    height: 0.9rem;
+    stroke-width: 2;
+  }
+  .composer-send :global(.loading-spinner) {
+    display: block;
   }
   .composer-steer {
     background: transparent;

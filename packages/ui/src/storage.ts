@@ -592,6 +592,29 @@ export function shouldPollSessionSource(session: {
   return !(session.agent === "codex" && isLiveCodexAppSource(session.source));
 }
 
+export type SessionMessageSource =
+  | { kind: "app-server"; source: string }
+  | { kind: "transcript"; source: string }
+  | { kind: "unavailable"; reason: "missing-transcript" | "not-pollable" };
+
+export function resolveSessionMessageSource(session: {
+  agent: PersistedAgent | string;
+  source: string;
+  transcriptSource?: string;
+  liveAppSurface?: boolean;
+}): SessionMessageSource {
+  if (session.liveAppSurface) {
+    return { kind: "app-server", source: session.source };
+  }
+  const source = isLiveCodexAppSource(session.source)
+    ? session.transcriptSource
+    : session.source;
+  if (!source) return { kind: "unavailable", reason: "missing-transcript" };
+  return shouldPollSessionSource({ agent: session.agent, source })
+    ? { kind: "transcript", source }
+    : { kind: "unavailable", reason: "not-pollable" };
+}
+
 export function transientDiscoverySources(
   byWt: Record<string, readonly Pick<PersistedSession, "agent" | "source">[]>,
   options: {

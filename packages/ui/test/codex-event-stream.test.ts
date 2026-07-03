@@ -7,14 +7,19 @@ import {
   codexLiveMarkerFromEvent,
   codexLiveToolResultFromEvent,
   codexLiveToolUseFromEvent,
+  codexAppHistoryKey,
   codexToolInputQuality,
   codexEventThreadIdForSession,
   mergeCodexAppHistoryMessages,
+  shouldLoadCodexAppThreadHistory,
   subscribeCodexEvents,
   type CodexAppEvent,
   type CodexEventStreamState,
 } from "../src/codex-event-stream";
-import { buildVisualTranscriptItems } from "../src/last-user-message";
+import {
+  buildVisualTranscriptItems,
+  buildVisualWorkDisplayEntries,
+} from "../src/last-user-message";
 
 class FakeEventSource {
   static instances: FakeEventSource[] = [];
@@ -169,6 +174,50 @@ describe("codex event stream hub", () => {
     ).toBeUndefined();
   });
 
+  test("loads app-server history once the visual pane has thread, cwd, and synthetic session", () => {
+    const key = codexAppHistoryKey("thread-1", "/repo");
+    expect(
+      shouldLoadCodexAppThreadHistory({
+        visualAppSurface: true,
+        threadId: "thread-1",
+        cwd: "/repo",
+        hasSession: true,
+        loadedHistoryKey: "",
+        loadingHistoryKey: "",
+      }),
+    ).toBe(true);
+    expect(
+      shouldLoadCodexAppThreadHistory({
+        visualAppSurface: true,
+        threadId: "thread-1",
+        cwd: "/repo",
+        hasSession: true,
+        loadedHistoryKey: key,
+        loadingHistoryKey: "",
+      }),
+    ).toBe(false);
+    expect(
+      shouldLoadCodexAppThreadHistory({
+        visualAppSurface: true,
+        threadId: "thread-1",
+        cwd: "/repo",
+        hasSession: true,
+        loadedHistoryKey: "",
+        loadingHistoryKey: key,
+      }),
+    ).toBe(false);
+    expect(
+      shouldLoadCodexAppThreadHistory({
+        visualAppSurface: false,
+        threadId: "thread-1",
+        cwd: "/repo",
+        hasSession: true,
+        loadedHistoryKey: "",
+        loadingHistoryKey: "",
+      }),
+    ).toBe(false);
+  });
+
   test("normalizes live command item events into paired tool-use rows", () => {
     const start: CodexAppEvent = {
       kind: "notification",
@@ -277,6 +326,35 @@ describe("codex event stream hub", () => {
     });
   });
 
+  test("normalizes live app-server compaction events into context markers", () => {
+    const event: CodexAppEvent = {
+      kind: "notification",
+      method: "context_compacted",
+      params: {
+        type: "context_compacted",
+        threadId: "thread-1",
+        turnId: "turn-1",
+      },
+      threadId: "thread-1",
+      turnId: "turn-1",
+      receivedAt: "2026-06-30T04:22:46.776Z",
+      seq: 42,
+    };
+
+    expect(codexLiveMarkerFromEvent(event)).toEqual({
+      id: "codex-marker-turn-1-context-42",
+      text: "[Context compacted]",
+    });
+    expect(codexLiveMessagesFromEvent(event)).toEqual([
+      {
+        id: "codex-marker-turn-1-context-42",
+        role: "system",
+        timestamp: "2026-06-30T04:22:46.776Z",
+        blocks: [{ type: "marker", text: "[Context compacted]" }],
+      },
+    ]);
+  });
+
   test("keeps completed commands with empty output visible", () => {
     const messages = codexAppHistoryMessagesFromThread({
       turns: [
@@ -309,6 +387,33 @@ describe("codex event stream hub", () => {
           text: "Exit code: 0\nWall time: 0.0120 seconds\nOutput:\n",
         },
       ],
+    });
+  });
+
+  test("keeps immediately completed commands visible without timing fields", () => {
+    const completed: CodexAppEvent = {
+      kind: "notification",
+      method: "item/completed",
+      params: {
+        item: {
+          type: "commandExecution",
+          id: "call-immediate",
+          command: "true",
+          cwd: "/repo",
+          status: "completed",
+        },
+        threadId: "thread-1",
+        turnId: "turn-1",
+      },
+      turnId: "turn-1",
+      receivedAt: "2026-06-22T10:00:02.000Z",
+    };
+
+    expect(codexLiveToolResultFromEvent(completed)).toEqual({
+      id: "codex-output-call-immediate",
+      toolName: "exec_command",
+      toolUseId: "call-immediate",
+      text: "Exit code: 0\nWall time: 0.0000 seconds\nOutput:\n",
     });
   });
 
@@ -667,6 +772,104 @@ describe("codex event stream hub", () => {
             path: "/tmp/asset-preview.png",
             title: "asset-preview.png",
             alt: "asset-preview.png",
+          },
+        ],
+      },
+    ]);
+  });
+
+  test("normalizes app-server write_stdin history and live results as read logs", () => {
+    const writeStdinItem = {
+      id: "call-logs",
+      type: "dynamicToolCall",
+      tool: "write_stdin",
+      arguments: {
+        session_id: 55249,
+        chars: "",
+        yield_time_ms: 5000,
+        max_output_tokens: 8000,
+      },
+      result:
+        "Chunk ID: 07acea\nWall time: 5.0019 seconds\nProcess running with session ID 55249\nOriginal token count: 2\nOutput:\n500/700\n",
+    };
+    const history = codexAppHistoryMessagesFromThread({
+      turns: [{ id: "turn-1", items: [writeStdinItem] }],
+    });
+    const live = codexLiveMessagesFromEvent({
+      kind: "notification",
+      method: "item/completed",
+      params: {
+        threadId: "thread-1",
+        turnId: "turn-1",
+        item: writeStdinItem,
+      },
+      threadId: "thread-1",
+      turnId: "turn-1",
+      receivedAt: "2026-06-22T10:00:00.000Z",
+    });
+
+    expect(stripTimestamps(live)).toEqual(stripTimestamps(history));
+
+    const work = buildVisualTranscriptItems([
+      {
+        role: "user" as const,
+        blocks: [{ type: "text" as const, text: "keep watching the logs" }],
+      },
+      ...live,
+    ]).find((item) => item.kind === "work");
+    if (!work || work.kind !== "work") {
+      throw new Error("expected work item");
+    }
+    const entries = buildVisualWorkDisplayEntries(work.entries);
+    expect(entries).toHaveLength(1);
+    expect(entries[0]?.pairedToolUse?.blocks[0]?.toolName).toBe("write_stdin");
+    expect(entries[0]?.entry.blocks[0]).toMatchObject({
+      type: "tool_result",
+      toolName: "write_stdin",
+      text: expect.stringContaining("500/700"),
+    });
+  });
+
+  test("normalizes app-server write_stdin starts before results arrive", () => {
+    const messages = codexLiveMessagesFromEvent({
+      kind: "notification",
+      method: "item/started",
+      params: {
+        threadId: "thread-1",
+        turnId: "turn-1",
+        item: {
+          id: "call-logs",
+          type: "dynamicToolCall",
+          tool: "write_stdin",
+          arguments: {
+            session_id: 55249,
+            chars: "",
+            yield_time_ms: 5000,
+            max_output_tokens: 8000,
+          },
+        },
+      },
+      threadId: "thread-1",
+      turnId: "turn-1",
+      receivedAt: "2026-06-22T10:00:00.000Z",
+    });
+
+    expect(messages).toEqual([
+      {
+        id: "codex-tool-call-logs",
+        role: "assistant",
+        timestamp: "2026-06-22T10:00:00.000Z",
+        blocks: [
+          {
+            type: "tool_use",
+            toolName: "write_stdin",
+            toolInput: {
+              session_id: 55249,
+              chars: "",
+              yield_time_ms: 5000,
+              max_output_tokens: 8000,
+            },
+            toolUseId: "call-logs",
           },
         ],
       },

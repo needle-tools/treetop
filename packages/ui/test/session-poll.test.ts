@@ -279,6 +279,50 @@ describe("createSessionPoller", () => {
     ]);
   });
 
+  test("does not replay cached transcript bodies into registrations that skip session polling", async () => {
+    let phase = 0;
+    const { fn, calls } = makeFetch((url) => {
+      if (url.includes("/api/sessions/batch")) {
+        phase++;
+        return jsonResponse({
+          results: [
+            { source: "A", status: 200, etag: `a${phase}`, body: '{"v":1}' },
+          ],
+        });
+      }
+      if (url.includes("/api/active-sends"))
+        return jsonResponse([], { etag: "rev-0-all" });
+      return jsonResponse({}, { status: 404 });
+    });
+    const poller = createSessionPoller({ fetchImpl: fn, isIdle: () => false });
+    const first: string[] = [];
+    const unmount = poller.register({
+      source: "A",
+      getSessionId: () => undefined,
+      onSession: (body) => first.push(body),
+      onInflight: noop,
+    });
+
+    await poller.tick();
+    unmount();
+
+    const skipped: string[] = [];
+    poller.register({
+      source: "A",
+      getSessionId: () => undefined,
+      shouldPollSession: () => false,
+      onSession: (body) => skipped.push(body),
+      onInflight: noop,
+    });
+    await Promise.resolve();
+    await poller.tick();
+
+    expect(first).toEqual(['{"v":1}']);
+    expect(skipped).toEqual([]);
+    const batches = calls.filter((c) => c.url.includes("/api/sessions/batch"));
+    expect(batches).toHaveLength(1);
+  });
+
   test("sends message hashes and dispatches daemon tail patches without full-body callback", async () => {
     let phase = 0;
     const { fn, calls } = makeFetch((url) => {

@@ -18,6 +18,16 @@ export interface MessageBlock {
   goalThreadId?: string;
 }
 
+export interface VisualMediaBlock extends MessageBlock {
+  type: "media";
+  mediaKind: "image" | "file" | "artifact";
+  path?: string;
+  url?: string;
+  title?: string;
+  alt?: string;
+  mimeType?: string;
+}
+
 export type VisualPlanStatus = "pending" | "in_progress" | "completed" | string;
 
 export interface VisualPlanItem {
@@ -719,7 +729,7 @@ export function visualToolTestResultBadges(
   const badges: VisualToolResultBadge[] = [];
   if (counts.failed > 0) {
     badges.push({
-      label: `✕×${counts.failed}`,
+      label: `✕${counts.failed}`,
       tone: "danger",
       title: `${counts.failed} ${plural(counts.failed, "test")} failed`,
     });
@@ -732,28 +742,28 @@ export function visualToolTestResultBadges(
   }
   if (counts.warnings > 0) {
     badges.push({
-      label: `⚠×${counts.warnings}`,
+      label: `⚠${counts.warnings}`,
       tone: "warning",
       title: `${counts.warnings} ${plural(counts.warnings, "warning")}`,
     });
   }
   if (counts.passed > 0) {
     badges.push({
-      label: `✓×${counts.passed}`,
+      label: `✓${counts.passed}`,
       tone: "success",
       title: `${counts.passed} ${plural(counts.passed, "test")} passed`,
     });
   }
   if (counts.skipped > 0) {
     badges.push({
-      label: `skip×${counts.skipped}`,
+      label: `skip ${counts.skipped}`,
       tone: "neutral",
       title: `${counts.skipped} ${plural(counts.skipped, "test")} skipped`,
     });
   }
   if (counts.todo > 0) {
     badges.push({
-      label: `todo×${counts.todo}`,
+      label: `todo ${counts.todo}`,
       tone: "neutral",
       title: `${counts.todo} todo ${plural(counts.todo, "test")}`,
     });
@@ -867,6 +877,66 @@ function visualToolFetchSummaries(
     (summary): summary is Extract<VisualCommandSummary, { kind: "fetch" }> =>
       summary.kind === "fetch",
   );
+}
+
+export function visualToolMediaBlocks(
+  block: MessageBlock | undefined,
+): VisualMediaBlock[] {
+  if (!block || block.type !== "tool_use") return [];
+  const out: VisualMediaBlock[] = [];
+  const seen = new Set<string>();
+  const addImagePath = (path: string | undefined, title?: string) => {
+    if (!path) return;
+    const trimmed = path.trim();
+    if (!trimmed || seen.has(trimmed)) return;
+    if (!looksLikeImagePath(trimmed)) return;
+    seen.add(trimmed);
+    out.push({
+      type: "media",
+      mediaKind: "image",
+      path: trimmed,
+      title: title ?? pathBasename(trimmed),
+      alt: title ?? pathBasename(trimmed),
+      toolName: block.toolName,
+      toolUseId: block.toolUseId,
+    });
+  };
+
+  const toolName = (block.toolName ?? "").toLowerCase();
+  if (block.toolInput && typeof block.toolInput === "object") {
+    const obj = block.toolInput as Record<string, unknown>;
+    if (
+      toolName.includes("take_screenshot") ||
+      toolName.includes("screenshot")
+    ) {
+      addImagePath(
+        stringField(obj, "filePath") ??
+          stringField(obj, "file_path") ??
+          stringField(obj, "path"),
+        "Screenshot",
+      );
+    } else if (toolName === "view_image" || toolName.endsWith(".view_image")) {
+      addImagePath(
+        stringField(obj, "path") ?? stringField(obj, "filePath"),
+        "Image",
+      );
+    }
+  }
+
+  const command =
+    stringFromToolInputField(block.toolInput, "cmd") ??
+    stringFromToolInputField(block.toolInput, "command");
+  if (command) {
+    for (const summary of visualCommandPreview(command).summaries) {
+      if (summary.kind === "image-transform") {
+        addImagePath(summary.input, "Input image");
+        addImagePath(summary.output, "Output image");
+      } else if (summary.kind === "fetch") {
+        addImagePath(summary.output, "Fetched image");
+      }
+    }
+  }
+  return out;
 }
 
 function fetchResultByteCount(
@@ -1092,8 +1162,25 @@ export function shouldShowLiveToolTimer(opts: {
   open: boolean;
   endedAt?: string;
   hasFinalResult: boolean;
+  canStillRun?: boolean;
 }): boolean {
-  return opts.active && opts.open && !opts.endedAt && !opts.hasFinalResult;
+  return (
+    opts.active &&
+    opts.open &&
+    !opts.endedAt &&
+    !opts.hasFinalResult &&
+    opts.canStillRun !== false
+  );
+}
+
+export function visualToolCanStillRun(
+  block: MessageBlock | undefined,
+): boolean {
+  if (!block || block.type !== "tool_use") return false;
+  const name = (block.toolName ?? "").toLowerCase();
+  if (name === "file change" || name === "file_change") return false;
+  if (name === "view_image" || name.endsWith(".view_image")) return false;
+  return true;
 }
 
 type VisualCommandSummary =
@@ -1116,6 +1203,7 @@ type VisualCommandSummary =
         | "log"
         | "branch"
         | "rev-parse"
+        | "rev-list-count"
         | "add"
         | "commit";
       targets: string[];
@@ -1163,6 +1251,18 @@ function visualStructuredToolPreviewParts(
     const fn = stringField(obj, "function");
     if (fn) return textPreviewParts("Run browser script");
   }
+  if (toolName === "list_pages" || toolName.endsWith(".list_pages")) {
+    return textPreviewParts("List browser pages");
+  }
+  if (toolName === "emulate" || toolName.endsWith(".emulate")) {
+    const mode =
+      stringField(obj, "networkConditions") ??
+      stringField(obj, "viewport") ??
+      stringField(obj, "colorScheme") ??
+      (obj.userAgent !== undefined ? "user agent" : undefined) ??
+      (obj.geolocation !== undefined ? "geolocation" : undefined);
+    return textPreviewParts(mode ? `Emulate ${mode}` : "Emulate browser");
+  }
   if (
     toolName === "navigate_page" ||
     toolName === "new_page" ||
@@ -1182,6 +1282,17 @@ function visualStructuredToolPreviewParts(
     toolName.endsWith(".list_console_messages")
   ) {
     return textPreviewParts(consoleMessagesPreview(obj));
+  }
+  if (toolName === "wait_for" || toolName.endsWith(".wait_for")) {
+    const textValues = Array.isArray(obj.text)
+      ? obj.text.filter((value): value is string => typeof value === "string")
+      : [];
+    if (textValues.length > 0) {
+      return textPreviewParts(`Wait for ${textValues.join(", ")}`);
+    }
+    const singleText = stringField(obj, "text");
+    if (singleText) return textPreviewParts(`Wait for ${singleText}`);
+    return textPreviewParts("Wait for page text");
   }
   if (
     toolName === "take_screenshot" ||
@@ -2121,6 +2232,16 @@ function summarizeGit(tokens: string[]): VisualCommandSummary | undefined {
   if (subcommand === "rev-parse") {
     return { kind: "git", action: "rev-parse", targets: [] };
   }
+  if (subcommand === "rev-list" && tokens.includes("--count")) {
+    const range = tokens
+      .slice(subcommandIndex + 1)
+      .find((token) => !token.startsWith("-"));
+    return {
+      kind: "git",
+      action: "rev-list-count",
+      targets: range ? [range] : [],
+    };
+  }
   if (subcommand === "add") {
     return {
       kind: "git",
@@ -2402,7 +2523,9 @@ function summarizeImageTransform(
 }
 
 function looksLikeImagePath(path: string): boolean {
-  return /\.(?:avif|bmp|gif|heic|jpe?g|png|tiff?|webp)$/i.test(path);
+  return /\.(?:avif|bmp|gif|heic|heif|jpe?g|png|svg|tiff?|webp)$/i.test(
+    path.split(/[?#]/)[0] ?? path,
+  );
 }
 
 function summarizeRemove(tokens: string[]): VisualCommandSummary | undefined {
@@ -2802,6 +2925,14 @@ function gitSummaryParts(
   }
   if (summary.action === "rev-parse") {
     return [{ kind: "text", text: "Show current commit" }];
+  }
+  if (summary.action === "rev-list-count") {
+    return [
+      {
+        kind: "text",
+        text: `Count commits${summary.targets.length ? ` ${summary.targets.join(", ")}` : ""}`,
+      },
+    ];
   }
   if (summary.action === "add") {
     return [{ kind: "text", text: "Stage" }, ...prefixedPathList(summary.targets)];

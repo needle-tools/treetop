@@ -23,6 +23,7 @@ import {
   openSessionRenderKey,
   reconcileOpenSessionsWithSurfacePreferences,
   resolveTitleSource,
+  resolveSessionMessageSource,
   sessionMatchesKnownKeys,
   sessionSurfacePreference,
   sessionSurfaceKeys,
@@ -549,6 +550,34 @@ describe("filterToExistingSessions", () => {
         source: "/Users/me/.codex/sessions/thread-123.jsonl",
       }),
     ).toBe(true);
+  });
+
+  test("live Codex App panes never poll the transcript source", () => {
+    expect(
+      resolveSessionMessageSource({
+        agent: "codex",
+        source: codexAppSource("thread-123"),
+        transcriptSource: "/Users/me/.codex/sessions/thread-123.jsonl",
+        liveAppSurface: true,
+      }),
+    ).toEqual({
+      kind: "app-server",
+      source: codexAppSource("thread-123"),
+    });
+  });
+
+  test("stopped Codex App review panes may poll their transcript source", () => {
+    expect(
+      resolveSessionMessageSource({
+        agent: "codex",
+        source: codexAppSource("thread-123"),
+        transcriptSource: "/Users/me/.codex/sessions/thread-123.jsonl",
+        liveAppSurface: false,
+      }),
+    ).toEqual({
+      kind: "transcript",
+      source: "/Users/me/.codex/sessions/thread-123.jsonl",
+    });
   });
 
   test("does NOT mutate the persisted array (callers persist the full thing)", () => {
