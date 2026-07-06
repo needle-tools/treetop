@@ -532,6 +532,56 @@ describe("CodexAppServerAdapter", () => {
     });
   });
 
+  test("pages Codex app-server turns instead of reading full history", async () => {
+    const fake = fakeCodexProcess();
+    const adapter = new CodexAppServerAdapter({ spawn: () => fake.proc });
+
+    const read = adapter.readThread({
+      threadId: "thr_existing",
+      cwd: "/repo",
+      turnsLimit: 50,
+      turnsCursor: "cursor-older",
+    });
+    await waitFor(() => fake.writes[0], "initialize request");
+    fake.enqueue({ id: 0, result: {} });
+
+    await waitFor(() => fake.writes[2], "thread read request");
+    expect(parseWrite(fake.writes, 2)).toEqual({
+      id: 1,
+      method: "thread/read",
+      params: { threadId: "thr_existing", includeTurns: false },
+    });
+    fake.enqueue({ id: 1, result: { thread: { id: "thr_existing" } } });
+
+    await waitFor(() => fake.writes[3], "turns list request");
+    expect(parseWrite(fake.writes, 3)).toEqual({
+      id: 2,
+      method: "thread/turns/list",
+      params: {
+        threadId: "thr_existing",
+        cursor: "cursor-older",
+        limit: 50,
+        sortDirection: "desc",
+        itemsView: "full",
+      },
+    });
+    fake.enqueue({
+      id: 2,
+      result: {
+        data: [{ id: "turn_2" }, { id: "turn_1" }],
+        nextCursor: "cursor-even-older",
+        backwardsCursor: "cursor-newer",
+      },
+    });
+
+    await expect(read).resolves.toEqual({
+      thread: { id: "thr_existing" },
+      turns: [{ id: "turn_2" }, { id: "turn_1" }],
+      nextCursor: "cursor-even-older",
+      backwardsCursor: "cursor-newer",
+    });
+  });
+
   test("reads, pauses, resumes, edits, and clears Codex thread goals over app-server RPC", async () => {
     const fake = fakeCodexProcess();
     const adapter = new CodexAppServerAdapter({ spawn: () => fake.proc });

@@ -106,6 +106,9 @@ export interface CodexThreadGoal {
 
 export interface CodexThreadReadResult {
   thread: JsonObject;
+  turns?: JsonObject[];
+  nextCursor?: string | null;
+  backwardsCursor?: string | null;
 }
 
 function defaultSpawn(cwd: string): CodexAppServerProcess {
@@ -347,15 +350,41 @@ export class CodexAppServerAdapter implements NativeAgentAdapter {
     threadId: string;
     cwd: string;
     includeTurns?: boolean;
+    turnsLimit?: number;
+    turnsCursor?: string;
   }): Promise<CodexThreadReadResult> {
     const rpc = await this.ensureRpc(req.cwd);
     const result = await rpc.request("thread/read", {
       threadId: req.threadId,
-      includeTurns: req.includeTurns !== false,
+      includeTurns: req.includeTurns === true,
     });
     const thread = nestedObject(result, ["thread"]);
     if (!thread) throw new Error("codex app-server did not return thread");
-    return { thread };
+    if (!req.turnsLimit || req.turnsLimit <= 0) return { thread };
+    const turnsResult = await rpc.request("thread/turns/list", {
+      threadId: req.threadId,
+      cursor: req.turnsCursor ?? null,
+      limit: req.turnsLimit,
+      sortDirection: "desc",
+      itemsView: "full",
+    });
+    const turns = Array.isArray(turnsResult.data)
+      ? (turnsResult.data.filter(
+          (turn): turn is JsonObject => !!turn && typeof turn === "object",
+        ) as JsonObject[])
+      : [];
+    return {
+      thread,
+      turns,
+      nextCursor:
+        typeof turnsResult.nextCursor === "string"
+          ? turnsResult.nextCursor
+          : null,
+      backwardsCursor:
+        typeof turnsResult.backwardsCursor === "string"
+          ? turnsResult.backwardsCursor
+          : null,
+    };
   }
 
   respondToRequest(

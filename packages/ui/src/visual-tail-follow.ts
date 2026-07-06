@@ -43,3 +43,13 @@ export function shouldAnchorLiveWorkTail(opts: {
 }): boolean {
   return opts.hasLiveWork && opts.shouldStickMessages;
 }
+
+export function replacementVisualScrollTop(opts: {
+  previous: VisualScrollMetrics;
+  next: VisualScrollMetrics;
+  followTail: boolean;
+}): number {
+  const max = Math.max(0, opts.next.scrollHeight - opts.next.clientHeight);
+  if (opts.followTail) return max;
+  return Math.min(max, Math.max(0, opts.previous.scrollTop));
+}

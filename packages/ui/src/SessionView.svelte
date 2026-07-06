@@ -66,6 +66,7 @@
   import VisualTranscript from "./VisualTranscript.svelte";
   import {
     isNearVisualScrollEnd,
+    replacementVisualScrollTop,
     shouldAnchorLiveWorkTail,
     shouldFollowNewLiveWorkBody,
     shouldFollowVisualTail,
@@ -133,8 +134,10 @@
   import { apiWsUrl } from "./api";
   import { createTerminalHold, type HoldSocket } from "./terminal-hold";
   import {
+    CODEX_APP_HISTORY_TURNS_PAGE_SIZE,
+    canRequestOlderCodexAppThreadHistory,
     codexEventItemId,
-    codexAppHistoryMessagesFromThread,
+    codexAppHistoryMessagesFromTurnPage,
     codexAppHistoryKey,
     codexEventThreadIdForSession,
     codexLiveMessagesFromEvent,
@@ -553,6 +556,7 @@
   let visualHistorySourceKey = "";
   let codexAppHistoryLoadedKey = "";
   let codexAppHistoryLoadingKey = "";
+  let codexAppHistoryNextCursor: string | null = null;
   let visualHistoryScrollAnchor: {
     el: HTMLElement;
     scrollHeight: number;
@@ -1694,6 +1698,35 @@
     el.scrollTop = 1_000_000_000;
   }
 
+  function visualScrollMetrics(el: HTMLElement) {
+    return {
+      scrollHeight: el.scrollHeight,
+      scrollTop: el.scrollTop,
+      clientHeight: el.clientHeight,
+    };
+  }
+
+  function preserveVisualTailScrollerReplacement(
+    previous: HTMLElement,
+    next: HTMLElement,
+  ): void {
+    const previousMetrics = visualScrollMetrics(previous);
+    const wasTailFollowing =
+      !visualTailFollowPaused && isNearVisualScrollEnd(previousMetrics);
+    if (!wasTailFollowing) setVisualTailFollowPaused(true);
+    const pauseSeq = visualTailFollowPauseSeq;
+    void tick().then(() => {
+      requestAnimationFrame(() => {
+        if (messagesEl !== next) return;
+        next.scrollTop = replacementVisualScrollTop({
+          previous: previousMetrics,
+          next: visualScrollMetrics(next),
+          followTail: wasTailFollowing && canApplyVisualTailFollow(pauseSeq),
+        });
+      });
+    });
+  }
+
   function scrollLiveWorkTailAnchorIntoView(el: HTMLElement): void {
     const summary = messagesEl?.querySelector<HTMLElement>(
       ".work-foldout-live > summary",
@@ -1885,6 +1918,7 @@
     visualHistoryMinMessages = DEFAULT_VISUAL_HISTORY_MESSAGES;
     visualHistoryRequestInFlight = false;
     visualHistoryScrollAnchor = null;
+    codexAppHistoryNextCursor = null;
   }
 
   function maxVisualHistoryMessages(): number {
@@ -1899,8 +1933,11 @@
     if (!session || !messagesEl) return false;
     if (codexVisualAppSurface) {
       const threadId = effectiveSessionId;
-      const key = codexAppHistoryKey(threadId, effectiveSessionCwd);
-      return !!key && codexAppHistoryLoadedKey !== key;
+      return canRequestOlderCodexAppThreadHistory({
+        threadId,
+        cwd: effectiveSessionCwd,
+        nextCursor: codexAppHistoryNextCursor,
+      });
     }
     if (sessionMessageSource.kind !== "transcript") return false;
     if (codexVisualAppSurface && codexActiveTurnId !== null) return false;
@@ -1983,6 +2020,7 @@
     if (key !== visualHistorySourceKey) {
       visualHistorySourceKey = key;
       resetVisualHistoryWindow();
+      resetVisualTailFollow();
       codexAppHistoryLoadedKey = "";
       codexAppHistoryLoadingKey = "";
     }
@@ -2055,20 +2093,30 @@
     if (!threadId || !cwd || !session) return;
     const targetThreadId = threadId;
     const targetHistoryKey = codexAppHistoryKey(threadId, cwd);
-    const qs = new URLSearchParams({ threadId, cwd });
+    const cursor =
+      codexAppHistoryLoadedKey === targetHistoryKey
+        ? codexAppHistoryNextCursor
+        : null;
+    const qs = new URLSearchParams({
+      threadId,
+      cwd,
+      limit: String(CODEX_APP_HISTORY_TURNS_PAGE_SIZE),
+    });
+    if (cursor) qs.set("cursor", cursor);
     try {
       const res = await fetch(
         apiUrl(`/api/codex-app/thread?${qs.toString()}`, daemonId),
       );
       const body = (await res.json().catch(() => null)) as {
         thread?: unknown;
+        nextCursor?: unknown;
         error?: string;
       } | null;
       if (!res.ok) throw new Error(body?.error ?? `HTTP ${res.status}`);
       if (!body?.thread || effectiveSessionId !== targetThreadId || !session)
         return;
       flushCodexDeltaPatches();
-      const historyMessages = codexAppHistoryMessagesFromThread(
+      const historyMessages = codexAppHistoryMessagesFromTurnPage(
         body.thread,
       ) as NormalizedMessage[];
       session = {
@@ -2079,6 +2127,10 @@
         ) as NormalizedMessage[],
       };
       codexAppHistoryLoadedKey = targetHistoryKey;
+      codexAppHistoryNextCursor =
+        typeof body.nextCursor === "string" && body.nextCursor
+          ? body.nextCursor
+          : null;
       preserveVisualHistoryScrollAnchor();
     } catch (e) {
       sendError = e instanceof Error ? e.message : String(e);
@@ -3373,6 +3425,8 @@
   ): string | null {
     if (!session) return null;
     const id = `codex-optimistic-user-${intent === "steer" ? "steer-" : ""}${randomUUID()}`;
+    const anchorIndex = session.messages.length - 1;
+    const anchorId = session.messages[anchorIndex]?.id;
     const blocks: NormalizedBlock[] = [
       ...attachments.map(
         (attachment): NormalizedBlock => ({
@@ -3394,6 +3448,8 @@
         role: "user",
         timestamp: new Date().toISOString(),
         intent,
+        optimisticAfterMessageId: anchorId,
+        optimisticAfterMessageIndex: anchorIndex,
         blocks,
       },
     ];
@@ -4602,8 +4658,11 @@
   //     scroller; live deltas inside that foldout need to tail like a TUI.
   $: if (messagesEl) {
     if (messagesEl !== visualTailMessagesEl) {
+      const previousMessagesEl = visualTailMessagesEl;
       visualTailMessagesEl = messagesEl;
-      resetVisualTailFollow();
+      if (previousMessagesEl && hasRenderedOnce) {
+        preserveVisualTailScrollerReplacement(previousMessagesEl, messagesEl);
+      }
     }
     const nextTailKey = visualMessagesTailKey(visualSessionMessages);
     if (nextTailKey !== visualTailKey) {

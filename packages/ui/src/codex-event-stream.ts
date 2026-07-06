@@ -135,6 +135,8 @@ export function codexAppHistoryKey(
   return threadId && cwd ? `${threadId}\0${cwd}` : "";
 }
 
+export const CODEX_APP_HISTORY_TURNS_PAGE_SIZE = 4;
+
 export function shouldLoadCodexAppThreadHistory(opts: {
   visualAppSurface: boolean;
   threadId: string | undefined;
@@ -147,6 +149,15 @@ export function shouldLoadCodexAppThreadHistory(opts: {
   const key = codexAppHistoryKey(opts.threadId, opts.cwd);
   if (!key) return false;
   return key !== opts.loadedHistoryKey && key !== opts.loadingHistoryKey;
+}
+
+export function canRequestOlderCodexAppThreadHistory(opts: {
+  threadId: string | undefined;
+  cwd: string | undefined;
+  nextCursor: string | null | undefined;
+}): boolean {
+  const key = codexAppHistoryKey(opts.threadId, opts.cwd);
+  return !!key && !!opts.nextCursor;
 }
 
 interface Hub {
@@ -335,12 +346,13 @@ export function codexLiveMessagesFromEvent(
   event: CodexAppEvent,
 ): CodexAppHistoryMessage[] {
   const messages: CodexAppHistoryMessage[] = [];
+  const timestamp = codexLiveItemTimestamp(event);
   const liveToolUse = codexLiveToolUseFromEvent(event);
   if (liveToolUse && !event.method.endsWith("/outputDelta")) {
     messages.push(
       codexToolUseMessage({
         id: liveToolUse.id,
-        timestamp: event.receivedAt,
+        timestamp,
         toolName: liveToolUse.toolName,
         toolInput: liveToolUse.toolInput,
         toolUseId: liveToolUse.toolUseId,
@@ -360,7 +372,7 @@ export function codexLiveMessagesFromEvent(
     messages.push(
       codexToolResultMessage({
         id: liveToolResult.id,
-        timestamp: event.receivedAt,
+        timestamp,
         toolName: liveToolResult.toolName,
         toolUseId: liveToolResult.toolUseId,
         text: liveToolResult.text,
@@ -378,7 +390,7 @@ export function codexLiveMessagesFromEvent(
     messages.push({
       id: `codex-media-${mediaId}`,
       role: "assistant",
-      timestamp: event.receivedAt,
+      timestamp,
       blocks: liveGeneratedMedia,
     });
   }
@@ -416,6 +428,18 @@ export function codexAppHistoryMessagesFromThread(
     }
   }
   return messages;
+}
+
+export function codexAppHistoryMessagesFromTurnPage(
+  thread: unknown,
+): CodexAppHistoryMessage[] {
+  if (!thread || typeof thread !== "object") return [];
+  const record = thread as Record<string, unknown>;
+  const turns = Array.isArray(record.turns) ? [...record.turns] : [];
+  return codexAppHistoryMessagesFromThread({
+    ...record,
+    turns: turns.reverse(),
+  });
 }
 
 export function mergeCodexAppHistoryMessages<
@@ -1093,6 +1117,26 @@ function codexUnixSecondsToIso(value: unknown): string | undefined {
   return typeof value === "number" && Number.isFinite(value)
     ? new Date(value * 1000).toISOString()
     : undefined;
+}
+
+function codexUnixMillisecondsToIso(value: unknown): string | undefined {
+  return typeof value === "number" && Number.isFinite(value)
+    ? new Date(value).toISOString()
+    : undefined;
+}
+
+function codexLiveItemTimestamp(event: CodexAppEvent): string {
+  if (event.method === "item/started") {
+    return (
+      codexUnixMillisecondsToIso(event.params.startedAtMs) ?? event.receivedAt
+    );
+  }
+  if (event.method === "item/completed") {
+    return (
+      codexUnixMillisecondsToIso(event.params.completedAtMs) ?? event.receivedAt
+    );
+  }
+  return event.receivedAt;
 }
 
 function messagePayloadWeight(message: { blocks: unknown[] }): number {

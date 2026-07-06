@@ -1639,6 +1639,55 @@ describe("updateVisualTranscriptItems", () => {
     ]);
   });
 
+  it("keeps a normal live follow-up after a completed turn out of steering", () => {
+    const firstUser = msg(
+      "user",
+      "fix the layout",
+      "2026-07-06T10:00:00.000Z",
+    );
+    const taskStarted: Message = {
+      role: "system",
+      timestamp: "2026-07-06T10:00:01.000Z",
+      blocks: [{ type: "marker", text: "[Task started]" }],
+    };
+    const finalAnswer = msg(
+      "assistant",
+      "Done.",
+      "2026-07-06T10:00:10.000Z",
+    );
+    const secondUser = msg(
+      "user",
+      "now commit it",
+      "2026-07-06T10:00:20.000Z",
+    );
+    secondUser.id = "codex-optimistic-user-normal";
+    const nextThinking: Message = {
+      role: "assistant",
+      timestamp: "2026-07-06T10:00:21.000Z",
+      blocks: [{ type: "thinking", text: "Preparing commit" }],
+    };
+
+    const items = buildVisualTranscriptItems(
+      [firstUser, taskStarted, finalAnswer, secondUser, nextThinking],
+      { active: true },
+    );
+
+    expect(items.map((item) => item.kind)).toEqual([
+      "message",
+      "message",
+      "message",
+      "work",
+    ]);
+    const followUp = items[2];
+    if (followUp?.kind !== "message") throw new Error("expected follow-up");
+    expect(followUp.message.role).toBe("user");
+    expect(followUp.message.intent).toBeUndefined();
+    expect(visualWorkSummary(items[3]?.kind === "work" ? items[3].entries : []))
+      .toMatchObject({
+        steerings: 0,
+      });
+  });
+
   it("appends a new user turn without remaking earlier transcript items", () => {
     const firstUser = msg("user", "fix it", "2026-06-19T10:00:00.000Z");
     const firstAnswer = msg(
@@ -1699,8 +1748,9 @@ describe("withoutDuplicateOptimisticUserMessages", () => {
 });
 
 describe("mergeVisualSessionMessages", () => {
-  it("places optimistic user rows by timestamp before later live assistant updates", () => {
+  it("places optimistic user rows after their send-time anchor", () => {
     const before = msg("assistant", "before", "2026-06-19T10:00:00.000Z");
+    before.id = "before";
     const liveAssistant = msg(
       "assistant",
       "working",
@@ -1710,6 +1760,8 @@ describe("mergeVisualSessionMessages", () => {
       id: "codex-optimistic-user-queued",
       role: "user",
       timestamp: "2026-06-19T10:00:01.000Z",
+      optimisticAfterMessageId: "before",
+      optimisticAfterMessageIndex: 0,
       blocks: [{ type: "text", text: "queued follow-up" }],
     };
 
@@ -1718,6 +1770,27 @@ describe("mergeVisualSessionMessages", () => {
         (message) => message.blocks[0]?.text,
       ),
     ).toEqual(["before", "queued follow-up", "working"]);
+  });
+
+  it("does not timestamp-sort new optimistic user rows above older app-server rows", () => {
+    const priorUser = msg("user", "older request", "2026-06-19T09:59:00.000Z");
+    priorUser.id = "prior-user";
+    const priorAssistant = msg("assistant", "older reply");
+    priorAssistant.id = "prior-assistant";
+    const optimistic: Message = {
+      id: "codex-optimistic-user-latest",
+      role: "user",
+      timestamp: "2026-06-19T10:00:01.000Z",
+      optimisticAfterMessageId: "prior-assistant",
+      optimisticAfterMessageIndex: 1,
+      blocks: [{ type: "text", text: "latest request" }],
+    };
+
+    expect(
+      mergeVisualSessionMessages([priorUser, priorAssistant], [optimistic]).map(
+        (message) => message.blocks[0]?.text,
+      ),
+    ).toEqual(["older request", "older reply", "latest request"]);
   });
 
   it("drops optimistic rows when matching canonical user rows arrive", () => {
@@ -2355,6 +2428,22 @@ describe("visual tool payload display helpers", () => {
     expect(visualToolCallPayloadText(block)).toContain("ps -axo");
   });
 
+  it("summarizes pgrep process inspection commands", () => {
+    const block = {
+      type: "tool_use",
+      toolName: "exec_command",
+      toolInput: {
+        cmd: "pgrep -af 'ssh -N -L 45600:127.0.0.1:45600 felix-win' || true",
+      },
+    };
+
+    expect(visualToolPreviewText(block)).toBe(
+      'Check processes for "ssh -N -L 45600:127.0.0.1:45600 felix-win"',
+    );
+    expect(visualToolIconNameForPreview(block)).toBe("process_check");
+    expect(visualToolCallPayloadText(block)).toContain("pgrep -af");
+  });
+
   it("summarizes lsof port checks without hiding the raw command", () => {
     const processOnPort = {
       type: "tool_use",
@@ -2415,6 +2504,70 @@ describe("visual tool payload display helpers", () => {
       path: "/tmp/usd-wg-assets-5173.log",
       range: "",
     });
+  });
+
+  it("summarizes wc counts", () => {
+    expect(
+      visualToolPreviewText({
+        type: "tool_use",
+        toolName: "exec_command",
+        toolInput: {
+          cmd: "wc -l packages/ui/src/SessionView.svelte packages/ui/src/VisualTranscript.svelte",
+        },
+      }),
+    ).toBe("Count lines in SessionView.svelte, VisualTranscript.svelte");
+
+    expect(
+      visualToolPreviewText({
+        type: "tool_use",
+        toolName: "exec_command",
+        toolInput: {
+          cmd: "wc -c < bookmarklet.txt",
+        },
+      }),
+    ).toBe("Count bytes in bookmarklet.txt");
+
+    expect(
+      visualToolPreviewText({
+        type: "tool_use",
+        toolName: "exec_command",
+        toolInput: {
+          cmd: "find submodules/glTF-Sample-Assets/Models -path '*/glTF-Binary/*.glb' | wc -l",
+        },
+      }),
+    ).toBe("Count items in Models");
+  });
+
+  it("summarizes jq JSON queries", () => {
+    expect(
+      visualToolPreviewText({
+        type: "tool_use",
+        toolName: "exec_command",
+        toolInput: {
+          cmd: "jq '.scripts' package.json",
+        },
+      }),
+    ).toBe("Query JSON package.json .scripts");
+
+    expect(
+      visualToolPreviewText({
+        type: "tool_use",
+        toolName: "exec_command",
+        toolInput: {
+          cmd: "cat package.json | jq '.scripts'",
+        },
+      }),
+    ).toBe("Query JSON package.json .scripts");
+
+    expect(
+      visualToolPreviewText({
+        type: "tool_use",
+        toolName: "exec_command",
+        toolInput: {
+          cmd: "curl -fsS http://127.0.0.1:8765/api/health | jq '{status, config}'",
+        },
+      }),
+    ).toBe("Query JSON 127.0.0.1:8765/api/health {status, config}");
   });
 
   it("summarizes Windows filesystem cleanup and creation commands", () => {

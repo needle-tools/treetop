@@ -1,6 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import {
   isNearVisualScrollEnd,
+  replacementVisualScrollTop,
   shouldAnchorLiveWorkTail,
   shouldFollowNewLiveWorkBody,
   shouldFollowVisualTail,
@@ -116,5 +117,41 @@ describe("visual transcript tail following", () => {
         shouldStickMessages: false,
       }),
     ).toBe(false);
+  });
+
+  it("preserves a reader's scroll position when the transcript scroller is replaced", () => {
+    expect(
+      replacementVisualScrollTop({
+        previous: {
+          scrollHeight: 3_000,
+          scrollTop: 900,
+          clientHeight: 600,
+        },
+        next: {
+          scrollHeight: 3_400,
+          scrollTop: 0,
+          clientHeight: 600,
+        },
+        followTail: false,
+      }),
+    ).toBe(900);
+  });
+
+  it("keeps tail-following readers at the end when the transcript scroller is replaced", () => {
+    expect(
+      replacementVisualScrollTop({
+        previous: {
+          scrollHeight: 3_000,
+          scrollTop: 2_400,
+          clientHeight: 600,
+        },
+        next: {
+          scrollHeight: 3_400,
+          scrollTop: 0,
+          clientHeight: 600,
+        },
+        followTail: true,
+      }),
+    ).toBe(2_800);
   });
 });

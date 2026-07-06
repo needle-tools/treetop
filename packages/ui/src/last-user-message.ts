@@ -67,6 +67,8 @@ export interface Message<B extends MessageBlock = MessageBlock> {
   timestamp?: string;
   id?: string;
   intent?: "steer";
+  optimisticAfterMessageId?: string;
+  optimisticAfterMessageIndex?: number;
 }
 
 export interface VisualWorkEntry<
@@ -877,6 +879,8 @@ export function visualToolIconNameForPreview(
     return "git";
   }
   if (/^Read logs?\b/.test(preview)) return "read";
+  if (/^Count\b/.test(preview)) return "read";
+  if (/^Query JSON\b/.test(preview)) return "read";
   if (/^Check listeners\b/.test(preview)) return "port_check";
   if (/^Run .*(?:tests|check)\b/.test(preview)) return "test";
   if (/^Reload page\b/.test(preview)) return "reload_page";
@@ -885,6 +889,7 @@ export function visualToolIconNameForPreview(
   if (/^List browser pages\b/.test(preview)) return "list_pages";
   if (/^Emulate\b/.test(preview)) return "emulate";
   if (/^(?:Navigate to|Open)\b/.test(preview)) return "navigate_page";
+  if (/^Check processes?\b/.test(preview)) return "process_check";
   if (/^Stop process(?:es)?\b/.test(preview)) return "process_end";
   if (/^Check port(?:s)?\b/.test(preview)) return "port_check";
   if (/^Delete (?:file|folder|path)\b/.test(preview)) {
@@ -1419,6 +1424,12 @@ type VisualCommandSummary =
   | { kind: "logs"; targets: string[]; tailLines?: number }
   | { kind: "search"; pattern: string; paths: string[] }
   | { kind: "find"; root: string; patterns: string[] }
+  | {
+      kind: "count";
+      metric: "lines" | "bytes" | "words" | "chars" | "items";
+      targets: string[];
+    }
+  | { kind: "json-query"; filter: string; targets: string[]; source?: string }
   | { kind: "script-file"; language: string; script: string; args: string[] }
   | { kind: "process-check"; pattern?: string }
   | {
@@ -1819,9 +1830,9 @@ function visualCommandPreview(command: string): {
   const normalized = normalizeLaunchedCommand(command);
   const unwrapped = normalized.command;
   const env = [...normalized.env];
-  const pipeSummary = summarizePipeRead(unwrapped);
+  const pipeSummary = summarizePipeCommand(unwrapped);
   if (pipeSummary) {
-    const parts = readPreviewParts(pipeSummary.targets);
+    const parts = commandSummaryParts(pipeSummary);
     return {
       text: parts.map((part) => part.text).join(""),
       parts,
@@ -2347,6 +2358,12 @@ function applyRemoteContextCwdToSummary(
   if (summary.kind === "find") {
     return { ...summary, root: qualifyRemotePathTarget(summary.root, cwd) };
   }
+  if (summary.kind === "count") {
+    return { ...summary, targets: qualifyTargets(summary.targets) };
+  }
+  if (summary.kind === "json-query") {
+    return { ...summary, targets: qualifyTargets(summary.targets) };
+  }
   if (summary.kind === "script-file") {
     return { ...summary, script: qualifyRemotePathTarget(summary.script, cwd) };
   }
@@ -2503,6 +2520,8 @@ function summarizeShellCommand(command: string): VisualCommandSummary | undefine
   if (lowerName === "curl" || lowerName === "wget")
     return summarizeFetch(tokens);
   if (lowerName === "tail") return summarizeTailRead(tokens);
+  if (lowerName === "wc") return summarizeWc(tokens);
+  if (lowerName === "jq") return summarizeJq(tokens);
   if (lowerName === "magick" || lowerName === "convert") {
     return summarizeImageTransform(tokens);
   }
@@ -2870,6 +2889,96 @@ function summarizeTailRead(tokens: string[]): VisualCommandSummary | undefined {
   return { kind: "logs", targets, tailLines };
 }
 
+function summarizeWc(
+  tokens: string[],
+): Extract<VisualCommandSummary, { kind: "count" }> | undefined {
+  const command = tokens[0]?.split("/").pop()?.toLowerCase();
+  if (command !== "wc") return undefined;
+  let metric: Extract<VisualCommandSummary, { kind: "count" }>["metric"] =
+    "items";
+  const targets: string[] = [];
+  const optionsWithValue = new Set(["--files0-from"]);
+  for (let index = 1; index < tokens.length; index += 1) {
+    const token = tokens[index]!;
+    if (token === "--") continue;
+    if (token === "<") {
+      const target = tokens[index + 1];
+      if (target) targets.push(target);
+      index += 1;
+      continue;
+    }
+    if (token === "-l" || token === "--lines" || /^-[A-Za-z]*l/.test(token)) {
+      metric = "lines";
+    } else if (
+      token === "-c" ||
+      token === "--bytes" ||
+      /^-[A-Za-z]*c/.test(token)
+    ) {
+      metric = "bytes";
+    } else if (
+      token === "-w" ||
+      token === "--words" ||
+      /^-[A-Za-z]*w/.test(token)
+    ) {
+      metric = "words";
+    } else if (
+      token === "-m" ||
+      token === "--chars" ||
+      /^-[A-Za-z]*m/.test(token)
+    ) {
+      metric = "chars";
+    }
+    if (token.startsWith("-")) {
+      if (!token.includes("=") && optionsWithValue.has(token)) index += 1;
+      continue;
+    }
+    if (token.includes("|") || token === ">" || token === "2>") break;
+    targets.push(token);
+  }
+  return { kind: "count", metric, targets };
+}
+
+function summarizeJq(
+  tokens: string[],
+): Extract<VisualCommandSummary, { kind: "json-query" }> | undefined {
+  const command = tokens[0]?.split("/").pop()?.toLowerCase();
+  if (command !== "jq") return undefined;
+  let filter = "";
+  const targets: string[] = [];
+  const optionsWithValue = new Set([
+    "--arg",
+    "--argjson",
+    "--slurpfile",
+    "--rawfile",
+    "--argfile",
+    "-L",
+  ]);
+  const optionsWithTwoValues = new Set([
+    "--arg",
+    "--argjson",
+    "--slurpfile",
+    "--rawfile",
+    "--argfile",
+  ]);
+  for (let index = 1; index < tokens.length; index += 1) {
+    const token = tokens[index]!;
+    if (token === "--") continue;
+    if (token.startsWith("-")) {
+      if (optionsWithTwoValues.has(token)) index += 2;
+      else if (optionsWithValue.has(token) || token === "-f") index += 1;
+      continue;
+    }
+    if (!filter) {
+      filter = token;
+      continue;
+    }
+    if (token.includes("|") || token === ">" || token === "2>") break;
+    targets.push(token);
+  }
+  if (!filter && targets.length === 0) return undefined;
+  return { kind: "json-query", filter, targets };
+}
+
 function summarizeFetch(tokens: string[]): VisualCommandSummary | undefined {
   const command = tokens[0]?.split("/").pop()?.toLowerCase();
   let output: string | undefined;
@@ -3034,9 +3143,18 @@ function positionalPathTokens(
   return targets;
 }
 
-function summarizePipeRead(
-  command: string,
-): Extract<VisualCommandSummary, { kind: "read" }> | undefined {
+function summarizePipeCommand(command: string): VisualCommandSummary | undefined {
+  return (
+    summarizePipeRead(command) ??
+    summarizePipeJsonQuery(command) ??
+    summarizePipeCount(command)
+  );
+}
+
+function summarizePipeRead(command: string): Extract<
+  VisualCommandSummary,
+  { kind: "read" }
+> | undefined {
   const parts = splitShellPipeline(command);
   if (parts.length !== 2) return undefined;
   const left = shellTokens(parts[0]!);
@@ -3052,6 +3170,44 @@ function summarizePipeRead(
     kind: "read",
     targets: sed.ranges.map((range) => `${path}${sedRangeSuffix(range)}`),
   };
+}
+
+function summarizePipeJsonQuery(
+  command: string,
+): Extract<VisualCommandSummary, { kind: "json-query" }> | undefined {
+  const parts = splitShellPipeline(command);
+  if (parts.length < 2) return undefined;
+  const query = summarizeJq(shellTokens(parts.at(-1)!));
+  if (!query) return undefined;
+  const leftSummary = summarizeShellCommand(parts.slice(0, -1).join(" | "));
+  if (leftSummary?.kind === "read") {
+    return { ...query, targets: leftSummary.targets };
+  }
+  if (leftSummary?.kind === "fetch") {
+    return { ...query, source: leftSummary.url };
+  }
+  return query.targets.length > 0 ? query : undefined;
+}
+
+function summarizePipeCount(
+  command: string,
+): Extract<VisualCommandSummary, { kind: "count" }> | undefined {
+  const parts = splitShellPipeline(command);
+  if (parts.length < 2) return undefined;
+  const count = summarizeWc(shellTokens(parts.at(-1)!));
+  if (!count) return undefined;
+  if (count.targets.length > 0) return count;
+  const leftSummary = summarizeShellCommand(parts.slice(0, -1).join(" | "));
+  if (leftSummary?.kind === "read") {
+    return { ...count, targets: leftSummary.targets };
+  }
+  if (leftSummary?.kind === "find") {
+    return { ...count, metric: "items", targets: [leftSummary.root] };
+  }
+  if (leftSummary?.kind === "git" && leftSummary.action === "ls-files") {
+    return { ...count, metric: "items", targets: leftSummary.targets };
+  }
+  return count;
 }
 
 function splitShellPipeline(command: string): string[] {
@@ -3237,6 +3393,12 @@ function summarizeProcessCheck(
 ): VisualCommandSummary | undefined {
   const tokens = shellTokens(command);
   const name = tokens[0]?.split("/").pop()?.toLowerCase();
+  if (name === "pgrep") {
+    const pattern = tokens
+      .slice(1)
+      .find((token) => token && !token.startsWith("-") && token !== "||");
+    return { kind: "process-check", pattern };
+  }
   if (name !== "ps") return undefined;
   const pipeIndex = tokens.findIndex((token) => token === "|");
   if (pipeIndex < 0) return { kind: "process-check" };
@@ -3264,6 +3426,12 @@ function commandSummaryParts(
   }
   if (summary.kind === "search") {
     return searchPreviewParts(summary.pattern, summary.paths);
+  }
+  if (summary.kind === "count") {
+    return countPreviewParts(summary);
+  }
+  if (summary.kind === "json-query") {
+    return jsonQueryPreviewParts(summary);
   }
   if (summary.kind === "script-file") {
     return [
@@ -3333,6 +3501,49 @@ function commandSummaryParts(
     ];
   }
   return findPreviewParts(summary);
+}
+
+function countPreviewParts(
+  summary: Extract<VisualCommandSummary, { kind: "count" }>,
+): VisualToolPreviewPart[] {
+  const metric =
+    summary.metric === "lines"
+      ? "lines"
+      : summary.metric === "bytes"
+        ? "bytes"
+        : summary.metric === "words"
+          ? "words"
+          : summary.metric === "chars"
+            ? "characters"
+            : "items";
+  if (summary.targets.length === 0) {
+    return [{ kind: "text", text: `Count ${metric}` }];
+  }
+  return [
+    { kind: "text", text: `Count ${metric} in ` },
+    ...interspersePathParts(summary.targets),
+  ];
+}
+
+function jsonQueryPreviewParts(
+  summary: Extract<VisualCommandSummary, { kind: "json-query" }>,
+): VisualToolPreviewPart[] {
+  const parts: VisualToolPreviewPart[] = [{ kind: "text", text: "Query JSON" }];
+  if (summary.targets.length > 0) {
+    parts.push(
+      { kind: "text", text: " " },
+      ...interspersePathParts(summary.targets),
+    );
+  } else if (summary.source) {
+    parts.push({ kind: "text", text: ` ${readableUrl(summary.source)}` });
+  }
+  const filter = compactJsonQueryFilter(summary.filter);
+  if (filter && filter !== ".") parts.push({ kind: "text", text: ` ${filter}` });
+  return parts;
+}
+
+function compactJsonQueryFilter(filter: string): string {
+  return filter.replace(/\s+/g, " ").trim();
 }
 
 function gitSummaryParts(
@@ -4438,13 +4649,51 @@ export function mergeVisualSessionMessages<
   const messagesWithIntent = withOptimisticUserMessageIntent(messages, overlays);
   if (overlays.length === 0)
     return withoutDuplicateOptimisticUserMessages(messagesWithIntent);
-  return withoutDuplicateOptimisticUserMessages(
-    [...messagesWithIntent, ...overlays].sort((a, b) => {
-      const aMs = timestampMs(a.timestamp) ?? Number.POSITIVE_INFINITY;
-      const bMs = timestampMs(b.timestamp) ?? Number.POSITIVE_INFINITY;
-      return aMs - bMs;
-    }),
+  const pendingOverlays = overlays.filter(
+    (overlay) =>
+      !hasCanonicalUserMessageMatchingOptimistic(messagesWithIntent, overlay),
   );
+  if (pendingOverlays.length === 0) {
+    return withoutDuplicateOptimisticUserMessages(messagesWithIntent);
+  }
+  const overlaysByAnchor = new Map<number, M[]>();
+  for (const overlay of pendingOverlays) {
+    const anchor = optimisticInsertionIndex(messagesWithIntent, overlay);
+    const list = overlaysByAnchor.get(anchor) ?? [];
+    list.push(overlay);
+    overlaysByAnchor.set(anchor, list);
+  }
+  const merged: M[] = [];
+  const beforeFirst = overlaysByAnchor.get(-1);
+  if (beforeFirst) merged.push(...beforeFirst);
+  messagesWithIntent.forEach((message, index) => {
+    merged.push(message);
+    const anchored = overlaysByAnchor.get(index);
+    if (anchored) merged.push(...anchored);
+  });
+  return withoutDuplicateOptimisticUserMessages(merged);
+}
+
+function optimisticInsertionIndex<
+  B extends MessageBlock,
+  M extends Message<B>,
+>(messages: readonly M[], overlay: M): number {
+  if (typeof overlay.optimisticAfterMessageId === "string") {
+    const byId = messages.findIndex(
+      (message) => message.id === overlay.optimisticAfterMessageId,
+    );
+    if (byId >= 0) return byId;
+  }
+  if (
+    typeof overlay.optimisticAfterMessageIndex === "number" &&
+    Number.isFinite(overlay.optimisticAfterMessageIndex)
+  ) {
+    return Math.max(
+      -1,
+      Math.min(messages.length - 1, Math.trunc(overlay.optimisticAfterMessageIndex)),
+    );
+  }
+  return messages.length - 1;
 }
 
 export function applyVisualTranscriptDeltaPatches<
@@ -4784,14 +5033,24 @@ export function buildVisualTranscriptItems<
     return undefined;
   }
 
-  function nextDisplayUserIntent(startIndex: number): "steer" | undefined {
+  function nextDisplayUserMessage(startIndex: number): M | undefined {
     for (let i = startIndex; i < messages.length; i += 1) {
       const next = messages[i];
       if (!next || displayBlocks(next).length === 0) continue;
-      if (next.role !== "user") continue;
-      return userMessageIntent(next);
+      if (next.role === "user") return next;
     }
     return undefined;
+  }
+
+  function nextDisplayUserIntent(startIndex: number): "steer" | undefined {
+    return userMessageIntent(nextDisplayUserMessage(startIndex));
+  }
+
+  function canImplicitlySteer(message: M | undefined): boolean {
+    if (!message || message.role !== "user") return false;
+    return (
+      userMessageIntent(message) === "steer" || !isOptimisticUserMessage(message)
+    );
   }
 
   function pushTurnWorkAndResponse(
@@ -4958,7 +5217,7 @@ export function buildVisualTranscriptItems<
       }
       if (
         previousTurnAcceptsSteering &&
-        nextDisplayMessageRole(messageIndex + 1) === "user"
+        canImplicitlySteer(nextDisplayUserMessage(messageIndex + 1))
       ) {
         pendingTurnPrefixEntries.push(entry);
         messageIndex += 1;
@@ -4973,7 +5232,8 @@ export function buildVisualTranscriptItems<
 
     const explicitSteer = userMessageIntent(message) === "steer";
     const turnWasAlreadyOpen: boolean =
-      previousTurnAcceptsSteering || explicitSteer;
+      explicitSteer ||
+      (previousTurnAcceptsSteering && canImplicitlySteer(message));
     const messageForDisplay = withUserMessageIntent(
       message,
       explicitSteer || turnWasAlreadyOpen ? "steer" : undefined,
@@ -5042,7 +5302,11 @@ export function buildVisualTranscriptItems<
     const acceptsSteering: boolean =
       turnStillOpen &&
       (turnWasAlreadyOpen || hasSteeringEligibleWork(turnEntries));
-    if (acceptsSteering && messages[messageIndex]?.role === "user") {
+    if (
+      acceptsSteering &&
+      messages[messageIndex]?.role === "user" &&
+      canImplicitlySteer(messages[messageIndex])
+    ) {
       pendingTurnPrefixEntries = turnEntries;
       pendingTurnStartedAt = turnStartedAt;
       previousTurnAcceptsSteering = true;
@@ -5055,7 +5319,7 @@ export function buildVisualTranscriptItems<
       messages[messageIndex]?.timestamp,
       turnWasAlreadyOpen,
     );
-    previousTurnAcceptsSteering = acceptsSteering;
+    previousTurnAcceptsSteering = false;
   }
 
   return coalesceAdjacentVisualWorkItems(out);

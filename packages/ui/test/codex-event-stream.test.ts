@@ -1,8 +1,11 @@
 import { beforeEach, describe, expect, test } from "bun:test";
 import {
+  CODEX_APP_HISTORY_TURNS_PAGE_SIZE,
   __resetCodexEventStreamsForTests,
   __setCodexEventSourceCtorForTests,
+  canRequestOlderCodexAppThreadHistory,
   codexAppHistoryMessagesFromThread,
+  codexAppHistoryMessagesFromTurnPage,
   codexLiveMessagesFromEvent,
   codexLiveMarkerFromEvent,
   codexLiveToolResultFromEvent,
@@ -216,6 +219,31 @@ describe("codex event stream hub", () => {
         hasSession: true,
         loadedHistoryKey: "",
         loadingHistoryKey: "",
+      }),
+    ).toBe(false);
+  });
+
+  test("pages older app-server history from the app-server cursor, not loaded message count", () => {
+    expect(CODEX_APP_HISTORY_TURNS_PAGE_SIZE).toBeLessThan(100);
+    expect(
+      canRequestOlderCodexAppThreadHistory({
+        threadId: "thread-1",
+        cwd: "/repo",
+        nextCursor: "older-page",
+      }),
+    ).toBe(true);
+    expect(
+      canRequestOlderCodexAppThreadHistory({
+        threadId: "thread-1",
+        cwd: "/repo",
+        nextCursor: null,
+      }),
+    ).toBe(false);
+    expect(
+      canRequestOlderCodexAppThreadHistory({
+        threadId: undefined,
+        cwd: "/repo",
+        nextCursor: "older-page",
       }),
     ).toBe(false);
   });
@@ -628,6 +656,90 @@ describe("codex event stream hub", () => {
         timestamp: "2026-06-22T10:00:00.000Z",
         blocks: [{ type: "text", text: "Found it." }],
       },
+    ]);
+  });
+
+  test("normalizes app-server paged turns from newest-first to chronological messages", () => {
+    const messages = codexAppHistoryMessagesFromTurnPage({
+      id: "thread-1",
+      turns: [
+        {
+          id: "turn-newer",
+          startedAt: 1782122460,
+          items: [
+            {
+              id: "user-newer",
+              type: "userMessage",
+              content: [{ type: "text", text: "newer turn" }],
+            },
+          ],
+        },
+        {
+          id: "turn-older",
+          startedAt: 1782122400,
+          items: [
+            {
+              id: "user-older",
+              type: "userMessage",
+              content: [{ type: "text", text: "older turn" }],
+            },
+          ],
+        },
+      ],
+    });
+
+    expect(messages.map((message) => message.id)).toEqual([
+      "codex-user-user-older",
+      "codex-user-user-newer",
+    ]);
+  });
+
+  test("prepends older app-server turn pages without dropping live/newer rows", () => {
+    const newer = codexAppHistoryMessagesFromTurnPage({
+      turns: [
+        {
+          id: "turn-newer",
+          startedAt: 1782122460,
+          items: [
+            {
+              id: "user-newer",
+              type: "userMessage",
+              content: [{ type: "text", text: "newer turn" }],
+            },
+          ],
+        },
+      ],
+    });
+    const older = codexAppHistoryMessagesFromTurnPage({
+      turns: [
+        {
+          id: "turn-older",
+          startedAt: 1782122400,
+          items: [
+            {
+              id: "user-older",
+              type: "userMessage",
+              content: [{ type: "text", text: "older turn" }],
+            },
+          ],
+        },
+      ],
+    });
+    const liveTail = {
+      id: "live-tail",
+      role: "assistant" as const,
+      blocks: [{ type: "text" as const, text: "still running" }],
+    };
+
+    const merged = mergeCodexAppHistoryMessages(older, [
+      ...newer,
+      liveTail,
+    ]);
+
+    expect(merged.map((message) => message.id)).toEqual([
+      "codex-user-user-older",
+      "codex-user-user-newer",
+      "live-tail",
     ]);
   });
 
@@ -1173,6 +1285,49 @@ describe("codex event stream hub", () => {
         ],
       },
     ]);
+  });
+
+  test("uses app-server item lifecycle timestamps for live item messages", () => {
+    const started = codexLiveMessagesFromEvent({
+      kind: "notification",
+      method: "item/started",
+      params: {
+        startedAtMs: Date.parse("2026-06-22T10:00:03.000Z"),
+        threadId: "thread-1",
+        turnId: "turn-1",
+        item: {
+          id: "call-logs",
+          type: "dynamicToolCall",
+          tool: "write_stdin",
+          arguments: { session_id: 55249, chars: "" },
+        },
+      },
+      threadId: "thread-1",
+      turnId: "turn-1",
+      receivedAt: "2026-06-22T10:00:00.000Z",
+    });
+    const completed = codexLiveMessagesFromEvent({
+      kind: "notification",
+      method: "item/completed",
+      params: {
+        completedAtMs: Date.parse("2026-06-22T10:00:04.000Z"),
+        threadId: "thread-1",
+        turnId: "turn-1",
+        item: {
+          id: "call-logs",
+          type: "dynamicToolCall",
+          tool: "write_stdin",
+          arguments: { session_id: 55249, chars: "" },
+          result: "done",
+        },
+      },
+      threadId: "thread-1",
+      turnId: "turn-1",
+      receivedAt: "2026-06-22T10:00:01.000Z",
+    });
+
+    expect(started[0]?.timestamp).toBe("2026-06-22T10:00:03.000Z");
+    expect(completed[0]?.timestamp).toBe("2026-06-22T10:00:04.000Z");
   });
 
   test("normalizes app-server image generation starts as visible tool calls", () => {

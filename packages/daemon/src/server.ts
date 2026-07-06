@@ -4392,6 +4392,12 @@ const server = Bun.serve<TermWsData, never>({
       if (url.pathname === "/api/codex-app/thread" && req.method === "GET") {
         const threadId = url.searchParams.get("threadId") || "";
         const cwd = url.searchParams.get("cwd") || WORKSPACE_PATH;
+        const turnsLimitRaw = Number(url.searchParams.get("limit") || 100);
+        const turnsLimit =
+          Number.isFinite(turnsLimitRaw) && turnsLimitRaw > 0
+            ? Math.min(200, Math.ceil(turnsLimitRaw))
+            : 100;
+        const turnsCursor = url.searchParams.get("cursor") || undefined;
         if (!threadId) {
           return json({ error: "threadId required" }, { status: 400 });
         }
@@ -4399,9 +4405,18 @@ const server = Bun.serve<TermWsData, never>({
           const result = await codexAgent.readThread({
             threadId,
             cwd,
-            includeTurns: true,
+            includeTurns: turnsLimit <= 0,
+            turnsLimit,
+            turnsCursor,
           });
-          return json({ ok: true, thread: result.thread });
+          return json({
+            ok: true,
+            thread: turnsLimit > 0
+              ? { ...result.thread, turns: result.turns ?? [] }
+              : result.thread,
+            nextCursor: result.nextCursor ?? null,
+            backwardsCursor: result.backwardsCursor ?? null,
+          });
         } catch (e) {
           return json(
             { error: e instanceof Error ? e.message : String(e) },
