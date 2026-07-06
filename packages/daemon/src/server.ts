@@ -64,6 +64,7 @@ import {
   detectAgents,
   agentsForWorktree,
   groupSessionsByFolder,
+  findCodexSessionSourceById,
   type FolderSuggestion,
 } from "./agents";
 import { computeAgentUsage, topClaudeSessionsByTokens } from "./agent-usage";
@@ -4090,6 +4091,25 @@ const server = Bun.serve<TermWsData, never>({
         return new Response(body, {
           headers: { "Content-Type": "application/json", ETag: etag, ...CORS },
         });
+      }
+
+      if (url.pathname === "/api/session/resolve" && req.method === "GET") {
+        const agent = url.searchParams.get("agent");
+        const sessionId = url.searchParams.get("id")?.trim();
+        if (!sessionId) {
+          return json({ error: "?id=<session-id> required" }, { status: 400 });
+        }
+        if (agent !== "codex") {
+          return json(
+            { error: "only Codex session resolution is supported" },
+            { status: 400 },
+          );
+        }
+        const source = await findCodexSessionSourceById(sessionId);
+        if (!source) {
+          return json({ error: "session not found" }, { status: 404 });
+        }
+        return json({ agent: "codex", sessionId, source });
       }
 
       // Batched sibling of GET /api/session: the dashboard coalesces every

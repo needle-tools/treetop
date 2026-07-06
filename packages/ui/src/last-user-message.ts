@@ -16,6 +16,15 @@ export interface MessageBlock {
   goalTimeUsedSeconds?: number;
   goalUpdatedAt?: number;
   goalThreadId?: string;
+  subagentId?: string;
+  subagentNickname?: string;
+  subagentAction?: "spawn" | "wait" | "notification";
+  subagentStatus?: "running" | "completed" | "failed" | "unknown";
+  subagentType?: string;
+  subagentModel?: string;
+  subagentEffort?: string;
+  subagentMessage?: string;
+  subagentResult?: string;
 }
 
 export interface VisualMediaBlock extends MessageBlock {
@@ -121,6 +130,7 @@ export interface VisualWorkSummary {
   steps: number;
   compactions: number;
   steerings: number;
+  subagents: number;
 }
 
 export interface VisualTranscriptDeltaPatch<
@@ -145,6 +155,179 @@ export interface VisualFileEdit {
 export interface VisualFileEditSummary {
   title: string;
   files: VisualFileEdit[];
+}
+
+export interface VisualSubagentMeta {
+  id?: string;
+  nickname?: string;
+  action: "spawn" | "wait" | "notification";
+  status: "running" | "completed" | "failed" | "unknown";
+  type?: string;
+  model?: string;
+  effort?: string;
+  task?: string;
+  result?: string;
+}
+
+function recordFromUnknown(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === "object"
+    ? (value as Record<string, unknown>)
+    : undefined;
+}
+
+function stringFromUnknown(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim() ? value : undefined;
+}
+
+function normalizedSubagentToolName(
+  toolName: string | undefined,
+): "spawn_agent" | "wait_agent" | undefined {
+  const normalized = (toolName ?? "").toLowerCase();
+  if (normalized.split(/[.:/]/).includes("spawn_agent")) return "spawn_agent";
+  if (normalized.split(/[.:/]/).includes("wait_agent")) return "wait_agent";
+  if (normalized.endsWith("spawn_agent")) return "spawn_agent";
+  if (normalized.endsWith("wait_agent")) return "wait_agent";
+  return undefined;
+}
+
+export function visualSubagentMetaFromBlocks(
+  toolUseBlock: MessageBlock | undefined,
+  resultBlock?: MessageBlock | undefined,
+): VisualSubagentMeta | undefined {
+  const direct = visualSubagentMetaFromBlock(resultBlock) ??
+    visualSubagentMetaFromToolResult(toolUseBlock, resultBlock) ??
+    visualSubagentMetaFromBlock(toolUseBlock);
+  if (!direct) return undefined;
+  const input = recordFromUnknown(toolUseBlock?.toolInput);
+  return {
+    ...direct,
+    type: direct.type ?? stringFromUnknown(input?.agent_type),
+    model: direct.model ?? stringFromUnknown(input?.model),
+    effort: direct.effort ?? stringFromUnknown(input?.reasoning_effort),
+    task: direct.task ?? stringFromUnknown(input?.message),
+  };
+}
+
+function visualSubagentMetaFromToolResult(
+  toolUseBlock: MessageBlock | undefined,
+  resultBlock: MessageBlock | undefined,
+): VisualSubagentMeta | undefined {
+  const toolName = normalizedSubagentToolName(
+    toolUseBlock?.toolName ?? resultBlock?.toolName,
+  );
+  if (
+    resultBlock?.type !== "tool_result" ||
+    !toolName ||
+    typeof resultBlock.text !== "string"
+  ) {
+    return undefined;
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(resultBlock.text);
+  } catch {
+    return undefined;
+  }
+  const record = recordFromUnknown(parsed);
+  if (!record) return undefined;
+  if (toolName === "spawn_agent") {
+    return {
+      id: stringFromUnknown(record.agent_id),
+      nickname: stringFromUnknown(record.nickname),
+      action: "spawn",
+      status: "running",
+    };
+  }
+  const status = recordFromUnknown(record.status);
+  if (!status) {
+    return { action: "wait", status: "unknown" };
+  }
+  const entries = Object.entries(status);
+  if (entries.length !== 1) {
+    return { action: "wait", status: "unknown" };
+  }
+  const [id, rawState] = entries[0]!;
+  const state = recordFromUnknown(rawState);
+  const completed = state ? stringFromUnknown(state.completed) : undefined;
+  const failed = state
+    ? stringFromUnknown(state.failed) ?? stringFromUnknown(state.error)
+    : undefined;
+  return {
+    id,
+    action: "wait",
+    status: completed ? "completed" : failed ? "failed" : "unknown",
+    result: completed ?? failed ?? resultBlock.text,
+  };
+}
+
+export function visualSubagentMetaFromBlock(
+  block: MessageBlock | undefined,
+): VisualSubagentMeta | undefined {
+  if (!block) return undefined;
+  if (block.type === "subagent") {
+    return {
+      id: block.subagentId,
+      nickname: block.subagentNickname,
+      action: block.subagentAction ?? "notification",
+      status: block.subagentStatus ?? "unknown",
+      type: block.subagentType,
+      model: block.subagentModel,
+      effort: block.subagentEffort,
+      task: block.subagentMessage,
+      result: block.subagentResult ?? block.text,
+    };
+  }
+  const toolName = normalizedSubagentToolName(block.toolName);
+  if (!toolName) {
+    return undefined;
+  }
+  const input = recordFromUnknown(block.toolInput);
+  const targets = Array.isArray(input?.targets)
+    ? input.targets.filter((target): target is string => typeof target === "string")
+    : [];
+  return {
+    id: block.subagentId ?? stringFromUnknown(input?.agent_id) ?? targets[0],
+    nickname: block.subagentNickname,
+    action:
+      block.subagentAction ??
+      (toolName === "spawn_agent" ? "spawn" : "wait"),
+    status:
+      block.subagentStatus ??
+      (toolName === "spawn_agent" ? "running" : "unknown"),
+    type: block.subagentType ?? stringFromUnknown(input?.agent_type),
+    model: block.subagentModel ?? stringFromUnknown(input?.model),
+    effort: block.subagentEffort ?? stringFromUnknown(input?.reasoning_effort),
+    task: block.subagentMessage ?? stringFromUnknown(input?.message),
+    result: block.subagentResult,
+  };
+}
+
+export function visualSubagentLabel(meta: VisualSubagentMeta): string {
+  return meta.nickname || meta.type || (meta.id ? meta.id.slice(0, 8) : "agent");
+}
+
+export function visualFileEditTotals(
+  summary: VisualFileEditSummary | undefined,
+): { additions?: number; deletions?: number } {
+  if (!summary) return {};
+  let additions = 0;
+  let deletions = 0;
+  let sawAdditions = false;
+  let sawDeletions = false;
+  for (const file of summary.files) {
+    if (file.additions !== undefined) {
+      additions += file.additions;
+      sawAdditions = true;
+    }
+    if (file.deletions !== undefined) {
+      deletions += file.deletions;
+      sawDeletions = true;
+    }
+  }
+  return {
+    additions: sawAdditions ? additions : undefined,
+    deletions: sawDeletions ? deletions : undefined,
+  };
 }
 
 export function visualPlanFromPayload(input: unknown): VisualPlan | undefined {
@@ -666,6 +849,54 @@ export function visualToolPreviewText(
     .join("");
 }
 
+export function visualToolIconNameForPreview(
+  block: MessageBlock | undefined,
+  preview = visualToolPreviewText(block),
+): string | undefined {
+  const toolName = (block?.toolName ?? "").toLowerCase();
+  if (toolName === "click" || toolName.endsWith(".click")) return "click";
+  if (
+    toolName === "take_screenshot" ||
+    toolName.endsWith(".take_screenshot")
+  )
+    return "take_screenshot";
+  if (toolName === "take_snapshot" || toolName.endsWith(".take_snapshot"))
+    return "take_snapshot";
+  if (
+    /^Check git\b/.test(preview) ||
+    /^Check (?:staged )?diff whitespace\b/.test(preview) ||
+    /^Review (?:staged )?diff\b/.test(preview) ||
+    /^Search .* from \S+ for\b/.test(preview) ||
+    /^Show (?:recent commits|current branch|current commit|HEAD)\b/.test(preview) ||
+    /^Count commits\b/.test(preview) ||
+    /^List tracked files\b/.test(preview) ||
+    /^Stage\b/.test(preview) ||
+    /^Commit changes\b/.test(preview) ||
+    /^git\b/.test(preview)
+  ) {
+    return "git";
+  }
+  if (/^Read logs?\b/.test(preview)) return "read";
+  if (/^Check listeners\b/.test(preview)) return "port_check";
+  if (/^Run .*(?:tests|check)\b/.test(preview)) return "test";
+  if (/^Reload page\b/.test(preview)) return "reload_page";
+  if (/^Wait for\b/.test(preview)) return "wait_for";
+  if (/^Check console\b/.test(preview)) return "list_console_messages";
+  if (/^List browser pages\b/.test(preview)) return "list_pages";
+  if (/^Emulate\b/.test(preview)) return "emulate";
+  if (/^(?:Navigate to|Open)\b/.test(preview)) return "navigate_page";
+  if (/^Stop process(?:es)?\b/.test(preview)) return "process_end";
+  if (/^Check port(?:s)?\b/.test(preview)) return "port_check";
+  if (/^Delete (?:file|folder|path)\b/.test(preview)) {
+    return "filesystem_delete";
+  }
+  if (/^Create (?:file|folder|path)\b/.test(preview)) {
+    return "filesystem_create";
+  }
+  if (/^Fetch\b/.test(preview)) return "fetch";
+  return block?.toolName;
+}
+
 export interface VisualToolResultBadge {
   label: string;
   tone: "neutral" | "danger" | "warning" | "success";
@@ -1185,6 +1416,7 @@ export function visualToolCanStillRun(
 
 type VisualCommandSummary =
   | { kind: "read"; targets: string[] }
+  | { kind: "logs"; targets: string[]; tailLines?: number }
   | { kind: "search"; pattern: string; paths: string[] }
   | { kind: "find"; root: string; patterns: string[] }
   | { kind: "script-file"; language: string; script: string; args: string[] }
@@ -1226,6 +1458,7 @@ type VisualCommandSummary =
     }
   | { kind: "process-end"; pids: string[] }
   | { kind: "port-check"; ports: string[] }
+  | { kind: "listener-check"; terms: string[] }
   | { kind: "fetch"; url: string; output?: string }
   | { kind: "image-transform"; input: string; output: string }
   | {
@@ -1293,6 +1526,12 @@ function visualStructuredToolPreviewParts(
     const singleText = stringField(obj, "text");
     if (singleText) return textPreviewParts(`Wait for ${singleText}`);
     return textPreviewParts("Wait for page text");
+  }
+  if (toolName === "click" || toolName.endsWith(".click")) {
+    const uid = stringField(obj, "uid");
+    const dblClick = booleanField(obj, "dblClick") ?? booleanField(obj, "doubleClick");
+    const label = dblClick ? "Double-click element" : "Click element";
+    return textPreviewParts(uid ? `${label} ${uid}` : label);
   }
   if (
     toolName === "take_screenshot" ||
@@ -1378,6 +1617,19 @@ function stringField(
 ): string | undefined {
   const value = obj[key];
   return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+function booleanField(
+  obj: Record<string, unknown>,
+  key: string,
+): boolean | undefined {
+  const value = obj[key];
+  if (typeof value === "boolean") return value;
+  if (typeof value === "string") {
+    if (value.toLowerCase() === "true") return true;
+    if (value.toLowerCase() === "false") return false;
+  }
+  return undefined;
 }
 
 function shortUrlForPreview(url: string): string {
@@ -1590,6 +1842,9 @@ function visualCommandPreview(command: string): {
       summaries: [],
     };
   }
+  const remoteContextCwd = normalized.remoteHost
+    ? shellContextCwd(parts)
+    : undefined;
   const meaningfulParts = parts.filter((part) => !isShellContextCommand(part));
   if (meaningfulParts.length === 0) {
     return {
@@ -1608,7 +1863,10 @@ function visualCommandPreview(command: string): {
   });
   const summaryPairs = normalizedParts.map((part) => ({
     part,
-    summary: summarizeShellCommand(part),
+    summary: applyRemoteContextCwdToSummary(
+      summarizeShellCommand(part),
+      remoteContextCwd,
+    ),
   }));
   const summaries = summaryPairs
     .map((pair) => pair.summary)
@@ -2046,6 +2304,95 @@ function isShellContextCommand(command: string): boolean {
   return name === "cd" || name === "pwd" || name === "true";
 }
 
+function shellContextCwd(parts: readonly string[]): string | undefined {
+  let cwd: string | undefined;
+  for (const part of parts) {
+    const tokens = shellTokens(part);
+    const name = shellLauncherName(tokens[0] ?? "");
+    if (name === "cd" || name === "chdir" || name === "set-location") {
+      const target = cdTargetFromTokens(tokens);
+      if (target) cwd = target;
+    }
+  }
+  return cwd;
+}
+
+function cdTargetFromTokens(tokens: readonly string[]): string | undefined {
+  for (let index = 1; index < tokens.length; index += 1) {
+    const token = tokens[index]!;
+    if (!token || token === "--") continue;
+    if (token.toLowerCase() === "/d") continue;
+    if (token.startsWith("-")) continue;
+    return token;
+  }
+  return undefined;
+}
+
+function applyRemoteContextCwdToSummary(
+  summary: VisualCommandSummary | undefined,
+  cwd: string | undefined,
+): VisualCommandSummary | undefined {
+  if (!summary || !cwd) return summary;
+  const qualifyTargets = (targets: readonly string[]) =>
+    targets.map((target) => qualifyRemotePathTarget(target, cwd));
+  if (summary.kind === "read") {
+    return { ...summary, targets: qualifyTargets(summary.targets) };
+  }
+  if (summary.kind === "logs") {
+    return { ...summary, targets: qualifyTargets(summary.targets) };
+  }
+  if (summary.kind === "search") {
+    return { ...summary, paths: qualifyTargets(summary.paths) };
+  }
+  if (summary.kind === "find") {
+    return { ...summary, root: qualifyRemotePathTarget(summary.root, cwd) };
+  }
+  if (summary.kind === "script-file") {
+    return { ...summary, script: qualifyRemotePathTarget(summary.script, cwd) };
+  }
+  if (summary.kind === "test") {
+    return { ...summary, targets: qualifyTargets(summary.targets) };
+  }
+  if (summary.kind === "fetch" && summary.output) {
+    return { ...summary, output: qualifyRemotePathTarget(summary.output, cwd) };
+  }
+  if (summary.kind === "image-transform") {
+    return {
+      ...summary,
+      input: qualifyRemotePathTarget(summary.input, cwd),
+      output: qualifyRemotePathTarget(summary.output, cwd),
+    };
+  }
+  if (summary.kind === "filesystem") {
+    return { ...summary, targets: qualifyTargets(summary.targets) };
+  }
+  return summary;
+}
+
+function qualifyRemotePathTarget(target: string, cwd: string): string {
+  const parsed = parsePathTarget(target);
+  if (!parsed.path || isAbsoluteOrSpecialPath(parsed.path)) return target;
+  return `${joinRemotePath(cwd, parsed.path)}${parsed.range}`;
+}
+
+function isAbsoluteOrSpecialPath(path: string): boolean {
+  return (
+    path === "." ||
+    path === "./" ||
+    path === ".." ||
+    path.startsWith("/") ||
+    path.startsWith("~/") ||
+    /^[A-Za-z]:[\\/]/.test(path) ||
+    /^\\\\/.test(path) ||
+    /^[a-z][a-z0-9+.-]*:\/\//i.test(path)
+  );
+}
+
+function joinRemotePath(cwd: string, path: string): string {
+  const separator = /^[A-Za-z]:[\\/]/.test(cwd) || cwd.includes("\\") ? "\\" : "/";
+  return `${cwd.replace(/[\\/]+$/, "")}${separator}${path.replace(/^[\\/]+/, "")}`;
+}
+
 function lsRequestsDetails(tokens: string[]): boolean {
   return tokens
     .slice(1)
@@ -2116,6 +2463,10 @@ function shellTokens(command: string): string[] {
   return tokens;
 }
 
+function cleanPowerShellBoundaryToken(token: string): string {
+  return token.replace(/^[(&]+/, "").replace(/[);]+$/, "");
+}
+
 function summarizeShellCommand(command: string): VisualCommandSummary | undefined {
   const portCheck = summarizePortCheck(command);
   if (portCheck) return portCheck;
@@ -2127,7 +2478,7 @@ function summarizeShellCommand(command: string): VisualCommandSummary | undefine
   if (pipeRead) return pipeRead;
   const tokens = shellTokens(command);
   if (tokens.length === 0) return undefined;
-  const name = tokens[0]!.split("/").pop() ?? tokens[0]!;
+  const name = cleanPowerShellBoundaryToken(tokens[0]!).split("/").pop() ?? tokens[0]!;
   const lowerName = name.toLowerCase();
   const test = summarizeTestCommand(tokens);
   if (test) return test;
@@ -2151,11 +2502,15 @@ function summarizeShellCommand(command: string): VisualCommandSummary | undefine
     return summarizeCreate(tokens);
   if (lowerName === "curl" || lowerName === "wget")
     return summarizeFetch(tokens);
+  if (lowerName === "tail") return summarizeTailRead(tokens);
   if (lowerName === "magick" || lowerName === "convert") {
     return summarizeImageTransform(tokens);
   }
   if (name === "sed") return summarizeSedRead(tokens);
   if (lowerName === "ls" || lowerName === "dir") return summarizeLs(tokens);
+  if (lowerName === "get-content" || lowerName === "gc") {
+    return summarizeGetContentRead(tokens.map(cleanPowerShellBoundaryToken));
+  }
   if (name === "cat" || name.toLowerCase() === "type") {
     return summarizeCatRead(tokens);
   }
@@ -2174,7 +2529,7 @@ function summarizeGitShowSearch(command: string): VisualCommandSummary | undefin
     return undefined;
   }
   const search = summarizeSearch(shellTokens(parts[1]!));
-  if (!search) return undefined;
+  if (!search || search.kind !== "search") return undefined;
   return {
     kind: "git",
     action: "show-file-search",
@@ -2447,8 +2802,72 @@ function summarizePortCheck(command: string): VisualCommandSummary | undefined {
   for (const match of command.matchAll(/(?:^|[^\w/])(?:tcp:|TCP:|:)(\d{2,5})/g)) {
     addPort(match[1]);
   }
+  const listenerTerms = lsofListenerTerms(command);
+  if (listenerTerms.length > 0) {
+    const numericTerms = listenerTerms.filter((term) => /^\d+$/.test(term));
+    if (numericTerms.length === listenerTerms.length) {
+      for (const port of numericTerms) addPort(port);
+    } else {
+      return { kind: "listener-check", terms: listenerTerms };
+    }
+  }
   if (ports.length === 0) return undefined;
   return { kind: "port-check", ports };
+}
+
+function lsofListenerTerms(command: string): string[] {
+  if (!/(?:^|\s)-sTCP:LISTEN\b/i.test(command)) return [];
+  const parts = splitShellPipeline(command);
+  if (parts.length < 2) return [];
+  const right = shellTokens(parts[1]!);
+  const filter = right[0]?.split("/").pop()?.toLowerCase();
+  if (filter !== "rg" && filter !== "grep") return [];
+  const pattern = right.slice(1).find((token) => token && !token.startsWith("-"));
+  if (!pattern) return [];
+  const terms: string[] = [];
+  return pattern
+    .split("|")
+    .map((term) =>
+      term
+        .trim()
+        .replace(/^\\b/, "")
+        .replace(/\\b$/, "")
+        .replace(/^:/, ""),
+    )
+    .filter((term) => {
+      if (!term || terms.includes(term)) return false;
+      terms.push(term);
+      return true;
+    });
+}
+
+function summarizeTailRead(tokens: string[]): VisualCommandSummary | undefined {
+  const targets: string[] = [];
+  let tailLines: number | undefined;
+  for (let index = 1; index < tokens.length; index += 1) {
+    const token = tokens[index]!;
+    if (token === "-n" || token === "--lines") {
+      const value = tokens[index + 1];
+      if (value && /^-?\d+$/.test(value)) tailLines = Math.abs(Number(value));
+      index += 1;
+      continue;
+    }
+    const compactLines = token.match(/^-([0-9]+)$/);
+    if (compactLines) {
+      tailLines = Number(compactLines[1]);
+      continue;
+    }
+    if (token.startsWith("--lines=")) {
+      const value = token.slice("--lines=".length);
+      if (/^-?\d+$/.test(value)) tailLines = Math.abs(Number(value));
+      continue;
+    }
+    if (token.startsWith("-")) continue;
+    if (token.includes("|") || token.includes(">")) break;
+    targets.push(token);
+  }
+  if (targets.length === 0) return undefined;
+  return { kind: "logs", targets, tailLines };
 }
 
 function summarizeFetch(tokens: string[]): VisualCommandSummary | undefined {
@@ -2627,10 +3046,12 @@ function summarizePipeRead(
   if (leftName !== "nl" || rightName !== "sed") return undefined;
   const path = left.slice(1).find((token) => !token.startsWith("-"));
   if (!path) return undefined;
-  const sed = summarizeSedRange(right);
+  const sed = summarizeSedRanges(right);
   if (!sed) return undefined;
-  const suffix = sed.end ? `:${sed.start}-${sed.end}` : `:${sed.start}`;
-  return { kind: "read", targets: [`${path}${suffix}`] };
+  return {
+    kind: "read",
+    targets: sed.ranges.map((range) => `${path}${sedRangeSuffix(range)}`),
+  };
 }
 
 function splitShellPipeline(command: string): string[] {
@@ -2667,30 +3088,45 @@ function splitShellPipeline(command: string): string[] {
   return parts;
 }
 
-function summarizeSedRange(
+type SedLineRange = { start: string; end?: string };
+
+function parseSedRangeScript(script: string): SedLineRange[] | undefined {
+  const clauses = script.split(";").map((part) => part.trim()).filter(Boolean);
+  if (clauses.length === 0) return undefined;
+  const ranges: SedLineRange[] = [];
+  for (const clause of clauses) {
+    const match = clause.match(/^(\d+)(?:,(\d+))?p$/);
+    if (!match) return undefined;
+    ranges.push({ start: match[1]!, end: match[2] });
+  }
+  return ranges;
+}
+
+function summarizeSedRanges(
   tokens: string[],
-): { start: string; end?: string } | undefined {
+): { ranges: SedLineRange[]; tokenIndex: number } | undefined {
   for (let i = 1; i < tokens.length; i += 1) {
-    const match = tokens[i]!.match(/^(\d+)(?:,(\d+))?p$/);
-    if (match) return { start: match[1]!, end: match[2] };
+    const ranges = parseSedRangeScript(tokens[i]!);
+    if (ranges) return { ranges, tokenIndex: i };
   }
   return undefined;
 }
 
+function sedRangeSuffix(range: SedLineRange): string {
+  return range.end ? `:${range.start}-${range.end}` : `:${range.start}`;
+}
+
 function summarizeSedRead(tokens: string[]): VisualCommandSummary | undefined {
-  const range = summarizeSedRange(tokens);
-  const rangeIndex = range
-    ? tokens.findIndex((token) =>
-        token === `${range.start}${range.end ? `,${range.end}` : ""}p`
-      )
-    : -1;
+  const sed = summarizeSedRanges(tokens);
   const path =
-    rangeIndex >= 0
-      ? tokens.slice(rangeIndex + 1).find((candidate) => !candidate.startsWith("-"))
+    sed
+      ? tokens.slice(sed.tokenIndex + 1).find((candidate) => !candidate.startsWith("-"))
       : undefined;
-  if (!range || !path) return undefined;
-  const suffix = range.end ? `:${range.start}-${range.end}` : `:${range.start}`;
-  return { kind: "read", targets: [`${path}${suffix}`] };
+  if (!sed || !path) return undefined;
+  return {
+    kind: "read",
+    targets: sed.ranges.map((range) => `${path}${sedRangeSuffix(range)}`),
+  };
 }
 
 function summarizeCatRead(tokens: string[]): VisualCommandSummary | undefined {
@@ -2699,6 +3135,32 @@ function summarizeCatRead(tokens: string[]): VisualCommandSummary | undefined {
     .filter((token) => !token.startsWith("-") && !/[|<>]/.test(token));
   if (paths.length === 0) return undefined;
   return { kind: "read", targets: paths };
+}
+
+function summarizeGetContentRead(
+  tokens: string[],
+): VisualCommandSummary | undefined {
+  const optionsWithValue = new Set([
+    ...powershellOptionsWithValue(),
+    "-totalcount",
+    "-tail",
+    "-readcount",
+    "-encoding",
+    "-delimiter",
+    "-stream",
+    "-replace",
+  ]);
+  const targets = positionalPathTokens(tokens.slice(1), optionsWithValue)
+    .map(cleanPowerShellBoundaryToken)
+    .filter((token) => token && !/[|<>]/.test(token) && !token.startsWith("-"));
+  if (targets.length === 0) return undefined;
+  const totalCount = powershellOptionValue(tokens, "-totalcount");
+  return {
+    kind: "read",
+    targets: targets.map((target) =>
+      totalCount && /^\d+$/.test(totalCount) ? `${target}:1-${totalCount}` : target,
+    ),
+  };
 }
 
 function summarizeSearch(tokens: string[]): VisualCommandSummary | undefined {
@@ -2791,6 +3253,15 @@ function commandSummaryParts(
 ): VisualToolPreviewPart[] {
   if (summary.kind === "read")
     return readPreviewParts(summary.targets);
+  if (summary.kind === "logs") {
+    return [
+      { kind: "text", text: "Read logs " },
+      ...interspersePathParts(summary.targets),
+      ...(summary.tailLines
+        ? [{ kind: "text" as const, text: ` last ${summary.tailLines}` }]
+        : []),
+    ];
+  }
   if (summary.kind === "search") {
     return searchPreviewParts(summary.pattern, summary.paths);
   }
@@ -2819,6 +3290,14 @@ function commandSummaryParts(
   if (summary.kind === "port-check") {
     const label = summary.ports.length === 1 ? "Check port" : "Check ports";
     return [{ kind: "text", text: `${label} ${summary.ports.join(", ")}` }];
+  }
+  if (summary.kind === "listener-check") {
+    return [
+      {
+        kind: "text",
+        text: `Check listeners for ${summary.terms.join(", ")}`,
+      },
+    ];
   }
   if (summary.kind === "git") {
     return gitSummaryParts(summary);
@@ -3674,6 +4153,16 @@ export function visualWorkSummary<
 >(entries: readonly VisualWorkEntry<B, M>[]): VisualWorkSummary {
   let compactions = 0;
   let steerings = 0;
+  const subagentIdByToolUseId = new Map<string, string>();
+  for (const entry of entries) {
+    for (const block of entry.blocks) {
+      const meta = visualSubagentMetaFromBlock(block);
+      if (meta?.id && block.toolUseId) {
+        subagentIdByToolUseId.set(block.toolUseId, meta.id);
+      }
+    }
+  }
+  const subagents = new Set<string>();
   let boundaryMarkers = 0;
   for (const entry of entries) {
     if (userMessageIntent(entry.message) === "steer") {
@@ -3694,11 +4183,27 @@ export function visualWorkSummary<
     if (markerKind === "compacted") {
       compactions += 1;
     }
+    for (const block of entry.blocks) {
+      const meta = visualSubagentMetaFromBlock(block);
+      if (!meta) continue;
+      subagents.add(
+        meta.id ??
+          (block.toolUseId
+            ? subagentIdByToolUseId.get(block.toolUseId) ?? block.toolUseId
+            : `${entry.messageIndex}`),
+      );
+    }
   }
   return {
-    steps: entries.length - compactions - steerings - boundaryMarkers,
+    steps:
+      entries.length -
+      compactions -
+      steerings -
+      boundaryMarkers -
+      subagents.size,
     compactions,
     steerings,
+    subagents: subagents.size,
   };
 }
 
@@ -4534,7 +5039,7 @@ export function buildVisualTranscriptItems<
       (turnWasAlreadyOpen || hasTurnMarker(turnEntries, "started")) &&
       !hasTurnMarker(turnEntries, "complete") &&
       !hasTurnMarker(turnEntries, "aborted");
-    const acceptsSteering =
+    const acceptsSteering: boolean =
       turnStillOpen &&
       (turnWasAlreadyOpen || hasSteeringEligibleWork(turnEntries));
     if (acceptsSteering && messages[messageIndex]?.role === "user") {

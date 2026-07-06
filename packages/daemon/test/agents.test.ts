@@ -20,6 +20,7 @@ import {
   scanCodexContextTokens,
   scanCodexTokenUsage,
   clearCodexScanCache,
+  findCodexSessionSourceById,
   scanClaude,
   scanCodex,
   scanCopilot,
@@ -1287,6 +1288,41 @@ describe("scanCodex", () => {
     expect(sessions).toHaveLength(1);
     expect(sessions[0]?.cwd).toBe(resolve("/proj"));
     expect(sessions[0]?.sessionId).toBe("flat");
+  });
+
+  test("resolves Codex subagent session source by id", async () => {
+    clearCodexScanCache();
+    const root = await tempDir("supergit-codex-resolve-");
+    const dated = join(root, "2026", "07", "03");
+    await mkdir(dated, { recursive: true });
+    const id = "019f27fe-0f3d-7a50-8371-3344fbaee5d0";
+    const file = join(dated, `rollout-2026-07-03T14-39-49-${id}.jsonl`);
+    await writeFile(
+      file,
+      JSON.stringify({
+        type: "session_meta",
+        payload: { id, cwd: "/Users/marcel/OpenUSD" },
+      }) + "\n",
+    );
+
+    expect(await findCodexSessionSourceById(id, [root])).toBe(file);
+  });
+
+  test("resolves Codex sessions by payload id when filename is not enough", async () => {
+    clearCodexScanCache();
+    const root = await tempDir("supergit-codex-resolve-meta-");
+    const file = join(root, "flat-session.jsonl");
+    await writeFile(
+      file,
+      JSON.stringify({
+        type: "session_meta",
+        payload: { id: "payload-session-id", cwd: "/proj" },
+      }) + "\n",
+    );
+
+    expect(await findCodexSessionSourceById("payload-session-id", [root])).toBe(
+      file,
+    );
   });
 
   test("extracts title, firstUserMessage, and lastUserMessages for session previews", async () => {

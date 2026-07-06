@@ -1529,6 +1529,43 @@ export async function scanCodex(
   return [];
 }
 
+export async function findCodexSessionSourceById(
+  sessionId: string,
+  roots: string[] = CODEX_ROOTS(),
+): Promise<string | null> {
+  const wanted = sessionId.trim();
+  if (!wanted) return null;
+  for (const root of roots) {
+    try {
+      await stat(root);
+    } catch {
+      continue;
+    }
+    const files = await collectCodexSessionFiles(root);
+    const direct = files.find((file) => {
+      const name = file.split(/[/\\]/).pop() ?? "";
+      return (
+        name === `${wanted}.jsonl` ||
+        name === `${wanted}.json` ||
+        name.endsWith(`-${wanted}.jsonl`) ||
+        name.endsWith(`-${wanted}.json`)
+      );
+    });
+    if (direct) return direct;
+    for (const file of files) {
+      try {
+        const stats = await stat(file);
+        const meta = await readCodexSessionMeta(file, stats.mtimeMs);
+        if (meta.id === wanted) return file;
+      } catch {
+        // Ignore unreadable or malformed candidate files; discovery is
+        // best-effort, same as scanCodex.
+      }
+    }
+  }
+  return null;
+}
+
 export async function scanCopilot(
   root: string = COPILOT_WS_ROOT(),
 ): Promise<AgentSession[]> {

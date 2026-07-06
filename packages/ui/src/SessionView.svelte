@@ -245,6 +245,17 @@
    *  experimental visual app-server surface for this session. Default
    *  read/transcript views must not grow the Codex composer. */
   export let visualAppEnabled: boolean = false;
+  /** Open a subagent transcript discovered inside this transcript/live
+   *  stream. The parent owns column placement; this view never owns the
+   *  child process lifecycle. */
+  export let onOpenSubagent: (
+    subagentId: string,
+    surface: "read" | "terminal",
+  ) => void = () => {};
+  export let onOpenRemotePath: (
+    remoteHost: string,
+    path: string,
+  ) => void | Promise<void> = () => {};
   /** Fired whenever the user flips between read and terminal mode (or
    *  the PTY exits and we flip back). The parent persists this so a
    *  page reload restores the same view. */
@@ -325,7 +336,8 @@
       | "system_reminder"
       | "command"
       | "goal"
-      | "marker";
+      | "marker"
+      | "subagent";
     text?: string;
     streaming?: boolean;
     toolName?: string;
@@ -347,6 +359,15 @@
     title?: string;
     alt?: string;
     hasAlpha?: boolean;
+    subagentId?: string;
+    subagentNickname?: string;
+    subagentAction?: "spawn" | "wait" | "notification";
+    subagentStatus?: "running" | "completed" | "failed" | "unknown";
+    subagentType?: string;
+    subagentModel?: string;
+    subagentEffort?: string;
+    subagentMessage?: string;
+    subagentResult?: string;
   }
   interface NormalizedMessage {
     role: "user" | "assistant" | "system" | "tool";
@@ -2854,6 +2875,15 @@
             approvalPolicy: liveToolUse.approvalPolicy,
             approvalDecision: liveToolUse.approvalDecision,
             sandboxPolicy: liveToolUse.sandboxPolicy,
+            subagentId: liveToolUse.subagentId,
+            subagentNickname: liveToolUse.subagentNickname,
+            subagentAction: liveToolUse.subagentAction,
+            subagentStatus: liveToolUse.subagentStatus,
+            subagentType: liveToolUse.subagentType,
+            subagentModel: liveToolUse.subagentModel,
+            subagentEffort: liveToolUse.subagentEffort,
+            subagentMessage: liveToolUse.subagentMessage,
+            subagentResult: liveToolUse.subagentResult,
           },
         );
       }
@@ -3013,7 +3043,18 @@
     extraBlocks: NormalizedBlock[] = [],
     toolMeta: Pick<
       NormalizedBlock,
-      "approvalPolicy" | "approvalDecision" | "sandboxPolicy"
+      | "approvalPolicy"
+      | "approvalDecision"
+      | "sandboxPolicy"
+      | "subagentId"
+      | "subagentNickname"
+      | "subagentAction"
+      | "subagentStatus"
+      | "subagentType"
+      | "subagentModel"
+      | "subagentEffort"
+      | "subagentMessage"
+      | "subagentResult"
     > = {},
   ): void {
     if (!session) return;
@@ -3039,6 +3080,31 @@
         : {}),
       ...(toolMeta.sandboxPolicy
         ? { sandboxPolicy: toolMeta.sandboxPolicy }
+        : {}),
+      ...(toolMeta.subagentId ? { subagentId: toolMeta.subagentId } : {}),
+      ...(toolMeta.subagentNickname
+        ? { subagentNickname: toolMeta.subagentNickname }
+        : {}),
+      ...(toolMeta.subagentAction
+        ? { subagentAction: toolMeta.subagentAction }
+        : {}),
+      ...(toolMeta.subagentStatus
+        ? { subagentStatus: toolMeta.subagentStatus }
+        : {}),
+      ...(toolMeta.subagentType
+        ? { subagentType: toolMeta.subagentType }
+        : {}),
+      ...(toolMeta.subagentModel
+        ? { subagentModel: toolMeta.subagentModel }
+        : {}),
+      ...(toolMeta.subagentEffort
+        ? { subagentEffort: toolMeta.subagentEffort }
+        : {}),
+      ...(toolMeta.subagentMessage
+        ? { subagentMessage: toolMeta.subagentMessage }
+        : {}),
+      ...(toolMeta.subagentResult
+        ? { subagentResult: toolMeta.subagentResult }
         : {}),
     };
     const blocks = [block, ...extraBlocks];
@@ -5134,6 +5200,8 @@
       showLiveThinkingLine={codexVisualAppSurface && codexRunning}
       messageMotionSources={composerMessageMotionSources}
       onMessageMotionDone={clearComposerMessageMotion}
+      {onOpenSubagent}
+      {onOpenRemotePath}
     />
   {/if}
 

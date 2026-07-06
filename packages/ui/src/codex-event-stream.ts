@@ -21,6 +21,15 @@ export interface CodexLiveToolUse {
   approvalDecision?: string;
   sandboxPolicy?: string;
   mediaBlock?: CodexAppHistoryBlock;
+  subagentId?: string;
+  subagentNickname?: string;
+  subagentAction?: "spawn" | "wait" | "notification";
+  subagentStatus?: "running" | "completed" | "failed" | "unknown";
+  subagentType?: string;
+  subagentModel?: string;
+  subagentEffort?: string;
+  subagentMessage?: string;
+  subagentResult?: string;
 }
 
 export interface CodexLiveToolResult {
@@ -28,6 +37,15 @@ export interface CodexLiveToolResult {
   toolName: string;
   text: string;
   toolUseId: string;
+  subagentId?: string;
+  subagentNickname?: string;
+  subagentAction?: "spawn" | "wait" | "notification";
+  subagentStatus?: "running" | "completed" | "failed" | "unknown";
+  subagentType?: string;
+  subagentModel?: string;
+  subagentEffort?: string;
+  subagentMessage?: string;
+  subagentResult?: string;
 }
 
 export interface CodexLiveMarker {
@@ -42,7 +60,8 @@ export interface CodexAppHistoryBlock {
     | "tool_use"
     | "tool_result"
     | "media"
-    | "marker";
+    | "marker"
+    | "subagent";
   text?: string;
   toolName?: string;
   toolInput?: unknown;
@@ -56,6 +75,15 @@ export interface CodexAppHistoryBlock {
   url?: string;
   title?: string;
   alt?: string;
+  subagentId?: string;
+  subagentNickname?: string;
+  subagentAction?: "spawn" | "wait" | "notification";
+  subagentStatus?: "running" | "completed" | "failed" | "unknown";
+  subagentType?: string;
+  subagentModel?: string;
+  subagentEffort?: string;
+  subagentMessage?: string;
+  subagentResult?: string;
 }
 
 export interface CodexAppHistoryMessage {
@@ -194,6 +222,13 @@ function parseEvent(data: unknown): CodexAppEvent | null {
 export function codexLiveToolUseFromEvent(
   event: CodexAppEvent,
 ): CodexLiveToolUse | null {
+  const item = codexEventItem(event.params);
+  if (
+    item?.type === "function_call_output" ||
+    item?.type === "custom_tool_call_output"
+  ) {
+    return null;
+  }
   const itemId = codexEventItemId(event);
   if (!itemId) return null;
   const toolName = codexEventToolName(event.method, event.params);
@@ -206,6 +241,7 @@ export function codexLiveToolUseFromEvent(
   const mediaBlock =
     toolName === "view_image" ? codexViewImageMediaBlock(toolInput) : undefined;
   const approvalFields = codexCommandApprovalFields(event.params);
+  const subagentFields = codexSubagentBlockFromToolUse(toolName, toolInput);
   return {
     id,
     toolName,
@@ -213,6 +249,7 @@ export function codexLiveToolUseFromEvent(
     toolUseId: itemId,
     inputQuality: codexToolInputQuality(toolInput),
     ...approvalFields,
+    ...subagentFields,
     ...(mediaBlock ? { mediaBlock } : {}),
   };
 }
@@ -245,16 +282,22 @@ export function codexLiveToolResultFromEvent(
         }
       : null;
   }
-  if (item.type === "mcpToolCall" || item.type === "dynamicToolCall") {
+  if (
+    item.type === "mcpToolCall" ||
+    item.type === "dynamicToolCall" ||
+    item.type === "function_call_output" ||
+    item.type === "custom_tool_call_output"
+  ) {
     const result = codexGenericToolResultPayload(item);
-    return result !== undefined
-      ? {
-          id: `codex-output-${itemId}`,
-          toolName,
-          text: stringifyPayload(result),
-          toolUseId: itemId,
-        }
-      : null;
+    if (result === undefined) return null;
+    const text = stringifyPayload(result);
+    return {
+      id: `codex-output-${itemId}`,
+      toolName,
+      text,
+      toolUseId: itemId,
+      ...codexSubagentBlockFromToolOutput(toolName, text),
+    };
   }
   return null;
 }
@@ -304,6 +347,10 @@ export function codexLiveMessagesFromEvent(
         approvalPolicy: liveToolUse.approvalPolicy,
         approvalDecision: liveToolUse.approvalDecision,
         sandboxPolicy: liveToolUse.sandboxPolicy,
+        extraFields: codexSubagentBlockFromToolUse(
+          liveToolUse.toolName,
+          liveToolUse.toolInput,
+        ),
         extraBlocks: liveToolUse.mediaBlock ? [liveToolUse.mediaBlock] : [],
       }),
     );
@@ -317,6 +364,10 @@ export function codexLiveMessagesFromEvent(
         toolName: liveToolResult.toolName,
         toolUseId: liveToolResult.toolUseId,
         text: liveToolResult.text,
+        extraFields: codexSubagentBlockFromToolOutput(
+          liveToolResult.toolName,
+          liveToolResult.text,
+        ),
       }),
     );
   }
@@ -353,11 +404,13 @@ export function codexAppHistoryMessagesFromThread(
     const turnId = stringField(turnRecord, "id");
     const timestamp = codexUnixSecondsToIso(turnRecord.startedAt);
     const items = Array.isArray(turnRecord.items) ? turnRecord.items : [];
+    const toolNames = new Map<string, string>();
     for (const rawItem of items) {
       const itemMessages = codexAppMessagesFromThreadItem(
         rawItem,
         turnId,
         timestamp,
+        toolNames,
       );
       messages.push(...itemMessages);
     }
@@ -401,15 +454,26 @@ function codexAppMessagesFromThreadItem(
   rawItem: unknown,
   turnId: string | undefined,
   timestamp: string | undefined,
+  toolNames: Map<string, string>,
 ): CodexAppHistoryMessage[] {
   if (!rawItem || typeof rawItem !== "object") return [];
   const item = rawItem as Record<string, unknown>;
   const itemType = stringField(item, "type");
-  const itemId = stringField(item, "id") ?? turnId ?? "item";
+  const itemId =
+    stringField(item, "id") ?? stringField(item, "call_id") ?? turnId ?? "item";
   if (itemType === "userMessage") {
     const blocks = codexUserInputBlocks(item.content);
     return blocks.length
-      ? [{ id: `codex-user-${itemId}`, role: "user", timestamp, blocks }]
+      ? [
+          {
+            id: `codex-user-${itemId}`,
+            role: blocks.every((block) => block.type === "subagent")
+              ? "assistant"
+              : "user",
+            timestamp,
+            blocks,
+          },
+        ]
       : [];
   }
   if (itemType === "agentMessage") {
@@ -467,6 +531,51 @@ function codexAppMessagesFromThreadItem(
   }
   if (itemType === "mcpToolCall" || itemType === "dynamicToolCall") {
     return codexGenericToolMessages(item, itemId, timestamp);
+  }
+  if (itemType === "function_call" || itemType === "custom_tool_call") {
+    const callId = stringField(item, "call_id") ?? itemId;
+    const tool =
+      stringField(item, "name") ??
+      (itemType === "custom_tool_call" ? "custom_tool" : "function_call");
+    const toolInput =
+      itemType === "function_call"
+        ? codexToolArguments(item.arguments)
+        : (item.input ?? item.arguments);
+    toolNames.set(callId, tool);
+    const viewImageMedia =
+      tool === "view_image" ? codexViewImageMediaBlock(toolInput) : null;
+    return [
+      codexToolUseMessage({
+        id: `codex-tool-${callId}`,
+        timestamp,
+        toolName: tool,
+        toolInput,
+        toolUseId: callId,
+        extraFields: codexSubagentBlockFromToolUse(tool, toolInput),
+        extraBlocks: viewImageMedia ? [viewImageMedia] : [],
+      }),
+    ];
+  }
+  if (
+    itemType === "function_call_output" ||
+    itemType === "custom_tool_call_output"
+  ) {
+    const callId = stringField(item, "call_id") ?? itemId;
+    const tool = toolNames.get(callId) ?? stringField(item, "name") ?? itemType;
+    const output =
+      typeof item.output === "string"
+        ? item.output
+        : stringifyPayload(item.output ?? item.result ?? "");
+    return [
+      codexToolResultMessage({
+        id: `codex-output-${callId}`,
+        timestamp,
+        toolName: tool,
+        toolUseId: callId,
+        text: output,
+        extraFields: codexSubagentBlockFromToolOutput(tool, output),
+      }),
+    ];
   }
   if (itemType === "imageView") {
     const path = stringField(item, "path");
@@ -543,7 +652,11 @@ function codexUserInputBlocks(input: unknown): CodexAppHistoryBlock[] {
     const type = stringField(item, "type");
     if (type === "text") {
       const part = stringField(item, "text");
-      if (part) text += part;
+      if (part) {
+        const subagent = codexSubagentNotificationBlock(part);
+        if (subagent) blocks.push(subagent);
+        else text += part;
+      }
     } else if (type === "image") {
       const url = stringField(item, "url");
       if (url) {
@@ -652,22 +765,145 @@ function codexGenericToolMessages(
       toolName: tool,
       toolInput,
       toolUseId: itemId,
+      extraFields: codexSubagentBlockFromToolUse(tool, toolInput),
       extraBlocks: viewImageMedia ? [viewImageMedia] : [],
     }),
   ];
   const result = codexGenericToolResultPayload(item);
   if (result !== undefined && result !== null) {
+    const text = stringifyPayload(result);
     messages.push(
       codexToolResultMessage({
         id: `codex-output-${itemId}`,
         timestamp,
         toolName: tool,
         toolUseId: itemId,
-        text: stringifyPayload(result),
+        text,
+        extraFields: codexSubagentBlockFromToolOutput(tool, text),
       }),
     );
   }
   return messages;
+}
+
+function codexSubagentBlockFromToolUse(
+  tool: string,
+  input: unknown,
+): Partial<CodexAppHistoryBlock> {
+  if (tool !== "spawn_agent" && tool !== "wait_agent") return {};
+  const record = input && typeof input === "object"
+    ? (input as Record<string, unknown>)
+    : {};
+  const targets = Array.isArray(record.targets)
+    ? record.targets.filter((target): target is string => typeof target === "string")
+    : [];
+  return definedHistoryFields({
+    subagentAction: tool === "spawn_agent" ? "spawn" : "wait",
+    subagentStatus: tool === "spawn_agent" ? "running" : "unknown",
+    subagentId:
+      stringField(record, "agent_id") ??
+      (targets.length === 1 ? targets[0] : undefined),
+    subagentType: stringField(record, "agent_type"),
+    subagentModel: stringField(record, "model"),
+    subagentEffort: stringField(record, "reasoning_effort"),
+    subagentMessage: stringField(record, "message"),
+  });
+}
+
+function codexSubagentBlockFromToolOutput(
+  tool: string | undefined,
+  output: string,
+): Partial<CodexAppHistoryBlock> {
+  if (tool !== "spawn_agent" && tool !== "wait_agent") return {};
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(output);
+  } catch {
+    return {};
+  }
+  if (!parsed || typeof parsed !== "object") return {};
+  const record = parsed as Record<string, unknown>;
+  if (tool === "spawn_agent") {
+    return definedHistoryFields({
+      subagentAction: "spawn",
+      subagentStatus: "running",
+      subagentId: stringField(record, "agent_id"),
+      subagentNickname: stringField(record, "nickname"),
+    });
+  }
+  const status = record.status;
+  if (!status || typeof status !== "object") return { subagentAction: "wait" };
+  const entries = Object.entries(status as Record<string, unknown>);
+  if (entries.length !== 1) return { subagentAction: "wait" };
+  const [subagentId, rawState] = entries[0]!;
+  const state =
+    rawState && typeof rawState === "object"
+      ? (rawState as Record<string, unknown>)
+      : {};
+  const completed = stringField(state, "completed");
+  const failed = stringField(state, "failed") ?? stringField(state, "error");
+  return definedHistoryFields({
+    subagentAction: "wait",
+    subagentId,
+    subagentStatus: completed ? "completed" : failed ? "failed" : "unknown",
+    subagentResult: completed ?? failed ?? output,
+  });
+}
+
+function codexSubagentNotificationBlock(text: string): CodexAppHistoryBlock | null {
+  const match = text
+    .trim()
+    .match(/^<subagent_notification>\s*([\s\S]*?)\s*<\/subagent_notification>$/);
+  if (!match) return null;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(match[1]!);
+  } catch {
+    return {
+      type: "subagent",
+      text,
+      subagentAction: "notification",
+      subagentStatus: "unknown",
+    };
+  }
+  if (!parsed || typeof parsed !== "object") return null;
+  const record = parsed as Record<string, unknown>;
+  const status =
+    record.status && typeof record.status === "object"
+      ? (record.status as Record<string, unknown>)
+      : {};
+  const completed = stringField(status, "completed");
+  const failed = stringField(status, "failed") ?? stringField(status, "error");
+  const running = stringField(status, "running");
+  const result = completed ?? failed ?? running;
+  const block: CodexAppHistoryBlock = {
+    type: "subagent",
+    text: result,
+    subagentAction: "notification",
+    subagentStatus: completed
+      ? "completed"
+      : failed
+        ? "failed"
+        : running
+          ? "running"
+          : "unknown",
+  };
+  const subagentId = stringField(record, "agent_path");
+  if (subagentId) block.subagentId = subagentId;
+  if (result) block.subagentResult = result;
+  return block;
+}
+
+function definedHistoryFields(
+  fields: Partial<CodexAppHistoryBlock>,
+): Partial<CodexAppHistoryBlock> {
+  const out: Partial<CodexAppHistoryBlock> = {};
+  for (const [key, value] of Object.entries(fields)) {
+    if (value !== undefined) {
+      (out as Record<string, unknown>)[key] = value;
+    }
+  }
+  return out;
 }
 
 function codexGenericToolResultPayload(
@@ -685,6 +921,7 @@ function codexToolUseMessage(opts: {
   approvalPolicy?: string;
   approvalDecision?: string;
   sandboxPolicy?: string;
+  extraFields?: Partial<CodexAppHistoryBlock>;
   extraBlocks?: CodexAppHistoryBlock[];
 }): CodexAppHistoryMessage {
   return {
@@ -702,6 +939,7 @@ function codexToolUseMessage(opts: {
           ? { approvalDecision: opts.approvalDecision }
           : {}),
         ...(opts.sandboxPolicy ? { sandboxPolicy: opts.sandboxPolicy } : {}),
+        ...(opts.extraFields ?? {}),
       },
       ...(opts.extraBlocks ?? []),
     ],
@@ -714,6 +952,7 @@ function codexToolResultMessage(opts: {
   toolName: string;
   toolUseId: string;
   text: string;
+  extraFields?: Partial<CodexAppHistoryBlock>;
 }): CodexAppHistoryMessage {
   return {
     id: opts.id,
@@ -725,6 +964,7 @@ function codexToolResultMessage(opts: {
         toolName: opts.toolName,
         toolUseId: opts.toolUseId,
         text: opts.text,
+        ...(opts.extraFields ?? {}),
       },
     ],
   };
@@ -869,10 +1109,21 @@ function messagePayloadWeight(message: { blocks: unknown[] }): number {
 
 export function codexEventItemId(event: CodexAppEvent): string | undefined {
   const item = codexEventItem(event.params);
+  if (
+    (item?.type === "function_call" ||
+      item?.type === "custom_tool_call" ||
+      item?.type === "function_call_output" ||
+      item?.type === "custom_tool_call_output") &&
+    typeof item.call_id === "string"
+  ) {
+    return item.call_id;
+  }
   return typeof event.params.itemId === "string"
     ? event.params.itemId
     : typeof item?.id === "string"
       ? item.id
+    : typeof item?.call_id === "string"
+      ? item.call_id
     : event.turnId;
 }
 
@@ -909,6 +1160,15 @@ function codexEventToolName(
   if (item?.type === "mcpToolCall" || item?.type === "dynamicToolCall") {
     return stringField(item, "tool") ?? item.type;
   }
+  if (item?.type === "function_call" || item?.type === "custom_tool_call") {
+    return stringField(item, "name") ?? item.type;
+  }
+  if (
+    item?.type === "function_call_output" ||
+    item?.type === "custom_tool_call_output"
+  ) {
+    return stringField(item, "name") ?? item.type;
+  }
   if (method.includes("commandExecution") || method.includes("command/exec")) {
     return "exec_command";
   }
@@ -942,6 +1202,17 @@ function codexEventToolInput(
   }
   if (item?.type === "mcpToolCall" || item?.type === "dynamicToolCall") {
     const input = codexToolArguments(item.arguments);
+    return input && typeof input === "object"
+      ? (input as Record<string, unknown>)
+      : input === undefined
+        ? undefined
+        : { value: input };
+  }
+  if (item?.type === "function_call" || item?.type === "custom_tool_call") {
+    const input =
+      item.type === "function_call"
+        ? codexToolArguments(item.arguments)
+        : (item.input ?? item.arguments);
     return input && typeof input === "object"
       ? (input as Record<string, unknown>)
       : input === undefined

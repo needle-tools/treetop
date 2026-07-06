@@ -19,13 +19,22 @@
     | "navigate"
     | "reload"
     | "wait"
+    | "click"
+    | "screenshot"
+    | "snapshot"
+    | "subagent"
     | "tool";
 
   function kindFor(toolName: string): IconKind {
     const n = toolName.toLowerCase();
+    if (n.includes("spawn_agent") || n.includes("wait_agent")) return "subagent";
     if (n.includes("evaluate_script")) return "bash";
     if (n.includes("reload_page") || n.includes("reload")) return "reload";
     if (n.includes("wait_for") || n.includes("wait")) return "wait";
+    if (n === "click" || n.includes(".click")) return "click";
+    if (n.includes("take_screenshot") || n.includes("screenshot"))
+      return "screenshot";
+    if (n.includes("take_snapshot")) return "snapshot";
     if (n.includes("navigate_page") || n.includes("new_page")) return "navigate";
     if (n.includes("filesystem_create")) return "create";
     if (n.includes("filesystem_delete")) return "delete";
@@ -224,6 +233,27 @@
       <path d="M12 13l3 2" />
       <path d="M9 2h6" />
       <path d="M12 2v3" />
+    {:else if kind === "click"}
+      <!-- cursor / click target -->
+      <path d="M5 3l12 11-5.2 1.1 2.3 5.1-2.7 1.2-2.3-5.1L5 20V3z" />
+      <path d="M16 4h3v3" />
+    {:else if kind === "screenshot"}
+      <!-- camera / screenshot -->
+      <path d="M4 7h4l1.4-2h5.2L16 7h4v12H4z" />
+      <circle cx="12" cy="13" r="3.2" />
+    {:else if kind === "snapshot"}
+      <!-- page snapshot -->
+      <rect x="4" y="4" width="16" height="16" rx="2" />
+      <path d="M8 8h8" />
+      <path d="M8 12h8" />
+      <path d="M8 16h5" />
+    {:else if kind === "subagent"}
+      <!-- branching agent -->
+      <circle cx="7" cy="7" r="3" />
+      <circle cx="17" cy="17" r="3" />
+      <path d="M9.2 9.2 14.8 14.8" />
+      <path d="M13 7h4v4" />
+      <path d="M17 7 10 14" />
     {:else}
       <!-- generic wrench -->
       <path

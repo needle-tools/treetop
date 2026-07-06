@@ -32,7 +32,9 @@ export type NormalizedBlockKind =
   /** `<command-name>` / `<command-message>` slash-command markers. */
   | "command"
   /** Standalone bracketed markers like "[Request interrupted by user]". */
-  | "marker";
+  | "marker"
+  /** Multi-agent child session events (`spawn_agent`, `wait_agent`, notifications). */
+  | "subagent";
 
 /** Recognise Claude's standalone bracket-markers so the UI can render them
  *  as quiet annotations instead of bold message text. */
@@ -76,6 +78,16 @@ export interface NormalizedBlock {
   inlineDataHash?: string;
   title?: string;
   alt?: string;
+  /** subagent only, and mirrored onto related subagent tool rows. */
+  subagentId?: string;
+  subagentNickname?: string;
+  subagentAction?: "spawn" | "wait" | "notification";
+  subagentStatus?: "running" | "completed" | "failed" | "unknown";
+  subagentType?: string;
+  subagentModel?: string;
+  subagentEffort?: string;
+  subagentMessage?: string;
+  subagentResult?: string;
 }
 
 export type NormalizedPlanStatus =
@@ -708,6 +720,135 @@ function codexToolInput(input: unknown): unknown {
   }
 }
 
+function codexSubagentBlockFromToolUse(
+  name: string,
+  input: unknown,
+): Partial<NormalizedBlock> {
+  if (name !== "spawn_agent" && name !== "wait_agent") return {};
+  const record =
+    input && typeof input === "object" ? (input as Record<string, unknown>) : {};
+  const targets = Array.isArray(record.targets)
+    ? record.targets.filter((target): target is string => typeof target === "string")
+    : [];
+  return {
+    subagentAction: name === "spawn_agent" ? "spawn" : "wait",
+    subagentStatus: name === "spawn_agent" ? "running" : "unknown",
+    subagentId:
+      typeof record.agent_id === "string"
+        ? record.agent_id
+        : targets.length === 1
+          ? targets[0]
+          : undefined,
+    subagentType:
+      typeof record.agent_type === "string" ? record.agent_type : undefined,
+    subagentModel: typeof record.model === "string" ? record.model : undefined,
+    subagentEffort:
+      typeof record.reasoning_effort === "string"
+        ? record.reasoning_effort
+        : undefined,
+    subagentMessage:
+      typeof record.message === "string" ? clipText(record.message) : undefined,
+  };
+}
+
+function codexSubagentBlockFromToolOutput(
+  name: string | undefined,
+  output: string,
+): Partial<NormalizedBlock> {
+  if (name !== "spawn_agent" && name !== "wait_agent") return {};
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(output);
+  } catch {
+    return {};
+  }
+  if (!parsed || typeof parsed !== "object") return {};
+  const record = parsed as Record<string, unknown>;
+  if (name === "spawn_agent") {
+    return {
+      subagentAction: "spawn",
+      subagentStatus: "running",
+      subagentId:
+        typeof record.agent_id === "string" ? record.agent_id : undefined,
+      subagentNickname:
+        typeof record.nickname === "string" ? record.nickname : undefined,
+    };
+  }
+  const status = record.status;
+  if (!status || typeof status !== "object") return { subagentAction: "wait" };
+  const entries = Object.entries(status as Record<string, unknown>);
+  if (entries.length !== 1) return { subagentAction: "wait" };
+  const [subagentId, rawState] = entries[0]!;
+  const state =
+    rawState && typeof rawState === "object"
+      ? (rawState as Record<string, unknown>)
+      : {};
+  const completed =
+    typeof state.completed === "string" ? state.completed : undefined;
+  const failed =
+    typeof state.failed === "string"
+      ? state.failed
+      : typeof state.error === "string"
+        ? state.error
+        : undefined;
+  return {
+    subagentAction: "wait",
+    subagentId,
+    subagentStatus: completed ? "completed" : failed ? "failed" : "unknown",
+    subagentResult: clipText(completed ?? failed ?? output),
+  };
+}
+
+function codexSubagentNotificationBlock(text: string): NormalizedBlock | null {
+  const match = text
+    .trim()
+    .match(/^<subagent_notification>\s*([\s\S]*?)\s*<\/subagent_notification>$/);
+  if (!match) return null;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(match[1]!);
+  } catch {
+    return {
+      type: "subagent",
+      text: clipText(text),
+      subagentAction: "notification",
+      subagentStatus: "unknown",
+    };
+  }
+  if (!parsed || typeof parsed !== "object") return null;
+  const record = parsed as Record<string, unknown>;
+  const status =
+    record.status && typeof record.status === "object"
+      ? (record.status as Record<string, unknown>)
+      : {};
+  const completed =
+    typeof status.completed === "string" ? status.completed : undefined;
+  const failed =
+    typeof status.failed === "string"
+      ? status.failed
+      : typeof status.error === "string"
+        ? status.error
+        : undefined;
+  const running =
+    typeof status.running === "string" ? status.running : undefined;
+  const result = completed ?? failed ?? running;
+  return {
+    type: "subagent",
+    text: result ? clipText(result) : undefined,
+    subagentAction: "notification",
+    subagentStatus: completed
+      ? "completed"
+      : failed
+        ? "failed"
+        : running
+          ? "running"
+          : "unknown",
+    subagentId:
+      typeof record.agent_path === "string" ? record.agent_path : undefined,
+    subagentResult: result ? clipText(result) : undefined,
+  };
+}
+
 function normalizePlanFromUnknown(
   input: unknown,
 ): { explanation?: string; planItems: NormalizedPlanItem[] } | null {
@@ -1050,6 +1191,7 @@ function parseCodexJsonlLine(line: string, out: NormalizedSession): void {
             toolName: name,
             toolInput: input,
             toolUseId: typeof p.call_id === "string" ? p.call_id : undefined,
+            ...codexSubagentBlockFromToolUse(name, input),
             ...codexToolApprovalFields(out, name),
           },
           ...(viewImageMedia ? [viewImageMedia] : []),
@@ -1084,6 +1226,7 @@ function parseCodexJsonlLine(line: string, out: NormalizedSession): void {
             text: clipText(text),
             toolName,
             toolUseId: typeof p.call_id === "string" ? p.call_id : undefined,
+            ...codexSubagentBlockFromToolOutput(toolName, text),
           },
         ],
         ts,
@@ -1170,19 +1313,36 @@ function parseCodexJsonlLine(line: string, out: NormalizedSession): void {
         if (typeof raw !== "object" || raw === null) continue;
         const b = raw as Record<string, unknown>;
         if (typeof b.text === "string") {
-          const text = role === "user" ? codexVisibleUserText(b.text) : b.text;
-          if (text) blocks.push(...codexTextBlocks(text));
+          const subagent = codexSubagentNotificationBlock(b.text);
+          if (subagent) {
+            blocks.push(subagent);
+          } else {
+            const text = role === "user" ? codexVisibleUserText(b.text) : b.text;
+            if (text) blocks.push(...codexTextBlocks(text));
+          }
         } else {
           const media = mediaBlockFromContent(b);
           if (media) blocks.push(media);
         }
       }
     } else if (typeof p.content === "string") {
-      const text =
-        role === "user" ? codexVisibleUserText(p.content) : p.content;
-      if (text) blocks.push(...codexTextBlocks(text));
+      const subagent = codexSubagentNotificationBlock(p.content);
+      if (subagent) {
+        blocks.push(subagent);
+      } else {
+        const text =
+          role === "user" ? codexVisibleUserText(p.content) : p.content;
+        if (text) blocks.push(...codexTextBlocks(text));
+      }
     }
-    pushSessionMessage(out, role, blocks, ts);
+    pushSessionMessage(
+      out,
+      role === "user" && blocks.every((block) => block.type === "subagent")
+        ? "assistant"
+        : role,
+      blocks,
+      ts,
+    );
     return;
   }
   if (obj.type === "compacted") {

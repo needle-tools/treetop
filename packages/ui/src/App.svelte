@@ -85,8 +85,13 @@
   import NewSessionCol from "./NewSessionCol.svelte";
   import FileBrowser from "./FileBrowser.svelte";
   import {
+    fetchRemoteDir,
+    fetchSshSessions,
+    openRemoteFile,
     resolveTermIdFromSource,
     parseRemoteSource,
+    splitParent,
+    type SshSessionInfo,
   } from "./file-browser-utils";
   import GitHistory from "./GitHistory.svelte";
   import ProcessList from "./ProcessList.svelte";
@@ -2289,6 +2294,102 @@
     scrollNewColIntoView(wtPath, synthetic);
   }
 
+  function normalizeSshHostLabel(label: string): string {
+    return label
+      .trim()
+      .replace(/^\[/, "")
+      .replace(/\]$/, "")
+      .replace(/:\d+$/, "")
+      .toLowerCase();
+  }
+
+  function sshHostNameOnly(host: string): string {
+    return host.split("@").pop() ?? host;
+  }
+
+  function sshHostAliases(info: SshSessionInfo): string[] {
+    const host = sshHostNameOnly(info.host);
+    const labels = [
+      info.host,
+      host,
+      host.split(".")[0],
+      info.user ? `${info.user}@${info.host}` : "",
+      info.user ? `${info.user}@${host}` : "",
+    ];
+    return labels
+      .filter(Boolean)
+      .map(normalizeSshHostLabel)
+      .filter(Boolean);
+  }
+
+  async function resolveRemoteTermIdForHost(
+    wtPath: string,
+    remoteHost: string,
+  ): Promise<string | undefined> {
+    if (remoteHost.trim().toLowerCase().startsWith("docker ")) return;
+    const wanted = normalizeSshHostLabel(remoteHost);
+    if (!wanted) return;
+    const sessions = await fetchSshSessions(
+      daemonIdForWorktreePath(repos, wtPath),
+    );
+    for (const [termId, info] of Object.entries(sessions)) {
+      const aliases = sshHostAliases(info);
+      if (
+        aliases.includes(wanted) ||
+        aliases.some(
+          (alias) =>
+            alias.split(".")[0] === wanted ||
+            wanted.split(".")[0] === alias,
+        )
+      ) {
+        return termId;
+      }
+    }
+  }
+
+  async function openTranscriptRemotePath(
+    wtPath: string,
+    remoteHost: string,
+    remotePath: string,
+  ): Promise<void> {
+    const path = remotePath.trim();
+    if (!path) return;
+    const termId = await resolveRemoteTermIdForHost(wtPath, remoteHost);
+    if (!termId) {
+      addToast({
+        kind: "warning",
+        message: `No live SSH file browser found for ${remoteHost}.`,
+      });
+      return;
+    }
+    try {
+      await fetchRemoteDir(termId, path);
+      sshCwdByTermId = { ...sshCwdByTermId, [termId]: path };
+      openRemoteBrowser(wtPath, termId, remoteHost);
+      return;
+    } catch {
+      // Not a directory, or not listable as one. Fall through to the
+      // existing remote-file open path and keep the remote browser near
+      // the containing folder when we can derive one.
+    }
+    const parent = splitParent(path).dir;
+    if (parent) sshCwdByTermId = { ...sshCwdByTermId, [termId]: parent };
+    try {
+      await openRemoteFile(termId, path);
+    } catch (e) {
+      addToast({
+        kind: "warning",
+        message:
+          e instanceof Error
+            ? e.message
+            : `Could not open ${path} on ${remoteHost}.`,
+      });
+      if (parent) openRemoteBrowser(wtPath, termId, remoteHost);
+      return;
+    }
+    if (parent) openRemoteBrowser(wtPath, termId, remoteHost);
+  }
+
   function openGitHistory(wtPath: string) {
     const id = `gh_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
     const synthetic = `__history__:${id}`;
@@ -3569,6 +3670,65 @@
     transientAwaiting = { ...transientAwaiting, [s.source]: false };
     clearFinishedFor(s.source);
     scrollNewColIntoView(wtPath, source);
+  }
+
+  async function openSubagentSession(
+    wtPath: string,
+    currentSource: string,
+    agent: OpenSession["agent"],
+    subagentId: string,
+    surface: SessionSurface,
+  ): Promise<void> {
+    if (agent !== "codex") {
+      addToast({
+        kind: "warning",
+        message: "Subagent transcript lookup is only available for Codex.",
+      });
+      return;
+    }
+    const daemonId = daemonIdForWorktreePath(repos, wtPath);
+    const qs = new URLSearchParams({ agent, id: subagentId });
+    const res = await fetch(apiUrl(`/api/session/resolve?${qs}`, daemonId));
+    const body = (await res.json().catch(() => null)) as {
+      agent?: "codex";
+      sessionId?: string;
+      source?: string;
+      error?: string;
+    } | null;
+    if (!res.ok || !body?.source) {
+      addToast({
+        kind: "warning",
+        message:
+          body?.error ??
+          `Could not find subagent transcript ${subagentId.slice(0, 8)}.`,
+      });
+      return;
+    }
+
+    const existing = openSessionsByWt[wtPath] ?? [];
+    const alreadyOpen = existing.find((entry) => entry.source === body.source);
+    if (alreadyOpen) {
+      scrollNewColIntoView(wtPath, alreadyOpen.source);
+      return;
+    }
+
+    const entry: OpenSession = {
+      agent: body.agent ?? "codex",
+      source: body.source,
+      resumeSessionId: body.sessionId ?? subagentId,
+    };
+    rememberSessionSurface(entry, surface);
+    const currentIndex = existing.findIndex(
+      (entry) => entry.source === currentSource,
+    );
+    const insertAt =
+      currentIndex >= 0
+        ? currentIndex + 1
+        : visibleLeftInsertIndex(wtPath, existing);
+    const next = [...existing];
+    next.splice(insertAt, 0, entry);
+    openSessionsByWt = { ...openSessionsByWt, [wtPath]: next };
+    scrollNewColIntoView(wtPath, body.source);
   }
   const visibleWorktreesPersistence = new VisibleWorktreesStore(
     getDaemonKV(),
@@ -11270,6 +11430,20 @@
                                             agentMeta?.source,
                                         )
                                     : undefined}
+                                  onOpenSubagent={(subagentId, surface) =>
+                                    void openSubagentSession(
+                                      wt.path,
+                                      s.source,
+                                      s.agent,
+                                      subagentId,
+                                      surface,
+                                    )}
+                                  onOpenRemotePath={(remoteHost, remotePath) =>
+                                    void openTranscriptRemotePath(
+                                      wt.path,
+                                      remoteHost,
+                                      remotePath,
+                                    )}
                                   onModeChange={(m) => {
                                     if (m === "terminal") {
                                       rememberSessionSurface(

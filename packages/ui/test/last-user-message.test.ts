@@ -29,6 +29,7 @@ import {
   visualToolEnvSummaryLabel,
   visualToolEnvTooltipText,
   visualToolFetchResultBadges,
+  visualToolIconNameForPreview,
   visualToolTestResultBadges,
   visualToolInlineScript,
   visualToolInlineScriptLanguageLabel,
@@ -37,6 +38,7 @@ import {
   visualToolRemoteHostLabel,
   visualWorkSummary,
   visualUserImageAttachments,
+  visualFileEditTotals,
   visualFileEditSummaryForBlock,
   visualObservedProcessOutput,
   visualThinkingSummary,
@@ -900,6 +902,7 @@ describe("buildVisualTranscriptItems", () => {
       steps: 0,
       compactions: 0,
       steerings: 1,
+      subagents: 0,
     });
     expect(items[1].entries.map((entry) => entry.message.role)).toEqual([
       "system",
@@ -1252,6 +1255,7 @@ describe("buildVisualTranscriptItems", () => {
       steps: 2,
       compactions: 1,
       steerings: 0,
+      subagents: 0,
     });
     const displayEntries = buildVisualWorkDisplayEntries(items[1].entries);
     expect(displayEntries).toContainEqual(
@@ -2157,6 +2161,13 @@ describe("visual tool payload display helpers", () => {
         toolInput: { cmd: "git diff --check" },
       }),
     ).toBe("Check diff whitespace");
+    expect(
+      visualToolIconNameForPreview({
+        type: "tool_use",
+        toolName: "exec_command",
+        toolInput: { cmd: "git -C /Users/herbst/git/OpenUSD diff --check" },
+      }),
+    ).toBe("git");
 
     expect(
       visualToolPreviewText({
@@ -2372,9 +2383,38 @@ describe("visual tool payload display helpers", () => {
     expect(visualToolPreviewText(listenerScan)).toBe(
       "Check ports 3001, 5173, 4173",
     );
+    expect(
+      visualToolPreviewText({
+        type: "tool_use",
+        toolName: "exec_command",
+        toolInput: {
+          cmd: 'lsof -nP -iTCP -sTCP:LISTEN | rg "5173|vite|node"',
+        },
+      }),
+    ).toBe("Check listeners for 5173, vite, node");
     expect(visualToolCallPayloadText(processOnPort)).toContain(
       "lsof -ti tcp:5173",
     );
+  });
+
+  it("summarizes tail log reads as log previews", () => {
+    const block = {
+      type: "tool_use",
+      toolName: "exec_command",
+      toolInput: {
+        cmd: "tail -80 /tmp/usd-wg-assets-5173.log",
+      },
+    };
+
+    expect(visualToolPreviewText(block)).toBe(
+      "Read logs usd-wg-assets-5173.log last 80",
+    );
+    expect(visualToolPreviewParts(block)).toContainEqual({
+      kind: "path",
+      text: "usd-wg-assets-5173.log",
+      path: "/tmp/usd-wg-assets-5173.log",
+      range: "",
+    });
   });
 
   it("summarizes Windows filesystem cleanup and creation commands", () => {
@@ -2482,6 +2522,15 @@ describe("visual tool payload display helpers", () => {
 
   it("summarizes screenshot and snapshot tools around their output files", () => {
     expect(
+      visualToolIconNameForPreview({
+        type: "tool_use",
+        toolName: "take_screenshot",
+        toolInput: {
+          filePath: "/tmp/custom-nodedef-canvas.png",
+        },
+      }),
+    ).toBe("take_screenshot");
+    expect(
       visualToolPreviewText({
         type: "tool_use",
         toolName: "take_screenshot",
@@ -2528,6 +2577,29 @@ describe("visual tool payload display helpers", () => {
         },
       }),
     ).toBe("View image custom-nodedef-canvas.png");
+  });
+
+  it("summarizes browser click tools around the action instead of raw JSON", () => {
+    const click = {
+      type: "tool_use",
+      toolName: "click",
+      toolInput: {
+        uid: "12_45",
+        includeSnapshot: true,
+      },
+    };
+    const doubleClick = {
+      type: "tool_use",
+      toolName: "click",
+      toolInput: {
+        uid: "12_45",
+        dblClick: true,
+      },
+    };
+
+    expect(visualToolPreviewText(click)).toBe("Click element 12_45");
+    expect(visualToolPreviewText(doubleClick)).toBe("Double-click element 12_45");
+    expect(visualToolIconNameForPreview(click)).toBe("click");
   });
 
   it("promotes image-producing tools to inline media blocks", () => {
@@ -2827,9 +2899,34 @@ describe("visual tool payload display helpers", () => {
     };
 
     expect(visualToolPreviewText(block)).toBe("Read compose-pr-34.yaml:1-40");
+    expect(visualToolPreviewParts(block)).toContainEqual({
+      kind: "path",
+      text: "compose-pr-34.yaml:1-40",
+      path: "/data/coolify/applications/vk4800s4gookog480gc0g0s0/compose-pr-34.yaml",
+      range: ":1-40",
+    });
     expect(visualToolLauncherLabel(block)).toBe("zsh");
     expect(visualToolRemoteHostLabel(block)).toBe("cloud-staging");
     expect(visualToolCallPayloadText(block)).toContain("ssh -o BatchMode=yes");
+  });
+
+  it("summarizes PowerShell file reads over ssh as remote path chips", () => {
+    const block = {
+      type: "tool_use",
+      toolName: "exec_command",
+      toolInput: {
+        cmd: "ssh felix-win 'cd /d E:\\git\\medikit && powershell -NoProfile -Command \"(Get-Content frontend\\src\\App.svelte -TotalCount 80)\"'",
+      },
+    };
+
+    expect(visualToolPreviewText(block)).toBe("Read App.svelte:1-80");
+    expect(visualToolRemoteHostLabel(block)).toBe("felix-win");
+    expect(visualToolPreviewParts(block)).toContainEqual({
+      kind: "path",
+      text: "App.svelte:1-80",
+      path: "E:\\git\\medikit\\frontend\\src\\App.svelte",
+      range: ":1-80",
+    });
   });
 
   it("normalizes ssh launch wrappers before previewing remote searches", () => {
@@ -3260,6 +3357,21 @@ describe("visual tool payload display helpers", () => {
     expect(visualToolCallPayloadText(block)).toContain("nl -ba");
   });
 
+  it("summarizes numbered line reads with multiple sed ranges", () => {
+    const block = {
+      type: "tool_use",
+      toolName: "exec_command",
+      toolInput: {
+        cmd: "nl -ba pxr/imaging/hdSt/mesh.cpp | sed -n '520,690p;2484,2507p;2633,2668p;2708,2763p;2844,2887p'",
+      },
+    };
+
+    expect(visualToolPreviewText(block)).toBe(
+      "Read mesh.cpp:520-690, mesh.cpp:2484-2507, mesh.cpp:2633-2668, mesh.cpp:2708-2763, mesh.cpp:2844-2887",
+    );
+    expect(visualToolCallPayloadText(block)).toContain("nl -ba");
+  });
+
   it("summarizes chained numbered line reads piped through sed", () => {
     const block = {
       type: "tool_use",
@@ -3606,6 +3718,29 @@ describe("buildVisualWorkDisplayEntries", () => {
 });
 
 describe("visualFileEditSummaryForBlock", () => {
+  it("totals file edit stats for compact edit rows", () => {
+    expect(
+      visualFileEditTotals({
+        title: "Edited authz.test.ts",
+        files: [
+          {
+            path: "authz.test.ts",
+            action: "edited",
+            additions: 21,
+            deletions: 0,
+          },
+        ],
+      }),
+    ).toEqual({ additions: 21, deletions: 0 });
+
+    expect(
+      visualFileEditTotals({
+        title: "Edited generated.ts",
+        files: [{ path: "generated.ts", action: "edited" }],
+      }),
+    ).toEqual({});
+  });
+
   it("summarizes Codex apply_patch input into edited files with line counts", () => {
     expect(
       visualFileEditSummaryForBlock({

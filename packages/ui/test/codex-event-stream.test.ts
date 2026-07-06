@@ -19,6 +19,8 @@ import {
 import {
   buildVisualTranscriptItems,
   buildVisualWorkDisplayEntries,
+  visualSubagentMetaFromBlocks,
+  visualWorkSummary,
 } from "../src/last-user-message";
 
 class FakeEventSource {
@@ -728,6 +730,303 @@ describe("codex event stream hub", () => {
     ).toEqual(
       visualContract(buildVisualTranscriptItems([user, ...history])),
     );
+  });
+
+  test("normalizes app-server subagent history and live snapshots to the same visual contract", () => {
+    const subagentId = "019f27fe-0f3d-7a50-8371-3344fbaee5d0";
+    const spawnItem = {
+      id: "call-spawn",
+      type: "dynamicToolCall",
+      tool: "spawn_agent",
+      arguments: {
+        agent_type: "explorer",
+        model: "gpt-5.5",
+        reasoning_effort: "xhigh",
+        message: "Inspect OpenUSD material imports.",
+      },
+      result: {
+        agent_id: subagentId,
+        nickname: "Leibniz",
+      },
+    };
+    const waitItem = {
+      id: "call-wait",
+      type: "dynamicToolCall",
+      tool: "wait_agent",
+      arguments: {
+        targets: [subagentId],
+        timeout_ms: 3600000,
+      },
+      result: {
+        status: {
+          [subagentId]: {
+            completed: "**Findings**\n\n- First finding.",
+          },
+        },
+      },
+    };
+    const history = codexAppHistoryMessagesFromThread({
+      turns: [{ id: "turn-1", items: [spawnItem, waitItem] }],
+    });
+    const spawnStartedItem = { ...spawnItem };
+    delete (spawnStartedItem as Partial<typeof spawnItem>).result;
+    const liveStart = codexLiveMessagesFromEvent({
+      kind: "notification",
+      method: "item/started",
+      params: {
+        item: spawnStartedItem,
+        threadId: "thread-1",
+        turnId: "turn-1",
+      },
+      threadId: "thread-1",
+      turnId: "turn-1",
+      receivedAt: "2026-06-22T09:59:59.000Z",
+    });
+    expect(liveStart).toEqual([
+      {
+        id: "codex-tool-call-spawn",
+        role: "assistant",
+        timestamp: "2026-06-22T09:59:59.000Z",
+        blocks: [
+          {
+            type: "tool_use",
+            toolName: "spawn_agent",
+            toolInput: spawnItem.arguments,
+            toolUseId: "call-spawn",
+            subagentAction: "spawn",
+            subagentStatus: "running",
+            subagentType: "explorer",
+            subagentModel: "gpt-5.5",
+            subagentEffort: "xhigh",
+            subagentMessage: "Inspect OpenUSD material imports.",
+          },
+        ],
+      },
+    ]);
+    const live = [
+      ...codexLiveMessagesFromEvent({
+        kind: "notification",
+        method: "item/completed",
+        params: {
+          item: spawnItem,
+          threadId: "thread-1",
+          turnId: "turn-1",
+        },
+        threadId: "thread-1",
+        turnId: "turn-1",
+        receivedAt: "2026-06-22T10:00:00.000Z",
+      }),
+      ...codexLiveMessagesFromEvent({
+        kind: "notification",
+        method: "item/completed",
+        params: {
+          item: waitItem,
+          threadId: "thread-1",
+          turnId: "turn-1",
+        },
+        threadId: "thread-1",
+        turnId: "turn-1",
+        receivedAt: "2026-06-22T10:00:01.000Z",
+      }),
+    ];
+
+    expect(stripTimestamps(live)).toEqual(stripTimestamps(history));
+
+    const historyEntries = buildVisualWorkDisplayEntries(
+      buildVisualTranscriptItems([
+        { role: "user", blocks: [{ type: "text", text: "start" }] },
+        ...history,
+      ]).find((item) => item.kind === "work")?.entries ?? [],
+    );
+    const spawn = historyEntries.find(
+      (entry) => entry.entry.blocks[0]?.toolName === "spawn_agent",
+    );
+    const wait = historyEntries.find(
+      (entry) => entry.entry.blocks[0]?.toolName === "wait_agent",
+    );
+    expect(
+      visualSubagentMetaFromBlocks(
+        spawn?.entry.blocks[0],
+        spawn?.pairedResult?.blocks[0],
+      ),
+    ).toMatchObject({
+      action: "spawn",
+      id: subagentId,
+      nickname: "Leibniz",
+      type: "explorer",
+    });
+    expect(
+      visualSubagentMetaFromBlocks(
+        wait?.entry.blocks[0],
+        wait?.pairedResult?.blocks[0],
+      ),
+    ).toMatchObject({
+      action: "wait",
+      status: "completed",
+      id: subagentId,
+      result: "**Findings**\n\n- First finding.",
+    });
+  });
+
+  test("normalizes response-style app-server subagent calls into visible work entries", () => {
+    const subagentId = "019f2814-918b-7ba2-bc07-ed683bb1a769";
+    const spawnCall = {
+      id: "call-spawn",
+      call_id: "call-spawn",
+      type: "function_call",
+      name: "spawn_agent",
+      arguments: JSON.stringify({
+        agent_type: "explorer",
+        model: "gpt-5.5",
+        reasoning_effort: "xhigh",
+        message: "Compare hdEmscripten against hdStorm.",
+      }),
+    };
+    const spawnOutput = {
+      call_id: "call-spawn",
+      type: "function_call_output",
+      output: JSON.stringify({
+        agent_id: subagentId,
+        nickname: "Aristotle",
+      }),
+    };
+    const waitCall = {
+      id: "call-wait",
+      call_id: "call-wait",
+      type: "function_call",
+      name: "wait_agent",
+      arguments: JSON.stringify({
+        targets: [subagentId],
+        timeout_ms: 3600000,
+      }),
+    };
+    const waitOutput = {
+      call_id: "call-wait",
+      type: "function_call_output",
+      output: JSON.stringify({
+        status: {
+          [subagentId]: {
+            completed: "Fresh subagent found five remaining differences.",
+          },
+        },
+      }),
+    };
+    const notificationText =
+      "<subagent_notification>\n" +
+      JSON.stringify({
+        agent_path: subagentId,
+        status: {
+          completed: "Fresh subagent found five remaining differences.",
+        },
+      }) +
+      "\n</subagent_notification>";
+    const history = codexAppHistoryMessagesFromThread({
+      turns: [
+        {
+          id: "turn-1",
+          startedAt: 1782122400,
+          items: [
+            {
+              id: "user-1",
+              type: "userMessage",
+              content: [
+                {
+                  type: "text",
+                  text: "Let a strong subagent compare the implementations.",
+                },
+              ],
+            },
+            {
+              id: "assistant-1",
+              type: "agentMessage",
+              text: "I’ll do another clean-room pass with a fresh strong explorer.",
+            },
+            spawnCall,
+            spawnOutput,
+            {
+              id: "assistant-2",
+              type: "agentMessage",
+              text: "Aristotle is running independently now.",
+            },
+            waitCall,
+            waitOutput,
+            {
+              id: "subagent-notification",
+              type: "userMessage",
+              content: [{ type: "text", text: notificationText }],
+            },
+            {
+              id: "assistant-3",
+              type: "agentMessage",
+              text: "Fresh subagent found five remaining differences.",
+            },
+          ],
+        },
+      ],
+    });
+
+    const items = buildVisualTranscriptItems(history);
+    const work = items.find((item) => item.kind === "work");
+    expect(work?.kind).toBe("work");
+    if (!work || work.kind !== "work") return;
+    expect(visualWorkSummary(work.entries)).toMatchObject({
+      subagents: 1,
+    });
+    const displayEntries = buildVisualWorkDisplayEntries(work.entries);
+    const spawn = displayEntries.find(
+      (entry) => entry.entry.blocks[0]?.toolName === "spawn_agent",
+    );
+    const wait = displayEntries.find(
+      (entry) => entry.entry.blocks[0]?.toolName === "wait_agent",
+    );
+    expect(
+      visualSubagentMetaFromBlocks(
+        spawn?.entry.blocks[0],
+        spawn?.pairedResult?.blocks[0],
+      ),
+    ).toMatchObject({
+      action: "spawn",
+      id: subagentId,
+      nickname: "Aristotle",
+      type: "explorer",
+    });
+    expect(
+      visualSubagentMetaFromBlocks(
+        wait?.entry.blocks[0],
+        wait?.pairedResult?.blocks[0],
+      ),
+    ).toMatchObject({
+      action: "wait",
+      id: subagentId,
+      status: "completed",
+      result: "Fresh subagent found five remaining differences.",
+    });
+    expect(
+      displayEntries.some((entry) => entry.entry.blocks[0]?.type === "subagent"),
+    ).toBe(true);
+
+    const live = [
+      ...codexLiveMessagesFromEvent({
+        kind: "notification",
+        method: "item/started",
+        params: { item: spawnCall, threadId: "thread-1", turnId: "turn-1" },
+        threadId: "thread-1",
+        turnId: "turn-1",
+        receivedAt: "2026-06-22T10:00:00.000Z",
+      }),
+      ...codexLiveMessagesFromEvent({
+        kind: "notification",
+        method: "item/completed",
+        params: { item: spawnOutput, threadId: "thread-1", turnId: "turn-1" },
+        threadId: "thread-1",
+        turnId: "turn-1",
+        receivedAt: "2026-06-22T10:00:01.000Z",
+      }),
+    ];
+    expect(live.map((message) => message.blocks[0]?.type)).toEqual([
+      "tool_use",
+      "tool_result",
+    ]);
   });
 
   test("normalizes app-server view_image calls into visible media", () => {

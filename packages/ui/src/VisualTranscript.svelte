@@ -18,6 +18,7 @@
     getVisualTranscriptItemKey,
     getVisualWorkDisplayEntryKey,
     visualFileEditSummaryForBlock,
+    visualFileEditTotals,
     visualObservedProcessOutput,
     visualPlanFromBlock,
     visualPathPreviewTargets,
@@ -35,16 +36,23 @@
     visualToolInlineScriptLanguageLabel,
     visualToolMediaBlocks,
     visualToolCanStillRun,
+    visualToolIconNameForPreview,
     visualToolPreviewParts,
     visualToolPreviewText,
     visualToolRemoteHostLabel,
     visualToolTestResultBadges,
+    visualSubagentLabel,
+    visualSubagentMetaFromBlock,
+    visualSubagentMetaFromBlocks,
     visualWorkSummary,
     visualUserImageAttachments,
     type VisualFileEditSummary,
     type VisualPlanItem,
     type VisualMarkerKind,
+    type VisualSubagentMeta,
+    type VisualToolResultBadge,
     type VisualTranscriptItem,
+    type VisualWorkDisplayEntry,
     type VisualWorkEntry,
   } from "./last-user-message";
   import { markdownCodeBlockHtml } from "./markdown-code";
@@ -68,7 +76,8 @@
       | "system_reminder"
       | "command"
       | "goal"
-      | "marker";
+      | "marker"
+      | "subagent";
     text?: string;
     streaming?: boolean;
     toolName?: string;
@@ -87,6 +96,15 @@
     title?: string;
     alt?: string;
     hasAlpha?: boolean;
+    subagentId?: string;
+    subagentNickname?: string;
+    subagentAction?: "spawn" | "wait" | "notification";
+    subagentStatus?: "running" | "completed" | "failed" | "unknown";
+    subagentType?: string;
+    subagentModel?: string;
+    subagentEffort?: string;
+    subagentMessage?: string;
+    subagentResult?: string;
   }
 
   interface NormalizedMessage {
@@ -138,6 +156,14 @@
   export let showLiveThinkingLine = false;
   export let messageMotionSources: Map<string, ComposerMotionRect> = new Map();
   export let onMessageMotionDone: (id: string) => void = () => {};
+  export let onOpenSubagent: (
+    subagentId: string,
+    surface: "read" | "terminal",
+  ) => void = () => {};
+  export let onOpenRemotePath: (
+    remoteHost: string,
+    path: string,
+  ) => void | Promise<void> = () => {};
 
   const MEDIA_IMAGE_ROOT_MARGIN = "300px 0px";
 
@@ -513,7 +539,11 @@
   ): Promise<void> {
     event.preventDefault();
     event.stopPropagation();
-    if (remoteHost) return;
+    if (remoteHost) {
+      const path = stripPreviewPathRange(part.path);
+      if (path) await onOpenRemotePath(remoteHost, path);
+      return;
+    }
     const path = resolvePreviewPath(part.path);
     if (!path) return;
     await fetch(apiUrl("/api/open", daemonId), {
@@ -547,10 +577,14 @@
     steps: number,
     compactions: number,
     steerings: number,
+    subagents: number,
   ): string {
     const parts: string[] = [];
-    if (steps > 0 || (steerings === 0 && compactions === 0)) {
+    if (steps > 0 || (steerings === 0 && compactions === 0 && subagents === 0)) {
       parts.push(`${steps} ${steps === 1 ? "step" : "steps"}`);
+    }
+    if (subagents > 0) {
+      parts.push(`${subagents} ${subagents === 1 ? "subagent" : "subagents"}`);
     }
     if (steerings > 0) {
       parts.push(`${steerings} ${steerings === 1 ? "steering" : "steerings"}`);
@@ -713,6 +747,10 @@
       const cleaned = cleanVisualToolResultText(first.text);
       return first.toolName ?? cleaned.title;
     }
+    if (first.type === "subagent") {
+      const subagent = visualSubagentMetaFromBlock(first);
+      return subagent ? subagentTitle(subagent) : "Subagent";
+    }
     if (first.type === "media") return mediaLabel(first);
     if (first.type === "ide_context") return first.tagName ?? "IDE context";
     if (first.type === "system_reminder") return "System reminder";
@@ -768,6 +806,10 @@
     }
     if (first.type === "plan") return planPreview(first);
     if (first.type === "tool_use") return workEntryToolPreview(first);
+    if (first.type === "subagent") {
+      const subagent = visualSubagentMetaFromBlock(first);
+      return subagent ? subagentPreview(subagent) : "";
+    }
     if (first.type === "media") return mediaLabel(first);
     return firstCollapsedLine(workEntryBlocksText(entry.blocks));
   }
@@ -799,6 +841,69 @@
     return text.replace(/\s+/g, " ").trim();
   }
 
+  function subagentTitle(meta: VisualSubagentMeta): string {
+    const label = visualSubagentLabel(meta);
+    if (meta.action === "spawn") return `Spawn ${label}`;
+    if (meta.action === "wait") return `Wait for ${label}`;
+    if (meta.status === "completed") return `${label} completed`;
+    if (meta.status === "failed") return `${label} failed`;
+    return `Subagent ${label}`;
+  }
+
+  function subagentPreview(meta: VisualSubagentMeta): string {
+    return (meta.result || meta.task || meta.id || "")
+      .replace(/\s+/g, " ")
+      .trim();
+  }
+
+  function workSummarySubagents(
+    entries: VisualWorkDisplayEntry<NormalizedBlock, NormalizedMessage>[],
+  ): VisualSubagentMeta[] {
+    const byKey = new Map<string, VisualSubagentMeta>();
+    for (const displayEntry of entries) {
+      if (displayEntry.kind !== "entry") continue;
+      const toolUse =
+        workEntryToolUseBlock(displayEntry.entry) ??
+        (displayEntry.pairedToolUse
+          ? workEntryToolUseBlock(displayEntry.pairedToolUse)
+          : undefined);
+      const result = workEntryToolResultBlock(
+        displayEntry.entry.blocks.some((block) => block.type === "tool_result")
+          ? displayEntry.entry
+          : displayEntry.pairedResult,
+      );
+      const meta =
+        visualSubagentMetaFromBlocks(toolUse, result) ??
+        visualSubagentMetaFromBlock(displayEntry.entry.blocks[0]);
+      if (!meta) continue;
+      const key = meta.id ?? `${meta.action}:${visualSubagentLabel(meta)}`;
+      const existing = byKey.get(key);
+      byKey.set(key, {
+        ...existing,
+        ...meta,
+        nickname: existing?.nickname ?? meta.nickname,
+        task: existing?.task ?? meta.task,
+        result: meta.result ?? existing?.result,
+      });
+    }
+    return [...byKey.values()];
+  }
+
+  function openSubagent(meta: VisualSubagentMeta, event: MouseEvent): void {
+    event.preventDefault();
+    event.stopPropagation();
+    if (!meta.id) return;
+    onOpenSubagent(meta.id, transcriptSurface);
+  }
+
+  function resultBadgeSymbol(label: string): string | undefined {
+    return label.match(/^([✓⚠✕])\d+$/)?.[1];
+  }
+
+  function resultBadgeCount(label: string): string | undefined {
+    return label.match(/^[✓⚠✕](\d+)$/)?.[1];
+  }
+
   function workEntryToolMediaBlocks(
     block: NormalizedBlock | undefined,
   ): NormalizedBlock[] {
@@ -822,36 +927,7 @@
     block: NormalizedBlock,
     preview: string,
   ): string | undefined {
-    if (
-      /^Check git\b/.test(preview) ||
-      /^Review (?:staged )?diff\b/.test(preview) ||
-      /^Search .* from \S+ for\b/.test(preview) ||
-      /^Show (?:recent commits|current branch|current commit|HEAD)\b/.test(preview) ||
-      /^Count commits\b/.test(preview) ||
-      /^List tracked files\b/.test(preview) ||
-      /^Stage\b/.test(preview) ||
-      /^Commit changes\b/.test(preview) ||
-      /^git\b/.test(preview)
-    ) {
-      return "git";
-    }
-    if (/^Run .*(?:tests|check)\b/.test(preview)) return "test";
-    if (/^Reload page\b/.test(preview)) return "reload_page";
-    if (/^Wait for\b/.test(preview)) return "wait_for";
-    if (/^Check console\b/.test(preview)) return "list_console_messages";
-    if (/^List browser pages\b/.test(preview)) return "list_pages";
-    if (/^Emulate\b/.test(preview)) return "emulate";
-    if (/^(?:Navigate to|Open)\b/.test(preview)) return "navigate_page";
-    if (/^Stop process(?:es)?\b/.test(preview)) return "process_end";
-    if (/^Check port(?:s)?\b/.test(preview)) return "port_check";
-    if (/^Delete (?:file|folder|path)\b/.test(preview)) {
-      return "filesystem_delete";
-    }
-    if (/^Create (?:file|folder|path)\b/.test(preview)) {
-      return "filesystem_create";
-    }
-    if (/^Fetch\b/.test(preview)) return "fetch";
-    return block.toolName;
+    return visualToolIconNameForPreview(block, preview);
   }
 
   function toolUsesInlineCommandLabel(block: NormalizedBlock): boolean {
@@ -1284,6 +1360,25 @@
   </span>
 {/snippet}
 
+{#snippet renderToolResultBadge(badge: VisualToolResultBadge)}
+  {@const symbol = resultBadgeSymbol(badge.label)}
+  {@const count = resultBadgeCount(badge.label)}
+  <span
+    class="work-tool-result-badge"
+    class:danger={badge.tone === "danger"}
+    class:warning={badge.tone === "warning"}
+    class:success={badge.tone === "success"}
+    title={badge.title}
+  >
+    {#if symbol && count}
+      <span class="work-tool-result-symbol" aria-hidden="true">{symbol}</span>
+      <span>{count}</span>
+    {:else}
+      {badge.label}
+    {/if}
+  </span>
+{/snippet}
+
 {#snippet renderToolEnvBadges(block: NormalizedBlock)}
   {@const env = visualToolEnvAssignments(block)}
   {@const summary = visualToolEnvSummaryLabel(block)}
@@ -1319,16 +1414,33 @@
   {/if}
 {/snippet}
 
+{#snippet renderSubagentBadge(meta: VisualSubagentMeta)}
+  <button
+    type="button"
+    class="work-subagent-badge"
+    class:completed={meta.status === "completed"}
+    class:failed={meta.status === "failed"}
+    class:running={meta.status === "running"}
+    title={meta.id
+      ? `Open subagent ${visualSubagentLabel(meta)} (${meta.id})`
+      : subagentTitle(meta)}
+    disabled={!meta.id}
+    on:click={(event) => openSubagent(meta, event)}
+  >
+    <ToolIcon name="spawn_agent" />
+    <span>{visualSubagentLabel(meta)}</span>
+  </button>
+{/snippet}
+
 {#snippet renderPreviewPathChip(part: VisualPreviewPathPart, remoteHost: string | undefined)}
   <button
     type="button"
     class="work-preview-path"
     class:remote={!!remoteHost}
     title={remoteHost
-      ? `${part.path}${part.range} on ${remoteHost}`
+      ? `Open ${part.path}${part.range} on ${remoteHost}`
       : `Open ${resolvePreviewPath(part.path)}`}
     aria-label={remoteHost ? `${part.text} on ${remoteHost}` : `Open ${part.text}`}
-    aria-disabled={!!remoteHost}
     on:click={(event) => openPreviewPath(part, remoteHost, event)}
   >
     {part.text}
@@ -1406,7 +1518,8 @@
             class="media-image-open"
             title={`Open ${mediaLabel(imageBlock)}`}
             aria-label={`Open ${mediaLabel(imageBlock)}`}
-            on:click={() => openMediaViewer(imageBlocks, imageIndex)}
+            on:click|stopPropagation={() =>
+              openMediaViewer(imageBlocks, imageIndex)}
           >
             {@render renderImageAttachmentFrame(
               src,
@@ -1475,16 +1588,47 @@
           </div>
         </div>
       {/if}
+    {:else if b.type === "subagent"}
+      {@const subagent = visualSubagentMetaFromBlock(b)}
+      {#if subagent}
+        <div class="block subagent-block">
+          <button
+            type="button"
+            class="work-tool-chip subagent-chip"
+            class:clickable={!!subagent.id}
+            disabled={!subagent.id}
+            title={subagent.id ? `Open subagent ${subagent.id}` : undefined}
+            on:click={(event) => openSubagent(subagent, event)}
+          >
+            <ToolIcon name="spawn_agent" />
+            <span>{subagentTitle(subagent)}</span>
+          </button>
+          {#if subagentPreview(subagent)}
+            <div class="subagent-preview md">{@html md(subagentPreview(subagent))}</div>
+          {/if}
+        </div>
+      {/if}
     {:else if b.type === "tool_use"}
       {@const remoteHost = visualToolRemoteHostLabel(b)}
+      {@const subagent = visualSubagentMetaFromBlock(b)}
       <div class="block tool-use">
-        <ToolIcon name={b.toolName} />
-        {@render renderRemoteHostBadge(remoteHost)}
-        {@render renderToolEnvBadges(b)}
-        <span class="tool-name">{b.toolName ?? "tool"}</span>
-        <code class="tool-input" title={inputPreview(b.toolInput)}>
-          {inputPreview(b.toolInput)}
-        </code>
+        {#if subagent}
+          {@render renderSubagentBadge(subagent)}
+          <span class="tool-name">{subagentTitle(subagent)}</span>
+          {#if subagentPreview(subagent)}
+            <code class="tool-input" title={subagentPreview(subagent)}>
+              {subagentPreview(subagent)}
+            </code>
+          {/if}
+        {:else}
+          <ToolIcon name={b.toolName} />
+          {@render renderRemoteHostBadge(remoteHost)}
+          {@render renderToolEnvBadges(b)}
+          <span class="tool-name">{b.toolName ?? "tool"}</span>
+          <code class="tool-input" title={inputPreview(b.toolInput)}>
+            {inputPreview(b.toolInput)}
+          </code>
+        {/if}
       </div>
     {:else if b.type === "tool_result"}
       {@const cleaned = cleanVisualToolResultText(b.text)}
@@ -1565,10 +1709,6 @@
 {#snippet renderFileEditSummary(summary: VisualFileEditSummary)}
   {@const pathParts = visualPathPreviewTargets(summary.files.map((file) => file.path))}
   <div class="work-file-edits">
-    <div class="work-file-edits-title">
-      <span class="work-file-edits-icon" aria-hidden="true">✎</span>
-      <span>{summary.title}</span>
-    </div>
     <div class="work-file-edit-list">
       {#each summary.files as file, fileIndex}
         {@const pathPart = pathParts[fileIndex] ?? {
@@ -1641,9 +1781,39 @@
           </div>
         </div>
       {/if}
+    {:else if b.type === "subagent"}
+      {@const subagent = visualSubagentMetaFromBlock(b)}
+      {#if subagent}
+        <div class="work-step-detail subagent-detail">
+          <button
+            type="button"
+            class="work-tool-chip subagent-chip"
+            class:clickable={!!subagent.id}
+            disabled={!subagent.id}
+            title={subagent.id ? `Open subagent ${subagent.id}` : undefined}
+            on:click={(event) => openSubagent(subagent, event)}
+          >
+            <ToolIcon name="spawn_agent" />
+            <span>{subagentTitle(subagent)}</span>
+          </button>
+          {#if subagentPreview(subagent)}
+            <div class="tag-body md">{@html md(subagentPreview(subagent))}</div>
+          {/if}
+        </div>
+      {/if}
     {:else if b.type === "tool_use"}
       {@const inputCode = visualToolCallPayloadText(b)}
       {@const inlineScript = visualToolInlineScript(b)}
+      {@const subagent = visualSubagentMetaFromBlock(b)}
+      {#if subagent}
+        <div class="work-step-detail subagent-detail">
+          {@render renderSubagentBadge(subagent)}
+          <span>{subagentTitle(subagent)}</span>
+          {#if subagent.task}
+            <span class="tag-body">{subagent.task}</span>
+          {/if}
+        </div>
+      {/if}
       {#if inputCode}
         <div class="md work-tool-code">
           <div class="work-tool-output-label">
@@ -1756,6 +1926,7 @@
       })}
       {@const workFoldoutOpen = item.open === true || openWorkFoldoutKeys.has(workKey)}
       {@const visibleWorkEntries = buildVisibleVisualWorkDisplayEntries(item)}
+      {@const summarySubagents = workSummarySubagents(visibleWorkEntries)}
       <li class="work-row">
         <details
           class="work-foldout"
@@ -1785,8 +1956,16 @@
                 workSummary.steps,
                 workSummary.compactions,
                 workSummary.steerings,
+                workSummary.subagents,
               )}
             </span>
+            {#if summarySubagents.length > 0}
+              <span class="work-summary-subagents">
+                {#each summarySubagents as meta (meta.id ?? visualSubagentLabel(meta))}
+                  {@render renderSubagentBadge(meta)}
+                {/each}
+              </span>
+            {/if}
           </summary>
           {#if workFoldoutOpen}
             <div
@@ -1837,6 +2016,7 @@
                   (displayEntry.pairedToolUse
                     ? workEntryFileEditSummary(displayEntry.pairedToolUse)
                     : undefined)}
+                {@const editTotals = visualFileEditTotals(editSummary)}
                 {@const visibleResultEntry = entry.blocks.some(
                   (block) => block.type === "tool_result",
                 )
@@ -1845,6 +2025,9 @@
                 {@const visibleResultBlock = workEntryToolResultBlock(
                   visibleResultEntry,
                 )}
+                {@const subagentMeta =
+                  visualSubagentMetaFromBlocks(toolBlock, visibleResultBlock) ??
+                  visualSubagentMetaFromBlock(entry.blocks[0])}
                 {@const observedProcessOutput = visualObservedProcessOutput(
                   toolBlock,
                   visibleResultBlock,
@@ -1933,6 +2116,35 @@
                             formatToolWallTime(observedProcessOutput.wallTimeSeconds)}
                         </span>
                       {/if}
+                    {:else if subagentMeta}
+                      <button
+                        type="button"
+                        class="work-tool-chip subagent-chip"
+                        class:clickable={!!subagentMeta.id}
+                        disabled={!subagentMeta.id}
+                        title={subagentMeta.id
+                          ? `Open subagent ${subagentMeta.id}`
+                          : undefined}
+                        on:click={(event) => openSubagent(subagentMeta, event)}
+                      >
+                        <ToolIcon name="spawn_agent" />
+                        <span>{subagentTitle(subagentMeta)}</span>
+                      </button>
+                      {#if subagentPreview(subagentMeta)}
+                        <span
+                          class="work-tool-preview"
+                          title={subagentPreview(subagentMeta)}
+                        >
+                          {subagentPreview(subagentMeta)}
+                        </span>
+                      {/if}
+                      {#if resultMeta}
+                        <span class="work-tool-meta">
+                          {entryBlock?.type === "tool_result"
+                            ? `ended · ${resultMeta}`
+                            : resultMeta}
+                        </span>
+                      {/if}
                     {:else if toolBlock}
                       {@const remoteHost = visualToolRemoteHostLabel(toolBlock)}
                       {@const scriptLanguage = visualToolInlineScriptLanguageLabel(toolBlock)}
@@ -1967,31 +2179,21 @@
                         >
                           {editSummary.title}
                         </span>
+                        {#if editTotals.additions !== undefined}
+                          <span class="work-file-add">+{editTotals.additions}</span>
+                        {/if}
+                        {#if editTotals.deletions !== undefined}
+                          <span class="work-file-del">−{editTotals.deletions}</span>
+                        {/if}
                       {:else if toolPreview}
                         {@render renderToolPreview(toolBlock, toolPreview, remoteHost)}
                       {/if}
                       {@render renderToolApprovalBadge(toolBlock)}
                       {#each fetchResultBadges as badge}
-                        <span
-                          class="work-tool-result-badge"
-                          class:danger={badge.tone === "danger"}
-                          class:warning={badge.tone === "warning"}
-                          class:success={badge.tone === "success"}
-                          title={badge.title}
-                        >
-                          {badge.label}
-                        </span>
+                        {@render renderToolResultBadge(badge)}
                       {/each}
                       {#each testResultBadges as badge}
-                        <span
-                          class="work-tool-result-badge"
-                          class:danger={badge.tone === "danger"}
-                          class:warning={badge.tone === "warning"}
-                          class:success={badge.tone === "success"}
-                          title={badge.title}
-                        >
-                          {badge.label}
-                        </span>
+                        {@render renderToolResultBadge(badge)}
                       {/each}
                       {#if toolElapsedDuration}
                         <span class="work-tool-meta">{toolElapsedDuration}</span>
@@ -2041,6 +2243,12 @@
                         </span>
                       {/if}
                     {/if}
+                    {#if toolMediaBlocks.length > 0}
+                      {@render renderInlineMediaStrip(
+                        toolMediaBlocks,
+                        "work-tool-summary-media-strip",
+                      )}
+                    {/if}
                     {#if entry.message.timestamp}
                       <span
                         class="muted small work-entry-time"
@@ -2050,7 +2258,6 @@
                       </span>
                     {/if}
                   </summary>
-                  {@render renderInlineMediaStrip(toolMediaBlocks, "work-tool-media-strip")}
                   {#if forceOpenThinkingEntry(workKey, entry) || openWorkEntryKeys.has(entryRenderKey)}
                     <div class="work-entry-body" on:wheel|capture={handOffNestedWheel}>
                       {#if editSummary}
@@ -2549,6 +2756,53 @@
     font-variant-numeric: tabular-nums;
     font-feature-settings: "tnum";
   }
+  .work-summary-subagents {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.25rem;
+    min-width: 0;
+  }
+  .work-subagent-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.25rem;
+    max-width: 9rem;
+    min-width: 0;
+    height: 1.16rem;
+    padding: 0 0.34rem;
+    border: 1px solid color-mix(in srgb, var(--accent) 26%, var(--surface-3));
+    border-radius: 999px;
+    background: color-mix(in srgb, var(--surface-2) 48%, transparent);
+    color: var(--text-2);
+    font: inherit;
+    font-size: 0.66rem;
+    line-height: 1;
+    cursor: pointer;
+  }
+  .work-subagent-badge:disabled {
+    cursor: default;
+  }
+  .work-subagent-badge:hover:not(:disabled) {
+    border-color: color-mix(in srgb, var(--accent) 54%, var(--surface-3));
+    color: var(--text-1);
+  }
+  .work-subagent-badge.completed {
+    border-color: color-mix(in srgb, var(--success, #7fd88f) 38%, var(--surface-3));
+  }
+  .work-subagent-badge.failed {
+    border-color: color-mix(in srgb, var(--danger, #e5707a) 44%, var(--surface-3));
+  }
+  .work-subagent-badge :global(svg) {
+    flex: 0 0 auto;
+    width: 0.78rem;
+    height: 0.78rem;
+  }
+  .work-subagent-badge span {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
   .work-foldout-body {
     display: grid;
     gap: 0.38rem;
@@ -2710,6 +2964,31 @@
     font-size: 0.74rem;
     line-height: 1.15;
   }
+  button.work-tool-chip {
+    appearance: none;
+    cursor: default;
+  }
+  button.work-tool-chip.clickable {
+    cursor: pointer;
+  }
+  button.work-tool-chip.clickable:hover {
+    border-color: color-mix(in srgb, var(--accent) 42%, var(--surface-3));
+    color: var(--text-1);
+  }
+  .subagent-chip {
+    border-color: color-mix(in srgb, var(--accent) 24%, var(--surface-3));
+  }
+  .subagent-block {
+    display: grid;
+    gap: 0.45rem;
+    justify-items: start;
+  }
+  .subagent-preview {
+    color: var(--text-2);
+  }
+  .subagent-detail {
+    align-items: flex-start;
+  }
   .work-tool-chip.icon-only {
     padding: 0.14rem 0.32rem;
   }
@@ -2789,6 +3068,7 @@
   .work-tool-result-badge {
     display: inline-flex;
     align-items: center;
+    gap: 0.12rem;
     flex: 0 0 auto;
     padding: 0.06rem 0.32rem 0.08rem;
     border-radius: 999px;
@@ -2801,6 +3081,11 @@
     font-size: 0.64rem;
     line-height: 1.1;
     white-space: nowrap;
+  }
+  .work-tool-result-symbol {
+    font-size: 1.5em;
+    line-height: 0.72;
+    transform: translateY(0.02em);
   }
   .work-tool-result-badge.danger {
     border-color: color-mix(in srgb, var(--error-text, #ffaaaa) 38%, var(--surface-3));
@@ -2961,18 +3246,6 @@
     color: var(--text-1);
     outline: none;
   }
-  .work-preview-path.remote,
-  .work-preview-path[aria-disabled="true"] {
-    cursor: default;
-  }
-  .work-preview-path.remote:hover,
-  .work-preview-path.remote:focus-visible,
-  .work-preview-path[aria-disabled="true"]:hover,
-  .work-preview-path[aria-disabled="true"]:focus-visible {
-    border-color: color-mix(in srgb, var(--surface-3) 40%, transparent);
-    background: color-mix(in srgb, var(--surface-2) 34%, transparent);
-    color: inherit;
-  }
   .work-file-edit-preview {
     color: var(--text-muted);
   }
@@ -3046,16 +3319,11 @@
     min-width: 0;
     color: var(--text-2);
   }
-  .work-file-edits-title,
   .work-file-edit-row {
     display: flex;
     align-items: baseline;
     gap: 0.42rem;
     min-width: 0;
-  }
-  .work-file-edits-title {
-    color: var(--text-muted);
-    font-size: 0.78rem;
   }
   .work-file-edits-icon {
     color: var(--text-faint);
@@ -3409,6 +3677,12 @@
     gap: 0.45rem;
     max-width: min(100%, 34rem);
   }
+  .work-tool-summary-media-strip {
+    flex: 0 0 auto;
+    max-width: 7rem;
+    margin-left: auto;
+    gap: 0.3rem;
+  }
   .user-media-strip {
     justify-content: flex-end;
   }
@@ -3430,6 +3704,10 @@
   }
   .user-media-strip .media-image-open {
     width: 5.2rem;
+    flex: 0 0 auto;
+  }
+  .work-tool-summary-media-strip .media-image-open {
+    width: 4rem;
     flex: 0 0 auto;
   }
   .media-block a:hover,

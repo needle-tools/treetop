@@ -12,6 +12,8 @@ import {
   cleanVisualToolResultText,
   latestVisualGoal,
   latestVisualPlan,
+  visualSubagentMetaFromBlock,
+  visualSubagentMetaFromBlocks,
 } from "../src/last-user-message";
 
 function jsonl(entries: object[]): string {
@@ -134,6 +136,173 @@ describe("visual transcript provider flow", () => {
         markerLabel: "Task complete",
       }),
     );
+  });
+
+  test("normalizes Codex subagent spawn, wait, and notification rows", () => {
+    const subagentId = "019f27fe-0f3d-7a50-8371-3344fbaee5d0";
+    const session = parseCodexJsonl(
+      jsonl([
+        {
+          timestamp: "2026-07-03T12:00:00.000Z",
+          type: "response_item",
+          payload: {
+            type: "message",
+            role: "user",
+            content: [{ type: "input_text", text: "compare the importer" }],
+          },
+        },
+        {
+          timestamp: "2026-07-03T12:00:01.000Z",
+          type: "response_item",
+          payload: {
+            type: "function_call",
+            name: "spawn_agent",
+            call_id: "call-spawn",
+            arguments: JSON.stringify({
+              agent_type: "explorer",
+              model: "gpt-5.5",
+              reasoning_effort: "xhigh",
+              message: "Inspect OpenUSD material imports.",
+            }),
+          },
+        },
+        {
+          timestamp: "2026-07-03T12:00:02.000Z",
+          type: "response_item",
+          payload: {
+            type: "function_call_output",
+            call_id: "call-spawn",
+            output: JSON.stringify({
+              agent_id: subagentId,
+              nickname: "Leibniz",
+            }),
+          },
+        },
+        {
+          timestamp: "2026-07-03T12:00:03.000Z",
+          type: "response_item",
+          payload: {
+            type: "function_call",
+            name: "wait_agent",
+            call_id: "call-wait",
+            arguments: JSON.stringify({
+              targets: [subagentId],
+              timeout_ms: 3600000,
+            }),
+          },
+        },
+        {
+          timestamp: "2026-07-03T12:00:04.000Z",
+          type: "response_item",
+          payload: {
+            type: "function_call_output",
+            call_id: "call-wait",
+            output: JSON.stringify({
+              status: {
+                [subagentId]: {
+                  completed: "**Findings**\n\n- First finding.",
+                },
+              },
+            }),
+          },
+        },
+        {
+          timestamp: "2026-07-03T12:00:05.000Z",
+          type: "response_item",
+          payload: {
+            type: "message",
+            role: "user",
+            content: [
+              {
+                type: "input_text",
+                text:
+                  "<subagent_notification>\n" +
+                  JSON.stringify({
+                    agent_path: subagentId,
+                    status: { completed: "**Findings**\n\n- First finding." },
+                  }) +
+                  "\n</subagent_notification>",
+              },
+            ],
+          },
+        },
+        {
+          timestamp: "2026-07-03T12:00:06.000Z",
+          type: "response_item",
+          payload: {
+            type: "message",
+            role: "assistant",
+            content: [{ type: "output_text", text: "The subagent found it." }],
+          },
+        },
+      ]),
+    );
+
+    const spawnUse = session.messages
+      .flatMap((message) => message.blocks)
+      .find(
+        (block) =>
+          block.type === "tool_use" && block.toolName === "spawn_agent",
+      );
+    const spawnResult = session.messages
+      .flatMap((message) => message.blocks)
+      .find(
+        (block) =>
+          block.type === "tool_result" && block.toolUseId === "call-spawn",
+      );
+    expect(visualSubagentMetaFromBlocks(spawnUse, spawnResult)).toMatchObject({
+      action: "spawn",
+      status: "running",
+      id: subagentId,
+      nickname: "Leibniz",
+      type: "explorer",
+      model: "gpt-5.5",
+      effort: "xhigh",
+      task: "Inspect OpenUSD material imports.",
+    });
+
+    const waitUse = session.messages
+      .flatMap((message) => message.blocks)
+      .find(
+        (block) => block.type === "tool_use" && block.toolName === "wait_agent",
+      );
+    const waitResult = session.messages
+      .flatMap((message) => message.blocks)
+      .find(
+        (block) =>
+          block.type === "tool_result" && block.toolUseId === "call-wait",
+      );
+    expect(visualSubagentMetaFromBlocks(waitUse, waitResult)).toMatchObject({
+      action: "wait",
+      status: "completed",
+      id: subagentId,
+      result: "**Findings**\n\n- First finding.",
+    });
+
+    const notification = session.messages.find((message) =>
+      message.blocks.some((block) => block.type === "subagent"),
+    );
+    expect(notification?.role).toBe("assistant");
+    expect(visualSubagentMetaFromBlock(notification?.blocks[0])).toMatchObject({
+      action: "notification",
+      status: "completed",
+      id: subagentId,
+    });
+
+    const { work } = onlyWorkItem(session.messages);
+    const displayEntries = buildVisualWorkDisplayEntries(work.entries);
+    expect(
+      displayEntries.some(
+        (entry) =>
+          entry.entry.blocks[0]?.type === "tool_use" &&
+          entry.entry.blocks[0]?.toolName === "spawn_agent",
+      ),
+    ).toBe(true);
+    expect(
+      displayEntries.some(
+        (entry) => entry.entry.blocks[0]?.type === "subagent",
+      ),
+    ).toBe(true);
   });
 
   test("attaches Codex turn approval context to command tools", () => {
