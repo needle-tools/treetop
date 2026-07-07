@@ -293,6 +293,192 @@ describe("TunnelManager", () => {
   });
 });
 
+describe("TunnelManager — circuit breaker (dead-peer storm guard)", () => {
+  // A failed open must NOT be retried on every poll: each ssh dial to a dead
+  // box blocks the full ConnectTimeout (≈10s) and starves the event loop.
+  // The breaker cools the peer down and fails fast (no ssh) until it expires.
+
+  test("a failed open cools the peer down — the next open fails fast, no ssh", async () => {
+    let t = 1000;
+    const spawned: string[][] = [];
+    const mgr = new TunnelManager({
+      spawn: (argv) => {
+        spawned.push(argv);
+        return fakeProc();
+      },
+      allocatePort: async () => 7801,
+      waitForPort: async () => false, // listener never comes up
+      readyTimeoutMs: 50,
+      cooldownBaseMs: 15000,
+      now: () => t,
+    });
+    await expect(mgr.open(daemon())).rejects.toThrow(/did not come up/);
+    expect(spawned).toHaveLength(1);
+    // Immediate retry: refused by the breaker, WITHOUT spawning ssh.
+    await expect(mgr.open(daemon())).rejects.toThrow(/cooling down/);
+    expect(spawned).toHaveLength(1);
+  });
+
+  test("once the cooldown elapses, open() dials again", async () => {
+    let t = 1000;
+    let ready = false;
+    const spawned: string[][] = [];
+    const mgr = new TunnelManager({
+      spawn: (argv) => {
+        spawned.push(argv);
+        return fakeProc();
+      },
+      allocatePort: async () => 7801,
+      waitForPort: async () => ready,
+      readyTimeoutMs: 50,
+      cooldownBaseMs: 15000,
+      now: () => t,
+    });
+    await expect(mgr.open(daemon())).rejects.toThrow(/did not come up/);
+    // 1ms before expiry: still refused.
+    t = 1000 + 15000 - 1;
+    await expect(mgr.open(daemon())).rejects.toThrow(/cooling down/);
+    expect(spawned).toHaveLength(1);
+    // At expiry, with the peer now reachable: a fresh dial that succeeds.
+    t = 1000 + 15000;
+    ready = true;
+    const tun = await mgr.open(daemon());
+    expect(tun.localPort).toBe(7801);
+    expect(spawned).toHaveLength(2);
+  });
+
+  test("consecutive failures double the cooldown, capped at cooldownMaxMs", async () => {
+    let t = 0;
+    const spawned: string[][] = [];
+    const mgr = new TunnelManager({
+      spawn: (argv) => {
+        spawned.push(argv);
+        return fakeProc();
+      },
+      allocatePort: async () => 7801,
+      waitForPort: async () => false,
+      readyTimeoutMs: 50,
+      cooldownBaseMs: 1000,
+      cooldownMaxMs: 4000,
+      now: () => t,
+    });
+    // #1 → cooldown 1000 (until 1000)
+    await expect(mgr.open(daemon())).rejects.toThrow(/did not come up/);
+    t = 1000; // #2 → cooldown 2000 (until 3000)
+    await expect(mgr.open(daemon())).rejects.toThrow(/did not come up/);
+    t = 3000; // #3 → cooldown 4000 = cap (until 7000)
+    await expect(mgr.open(daemon())).rejects.toThrow(/did not come up/);
+    expect(spawned).toHaveLength(3);
+    // #4 fires at 7000 (cap = 4000 elapsed). If the cooldown had grown to
+    // 8000 instead of capping, 11000 would still be cooling — so a dial at
+    // 11000 proves the cap held.
+    t = 7000;
+    await expect(mgr.open(daemon())).rejects.toThrow(/did not come up/);
+    expect(spawned).toHaveLength(4);
+    t = 11000; // capped cooldown (until 11000) has elapsed → dials
+    await expect(mgr.open(daemon())).rejects.toThrow(/did not come up/);
+    expect(spawned).toHaveLength(5);
+  });
+
+  test("a successful open resets the backoff to the base cooldown", async () => {
+    let t = 0;
+    let ready = false;
+    const spawned: string[][] = [];
+    const procs: ReturnType<typeof fakeProc>[] = [];
+    const mgr = new TunnelManager({
+      spawn: (argv) => {
+        spawned.push(argv);
+        const p = fakeProc();
+        procs.push(p);
+        return p;
+      },
+      allocatePort: async () => 7801,
+      waitForPort: async () => ready,
+      readyTimeoutMs: 50,
+      cooldownBaseMs: 1000,
+      cooldownMaxMs: 60000,
+      now: () => t,
+    });
+    // Two failures grow the backoff to 2× base.
+    await expect(mgr.open(daemon())).rejects.toThrow(/did not come up/); // until 1000
+    t = 1000;
+    await expect(mgr.open(daemon())).rejects.toThrow(/did not come up/); // until 3000
+    // Then a success — resets the backoff.
+    t = 3000;
+    ready = true;
+    await mgr.open(daemon());
+    // Drop the tunnel via an ssh exit (does NOT touch the breaker), so the
+    // next open dials again.
+    procs[procs.length - 1]!.die(255);
+    await Promise.resolve();
+    // The next failure must cool down for the BASE (1000), not 4000.
+    ready = false;
+    await expect(mgr.open(daemon())).rejects.toThrow(/did not come up/);
+    t = 3000 + 999;
+    await expect(mgr.open(daemon())).rejects.toThrow(/cooling down/);
+    const before = spawned.length;
+    t = 3000 + 1000; // base elapsed → dials (proves reset; 4000 would refuse)
+    ready = true;
+    await mgr.open(daemon());
+    expect(spawned.length).toBe(before + 1);
+  });
+
+  test("close() clears the cooldown so an explicit reconnect retries at once", async () => {
+    let t = 0;
+    let ready = false;
+    const spawned: string[][] = [];
+    const mgr = new TunnelManager({
+      spawn: (argv) => {
+        spawned.push(argv);
+        return fakeProc();
+      },
+      allocatePort: async () => 7801,
+      waitForPort: async () => ready,
+      readyTimeoutMs: 50,
+      cooldownBaseMs: 30000,
+      now: () => t,
+    });
+    await expect(mgr.open(daemon())).rejects.toThrow(/did not come up/);
+    await expect(mgr.open(daemon())).rejects.toThrow(/cooling down/);
+    expect(spawned).toHaveLength(1);
+    await mgr.close("d1"); // resets the breaker
+    ready = true;
+    const tun = await mgr.open(daemon());
+    expect(tun.localPort).toBe(7801);
+    expect(spawned).toHaveLength(2);
+  });
+});
+
+describe("TunnelManager — concurrent open() coalescing", () => {
+  test("simultaneous opens share ONE ssh spawn and never expose a half-open tunnel", async () => {
+    const spawned: string[][] = [];
+    let releaseReady!: (v: boolean) => void;
+    const readyGate = new Promise<boolean>((r) => {
+      releaseReady = r;
+    });
+    const mgr = new TunnelManager({
+      spawn: (argv) => {
+        spawned.push(argv);
+        return fakeProc();
+      },
+      allocatePort: async () => 7801,
+      // Both opens block here until the test releases the gate.
+      waitForPort: () => readyGate,
+      readyTimeoutMs: 50,
+    });
+    const p1 = mgr.open(daemon());
+    const p2 = mgr.open(daemon());
+    // While readiness is pending the tunnel MUST NOT be tracked — a racing
+    // forward against a half-open tunnel would 502 and reopen (the storm).
+    expect(mgr.get("d1")).toBeUndefined();
+    releaseReady(true);
+    const [a, b] = await Promise.all([p1, p2]);
+    expect(a.localPort).toBe(b.localPort);
+    expect(spawned).toHaveLength(1); // coalesced onto one ssh, not two
+    expect(mgr.get("d1")?.localPort).toBe(7801);
+  });
+});
+
 describe("TunnelManager — direct mode (two-daemon e2e seam)", () => {
   test("open() returns the remote's own port and spawns NO ssh", async () => {
     let spawned = 0;

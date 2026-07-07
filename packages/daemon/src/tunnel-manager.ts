@@ -71,6 +71,18 @@ export interface TunnelManagerOptions {
    *  `<workspace>/daemon.log` — the trail for "the remote went offline after
    *  the laptop slept" (the ssh exits on wake; the next request reopens). */
   log?: (msg: string) => void;
+  /** First cooldown after a failed open, before we're willing to spawn ssh
+   *  to that peer again. Doubles on each consecutive failure up to
+   *  `cooldownMaxMs`. Default 15000ms. The circuit breaker exists because a
+   *  dead box makes every `ssh` dial block the full ConnectTimeout (≈10s);
+   *  without a cooldown the UI's 5s poll re-dials forever, saturating the
+   *  event loop and wedging unrelated work (e.g. new-terminal startup). */
+  cooldownBaseMs?: number;
+  /** Cap on the exponential cooldown. Default 120000ms (2 min). */
+  cooldownMaxMs?: number;
+  /** Injectable clock (ms). Defaults to `Date.now`; tests pass a fake so
+   *  cooldown expiry is deterministic without real timers. */
+  now?: () => number;
 }
 
 /** A stand-in TunnelProc for direct mode — there's no ssh child, so kill()
@@ -206,12 +218,26 @@ async function readStderr(
 
 export class TunnelManager {
   private tunnels = new Map<string, Tunnel>();
+  /** In-flight open() promises, keyed by daemon id. Concurrent callers await
+   *  the SAME promise instead of each spawning their own ssh — and the tunnel
+   *  isn't published to `tunnels` until its listener is confirmed ready, so a
+   *  racing caller can never be handed a half-open tunnel to forward against
+   *  (which would 502 → trigger a reopen storm). */
+  private pending = new Map<string, Promise<Tunnel>>();
+  /** Circuit breaker: `now()` timestamp (ms) before which we refuse to dial a
+   *  peer that just failed to open. */
+  private cooldownUntil = new Map<string, number>();
+  /** Current backoff length per peer; doubles each consecutive failure. */
+  private backoffMs = new Map<string, number>();
   private readonly spawn: TunnelSpawner;
   private readonly allocatePort: PortAllocator;
   private readonly waitForPort: PortReadyCheck;
   private readonly readyTimeoutMs: number;
   private readonly direct: boolean;
   private readonly log: (msg: string) => void;
+  private readonly cooldownBaseMs: number;
+  private readonly cooldownMaxMs: number;
+  private readonly now: () => number;
 
   constructor(opts: TunnelManagerOptions = {}) {
     this.spawn =
@@ -222,6 +248,9 @@ export class TunnelManager {
     this.readyTimeoutMs = opts.readyTimeoutMs ?? 15000;
     this.direct = opts.direct ?? false;
     this.log = opts.log ?? (() => {});
+    this.cooldownBaseMs = opts.cooldownBaseMs ?? 15000;
+    this.cooldownMaxMs = opts.cooldownMaxMs ?? 120000;
+    this.now = opts.now ?? (() => Date.now());
   }
 
   /** Open (or return the existing) tunnel for a remote daemon. Idempotent
@@ -234,6 +263,59 @@ export class TunnelManager {
     const existing = this.tunnels.get(daemon.id);
     if (existing) return existing;
 
+    // Coalesce concurrent opens: the first caller drives the ssh spawn, the
+    // rest await the same promise. Prevents N simultaneous polls to one peer
+    // from stacking N ssh processes (and, on a dead peer, N blocking dials).
+    const inFlight = this.pending.get(daemon.id);
+    if (inFlight) return inFlight;
+
+    // Circuit breaker: a peer that just failed is in cooldown. Fail fast
+    // WITHOUT spawning ssh — a dead box makes every dial block the full
+    // ConnectTimeout (≈10s), so re-dialing on each 5s UI poll saturates the
+    // event loop and wedges unrelated work (new-terminal startup, enrich).
+    const until = this.cooldownUntil.get(daemon.id);
+    if (until !== undefined && this.now() < until) {
+      const who = daemon.label || daemon.host;
+      const secs = Math.ceil((until - this.now()) / 1000);
+      throw new Error(
+        `tunnel to ${who} is cooling down after a failed connect — ` +
+          `next attempt in ${secs}s`,
+      );
+    }
+
+    const promise = this.doOpen(daemon);
+    this.pending.set(daemon.id, promise);
+    try {
+      const tunnel = await promise;
+      // Success — clear any prior failure state so the peer isn't penalised.
+      this.cooldownUntil.delete(daemon.id);
+      this.backoffMs.delete(daemon.id);
+      return tunnel;
+    } catch (e) {
+      this.noteUnreachable(daemon);
+      throw e;
+    } finally {
+      this.pending.delete(daemon.id);
+    }
+  }
+
+  /** Record a failed open and arm the circuit breaker with an exponentially
+   *  growing cooldown (base → ×2 each consecutive failure → capped). */
+  private noteUnreachable(daemon: RemoteDaemon): void {
+    const prev = this.backoffMs.get(daemon.id) ?? 0;
+    const next =
+      prev === 0
+        ? this.cooldownBaseMs
+        : Math.min(prev * 2, this.cooldownMaxMs);
+    this.backoffMs.set(daemon.id, next);
+    this.cooldownUntil.set(daemon.id, this.now() + next);
+    this.log(
+      `[tunnel] ${daemon.label || daemon.host} unreachable — ` +
+        `cooling down ${Math.round(next / 1000)}s before the next attempt`,
+    );
+  }
+
+  private async doOpen(daemon: RemoteDaemon): Promise<Tunnel> {
     if (this.direct) {
       // No ssh: the remote daemon is reachable directly on
       // 127.0.0.1:<daemon.port> (both daemons on localhost). Still wait for
@@ -260,7 +342,6 @@ export class TunnelManager {
     this.log(`[tunnel] opening ${who} → ssh -L ${localPort}:127.0.0.1:${daemon.port}`);
     const proc = this.spawn(buildSshTunnelArgs(daemon, localPort));
     const tunnel: Tunnel = { id: daemon.id, localPort, proc };
-    this.tunnels.set(daemon.id, tunnel);
 
     // If ssh exits (connection dropped, auth failed, forward couldn't
     // bind), stop tracking it so the next open() spawns a fresh one. Guard
@@ -279,10 +360,11 @@ export class TunnelManager {
     // Wait for the listener. If it never comes up (auth failed, host
     // unreachable, forward rejected), tear down + throw so the caller
     // surfaces a real error instead of handing back a dead tunnel that
-    // every request will fail against.
+    // every request will fail against. We publish the tunnel to `tunnels`
+    // only AFTER it's confirmed ready — a half-open tunnel handed to a
+    // racing caller would 502 and trigger a reopen storm.
     const ready = await this.waitForPort(localPort, this.readyTimeoutMs);
     if (!ready) {
-      this.tunnels.delete(daemon.id);
       // Grab ssh's own complaint (auth, host key, permission denied, …)
       // before killing it — a generic "did not come up" sent us chasing
       // ghosts; ssh's stderr is the actual diagnosis.
@@ -299,6 +381,7 @@ export class TunnelManager {
       );
     }
 
+    this.tunnels.set(daemon.id, tunnel);
     this.log(`[tunnel] up: ${who} on :${localPort}`);
     return tunnel;
   }
@@ -314,6 +397,11 @@ export class TunnelManager {
   /** Close one tunnel: kill its ssh process and forget it. Returns false
    *  if no tunnel was tracked for that id. */
   async close(id: string): Promise<boolean> {
+    // An explicit close (Reconnect button, remove-daemon) clears the circuit
+    // breaker so the very next open() retries immediately instead of being
+    // refused by a lingering cooldown.
+    this.cooldownUntil.delete(id);
+    this.backoffMs.delete(id);
     const tunnel = this.tunnels.get(id);
     if (!tunnel) return false;
     this.tunnels.delete(id);
