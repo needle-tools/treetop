@@ -110,16 +110,23 @@ export function mergeLiveShells(
  *   one running terminal shows up as TWO columns after reload: the
  *   working attached one plus a stale "disconnected — Resume" card.
  * - Skips entries already present as `__restore__:<termId>`.
+ * - Skips entries the user dismissed (× on the column records
+ *   `__attached__:shell:<termId>` in dismissedShells but does NOT remove
+ *   the daemon's active-terminals.json record). Without this, every
+ *   ×-closed terminal resurrects as a "disconnected — Resume" card on the
+ *   next restart. Symmetric with `mergeLiveShells`.
  *
  * Pure; returns a new map.
  */
 export function mergePersistedTerminals(
   current: Record<string, OpenSessionRef[]>,
   persisted: readonly PersistedTerminalEntry[],
+  dismissed: ReadonlySet<string> = new Set(),
 ): Record<string, OpenSessionRef[]> {
   if (persisted.length === 0) return current;
   const next: Record<string, OpenSessionRef[]> = { ...current };
   for (const entry of persisted) {
+    if (dismissed.has(`${ATTACHED_SHELL_PREFIX}${entry.termId}`)) continue;
     const source = `${RESTORE_PREFIX}${entry.termId}`;
     const existing = next[entry.wtPath] ?? [];
     const alreadyAttached = existing.some(

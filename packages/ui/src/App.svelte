@@ -2583,6 +2583,7 @@
         openSessionsByWt = mergePersistedTerminals(
           openSessionsByWt,
           list,
+          dismissedShells,
         ) as typeof openSessionsByWt;
       } catch {
         // best-effort per daemon

@@ -167,6 +167,38 @@ describe("mergePersistedTerminals", () => {
     ]);
   });
 
+  test("BUG REPRO: a persisted entry the user dismissed must NOT come back as a __restore__ card", () => {
+    // Scenario: the user ×-closed a terminal column in a previous
+    // session. closeSessionInWt recorded `__attached__:shell:t1` in the
+    // persisted dismissedShells set, but the daemon still has t1 in
+    // active-terminals.json (× never removes the daemon record). On the
+    // next restart mergePersistedTerminals would resurrect it as a
+    // "disconnected — Resume" card unless it honors the dismissed set —
+    // exactly like mergeLiveShells already does.
+    const persisted: PersistedTerminalEntry[] = [
+      { termId: "t1", cmd: ["cmd.exe"], cwd: WT, wtPath: WT },
+    ];
+    const result = mergePersistedTerminals(
+      { [WT]: [] },
+      persisted,
+      new Set(["__attached__:shell:t1"]),
+    );
+    expect(result[WT] ?? []).toEqual([]);
+  });
+
+  test("dismissing one persisted entry still restores the others", () => {
+    const persisted: PersistedTerminalEntry[] = [
+      { termId: "t1", cmd: ["cmd.exe"], cwd: WT, wtPath: WT },
+      { termId: "t2", cmd: ["bash"], cwd: WT, wtPath: WT },
+    ];
+    const result = mergePersistedTerminals(
+      { [WT]: [] },
+      persisted,
+      new Set(["__attached__:shell:t1"]),
+    );
+    expect(result[WT]!.map((s) => s.source)).toEqual(["__restore__:t2"]);
+  });
+
   test("idempotent: re-running over an already-merged map is a no-op", () => {
     const persisted: PersistedTerminalEntry[] = [
       { termId: "t1", cmd: ["cmd.exe"], cwd: WT, wtPath: WT },
