@@ -21,6 +21,7 @@ import {
   visualPathPreviewTargets,
   visualToolCallPayloadLanguage,
   visualToolCallPayloadText,
+  visualToolCommandResultBadges,
   visualToolApprovalBadge,
   visualToolLauncherLabel,
   visualToolPreviewParts,
@@ -35,6 +36,8 @@ import {
   visualToolInlineScriptLanguageLabel,
   visualToolInlineScriptPreviewText,
   visualToolMediaBlocks,
+  visualFileEditCountBadge,
+  visualObservedProcessOwnerToolUseBlock,
   visualToolRemoteHostLabel,
   visualWorkSummary,
   visualUserImageAttachments,
@@ -1347,6 +1350,227 @@ describe("buildVisualTranscriptItems", () => {
       { type: "text", text: "Done, both are fixed." },
     ]);
   });
+
+  it("collapses quick tool starts and results by tool-use id even when they are not adjacent", () => {
+    const entries = [
+      {
+        message: {
+          role: "assistant",
+          timestamp: "2026-07-02T15:40:00.000Z",
+          blocks: [
+            { type: "tool_use", toolName: "spawn_agent", toolUseId: "call-1" },
+          ],
+        },
+        blocks: [
+          { type: "tool_use", toolName: "spawn_agent", toolUseId: "call-1" },
+        ],
+        messageIndex: 0,
+      },
+      {
+        message: msg(
+          "assistant",
+          "Carson is on it.",
+          "2026-07-02T15:40:00.200Z",
+        ),
+        blocks: [{ type: "text", text: "Carson is on it." }],
+        messageIndex: 1,
+      },
+      {
+        message: {
+          role: "tool",
+          timestamp: "2026-07-02T15:40:00.800Z",
+          blocks: [
+            {
+              type: "tool_result",
+              toolName: "spawn_agent",
+              toolUseId: "call-1",
+              text: '{"agent_id":"agent-1","nickname":"Carson"}',
+            },
+          ],
+        },
+        blocks: [
+          {
+            type: "tool_result",
+            toolName: "spawn_agent",
+            toolUseId: "call-1",
+            text: '{"agent_id":"agent-1","nickname":"Carson"}',
+          },
+        ],
+        messageIndex: 2,
+      },
+    ];
+
+    const display = buildVisualWorkDisplayEntries(entries);
+
+    expect(display.map((entry) => entry.entry.blocks[0]?.type)).toEqual([
+      "tool_use",
+      "text",
+    ]);
+    expect(display[0]?.pairedResult?.blocks[0]).toMatchObject({
+      type: "tool_result",
+      toolName: "spawn_agent",
+      toolUseId: "call-1",
+    });
+  });
+
+  it("keeps long-running tool results visible at the result point", () => {
+    const entries = [
+      {
+        message: {
+          role: "assistant",
+          timestamp: "2026-07-02T15:40:00.000Z",
+          blocks: [
+            { type: "tool_use", toolName: "exec_command", toolUseId: "call-1" },
+          ],
+        },
+        blocks: [
+          { type: "tool_use", toolName: "exec_command", toolUseId: "call-1" },
+        ],
+        messageIndex: 0,
+      },
+      {
+        message: msg(
+          "assistant",
+          "Still running.",
+          "2026-07-02T15:40:02.000Z",
+        ),
+        blocks: [{ type: "text", text: "Still running." }],
+        messageIndex: 1,
+      },
+      {
+        message: {
+          role: "tool",
+          timestamp: "2026-07-02T15:40:03.000Z",
+          blocks: [
+            {
+              type: "tool_result",
+              toolName: "exec_command",
+              toolUseId: "call-1",
+              text: "done",
+            },
+          ],
+        },
+        blocks: [
+          {
+            type: "tool_result",
+            toolName: "exec_command",
+            toolUseId: "call-1",
+            text: "done",
+          },
+        ],
+        messageIndex: 2,
+      },
+    ];
+
+    const display = buildVisualWorkDisplayEntries(entries);
+
+    expect(display.map((entry) => entry.entry.blocks[0]?.type)).toEqual([
+      "tool_use",
+      "text",
+      "tool_result",
+    ]);
+    expect(display[2]?.pairedToolUse?.blocks[0]).toMatchObject({
+      type: "tool_use",
+      toolUseId: "call-1",
+    });
+  });
+
+  it("collapses a redundant subagent notification after the matching wait result", () => {
+    const entries = [
+      {
+        message: {
+          role: "assistant",
+          timestamp: "2026-07-02T15:40:00.000Z",
+          blocks: [
+            {
+              type: "tool_use",
+              toolName: "wait_agent",
+              toolUseId: "call-wait",
+              toolInput: { targets: ["agent-1"] },
+            },
+          ],
+        },
+        blocks: [
+          {
+            type: "tool_use",
+            toolName: "wait_agent",
+            toolUseId: "call-wait",
+            toolInput: { targets: ["agent-1"] },
+          },
+        ],
+        messageIndex: 0,
+      },
+      {
+        message: {
+          role: "tool",
+          timestamp: "2026-07-02T15:40:03.000Z",
+          blocks: [
+            {
+              type: "tool_result",
+              toolName: "wait_agent",
+              toolUseId: "call-wait",
+              text: JSON.stringify({
+                status: {
+                  "agent-1": { completed: "Subagent report." },
+                },
+              }),
+            },
+          ],
+        },
+        blocks: [
+          {
+            type: "tool_result",
+            toolName: "wait_agent",
+            toolUseId: "call-wait",
+            text: JSON.stringify({
+              status: {
+                "agent-1": { completed: "Subagent report." },
+              },
+            }),
+          },
+        ],
+        messageIndex: 1,
+      },
+      {
+        message: {
+          role: "assistant",
+          timestamp: "2026-07-02T15:40:03.100Z",
+          blocks: [
+            {
+              type: "subagent",
+              text: "Subagent report.",
+              subagentId: "agent-1",
+              subagentAction: "notification",
+              subagentStatus: "completed",
+              subagentResult: "Subagent report.",
+            },
+          ],
+        },
+        blocks: [
+          {
+            type: "subagent",
+            text: "Subagent report.",
+            subagentId: "agent-1",
+            subagentAction: "notification",
+            subagentStatus: "completed",
+            subagentResult: "Subagent report.",
+          },
+        ],
+        messageIndex: 2,
+      },
+    ];
+
+    const display = buildVisualWorkDisplayEntries(entries);
+
+    expect(display.map((entry) => entry.entry.blocks[0]?.type)).toEqual([
+      "tool_use",
+      "tool_result",
+    ]);
+    expect(display[1]?.pairedToolUse?.blocks[0]).toMatchObject({
+      type: "tool_use",
+      toolName: "wait_agent",
+    });
+  });
 });
 
 describe("reuseStableVisualTranscriptItems", () => {
@@ -2242,6 +2466,24 @@ describe("visual tool payload display helpers", () => {
       }),
     ).toBe("git");
 
+    const stageBlock = {
+      type: "tool_use",
+      toolName: "exec_command",
+      toolInput: {
+        cmd: "git add -- domain.ts i18n.ts store.ts routes/+page.server.ts routes/+page.svelte",
+      },
+    };
+    expect(visualToolPreviewText(stageBlock)).toBe(
+      "Stage domain.ts, i18n.ts, store.ts, routes/+page.server.ts, routes/+page.svelte",
+    );
+    expect(visualToolCommandResultBadges(stageBlock)).toEqual([
+      {
+        label: "5 files",
+        tone: "neutral",
+        title: "5 files staged",
+      },
+    ]);
+
     expect(
       visualToolPreviewText({
         type: "tool_use",
@@ -2259,6 +2501,18 @@ describe("visual tool payload display helpers", () => {
         },
       }),
     ).toBe("Count commits needle/main..HEAD · Check diff whitespace");
+
+    expect(
+      visualToolPreviewText({
+        type: "tool_use",
+        toolName: "exec_command",
+        toolInput: {
+          cmd: "git check-ignore -v full_assets/Kitchen_set full_assets/Kitchen_set_draco/Kitchen_set_draco.usda || true",
+        },
+      }),
+    ).toBe(
+      "Check git ignore for Kitchen_set, Kitchen_set_draco.usda",
+    );
 
     expect(
       visualToolPreviewText({
@@ -2538,6 +2792,26 @@ describe("visual tool payload display helpers", () => {
     ).toBe("Count items in Models");
   });
 
+  it("summarizes disk usage checks", () => {
+    const block = {
+      type: "tool_use",
+      toolName: "exec_command",
+      toolInput: {
+        cmd: "du -sh full_assets/Kitchen_set full_assets/Kitchen_set_draco && du -ch full_assets/Kitchen_set/assets/**/*.geom.usd | tail -1",
+      },
+    };
+
+    expect(visualToolPreviewText(block)).toBe(
+      "Check size of Kitchen_set, Kitchen_set_draco, assets/**/*.geom.usd",
+    );
+    expect(visualToolPreviewParts(block)).toContainEqual({
+      kind: "path",
+      text: "Kitchen_set",
+      path: "full_assets/Kitchen_set",
+      range: "",
+    });
+  });
+
   it("summarizes jq JSON queries", () => {
     expect(
       visualToolPreviewText({
@@ -2568,6 +2842,47 @@ describe("visual tool payload display helpers", () => {
         },
       }),
     ).toBe("Query JSON 127.0.0.1:8765/api/health {status, config}");
+  });
+
+  it("summarizes awk text processing without hiding raw commands", () => {
+    const direct = {
+      type: "tool_use",
+      toolName: "exec_command",
+      toolInput: {
+        cmd: "awk -F, '{print $1}' data/results.csv",
+      },
+    };
+    const pipedFile = {
+      type: "tool_use",
+      toolName: "exec_command",
+      toolInput: {
+        cmd: "cat packages/ui/package.json | awk '/svelte/ {print $1}'",
+      },
+    };
+    const pipedFetch = {
+      type: "tool_use",
+      toolName: "exec_command",
+      toolInput: {
+        cmd: "curl -fsS http://127.0.0.1:8765/metrics | awk '/http_requests/ {print $2}'",
+      },
+    };
+
+    expect(visualToolPreviewText(direct)).toBe(
+      "Process text in results.csv with awk {print $1}",
+    );
+    expect(visualToolPreviewParts(direct)).toContainEqual({
+      kind: "path",
+      text: "results.csv",
+      path: "data/results.csv",
+      range: "",
+    });
+    expect(visualToolPreviewText(pipedFile)).toBe(
+      "Process text in ui/package.json with awk /svelte/ {print $1}",
+    );
+    expect(visualToolPreviewText(pipedFetch)).toBe(
+      "Process text from 127.0.0.1:8765/metrics with awk /http_requests/ {print $2}",
+    );
+    expect(visualToolCallPayloadText(direct)).toContain("awk -F,");
   });
 
   it("summarizes Windows filesystem cleanup and creation commands", () => {
@@ -2620,6 +2935,70 @@ describe("visual tool payload display helpers", () => {
       path: "/tmp/supergit-test",
       range: "",
     });
+    expect(visualToolCommandResultBadges(block)).toEqual([
+      {
+        label: "3 paths",
+        tone: "neutral",
+        title: "3 paths touched",
+      },
+    ]);
+
+    expect(
+      visualToolCommandResultBadges({
+        type: "tool_use",
+        toolName: "exec_command",
+        toolInput: { cmd: "mkdir -p /tmp/one-folder" },
+      }),
+    ).toEqual([]);
+  });
+
+  it("ignores shell option setup when summarizing chained filesystem commands", () => {
+    const block = {
+      type: "tool_use",
+      toolName: "exec_command",
+      toolInput: {
+        cmd: "set -euo pipefail; mkdir -p .git/info; exclude=.git/info/exclude; touch \"$exclude\"",
+      },
+    };
+
+    expect(visualToolPreviewText(block)).toBe(
+      "Create folder info · Create file $exclude",
+    );
+    expect(visualToolCallPayloadText(block)).toContain("set -euo pipefail");
+  });
+
+  it("summarizes file copy and move commands with file-count badges", () => {
+    const copyBlock = {
+      type: "tool_use",
+      toolName: "exec_command",
+      toolInput: { cmd: "cp src/App.svelte /tmp/App.svelte" },
+    };
+    expect(visualToolPreviewText(copyBlock)).toBe(
+      "Copy App.svelte -> App.svelte",
+    );
+    expect(visualToolCommandResultBadges(copyBlock)).toEqual([
+      {
+        label: "2 files",
+        tone: "neutral",
+        title: "2 files copied",
+      },
+    ]);
+
+    const moveBlock = {
+      type: "tool_use",
+      toolName: "exec_command",
+      toolInput: { cmd: "mv old-name.ts new-name.ts" },
+    };
+    expect(visualToolPreviewText(moveBlock)).toBe(
+      "Move old-name.ts -> new-name.ts",
+    );
+    expect(visualToolCommandResultBadges(moveBlock)).toEqual([
+      {
+        label: "2 files",
+        tone: "neutral",
+        title: "2 files moved",
+      },
+    ]);
   });
 
   it("keeps mkdir folder chips when a command chain has an image transform", () => {
@@ -3082,6 +3461,36 @@ describe("visual tool payload display helpers", () => {
     });
   });
 
+  it("summarizes PowerShell drive and directory inspection over ssh", () => {
+    const drivesBlock = {
+      type: "tool_use",
+      toolName: "exec_command",
+      toolInput: {
+        cmd: "ssh felix-win 'Get-PSDrive -PSProvider FileSystem | Format-Table -AutoSize Name,Root,Used,Free'",
+      },
+    };
+    expect(visualToolPreviewText(drivesBlock)).toBe("Check Windows drives");
+    expect(visualToolRemoteHostLabel(drivesBlock)).toBe("felix-win");
+
+    const directoriesBlock = {
+      type: "tool_use",
+      toolName: "exec_command",
+      toolInput: {
+        cmd: "ssh felix-win 'Get-ChildItem -Path C:\\,D:\\,E:\\ -Directory -ErrorAction SilentlyContinue | Select-Object FullName'",
+      },
+    };
+    expect(visualToolPreviewText(directoriesBlock)).toBe(
+      "Read directories C:, D:, E:",
+    );
+    expect(visualToolPreviewParts(directoriesBlock)).toContainEqual({
+      kind: "path",
+      text: "D:",
+      path: "D:\\",
+      range: "",
+    });
+    expect(visualToolRemoteHostLabel(directoriesBlock)).toBe("felix-win");
+  });
+
   it("normalizes ssh launch wrappers before previewing remote searches", () => {
     const block = {
       type: "tool_use",
@@ -3119,6 +3528,40 @@ describe("visual tool payload display helpers", () => {
 
     expect(visualToolPreviewText(block)).toBe('Search config for "tts_url"');
     expect(visualToolRemoteHostLabel(block)).toBe("docker coolify");
+  });
+
+  it("summarizes Docker container checks and nearby container directory reads", () => {
+    const checkBlock = {
+      type: "tool_use",
+      toolName: "exec_command",
+      toolInput: {
+        cmd: "docker ps --format '{{.Names}} {{.Image}} {{.Ports}}' | rg 'open-webui|ollama'",
+      },
+    };
+
+    expect(visualToolPreviewText(checkBlock)).toBe(
+      'Check containers for "open-webui|ollama"',
+    );
+    expect(visualToolIconNameForPreview(checkBlock)).toBe("process_check");
+
+    const readBlock = {
+      type: "tool_use",
+      toolName: "exec_command",
+      toolInput: {
+        cmd: "docker exec fhir-patient-journey-open-webui-1 sh -lc 'cd /app/backend && ls -lah data && find data -maxdepth 2 -type f | sort'",
+      },
+    };
+
+    expect(visualToolPreviewText(readBlock)).toBe("Read directory data");
+    expect(visualToolRemoteHostLabel(readBlock)).toBe(
+      "docker fhir-patient-journey-open-webui-1",
+    );
+    expect(visualToolPreviewParts(readBlock)).toContainEqual({
+      kind: "path",
+      text: "data",
+      path: "/app/backend/data",
+      range: "",
+    });
   });
 
   it("summarizes combined sed reads as one readable preview", () => {
@@ -3325,6 +3768,26 @@ describe("visual tool payload display helpers", () => {
       code: "import json\nprint(json.dumps({'ok': True}))",
     });
     expect(visualToolCallPayloadText(heredocBlock)).toContain("python3 -");
+
+    const sameLineHeredocBlock = {
+      type: "tool_use",
+      toolName: "exec_command",
+      toolInput: {
+        cmd: "TMPDIR=/tmp node <<NODE import { mkdtempSync } from 'node:fs';\nconsole.log(mkdtempSync('treetop-'));\nNODE",
+      },
+    };
+    expect(visualToolPreviewText(sameLineHeredocBlock)).toBe(
+      "import { mkdtempSync } from 'node:fs'; console.log(mkdtempSync('treetop-'));",
+    );
+    expect(visualToolInlineScriptLanguageLabel(sameLineHeredocBlock)).toBe(
+      "JavaScript",
+    );
+    expect(visualToolInlineScript(sameLineHeredocBlock)).toEqual({
+      language: "js",
+      title: "JavaScript script",
+      code: "import { mkdtempSync } from 'node:fs';\nconsole.log(mkdtempSync('treetop-'));",
+    });
+    expect(visualToolEnvSummaryLabel(sameLineHeredocBlock)).toBe("ENV");
 
     const evalBlock = {
       type: "tool_use",
@@ -3732,6 +4195,111 @@ describe("buildVisualWorkDisplayEntries", () => {
     expect(entries[2]?.pairedToolUse).toBe(firstToolUse);
   });
 
+  it("uses running process log reads to show live test counters", () => {
+    const testToolUse = {
+      message: {
+        role: "assistant",
+        blocks: [
+          {
+            type: "tool_use",
+            toolName: "exec_command",
+            toolUseId: "test-call",
+            toolInput: { cmd: "npm run test:assets" },
+          },
+        ],
+      },
+      blocks: [
+        {
+          type: "tool_use",
+          toolName: "exec_command",
+          toolUseId: "test-call",
+          toolInput: { cmd: "npm run test:assets" },
+        },
+      ],
+      messageIndex: 1,
+    };
+    const runningResult = {
+      message: {
+        role: "tool",
+        blocks: [
+          {
+            type: "tool_result",
+            toolUseId: "test-call",
+            text: "Chunk ID: run\nWall time: 52.0000 seconds\nProcess running with session ID 55249\nOriginal token count: 1\nOutput:\nstarting\n",
+          },
+        ],
+      },
+      blocks: [
+        {
+          type: "tool_result",
+          toolUseId: "test-call",
+          text: "Chunk ID: run\nWall time: 52.0000 seconds\nProcess running with session ID 55249\nOriginal token count: 1\nOutput:\nstarting\n",
+        },
+      ],
+      messageIndex: 2,
+    };
+    const pollUse = {
+      message: {
+        role: "assistant",
+        blocks: [
+          {
+            type: "tool_use",
+            toolName: "write_stdin",
+            toolUseId: "poll-call",
+            toolInput: { session_id: 55249, chars: "" },
+          },
+        ],
+      },
+      blocks: [
+        {
+          type: "tool_use",
+          toolName: "write_stdin",
+          toolUseId: "poll-call",
+          toolInput: { session_id: 55249, chars: "" },
+        },
+      ],
+      messageIndex: 3,
+    };
+    const pollResult = {
+      message: {
+        role: "tool",
+        blocks: [
+          {
+            type: "tool_result",
+            toolUseId: "poll-call",
+            text: "Chunk ID: poll\nWall time: 5.0000 seconds\nProcess running with session ID 55249\nOriginal token count: 2\nOutput:\n(pass) loads assets\n(pass) renders thumbnail\nWarnings 1\n",
+          },
+        ],
+      },
+      blocks: [
+        {
+          type: "tool_result",
+          toolUseId: "poll-call",
+          text: "Chunk ID: poll\nWall time: 5.0000 seconds\nProcess running with session ID 55249\nOriginal token count: 2\nOutput:\n(pass) loads assets\n(pass) renders thumbnail\nWarnings 1\n",
+        },
+      ],
+      messageIndex: 4,
+    };
+
+    const entries = buildVisualWorkDisplayEntries([
+      testToolUse,
+      runningResult,
+      pollUse,
+      pollResult,
+    ]);
+    const observed = visualObservedProcessOutput(
+      pollUse.blocks[0],
+      pollResult.blocks[0],
+    );
+    const owner = visualObservedProcessOwnerToolUseBlock(entries, observed);
+
+    expect(owner).toBe(testToolUse.blocks[0]);
+    expect(visualToolTestResultBadges(owner, pollResult.blocks[0])).toEqual([
+      { label: "⚠1", tone: "warning", title: "1 warning" },
+      { label: "✓2", tone: "success", title: "2 tests passed" },
+    ]);
+  });
+
   it("carries a paired tool use name onto sparse delayed tool results", () => {
     const toolUse = {
       message: {
@@ -3872,6 +4440,26 @@ describe("buildVisualWorkDisplayEntries", () => {
 
 describe("visualFileEditSummaryForBlock", () => {
   it("totals file edit stats for compact edit rows", () => {
+    expect(
+      visualFileEditCountBadge({
+        title: "Edited 2 files",
+        files: [
+          { path: "src/App.svelte", action: "edited" },
+          { path: "src/routes/+page.svelte", action: "edited" },
+        ],
+      }),
+    ).toEqual({
+      label: "2 files",
+      tone: "neutral",
+      title: "2 files edited",
+    });
+    expect(
+      visualFileEditCountBadge({
+        title: "Edited App.svelte",
+        files: [{ path: "src/App.svelte", action: "edited" }],
+      }),
+    ).toBeUndefined();
+
     expect(
       visualFileEditTotals({
         title: "Edited authz.test.ts",

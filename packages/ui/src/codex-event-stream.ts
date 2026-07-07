@@ -53,6 +53,17 @@ export interface CodexLiveMarker {
   text: string;
 }
 
+export interface CodexLiveNormalizeContext {
+  toolNames?: Map<string, string>;
+}
+
+function codexLiveToolNameMap(
+  context: CodexLiveNormalizeContext,
+): Map<string, string> {
+  context.toolNames ??= new Map<string, string>();
+  return context.toolNames;
+}
+
 export interface CodexAppHistoryBlock {
   type:
     | "text"
@@ -232,6 +243,7 @@ function parseEvent(data: unknown): CodexAppEvent | null {
 
 export function codexLiveToolUseFromEvent(
   event: CodexAppEvent,
+  context: CodexLiveNormalizeContext = {},
 ): CodexLiveToolUse | null {
   const item = codexEventItem(event.params);
   if (
@@ -242,8 +254,9 @@ export function codexLiveToolUseFromEvent(
   }
   const itemId = codexEventItemId(event);
   if (!itemId) return null;
-  const toolName = codexEventToolName(event.method, event.params);
+  const toolName = codexEventToolName(event.method, event.params, context);
   if (!toolName) return null;
+  codexLiveToolNameMap(context).set(itemId, toolName);
   const id = `${toolName === "file change" ? "codex-file" : "codex-tool"}-${itemId}`;
   const toolInput =
     toolName === "file change" && event.params.changes !== undefined
@@ -267,10 +280,11 @@ export function codexLiveToolUseFromEvent(
 
 export function codexLiveToolResultFromEvent(
   event: CodexAppEvent,
+  context: CodexLiveNormalizeContext = {},
 ): CodexLiveToolResult | null {
   const item = codexEventItem(event.params);
   const itemId = codexEventItemId(event);
-  const toolName = codexEventToolName(event.method, event.params);
+  const toolName = codexEventToolName(event.method, event.params, context);
   if (!item || !itemId || !toolName) return null;
   if (item.type === "commandExecution") {
     const text = codexCommandExecutionResultText(item);
@@ -344,10 +358,11 @@ export function codexLiveMarkerFromEvent(
 
 export function codexLiveMessagesFromEvent(
   event: CodexAppEvent,
+  context: CodexLiveNormalizeContext = {},
 ): CodexAppHistoryMessage[] {
   const messages: CodexAppHistoryMessage[] = [];
   const timestamp = codexLiveItemTimestamp(event);
-  const liveToolUse = codexLiveToolUseFromEvent(event);
+  const liveToolUse = codexLiveToolUseFromEvent(event, context);
   if (liveToolUse && !event.method.endsWith("/outputDelta")) {
     messages.push(
       codexToolUseMessage({
@@ -367,7 +382,7 @@ export function codexLiveMessagesFromEvent(
       }),
     );
   }
-  const liveToolResult = codexLiveToolResultFromEvent(event);
+  const liveToolResult = codexLiveToolResultFromEvent(event, context);
   if (liveToolResult) {
     messages.push(
       codexToolResultMessage({
@@ -405,18 +420,19 @@ export function codexLiveMessagesFromEvent(
 
 export function codexAppHistoryMessagesFromThread(
   thread: unknown,
+  context: CodexLiveNormalizeContext = {},
 ): CodexAppHistoryMessage[] {
   if (!thread || typeof thread !== "object") return [];
   const turns = (thread as Record<string, unknown>).turns;
   if (!Array.isArray(turns)) return [];
   const messages: CodexAppHistoryMessage[] = [];
+  const toolNames = codexLiveToolNameMap(context);
   for (const turn of turns) {
     if (!turn || typeof turn !== "object") continue;
     const turnRecord = turn as Record<string, unknown>;
     const turnId = stringField(turnRecord, "id");
     const timestamp = codexUnixSecondsToIso(turnRecord.startedAt);
     const items = Array.isArray(turnRecord.items) ? turnRecord.items : [];
-    const toolNames = new Map<string, string>();
     for (const rawItem of items) {
       const itemMessages = codexAppMessagesFromThreadItem(
         rawItem,
@@ -432,6 +448,7 @@ export function codexAppHistoryMessagesFromThread(
 
 export function codexAppHistoryMessagesFromTurnPage(
   thread: unknown,
+  context: CodexLiveNormalizeContext = {},
 ): CodexAppHistoryMessage[] {
   if (!thread || typeof thread !== "object") return [];
   const record = thread as Record<string, unknown>;
@@ -439,7 +456,7 @@ export function codexAppHistoryMessagesFromTurnPage(
   return codexAppHistoryMessagesFromThread({
     ...record,
     turns: turns.reverse(),
-  });
+  }, context);
 }
 
 export function mergeCodexAppHistoryMessages<
@@ -1196,6 +1213,7 @@ export function codexToolInputQuality(input: unknown): number {
 function codexEventToolName(
   method: string,
   params?: Record<string, unknown>,
+  context: CodexLiveNormalizeContext = {},
 ): string | null {
   const item = params ? codexEventItem(params) : undefined;
   if (item?.type === "commandExecution") return "exec_command";
@@ -1211,7 +1229,17 @@ function codexEventToolName(
     item?.type === "function_call_output" ||
     item?.type === "custom_tool_call_output"
   ) {
-    return stringField(item, "name") ?? item.type;
+    const itemId =
+      typeof item.call_id === "string"
+        ? item.call_id
+        : typeof item.id === "string"
+          ? item.id
+          : undefined;
+    return (
+      stringField(item, "name") ??
+      (itemId ? context.toolNames?.get(itemId) : undefined) ??
+      item.type
+    );
   }
   if (method.includes("commandExecution") || method.includes("command/exec")) {
     return "exec_command";

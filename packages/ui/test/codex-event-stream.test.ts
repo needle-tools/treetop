@@ -1115,8 +1115,9 @@ describe("codex event stream hub", () => {
     });
     expect(
       displayEntries.some((entry) => entry.entry.blocks[0]?.type === "subagent"),
-    ).toBe(true);
+    ).toBe(false);
 
+    const liveToolNames = new Map<string, string>();
     const live = [
       ...codexLiveMessagesFromEvent({
         kind: "notification",
@@ -1125,7 +1126,7 @@ describe("codex event stream hub", () => {
         threadId: "thread-1",
         turnId: "turn-1",
         receivedAt: "2026-06-22T10:00:00.000Z",
-      }),
+      }, { toolNames: liveToolNames }),
       ...codexLiveMessagesFromEvent({
         kind: "notification",
         method: "item/completed",
@@ -1133,12 +1134,43 @@ describe("codex event stream hub", () => {
         threadId: "thread-1",
         turnId: "turn-1",
         receivedAt: "2026-06-22T10:00:01.000Z",
-      }),
+      }, { toolNames: liveToolNames }),
     ];
     expect(live.map((message) => message.blocks[0]?.type)).toEqual([
       "tool_use",
       "tool_result",
     ]);
+    expect(live[1]?.blocks[0]).toMatchObject({
+      type: "tool_result",
+      toolName: "spawn_agent",
+      subagentAction: "spawn",
+      subagentId,
+      subagentNickname: "Aristotle",
+    });
+
+    const attachContext = {};
+    const attachedHistory = codexAppHistoryMessagesFromThread({
+      turns: [{ id: "turn-1", items: [spawnCall] }],
+    }, attachContext);
+    const attachedLiveOutput = codexLiveMessagesFromEvent({
+      kind: "notification",
+      method: "item/completed",
+      params: { item: spawnOutput, threadId: "thread-1", turnId: "turn-1" },
+      threadId: "thread-1",
+      turnId: "turn-1",
+      receivedAt: "2026-06-22T10:00:01.000Z",
+    }, attachContext);
+    expect(attachedHistory[0]?.blocks[0]).toMatchObject({
+      type: "tool_use",
+      toolName: "spawn_agent",
+    });
+    expect(attachedLiveOutput[0]?.blocks[0]).toMatchObject({
+      type: "tool_result",
+      toolName: "spawn_agent",
+      subagentAction: "spawn",
+      subagentId,
+      subagentNickname: "Aristotle",
+    });
   });
 
   test("normalizes app-server view_image calls into visible media", () => {
