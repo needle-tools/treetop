@@ -17,9 +17,11 @@
     formatVisualWorkDuration,
     getVisualTranscriptItemKey,
     getVisualWorkDisplayEntryKey,
+    visualFileEditCountBadge,
     visualFileEditSummaryForBlock,
     visualFileEditTotals,
     visualObservedProcessOutput,
+    visualObservedProcessOwnerToolUseBlock,
     visualPlanFromBlock,
     visualPathPreviewTargets,
     visualThinkingSummary,
@@ -36,6 +38,7 @@
     visualToolInlineScriptLanguageLabel,
     visualToolMediaBlocks,
     visualToolCanStillRun,
+    visualToolCommandResultBadges,
     visualToolIconNameForPreview,
     visualToolPreviewParts,
     visualToolPreviewText,
@@ -164,6 +167,9 @@
     remoteHost: string,
     path: string,
   ) => void | Promise<void> = () => {};
+  export let expandedThinkingWorkKeys = new Set<string>();
+  export let openWorkFoldoutKeys = new Set<string>();
+  export let openWorkEntryKeys = new Set<string>();
 
   const MEDIA_IMAGE_ROOT_MARGIN = "300px 0px";
 
@@ -228,9 +234,6 @@
   let liveClock: ReturnType<typeof setInterval> | null = null;
   let openMediaBlocks: NormalizedBlock[] = [];
   let openMediaIndex = -1;
-  let expandedThinkingWorkKeys = new Set<string>();
-  let openWorkFoldoutKeys = new Set<string>();
-  let openWorkEntryKeys = new Set<string>();
   let pendingDetailsScrollAnchor: DetailsScrollAnchor | null = null;
   const MARKDOWN_CACHE_LIMIT = 500;
   const markdownCache = new Map<string, string>();
@@ -998,6 +1001,12 @@
     toolResultBlock: NormalizedBlock | undefined,
   ): ReturnType<typeof visualToolTestResultBadges> {
     return visualToolTestResultBadges(toolUseBlock, toolResultBlock);
+  }
+
+  function toolCommandResultBadges(
+    toolUseBlock: NormalizedBlock | undefined,
+  ): ReturnType<typeof visualToolCommandResultBadges> {
+    return visualToolCommandResultBadges(toolUseBlock);
   }
 
   function workMarkerIcon(kind: VisualMarkerKind | undefined): string {
@@ -1927,7 +1936,7 @@
       {@const workFoldoutOpen = item.open === true || openWorkFoldoutKeys.has(workKey)}
       {@const visibleWorkEntries = buildVisibleVisualWorkDisplayEntries(item)}
       {@const summarySubagents = workSummarySubagents(visibleWorkEntries)}
-      <li class="work-row">
+      <li class="work-row" data-visual-scroll-anchor={workKey}>
         <details
           class="work-foldout"
           class:work-foldout-live={liveWorkOpen}
@@ -1976,7 +1985,10 @@
             {#each visibleWorkEntries as displayEntry (getVisualWorkDisplayEntryKey(displayEntry))}
               {@const entry = displayEntry.entry}
               {#if isPlainAssistantWorkText(entry)}
-                <div class="work-entry-inline">
+                <div
+                  class="work-entry-inline"
+                  data-visual-scroll-anchor={getVisualWorkDisplayEntryKey(displayEntry)}
+                >
                   {@render renderWorkEntryBlocks(entry.blocks)}
                   {#if displayEntry.pairedResult}
                     {@render renderWorkEntryBlocks(displayEntry.pairedResult.blocks)}
@@ -1986,6 +1998,7 @@
                 {@const markerBlock = displayEntry.markerBlock}
                 <div
                   class="work-marker-pill"
+                  data-visual-scroll-anchor={getVisualWorkDisplayEntryKey(displayEntry)}
                   class:complete={displayEntry.markerKind === "complete"}
                   class:started={displayEntry.markerKind === "started"}
                   class:compacted={displayEntry.markerKind === "compacted"}
@@ -2032,6 +2045,11 @@
                   toolBlock,
                   visibleResultBlock,
                 )}
+                {@const observedProcessOwnerToolBlock =
+                  visualObservedProcessOwnerToolUseBlock(
+                    visibleWorkEntries,
+                    observedProcessOutput,
+                  )}
                 {@const toolElapsedDuration = toolRunningDurationLabel(
                   item,
                   entry,
@@ -2044,12 +2062,17 @@
                   visibleResultBlock,
                 )}
                 {@const testResultBadges = toolTestResultBadges(
-                  toolBlock,
+                  observedProcessOwnerToolBlock ?? toolBlock,
                   visibleResultBlock,
                 )}
+                {@const commandResultBadges = toolCommandResultBadges(toolBlock)}
+                {@const editCountBadge = visualFileEditCountBadge(editSummary)}
                 {@const resultMeta = toolResultMeta(visibleResultEntry, {
                   suppressNoOutput:
-                    fetchResultBadges.length > 0 || testResultBadges.length > 0,
+                    fetchResultBadges.length > 0 ||
+                    testResultBadges.length > 0 ||
+                    commandResultBadges.length > 0 ||
+                    !!editCountBadge,
                 })}
                 {@const toolPreview = toolBlock ? workEntryToolPreview(toolBlock) : ""}
                 {@const toolMediaBlocks = workEntryToolMediaBlocks(toolBlock)}
@@ -2062,7 +2085,10 @@
                   displayEntry,
                 )}
                 {#if isSteeredUserMessage(entry.message)}
-                  <div class="work-steering-user-message">
+                  <div
+                    class="work-steering-user-message"
+                    data-visual-scroll-anchor={entryRenderKey}
+                  >
                     <div class="work-steering-user-bubble">
                       <span class="user-intent-chip steered" title="Sent as steering">
                         steered
@@ -2077,6 +2103,7 @@
                 {:else}
                   <details
                     class="work-entry"
+                    data-visual-scroll-anchor={entryRenderKey}
                     open={forceOpenThinkingEntry(workKey, entry) ||
                       openWorkEntryKeys.has(entryRenderKey)}
                     use:preserveDetailsToggleScroll
@@ -2185,10 +2212,20 @@
                         {#if editTotals.deletions !== undefined}
                           <span class="work-file-del">−{editTotals.deletions}</span>
                         {/if}
+                        {#if editCountBadge}
+                          <span class="work-tool-meta" title={editCountBadge.title}>
+                            {editCountBadge.label}
+                          </span>
+                        {/if}
                       {:else if toolPreview}
                         {@render renderToolPreview(toolBlock, toolPreview, remoteHost)}
                       {/if}
                       {@render renderToolApprovalBadge(toolBlock)}
+                      {#each commandResultBadges as badge}
+                        <span class="work-tool-meta" title={badge.title}>
+                          {badge.label}
+                        </span>
+                      {/each}
                       {#each fetchResultBadges as badge}
                         {@render renderToolResultBadge(badge)}
                       {/each}
@@ -2304,7 +2341,10 @@
         </details>
       </li>
     {:else if item.kind === "marker"}
-      <li class="marker-row">
+      <li
+        class="marker-row"
+        data-visual-scroll-anchor={getVisualTranscriptItemKey(item, itemIndex)}
+      >
         <div
           class="work-marker-pill transcript-marker-pill"
           class:complete={item.markerKind === "complete"}
@@ -2334,6 +2374,7 @@
         class="msg role-{m.role}"
         class:user-message={m.role === "user"}
         class:assistant-response={m.role === "assistant"}
+        data-visual-scroll-anchor={getVisualTranscriptItemKey(item, itemIndex)}
         use:flyActualMessageFromComposer={{
           id: m.id,
           source: motionSourceForMessage(m),

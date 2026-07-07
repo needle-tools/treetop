@@ -1,6 +1,7 @@
 <script context="module" lang="ts">
   import { apiUrl as moduleApiUrl } from "./api";
   import type { CodexModelInfo as ModuleCodexModelInfo } from "./claude-session-menu";
+  import type { VisualScrollMemory as ModuleVisualScrollMemory } from "./visual-tail-follow";
 
   interface CodexModelsResult {
     models: ModuleCodexModelInfo[];
@@ -9,6 +10,22 @@
 
   const codexModelsCache = new Map<string, CodexModelsResult>();
   const codexModelsInFlight = new Map<string, Promise<CodexModelsResult>>();
+  const visualScrollMemoryByKey = new Map<string, ModuleVisualScrollMemory>();
+  const VISUAL_SCROLL_MEMORY_LIMIT = 200;
+
+  function rememberVisualScrollMemory(
+    key: string,
+    memory: ModuleVisualScrollMemory,
+  ): void {
+    if (!key) return;
+    if (visualScrollMemoryByKey.has(key)) visualScrollMemoryByKey.delete(key);
+    visualScrollMemoryByKey.set(key, memory);
+    while (visualScrollMemoryByKey.size > VISUAL_SCROLL_MEMORY_LIMIT) {
+      const oldest = visualScrollMemoryByKey.keys().next().value;
+      if (!oldest) break;
+      visualScrollMemoryByKey.delete(oldest);
+    }
+  }
 
   function codexModelsCacheKey(
     daemonId: string | undefined,
@@ -71,6 +88,8 @@
     shouldFollowNewLiveWorkBody,
     shouldFollowVisualTail,
     VISUAL_TAIL_FOLLOW_NEAR_PX,
+    visualScrollMemoryFromMetrics,
+    visualScrollTopFromMemory,
   } from "./visual-tail-follow";
   import LoadingOverlay from "./LoadingOverlay.svelte";
   import LoadingSpinner from "./LoadingSpinner.svelte";
@@ -148,6 +167,7 @@
     subscribeCodexEvents,
     type CodexAppEvent,
     type CodexEventStreamState,
+    type CodexLiveNormalizeContext,
   } from "./codex-event-stream";
   import { splitParent } from "./file-browser-utils";
   import { imageBlobHasAlpha, shrinkImageBlob } from "./image-shrink";
@@ -544,6 +564,7 @@
   }
   function onMessagesScroll(): void {
     updateVisualTailFollowIntent();
+    saveVisualScrollMemory();
     maybeRequestOlderVisualHistory();
   }
   let lastLoadedAt = 0;
@@ -1204,6 +1225,13 @@
     lastUserMessage,
   );
   $: renderReadBody = mode !== "read" || columnNearViewport;
+  let previousRenderReadBody = renderReadBody;
+  $: if (previousRenderReadBody !== renderReadBody) {
+    if (previousRenderReadBody && !renderReadBody) {
+      saveVisualScrollMemory();
+    }
+    previousRenderReadBody = renderReadBody;
+  }
   let visualTranscriptItems: VisualTranscriptItem<
     NormalizedBlock,
     NormalizedMessage
@@ -1634,6 +1662,10 @@
   let visualTailFollowPauseSeq = 0;
   let visualTailMessagesEl: HTMLElement | null = null;
   let visualTailLayoutObserver: ResizeObserver | null = null;
+  let visualScrollMemoryKey = "";
+  let visualOpenWorkFoldoutKeys = new Set<string>();
+  let visualOpenWorkEntryKeys = new Set<string>();
+  let visualExpandedThinkingWorkKeys = new Set<string>();
 
   function isNearScrollEnd(el: HTMLElement): boolean {
     return isNearVisualScrollEnd(el, VISUAL_TAIL_FOLLOW_NEAR_PX);
@@ -1704,6 +1736,76 @@
       scrollTop: el.scrollTop,
       clientHeight: el.clientHeight,
     };
+  }
+
+  function visualScrollAnchor(el: HTMLElement):
+    | { key: string; offsetTop: number }
+    | undefined {
+    const scrollerRect = el.getBoundingClientRect();
+    const anchors = Array.from(
+      el.querySelectorAll<HTMLElement>("[data-visual-scroll-anchor]"),
+    );
+    for (const anchor of anchors) {
+      const key = anchor.dataset.visualScrollAnchor;
+      if (!key) continue;
+      const rect = anchor.getBoundingClientRect();
+      if (rect.bottom < scrollerRect.top + 1) continue;
+      if (rect.top > scrollerRect.bottom) break;
+      return {
+        key,
+        offsetTop: rect.top - scrollerRect.top,
+      };
+    }
+    return undefined;
+  }
+
+  function saveVisualScrollMemory(el: HTMLElement | null = messagesEl): void {
+    if (!el || !visualScrollMemoryKey) return;
+    const anchor = visualScrollAnchor(el);
+    rememberVisualScrollMemory(
+      visualScrollMemoryKey,
+      visualScrollMemoryFromMetrics({
+        metrics: visualScrollMetrics(el),
+        paused: visualTailFollowPaused,
+        nearPx: VISUAL_TAIL_FOLLOW_NEAR_PX,
+        anchorKey: anchor?.key,
+        anchorOffsetTop: anchor?.offsetTop,
+      }),
+    );
+  }
+
+  function restoreVisualScrollMemory(el: HTMLElement): boolean {
+    const memory = visualScrollMemoryByKey.get(visualScrollMemoryKey);
+    if (!memory) return false;
+    hasRenderedOnce = true;
+    setVisualTailFollowPaused(!memory.followTail);
+    const targetKey = memory.anchorKey;
+    const targetOffset = memory.anchorOffsetTop;
+    void tick().then(() => {
+      requestAnimationFrame(() => {
+        if (messagesEl !== el) return;
+        if (
+          !memory.followTail &&
+          targetKey &&
+          targetOffset !== undefined
+        ) {
+          const target = el.querySelector<HTMLElement>(
+            `[data-visual-scroll-anchor="${CSS.escape(targetKey)}"]`,
+          );
+          if (target) {
+            const scrollerRect = el.getBoundingClientRect();
+            const targetRect = target.getBoundingClientRect();
+            el.scrollTop += targetRect.top - scrollerRect.top - targetOffset;
+            return;
+          }
+        }
+        el.scrollTop = visualScrollTopFromMemory({
+          memory,
+          next: visualScrollMetrics(el),
+        });
+      });
+    });
+    return true;
   }
 
   function preserveVisualTailScrollerReplacement(
@@ -1921,6 +2023,12 @@
     codexAppHistoryNextCursor = null;
   }
 
+  function resetVisualExpansionState(): void {
+    visualOpenWorkFoldoutKeys = new Set();
+    visualOpenWorkEntryKeys = new Set();
+    visualExpandedThinkingWorkKeys = new Set();
+  }
+
   function maxVisualHistoryMessages(): number {
     const total =
       typeof totalMessageCount === "number" && totalMessageCount > 0
@@ -2013,14 +2121,22 @@
     }
   }
 
-  $: {
-    const key = codexVisualAppSurface
-      ? `codex-app:${effectiveSessionId ?? ""}`
+  function currentVisualHistorySourceKey(): string {
+    const sourceKey = codexVisualAppSurface
+      ? `codex-app:${effectiveSessionId ?? ""}:${effectiveSessionCwd ?? ""}`
       : sessionMessageSourceHistoryKey(sessionMessageSource);
+    return `${daemonId ?? "local"}:${sourceKey}`;
+  }
+
+  $: {
+    const key = currentVisualHistorySourceKey();
     if (key !== visualHistorySourceKey) {
+      saveVisualScrollMemory();
       visualHistorySourceKey = key;
+      visualScrollMemoryKey = key;
       resetVisualHistoryWindow();
       resetVisualTailFollow();
+      resetVisualExpansionState();
       codexAppHistoryLoadedKey = "";
       codexAppHistoryLoadingKey = "";
     }
@@ -2118,6 +2234,7 @@
       flushCodexDeltaPatches();
       const historyMessages = codexAppHistoryMessagesFromTurnPage(
         body.thread,
+        codexLiveNormalizeContext,
       ) as NormalizedMessage[];
       session = {
         ...session,
@@ -2234,6 +2351,9 @@
   let codexModelsError = "";
   let codexPendingDeltaPatches: VisualTranscriptDeltaPatch<NormalizedBlock>[] =
     [];
+  let codexLiveNormalizeContext: CodexLiveNormalizeContext = {
+    toolNames: new Map(),
+  };
   let codexDeltaFlushFrame: number | null = null;
   let codexDeltaFlushTimer: ReturnType<typeof setTimeout> | null = null;
   const CODEX_SETTINGS_KEY = "supergit:codexApp:turnSettings";
@@ -2718,6 +2838,7 @@
   function openCodexEventStream(threadId: string): void {
     if (unsubscribeCodexEvents && codexEventsThreadId === threadId) return;
     closeCodexEventStream();
+    codexLiveNormalizeContext = { toolNames: new Map() };
     codexEventsThreadId = threadId;
     codexEventStreamState = "connecting";
     unsubscribeCodexEvents = subscribeCodexEvents(daemonId, threadId, {
@@ -2738,6 +2859,7 @@
     unsubscribeCodexEvents = null;
     codexEventsThreadId = null;
     codexEventStreamState = "closed";
+    codexLiveNormalizeContext = { toolNames: new Map() };
   }
 
   function scheduleCodexDeltaFlush(): void {
@@ -2808,7 +2930,10 @@
     if (event.kind === "request") {
       flushCodexDeltaPatches();
       upsertCodexLiveMessages(
-        codexLiveMessagesFromEvent(event) as NormalizedMessage[],
+        codexLiveMessagesFromEvent(
+          event,
+          codexLiveNormalizeContext,
+        ) as NormalizedMessage[],
       );
       codexRequests = [
         ...codexRequests.filter((r) => r.id !== event.id),
@@ -2819,6 +2944,7 @@
     }
     const liveMessages = codexLiveMessagesFromEvent(
       event,
+      codexLiveNormalizeContext,
     ) as NormalizedMessage[];
     const hasLiveMarker = liveMessages.some((message) =>
       message.blocks.some((block) => block.type === "marker"),
@@ -2914,7 +3040,10 @@
       event.method === "item/fileChange/outputDelta"
     ) {
       const itemId = codexEventItemId(event);
-      const liveToolUse = codexLiveToolUseFromEvent(event);
+      const liveToolUse = codexLiveToolUseFromEvent(
+        event,
+        codexLiveNormalizeContext,
+      );
       if (liveToolUse) {
         upsertCodexToolUse(
           liveToolUse.id,
@@ -4657,14 +4786,20 @@
   //     pinned near the bottom. This includes the nested live "Worked for…"
   //     scroller; live deltas inside that foldout need to tail like a TUI.
   $: if (messagesEl) {
+    const nextTailKey = visualMessagesTailKey(visualSessionMessages);
     if (messagesEl !== visualTailMessagesEl) {
       const previousMessagesEl = visualTailMessagesEl;
-      visualTailMessagesEl = messagesEl;
       if (previousMessagesEl && hasRenderedOnce) {
+        saveVisualScrollMemory(previousMessagesEl);
+      }
+      visualTailMessagesEl = messagesEl;
+      const restored = restoreVisualScrollMemory(messagesEl);
+      if (restored) {
+        visualTailKey = nextTailKey;
+      } else if (previousMessagesEl && hasRenderedOnce) {
         preserveVisualTailScrollerReplacement(previousMessagesEl, messagesEl);
       }
     }
-    const nextTailKey = visualMessagesTailKey(visualSessionMessages);
     if (nextTailKey !== visualTailKey) {
       visualTailKey = nextTailKey;
       scheduleVisualTailFollow();
@@ -5251,6 +5386,9 @@
       {transcriptSurface}
       {ollamaStreamingIdx}
       bind:messagesEl
+      bind:expandedThinkingWorkKeys={visualExpandedThinkingWorkKeys}
+      bind:openWorkFoldoutKeys={visualOpenWorkFoldoutKeys}
+      bind:openWorkEntryKeys={visualOpenWorkEntryKeys}
       {onMessagesEnter}
       {onMessagesLeave}
       {onMessagesWheel}

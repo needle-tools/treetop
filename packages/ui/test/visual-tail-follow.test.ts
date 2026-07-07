@@ -5,6 +5,8 @@ import {
   shouldAnchorLiveWorkTail,
   shouldFollowNewLiveWorkBody,
   shouldFollowVisualTail,
+  visualScrollMemoryFromMetrics,
+  visualScrollTopFromMemory,
 } from "../src/visual-tail-follow";
 
 describe("visual transcript tail following", () => {
@@ -153,5 +155,58 @@ describe("visual transcript tail following", () => {
         followTail: true,
       }),
     ).toBe(2_800);
+  });
+
+  it("remembers a reader's paused position without promoting it to first-render tail follow", () => {
+    const memory = visualScrollMemoryFromMetrics({
+      metrics: {
+        scrollHeight: 4_000,
+        scrollTop: 1_125,
+        clientHeight: 600,
+      },
+      paused: true,
+      anchorKey: "message:mid",
+      anchorOffsetTop: 42,
+    });
+
+    expect(memory).toMatchObject({
+      followTail: false,
+      scrollTop: 1_125,
+      anchorKey: "message:mid",
+      anchorOffsetTop: 42,
+    });
+    expect(
+      visualScrollTopFromMemory({
+        memory,
+        next: {
+          scrollHeight: 4_800,
+          scrollTop: 0,
+          clientHeight: 600,
+        },
+      }),
+    ).toBe(1_125);
+  });
+
+  it("remembers tail-following state across transcript remounts", () => {
+    const memory = visualScrollMemoryFromMetrics({
+      metrics: {
+        scrollHeight: 4_000,
+        scrollTop: 3_380,
+        clientHeight: 600,
+      },
+      paused: false,
+    });
+
+    expect(memory.followTail).toBe(true);
+    expect(
+      visualScrollTopFromMemory({
+        memory,
+        next: {
+          scrollHeight: 4_800,
+          scrollTop: 0,
+          clientHeight: 600,
+        },
+      }),
+    ).toBe(4_200);
   });
 });

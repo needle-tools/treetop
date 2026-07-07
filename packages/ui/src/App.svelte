@@ -4000,10 +4000,7 @@
     const colEl = stripEl?.querySelector(
       `.session-col[data-session-source="${CSS.escape(entry.source)}"]`,
     );
-    if (colEl) {
-      stickSessionColumnToTail(colEl as HTMLElement);
-      return;
-    }
+    if (colEl) return;
     if (!dockEntryExistsInLoadedRepos(repos, entry)) {
       const label = entry.manualTitle ?? entry.title ?? "this session";
       addToast({
@@ -4096,7 +4093,6 @@
       });
       col.classList.add("session-col-flash");
       setTimeout(() => col.classList.remove("session-col-flash"), 2000);
-      stickSessionColumnToTail(col);
     });
   }
   /** Park a SessionView's messages list at the bottom, then re-stick
@@ -7986,7 +7982,6 @@
       block: "center",
       inline: "center",
     });
-    stickSessionColumnToTail(el);
     el.classList.add("session-col-focused");
     setTimeout(() => el.classList.remove("session-col-focused"), 1800);
   }

@@ -6,6 +6,12 @@ export interface VisualScrollMetrics {
   clientHeight: number;
 }
 
+export interface VisualScrollMemory extends VisualScrollMetrics {
+  followTail: boolean;
+  anchorKey?: string;
+  anchorOffsetTop?: number;
+}
+
 export function isNearVisualScrollEnd(
   metrics: VisualScrollMetrics,
   nearPx = VISUAL_TAIL_FOLLOW_NEAR_PX,
@@ -52,4 +58,31 @@ export function replacementVisualScrollTop(opts: {
   const max = Math.max(0, opts.next.scrollHeight - opts.next.clientHeight);
   if (opts.followTail) return max;
   return Math.min(max, Math.max(0, opts.previous.scrollTop));
+}
+
+export function visualScrollMemoryFromMetrics(opts: {
+  metrics: VisualScrollMetrics;
+  paused: boolean;
+  nearPx?: number;
+  anchorKey?: string;
+  anchorOffsetTop?: number;
+}): VisualScrollMemory {
+  return {
+    ...opts.metrics,
+    followTail:
+      !opts.paused && isNearVisualScrollEnd(opts.metrics, opts.nearPx),
+    anchorKey: opts.anchorKey,
+    anchorOffsetTop: opts.anchorOffsetTop,
+  };
+}
+
+export function visualScrollTopFromMemory(opts: {
+  memory: VisualScrollMemory;
+  next: VisualScrollMetrics;
+}): number {
+  return replacementVisualScrollTop({
+    previous: opts.memory,
+    next: opts.next,
+    followTail: opts.memory.followTail,
+  });
 }

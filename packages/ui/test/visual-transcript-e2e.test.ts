@@ -302,7 +302,22 @@ describe("visual transcript provider flow", () => {
       displayEntries.some(
         (entry) => entry.entry.blocks[0]?.type === "subagent",
       ),
-    ).toBe(true);
+    ).toBe(false);
+    const displayedWait = displayEntries.find(
+      (entry) =>
+        entry.entry.blocks[0]?.type === "tool_use" &&
+        entry.entry.blocks[0]?.toolName === "wait_agent",
+    );
+    expect(
+      visualSubagentMetaFromBlocks(
+        displayedWait?.entry.blocks[0],
+        displayedWait?.pairedResult?.blocks[0],
+      ),
+    ).toMatchObject({
+      action: "wait",
+      status: "completed",
+      id: subagentId,
+    });
   });
 
   test("attaches Codex turn approval context to command tools", () => {
