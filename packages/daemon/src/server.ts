@@ -105,7 +105,7 @@ import {
   type SshSession,
 } from "./ssh-detect";
 import { OrphanCleaner } from "./orphan-cleanup";
-import { IdleReaper } from "./idle-reaper";
+import { IdleReaper, selectStaleUnattachedSpawns } from "./idle-reaper";
 import { trimTerminalBacklog } from "./terminal-backlog";
 import { TerminalPersist } from "./terminal-persist";
 import { SshPool } from "./ssh-pool";
@@ -2377,6 +2377,20 @@ async function recordServerError(
 // will linger for that long but cost nothing.
 const GRACE_MS = 60_000;
 const graceTimers = new Map<string, ReturnType<typeof setTimeout>>();
+
+// A PTY that spawns but never has a WebSocket attach (the user ×-closed the
+// column before the TerminalView connected) keeps a permanent cleanup-only
+// subscriber, so `startGraceIfIdle` — which only fires on the LAST subscriber
+// detaching — never reaps it. It would linger in active-terminals.json and
+// resurrect as a "disconnected — Resume" card on the next restart. This sweep
+// reaps such orphans once they're older than the attach-grace window. It's
+// generous (a cold reload can take 5–10s to open the WS) and only ever touches
+// PTYs still in `terminalSpawnPendingWs` — an entry deleted the instant a WS
+// first attaches, so a terminal anyone ever looked at is never a candidate.
+const SPAWN_ATTACH_GRACE_MS = Number(
+  process.env.SUPERGIT_SPAWN_ATTACH_GRACE_MS ?? 90_000,
+);
+const SPAWN_REAP_SWEEP_MS = 30_000;
 
 // Per-shell live cwd cache. We sample `lsof -p <pid> -d cwd` every
 // SHELL_CWD_INTERVAL_MS and remember the latest path so GET /api/shells
@@ -10360,6 +10374,34 @@ if (IDLE_REAP_MS > 0) {
     "supergit daemon: idle ssh reaper disabled (SUPERGIT_TERMINAL_IDLE_REAP_MS=0)",
   );
 }
+
+// Reap orphaned spawns: PTYs that were created but never had a WebSocket
+// attach (column ×-closed before connect). See SPAWN_ATTACH_GRACE_MS.
+function sweepUnattachedSpawns(): void {
+  if (SPAWN_ATTACH_GRACE_MS <= 0 || terminalSpawnPendingWs.size === 0) return;
+  const due = selectStaleUnattachedSpawns(
+    [...terminalSpawnPendingWs.entries()].map(([id, spawnedAt]) => ({
+      id,
+      spawnedAt,
+      isAlive: terminalBackend.get(id)?.isAlive() ?? false,
+    })),
+    { now: performance.now(), graceMs: SPAWN_ATTACH_GRACE_MS },
+  );
+  for (const id of due) {
+    const h = terminalBackend.get(id);
+    console.log(
+      `supergit daemon: reaping unattached spawn id=${id} pid=${h?.pid ?? "-"} (no WS within ${Math.round(SPAWN_ATTACH_GRACE_MS / 1000)}s)`,
+    );
+    // Drop the pending marker up front so a dead/missing PTY still stops being
+    // a candidate; killing the live PTY fires onExit → terminalPersist.remove,
+    // so it won't resurrect as a __restore__ card.
+    terminalSpawnPendingWs.delete(id);
+    cancelGrace(id);
+    if (h?.isAlive()) void h.kill();
+  }
+}
+const spawnReapTimer = setInterval(sweepUnattachedSpawns, SPAWN_REAP_SWEEP_MS);
+spawnReapTimer.unref?.();
 
 async function sampleSshSessions(): Promise<void> {
   if (sseSubscribers.size === 0) return;

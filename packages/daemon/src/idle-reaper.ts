@@ -39,6 +39,42 @@ export interface IdleCandidate {
   lastOutputAt: string;
 }
 
+/** A PTY that spawned but has not yet had a WebSocket attach to it. */
+export interface UnattachedSpawnCandidate {
+  id: string;
+  /** `performance.now()`-style ms timestamp captured when the PTY spawned. */
+  spawnedAt: number;
+  /** False once the PTY has exited. */
+  isAlive: boolean;
+}
+
+/**
+ * Pure: which spawned-but-never-attached PTYs are past the grace window and
+ * should be reaped.
+ *
+ * Closes the "orphaned spawn" gap: the UI opens a shell column (POST
+ * /api/terminals spawns a PTY + writes active-terminals.json), then the user
+ * ×-closes the column before the TerminalView's WebSocket ever attaches. That
+ * PTY keeps a permanent cleanup-only subscriber, so the per-terminal grace
+ * timer (which only fires when the *last* subscriber detaches) never reaps it —
+ * it lingers in active-terminals.json and resurrects as a "disconnected —
+ * Resume" card on the next daemon restart. Candidates are drawn from
+ * `terminalSpawnPendingWs` (an entry is deleted the instant a WS first
+ * attaches), so a normally-used terminal is never a candidate here — only one
+ * that no client ever connected to.
+ */
+export function selectStaleUnattachedSpawns(
+  candidates: UnattachedSpawnCandidate[],
+  opts: { now: number; graceMs: number },
+): string[] {
+  const due: string[] = [];
+  for (const c of candidates) {
+    if (!c.isAlive) continue;
+    if (opts.now - c.spawnedAt >= opts.graceMs) due.push(c.id);
+  }
+  return due;
+}
+
 /** Pure: which candidate ids are due for reaping at `now`. */
 export function selectIdleTerminals(
   candidates: IdleCandidate[],

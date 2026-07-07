@@ -1,6 +1,13 @@
 import { test, expect, describe } from "bun:test";
-import { selectIdleTerminals, IdleReaper } from "../src/idle-reaper";
-import type { IdleCandidate } from "../src/idle-reaper";
+import {
+  selectIdleTerminals,
+  selectStaleUnattachedSpawns,
+  IdleReaper,
+} from "../src/idle-reaper";
+import type {
+  IdleCandidate,
+  UnattachedSpawnCandidate,
+} from "../src/idle-reaper";
 
 // A fixed "now" so the tests don't depend on the wall clock.
 const NOW = Date.parse("2026-06-12T12:00:00.000Z");
@@ -93,6 +100,73 @@ describe("selectIdleTerminals", () => {
     expect(
       selectIdleTerminals(set, { now: NOW, idleMs: IDLE_MS }).sort(),
     ).toEqual(["reap-me", "reap-me-too"]);
+  });
+});
+
+describe("selectStaleUnattachedSpawns", () => {
+  const GRACE_MS = 90_000;
+  // `spawnedAt` is a performance.now()-style ms value; use a fixed origin so
+  // the arithmetic is stable regardless of wall clock.
+  const NOW_MS = 1_000_000;
+  const spawnedAgo = (ageMs: number): number => NOW_MS - ageMs;
+
+  function spawn(
+    over: Partial<UnattachedSpawnCandidate> = {},
+  ): UnattachedSpawnCandidate {
+    return {
+      id: "t1",
+      spawnedAt: spawnedAgo(GRACE_MS + 1000), // past the window by default
+      isAlive: true,
+      ...over,
+    };
+  }
+
+  test("reaps a live PTY that never attached within the grace window", () => {
+    expect(
+      selectStaleUnattachedSpawns([spawn()], { now: NOW_MS, graceMs: GRACE_MS }),
+    ).toEqual(["t1"]);
+  });
+
+  test("spares a freshly-spawned PTY still inside the grace window", () => {
+    expect(
+      selectStaleUnattachedSpawns([spawn({ spawnedAt: spawnedAgo(1000) })], {
+        now: NOW_MS,
+        graceMs: GRACE_MS,
+      }),
+    ).toEqual([]);
+  });
+
+  test("spares an already-dead PTY (exit already cleaned it up)", () => {
+    expect(
+      selectStaleUnattachedSpawns([spawn({ isAlive: false })], {
+        now: NOW_MS,
+        graceMs: GRACE_MS,
+      }),
+    ).toEqual([]);
+  });
+
+  test("reaps exactly at the grace boundary", () => {
+    expect(
+      selectStaleUnattachedSpawns([spawn({ spawnedAt: spawnedAgo(GRACE_MS) })], {
+        now: NOW_MS,
+        graceMs: GRACE_MS,
+      }),
+    ).toEqual(["t1"]);
+  });
+
+  test("selects only the qualifying PTYs from a mixed set", () => {
+    const set: UnattachedSpawnCandidate[] = [
+      spawn({ id: "orphan" }),
+      spawn({ id: "fresh", spawnedAt: spawnedAgo(1000) }),
+      spawn({ id: "dead", isAlive: false }),
+      spawn({ id: "orphan-too" }),
+    ];
+    expect(
+      selectStaleUnattachedSpawns(set, {
+        now: NOW_MS,
+        graceMs: GRACE_MS,
+      }).sort(),
+    ).toEqual(["orphan", "orphan-too"]);
   });
 });
 
