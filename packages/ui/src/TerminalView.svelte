@@ -61,6 +61,7 @@
   } from "./errors";
   import { settingValue, getSetting, setSetting } from "./settings-registry";
   import { msSinceScroll, SCROLL_QUIET_MS } from "./scroll-activity";
+  import { shouldAutofocusOnWsOpen } from "./terminal-autofocus";
 
   type PasteDebugExtra = Record<string, string | number | boolean | null>;
 
@@ -1020,7 +1021,7 @@
             }
             sendResize();
           }
-          focusTerminal();
+          focusTerminalOnOpen();
           logTerminalStartup("ws-open-raf", {
             rafMs: roundMs(performance.now() - rafStartedAt),
             fitAttempted,
@@ -1666,6 +1667,26 @@
 
   function focusTerminal() {
     xterm?.focus();
+  }
+
+  /** The autofocus-on-WS-open contract must not steal a caret the user is
+   *  already using. A background column reconnecting or a new one scrolling
+   *  into view opens its WS too — and that used to yank focus out of whichever
+   *  TUI/input the user was typing in. Reads the live focus and defers to the
+   *  pure decision in terminal-autofocus.ts. */
+  function focusTerminalOnOpen() {
+    const active = document.activeElement as HTMLElement | null;
+    const grab = shouldAutofocusOnWsOpen({
+      activeIsBodyOrNull: !active || active === document.body,
+      activeIsWithinThisTerminal:
+        !!active && !!containerEl && containerEl.contains(active),
+      activeIsTextEntry:
+        !!active &&
+        (active.tagName === "TEXTAREA" ||
+          active.tagName === "INPUT" ||
+          active.isContentEditable),
+    });
+    if (grab) focusTerminal();
   }
 
   function onStagePrompt(e: Event): void {

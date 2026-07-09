@@ -68,7 +68,11 @@ describe("TerminalView ws.onopen post-mount fixups", () => {
 
   test("autofocuses the xterm from ws.onopen (resume-focus fix)", () => {
     const block = onOpenBlock();
-    expect(block).toContain("focusTerminal()");
+    // Routed through focusTerminalOnOpen(), which gates the focus so a
+    // background reconnect / newly-visible column doesn't steal the caret
+    // from another TUI. The gate's decision table is covered behaviorally in
+    // terminal-autofocus.test.ts.
+    expect(block).toContain("focusTerminalOnOpen()");
   });
 
   test("phase flips to 'live' before the focus / resize fixups", () => {
