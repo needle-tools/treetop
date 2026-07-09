@@ -10345,9 +10345,15 @@ setInterval(() => {
 // firing), so an interactive `ssh` session can stay authenticated and
 // re-attachable for hours. Kill ssh PTYs that no on-screen socket is
 // watching once they've been silent for SUPERGIT_TERMINAL_IDLE_REAP_MS
-// (default 10m). 0 disables. See idle-reaper.ts for why this is ssh-only.
+// (default 4h). 0 disables. See idle-reaper.ts for why this is ssh-only.
+//
+// 4h, not 10m: a session started on purpose (e.g. a saved `ssh` command)
+// routinely sits idle far longer than 10m — reading docs, a meeting, lunch —
+// and reaping it there felt like a random disconnect. 4h still closes an ssh
+// channel the user genuinely forgot about, without killing one they're
+// actively (if intermittently) using.
 const IDLE_REAP_MS = Number(
-  process.env.SUPERGIT_TERMINAL_IDLE_REAP_MS ?? 10 * 60 * 1000,
+  process.env.SUPERGIT_TERMINAL_IDLE_REAP_MS ?? 4 * 60 * 60 * 1000,
 );
 const idleReaper = new IdleReaper({
   idleMs: IDLE_REAP_MS,
