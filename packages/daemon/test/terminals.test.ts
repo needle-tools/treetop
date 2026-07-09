@@ -25,6 +25,7 @@ import {
   renameArgv,
   resolveAgentBinary,
   wrapWindowsCmd,
+  resolveWindowsExecutable,
 } from "../src/procs";
 import {
   mkdtemp,
@@ -1115,6 +1116,78 @@ describe("wrapWindowsCmd", () => {
       "/c",
       "C:\\Tools\\AGENT.CMD",
     ]);
+  });
+});
+
+describe("resolveWindowsExecutable", () => {
+  const PATH = ["C:\\Windows\\System32", "C:\\Windows\\System32\\WindowsPowerShell\\v1.0"].join(";");
+  const PATHEXT = ".COM;.EXE;.BAT;.CMD";
+
+  test("resolves a bare powershell.exe to its absolute PATH location (the reported bug)", () => {
+    const real = "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe";
+    expect(
+      resolveWindowsExecutable("powershell.exe", {
+        pathVar: PATH,
+        pathExt: PATHEXT,
+        fileExists: (p) => p === real,
+      }),
+    ).toBe(real);
+  });
+
+  test("resolves an extensionless head by trying PATHEXT extensions", () => {
+    // The candidate carries PATHEXT's casing (`cmd.EXE`); Windows' FS is
+    // case-insensitive, so model that in the stub rather than exact-match.
+    const real = "C:\\Windows\\System32\\cmd.EXE";
+    expect(
+      resolveWindowsExecutable("cmd", {
+        pathVar: PATH,
+        pathExt: PATHEXT,
+        fileExists: (p) => p.toLowerCase() === real.toLowerCase(),
+      }),
+    ).toBe(real);
+  });
+
+  test("leaves an already-absolute path untouched (no fs lookup)", () => {
+    const abs = "C:\\Windows\\System32\\cmd.exe";
+    expect(
+      resolveWindowsExecutable(abs, {
+        pathVar: PATH,
+        pathExt: PATHEXT,
+        fileExists: () => {
+          throw new Error("should not probe an absolute path");
+        },
+      }),
+    ).toBe(abs);
+  });
+
+  test("leaves a path with a separator untouched", () => {
+    expect(
+      resolveWindowsExecutable("subdir\\tool.exe", {
+        pathVar: PATH,
+        pathExt: PATHEXT,
+        fileExists: () => true,
+      }),
+    ).toBe("subdir\\tool.exe");
+  });
+
+  test("returns the original bare name on a PATH miss (so the spawn surfaces its own error)", () => {
+    expect(
+      resolveWindowsExecutable("powershell.exe", {
+        pathVar: PATH,
+        pathExt: PATHEXT,
+        fileExists: () => false,
+      }),
+    ).toBe("powershell.exe");
+  });
+
+  test("returns the original when PATH is empty", () => {
+    expect(
+      resolveWindowsExecutable("powershell.exe", {
+        pathVar: "",
+        pathExt: PATHEXT,
+        fileExists: () => true,
+      }),
+    ).toBe("powershell.exe");
   });
 });
 

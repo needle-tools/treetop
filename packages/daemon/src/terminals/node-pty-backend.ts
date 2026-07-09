@@ -20,7 +20,7 @@ import type {
   ExitInfo,
 } from "./types";
 import { isZshCmd, makeZshZdotdir, cleanupZdotdir } from "./shell-init";
-import { wrapWindowsCmd } from "../procs";
+import { wrapWindowsCmd, resolveWindowsExecutable } from "../procs";
 import {
   UserBoxRemap,
   CLAUDE_USER_BOX_THEME,
@@ -583,8 +583,25 @@ export class NodePtyBackend implements PtyBackend {
     // respective launchers. We keep `t.cmd` as the *original* (so the
     // dashboard still shows `codex.cmd`, agent detection still labels
     // it `codex`, etc.) and only wrap the cmd we hand to the helper.
-    const cmdForHelper =
-      process.platform === "win32" ? wrapWindowsCmd(opts.cmd) : opts.cmd;
+    // On Windows, also resolve a bare exe head (`powershell.exe`, `cmd.exe`)
+    // to an absolute path: ConPTY's CreateProcess resolves a bare name against
+    // the cwd, not PATH, so a `powershell.exe` shell spawned in a repo fails
+    // with "C:\repo\powershell.exe: file does not exist". `t.cmd` keeps the
+    // original for the dashboard / agent detection; only the helper cmd changes.
+    let cmdForHelper = opts.cmd;
+    if (process.platform === "win32") {
+      const wrapped = wrapWindowsCmd(opts.cmd);
+      cmdForHelper =
+        wrapped.length > 0
+          ? [
+              resolveWindowsExecutable(wrapped[0]!, {
+                pathVar: process.env.PATH,
+                pathExt: process.env.PATHEXT,
+              }),
+              ...wrapped.slice(1),
+            ]
+          : wrapped;
+    }
     this.send({
       op: "spawn",
       id,

@@ -17,8 +17,9 @@
 
 import { $ } from "bun";
 import { stat, readdir } from "node:fs/promises";
+import { existsSync } from "node:fs";
 import { homedir, cpus } from "node:os";
-import { join } from "node:path";
+import { delimiter, isAbsolute, join } from "node:path";
 
 /** Absolute path to cmd.exe — see open.ts for why bare "cmd" breaks. */
 const CMD_EXE = process.env.COMSPEC ?? "cmd.exe";
@@ -182,6 +183,58 @@ export function wrapWindowsCmd(cmd: string[]): string[] {
     ];
   }
   return cmd;
+}
+
+/**
+ * Resolve a bare Windows executable name (e.g. `powershell.exe`) to its
+ * absolute path via PATH — the way a shell would, but ConPTY won't.
+ *
+ * node-pty's ConPTY backend hands the command to CreateProcess, which resolves
+ * a bare application name **relative to the cwd**, not against PATH. So a
+ * `powershell.exe` shell choice (or the `powershell.exe` we prepend to run a
+ * `.ps1`) spawned inside a repo dies with
+ * `exec: "C:\repo\powershell.exe": file does not exist`. Resolving to an
+ * absolute path up front sidesteps that.
+ *
+ * Already-qualified paths (absolute, or containing a separator) are returned
+ * untouched — CreateProcess handles those correctly. On a PATH miss we return
+ * the original, so the spawn still surfaces its own error rather than us
+ * masking it.
+ *
+ * Pure aside from the injected `fileExists` (defaults to fs.existsSync), so
+ * the PATH/PATHEXT walk is unit-testable without a real filesystem.
+ */
+export function resolveWindowsExecutable(
+  file: string,
+  opts: {
+    pathVar?: string;
+    pathExt?: string;
+    fileExists?: (p: string) => boolean;
+  } = {},
+): string {
+  if (!file) return file;
+  if (isAbsolute(file) || file.includes("\\") || file.includes("/"))
+    return file;
+  const fileExists = opts.fileExists ?? existsSync;
+  const dirs = (opts.pathVar ?? "").split(delimiter).filter(Boolean);
+  const exts = (opts.pathExt ?? ".COM;.EXE;.BAT;.CMD")
+    .split(";")
+    .map((e) => e.trim())
+    .filter(Boolean);
+  const lower = file.toLowerCase();
+  const hasKnownExt = exts.some((e) => lower.endsWith(e.toLowerCase()));
+  for (const dir of dirs) {
+    if (hasKnownExt) {
+      const candidate = join(dir, file);
+      if (fileExists(candidate)) return candidate;
+    } else {
+      for (const e of exts) {
+        const candidate = join(dir, file + e);
+        if (fileExists(candidate)) return candidate;
+      }
+    }
+  }
+  return file;
 }
 
 /** Single-quote a shell argument robustly. Empty strings are fine; any
