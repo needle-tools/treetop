@@ -49,6 +49,7 @@ export interface ContextChip {
  *  Source: https://platform.claude.com/docs/en/about-claude/models/overview
  *  (verified May 2026). Caps are tied to the Claude generation, not to a
  *  beta flag:
+ *    - Fable 5 (current, most capable) → 1,000,000
  *    - Opus / Sonnet 4.6 and 4.7 (current) → 1,000,000
  *    - Haiku 4.5 (current) → 200,000
  *    - Opus / Sonnet ≤ 4.5 (legacy) → 200,000
@@ -68,14 +69,16 @@ export function modelContextCap(
   // with a minor version. `claude-sonnet-4-20250514` is legacy Sonnet
   // 4 (no minor), not Sonnet 4.20250514.
   const stripped = id.replace(/-\d{8}$/, "");
-  // claude-(opus|sonnet|haiku)-<major>(-<minor>)?
-  const m = stripped.match(/^claude-(opus|sonnet|haiku)-(\d+)(?:-(\d+))?$/);
+  // claude-(fable|opus|sonnet|haiku)-<major>(-<minor>)?
+  const m = stripped.match(/^claude-(fable|opus|sonnet|haiku)-(\d+)(?:-(\d+))?$/);
   if (m) {
     const family = m[1];
     const major = Number(m[2]);
     const minor = m[3] !== undefined ? Number(m[3]) : 0;
     if (family === "haiku") return 200_000;
-    // Opus / Sonnet: 1M starting at the 4.6 generation, 200k below.
+    // Fable started at 5 (always 1M). Opus / Sonnet: 1M from the 4.6
+    // generation, 200k below.
+    if (family === "fable") return 1_000_000;
     if (major > 4 || (major === 4 && minor >= 6)) return 1_000_000;
     return 200_000;
   }

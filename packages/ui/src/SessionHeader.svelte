@@ -559,6 +559,7 @@
           <div class="ctx-tt-section">
             <div class="ctx-tt-section-head">Cap (picked from model id)</div>
             <ul>
+              <li>Fable 5 → 1,000,000</li>
               <li>Opus / Sonnet 4.6+ → 1,000,000</li>
               <li>Haiku 4.5 → 200,000</li>
               <li>Legacy Opus / Sonnet (≤4.5) → 200,000</li>

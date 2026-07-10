@@ -1227,12 +1227,14 @@ describe("claudeModelAlias", () => {
     expect(claudeModelAlias("claude-opus-4-8")).toBe("opus");
     expect(claudeModelAlias("claude-sonnet-4-6")).toBe("sonnet");
     expect(claudeModelAlias("claude-haiku-4-5-20251001")).toBe("haiku");
+    expect(claudeModelAlias("claude-fable-5")).toBe("fable");
   });
 
   test("passes the bare aliases through", () => {
     expect(claudeModelAlias("opus")).toBe("opus");
     expect(claudeModelAlias("sonnet")).toBe("sonnet");
     expect(claudeModelAlias("haiku")).toBe("haiku");
+    expect(claudeModelAlias("fable")).toBe("fable");
   });
 
   test("is case-insensitive", () => {

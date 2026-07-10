@@ -42,7 +42,7 @@ describe("claudeSessionMenuItems", () => {
     }
   });
 
-  test("Model submenu offers opus / sonnet / haiku", () => {
+  test("Model submenu offers fable / opus / sonnet / haiku", () => {
     const [model] = claudeSessionMenuItems({
       currentModel: undefined,
       detectedModel: undefined,
@@ -52,6 +52,7 @@ describe("claudeSessionMenuItems", () => {
     });
     if (model?.kind !== "submenu") throw new Error("expected submenu");
     expect(model.children.map((c) => c.label)).toEqual([
+      "fable",
       "opus",
       "sonnet",
       "haiku",
@@ -244,9 +245,14 @@ describe("claudeAgentSettings (pill popover model)", () => {
     expect(groups.map((g) => g.label)).toEqual(["Model", "Effort"]);
   });
 
-  test("Model options are opus/sonnet/haiku; Effort is low→max (popover order)", () => {
+  test("Model options are fable/opus/sonnet/haiku; Effort is low→max (popover order)", () => {
     const [model, effort] = build();
-    expect(model!.options.map((o) => o.value)).toEqual(["opus", "sonnet", "haiku"]);
+    expect(model!.options.map((o) => o.value)).toEqual([
+      "fable",
+      "opus",
+      "sonnet",
+      "haiku",
+    ]);
     // The popover lists effort ascending (gauge grows left→right); the
     // burger menu lists it high→low — they intentionally differ.
     expect(effort!.options.map((o) => o.value)).toEqual([

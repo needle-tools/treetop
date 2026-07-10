@@ -37,6 +37,13 @@ describe("modelContextCap", () => {
     expect(modelContextCap("claude-opus-4-6", "claude")).toBe(1_000_000);
   });
 
+  test("Fable 5 → 1M (Anthropic's most capable model)", () => {
+    expect(modelContextCap("claude-fable-5", "claude")).toBe(1_000_000);
+    expect(modelContextCap("claude-fable-5-20260601", "claude")).toBe(
+      1_000_000,
+    );
+  });
+
   test("Haiku 4.5 stays at 200k even on the current generation", () => {
     expect(modelContextCap("claude-haiku-4-5", "claude")).toBe(200_000);
     expect(modelContextCap("claude-haiku-4-5-20251001", "claude")).toBe(

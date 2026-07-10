@@ -203,7 +203,12 @@ export type PersistedAgent =
 /** Model tier aliases offered for Claude sessions. We deliberately stick
  *  to the CLI's stable aliases rather than pinned versions so the menu
  *  keeps mapping to the latest model of each tier without code changes. */
-export const CLAUDE_MODEL_ALIASES = ["opus", "sonnet", "haiku"] as const;
+export const CLAUDE_MODEL_ALIASES = [
+  "fable",
+  "opus",
+  "sonnet",
+  "haiku",
+] as const;
 export type ClaudeModelAlias = (typeof CLAUDE_MODEL_ALIASES)[number];
 
 /** Effort levels the Claude CLI accepts via `--effort`. */
@@ -226,6 +231,7 @@ export function claudeModelAlias(
 ): ClaudeModelAlias | undefined {
   if (!model) return undefined;
   const m = model.toLowerCase();
+  if (m.includes("fable")) return "fable";
   if (m.includes("opus")) return "opus";
   if (m.includes("sonnet")) return "sonnet";
   if (m.includes("haiku")) return "haiku";
