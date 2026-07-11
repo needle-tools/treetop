@@ -834,6 +834,29 @@ const termSshSessions = new Map<string, SshSession>();
 const terminalPersist = new TerminalPersist(
   READONLY_MODE ? INSTANCE_RUNTIME_PATH : WORKSPACE_PATH,
 );
+// Bound the persisted-terminal set at startup. The file leaks on every rebuild
+// (a killed daemon can't remove the records of PTYs its dying helper took with
+// it), so without this it grows into hundreds of dead "Resume" cards that all
+// resurrect on the next launch. Keep only recent, non-ancient entries.
+const PERSISTED_TERMINALS_MAX = Number(
+  process.env.SUPERGIT_PERSISTED_TERMINALS_MAX ?? 25,
+);
+const PERSISTED_TERMINALS_MAX_AGE_MS = Number(
+  process.env.SUPERGIT_PERSISTED_TERMINALS_MAX_AGE_MS ?? 48 * 60 * 60 * 1000,
+);
+void terminalPersist
+  .prune({
+    now: Date.now(),
+    maxAgeMs: PERSISTED_TERMINALS_MAX_AGE_MS,
+    maxEntries: PERSISTED_TERMINALS_MAX,
+  })
+  .then((removed) => {
+    if (removed > 0)
+      console.log(
+        `supergit daemon: pruned ${removed} stale persisted terminal(s) at startup`,
+      );
+  })
+  .catch(() => {});
 
 const orphanCleaner = new OrphanCleaner({
   getTerminals: () =>

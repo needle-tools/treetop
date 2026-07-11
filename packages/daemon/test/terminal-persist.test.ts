@@ -1,6 +1,8 @@
 import { test, expect, describe, beforeAll, afterAll } from "bun:test";
 import {
   TerminalPersist,
+  terminalCreatedAt,
+  prunePersistedTerminals,
   type PersistedTerminal,
 } from "../src/terminal-persist";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
@@ -227,5 +229,128 @@ describe("TerminalPersist", () => {
 
     const list = await tp.list();
     expect(list.length).toBe(3);
+  });
+});
+
+// A termId as the daemon mints it: `t_<base36(spawnMs)>_<counter>`.
+const idAt = (ms: number, n: number): string => `t_${ms.toString(36)}_${n}`;
+const entryAt = (ms: number, n: number): PersistedTerminal => ({
+  termId: idAt(ms, n),
+  cmd: ["cmd.exe"],
+  cwd: "C:/repo",
+  wtPath: "C:/repo",
+});
+
+describe("terminalCreatedAt", () => {
+  test("decodes the base36 spawn time from a real termId", () => {
+    const ms = Date.parse("2026-07-11T12:34:26.852Z");
+    expect(terminalCreatedAt(idAt(ms, 47))).toBe(ms);
+    // Tolerates the extra hash segment resumed terminals carry.
+    expect(terminalCreatedAt(`t_${ms.toString(36)}_47_2b78064b`)).toBe(ms);
+  });
+
+  test("returns null for ids that don't fit the shape or decode implausibly", () => {
+    expect(terminalCreatedAt("weird")).toBeNull();
+    expect(terminalCreatedAt("t_zzz_1")).toBeNull(); // decodes far in the past
+  });
+});
+
+describe("prunePersistedTerminals", () => {
+  const NOW = Date.parse("2026-07-11T12:00:00.000Z");
+  const HOUR = 60 * 60 * 1000;
+  const DAY = 24 * HOUR;
+
+  test("drops entries older than maxAgeMs", () => {
+    const entries = [
+      entryAt(NOW - 1 * HOUR, 1),
+      entryAt(NOW - 5 * DAY, 2), // stale
+      entryAt(NOW - 2 * HOUR, 3),
+    ];
+    const kept = prunePersistedTerminals(entries, {
+      now: NOW,
+      maxAgeMs: 48 * HOUR,
+      maxEntries: 100,
+    });
+    expect(kept.map((e) => e.termId)).toEqual([idAt(NOW - 1 * HOUR, 1), idAt(NOW - 2 * HOUR, 3)]);
+  });
+
+  test("keeps only the most-recent maxEntries and preserves file order", () => {
+    const entries = [
+      entryAt(NOW - 3 * HOUR, 1),
+      entryAt(NOW - 1 * HOUR, 2),
+      entryAt(NOW - 2 * HOUR, 3),
+    ];
+    const kept = prunePersistedTerminals(entries, {
+      now: NOW,
+      maxAgeMs: 48 * HOUR,
+      maxEntries: 2,
+    });
+    // Newest two are #2 (1h) and #3 (2h); output keeps original order (2 then 3).
+    expect(kept.map((e) => e.termId)).toEqual([idAt(NOW - 1 * HOUR, 2), idAt(NOW - 2 * HOUR, 3)]);
+  });
+
+  test("a no-op when everything is fresh and under the cap", () => {
+    const entries = [entryAt(NOW - 1 * HOUR, 1), entryAt(NOW - 2 * HOUR, 2)];
+    const kept = prunePersistedTerminals(entries, {
+      now: NOW,
+      maxAgeMs: 48 * HOUR,
+      maxEntries: 25,
+    });
+    expect(kept).toEqual(entries);
+  });
+
+  test("unknown-age entries are never age-dropped but still count against the cap", () => {
+    const entries = [
+      { termId: "legacy-a", cmd: ["x"], cwd: "/", wtPath: "/" },
+      entryAt(NOW - 1 * HOUR, 1),
+      { termId: "legacy-b", cmd: ["x"], cwd: "/", wtPath: "/" },
+    ];
+    // Cap of 2: the known-recent one wins a slot, then the later unknown.
+    const kept = prunePersistedTerminals(entries, {
+      now: NOW,
+      maxAgeMs: 1 * HOUR,
+      maxEntries: 2,
+    });
+    expect(kept.map((e) => e.termId).sort()).toEqual(
+      [idAt(NOW - 1 * HOUR, 1), "legacy-b"].sort(),
+    );
+  });
+});
+
+describe("TerminalPersist.prune", () => {
+  const NOW = Date.parse("2026-07-11T12:00:00.000Z");
+  const HOUR = 60 * 60 * 1000;
+
+  test("rewrites the file to the bounded set and reports the drop count", async () => {
+    const dir = join(tmpDir, "prune");
+    const tp = new TerminalPersist(dir);
+    for (let i = 0; i < 5; i++) {
+      await tp.save(entryAt(NOW - (i + 1) * HOUR, i));
+    }
+    await tp.save(entryAt(NOW - 500 * HOUR, 99)); // ancient
+
+    const removed = await tp.prune({
+      now: NOW,
+      maxAgeMs: 48 * HOUR,
+      maxEntries: 3,
+    });
+    // 6 saved → 1 ancient age-dropped, then capped to 3 → 3 removed total.
+    expect(removed).toBe(3);
+    const list = await tp.list();
+    expect(list.length).toBe(3);
+    expect(list.every((e) => e.termId !== idAt(NOW - 500 * HOUR, 99))).toBe(true);
+  });
+
+  test("returns 0 and leaves the file untouched when nothing to prune", async () => {
+    const dir = join(tmpDir, "prune-noop");
+    const tp = new TerminalPersist(dir);
+    await tp.save(entryAt(NOW - 1 * HOUR, 1));
+    const removed = await tp.prune({
+      now: NOW,
+      maxAgeMs: 48 * HOUR,
+      maxEntries: 25,
+    });
+    expect(removed).toBe(0);
+    expect((await tp.list()).length).toBe(1);
   });
 });
