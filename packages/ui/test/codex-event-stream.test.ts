@@ -300,6 +300,101 @@ describe("codex event stream hub", () => {
     );
   });
 
+  test("normalizes response-style exec tool calls into command tool rows", () => {
+    const start: CodexAppEvent = {
+      kind: "notification",
+      method: "item/started",
+      params: {
+        item: {
+          type: "function_call",
+          id: "call-exec",
+          call_id: "call-exec",
+          name: "exec",
+          arguments: JSON.stringify({
+            cmd: "sed -n '1,120p' src/TextureGenerator.js",
+            workdir: "/repo",
+          }),
+        },
+        threadId: "thread-1",
+        turnId: "turn-1",
+      },
+      turnId: "turn-1",
+      receivedAt: "2026-06-22T10:00:00.000Z",
+    };
+    const result: CodexAppEvent = {
+      kind: "notification",
+      method: "item/completed",
+      params: {
+        item: {
+          type: "function_call_output",
+          call_id: "call-exec",
+          output: "Chunk ID: abc123\nWall time: 0.1234 seconds\nOutput:\nimport three",
+        },
+        threadId: "thread-1",
+        turnId: "turn-1",
+      },
+      turnId: "turn-1",
+      receivedAt: "2026-06-22T10:00:01.000Z",
+    };
+
+    const context = {};
+    expect(codexLiveToolUseFromEvent(start, context)).toEqual({
+      id: "codex-tool-call-exec",
+      toolName: "exec_command",
+      toolInput: {
+        cmd: "sed -n '1,120p' src/TextureGenerator.js",
+        workdir: "/repo",
+      },
+      toolUseId: "call-exec",
+      inputQuality: 3,
+    });
+    expect(codexLiveToolResultFromEvent(result, context)).toEqual({
+      id: "codex-output-call-exec",
+      toolName: "exec_command",
+      toolUseId: "call-exec",
+      text: "Chunk ID: abc123\nWall time: 0.1234 seconds\nOutput:\nimport three",
+    });
+    expect(codexLiveMessagesFromEvent(result, context)[0]?.blocks[0]).toMatchObject({
+      type: "tool_result",
+      toolName: "exec_command",
+      toolUseId: "call-exec",
+    });
+  });
+
+  test("normalizes live Codex Desktop custom-tool JavaScript wrappers", () => {
+    const start: CodexAppEvent = {
+      kind: "notification",
+      method: "item/started",
+      params: {
+        item: {
+          type: "custom_tool_call",
+          id: "call-js-wrapper",
+          call_id: "call-js-wrapper",
+          name: "exec",
+          input:
+            'const r = await tools.exec_command({cmd:"npm run check",workdir:"/repo",yield_time_ms:10000,max_output_tokens:12000}); text(r.output);',
+        },
+        threadId: "thread-1",
+        turnId: "turn-1",
+      },
+      turnId: "turn-1",
+      receivedAt: "2026-06-22T10:00:00.000Z",
+    };
+
+    expect(codexLiveToolUseFromEvent(start)).toEqual({
+      id: "codex-tool-call-js-wrapper",
+      toolName: "exec_command",
+      toolInput: {
+        cmd: "npm run check",
+        workdir: "/repo",
+        yield_time_ms: 10000,
+        max_output_tokens: 12000,
+      },
+      toolUseId: "call-js-wrapper",
+      inputQuality: 5,
+    });
+  });
+
   test("normalizes completed live command item snapshots into tool results", () => {
     const completed: CodexAppEvent = {
       kind: "notification",

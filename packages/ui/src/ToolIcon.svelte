@@ -23,10 +23,12 @@
     | "screenshot"
     | "snapshot"
     | "subagent"
+    | "configure"
     | "tool";
 
   function kindFor(toolName: string): IconKind {
     const n = toolName.toLowerCase();
+    if (n.includes("cmake") || n.includes("configure")) return "configure";
     if (n.includes("spawn_agent") || n.includes("wait_agent")) return "subagent";
     if (n.includes("evaluate_script")) return "bash";
     if (n.includes("reload_page") || n.includes("reload")) return "reload";
@@ -39,6 +41,8 @@
     if (n.includes("filesystem_create")) return "create";
     if (n.includes("filesystem_delete")) return "delete";
     if (n.includes("process_end") || n.includes("kill")) return "end";
+    if (n.includes("upload")) return "write";
+    if (n.includes("download")) return "fetch";
     if (n.includes("port_check")) return "fetch";
     if (n === "git" || n.includes("git_")) return "git";
     if (n === "test" || n.includes("test")) return "test";
@@ -91,6 +95,7 @@
       n.includes("take_snapshot") ||
       n.includes("type_text") ||
       n.includes("upload_file") ||
+      n.includes("download_file") ||
       n.includes("wait_for") ||
       n.includes("click") ||
       n.includes("fill") ||
@@ -247,6 +252,14 @@
       <path d="M8 8h8" />
       <path d="M8 12h8" />
       <path d="M8 16h5" />
+    {:else if kind === "configure"}
+      <!-- sliders / configuration -->
+      <line x1="4" y1="6" x2="20" y2="6" />
+      <line x1="4" y1="12" x2="20" y2="12" />
+      <line x1="4" y1="18" x2="20" y2="18" />
+      <circle cx="9" cy="6" r="2" />
+      <circle cx="15" cy="12" r="2" />
+      <circle cx="11" cy="18" r="2" />
     {:else if kind === "subagent"}
       <!-- branching agent -->
       <circle cx="7" cy="7" r="3" />

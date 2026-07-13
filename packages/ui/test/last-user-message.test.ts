@@ -21,6 +21,9 @@ import {
   visualPathPreviewTargets,
   visualToolCallPayloadLanguage,
   visualToolCallPayloadText,
+  visualToolConfigAssignments,
+  visualToolConfigSummaryLabel,
+  visualToolConfigTooltipText,
   visualToolCommandResultBadges,
   visualToolApprovalBadge,
   visualToolLauncherLabel,
@@ -415,6 +418,29 @@ describe("cleanVisualUserText", () => {
       { label: "Image #2", path: "/tmp/live-two.webp" },
     ]);
     expect(cleanVisualUserText(text)).toBe("before after");
+  });
+
+  it("cleans Codex request envelopes and extracts mentioned image files", () => {
+    const text = [
+      "# Files mentioned by the user:",
+      "",
+      "codex-clipboard-d0e93634.png:",
+      "/var/folders/9l/codex-clipboard-d0e93634.png",
+      "",
+      "## My request for Codex:",
+      "Thanks, that sounds great. But seems something about our handling of these files is still wrong.",
+      "[Image #1]",
+    ].join("\n");
+
+    expect(cleanVisualUserText(text)).toBe(
+      "Thanks, that sounds great. But seems something about our handling of these files is still wrong.",
+    );
+    expect(visualUserImageAttachments(text)).toEqual([
+      {
+        label: "codex-clipboard-d0e93634.png",
+        path: "/var/folders/9l/codex-clipboard-d0e93634.png",
+      },
+    ]);
   });
 
   it("keeps ordinary text unchanged", () => {
@@ -2434,6 +2460,31 @@ describe("visual tool payload display helpers", () => {
 
     expect(visualToolPreviewText(block)).toBe("Review diff stats");
     expect(visualToolLauncherLabel(block)).toBe("bash");
+
+    expect(
+      visualToolPreviewText({
+        type: "tool_use",
+        toolName: "exec_command",
+        toolInput:
+          'exec_command {"cmd":"/bin/zsh -lc \'git status --short\'","workdir":"/repo"}',
+      }),
+    ).toBe("Check git status");
+    expect(
+      visualToolPreviewText({
+        type: "tool_use",
+        toolName: "exec_command",
+        toolInput:
+          'exec_command {"cmd":"/bin/zsh -lc \'git diff --check\'","workdir":"/repo"}',
+      }),
+    ).toBe("Check diff whitespace");
+    expect(
+      visualToolPreviewText({
+        type: "tool_use",
+        toolName: "exec_command",
+        toolInput:
+          'exec_command {"cmd":"/bin/zsh -lc \'git diff --stat\'","workdir":"/repo"}',
+      }),
+    ).toBe("Review diff stats");
   });
 
   it("summarizes common git commands around the intent and paths", () => {
@@ -3308,6 +3359,76 @@ describe("visual tool payload display helpers", () => {
         type: "tool_use",
         toolName: "exec_command",
         toolInput: {
+          workdir: "/Users/herbst/git/shapes",
+          cmd: "magick input.png -crop 128x128 output.webp",
+        },
+      }),
+    ).toEqual([
+      expect.objectContaining({
+        type: "media",
+        mediaKind: "image",
+        path: "/Users/herbst/git/shapes/input.png",
+        title: "Input image",
+      }),
+      expect.objectContaining({
+        type: "media",
+        mediaKind: "image",
+        path: "/Users/herbst/git/shapes/output.webp",
+        title: "Output image",
+      }),
+    ]);
+
+    expect(
+      visualToolMediaBlocks({
+        type: "tool_use",
+        toolName: "exec_command",
+        toolInput: {
+          workdir: "/Users/herbst/git/ml-sharp",
+          cmd: "mkdir -p outputs/production-regression/interior-12 && cd outputs/production-regression/interior-12 && npx --yes agent-browser --session sharp-corpus upload source.png to @e20",
+        },
+      }),
+    ).toEqual([
+      expect.objectContaining({
+        type: "media",
+        mediaKind: "image",
+        path: "/Users/herbst/git/ml-sharp/outputs/production-regression/interior-12/source.png",
+        title: "Uploaded image",
+      }),
+    ]);
+
+    expect(
+      visualToolMediaBlocks({
+        type: "tool_use",
+        toolName: "exec_command",
+        toolInput:
+          'const result = await tools.exec_command({"cmd":"magick input.png output.webp","workdir":"/Users/herbst/git/shapes"});',
+      }),
+    ).toEqual([
+      expect.objectContaining({
+        path: "/Users/herbst/git/shapes/input.png",
+        title: "Input image",
+      }),
+      expect.objectContaining({
+        path: "/Users/herbst/git/shapes/output.webp",
+        title: "Output image",
+      }),
+    ]);
+
+    expect(
+      visualToolMediaBlocks({
+        type: "tool_use",
+        toolName: "exec_command",
+        toolInput: {
+          cmd: "ssh cloud-staging 'magick /tmp/input.png /tmp/output.webp'",
+        },
+      }),
+    ).toEqual([]);
+
+    expect(
+      visualToolMediaBlocks({
+        type: "tool_use",
+        toolName: "exec_command",
+        toolInput: {
           cmd: "magick /tmp/custom-nodedef-voronoi-2.png -crop 900x650+575+13 -resize 420x300 /tmp/custom-nodedef-crop.webp",
         },
       }),
@@ -3323,6 +3444,65 @@ describe("visual tool payload display helpers", () => {
         mediaKind: "image",
         path: "/tmp/custom-nodedef-crop.webp",
         title: "Output image",
+      }),
+    ]);
+
+    expect(
+      visualToolMediaBlocks(
+        {
+          type: "tool_use",
+          toolName: "exec_command",
+          toolUseId: "browser-shot-1",
+          toolInput: {
+            cmd: "npx --yes agent-browser --session mlsharp screenshot /tmp/reference-view2.png",
+          },
+        },
+        {
+          type: "tool_result",
+          toolUseId: "browser-shot-1",
+          text: [
+            "Chunk ID: 8185",
+            "Wall time: 0.0000 seconds",
+            "Process exited with code 0",
+            "Output:",
+            "✓ Screenshot saved to /tmp/reference-view2.png",
+          ].join("\n"),
+        },
+      ),
+    ).toEqual([
+      expect.objectContaining({
+        type: "media",
+        mediaKind: "image",
+        path: "/tmp/reference-view2.png",
+        title: "Screenshot",
+        toolName: "exec_command",
+        toolUseId: "browser-shot-1",
+      }),
+    ]);
+
+    expect(
+      visualToolMediaBlocks(
+        {
+          type: "tool_use",
+          toolName: "take_screenshot",
+          toolUseId: "browser-shot-2",
+          toolInput: {},
+        },
+        {
+          type: "tool_result",
+          toolUseId: "browser-shot-2",
+          text: JSON.stringify({
+            message: "Screenshot saved",
+            filePath: "/tmp/devtools-shot.webp",
+          }),
+        },
+      ),
+    ).toEqual([
+      expect.objectContaining({
+        type: "media",
+        mediaKind: "image",
+        path: "/tmp/devtools-shot.webp",
+        title: "Screenshot",
       }),
     ]);
   });
@@ -3535,7 +3715,7 @@ describe("visual tool payload display helpers", () => {
     };
 
     expect(visualToolPreviewText(block)).toBe(
-      "npx --yes agent-browser open http://localhost:5173/medikit/auth/sign-in",
+      "Open browser localhost:5173/medikit/auth/sign-in",
     );
     expect(visualToolEnvSummaryLabel(block)).toBe("ENV");
     expect(visualToolEnvTooltipText(block)).toBe(
@@ -3581,6 +3761,127 @@ describe("visual tool payload display helpers", () => {
       path: "thumbnails",
       range: "",
     });
+  });
+
+  it("summarizes CMake configure commands and lifts flags into a compact badge", () => {
+    const block = {
+      type: "tool_use",
+      toolName: "exec_command",
+      toolInput: {
+        cmd: "cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH=/opt/homebrew -DABSL_PROPAGATE_CXX_STD=ON",
+      },
+    };
+
+    expect(visualToolPreviewText(block)).toBe("Configure CMake . -> build");
+    expect(visualToolConfigSummaryLabel(block)).toBe("6 FLAGS");
+    expect(visualToolConfigTooltipText(block)).toBe(
+      "SOURCE=.\nBUILD=build\nGENERATOR=Ninja\nCMAKE_BUILD_TYPE=Release\nCMAKE_PREFIX_PATH=/opt/homebrew\nABSL_PROPAGATE_CXX_STD=ON",
+    );
+    expect(visualToolConfigAssignments(block)).toEqual([
+      { name: "SOURCE", value: "." },
+      { name: "BUILD", value: "build" },
+      { name: "GENERATOR", value: "Ninja" },
+      { name: "CMAKE_BUILD_TYPE", value: "Release" },
+      { name: "CMAKE_PREFIX_PATH", value: "/opt/homebrew" },
+      { name: "ABSL_PROPAGATE_CXX_STD", value: "ON" },
+    ]);
+    expect(visualToolCallPayloadText(block)).toContain("cmake -S");
+  });
+
+  it("summarizes plain CMake build commands without configure flags", () => {
+    const block = {
+      type: "tool_use",
+      toolName: "exec_command",
+      toolInput: {
+        cmd: "cmake --build build --target install",
+      },
+    };
+
+    expect(visualToolPreviewText(block)).toBe("Build CMake build");
+    expect(visualToolConfigAssignments(block)).toEqual([]);
+  });
+
+  it("summarizes agent-browser CLI commands as browser actions", () => {
+    expect(
+      visualToolPreviewText({
+        type: "tool_use",
+        toolName: "exec_command",
+        toolInput: {
+          cmd: "npx agent-browser --session obj-debug console",
+        },
+      }),
+    ).toBe("Check console messages");
+    expect(
+      visualToolIconNameForPreview({
+        type: "tool_use",
+        toolName: "exec_command",
+        toolInput: {
+          cmd: "npx agent-browser --session obj-debug console",
+        },
+      }),
+    ).toBe("list_console_messages");
+    expect(
+      visualToolPreviewText({
+        type: "tool_use",
+        toolName: "exec_command",
+        toolInput: {
+          cmd: "npx agent-browser --session obj-debug snapshot -i && npx agent-browser --session obj-debug console",
+        },
+      }),
+    ).toBe("Capture browser snapshot (interactive) · Check console messages");
+    expect(
+      visualToolPreviewText({
+        type: "tool_use",
+        toolName: "exec_command",
+        toolInput: {
+          cmd: "npx agent-browser --session obj-debug click @e8 && npx agent-browser --session obj-debug snapshot -i",
+        },
+      }),
+    ).toBe("Click browser element @e8 · Capture browser snapshot (interactive)");
+    expect(
+      visualToolPreviewText({
+        type: "tool_use",
+        toolName: "exec_command",
+        toolInput: {
+          cmd: "npx --yes agent-browser --session mlsharp upload @e20 /Users/herbst/Downloads/round_of_57/03_lanczos_4k/06.png && npx --yes agent-browser --session mlsharp snapshot -i",
+        },
+      }),
+    ).toBe(
+      "Upload 06.png to @e20 · Capture browser snapshot (interactive)",
+    );
+    expect(
+      visualToolPreviewText({
+        type: "tool_use",
+        toolName: "exec_command",
+        toolInput: {
+          cmd: "npx --yes agent-browser --session mlsharp wait 110000",
+        },
+      }),
+    ).toBe("Wait for browser 110s");
+    expect(
+      visualToolPreviewText({
+        type: "tool_use",
+        toolName: "exec_command",
+        toolInput: {
+          cmd: "npx --yes agent-browser --session mlsharp get text body",
+        },
+      }),
+    ).toBe("Read browser body text");
+  });
+
+  it("summarizes CMake configure commands after newline-separated setup", () => {
+    const block = {
+      type: "tool_use",
+      toolName: "exec_command",
+      toolInput: {
+        cmd: "perl -pi -e 's#old#new#g' $(rg -l old src)\ncmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH=/opt/homebrew",
+      },
+    };
+
+    expect(visualToolPreviewText(block)).toBe(
+      "perl -pi -e 's#old#new#g' $(rg -l old src) · Configure CMake . -> build",
+    );
+    expect(visualToolConfigSummaryLabel(block)).toBe("5 FLAGS");
   });
 
   it("normalizes ssh launch wrappers before previewing remote file reads", () => {
@@ -3866,6 +4167,60 @@ describe("visual tool payload display helpers", () => {
       { kind: "text", text: 'for "needle-engine-usdc|geometryBackend"' },
     ]);
     expect(visualToolCallPayloadText(block)).toContain("sed -n");
+  });
+
+  it("shows visible result counts for search commands with paired output", () => {
+    const block = {
+      type: "tool_use",
+      toolName: "exec_command",
+      toolInput: {
+        cmd: "rg -n \"get(By|AllBy|queryBy)(Text|Role).*name:\" packages/ui/test",
+      },
+    };
+    const result = {
+      type: "tool_result",
+      toolName: "exec_command",
+      text: [
+        "Chunk ID: abc123 Wall time: 0.1000 seconds Process exited with code 0 Original token count: 12 Output:",
+        "packages/ui/test/a.test.ts:12:expect(getByRole('button', { name: 'Save' }))",
+        "packages/ui/test/b.test.ts:44:expect(queryByText('Done'))",
+        "",
+      ].join("\n"),
+    };
+
+    expect(visualToolPreviewText(block)).toBe(
+      'Search test for "get(By|AllBy|queryBy)(Text|Role).*name:"',
+    );
+    expect(visualToolCommandResultBadges(block, result)).toEqual([
+      {
+        label: "2 results",
+        tone: "neutral",
+        title: "2 visible search results",
+      },
+    ]);
+  });
+
+  it("shows no results for successful empty search output", () => {
+    expect(
+      visualToolCommandResultBadges(
+        {
+          type: "tool_use",
+          toolName: "exec_command",
+          toolInput: { cmd: "rg -n \"missing\" src" },
+        },
+        {
+          type: "tool_result",
+          toolName: "exec_command",
+          text: "Chunk ID: abc123 Wall time: 0.1000 seconds Process exited with code 0 Original token count: 0 Output:",
+        },
+      ),
+    ).toEqual([
+      {
+        label: "no results",
+        tone: "neutral",
+        title: "Search returned no visible result lines",
+      },
+    ]);
   });
 
   it("ignores label-only print commands between read summaries", () => {
@@ -4720,6 +5075,129 @@ describe("buildVisualWorkDisplayEntries", () => {
     expect(
       visualToolPreviewText(doubleClickBlock, entries[2]?.previewContext),
     ).toBe("Double-click tab Settings");
+  });
+
+  it("resolves agent-browser refs from the latest preceding snapshot", () => {
+    const snapshotUse = {
+      message: {
+        role: "assistant",
+        blocks: [
+          {
+            type: "tool_use",
+            toolName: "exec_command",
+            toolUseId: "snap-1",
+            toolInput: {
+              cmd: "npx --yes agent-browser --session mlsharp snapshot -i",
+            },
+          },
+        ],
+      },
+      blocks: [
+        {
+          type: "tool_use",
+          toolName: "exec_command",
+          toolUseId: "snap-1",
+          toolInput: {
+            cmd: "npx --yes agent-browser --session mlsharp snapshot -i",
+          },
+        },
+      ],
+      messageIndex: 1,
+    };
+    const snapshotResult = {
+      message: {
+        role: "tool",
+        blocks: [
+          {
+            type: "tool_result",
+            toolName: "exec_command",
+            toolUseId: "snap-1",
+            text: [
+              "@e18 [heading] \"Upload source files\"",
+              "@e20 [button] \"Select image\"",
+              "@e21 [input] \"Caption\"",
+            ].join("\n"),
+          },
+        ],
+      },
+      blocks: [
+        {
+          type: "tool_result",
+          toolName: "exec_command",
+          toolUseId: "snap-1",
+          text: [
+            "@e18 [heading] \"Upload source files\"",
+            "@e20 [button] \"Select image\"",
+            "@e21 [input] \"Caption\"",
+          ].join("\n"),
+        },
+      ],
+      messageIndex: 2,
+    };
+    const uploadUse = {
+      message: {
+        role: "assistant",
+        blocks: [
+          {
+            type: "tool_use",
+            toolName: "exec_command",
+            toolInput: {
+              cmd: "npx --yes agent-browser --session mlsharp upload @e20 /Users/herbst/Downloads/06.png",
+            },
+          },
+        ],
+      },
+      blocks: [
+        {
+          type: "tool_use",
+          toolName: "exec_command",
+          toolInput: {
+            cmd: "npx --yes agent-browser --session mlsharp upload @e20 /Users/herbst/Downloads/06.png",
+          },
+        },
+      ],
+      messageIndex: 3,
+    };
+    const fillUse = {
+      message: {
+        role: "assistant",
+        blocks: [
+          {
+            type: "tool_use",
+            toolName: "exec_command",
+            toolInput: {
+              cmd: "npx --yes agent-browser --session mlsharp fill @e21 hello",
+            },
+          },
+        ],
+      },
+      blocks: [
+        {
+          type: "tool_use",
+          toolName: "exec_command",
+          toolInput: {
+            cmd: "npx --yes agent-browser --session mlsharp fill @e21 hello",
+          },
+        },
+      ],
+      messageIndex: 4,
+    };
+
+    const entries = buildVisualWorkDisplayEntries([
+      snapshotUse,
+      snapshotResult,
+      uploadUse,
+      fillUse,
+    ]);
+
+    const uploadBlock = entries[1]?.entry.blocks[0];
+    const fillBlock = entries[2]?.entry.blocks[0];
+    expect(
+      visualToolPreviewText(uploadBlock, entries[1]?.previewContext),
+    ).toBe("Upload 06.png to button Select image");
+    expect(visualToolPreviewText(fillBlock, entries[2]?.previewContext)).toBe(
+      "Fill browser element input Caption",
+    );
   });
 
   it("classifies marker-only rows for badge rendering", () => {

@@ -720,6 +720,115 @@ function codexToolInput(input: unknown): unknown {
   }
 }
 
+function canonicalCodexToolName(name: string): string {
+  return name === "exec" ? "exec_command" : name;
+}
+
+interface CodexToolInvocation {
+  name: string;
+  input: unknown;
+}
+
+function codexWrappedToolInvocation(
+  name: string,
+  input: unknown,
+): CodexToolInvocation {
+  const canonicalName = canonicalCodexToolName(name);
+  if (typeof input !== "string" || canonicalName !== "exec_command") {
+    return { name: canonicalName, input };
+  }
+  const invocation = parseCodexToolScriptInvocation(input);
+  return invocation ?? { name: canonicalName, input };
+}
+
+function parseCodexToolScriptInvocation(
+  source: string,
+): CodexToolInvocation | undefined {
+  const call = source.match(/tools\.([A-Za-z_$][\w$]*)\s*\(/);
+  if (!call?.[1] || call.index === undefined) return undefined;
+  const argsStart = source.indexOf("(", call.index);
+  const args = balancedCallArgument(source, argsStart);
+  if (!args) return undefined;
+  const rawName = call[1].replace(/__/g, ".");
+  const name = canonicalCodexToolName(rawName);
+  const trimmedArgs = args.trim();
+  const variable = trimmedArgs.match(/^[A-Za-z_$][\w$]*$/)?.[0];
+  const input =
+    variable !== undefined
+      ? stringVariableValue(source, variable)
+      : parseCodexToolScriptObject(trimmedArgs);
+  return { name, input: input ?? trimmedArgs };
+}
+
+function balancedCallArgument(source: string, openParen: number): string | undefined {
+  if (openParen < 0 || source[openParen] !== "(") return undefined;
+  let depth = 0;
+  let quote: '"' | "'" | "`" | undefined;
+  let escaped = false;
+  for (let i = openParen; i < source.length; i++) {
+    const ch = source[i];
+    if (quote) {
+      if (escaped) {
+        escaped = false;
+      } else if (ch === "\\") {
+        escaped = true;
+      } else if (ch === quote) {
+        quote = undefined;
+      }
+      continue;
+    }
+    if (ch === '"' || ch === "'" || ch === "`") {
+      quote = ch;
+      continue;
+    }
+    if (ch === "(") {
+      depth++;
+      continue;
+    }
+    if (ch === ")") {
+      depth--;
+      if (depth === 0) return source.slice(openParen + 1, i);
+    }
+  }
+  return undefined;
+}
+
+function stringVariableValue(source: string, variable: string): string | undefined {
+  const match = new RegExp(
+    `(?:const|let|var)\\s+${escapeRegExp(variable)}\\s*=\\s*(\"(?:\\\\.|[^\"\\\\])*\")\\s*;`,
+    "s",
+  ).exec(source);
+  if (!match?.[1]) return undefined;
+  try {
+    return JSON.parse(match[1]) as string;
+  } catch {
+    return undefined;
+  }
+}
+
+function parseCodexToolScriptObject(source: string): unknown {
+  try {
+    return JSON.parse(source);
+  } catch {
+    // Codex Desktop custom-tool scripts use JS object literals with unquoted
+    // keys. Normalize that concrete transport shape without executing it.
+  }
+  if (!source.startsWith("{") && !source.startsWith("[")) return undefined;
+  const jsonish = source.replace(
+    /([{,]\s*)([A-Za-z_$][\w$]*)\s*:/g,
+    '$1"$2":',
+  );
+  try {
+    return JSON.parse(jsonish);
+  } catch {
+    return undefined;
+  }
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
 function codexSubagentBlockFromToolUse(
   name: string,
   input: unknown,
@@ -1140,16 +1249,21 @@ function parseCodexJsonlLine(line: string, out: NormalizedSession): void {
     const p = obj.payload as Record<string, unknown>;
     const ts = codexTimestamp(obj);
     if (p.type === "function_call" || p.type === "custom_tool_call") {
-      const name =
+      const rawName =
         typeof p.name === "string"
-          ? p.name
+          ? canonicalCodexToolName(p.name)
           : p.type === "custom_tool_call"
             ? "custom_tool"
             : "function_call";
-      const input =
+      const rawInput =
         p.type === "function_call"
           ? codexToolInput(p.arguments)
           : clipToolInput(p.input);
+      const normalized =
+        p.type === "custom_tool_call"
+          ? codexWrappedToolInvocation(rawName, rawInput)
+          : { name: rawName, input: rawInput };
+      const { name, input } = normalized;
       rememberCodexToolName(out, p.call_id, name);
       if (
         name === "get_goal" ||

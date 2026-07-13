@@ -138,6 +138,69 @@ describe("visual transcript provider flow", () => {
     );
   });
 
+  test("normalizes short Codex exec tool names into command work", () => {
+    const session = parseCodexJsonl(
+      jsonl([
+        {
+          timestamp: "2026-06-01T10:00:00.000Z",
+          type: "response_item",
+          payload: {
+            type: "message",
+            role: "user",
+            content: [{ type: "input_text", text: "inspect files" }],
+          },
+        },
+        {
+          timestamp: "2026-06-01T10:00:01.000Z",
+          type: "response_item",
+          payload: {
+            type: "function_call",
+            name: "exec",
+            call_id: "call-exec",
+            arguments: JSON.stringify({
+              cmd: "sed -n '1,120p' src/TextureGenerator.js",
+              workdir: "/repo",
+            }),
+          },
+        },
+        {
+          timestamp: "2026-06-01T10:00:02.000Z",
+          type: "response_item",
+          payload: {
+            type: "function_call_output",
+            call_id: "call-exec",
+            output:
+              "Chunk ID: abc123\nWall time: 0.1234 seconds\nProcess exited with code 0\nOriginal token count: 2\nOutput:\nimport three",
+          },
+        },
+      ]),
+    );
+
+    const { work } = onlyWorkItem(session.messages);
+    const displayEntries = buildVisualWorkDisplayEntries(work.entries);
+    const commandEntry = displayEntries.find((entry) =>
+      entry.entry.blocks.some(
+        (block) =>
+          block.type === "tool_use" && block.toolUseId === "call-exec",
+      ),
+    );
+
+    expect(commandEntry?.entry.blocks[0]).toMatchObject({
+      type: "tool_use",
+      toolName: "exec_command",
+      toolUseId: "call-exec",
+      toolInput: {
+        cmd: "sed -n '1,120p' src/TextureGenerator.js",
+        workdir: "/repo",
+      },
+    });
+    expect(commandEntry?.pairedResult?.blocks[0]).toMatchObject({
+      type: "tool_result",
+      toolName: "exec_command",
+      toolUseId: "call-exec",
+    });
+  });
+
   test("normalizes Codex subagent spawn, wait, and notification rows", () => {
     const subagentId = "019f27fe-0f3d-7a50-8371-3344fbaee5d0";
     const session = parseCodexJsonl(

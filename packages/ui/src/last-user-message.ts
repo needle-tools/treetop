@@ -19,6 +19,9 @@ export {
   visualToolCallPayloadText,
   visualToolCanStillRun,
   visualToolCommandResultBadges,
+  visualToolConfigAssignments,
+  visualToolConfigSummaryLabel,
+  visualToolConfigTooltipText,
   visualToolEnvAssignments,
   visualToolEnvSummaryLabel,
   visualToolEnvTooltipText,
@@ -37,6 +40,7 @@ export {
   type VisualToolPreviewContext,
   type VisualObservedProcessOutput,
   type VisualToolApprovalBadge,
+  type VisualToolConfigAssignment,
   type VisualToolEnvAssignment,
   type VisualToolInlineScript,
   type VisualToolPreviewPart,
@@ -539,6 +543,9 @@ export function lastUserMessageWithContext(
 }
 
 const CODEX_IMAGE_ENVELOPE_RE = /<image\b[^>]*>\s*/gi;
+const CODEX_REQUEST_BODY_RE = /(?:^|\n)## My request for Codex:\s*\n?/;
+const CODEX_FILE_MENTION_IMAGE_RE =
+  /(?:^|\n)(?:##\s*)?([^\n:]+?\.(?:png|jpe?g|webp|gif)):\s*\n?([^\n]+\.(?:png|jpe?g|webp|gif))/gi;
 
 function codexImageEnvelopeAttrs(raw: string): Record<string, string> {
   const attrs: Record<string, string> = {};
@@ -561,7 +568,12 @@ function codexImageEnvelopeLabel(rawName: string | undefined): string {
 
 export function cleanVisualUserText(text: string | undefined): string {
   if (!text) return "";
-  return text
+  const requestMatch = text.match(CODEX_REQUEST_BODY_RE);
+  const requestText =
+    requestMatch?.index !== undefined
+      ? text.slice(requestMatch.index + requestMatch[0].length)
+      : text;
+  return requestText
     .replace(CODEX_IMAGE_ENVELOPE_RE, "")
     .replace(/\s*\[Image\s+#\d+\]\s*/g, " ")
     .replace(/[ \t]+\n/g, "\n")
@@ -579,7 +591,7 @@ export function visualUserImageAttachments(
   text: string | undefined,
 ): VisualUserImageAttachment[] {
   if (!text) return [];
-  return Array.from(
+  const attachments = Array.from(
     text.matchAll(CODEX_IMAGE_ENVELOPE_RE),
     (match) => {
       const attrs = codexImageEnvelopeAttrs(match[0] ?? "");
@@ -589,6 +601,18 @@ export function visualUserImageAttachments(
       };
     },
   ).filter((attachment) => attachment.path.trim().length > 0);
+  for (const match of text.matchAll(CODEX_FILE_MENTION_IMAGE_RE)) {
+    const label = match[1]?.trim() || "Image";
+    const path = match[2]?.trim() || "";
+    if (path) attachments.push({ label, path });
+  }
+  const seen = new Set<string>();
+  return attachments.filter((attachment) => {
+    const key = attachment.path.trim();
+    if (!key || seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
 }
 
 export function formatVisualWorkDuration(

@@ -256,19 +256,29 @@ export function codexLiveToolUseFromEvent(
   if (!itemId) return null;
   const toolName = codexEventToolName(event.method, event.params, context);
   if (!toolName) return null;
-  codexLiveToolNameMap(context).set(itemId, toolName);
-  const id = `${toolName === "file change" ? "codex-file" : "codex-tool"}-${itemId}`;
-  const toolInput =
+  const rawToolInput =
     toolName === "file change" && event.params.changes !== undefined
       ? event.params.changes
       : codexEventToolInput(event.params);
+  const normalizedTool =
+    item?.type === "custom_tool_call"
+      ? codexWrappedToolInvocation(toolName, rawToolInput)
+      : { name: toolName, input: rawToolInput };
+  codexLiveToolNameMap(context).set(itemId, normalizedTool.name);
+  const id = `${normalizedTool.name === "file change" ? "codex-file" : "codex-tool"}-${itemId}`;
+  const toolInput = normalizedTool.input;
   const mediaBlock =
-    toolName === "view_image" ? codexViewImageMediaBlock(toolInput) : undefined;
+    normalizedTool.name === "view_image"
+      ? codexViewImageMediaBlock(toolInput)
+      : undefined;
   const approvalFields = codexCommandApprovalFields(event.params);
-  const subagentFields = codexSubagentBlockFromToolUse(toolName, toolInput);
+  const subagentFields = codexSubagentBlockFromToolUse(
+    normalizedTool.name,
+    toolInput,
+  );
   return {
     id,
-    toolName,
+    toolName: normalizedTool.name,
     toolInput,
     toolUseId: itemId,
     inputQuality: codexToolInputQuality(toolInput),
@@ -575,13 +585,20 @@ function codexAppMessagesFromThreadItem(
   }
   if (itemType === "function_call" || itemType === "custom_tool_call") {
     const callId = stringField(item, "call_id") ?? itemId;
-    const tool =
+    const rawTool = canonicalCodexToolName(
       stringField(item, "name") ??
-      (itemType === "custom_tool_call" ? "custom_tool" : "function_call");
-    const toolInput =
+        (itemType === "custom_tool_call" ? "custom_tool" : "function_call"),
+    );
+    const rawToolInput =
       itemType === "function_call"
         ? codexToolArguments(item.arguments)
         : (item.input ?? item.arguments);
+    const normalized =
+      itemType === "custom_tool_call"
+        ? codexWrappedToolInvocation(rawTool, rawToolInput)
+        : { name: rawTool, input: rawToolInput };
+    const tool = normalized.name;
+    const toolInput = normalized.input;
     toolNames.set(callId, tool);
     const viewImageMedia =
       tool === "view_image" ? codexViewImageMediaBlock(toolInput) : null;
@@ -1111,6 +1128,115 @@ function codexToolArguments(input: unknown): unknown {
   }
 }
 
+function canonicalCodexToolName(name: string): string {
+  return name === "exec" ? "exec_command" : name;
+}
+
+interface CodexWrappedToolInvocation {
+  name: string;
+  input: unknown;
+}
+
+function codexWrappedToolInvocation(
+  name: string,
+  input: unknown,
+): CodexWrappedToolInvocation {
+  const canonicalName = canonicalCodexToolName(name);
+  if (typeof input !== "string" || canonicalName !== "exec_command") {
+    return { name: canonicalName, input };
+  }
+  const invocation = parseCodexToolScriptInvocation(input);
+  return invocation ?? { name: canonicalName, input };
+}
+
+function parseCodexToolScriptInvocation(
+  source: string,
+): CodexWrappedToolInvocation | undefined {
+  const call = source.match(/tools\.([A-Za-z_$][\w$]*)\s*\(/);
+  if (!call?.[1] || call.index === undefined) return undefined;
+  const argsStart = source.indexOf("(", call.index);
+  const args = balancedCallArgument(source, argsStart);
+  if (!args) return undefined;
+  const rawName = call[1].replace(/__/g, ".");
+  const name = canonicalCodexToolName(rawName);
+  const trimmedArgs = args.trim();
+  const variable = trimmedArgs.match(/^[A-Za-z_$][\w$]*$/)?.[0];
+  const input =
+    variable !== undefined
+      ? stringVariableValue(source, variable)
+      : parseCodexToolScriptObject(trimmedArgs);
+  return { name, input: input ?? trimmedArgs };
+}
+
+function balancedCallArgument(source: string, openParen: number): string | undefined {
+  if (openParen < 0 || source[openParen] !== "(") return undefined;
+  let depth = 0;
+  let quote: '"' | "'" | "`" | undefined;
+  let escaped = false;
+  for (let i = openParen; i < source.length; i++) {
+    const ch = source[i];
+    if (quote) {
+      if (escaped) {
+        escaped = false;
+      } else if (ch === "\\") {
+        escaped = true;
+      } else if (ch === quote) {
+        quote = undefined;
+      }
+      continue;
+    }
+    if (ch === '"' || ch === "'" || ch === "`") {
+      quote = ch;
+      continue;
+    }
+    if (ch === "(") {
+      depth++;
+      continue;
+    }
+    if (ch === ")") {
+      depth--;
+      if (depth === 0) return source.slice(openParen + 1, i);
+    }
+  }
+  return undefined;
+}
+
+function stringVariableValue(source: string, variable: string): string | undefined {
+  const match = new RegExp(
+    `(?:const|let|var)\\s+${escapeRegExp(variable)}\\s*=\\s*(\"(?:\\\\.|[^\"\\\\])*\")\\s*;`,
+    "s",
+  ).exec(source);
+  if (!match?.[1]) return undefined;
+  try {
+    return JSON.parse(match[1]) as string;
+  } catch {
+    return undefined;
+  }
+}
+
+function parseCodexToolScriptObject(source: string): unknown {
+  try {
+    return JSON.parse(source);
+  } catch {
+    // Codex Desktop custom-tool scripts use JS object literals with unquoted
+    // keys. Normalize that concrete transport shape without executing it.
+  }
+  if (!source.startsWith("{") && !source.startsWith("[")) return undefined;
+  const jsonish = source.replace(
+    /([{,]\s*)([A-Za-z_$][\w$]*)\s*:/g,
+    '$1"$2":',
+  );
+  try {
+    return JSON.parse(jsonish);
+  } catch {
+    return undefined;
+  }
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
 function codexReasoningText(item: Record<string, unknown>): string | undefined {
   const summary = Array.isArray(item.summary) ? item.summary : [];
   const content = Array.isArray(item.content) ? item.content : [];
@@ -1225,7 +1351,7 @@ function codexEventToolName(
     return stringField(item, "tool") ?? item.type;
   }
   if (item?.type === "function_call" || item?.type === "custom_tool_call") {
-    return stringField(item, "name") ?? item.type;
+    return canonicalCodexToolName(stringField(item, "name") ?? item.type);
   }
   if (method === "item/tool/call") {
     return stringField(params, "tool") ?? "dynamicToolCall";
@@ -1254,9 +1380,7 @@ function codexEventToolName(
   return null;
 }
 
-function codexEventToolInput(
-  params: Record<string, unknown>,
-): Record<string, unknown> | undefined {
+function codexEventToolInput(params: Record<string, unknown>): unknown {
   const item = codexEventItem(params);
   if (item?.type === "commandExecution") {
     return cleanCodexToolInput({
@@ -1298,15 +1422,9 @@ function codexEventToolInput(
         : { value: input };
   }
   if (item?.type === "function_call" || item?.type === "custom_tool_call") {
-    const input =
-      item.type === "function_call"
-        ? codexToolArguments(item.arguments)
-        : (item.input ?? item.arguments);
-    return input && typeof input === "object"
-      ? (input as Record<string, unknown>)
-      : input === undefined
-        ? undefined
-        : { value: input };
+    return item.type === "function_call"
+      ? codexToolArguments(item.arguments)
+      : (item.input ?? item.arguments);
   }
   const input: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(params)) {

@@ -30,6 +30,9 @@
     visualToolCallPayloadLanguage,
     visualToolCallPayloadText,
     visualToolApprovalBadge,
+    visualToolConfigAssignments,
+    visualToolConfigSummaryLabel,
+    visualToolConfigTooltipText,
     visualToolEnvAssignments,
     visualToolEnvSummaryLabel,
     visualToolEnvTooltipText,
@@ -245,6 +248,9 @@
   const markdownCache = new Map<string, string>();
   const TIME_TITLE_CACHE_LIMIT = 1000;
   const timeTitleCache = new Map<string, string>();
+  let toolKeyValuePopover: ToolKeyValuePopoverState | null = null;
+  let toolKeyValuePopoverCloseTimer: ReturnType<typeof setTimeout> | null =
+    null;
 
   interface ComposerMotionRect {
     x: number;
@@ -260,6 +266,17 @@
     snapshot: ScrollSnapshotEntry[];
   }
 
+  interface ToolKeyValuePopoverState {
+    summary: string;
+    tooltip: string;
+    items: { name: string; value: string }[];
+    left: number;
+    top?: number;
+    bottom?: number;
+    width: number;
+    maxHeight: number;
+  }
+
   $: openMediaBlock =
     openMediaIndex >= 0 ? openMediaBlocks[openMediaIndex] : undefined;
   $: openMediaSrc = openMediaBlock ? mediaSourceUrl(openMediaBlock) : undefined;
@@ -270,13 +287,13 @@
   );
   $: {
     const liveKeys = new Set(
-      items
-        .map((item, index) =>
-          item.kind === "work" && item.open && !item.endedAt
-            ? getVisualTranscriptItemKey(item, index)
-            : undefined,
-        )
-        .filter((key): key is string => !!key),
+      items.flatMap((item, index) => {
+        if (item.kind !== "work" || !item.open || item.endedAt) return [];
+        const workKey = getVisualTranscriptItemKey(item, index);
+        return buildVisibleVisualWorkDisplayEntries(item)
+          .filter((displayEntry) => isThinkingWorkEntry(displayEntry.entry))
+          .map((displayEntry) => workEntryRenderKey(workKey, displayEntry));
+      }),
     );
     const next = new Set(
       [...expandedThinkingWorkKeys].filter((key) => liveKeys.has(key)),
@@ -300,7 +317,87 @@
 
   onDestroy(() => {
     if (liveClock) clearInterval(liveClock);
+    if (toolKeyValuePopoverCloseTimer) {
+      clearTimeout(toolKeyValuePopoverCloseTimer);
+    }
   });
+
+  function clampNumber(value: number, min: number, max: number): number {
+    if (max < min) return min;
+    return Math.min(max, Math.max(min, value));
+  }
+
+  function cancelToolKeyValuePopoverClose(): void {
+    if (!toolKeyValuePopoverCloseTimer) return;
+    clearTimeout(toolKeyValuePopoverCloseTimer);
+    toolKeyValuePopoverCloseTimer = null;
+  }
+
+  function scheduleToolKeyValuePopoverClose(): void {
+    cancelToolKeyValuePopoverClose();
+    toolKeyValuePopoverCloseTimer = setTimeout(() => {
+      toolKeyValuePopover = null;
+      toolKeyValuePopoverCloseTimer = null;
+    }, 90);
+  }
+
+  function showToolKeyValuePopover(
+    event: MouseEvent | FocusEvent,
+    summary: string,
+    tooltip: string,
+    items: { name: string; value: string }[],
+  ): void {
+    if (items.length === 0 || typeof window === "undefined") return;
+    const target =
+      event.currentTarget instanceof HTMLElement ? event.currentTarget : null;
+    if (!target) return;
+    cancelToolKeyValuePopoverClose();
+
+    const rect = target.getBoundingClientRect();
+    const viewportPadding = 12;
+    const gap = 8;
+    const width = Math.min(
+      680,
+      Math.max(360, window.innerWidth - viewportPadding * 2),
+    );
+    const left = clampNumber(
+      rect.left,
+      viewportPadding,
+      window.innerWidth - width - viewportPadding,
+    );
+    const roomBelow = Math.max(
+      0,
+      window.innerHeight - rect.bottom - gap - viewportPadding,
+    );
+    const roomAbove = Math.max(0, rect.top - gap - viewportPadding);
+    const placeBelow = roomBelow >= roomAbove || roomAbove < 180;
+    const maxHeight = Math.max(
+      140,
+      Math.min(520, placeBelow ? roomBelow : roomAbove),
+    );
+
+    toolKeyValuePopover = {
+      summary,
+      tooltip,
+      items,
+      left,
+      width,
+      maxHeight,
+      ...(placeBelow
+        ? { top: rect.bottom + gap }
+        : { bottom: window.innerHeight - rect.top + gap }),
+    };
+  }
+
+  function toolKeyValuePopoverStyle(
+    state: ToolKeyValuePopoverState,
+  ): string {
+    const vertical =
+      state.top !== undefined
+        ? `top: ${state.top}px;`
+        : `bottom: ${state.bottom ?? 12}px;`;
+    return `left: ${state.left}px; width: ${state.width}px; max-height: ${state.maxHeight}px; ${vertical}`;
+  }
 
   function escapeAttr(s: string): string {
     return s
@@ -736,19 +833,30 @@
     role: string,
   ): NormalizedBlock[] {
     if (role !== "user") return blocks;
-    const mediaBlocks = blocks.filter((block) => block.type === "media");
+    const seenMedia = new Set<string>();
+    const pushMedia = (block: NormalizedBlock): NormalizedBlock[] => {
+      const media = block as NormalizedBlock & { path?: string; url?: string };
+      const key = media.path || media.url || "";
+      if (key && seenMedia.has(key)) return [];
+      if (key) seenMedia.add(key);
+      return [block];
+    };
+    const mediaBlocks = blocks
+      .filter((block) => block.type === "media")
+      .flatMap(pushMedia);
     const bodyBlocks = blocks
       .filter((block) => block.type !== "media")
       .flatMap((block): NormalizedBlock[] => {
         if (block.type !== "text") return [block];
-        const attachments = visualUserImageAttachments(block.text).map(
-          (attachment): NormalizedBlock => ({
-            type: "media",
-            mediaKind: "image",
-            path: attachment.path,
-            title: attachment.label,
-            alt: attachment.label,
-          }),
+        const attachments = visualUserImageAttachments(block.text).flatMap(
+          (attachment): NormalizedBlock[] =>
+            pushMedia({
+              type: "media",
+              mediaKind: "image",
+              path: attachment.path,
+              title: attachment.label,
+              alt: attachment.label,
+            }),
         );
         const text = cleanVisualUserText(block.text);
         return [...attachments, ...(text ? [{ ...block, text }] : [])];
@@ -988,9 +1096,10 @@
 
   function workEntryToolMediaBlocks(
     block: NormalizedBlock | undefined,
+    resultBlock?: NormalizedBlock | undefined,
   ): NormalizedBlock[] {
     if (!block) return [];
-    return visualToolMediaBlocks(block).map(
+    return visualToolMediaBlocks(block, resultBlock).map(
       (media): NormalizedBlock => ({
         type: "media",
         mediaKind: media.mediaKind === "image" ? "image" : "artifact",
@@ -1084,8 +1193,9 @@
 
   function toolCommandResultBadges(
     toolUseBlock: NormalizedBlock | undefined,
+    toolResultBlock: NormalizedBlock | undefined,
   ): ReturnType<typeof visualToolCommandResultBadges> {
-    return visualToolCommandResultBadges(toolUseBlock);
+    return visualToolCommandResultBadges(toolUseBlock, toolResultBlock);
   }
 
   function workMarkerIcon(kind: VisualMarkerKind | undefined): string {
@@ -1180,9 +1290,13 @@
 
   function forceOpenThinkingEntry(
     workKey: string,
+    displayEntry: ReturnType<typeof buildVisualWorkDisplayEntries>[number],
     entry: VisualWorkEntry<NormalizedBlock, NormalizedMessage>,
   ): boolean {
-    return isThinkingWorkEntry(entry) && expandedThinkingWorkKeys.has(workKey);
+    return (
+      isThinkingWorkEntry(entry) &&
+      expandedThinkingWorkKeys.has(workEntryRenderKey(workKey, displayEntry))
+    );
   }
 
   function workEntryRenderKey(
@@ -1337,8 +1451,12 @@
     ) {
       return;
     }
-    if (expandedThinkingWorkKeys.has(workKey)) return;
-    expandedThinkingWorkKeys = new Set([...expandedThinkingWorkKeys, workKey]);
+    const thinkingKey = workEntryRenderKey(workKey, displayEntry);
+    if (expandedThinkingWorkKeys.has(thinkingKey)) return;
+    expandedThinkingWorkKeys = new Set([
+      ...expandedThinkingWorkKeys,
+      thinkingKey,
+    ]);
   }
 
   interface WorkEntryBodyVisibilityParams {
@@ -1494,26 +1612,48 @@
   </span>
 {/snippet}
 
-{#snippet renderToolEnvBadges(block: NormalizedBlock)}
-  {@const env = visualToolEnvAssignments(block)}
-  {@const summary = visualToolEnvSummaryLabel(block)}
-  {#if env.length > 0}
-    <span
+{#snippet renderToolKeyValueBadges(
+  summary: string,
+  tooltip: string,
+  items: { name: string; value: string }[],
+  ariaPrefix: string,
+)}
+  {#if items.length > 0}
+    <button
+      type="button"
       class="tool-env-summary"
-      title={visualToolEnvTooltipText(block)}
-      aria-label={`Environment adjustments: ${visualToolEnvTooltipText(block)}`}
+      title={tooltip}
+      aria-label={`${ariaPrefix}: ${tooltip}`}
+      on:mouseenter={(event) =>
+        showToolKeyValuePopover(event, summary, tooltip, items)}
+      on:focus={(event) =>
+        showToolKeyValuePopover(event, summary, tooltip, items)}
+      on:click={(event) =>
+        showToolKeyValuePopover(event, summary, tooltip, items)}
+      on:mouseleave={scheduleToolKeyValuePopoverClose}
+      on:blur={scheduleToolKeyValuePopoverClose}
     >
       <span class="tool-env-summary-chip">{summary}</span>
-      <span class="tool-env-popover" role="tooltip">
-        {#each env as item (`${item.name}=${item.value}`)}
-          <span class="tool-env-badge" title={`${item.name}=${item.value}`}>
-            <span class="tool-env-key">{item.name}</span>
-            <span class="tool-env-value">{item.value}</span>
-          </span>
-        {/each}
-      </span>
-    </span>
+    </button>
   {/if}
+{/snippet}
+
+{#snippet renderToolEnvBadges(block: NormalizedBlock)}
+  {@render renderToolKeyValueBadges(
+    visualToolEnvSummaryLabel(block),
+    visualToolEnvTooltipText(block),
+    visualToolEnvAssignments(block),
+    "Environment adjustments",
+  )}
+{/snippet}
+
+{#snippet renderToolConfigBadges(block: NormalizedBlock)}
+  {@render renderToolKeyValueBadges(
+    visualToolConfigSummaryLabel(block),
+    visualToolConfigTooltipText(block),
+    visualToolConfigAssignments(block),
+    "Command flags",
+  )}
 {/snippet}
 
 {#snippet renderToolApprovalBadge(block: NormalizedBlock)}
@@ -1611,6 +1751,7 @@
   label: string,
   hasAlpha: boolean,
   extraClass: string,
+  onError: (() => void) | undefined = undefined,
 )}
   <span
     class={`sticky-photo-frame ${extraClass}`.trim()}
@@ -1623,6 +1764,7 @@
       draggable="false"
       loading="lazy"
       decoding="async"
+      on:error={onError}
     />
   </span>
 {/snippet}
@@ -1646,6 +1788,7 @@
               imageBlock.alt ?? mediaLabel(imageBlock),
               !!imageBlock.hasAlpha,
               "composer-photo-frame media-photo-frame",
+              () => markMediaSourceFailed(src),
             )}
           </button>
         {/if}
@@ -1728,6 +1871,7 @@
           <ToolIcon name={b.toolName} />
           {@render renderRemoteHostBadge(remoteHost)}
           {@render renderToolEnvBadges(b)}
+          {@render renderToolConfigBadges(b)}
           <span class="tool-name">{b.toolName ?? "tool"}</span>
           <code class="tool-input" title={inputPreview(b.toolInput)}>
             {inputPreview(b.toolInput)}
@@ -2161,7 +2305,10 @@
                   observedProcessOwnerToolBlock ?? toolBlock,
                   visibleResultBlock,
                 )}
-                {@const commandResultBadges = toolCommandResultBadges(toolBlock)}
+                {@const commandResultBadges = toolCommandResultBadges(
+                  toolBlock,
+                  visibleResultBlock,
+                )}
                 {@const editCountBadge = visualFileEditCountBadge(editSummary)}
                 {@const resultMeta = toolResultMeta(visibleResultEntry, {
                   suppressNoOutput:
@@ -2173,7 +2320,10 @@
                 {@const toolPreview = toolBlock
                   ? workEntryToolPreview(toolBlock, displayEntry.previewContext)
                   : ""}
-                {@const toolMediaBlocks = workEntryToolMediaBlocks(toolBlock)}
+                {@const toolMediaBlocks = workEntryToolMediaBlocks(
+                  toolBlock,
+                  visibleResultBlock,
+                )}
                 {@const entryBlock = entry.blocks[0]}
                 {@const planBlock = workEntryPlanBlock(entry)}
                 {@const resultBlock = workEntryToolResultBlock(entry)}
@@ -2203,7 +2353,7 @@
                   <details
                     class="work-entry"
                     data-visual-scroll-anchor={entryRenderKey}
-                    open={forceOpenThinkingEntry(workKey, entry) ||
+                    open={forceOpenThinkingEntry(workKey, displayEntry, entry) ||
                       openWorkEntryKeys.has(entryRenderKey)}
                     use:preserveDetailsToggleScroll
                     use:workEntryBodyVisibility={{
@@ -2296,6 +2446,7 @@
                             name={workEntryToolIconName(toolBlock, toolPreview)}
                           />
                           {@render renderToolEnvBadges(toolBlock)}
+                          {@render renderToolConfigBadges(toolBlock)}
                           {#if !toolUsesInlineCommandLabel(toolBlock)}
                             <span>{toolBlock.toolName ?? "tool"}</span>
                           {/if}
@@ -2418,7 +2569,7 @@
                   {#if planBlock}
                     {@render renderPlanCard(planBlock, "work-plan-preview")}
                   {/if}
-                  {#if forceOpenThinkingEntry(workKey, entry) || openWorkEntryKeys.has(entryRenderKey)}
+                  {#if forceOpenThinkingEntry(workKey, displayEntry, entry) || openWorkEntryKeys.has(entryRenderKey)}
                     <div class="work-entry-body" on:wheel|capture={handOffNestedWheel}>
                       {#if editSummary}
                         {@render renderFileEditSummary(editSummary)}
@@ -2555,6 +2706,27 @@
     </li>
   {/if}
 </ul>
+
+{#if toolKeyValuePopover}
+  <div
+    use:portal
+    class="tool-env-popover-fixed"
+    role="tooltip"
+    style={toolKeyValuePopoverStyle(toolKeyValuePopover)}
+    on:mouseenter={cancelToolKeyValuePopoverClose}
+    on:mouseleave={scheduleToolKeyValuePopoverClose}
+  >
+    <div class="tool-env-popover-title">{toolKeyValuePopover.summary}</div>
+    <div class="tool-env-popover-list">
+      {#each toolKeyValuePopover.items as item (`${item.name}=${item.value}`)}
+        <span class="tool-env-badge" title={`${item.name}=${item.value}`}>
+          <span class="tool-env-key">{item.name}</span>
+          <span class="tool-env-value">{item.value}</span>
+        </span>
+      {/each}
+    </div>
+  </div>
+{/if}
 
 {#if openMediaBlock && openMediaSrc}
   <section
@@ -3286,11 +3458,17 @@
     white-space: nowrap;
   }
   .tool-env-summary {
-    position: relative;
     display: inline-flex;
     align-items: center;
     flex: 0 0 auto;
     min-width: 0;
+    padding: 0;
+    border: 0;
+    background: transparent;
+    color: inherit;
+    font: inherit;
+    cursor: default;
+    outline: none;
   }
   .tool-env-summary-chip {
     display: inline-flex;
@@ -3304,31 +3482,39 @@
     font-size: 0.7rem;
     line-height: 1.1;
   }
-  .tool-env-popover {
-    position: absolute;
-    left: 0;
-    bottom: calc(100% + 0.34rem);
-    z-index: 40;
+  .tool-env-summary:focus-visible .tool-env-summary-chip {
+    color: var(--text-2);
+  }
+  .tool-env-popover-fixed {
+    position: fixed;
+    z-index: 3200;
     display: grid;
     grid-template-columns: minmax(0, 1fr);
-    gap: 0.24rem;
-    width: max-content;
-    max-width: min(28rem, 72vw);
-    padding: 0.38rem;
+    gap: 0.34rem;
+    overflow: auto;
+    padding: 0.46rem;
     border: 1px solid color-mix(in srgb, var(--surface-3) 72%, transparent);
-    border-radius: 0.5rem;
+    border-radius: 0.58rem;
     background: color-mix(in srgb, var(--surface-2) 96%, black 4%);
     box-shadow: 0 0.65rem 1.8rem rgba(0, 0, 0, 0.34);
-    opacity: 0;
-    pointer-events: none;
-    transform: translateY(0.18rem);
-    transition:
-      opacity 120ms ease,
-      transform 120ms ease;
+    color: var(--text-muted);
+    font-family:
+      ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono",
+      "Courier New", monospace;
+    font-size: 0.66rem;
+    line-height: 1.25;
   }
-  .tool-env-summary:hover .tool-env-popover {
-    opacity: 1;
-    transform: translateY(0);
+  .tool-env-popover-title {
+    color: var(--text-3);
+    font-size: 0.62rem;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+  }
+  .tool-env-popover-list {
+    display: grid;
+    gap: 0.24rem;
+    min-width: 0;
   }
   .tool-env-badge {
     display: inline-flex;
@@ -3373,12 +3559,26 @@
     max-width: 5.5rem;
     color: var(--text-faint);
   }
-  .tool-env-popover .tool-env-badge {
-    max-width: 26rem;
+  .tool-env-popover-fixed .tool-env-badge {
+    display: grid;
+    grid-template-columns: minmax(7rem, 0.42fr) minmax(0, 1fr);
+    width: 100%;
+    max-width: none;
+    white-space: normal;
   }
-  .tool-env-popover .tool-env-key,
-  .tool-env-popover .tool-env-value {
-    max-width: 13rem;
+  .tool-env-popover-fixed .tool-env-key,
+  .tool-env-popover-fixed .tool-env-value {
+    max-width: none;
+    overflow: visible;
+    text-overflow: clip;
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+  .tool-env-popover-fixed .tool-env-key {
+    align-content: start;
+  }
+  .tool-env-popover-fixed .tool-env-value {
+    word-break: break-word;
   }
   .work-thinking-preview {
     font-family: inherit;

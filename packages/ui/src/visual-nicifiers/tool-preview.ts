@@ -169,6 +169,17 @@ function stringFromToolInputField(
   return undefined;
 }
 
+function commandTextFromToolInput(
+  input: unknown,
+  toolName: string | undefined,
+): string | undefined {
+  return (
+    stringFromToolInputField(input, "cmd") ??
+    stringFromToolInputField(input, "command") ??
+    commandFromToolInput(input, toolName)
+  );
+}
+
 export function visualToolCallPayloadText(
   block: MessageBlock | undefined,
 ): string {
@@ -199,8 +210,7 @@ export function visualToolInlineScript(
   );
   if (structuredScript) return structuredScript;
   const command =
-    stringFromToolInputField(block.toolInput, "cmd") ??
-    stringFromToolInputField(block.toolInput, "command");
+    commandTextFromToolInput(block.toolInput, block.toolName);
   if (!command) return undefined;
   return inlineScriptFromCommandPreservingHeredoc(command);
 }
@@ -212,8 +222,7 @@ export function visualToolInlineScriptLanguageLabel(
   if (inlineScript) return inlineScriptLanguageLabel(inlineScript.language);
   if (!block || block.type !== "tool_use") return "";
   const command =
-    stringFromToolInputField(block.toolInput, "cmd") ??
-    stringFromToolInputField(block.toolInput, "command");
+    commandTextFromToolInput(block.toolInput, block.toolName);
   if (!command) return "";
   const scriptFile = directScriptCommand(
     normalizeLaunchedCommand(command).command,
@@ -284,10 +293,17 @@ export function visualToolIconNameForPreview(
   if (/^Check console\b/.test(preview)) return "list_console_messages";
   if (/^Check network requests\b/.test(preview)) return "list_network_requests";
   if (/^List browser pages\b/.test(preview)) return "list_pages";
+  if (/^Capture browser snapshot\b/.test(preview)) return "take_snapshot";
+  if (/^Capture browser screenshot\b/.test(preview)) return "take_screenshot";
+  if (/^Click browser element\b/.test(preview)) return "click";
+  if (/^Upload\b/.test(preview)) return "upload_file";
+  if (/^Download from browser\b/.test(preview)) return "download_file";
+  if (/^Read browser\b/.test(preview)) return "read_browser";
+  if (/^Scroll browser\b/.test(preview)) return "scroll_browser";
   if (/^List screen sessions\b/.test(preview)) return "list";
   if (/^Emulate\b/.test(preview)) return "emulate";
   if (/^Open tunnel\b/.test(preview)) return "port_check";
-  if (/^(?:Navigate to|Open)\b/.test(preview)) return "navigate_page";
+  if (/^(?:Navigate to|Open|Open browser)\b/.test(preview)) return "navigate_page";
   if (/^Check processes?\b/.test(preview)) return "process_check";
   if (/^Check containers?\b/.test(preview)) return "process_check";
   if (/^Stop process(?:es)?\b/.test(preview)) return "process_end";
@@ -299,6 +315,7 @@ export function visualToolIconNameForPreview(
     return "filesystem_create";
   }
   if (/^Fetch\b/.test(preview)) return "fetch";
+  if (/^(Configure|Build) CMake\b/.test(preview)) return "cmake";
   return block?.toolName;
 }
 
@@ -321,17 +338,23 @@ export function visualSnapshotUidLabelsFromToolResult(
   toolResultBlock: MessageBlock | undefined,
 ): ReadonlyMap<string, string> | undefined {
   const toolName = (toolUseBlock?.toolName ?? "").toLowerCase();
-  if (toolName !== "take_snapshot" && !toolName.endsWith(".take_snapshot")) {
+  const isNativeSnapshotTool =
+    toolName === "take_snapshot" || toolName.endsWith(".take_snapshot");
+  const isAgentBrowserSnapshotCommand = /^Capture browser snapshot\b/.test(
+    visualToolPreviewText(toolUseBlock),
+  );
+  if (!isNativeSnapshotTool && !isAgentBrowserSnapshotCommand) {
     return undefined;
   }
   if (!toolResultBlock || toolResultBlock.type !== "tool_result") {
     return undefined;
   }
   const labels = parseChromeSnapshotUidLabels(toolResultBlock.text ?? "");
+  parseAgentBrowserSnapshotRefLabels(toolResultBlock.text ?? "", labels);
   return labels.size > 0 ? labels : undefined;
 }
 
-function parseChromeSnapshotUidLabels(text: string): ReadonlyMap<string, string> {
+function parseChromeSnapshotUidLabels(text: string): Map<string, string> {
   const labels = new Map<string, string>();
   const linePattern =
     /\buid=([A-Za-z0-9_-]+)\s+([A-Za-z][A-Za-z0-9_-]*)(?:\s+"([^"]*)")?/g;
@@ -351,6 +374,22 @@ function chromeSnapshotRoleLabel(role: string): string {
     .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
     .replace(/[_-]+/g, " ")
     .toLowerCase();
+}
+
+function parseAgentBrowserSnapshotRefLabels(
+  text: string,
+  labels: Map<string, string>,
+): void {
+  const linePattern =
+    /(^|\s)(@[A-Za-z][A-Za-z0-9_-]*)\s+\[([^\]\n]+)\](?:\s+"([^"\n]*)")?/g;
+  for (const match of text.matchAll(linePattern)) {
+    const ref = match[2];
+    const role = match[3]?.trim();
+    const name = match[4]?.trim();
+    if (!ref || !role) continue;
+    const readableRole = chromeSnapshotRoleLabel(role);
+    labels.set(ref, name ? `${readableRole} ${name}` : readableRole);
+  }
 }
 
 export function visualToolFetchResultBadges(
@@ -490,8 +529,12 @@ function svelteCheckResultBadges(body: string): VisualToolResultBadge[] {
 
 export function visualToolCommandResultBadges(
   toolUseBlock: MessageBlock | undefined,
+  toolResultBlock?: MessageBlock | undefined,
 ): VisualToolResultBadge[] {
-  const infos = visualToolCommandSummaries(toolUseBlock)
+  const summaries = visualToolCommandSummaries(toolUseBlock);
+  const searchBadge = commandSearchResultBadge(summaries, toolResultBlock);
+  if (searchBadge) return [searchBadge];
+  const infos = summaries
     .map(commandFileBadgeInfo)
     .filter((info): info is CommandFileBadgeInfo => !!info);
   if (infos.length === 0) return [];
@@ -500,6 +543,52 @@ export function visualToolCommandResultBadges(
   const noun = sharedInfoValue(infos, "noun") ?? "path";
   const action = sharedInfoValue(infos, "action") ?? "touched";
   return [fileCountBadge(count, noun, action)];
+}
+
+function commandSearchResultBadge(
+  summaries: readonly VisualCommandSummary[],
+  toolResultBlock: MessageBlock | undefined,
+): VisualToolResultBadge | undefined {
+  if (
+    !summaries.some(
+      (summary) =>
+        summary.kind === "search" ||
+        (summary.kind === "git" && summary.action === "show-file-search"),
+    )
+  ) {
+    return undefined;
+  }
+  if (!toolResultBlock || toolResultBlock.type !== "tool_result") {
+    return undefined;
+  }
+  const result = cleanVisualToolResultText(toolResultBlock.text);
+  if (!result.wrappedCodexChunk) return undefined;
+  if (result.exitCode !== undefined && result.exitCode !== 0) {
+    return {
+      label: `exit ${result.exitCode}`,
+      tone: "danger",
+      title: "Search command failed",
+    };
+  }
+  const count = countVisibleResultLines(result.body);
+  if (count === 0) {
+    return {
+      label: "no results",
+      tone: "neutral",
+      title: "Search returned no visible result lines",
+    };
+  }
+  return {
+    label: `${count} ${plural(count, "result")}`,
+    tone: "neutral",
+    title: `${count} visible search ${plural(count, "result")}`,
+  };
+}
+
+function countVisibleResultLines(body: string): number {
+  const trimmed = body.trim();
+  if (!trimmed) return 0;
+  return trimmed.split(/\r?\n/).filter((line) => line.trim().length > 0).length;
 }
 
 export function visualFileEditCountBadge(
@@ -527,9 +616,7 @@ function visualToolCommandSummaries(
   block: MessageBlock | undefined,
 ): VisualCommandSummary[] {
   if (!block || block.type !== "tool_use") return [];
-  const command =
-    stringFromToolInputField(block.toolInput, "cmd") ??
-    stringFromToolInputField(block.toolInput, "command");
+  const command = commandTextFromToolInput(block.toolInput, block.toolName);
   if (!command) return [];
   return visualCommandPreview(command).summaries;
 }
@@ -597,9 +684,7 @@ function visualToolTestSummary(
   block: MessageBlock | undefined,
 ): Extract<VisualCommandSummary, { kind: "test" }> | undefined {
   if (!block || block.type !== "tool_use") return undefined;
-  const command =
-    stringFromToolInputField(block.toolInput, "cmd") ??
-    stringFromToolInputField(block.toolInput, "command");
+  const command = commandTextFromToolInput(block.toolInput, block.toolName);
   if (!command) return undefined;
   return visualCommandPreview(command).summaries.find(
     (summary): summary is Extract<VisualCommandSummary, { kind: "test" }> =>
@@ -708,9 +793,7 @@ function visualToolFetchSummaries(
   block: MessageBlock | undefined,
 ): Extract<VisualCommandSummary, { kind: "fetch" }>[] {
   if (!block || block.type !== "tool_use") return [];
-  const command =
-    stringFromToolInputField(block.toolInput, "cmd") ??
-    stringFromToolInputField(block.toolInput, "command");
+  const command = commandTextFromToolInput(block.toolInput, block.toolName);
   if (!command) return [];
   return visualCommandPreview(command).summaries.filter(
     (summary): summary is Extract<VisualCommandSummary, { kind: "fetch" }> =>
@@ -720,22 +803,29 @@ function visualToolFetchSummaries(
 
 export function visualToolMediaBlocks(
   block: MessageBlock | undefined,
+  resultBlock?: MessageBlock | undefined,
 ): VisualMediaBlock[] {
   if (!block || block.type !== "tool_use") return [];
   const out: VisualMediaBlock[] = [];
   const seen = new Set<string>();
-  const addImagePath = (path: string | undefined, title?: string) => {
-    if (!path) return;
-    const trimmed = path.trim();
-    if (!trimmed || seen.has(trimmed)) return;
-    if (!looksLikeImagePath(trimmed)) return;
-    seen.add(trimmed);
+  const cwd = absoluteLocalWorkingDirectoryFromToolInput(block.toolInput);
+  let commandRunsRemotely = false;
+  const addImagePath = (
+    path: string | undefined,
+    title?: string,
+    pathCwd = cwd,
+  ) => {
+    const resolved = resolveLocalImagePathForMedia(path, pathCwd, {
+      remote: commandRunsRemotely,
+    });
+    if (!resolved || seen.has(resolved)) return;
+    seen.add(resolved);
     out.push({
       type: "media",
       mediaKind: "image",
-      path: trimmed,
-      title: title ?? pathBasename(trimmed),
-      alt: title ?? pathBasename(trimmed),
+      path: resolved,
+      title: title ?? pathBasename(resolved),
+      alt: title ?? pathBasename(resolved),
       toolName: block.toolName,
       toolUseId: block.toolUseId,
     });
@@ -762,17 +852,237 @@ export function visualToolMediaBlocks(
     }
   }
 
-  const command =
-    stringFromToolInputField(block.toolInput, "cmd") ??
-    stringFromToolInputField(block.toolInput, "command");
+  const command = commandTextFromToolInput(block.toolInput, block.toolName);
+  let commandResultCwd = cwd;
   if (command) {
-    for (const summary of visualCommandPreview(command).summaries) {
+    const preview = visualCommandPreview(command);
+    commandRunsRemotely = !!preview.remoteHost;
+    const mediaSummaries = visualCommandMediaSummaries(
+      command,
+      cwd,
+    );
+    commandResultCwd =
+      mediaSummaries.at(-1)?.cwd ?? localCommandFinalCwd(command, cwd);
+    for (const { summary, cwd: summaryCwd } of mediaSummaries) {
       if (summary.kind === "image-transform") {
-        addImagePath(summary.input, "Input image");
-        addImagePath(summary.output, "Output image");
+        addImagePath(summary.input, "Input image", summaryCwd);
+        addImagePath(summary.output, "Output image", summaryCwd);
       } else if (summary.kind === "fetch") {
-        addImagePath(summary.output, "Fetched image");
+        addImagePath(summary.output, "Fetched image", summaryCwd);
+      } else if (summary.kind === "browser" && summary.action === "upload") {
+        addImagePath(summary.detail ?? summary.target, "Uploaded image", summaryCwd);
+      } else if (summary.kind === "browser" && summary.action === "screenshot") {
+        addImagePath(summary.target, "Screenshot", summaryCwd);
       }
+    }
+  }
+  for (const path of imagePathsFromToolResult(resultBlock)) {
+    addImagePath(path, "Screenshot", commandResultCwd);
+  }
+  return out;
+}
+
+function absoluteLocalWorkingDirectoryFromToolInput(
+  input: unknown,
+): string | undefined {
+  if (typeof input === "string") {
+    const cwd = extractStringLiteralField(input, [
+      "cwd",
+      "workdir",
+      "workingDirectory",
+    ]);
+    return cwd && isAbsoluteLocalFilePath(cwd) ? cwd : undefined;
+  }
+  if (!input || typeof input !== "object") return undefined;
+  const obj = input as Record<string, unknown>;
+  const cwd =
+    stringField(obj, "cwd") ??
+    stringField(obj, "workdir") ??
+    stringField(obj, "workingDirectory");
+  return cwd && isAbsoluteLocalFilePath(cwd) ? cwd : undefined;
+}
+
+function commandFromToolInput(
+  input: unknown,
+  toolName: string | undefined,
+): string | undefined {
+  if (typeof input !== "string") return undefined;
+  const embedded = extractStringLiteralField(input, ["cmd", "command"]);
+  if (embedded) return embedded;
+  const trimmed = input.trim();
+  if (!trimmed) return undefined;
+  const normalizedTool = (toolName ?? "").toLowerCase();
+  if (normalizedTool.includes("exec")) return trimmed;
+  return undefined;
+}
+
+function extractStringLiteralField(
+  source: string,
+  keys: readonly string[],
+): string | undefined {
+  for (const key of keys) {
+    const field = `(?:["']${escapeRegExp(key)}["']|\\b${escapeRegExp(key)}\\b)`;
+    const doubleQuoted = source.match(
+      new RegExp(`${field}\\s*:\\s*"((?:[^"\\\\]|\\\\.)*)"`),
+    );
+    if (doubleQuoted?.[1]) return unescapeToolLiteral(doubleQuoted[1], '"');
+    const singleQuoted = source.match(
+      new RegExp(`${field}\\s*:\\s*'((?:[^'\\\\]|\\\\.)*)'`),
+    );
+    if (singleQuoted?.[1]) return unescapeToolLiteral(singleQuoted[1], "'");
+    const templateQuoted = source.match(
+      new RegExp(`${field}\\s*:\\s*\`((?:[^\`\\\\]|\\\\.)*)\``),
+    );
+    if (templateQuoted?.[1]) return unescapeToolLiteral(templateQuoted[1], "`");
+  }
+  return undefined;
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[\\^$.*+?()[\]{}|]/g, "\\$&");
+}
+
+function unescapeToolLiteral(value: string, quote: string): string {
+  if (quote === "`") {
+    return value.replace(/\\`/g, "`").replace(/\\\\/g, "\\");
+  }
+  try {
+    return JSON.parse(`${quote}${value}${quote}`);
+  } catch {
+    return value.replace(/\\(["'\\])/g, "$1");
+  }
+}
+
+function visualCommandMediaSummaries(
+  command: string,
+  baseCwd: string | undefined,
+): { summary: VisualCommandSummary; cwd: string | undefined }[] {
+  const normalized = normalizeLaunchedCommand(command);
+  if (normalized.remoteHost) {
+    return visualCommandPreview(command).summaries.map((summary) => ({
+      summary,
+      cwd: baseCwd,
+    }));
+  }
+  const parts = splitShellCommandChain(normalized.command);
+  if (parts.length === 0) {
+    return visualCommandPreview(command).summaries.map((summary) => ({
+      summary,
+      cwd: baseCwd,
+    }));
+  }
+  let currentCwd = baseCwd;
+  const summaries: { summary: VisualCommandSummary; cwd: string | undefined }[] = [];
+  for (const part of parts) {
+    const next = normalizeLaunchedCommand(part);
+    const tokens = shellTokens(next.command);
+    const name = shellLauncherName(tokens[0] ?? "");
+    if (name === "cd" || name === "chdir" || name === "set-location") {
+      currentCwd = resolveLocalShellCwd(currentCwd, cdTargetFromTokens(tokens));
+      continue;
+    }
+    const summary = summarizeShellCommand(next.command);
+    if (summary) summaries.push({ summary, cwd: currentCwd });
+  }
+  if (summaries.length > 0) return summaries;
+  return visualCommandPreview(command).summaries.map((summary) => ({
+    summary,
+    cwd: currentCwd,
+  }));
+}
+
+function localCommandFinalCwd(
+  command: string,
+  baseCwd: string | undefined,
+): string | undefined {
+  const normalized = normalizeLaunchedCommand(command);
+  if (normalized.remoteHost) return baseCwd;
+  let currentCwd = baseCwd;
+  for (const part of splitShellCommandChain(normalized.command)) {
+    const next = normalizeLaunchedCommand(part);
+    const tokens = shellTokens(next.command);
+    const name = shellLauncherName(tokens[0] ?? "");
+    if (name === "cd" || name === "chdir" || name === "set-location") {
+      currentCwd = resolveLocalShellCwd(currentCwd, cdTargetFromTokens(tokens));
+    }
+  }
+  return currentCwd;
+}
+
+function resolveLocalShellCwd(
+  cwd: string | undefined,
+  target: string | undefined,
+): string | undefined {
+  if (!target || target === "." || target === "./") return cwd;
+  if (target === ".." && cwd) {
+    return cwd.replace(/[\\/]+$/g, "").replace(/[\\/][^\\/]*$/, "") || cwd;
+  }
+  if (isAbsoluteLocalFilePath(target)) return target;
+  if (!cwd || isAbsoluteOrSpecialPath(target)) return cwd;
+  return joinRemotePath(cwd, target);
+}
+
+function resolveLocalImagePathForMedia(
+  path: string | undefined,
+  cwd: string | undefined,
+  options: { remote: boolean },
+): string | undefined {
+  if (!path) return undefined;
+  const trimmed = cleanImagePathCandidate(path);
+  if (!trimmed || !looksLikeImagePath(trimmed)) return undefined;
+  if (options.remote) return undefined;
+  if (isAbsoluteLocalFilePath(trimmed)) return trimmed;
+  if (!cwd || isAbsoluteOrSpecialPath(trimmed)) return undefined;
+  return joinRemotePath(cwd, trimmed);
+}
+
+function cleanImagePathCandidate(path: string): string {
+  return path
+    .trim()
+    .replace(/^[`'"]+/, "")
+    .replace(/[`'",.;:)\]}]+$/, "");
+}
+
+function isAbsoluteLocalFilePath(path: string): boolean {
+  return (
+    path.startsWith("/") ||
+    /^[A-Za-z]:[\\/]/.test(path) ||
+    /^\\\\/.test(path)
+  );
+}
+
+function imagePathsFromToolResult(
+  block: MessageBlock | undefined,
+): string[] {
+  if (!block || block.type !== "tool_result" || !block.text) return [];
+  const cleaned = cleanVisualToolResultText(block.text);
+  const text = `${cleaned.body}\n${block.text}`;
+  if (!/\b(?:screenshot|snapshot|image)\b/i.test(text)) return [];
+
+  const out: string[] = [];
+  const seen = new Set<string>();
+  const push = (path: string | undefined) => {
+    if (!path) return;
+    const trimmed = path
+      .trim()
+      .replace(/^[`'"]+/, "")
+      .replace(/[`'",.;:)\]}]+$/, "");
+    if (!trimmed || seen.has(trimmed) || !looksLikeImagePath(trimmed)) return;
+    seen.add(trimmed);
+    out.push(trimmed);
+  };
+
+  const patterns = [
+    /\b(?:screenshot|snapshot|image)\s+(?:saved|written|captured|created)\s+to\s+(.+?\.(?:png|jpe?g|webp|gif|avif))(?:\s|$|["'`),.;:\]}])/gi,
+    /\bsaved\s+(?:screenshot|snapshot|image)\s+to\s+(.+?\.(?:png|jpe?g|webp|gif|avif))(?:\s|$|["'`),.;:\]}])/gi,
+    /["'](?:filePath|file_path|path)["']\s*:\s*["']([^"']+\.(?:png|jpe?g|webp|gif|avif))["']/gi,
+  ] as const;
+
+  for (const pattern of patterns) {
+    pattern.lastIndex = 0;
+    let match: RegExpExecArray | null;
+    while ((match = pattern.exec(text))) {
+      push(match[1]);
     }
   }
   return out;
@@ -827,14 +1137,22 @@ export function visualToolPreviewParts(
     context,
   );
   if (structuredPreview) return structuredPreview;
-  const command =
-    stringFromToolInputField(input, "cmd") ??
-    stringFromToolInputField(input, "command");
+  const command = commandTextFromToolInput(input, block.toolName);
+  const commandParts = command
+    ? splitShellCommandChain(normalizeLaunchedCommand(command).command)
+    : [];
+  const commandHasHeredoc = command
+    ? /(?:^|\s)(?:python3?|node|bun|deno|swift|ruby|perl)\b[\s\S]*?<<-?\s*['"]?[A-Za-z_][A-Za-z0-9_]*['"]?/.test(
+        command,
+      )
+    : false;
   const inlineScript = command
-    ? inlineScriptFromCommandPreservingHeredoc(command)
+    ? commandHasHeredoc || commandParts.length <= 1
+      ? inlineScriptFromCommandPreservingHeredoc(command)
+      : undefined
     : undefined;
   if (inlineScript) return textPreviewParts(visualToolInlineScriptPreviewText(block));
-  const commandPreview = command ? visualCommandPreview(command) : undefined;
+  const commandPreview = command ? visualCommandPreview(command, context) : undefined;
   if (commandPreview && commandPreview.parts.length > 0) {
     return commandPreview.parts;
   }
@@ -944,9 +1262,7 @@ export function visualToolLauncherLabel(
   block: MessageBlock | undefined,
 ): string | undefined {
   if (!block || block.type !== "tool_use") return undefined;
-  const command =
-    stringFromToolInputField(block.toolInput, "cmd") ??
-    stringFromToolInputField(block.toolInput, "command");
+  const command = commandTextFromToolInput(block.toolInput, block.toolName);
   if (!command) return undefined;
   return normalizeLaunchedCommand(command).launcher;
 }
@@ -955,9 +1271,7 @@ export function visualToolRemoteHostLabel(
   block: MessageBlock | undefined,
 ): string | undefined {
   if (!block || block.type !== "tool_use") return undefined;
-  const command =
-    stringFromToolInputField(block.toolInput, "cmd") ??
-    stringFromToolInputField(block.toolInput, "command");
+  const command = commandTextFromToolInput(block.toolInput, block.toolName);
   if (!command) return undefined;
   return normalizeLaunchedCommand(command).remoteHost;
 }
@@ -967,13 +1281,16 @@ export interface VisualToolEnvAssignment {
   value: string;
 }
 
+export interface VisualToolConfigAssignment {
+  name: string;
+  value: string;
+}
+
 export function visualToolEnvAssignments(
   block: MessageBlock | undefined,
 ): VisualToolEnvAssignment[] {
   if (!block || block.type !== "tool_use") return [];
-  const command =
-    stringFromToolInputField(block.toolInput, "cmd") ??
-    stringFromToolInputField(block.toolInput, "command");
+  const command = commandTextFromToolInput(block.toolInput, block.toolName);
   if (!command) return [];
   return visualCommandPreview(command).env;
 }
@@ -988,6 +1305,30 @@ export function visualToolEnvTooltipText(
   block: MessageBlock | undefined,
 ): string {
   return visualToolEnvAssignments(block)
+    .map((item) => `${item.name}=${item.value}`)
+    .join("\n");
+}
+
+export function visualToolConfigAssignments(
+  block: MessageBlock | undefined,
+): VisualToolConfigAssignment[] {
+  if (!block || block.type !== "tool_use") return [];
+  const command = commandTextFromToolInput(block.toolInput, block.toolName);
+  if (!command) return [];
+  return cmakeFlagAssignmentsFromCommand(command);
+}
+
+export function visualToolConfigSummaryLabel(
+  block: MessageBlock | undefined,
+): string {
+  const count = visualToolConfigAssignments(block).length;
+  return count > 0 ? `${count} ${plural(count, "FLAG").toUpperCase()}` : "";
+}
+
+export function visualToolConfigTooltipText(
+  block: MessageBlock | undefined,
+): string {
+  return visualToolConfigAssignments(block)
     .map((item) => `${item.name}=${item.value}`)
     .join("\n");
 }
@@ -1100,8 +1441,39 @@ type VisualCommandSummary =
       attempts?: number;
       intervalSeconds?: number;
     }
+  | {
+      kind: "browser";
+      action:
+        | "open"
+        | "close"
+        | "snapshot"
+        | "screenshot"
+        | "click"
+        | "upload"
+        | "download"
+        | "fill"
+        | "press"
+        | "wait"
+        | "get"
+        | "scroll"
+        | "console"
+        | "network"
+        | "pages"
+        | "reload"
+        | "emulate";
+      target?: string;
+      targetLabel?: string;
+      detail?: string;
+    }
   | { kind: "fetch"; url: string; output?: string }
   | { kind: "image-transform"; input: string; output: string }
+  | {
+      kind: "cmake";
+      action: "configure" | "build";
+      source?: string;
+      build?: string;
+      generator?: string;
+    }
   | {
       kind: "filesystem";
       action: "create" | "delete" | "copy" | "move";
@@ -1508,7 +1880,10 @@ function findPreviewParts(summary: {
   ];
 }
 
-function visualCommandPreview(command: string): {
+function visualCommandPreview(
+  command: string,
+  context?: VisualToolPreviewContext,
+): {
   text: string;
   parts: VisualToolPreviewPart[];
   launcher?: string;
@@ -1543,18 +1918,6 @@ function visualCommandPreview(command: string): {
       summaries: [fileLoopSummary],
     };
   }
-  const pipeSummary = summarizePipeCommand(unwrapped);
-  if (pipeSummary) {
-    const parts = commandSummaryParts(pipeSummary);
-    return {
-      text: parts.map((part) => part.text).join(""),
-      parts,
-      launcher: normalized.launcher,
-      remoteHost: normalized.remoteHost,
-      env,
-      summaries: [pipeSummary],
-    };
-  }
   const parts = splitShellCommandChain(unwrapped);
   if (parts.length === 0) {
     return {
@@ -1565,6 +1928,20 @@ function visualCommandPreview(command: string): {
       env,
       summaries: [],
     };
+  }
+  if (parts.length === 1) {
+    const pipeSummary = summarizePipeCommand(unwrapped);
+    if (pipeSummary) {
+      const previewParts = commandSummaryParts(pipeSummary);
+      return {
+        text: previewParts.map((part) => part.text).join(""),
+        parts: previewParts,
+        launcher: normalized.launcher,
+        remoteHost: normalized.remoteHost,
+        env,
+        summaries: [pipeSummary],
+      };
+    }
   }
   const remoteContextCwd = normalized.remoteHost
     ? shellContextCwd(parts)
@@ -1605,7 +1982,7 @@ function visualCommandPreview(command: string): {
       const parts = summaries.flatMap(
         (summary, index): VisualToolPreviewPart[] => [
           ...(index === 0 ? [] : [{ kind: "text" as const, text: " · " }]),
-          ...commandSummaryParts(summary),
+          ...commandSummaryParts(summary, context),
         ],
       );
       return {
@@ -1620,7 +1997,7 @@ function visualCommandPreview(command: string): {
     const parts = summaryPairs.flatMap((pair, index): VisualToolPreviewPart[] => [
       ...(index === 0 ? [] : [{ kind: "text" as const, text: " · " }]),
       ...(pair.summary
-        ? commandSummaryParts(pair.summary)
+        ? commandSummaryParts(pair.summary, context)
         : textPreviewParts(pair.part.replace(/\s+/g, " ").trim())),
     ]);
     return {
@@ -1697,7 +2074,7 @@ function visualCommandPreview(command: string): {
     };
   }
   if (summaries.length === 1) {
-    const parts = commandSummaryParts(summaries[0]!);
+    const parts = commandSummaryParts(summaries[0]!, context);
     return {
       text: parts.map((part) => part.text).join(""),
       parts,
@@ -1710,7 +2087,7 @@ function visualCommandPreview(command: string): {
   if (summaries.length > 1) {
     const parts = summaries.flatMap((summary, index): VisualToolPreviewPart[] => [
       ...(index === 0 ? [] : [{ kind: "text" as const, text: " · " }]),
-      ...commandSummaryParts(summary),
+      ...commandSummaryParts(summary, context),
     ]);
     return {
       text: parts.map((part) => part.text).join(""),
@@ -2164,7 +2541,7 @@ function splitShellCommandChain(command: string): string[] {
       quote = ch;
       continue;
     }
-    if (ch === ";" || (ch === "&" && command[i + 1] === "&")) {
+    if (ch === ";" || ch === "\n" || (ch === "&" && command[i + 1] === "&")) {
       const part = command.slice(start, i).trim();
       if (part) parts.push(part);
       if (ch === "&") i += 1;
@@ -2415,6 +2792,8 @@ function summarizeShellCommand(command: string): VisualCommandSummary | undefine
   if (screen) return screen;
   const test = summarizeTestCommand(tokens);
   if (test) return test;
+  const browser = summarizeAgentBrowser(tokens);
+  if (browser) return browser;
   const scriptFile = directScriptCommand(command);
   if (scriptFile) return scriptFile;
   if (lowerName === "git") return summarizeGit(tokens);
@@ -2453,6 +2832,7 @@ function summarizeShellCommand(command: string): VisualCommandSummary | undefine
   if (lowerName === "magick" || lowerName === "convert") {
     return summarizeImageTransform(tokens);
   }
+  if (lowerName === "cmake") return summarizeCMake(tokens);
   if (name === "sed") return summarizeSedRead(tokens);
   if (lowerName === "ls") return summarizeLs(tokens);
   if (lowerName === "dir") {
@@ -3146,6 +3526,338 @@ function looksLikeImagePath(path: string): boolean {
   );
 }
 
+function summarizeCMake(tokens: string[]): VisualCommandSummary | undefined {
+  if ((tokens[0] ?? "").split("/").pop()?.toLowerCase() !== "cmake") {
+    return undefined;
+  }
+  const buildIndex = tokens.indexOf("--build");
+  if (buildIndex >= 0) {
+    return {
+      kind: "cmake",
+      action: "build",
+      build:
+        tokens[buildIndex + 1] && !tokens[buildIndex + 1]!.startsWith("-")
+          ? tokens[buildIndex + 1]
+          : undefined,
+    };
+  }
+  const flags = cmakeFlagAssignmentsFromTokens(tokens);
+  if (flags.length === 0) return undefined;
+  return {
+    kind: "cmake",
+    action: "configure",
+    source: valueAfterFlag(tokens, "-S"),
+    build: valueAfterFlag(tokens, "-B"),
+    generator: valueAfterFlag(tokens, "-G"),
+  };
+}
+
+function summarizeAgentBrowser(
+  tokens: string[],
+): Extract<VisualCommandSummary, { kind: "browser" }> | undefined {
+  const browserIndex = agentBrowserTokenIndex(tokens);
+  if (browserIndex < 0) return undefined;
+  let i = browserIndex + 1;
+  for (; i < tokens.length; i += 1) {
+    const token = tokens[i]!;
+    if (token === "--") {
+      i += 1;
+      break;
+    }
+    if (!token.startsWith("-")) break;
+    const option = token.split("=")[0]!;
+    if (AGENT_BROWSER_OPTIONS_WITH_VALUE.has(option) && !token.includes("=")) {
+      i += 1;
+    }
+  }
+  const command = tokens[i]?.toLowerCase();
+  if (!command) return undefined;
+  const args = tokens.slice(i + 1);
+  if (command === "open" || command === "goto" || command === "navigate") {
+    return { kind: "browser", action: "open", target: firstPositionalArg(args) };
+  }
+  if (command === "close") return { kind: "browser", action: "close" };
+  if (command === "snapshot")
+    return { kind: "browser", action: "snapshot", detail: browserFlagDetail(args) };
+  if (command === "screenshot") {
+    return {
+      kind: "browser",
+      action: "screenshot",
+      target: firstPositionalArg(args),
+      detail: browserFlagDetail(args),
+    };
+  }
+  if (command === "click" || command === "dblclick" || command === "doubleclick") {
+    return {
+      kind: "browser",
+      action: "click",
+      target: firstPositionalArg(args),
+      detail: command === "click" ? undefined : "double",
+    };
+  }
+  if (command === "upload") {
+    const upload = agentBrowserUploadArgs(args);
+    return {
+      kind: "browser",
+      action: "upload",
+      target: upload.target,
+      detail: upload.file,
+    };
+  }
+  if (command === "download") {
+    const target = firstPositionalArg(args);
+    return {
+      kind: "browser",
+      action: "download",
+      target,
+      detail: target ? firstPositionalArg(args.slice(args.indexOf(target) + 1)) : undefined,
+    };
+  }
+  if (command === "fill" || command === "type" || command === "select") {
+    return {
+      kind: "browser",
+      action: "fill",
+      target: firstPositionalArg(args),
+      detail: command,
+    };
+  }
+  if (command === "press" || command === "keyboard") {
+    return {
+      kind: "browser",
+      action: "press",
+      target: firstPositionalArg(args),
+      detail: command === "keyboard" ? firstPositionalArg(args.slice(1)) : undefined,
+    };
+  }
+  if (command === "wait") {
+    return {
+      kind: "browser",
+      action: "wait",
+      target: browserWaitTarget(args),
+    };
+  }
+  if (command === "get") {
+    return {
+      kind: "browser",
+      action: "get",
+      target: browserGetTarget(args),
+    };
+  }
+  if (command === "scroll") {
+    return {
+      kind: "browser",
+      action: "scroll",
+      target: browserScrollTarget(args),
+    };
+  }
+  if (command === "console") {
+    return { kind: "browser", action: "console" };
+  }
+  if (command === "network") {
+    const subcommand = args[0]?.toLowerCase();
+    return {
+      kind: "browser",
+      action: "network",
+      target: subcommand && !subcommand.startsWith("-") ? subcommand : undefined,
+    };
+  }
+  if (command === "pages") return { kind: "browser", action: "pages" };
+  if (command === "reload") return { kind: "browser", action: "reload" };
+  if (command === "set") {
+    const target = args[0]?.toLowerCase();
+    if (target === "viewport" || target === "device") {
+      return {
+        kind: "browser",
+        action: "emulate",
+        target:
+          target === "viewport"
+            ? args.slice(1, 3).filter(Boolean).join("x")
+            : firstPositionalArg(args.slice(1)),
+      };
+    }
+  }
+  return undefined;
+}
+
+function agentBrowserUploadArgs(args: string[]): {
+  target?: string;
+  file?: string;
+} {
+  const positional = args.filter(
+    (arg) => arg && arg !== "--" && !arg.startsWith("-"),
+  );
+  const toIndex = positional.findIndex((arg) => arg.toLowerCase() === "to");
+  if (toIndex > 0) {
+    return {
+      file: positional[toIndex - 1],
+      target: positional[toIndex + 1],
+    };
+  }
+  const target = positional.find((arg) => /^@?e?\d+(?:_\d+)?$/i.test(arg));
+  const file =
+    positional.find((arg) => arg !== target && looksLikeImagePath(arg)) ??
+    positional.find((arg) => arg !== target);
+  return { target, file };
+}
+
+const AGENT_BROWSER_OPTIONS_WITH_VALUE = new Set([
+  "--session",
+  "--session-name",
+  "--profile",
+  "--state",
+  "--download-path",
+  "--screenshot-dir",
+  "--screenshot-format",
+  "--screenshot-quality",
+  "--selector",
+  "--timeout",
+  "--browser",
+  "--user-data-dir",
+  "--cdp-url",
+]);
+
+function agentBrowserTokenIndex(tokens: readonly string[]): number {
+  for (let i = 0; i < tokens.length; i += 1) {
+    const name = shellLauncherName(tokens[i] ?? "");
+    if (name === "agent-browser") return i;
+  }
+  return -1;
+}
+
+function firstPositionalArg(args: readonly string[]): string | undefined {
+  for (let i = 0; i < args.length; i += 1) {
+    const arg = args[i]!;
+    if (arg === "--") return args[i + 1];
+    if (!arg.startsWith("-")) return arg;
+    if (AGENT_BROWSER_OPTIONS_WITH_VALUE.has(arg.split("=")[0]!) && !arg.includes("=")) {
+      i += 1;
+    }
+  }
+  return undefined;
+}
+
+function browserFlagDetail(args: readonly string[]): string | undefined {
+  if (args.includes("-i") || args.includes("--interactive")) return "interactive";
+  if (args.includes("--full")) return "full page";
+  if (args.includes("--annotate")) return "annotated";
+  return undefined;
+}
+
+function browserWaitTarget(args: readonly string[]): string | undefined {
+  if (args.length === 0) return undefined;
+  for (let i = 0; i < args.length; i += 1) {
+    const arg = args[i]!;
+    if (arg === "--load" && args[i + 1]) return `load ${args[i + 1]}`;
+    if (arg === "--url" && args[i + 1]) return `URL ${args[i + 1]}`;
+    if (arg === "--text" && args[i + 1]) return args[i + 1];
+    if (arg === "--fn" && args[i + 1]) return "function";
+    if (/^\d+$/.test(arg)) return formatMillisecondsAsSeconds(arg);
+    if (!arg.startsWith("-")) return arg;
+  }
+  return undefined;
+}
+
+function browserGetTarget(args: readonly string[]): string | undefined {
+  const subject = firstPositionalArg(args);
+  if (!subject) return undefined;
+  const subjectIndex = args.indexOf(subject);
+  const target =
+    subjectIndex >= 0 ? firstPositionalArg(args.slice(subjectIndex + 1)) : undefined;
+  if (subject === "text" && target === "body") return "body text";
+  if (target) return `${target} ${subject}`;
+  return subject;
+}
+
+function browserScrollTarget(args: readonly string[]): string | undefined {
+  const direction = firstPositionalArg(args);
+  if (!direction) return undefined;
+  const directionIndex = args.indexOf(direction);
+  const amount =
+    directionIndex >= 0 ? firstPositionalArg(args.slice(directionIndex + 1)) : undefined;
+  return amount ? `${direction} ${amount}` : direction;
+}
+
+function formatMillisecondsAsSeconds(value: string): string {
+  const ms = Number(value);
+  if (!Number.isFinite(ms) || ms <= 0) return value;
+  if (ms < 1000) return `${ms}ms`;
+  const seconds = ms / 1000;
+  return Number.isInteger(seconds) ? `${seconds}s` : `${seconds.toFixed(1)}s`;
+}
+
+function valueAfterFlag(
+  tokens: readonly string[],
+  flag: string,
+): string | undefined {
+  const index = tokens.indexOf(flag);
+  const value = index >= 0 ? tokens[index + 1] : undefined;
+  return value && !value.startsWith("-") ? value : undefined;
+}
+
+function cmakeFlagAssignmentsFromCommand(
+  command: string,
+): VisualToolConfigAssignment[] {
+  const normalized = normalizeLaunchedCommand(command);
+  const parts = splitShellCommandChain(normalized.command);
+  const commands = parts.length > 0 ? parts : [normalized.command];
+  const assignments: VisualToolConfigAssignment[] = [];
+  for (const part of commands) {
+    const next = normalizeLaunchedCommand(part);
+    const tokens = shellTokens(next.command);
+    if ((tokens[0] ?? "").split("/").pop()?.toLowerCase() !== "cmake") {
+      continue;
+    }
+    assignments.push(...cmakeFlagAssignmentsFromTokens(tokens));
+  }
+  return assignments;
+}
+
+function cmakeFlagAssignmentsFromTokens(
+  tokens: readonly string[],
+): VisualToolConfigAssignment[] {
+  const assignments: VisualToolConfigAssignment[] = [];
+  for (let i = 1; i < tokens.length; i += 1) {
+    const token = tokens[i] ?? "";
+    if (token === "-S" || token === "-B" || token === "-G") {
+      const value = tokens[i + 1];
+      if (value && !value.startsWith("-")) {
+        assignments.push({
+          name:
+            token === "-S"
+              ? "SOURCE"
+              : token === "-B"
+                ? "BUILD"
+                : "GENERATOR",
+          value,
+        });
+        i += 1;
+      }
+      continue;
+    }
+    if (token === "-D") {
+      const value = tokens[i + 1];
+      if (value) {
+        assignments.push(cmakeDefinitionAssignment(value));
+        i += 1;
+      }
+      continue;
+    }
+    if (token.startsWith("-D") && token.length > 2) {
+      assignments.push(cmakeDefinitionAssignment(token.slice(2)));
+    }
+  }
+  return assignments;
+}
+
+function cmakeDefinitionAssignment(value: string): VisualToolConfigAssignment {
+  const eq = value.indexOf("=");
+  if (eq < 0) return { name: value, value: "ON" };
+  return {
+    name: value.slice(0, eq),
+    value: value.slice(eq + 1),
+  };
+}
+
 function summarizeRemove(tokens: string[]): VisualCommandSummary | undefined {
   const command = tokens[0]?.split("/").pop()?.toLowerCase();
   const targets = positionalPathTokens(tokens.slice(1), powershellOptionsWithValue());
@@ -3637,6 +4349,7 @@ function isDockerContainerList(tokens: string[]): boolean {
 
 function commandSummaryParts(
   summary: VisualCommandSummary,
+  context?: VisualToolPreviewContext,
 ): VisualToolPreviewPart[] {
   if (summary.kind === "read")
     return readPreviewParts(summary.targets);
@@ -3734,6 +4447,9 @@ function commandSummaryParts(
       { kind: "text", text: readableUrl(summary.url) },
     ];
   }
+  if (summary.kind === "browser") {
+    return browserSummaryParts(summary, context);
+  }
   if (summary.kind === "git") {
     return gitSummaryParts(summary);
   }
@@ -3759,6 +4475,26 @@ function commandSummaryParts(
       { kind: "text", text: " -> " },
       ...interspersePathParts([summary.output]),
     ];
+  }
+  if (summary.kind === "cmake") {
+    const parts: VisualToolPreviewPart[] = [
+      {
+        kind: "text",
+        text: summary.action === "build" ? "Build CMake" : "Configure CMake",
+      },
+    ];
+    if (summary.action === "configure" && summary.source) {
+      parts.push({ kind: "text", text: " " });
+      parts.push(...interspersePathParts([summary.source]));
+    }
+    if (summary.build) {
+      parts.push({
+        kind: "text",
+        text: summary.action === "build" ? " " : " -> ",
+      });
+      parts.push(...interspersePathParts([summary.build]));
+    }
+    return parts;
   }
   if (summary.kind === "filesystem") {
     if (summary.action === "copy" || summary.action === "move") {
@@ -3996,6 +4732,129 @@ function prefixedTestTargetList(
     }
   });
   return parts;
+}
+
+function browserSummaryParts(
+  summary: Extract<VisualCommandSummary, { kind: "browser" }>,
+  context?: VisualToolPreviewContext,
+): VisualToolPreviewPart[] {
+  if (summary.action === "open") {
+    return [
+      { kind: "text", text: "Open browser " },
+      { kind: "text", text: summary.target ? readableUrl(summary.target) : "page" },
+    ];
+  }
+  if (summary.action === "close") return textPreviewParts("Close browser");
+  if (summary.action === "snapshot") {
+    return textPreviewParts(
+      summary.detail
+        ? `Capture browser snapshot (${summary.detail})`
+        : "Capture browser snapshot",
+    );
+  }
+  if (summary.action === "screenshot") {
+    const prefix = summary.detail
+      ? `Capture browser screenshot (${summary.detail})`
+      : "Capture browser screenshot";
+    if (!summary.target) return textPreviewParts(prefix);
+    return [
+      { kind: "text", text: `${prefix} ` },
+      ...interspersePathParts([summary.target]),
+    ];
+  }
+  if (summary.action === "click") {
+    const target = browserTargetLabel(summary, context);
+    return textPreviewParts(
+      `${summary.detail === "double" ? "Double-click" : "Click"} browser element${
+        target ? ` ${target}` : ""
+      }`,
+    );
+  }
+  if (summary.action === "upload") {
+    const target = browserTargetLabel(summary, context);
+    const parts: VisualToolPreviewPart[] = [
+      { kind: "text", text: "Upload " },
+      ...(summary.detail
+        ? interspersePathParts([summary.detail])
+        : textPreviewParts("file")),
+    ];
+    if (target) {
+      parts.push({ kind: "text", text: ` to ${target}` });
+    }
+    return parts;
+  }
+  if (summary.action === "download") {
+    const parts: VisualToolPreviewPart[] = [
+      { kind: "text", text: "Download from browser" },
+    ];
+    if (summary.detail) {
+      parts.push({ kind: "text", text: " to " }, ...interspersePathParts([summary.detail]));
+    } else if (summary.target) {
+      parts.push({ kind: "text", text: ` ${summary.target}` });
+    }
+    return parts;
+  }
+  if (summary.action === "fill") {
+    const target = browserTargetLabel(summary, context);
+    const verb =
+      summary.detail === "type"
+        ? "Type into"
+        : summary.detail === "select"
+          ? "Select in"
+          : "Fill";
+    return textPreviewParts(
+      `${verb} browser element${target ? ` ${target}` : ""}`,
+    );
+  }
+  if (summary.action === "press") {
+    return textPreviewParts(
+      `Press browser key${summary.target ? ` ${summary.target}` : ""}`,
+    );
+  }
+  if (summary.action === "wait") {
+    return textPreviewParts(
+      summary.target ? `Wait for browser ${summary.target}` : "Wait for browser",
+    );
+  }
+  if (summary.action === "get") {
+    return textPreviewParts(
+      summary.target ? `Read browser ${summary.target}` : "Read browser",
+    );
+  }
+  if (summary.action === "scroll") {
+    return textPreviewParts(
+      summary.target ? `Scroll browser ${summary.target}` : "Scroll browser",
+    );
+  }
+  if (summary.action === "console") {
+    return textPreviewParts("Check console messages");
+  }
+  if (summary.action === "network") {
+    return textPreviewParts(
+      summary.target === "requests"
+        ? "Check network requests"
+        : summary.target
+          ? `Check network ${summary.target}`
+          : "Check network",
+    );
+  }
+  if (summary.action === "pages") return textPreviewParts("List browser pages");
+  if (summary.action === "reload") return textPreviewParts("Reload page");
+  if (summary.action === "emulate") {
+    return textPreviewParts(
+      summary.target ? `Emulate ${summary.target}` : "Emulate browser",
+    );
+  }
+  return textPreviewParts("Use browser");
+}
+
+function browserTargetLabel(
+  summary: Extract<VisualCommandSummary, { kind: "browser" }>,
+  context?: VisualToolPreviewContext,
+): string | undefined {
+  if (summary.targetLabel) return summary.targetLabel;
+  if (!summary.target) return undefined;
+  return context?.snapshotUidLabels?.get(summary.target) ?? summary.target;
 }
 
 function prefixedPathSuffixList(

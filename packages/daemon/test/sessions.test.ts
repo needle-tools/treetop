@@ -485,6 +485,52 @@ describe("parseCodexJsonl", () => {
     });
   });
 
+  test("unwraps Codex Desktop custom-tool JavaScript invocations", () => {
+    const text = JSON.stringify({
+      timestamp: "2026-06-01T10:00:00.000Z",
+      type: "response_item",
+      payload: {
+        type: "custom_tool_call",
+        name: "exec",
+        call_id: "call-js-wrapper",
+        input: `const r = await tools.exec_command({cmd:"sed -n '1,80p' src/App.svelte",workdir:"/repo",yield_time_ms:10000,max_output_tokens:12000}); text(r.output);`,
+      },
+    });
+    const s = parseCodexJsonl(text);
+    expect(s.messages[0]?.blocks[0]).toEqual({
+      type: "tool_use",
+      toolName: "exec_command",
+      toolInput: {
+        cmd: "sed -n '1,80p' src/App.svelte",
+        workdir: "/repo",
+        yield_time_ms: 10000,
+        max_output_tokens: 12000,
+      },
+      toolUseId: "call-js-wrapper",
+    });
+  });
+
+  test("unwraps Codex Desktop apply_patch JavaScript invocations", () => {
+    const patch = "*** Begin Patch\n*** Update File: src/App.svelte\n@@\n-old\n+new\n*** End Patch";
+    const text = JSON.stringify({
+      timestamp: "2026-06-01T10:00:00.000Z",
+      type: "response_item",
+      payload: {
+        type: "custom_tool_call",
+        name: "exec",
+        call_id: "call-apply-patch",
+        input: `const patch = ${JSON.stringify(patch)};\ntext(await tools.apply_patch(patch));`,
+      },
+    });
+    const s = parseCodexJsonl(text);
+    expect(s.messages[0]?.blocks[0]).toEqual({
+      type: "tool_use",
+      toolName: "apply_patch",
+      toolInput: patch,
+      toolUseId: "call-apply-patch",
+    });
+  });
+
   test("clamps unexpected roles to 'user'", () => {
     const text = JSON.stringify({ role: "weird", content: "x" });
     expect(parseCodexJsonl(text).messages[0]?.role).toBe("user");
