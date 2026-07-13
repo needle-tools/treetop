@@ -1778,6 +1778,7 @@
           <button
             type="button"
             class="media-image-open"
+            data-supergit-image-path={imageBlock.path}
             title={`Open ${mediaLabel(imageBlock)}`}
             aria-label={`Open ${mediaLabel(imageBlock)}`}
             on:click|stopPropagation={() =>
@@ -1818,7 +1819,9 @@
           <LoadingSpinner size="0.9rem" label="Waiting for response" />
         </div>
       {:else if displayText}
-        <div class="block text md">{@html md(displayText)}</div>
+        <div class="block text md" data-supergit-markdown-source={displayText}>
+          {@html md(displayText)}
+        </div>
       {/if}
     {:else if b.type === "thinking"}
       {@const thought = thinkingDisplay(b.text)}
@@ -1829,7 +1832,9 @@
             <div class="thinking-title">{thought.title}</div>
           {/if}
           {#if thought.body}
-            <div class="tag-body md">{@html md(thought.body)}</div>
+            <div class="tag-body md" data-supergit-markdown-source={thought.body}>
+              {@html md(thought.body)}
+            </div>
           {/if}
         </div>
       </div>
@@ -1851,7 +1856,12 @@
             <span>{subagentTitle(subagent)}</span>
           </button>
           {#if subagentPreview(subagent)}
-            <div class="subagent-preview md">{@html md(subagentPreview(subagent))}</div>
+            <div
+              class="subagent-preview md"
+              data-supergit-markdown-source={subagentPreview(subagent)}
+            >
+              {@html md(subagentPreview(subagent))}
+            </div>
           {/if}
         </div>
       {/if}
@@ -1900,6 +1910,7 @@
           <button
             type="button"
             class="media-image-open"
+            data-supergit-image-path={b.path}
             title={`Open ${mediaLabel(b)}`}
             aria-label={`Open ${mediaLabel(b)}`}
             on:click={() => openMediaViewer([b], 0)}
@@ -2002,7 +2013,9 @@
   {#each blocks as b, blockIndex (visualBlockRenderKey(b, blockIndex))}
     {#if b.type === "text"}
       {#if b.text}
-        <div class="work-step-text md">{@html md(b.text)}</div>
+        <div class="work-step-text md" data-supergit-markdown-source={b.text}>
+          {@html md(b.text)}
+        </div>
       {/if}
     {:else if b.type === "thinking"}
       {@const thought = thinkingDisplay(b.text)}
@@ -2010,7 +2023,9 @@
         {@render renderThinkingIcon()}
         <div class="thinking-copy">
           {#if thought.body}
-            <div class="tag-body md">{@html md(thought.body)}</div>
+            <div class="tag-body md" data-supergit-markdown-source={thought.body}>
+              {@html md(thought.body)}
+            </div>
           {/if}
         </div>
       </div>
@@ -2037,7 +2052,12 @@
             <span>{subagentTitle(subagent)}</span>
           </button>
           {#if subagentPreview(subagent)}
-            <div class="tag-body md">{@html md(subagentPreview(subagent))}</div>
+            <div
+              class="tag-body md"
+              data-supergit-markdown-source={subagentPreview(subagent)}
+            >
+              {@html md(subagentPreview(subagent))}
+            </div>
           {/if}
         </div>
       {/if}
@@ -2101,6 +2121,7 @@
           <button
             type="button"
             class="media-image-open work-media-image-open"
+            data-supergit-image-path={b.path}
             title={`Open ${mediaLabel(b)}`}
             aria-label={`Open ${mediaLabel(b)}`}
             on:click={() => openMediaViewer([b], 0)}
@@ -2154,6 +2175,7 @@
   on:scroll={onMessagesScroll}
   use:codeCopy
   data-supergit-session-cwd={sessionCwd}
+  data-supergit-daemon-id={daemonId}
 >
   {#each items as item, itemIndex (getVisualTranscriptItemKey(item, itemIndex))}
     {#if item.kind === "work"}

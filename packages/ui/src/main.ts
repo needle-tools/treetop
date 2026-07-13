@@ -12,6 +12,11 @@ import {
   playOnFirstGesture,
 } from "./sound";
 import { startPeerWatcher } from "./peer-watcher";
+import {
+  CREATE_NOTE_EVENT,
+  installMarkdownSelectionContextMenu,
+} from "./selection-markdown";
+import { spawnNote } from "./StickyNotesLayer.svelte";
 import { windowTitle } from "../../../product";
 import "./styles/tokens.css";
 import "./styles/base.css";
@@ -108,6 +113,17 @@ configure(DEFAULT_MAPPINGS);
 installGestureListener();
 playOnFirstGesture("app-startup");
 startPeerWatcher();
+const destroyMarkdownSelectionContextMenu =
+  installMarkdownSelectionContextMenu();
+window.addEventListener("beforeunload", destroyMarkdownSelectionContextMenu);
+window.addEventListener(CREATE_NOTE_EVENT, (event) => {
+  const detail = event.detail;
+  void spawnNote({
+    anchor: detail.anchor,
+    body: detail.body,
+    originRect: detail.originRect,
+  });
+});
 
 const app = mount(App, { target });
 
