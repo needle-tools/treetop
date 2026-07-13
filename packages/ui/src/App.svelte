@@ -7303,6 +7303,12 @@
    *  doesn't snap to a flex-default at the start of phase 2.
    *  `prefers-reduced-motion: reduce` short-circuits to a 0-duration
    *  removal — instant, but still semantically a transition. */
+  /** Duration (ms) shared by a session column's leave-outro (`closeColumn`)
+   *  and the `animate:flip` that slides its neighbours into the gap. They MUST
+   *  match: if the collapse outlasts the flip, the neighbours finish sliding
+   *  and then keep moving via un-eased reflow as the gap finishes closing —
+   *  the stutter you see dismissing several columns fast. Keep them equal. */
+  const COLUMN_CLOSE_MS = 220;
   function closeColumn(node: HTMLElement) {
     const src = node.dataset.sessionSource ?? "";
     if (promotedSources.delete(src)) {
@@ -7320,23 +7326,30 @@
     const ml = parseFloat(cs.marginLeft) || 0;
     const mr = parseFloat(cs.marginRight) || 0;
     return {
-      duration: 360,
+      duration: COLUMN_CLOSE_MS,
       css: (t: number) => {
-        // Svelte out-transitions run `t` from 1 (start) -> 0 (gone).
-        // Convert to forward progress so the phase boundaries read
-        // naturally.
-        const p = 1 - t;
-        const opacity = p < 0.5 ? 1 - p * 2 : 0;
-        const sizeT = p < 0.5 ? 1 : 1 - (p - 0.5) * 2;
-        const w = sizeT * fullWidth;
+        // Svelte runs `t` from 1 (start) -> 0 (gone). Collapse the width AND
+        // fade over the WHOLE duration, matched to the `animate:flip`
+        // (COLUMN_CLOSE_MS) that slides the surviving columns leftward — so
+        // the closing gap and the slide move in lockstep.
+        //
+        // The old version was two-phase: fade first, collapse second. But the
+        // width collapse is what moves the neighbours, and it ran in the
+        // second half — AFTER the flip had already finished — so the
+        // neighbours jumped via un-eased reflow. Dismissing several columns
+        // quickly stacked those un-eased jumps into a visible stutter. A
+        // single synced phase removes the desync. Opacity clears slightly
+        // ahead of the width so you don't watch squished content shrink.
+        const w = t * fullWidth;
+        const opacity = t <= 0.3 ? 0 : (t - 0.3) / 0.7;
         return `
           opacity: ${opacity};
           width: ${w}px;
           min-width: ${w}px;
           max-width: ${w}px;
           flex: 0 0 ${w}px;
-          margin-left: ${sizeT * ml}px;
-          margin-right: ${sizeT * mr}px;
+          margin-left: ${t * ml}px;
+          margin-right: ${t * mr}px;
           overflow: hidden;
         `;
       },
@@ -10849,7 +10862,7 @@
                               dragSource?.index !== i}
                             data-session-source={s.source}
                             use:colVisibility
-                            animate:flip={{ duration: 220 }}
+                            animate:flip={{ duration: COLUMN_CLOSE_MS }}
                             on:dragover={(e) =>
                               handleSessionDragOver(e, wt.path, i)}
                             on:drop={(e) => handleSessionDrop(e, wt.path, i)}
