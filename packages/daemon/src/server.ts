@@ -839,7 +839,7 @@ const terminalPersist = new TerminalPersist(
 // it), so without this it grows into hundreds of dead "Resume" cards that all
 // resurrect on the next launch. Keep only recent, non-ancient entries.
 const PERSISTED_TERMINALS_MAX = Number(
-  process.env.SUPERGIT_PERSISTED_TERMINALS_MAX ?? 25,
+  process.env.SUPERGIT_PERSISTED_TERMINALS_MAX ?? 10,
 );
 const PERSISTED_TERMINALS_MAX_AGE_MS = Number(
   process.env.SUPERGIT_PERSISTED_TERMINALS_MAX_AGE_MS ?? 48 * 60 * 60 * 1000,
