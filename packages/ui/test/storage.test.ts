@@ -405,6 +405,33 @@ describe("OpenSessionsStore", () => {
     });
   });
 
+  test("round-trips codex model, effort, and service tier", () => {
+    const m = new MemStore();
+    const s = new OpenSessionsStore(m, KEY);
+    s.save({
+      "/a": [
+        {
+          agent: "codex",
+          source: "__new__:codex:1",
+          codexModel: "gpt-5.6-terra",
+          codexEffort: "max",
+          codexServiceTier: "priority",
+        },
+      ],
+    });
+    expect(s.load()).toEqual({
+      "/a": [
+        {
+          agent: "codex",
+          source: "__new__:codex:1",
+          codexModel: "gpt-5.6-terra",
+          codexEffort: "max",
+          codexServiceTier: "priority",
+        },
+      ],
+    });
+  });
+
   test("drops out-of-range claudeModel / claudeEffort values", () => {
     const m = new MemStore();
     m.setItem(
@@ -1117,7 +1144,7 @@ describe("cmdForOpenSession", () => {
     ]);
   });
 
-  test("model/effort flags are claude-only (codex ignores them)", () => {
+  test("claude model/effort flags stay claude-only for codex", () => {
     expect(
       cmdForOpenSession(
         { agent: "codex", claudeModel: "opus", claudeEffort: "high" } as never,
@@ -1132,6 +1159,34 @@ describe("cmdForOpenSession", () => {
     ]);
   });
 
+  test("brand-new codex column with codexModel appends `--model <id>`", () => {
+    expect(
+      cmdForOpenSession({ agent: "codex", codexModel: "gpt-5.4" }, "/bin/zsh"),
+    ).toEqual(["codex", "--model", "gpt-5.4"]);
+  });
+
+  test("brand-new codex column threads effort and speed through config overrides", () => {
+    expect(
+      cmdForOpenSession(
+        {
+          agent: "codex",
+          codexModel: "gpt-5.6-sol",
+          codexEffort: "ultra",
+          codexServiceTier: "priority",
+        },
+        "/bin/zsh",
+      ),
+    ).toEqual([
+      "codex",
+      "--model",
+      "gpt-5.6-sol",
+      "-c",
+      'model_reasoning_effort="ultra"',
+      "-c",
+      'service_tier="priority"',
+    ]);
+  });
+
   test("codex with a stamped resumeSessionId uses `codex resume <sid>`", () => {
     // codex takes the session id as a positional after `resume`, matching
     // the read-mode Resume path in SessionView.svelte.
@@ -1141,6 +1196,62 @@ describe("cmdForOpenSession", () => {
         "/bin/zsh",
       ),
     ).toEqual(["codex", "resume", "ses_42"]);
+  });
+
+  test("resumed codex column threads `--model` before the resume session id", () => {
+    expect(
+      cmdForOpenSession(
+        {
+          agent: "codex",
+          resumeSessionId: "ses_42",
+          codexModel: "gpt-5.4-mini",
+        },
+        "/bin/zsh",
+      ),
+    ).toEqual(["codex", "resume", "--model", "gpt-5.4-mini", "ses_42"]);
+  });
+
+  test("resumed codex column threads model, effort, and speed before the resume session id", () => {
+    expect(
+      cmdForOpenSession(
+        {
+          agent: "codex",
+          resumeSessionId: "ses_42",
+          codexModel: "gpt-5.6-luna",
+          codexEffort: "max",
+          codexServiceTier: "priority",
+        },
+        "/bin/zsh",
+      ),
+    ).toEqual([
+      "codex",
+      "resume",
+      "--model",
+      "gpt-5.6-luna",
+      "-c",
+      'model_reasoning_effort="max"',
+      "-c",
+      'service_tier="priority"',
+      "ses_42",
+    ]);
+  });
+
+  test("codexModel flag precedes the contextFilePath positional prompt", () => {
+    expect(
+      cmdForOpenSession(
+        {
+          agent: "codex",
+          codexModel: "gpt-5.3-codex-spark",
+          contextFilePath: "/tmp/ctx.md",
+        },
+        "/bin/zsh",
+      ),
+    ).toEqual([
+      "codex",
+      "--model",
+      "gpt-5.3-codex-spark",
+      "Continue this conversation. Read the prior context from /tmp/ctx.md",
+    ]);
   });
 
   test("copilot ignores resumeSessionId in v0 (no resume semantics)", () => {

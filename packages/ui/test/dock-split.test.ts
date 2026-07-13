@@ -23,85 +23,78 @@ describe("splitDockEntries", () => {
     expect(splitDockEntries([e], true)).toEqual({ top: [e], bottom: [] });
   });
 
-  test("two entries, different repos → one each side", () => {
+  test("active entries stay above the toggle in lane order", () => {
     const a = entry("r1", "s1");
     const b = entry("r2", "s2");
+    const c = entry("r3", "s3", true);
     const result = splitDockEntries([a, b], true);
-    expect(result.top).toEqual([a]);
-    expect(result.bottom).toEqual([b]);
+    expect(result.top).toEqual([a, b]);
+    expect(result.bottom).toEqual([]);
+    expect(splitDockEntries([a, c, b], true).top).toEqual([a, b]);
   });
 
   test("two entries, same repo → not split (all top)", () => {
     const a = entry("r1", "s1");
     const b = entry("r1", "s2");
     const result = splitDockEntries([a, b], true);
-    // Can't split a single repo group, so all go to whichever
-    // half keeps them together. Closer to even = top.
     expect(result.top).toEqual([a, b]);
     expect(result.bottom).toEqual([]);
   });
 
-  test("4 entries: 2 repoA + 2 repoB → even split", () => {
+  test("inactive entries stay below the toggle in lane order", () => {
     const a1 = entry("r1", "a1");
-    const a2 = entry("r1", "a2");
-    const b1 = entry("r2", "b1");
+    const a2 = entry("r1", "a2", true);
+    const b1 = entry("r2", "b1", true);
     const b2 = entry("r2", "b2");
     const result = splitDockEntries([a1, a2, b1, b2], true);
-    expect(result.top).toEqual([a1, a2]);
-    expect(result.bottom).toEqual([b1, b2]);
+    expect(result.top).toEqual([a1, b2]);
+    expect(result.bottom).toEqual([a2, b1]);
   });
 
-  test("picks the split closest to the midpoint", () => {
-    // 1 repoA + 4 repoB + 1 repoC = 6 entries, midpoint = 3
-    // Split after repoA (1 top, 5 bottom) = imbalance 4
-    // Split after repoB (5 top, 1 bottom) = imbalance 4
-    // Both equally bad; pick the first that's >= midpoint.
+  test("active-only mode filters out inactive entries without reordering", () => {
     const a = entry("r1", "a");
-    const b1 = entry("r2", "b1");
-    const b2 = entry("r2", "b2");
-    const b3 = entry("r2", "b3");
-    const b4 = entry("r2", "b4");
+    const b = entry("r2", "b", true);
     const c = entry("r3", "c");
-    const result = splitDockEntries([a, b1, b2, b3, b4, c], true);
-    // After repoA: top=1, bottom=5, diff=4
-    // After repoB: top=5, bottom=1, diff=4
-    // Tie — prefer the split closest to midpoint (3).
-    // After repoA: top end = 1, distance from 3 = 2
-    // After repoB: top end = 5, distance from 3 = 2
-    // Same distance — prefer the first (smaller top).
-    expect(result.top).toEqual([a]);
-    expect(result.bottom).toEqual([b1, b2, b3, b4, c]);
+    const result = splitDockEntries([a, b, c], false);
+    expect(result.top).toEqual([a, c]);
+    expect(result.bottom).toEqual([]);
   });
 
-  test("preserves repo group order (same as input)", () => {
-    const a = entry("r1", "a");
-    const b = entry("r2", "b");
-    const c = entry("r3", "c");
-    const d = entry("r4", "d");
-    const result = splitDockEntries([a, b, c, d], true);
-    // 4 entries, midpoint = 2. Split after group 2 (r2).
-    expect(result.top).toEqual([a, b]);
-    expect(result.bottom).toEqual([c, d]);
-  });
-
-  test("showInactive=false filters out exited entries before splitting", () => {
+  test("showInactive=false hides exited entries", () => {
     const a = entry("r1", "a", false);
     const b = entry("r1", "b", true); // exited
     const c = entry("r2", "c", false);
     const result = splitDockEntries([a, b, c], false);
-    // After filtering: [a(r1), c(r2)] → one each side
-    expect(result.top).toEqual([a]);
-    expect(result.bottom).toEqual([c]);
+    expect(result.top).toEqual([a, c]);
+    expect(result.bottom).toEqual([]);
   });
 
-  test("showInactive=true keeps exited entries", () => {
+  test("showInactive=true keeps exited entries below active ones", () => {
     const a = entry("r1", "a", false);
     const b = entry("r1", "b", true);
     const c = entry("r2", "c", false);
     const result = splitDockEntries([a, b, c], true);
-    // All 3: r1 group (2) + r2 group (1) = split after r1
-    expect(result.top).toEqual([a, b]);
-    expect(result.bottom).toEqual([c]);
+    expect(result.top).toEqual([a, c]);
+    expect(result.bottom).toEqual([b]);
+  });
+
+  test("inactive bucket preserves lane order across projects", () => {
+    const fastvid = entry("fastvid", "fastvid-stopped", true);
+    const supergit = entry("supergit", "supergit-active", false);
+    const marketing = entry("marketing", "marketing-stopped", true);
+    const needle = entry("needle", "needle-stopped", true);
+
+    const result = splitDockEntries(
+      [fastvid, supergit, marketing, needle],
+      true,
+    );
+
+    expect(result.top.map((e) => e.repoId)).toEqual(["supergit"]);
+    expect(result.bottom.map((e) => e.repoId)).toEqual([
+      "fastvid",
+      "marketing",
+      "needle",
+    ]);
   });
 
   test("all entries from one repo → no split possible", () => {

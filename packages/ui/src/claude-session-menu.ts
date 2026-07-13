@@ -206,8 +206,19 @@ export interface CodexModelInfo {
   displayName?: string;
   description?: string;
   isDefault?: boolean;
+  hidden?: boolean;
   supportedReasoningEfforts?: string[];
   defaultReasoningEffort?: string;
+  serviceTiers?: { id: string; name?: string; description?: string }[];
+  defaultServiceTier?: string;
+  additionalSpeedTiers?: string[];
+}
+
+export function shouldLoadCodexModelCatalog(opts: {
+  agent: string;
+  cwd: string | null | undefined;
+}): boolean {
+  return opts.agent === "codex" && !!opts.cwd?.trim();
 }
 
 export function codexModelValue(m: CodexModelInfo): string {
@@ -230,7 +241,10 @@ export function uniqueCodexModels(opts: {
   currentModel?: string;
 }): CodexModelInfo[] {
   const byValue = new Map<string, CodexModelInfo>();
-  for (const m of opts.models) byValue.set(codexModelValue(m), m);
+  for (const m of opts.models) {
+    if (m.hidden) continue;
+    byValue.set(codexModelValue(m), m);
+  }
   if (opts.detectedModel && !byValue.has(opts.detectedModel)) {
     byValue.set(opts.detectedModel, {
       id: opts.detectedModel,
@@ -247,12 +261,13 @@ export function uniqueCodexModels(opts: {
 }
 
 const CODEX_EFFORT_LABELS: Record<string, string> = {
-  speed: "speed",
   minimal: "minimal",
   low: "low",
   medium: "medium",
   high: "high",
   xhigh: "extra high",
+  max: "max",
+  ultra: "ultra",
 };
 
 function codexEffortLabel(value: string): string {
@@ -284,6 +299,54 @@ function codexReasoningOptions(opts: {
       value,
       label: codexEffortLabel(value),
       selected: opts.currentEffort === value,
+    })),
+  ];
+}
+
+function codexServiceTierLabel(value: string): string {
+  if (value === "priority") return "fast";
+  return value;
+}
+
+function codexServiceTierOptions(opts: {
+  currentServiceTier: string;
+  defaultServiceTier: string;
+  serviceTiers: readonly { id: string; name?: string; description?: string }[] | undefined;
+  additionalSpeedTiers: readonly string[] | undefined;
+}): AgentSettingOption[] {
+  const byId = new Map<
+    string,
+    { id: string; name?: string; description?: string }
+  >();
+  for (const tier of opts.serviceTiers ?? []) {
+    if (tier.id) byId.set(tier.id, tier);
+  }
+  for (const id of opts.additionalSpeedTiers ?? []) {
+    if (id && !byId.has(id)) byId.set(id, { id });
+  }
+  if (opts.defaultServiceTier && !byId.has(opts.defaultServiceTier)) {
+    byId.set(opts.defaultServiceTier, { id: opts.defaultServiceTier });
+  }
+  if (opts.currentServiceTier && !byId.has(opts.currentServiceTier)) {
+    byId.set(opts.currentServiceTier, { id: opts.currentServiceTier });
+  }
+  const defaultLabel = opts.defaultServiceTier
+    ? codexServiceTierLabel(opts.defaultServiceTier)
+    : "";
+  return [
+    {
+      value: "",
+      label: defaultLabel ? `Default (${defaultLabel})` : "Default",
+      selected: !opts.currentServiceTier,
+      title: defaultLabel
+        ? `Uses the app-server default speed for this model, currently ${defaultLabel}`
+        : "Uses the app-server default speed for this model",
+    },
+    ...[...byId.values()].map((tier) => ({
+      value: tier.id,
+      label: tier.name || codexServiceTierLabel(tier.id),
+      selected: opts.currentServiceTier === tier.id,
+      title: tier.description,
     })),
   ];
 }
@@ -387,11 +450,13 @@ export function codexAgentSettings(opts: {
   modelsLoading: boolean;
   modelsError: string;
   currentEffort: string;
+  currentServiceTier: string;
   currentSummary: string;
   currentSandbox: string;
   currentApproval: string;
   onPickModel: (model: string) => void;
   onPickEffort: (effort: string) => void;
+  onPickServiceTier: (serviceTier: string) => void;
   onPickSummary: (summary: string) => void;
   onPickSandbox: (sandbox: string) => void;
   onPickApproval: (approval: string) => void;
@@ -408,6 +473,12 @@ export function codexAgentSettings(opts: {
   const supportedReasoningEfforts =
     currentModelInfo?.supportedReasoningEfforts ??
     defaultModel?.supportedReasoningEfforts;
+  const defaultServiceTier =
+    currentModelInfo?.defaultServiceTier ?? defaultModel?.defaultServiceTier ?? "";
+  const serviceTiers =
+    currentModelInfo?.serviceTiers ?? defaultModel?.serviceTiers;
+  const additionalSpeedTiers =
+    currentModelInfo?.additionalSpeedTiers ?? defaultModel?.additionalSpeedTiers;
   const modelOptions = uniqueCodexModels({
     models: opts.models,
     detectedModel: opts.detectedModel,
@@ -456,6 +527,17 @@ export function codexAgentSettings(opts: {
         currentEffort: opts.currentEffort,
         defaultReasoningEffort,
         supportedReasoningEfforts,
+      }),
+    },
+    {
+      key: "codex-service-tier",
+      label: "Speed",
+      onPick: opts.onPickServiceTier,
+      options: codexServiceTierOptions({
+        currentServiceTier: opts.currentServiceTier,
+        defaultServiceTier,
+        serviceTiers,
+        additionalSpeedTiers,
       }),
     },
     {

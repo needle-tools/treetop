@@ -1186,6 +1186,76 @@
   background: transparent;
   padding: 0;
 }
+.sticky-body .md-code-frame {
+  margin: 0.45em 0;
+  overflow: hidden;
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.08);
+}
+.sticky-body .md-code-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 1.25rem;
+  padding: 0.18rem 0.45rem 0;
+  color: rgba(42, 37, 22, 0.62);
+  font-family: ui-monospace, SFMono-Regular, monospace;
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  line-height: 1;
+  text-transform: uppercase;
+}
+.sticky-body .md-code-lang {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.sticky-body .md-code-copy {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.18rem;
+  height: 1.05rem;
+  min-width: 1.18rem;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  background: transparent;
+  color: rgba(42, 37, 22, 0.62);
+  font: inherit;
+  font-size: 0;
+  cursor: pointer;
+}
+.sticky-body .md-code-copy::before,
+.sticky-body .md-code-copy::after {
+  content: "";
+  position: absolute;
+  width: 0.38rem;
+  height: 0.48rem;
+  border: 1.35px solid currentColor;
+  border-radius: 0.1rem;
+}
+.sticky-body .md-code-copy::before {
+  transform: translate(-0.08rem, 0.05rem);
+}
+.sticky-body .md-code-copy::after {
+  background: #eadb73;
+  transform: translate(0.08rem, -0.07rem);
+}
+.sticky-body .md-code-copy:hover {
+  border-color: rgba(42, 37, 22, 0.16);
+  background: rgba(255, 255, 255, 0.2);
+  color: rgba(42, 37, 22, 0.82);
+}
+.sticky-body .md-code-frame pre {
+  margin: 0;
+  padding: 0.25em 0.6em 0.5em;
+  background: transparent;
+  border-radius: 0;
+}
 .sticky-body a {
   color: #4b3c0e;
   text-decoration: underline;
@@ -1488,7 +1558,7 @@
   padding: 0.45rem 0.55rem 0.55rem;
 }
 .attachment-media-shell-image {
-  padding: 0.55rem 0.65rem 0.7rem;
+  padding: 0;
 }
 .attachment-media-shell-text,
 .attachment-media-shell-note {
@@ -1750,7 +1820,6 @@
 .sticky-photo-frame {
   display: block;
   width: 100%;
-  padding: 8px 8px 20px;
   background: #fffaf0;
   border: 1px solid rgba(42, 37, 22, 0.16);
   box-shadow:
@@ -1760,7 +1829,6 @@
 .sticky-photo-frame img {
   display: block;
   width: 100%;
-  aspect-ratio: 1 / 0.78;
   max-height: 130px;
   object-fit: contain;
   background: rgba(42, 37, 22, 0.04);
@@ -1769,10 +1837,9 @@
   -webkit-user-drag: none;
 }
 .sticky-detached-image .sticky-photo-frame {
-  padding: 12px 12px 30px;
+  padding: 0;
 }
 .sticky-detached-image .sticky-photo-frame img {
-  height: min(14rem, 48vw);
   max-height: none;
 }
 .sticky-photo-frame-transparent,

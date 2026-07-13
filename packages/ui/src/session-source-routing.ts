@@ -62,6 +62,10 @@ export interface OpenSession {
    *  through to a `claude --resume … --model/--effort` spawn. */
   claudeModel?: string;
   claudeEffort?: string;
+  /** Codex model/effort/service overrides picked from the session header. */
+  codexModel?: string;
+  codexEffort?: string;
+  codexServiceTier?: string;
   /** Explicit shell command for a plain terminal column, stamped by the
    *  new-session picker when the box offers >1 shell (Windows: PowerShell
    *  vs CMD). Overrides the daemon's default shell in cmdForOpenSession. */
@@ -75,6 +79,18 @@ export interface Worktree {
 
 export interface Repo {
   worktrees?: Worktree[];
+}
+
+export interface SidebarDockRow {
+  key: string;
+  wt: { path: string } | null;
+}
+
+export function sidebarDockRows<Row extends SidebarDockRow>(
+  rows: readonly Row[],
+  rowFolded: Record<string, boolean>,
+): Row[] {
+  return rows.filter((row) => row.wt && !rowFolded[row.key]);
 }
 
 export interface LiveAgentTerminal {
@@ -333,6 +349,9 @@ export interface BackgroundSpawnCandidate {
   resumeSessionId: string;
   claudeModel?: string;
   claudeEffort?: string;
+  codexModel?: string;
+  codexEffort?: string;
+  codexServiceTier?: string;
 }
 
 export function selectSessionsForBackgroundSpawn(
@@ -361,6 +380,11 @@ export function selectSessionsForBackgroundSpawn(
         resumeSessionId: s.resumeSessionId,
         ...(s.claudeModel ? { claudeModel: s.claudeModel } : {}),
         ...(s.claudeEffort ? { claudeEffort: s.claudeEffort } : {}),
+        ...(s.codexModel ? { codexModel: s.codexModel } : {}),
+        ...(s.codexEffort ? { codexEffort: s.codexEffort } : {}),
+        ...(s.codexServiceTier
+          ? { codexServiceTier: s.codexServiceTier }
+          : {}),
       });
     }
   }

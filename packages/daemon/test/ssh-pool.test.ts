@@ -1,5 +1,5 @@
 import { test, expect, describe, afterAll } from "bun:test";
-import { SshPool } from "../src/ssh-pool";
+import { parseOpenSshGOutput, SshPool } from "../src/ssh-pool";
 
 describe("SshPool", () => {
   test("creates a pool instance", () => {
@@ -62,6 +62,62 @@ describe("SshPool", () => {
       expect(pool.hasCachedConnection(pool.hostKey(user, host, port))).toBe(
         true,
       );
+    });
+  });
+});
+
+describe("parseOpenSshGOutput", () => {
+  test("resolves host aliases the same way ssh -G exposes them", () => {
+    expect(
+      parseOpenSshGOutput(
+        [
+          "host mac-mini-m4",
+          "user needle",
+          "hostname 100.72.16.20",
+          "port 2222",
+          "identityagent /tmp/agent.sock",
+        ].join("\n"),
+        "mac-mini-m4",
+        undefined,
+        22,
+      ),
+    ).toEqual({
+      host: "100.72.16.20",
+      user: "needle",
+      port: 2222,
+      identityAgent: "/tmp/agent.sock",
+    });
+  });
+
+  test("keeps an explicit parsed ssh user over ssh config user", () => {
+    expect(
+      parseOpenSshGOutput(
+        ["user configured", "hostname box.internal", "port 2200"].join("\n"),
+        "box",
+        "typed",
+        22,
+      ),
+    ).toEqual({
+      host: "box.internal",
+      user: "typed",
+      port: 2200,
+      identityAgent: undefined,
+    });
+  });
+
+  test("keeps an explicit parsed ssh port over ssh config port", () => {
+    expect(
+      parseOpenSshGOutput(
+        ["hostname box.internal", "port 2200"].join("\n"),
+        "box",
+        undefined,
+        2222,
+      ),
+    ).toEqual({
+      host: "box.internal",
+      user: undefined,
+      port: 2222,
+      identityAgent: undefined,
     });
   });
 });

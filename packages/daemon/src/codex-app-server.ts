@@ -5,6 +5,7 @@ import type {
   NativeAgentStartRequest,
   NativeAgentTurnRequest,
 } from "./native-agent-adapters";
+import { existsSync } from "node:fs";
 
 export interface CodexAppServerProcess {
   pid: number;
@@ -72,8 +73,12 @@ export interface CodexModelInfo {
   displayName?: string;
   description?: string;
   isDefault?: boolean;
+  hidden?: boolean;
   supportedReasoningEfforts?: string[];
   defaultReasoningEffort?: string;
+  serviceTiers?: { id: string; name?: string; description?: string }[];
+  defaultServiceTier?: string;
+  additionalSpeedTiers?: string[];
 }
 
 export interface CodexTurnOverrides {
@@ -81,6 +86,7 @@ export interface CodexTurnOverrides {
   approvalPolicy?: unknown;
   sandboxPolicy?: JsonObject;
   effort?: string;
+  serviceTier?: string;
   summary?: string;
 }
 
@@ -113,7 +119,7 @@ export interface CodexThreadReadResult {
 
 function defaultSpawn(cwd: string): CodexAppServerProcess {
   const proc = Bun.spawn({
-    cmd: ["codex", "app-server"],
+    cmd: [resolveCodexBinary(), "app-server"],
     cwd,
     stdin: "pipe",
     stdout: "pipe",
@@ -223,6 +229,7 @@ export class CodexAppServerAdapter implements NativeAgentAdapter {
       approvalPolicy: req.overrides?.approvalPolicy,
       sandboxPolicy: req.overrides?.sandboxPolicy,
       effort: cleanString(req.overrides?.effort),
+      serviceTier: cleanString(req.overrides?.serviceTier),
       summary: cleanString(req.overrides?.summary),
     }));
     const turnId = nestedString(turn, ["turn", "id"]);
@@ -274,27 +281,47 @@ export class CodexAppServerAdapter implements NativeAgentAdapter {
         const obj = raw as Record<string, unknown>;
         const id = cleanString(obj.id);
         if (!id) continue;
+        const supportedReasoningEfforts = Array.isArray(
+          obj.supportedReasoningEfforts,
+        )
+          ? obj.supportedReasoningEfforts
+              .map(codexReasoningEffortId)
+              .filter((effort): effort is string => !!effort)
+          : undefined;
+        const serviceTiers = Array.isArray(obj.serviceTiers)
+          ? obj.serviceTiers
+              .map(codexServiceTier)
+              .filter(
+                (
+                  tier,
+                ): tier is {
+                  id: string;
+                  name?: string;
+                  description?: string;
+                } => !!tier,
+              )
+          : undefined;
+        const additionalSpeedTiers = Array.isArray(obj.additionalSpeedTiers)
+          ? obj.additionalSpeedTiers
+              .map(cleanString)
+              .filter((tier): tier is string => !!tier)
+          : undefined;
         models.push({
           id,
           model: cleanString(obj.model),
           displayName: cleanString(obj.displayName),
           description: cleanString(obj.description),
           isDefault: obj.isDefault === true,
-          supportedReasoningEfforts: Array.isArray(
-            obj.supportedReasoningEfforts,
-          )
-            ? obj.supportedReasoningEfforts
-                .map((effort) => {
-                  if (typeof effort === "string") return cleanString(effort);
-                  return effort && typeof effort === "object"
-                    ? cleanString(
-                        (effort as Record<string, unknown>).reasoningEffort,
-                      )
-                    : undefined;
-                })
-                .filter((effort): effort is string => !!effort)
-            : undefined,
+          ...(obj.hidden === true ? { hidden: true } : {}),
+          ...(supportedReasoningEfforts
+            ? { supportedReasoningEfforts }
+            : {}),
           defaultReasoningEffort: cleanString(obj.defaultReasoningEffort),
+          ...(serviceTiers ? { serviceTiers } : {}),
+          ...(cleanString(obj.defaultServiceTier)
+            ? { defaultServiceTier: cleanString(obj.defaultServiceTier) }
+            : {}),
+          ...(additionalSpeedTiers ? { additionalSpeedTiers } : {}),
         });
       }
       cursor = cleanString(result.nextCursor) ?? null;
@@ -485,6 +512,15 @@ export class CodexAppServerAdapter implements NativeAgentAdapter {
   }
 }
 
+export function resolveCodexBinary(): string {
+  const envPath = cleanString(process.env.CODEX_CLI_PATH);
+  if (envPath && existsSync(envPath)) return envPath;
+  const chatGptBundledCodex =
+    "/Applications/ChatGPT.app/Contents/Resources/codex";
+  if (existsSync(chatGptBundledCodex)) return chatGptBundledCodex;
+  return "codex";
+}
+
 function nestedString(obj: unknown, path: string[]): string | undefined {
   let cur: unknown = obj;
   for (const key of path) {
@@ -526,6 +562,31 @@ function cleanObject(obj: JsonObject): JsonObject {
     if (value !== undefined && value !== null) out[key] = value;
   }
   return out;
+}
+
+function codexReasoningEffortId(effort: unknown): string | undefined {
+  if (typeof effort === "string") return cleanString(effort);
+  if (!effort || typeof effort !== "object") return undefined;
+  const obj = effort as Record<string, unknown>;
+  return cleanString(obj.reasoningEffort) ?? cleanString(obj.effort);
+}
+
+function codexServiceTier(
+  tier: unknown,
+): { id: string; name?: string; description?: string } | undefined {
+  if (typeof tier === "string") {
+    const id = cleanString(tier);
+    return id ? { id } : undefined;
+  }
+  if (!tier || typeof tier !== "object") return undefined;
+  const obj = tier as Record<string, unknown>;
+  const id = cleanString(obj.id) ?? cleanString(obj.serviceTier);
+  if (!id) return undefined;
+  return {
+    id,
+    name: cleanString(obj.name) ?? cleanString(obj.displayName),
+    description: cleanString(obj.description),
+  };
 }
 
 function codexGoalFromResult(result: JsonObject): CodexThreadGoal | null {

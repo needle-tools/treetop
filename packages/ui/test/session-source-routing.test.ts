@@ -22,6 +22,7 @@ import {
   canResumeVisualSurface,
   openSessionHasDockActivity,
   openSessionHasLiveTerminal,
+  sidebarDockRows,
   reconcileLiveAgentTerminals,
   selectSessionsForBackgroundSpawn,
   shouldHoldOffscreenAttachedTerminal,
@@ -36,6 +37,35 @@ import {
 // ===========================================================================
 // Tests
 // ===========================================================================
+
+describe("sidebarDockRows", () => {
+  test("preserves rendered lane order", () => {
+    const rows = [
+      { key: "repo-b|wt-2", wt: { path: "/wt/2" } },
+      { key: "repo-a|wt-1", wt: { path: "/wt/1" } },
+      { key: "repo-c|wt-3", wt: { path: "/wt/3" } },
+    ];
+
+    expect(sidebarDockRows(rows, {}).map((row) => row.key)).toEqual([
+      "repo-b|wt-2",
+      "repo-a|wt-1",
+      "repo-c|wt-3",
+    ]);
+  });
+
+  test("omits folded and placeholder lanes", () => {
+    const rows = [
+      { key: "repo-a|wt-1", wt: { path: "/wt/1" } },
+      { key: "repo-a|wt-2", wt: { path: "/wt/2" } },
+      { key: "repo-b|none", wt: null },
+      { key: "repo-c|wt-3", wt: { path: "/wt/3" } },
+    ];
+
+    expect(
+      sidebarDockRows(rows, { "repo-a|wt-2": true }).map((row) => row.key),
+    ).toEqual(["repo-a|wt-1", "repo-c|wt-3"]);
+  });
+});
 
 // ---------------------------------------------------------------------------
 // resolveTermId
@@ -450,6 +480,21 @@ describe("selectSessionsForBackgroundSpawn", () => {
         newTermIds: {},
       })[0],
     ).toMatchObject({ claudeModel: "opus", claudeEffort: "high" });
+  });
+
+  test("forwards codex model overrides", () => {
+    const byWt: Record<string, OpenSession[]> = {
+      [wtPath]: [
+        restorable("sid-cx", { agent: "codex", codexModel: "gpt-5.4" }),
+      ],
+    };
+    expect(
+      selectSessionsForBackgroundSpawn(byWt, {
+        liveTerminalIds: new Set(),
+        inFlight: new Set(),
+        newTermIds: {},
+      })[0],
+    ).toMatchObject({ agent: "codex", codexModel: "gpt-5.4" });
   });
 
   test("resumes codex sessions too", () => {

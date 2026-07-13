@@ -219,7 +219,7 @@ import { ProvisionManager } from "./provision-manager";
 import { makeProvisionSpawner } from "./provision-spawn";
 import { buildProvisionPlan } from "./provision";
 import { ClaudeCliAdapter } from "./claude-cli-adapter";
-import { CodexAppServerAdapter } from "./codex-app-server";
+import { CodexAppServerAdapter, resolveCodexBinary } from "./codex-app-server";
 import { createNativeAgentRegistry } from "./native-agent-adapters";
 
 const REQUESTED_WORKSPACE_PATH =
@@ -4474,6 +4474,7 @@ const server = Bun.serve<TermWsData, never>({
           approvalPolicy?: unknown;
           sandboxPolicy?: unknown;
           effort?: unknown;
+          serviceTier?: unknown;
           summary?: unknown;
         } | null;
         const threadId =
@@ -4521,6 +4522,7 @@ const server = Bun.serve<TermWsData, never>({
               approvalPolicy: codexApprovalPolicy(body?.approvalPolicy),
               sandboxPolicy: codexSandboxPolicy(body?.sandboxPolicy, cwd),
               effort: codexTurnString(body?.effort),
+              serviceTier: codexTurnString(body?.serviceTier),
               summary: codexTurnString(body?.summary),
             },
           });
@@ -4703,7 +4705,10 @@ const server = Bun.serve<TermWsData, never>({
           !body.cmd[0]!.includes("/") &&
           (head0 === "claude" || head0 === "codex" || head0 === "ollama")
         ) {
-          const abs = await resolveAgentBinary(head0);
+          const abs =
+            head0 === "codex"
+              ? resolveCodexBinary()
+              : await resolveAgentBinary(head0);
           if (abs) resolvedCmd[0] = abs;
         }
         // Optional argv[0] rename via `bash -c 'exec -a NAME …'` so the PTY

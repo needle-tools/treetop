@@ -1,15 +1,6 @@
 <script context="module" lang="ts">
-  import { apiUrl as moduleApiUrl } from "./api";
-  import type { CodexModelInfo as ModuleCodexModelInfo } from "./claude-session-menu";
   import type { VisualScrollMemory as ModuleVisualScrollMemory } from "./visual-tail-follow";
 
-  interface CodexModelsResult {
-    models: ModuleCodexModelInfo[];
-    error: string;
-  }
-
-  const codexModelsCache = new Map<string, CodexModelsResult>();
-  const codexModelsInFlight = new Map<string, Promise<CodexModelsResult>>();
   const visualScrollMemoryByKey = new Map<string, ModuleVisualScrollMemory>();
   const VISUAL_SCROLL_MEMORY_LIMIT = 200;
 
@@ -27,51 +18,6 @@
     }
   }
 
-  function codexModelsCacheKey(
-    daemonId: string | undefined,
-    cwd: string,
-  ): string {
-    return `${daemonId ?? ""}\0${cwd}`;
-  }
-
-  async function loadSharedCodexModels(
-    daemonId: string | undefined,
-    cwd: string,
-  ): Promise<CodexModelsResult> {
-    const key = codexModelsCacheKey(daemonId, cwd);
-    const cached = codexModelsCache.get(key);
-    if (cached) return cached;
-    const inFlight = codexModelsInFlight.get(key);
-    if (inFlight) return inFlight;
-    const promise = (async () => {
-      try {
-        const qs = new URLSearchParams({ cwd });
-        const res = await fetch(
-          moduleApiUrl(`/api/codex-app/models?${qs.toString()}`, daemonId),
-        );
-        const body = (await res.json().catch(() => null)) as {
-          models?: ModuleCodexModelInfo[];
-          error?: string;
-        } | null;
-        if (!res.ok) throw new Error(body?.error ?? `HTTP ${res.status}`);
-        const result = {
-          models: Array.isArray(body?.models) ? body.models : [],
-          error: "",
-        };
-        codexModelsCache.set(key, result);
-        return result;
-      } catch (e) {
-        return {
-          models: [],
-          error: e instanceof Error ? e.message : String(e),
-        };
-      } finally {
-        codexModelsInFlight.delete(key);
-      }
-    })();
-    codexModelsInFlight.set(key, promise);
-    return promise;
-  }
 </script>
 
 <script lang="ts">
@@ -82,11 +28,13 @@
   import TerminalView from "./TerminalView.svelte";
   import VisualTranscript from "./VisualTranscript.svelte";
   import {
+    isVisualTailFollowActive,
     isNearVisualScrollEnd,
     replacementVisualScrollTop,
-    shouldAnchorLiveWorkTail,
-    shouldFollowNewLiveWorkBody,
+    shouldFollowLiveWorkBody,
     shouldFollowVisualTail,
+    shouldPauseVisualTailAfterUserScroll,
+    shouldRememberVisualScrollMemory,
     VISUAL_TAIL_FOLLOW_NEAR_PX,
     visualScrollMemoryFromMetrics,
     visualScrollTopFromMemory,
@@ -107,6 +55,7 @@
     claudeAgentSettings,
     codexAgentSettings,
     effortIcon,
+    shouldLoadCodexModelCatalog,
     type CodexModelInfo,
   } from "./claude-session-menu";
   import { elementNearViewport } from "./col-visibility";
@@ -122,6 +71,10 @@
   import { openShare } from "./share-session-dialog";
   import { openCopy } from "./copy-session-dialog";
   import { ICONS } from "./icons";
+  import {
+    codexModelsCacheKey,
+    loadSharedCodexModels,
+  } from "./codex-model-catalog";
   import {
     applyVisualTranscriptDeltaPatches,
     formatVisualWorkDuration,
@@ -335,17 +288,23 @@
   export let summaryMaxLines: number = 6;
   export let starred: boolean = false;
   export let onToggleStar: () => void = () => {};
-  /** Claude model/effort overrides for this session (persisted by the
+  /** Agent model/effort overrides for this session (persisted by the
    *  parent in openSessionsByWt). Drive the agent-pill label, the ✓ in
    *  the header's Model/Effort menus, and the `--model`/`--effort` flags
-   *  on the resume PTY. claude-only — undefined for other agents. */
+   *  on the resume PTY. */
   export let claudeModel: string | undefined = undefined;
   export let claudeEffort: string | undefined = undefined;
+  export let codexModelOverride: string | undefined = undefined;
+  export let codexEffortOverride: string | undefined = undefined;
+  export let codexServiceTierOverride: string | undefined = undefined;
   /** Called when the user picks a model/effort from the header menu.
    *  The parent persists the choice and re-keys the column so the resume
    *  PTY respawns with the new flag ("restart via resume"). */
   export let onSetClaudeModel: (model: string) => void = () => {};
   export let onSetClaudeEffort: (effort: string) => void = () => {};
+  export let onSetCodexModel: (model: string) => void = () => {};
+  export let onSetCodexEffort: (effort: string) => void = () => {};
+  export let onSetCodexServiceTier: (serviceTier: string) => void = () => {};
 
   interface NormalizedBlock {
     type:
@@ -1663,6 +1622,7 @@
   let visualTailMessagesEl: HTMLElement | null = null;
   let visualTailLayoutObserver: ResizeObserver | null = null;
   let visualScrollMemoryKey = "";
+  let visualPausedLiveWorkBodyKeys = new Set<string>();
   let visualOpenWorkFoldoutKeys = new Set<string>();
   let visualOpenWorkEntryKeys = new Set<string>();
   let visualExpandedThinkingWorkKeys = new Set<string>();
@@ -1672,6 +1632,7 @@
   }
 
   function hasUsableScrollLayout(el: HTMLElement): boolean {
+    if (!el.isConnected) return false;
     const rect = el.getBoundingClientRect();
     return rect.width > 0 && rect.height > 0;
   }
@@ -1730,6 +1691,74 @@
     el.scrollTop = 1_000_000_000;
   }
 
+  function liveWorkBodiesAreFollowing(): boolean {
+    for (const { body, key } of liveWorkBodies()) {
+      if (body.scrollHeight <= body.clientHeight + 1) continue;
+      if (visualPausedLiveWorkBodyKeys.has(key)) return false;
+      if (!isNearVisualScrollEnd(visualScrollMetrics(body))) return false;
+    }
+    return true;
+  }
+
+  function setLiveWorkBodyPaused(key: string, paused: boolean): void {
+    const hasKey = visualPausedLiveWorkBodyKeys.has(key);
+    if (paused === hasKey) {
+      syncVisualTailFollowActive();
+      return;
+    }
+    const next = new Set(visualPausedLiveWorkBodyKeys);
+    if (paused) next.add(key);
+    else next.delete(key);
+    visualPausedLiveWorkBodyKeys = next;
+    syncVisualTailFollowActive();
+  }
+
+  function onLiveWorkBodyScroll(workKey: string, body: HTMLElement): void {
+    setLiveWorkBodyPaused(
+      workKey,
+      shouldPauseVisualTailAfterUserScroll({ metrics: visualScrollMetrics(body) }),
+    );
+  }
+
+  function scrollLiveWorkBodiesToEnd(opts: { force?: boolean } = {}): void {
+    for (const { body } of liveWorkBodies()) {
+      const key = body.dataset.workKey ?? "";
+      const bodyPaused =
+        opts.force !== true && key
+          ? visualPausedLiveWorkBodyKeys.has(key)
+          : false;
+      if (
+        !shouldFollowLiveWorkBody({
+          parentShouldStick: true,
+          bodyPaused,
+        })
+      ) {
+        continue;
+      }
+      scrollToEnd(body);
+    }
+  }
+
+  function applyVisualTailFollow(
+    el: HTMLElement,
+    opts: { force?: boolean } = {},
+  ): void {
+    scrollToEnd(el);
+    scrollLiveWorkBodiesToEnd(opts);
+    syncVisualTailFollowActive(el);
+  }
+
+  function settleVisualTailFollow(
+    el: HTMLElement,
+    parentShouldStick: boolean,
+  ): void {
+    if (!shouldFollowLiveWorkBody({ parentShouldStick })) return;
+    requestAnimationFrame(() => {
+      if (messagesEl !== el) return;
+      applyVisualTailFollow(el);
+    });
+  }
+
   function visualScrollMetrics(el: HTMLElement) {
     return {
       scrollHeight: el.scrollHeight,
@@ -1761,11 +1790,20 @@
 
   function saveVisualScrollMemory(el: HTMLElement | null = messagesEl): void {
     if (!el || !visualScrollMemoryKey) return;
+    const metrics = visualScrollMetrics(el);
+    if (
+      !shouldRememberVisualScrollMemory({
+        layoutUsable: hasUsableScrollLayout(el),
+        metrics,
+      })
+    ) {
+      return;
+    }
     const anchor = visualScrollAnchor(el);
     rememberVisualScrollMemory(
       visualScrollMemoryKey,
       visualScrollMemoryFromMetrics({
-        metrics: visualScrollMetrics(el),
+        metrics,
         paused: visualTailFollowPaused,
         nearPx: VISUAL_TAIL_FOLLOW_NEAR_PX,
         anchorKey: anchor?.key,
@@ -1796,6 +1834,7 @@
             const scrollerRect = el.getBoundingClientRect();
             const targetRect = target.getBoundingClientRect();
             el.scrollTop += targetRect.top - scrollerRect.top - targetOffset;
+            syncVisualTailFollowActive(el);
             return;
           }
         }
@@ -1803,6 +1842,9 @@
           memory,
           next: visualScrollMetrics(el),
         });
+        if (memory.followTail) scrollLiveWorkBodiesToEnd();
+        syncVisualTailFollowActive(el);
+        settleVisualTailFollow(el, memory.followTail);
       });
     });
     return true;
@@ -1825,28 +1867,13 @@
           next: visualScrollMetrics(next),
           followTail: wasTailFollowing && canApplyVisualTailFollow(pauseSeq),
         });
+        const parentShouldStick =
+          wasTailFollowing && canApplyVisualTailFollow(pauseSeq);
+        if (parentShouldStick) scrollLiveWorkBodiesToEnd();
+        syncVisualTailFollowActive(next);
+        settleVisualTailFollow(next, parentShouldStick);
       });
     });
-  }
-
-  function scrollLiveWorkTailAnchorIntoView(el: HTMLElement): void {
-    const summary = messagesEl?.querySelector<HTMLElement>(
-      ".work-foldout-live > summary",
-    );
-    if (!summary) {
-      scrollToEnd(el);
-      return;
-    }
-    const scrollerRect = el.getBoundingClientRect();
-    const summaryRect = summary.getBoundingClientRect();
-    if (
-      summaryRect.top >= scrollerRect.top &&
-      summaryRect.bottom <= scrollerRect.bottom
-    ) {
-      return;
-    }
-    const topInset = Math.min(140, Math.max(56, scrollerRect.height * 0.18));
-    el.scrollTop += summaryRect.top - scrollerRect.top - topInset;
   }
 
   function visualTranscriptHasActiveSelection(): boolean {
@@ -1868,6 +1895,18 @@
     visualTailFollowPaused = false;
     visualTailFollowActive = false;
     visualTailFollowPauseSeq += 1;
+    visualPausedLiveWorkBodyKeys = new Set();
+  }
+
+  function syncVisualTailFollowActive(el: HTMLElement | null = messagesEl): void {
+    visualTailFollowActive =
+      !!el &&
+      isVisualTailFollowActive({
+        metrics: visualScrollMetrics(el),
+        paused: visualTailFollowPaused,
+        nearPx: VISUAL_TAIL_FOLLOW_NEAR_PX,
+      }) &&
+      liveWorkBodiesAreFollowing();
   }
 
   function setVisualTailFollowPaused(paused: boolean): void {
@@ -1875,13 +1914,15 @@
       visualTailFollowPaused = paused;
       visualTailFollowPauseSeq += 1;
     }
-    visualTailFollowActive = !paused;
+    syncVisualTailFollowActive();
   }
 
   function updateVisualTailFollowIntent(): void {
     const el = messagesEl;
     if (!el) return;
-    setVisualTailFollowPaused(!isNearScrollEnd(el));
+    setVisualTailFollowPaused(
+      shouldPauseVisualTailAfterUserScroll({ metrics: visualScrollMetrics(el) }),
+    );
   }
 
   function canApplyVisualTailFollow(seq: number): boolean {
@@ -1925,18 +1966,7 @@
       nearEnd: isNearScrollEnd(el),
       selecting,
     });
-    visualTailFollowActive =
-      shouldStickMessages && (firstRender || !visualTailFollowPaused);
-    const liveBodyStates = liveWorkBodies().map((body) => ({
-      key: body.key,
-      shouldStick: shouldFollowVisualTail({
-        force,
-        firstRender,
-        paused: visualTailFollowPaused,
-        nearEnd: isNearScrollEnd(body.body),
-        selecting,
-      }),
-    }));
+    syncVisualTailFollowActive(el);
     hasRenderedOnce = true;
 
     void tick().then(() => {
@@ -1944,67 +1974,21 @@
         const current = messagesEl;
         if (!current) return;
         const mayFollow = firstRender || canApplyVisualTailFollow(pauseSeq);
-        const currentLiveBodies = liveWorkBodies();
         if (!mayFollow) visualTailFollowActive = false;
         if (shouldStickMessages && mayFollow) {
-          if (
-            shouldAnchorLiveWorkTail({
-              hasLiveWork: currentLiveBodies.length > 0,
-              shouldStickMessages,
-            })
-          ) {
-            scrollLiveWorkTailAnchorIntoView(current);
-          } else {
-            scrollToEnd(current);
-          }
+          applyVisualTailFollow(current, { force });
         }
 
-        for (const { body, key } of currentLiveBodies) {
-          const previous = liveBodyStates.find((state) => state.key === key);
-          if (
-            mayFollow &&
-            shouldFollowNewLiveWorkBody({
-              previousShouldStick: previous?.shouldStick,
-              parentShouldStick: shouldStickMessages,
-            })
-          ) {
-            scrollToEnd(body);
-          }
-        }
-
-        if (!visualTranscriptActive && liveBodyStates.length === 0) return;
+        const currentLiveBodyCount = liveWorkBodies().length;
+        if (!visualTranscriptActive && currentLiveBodyCount === 0) return;
 
         requestAnimationFrame(() => {
           const settled = messagesEl;
           const mayFollowSettled =
             firstRender || canApplyVisualTailFollow(pauseSeq);
-          const settledLiveBodies = liveWorkBodies();
           if (!mayFollowSettled) visualTailFollowActive = false;
           if (settled && shouldStickMessages && mayFollowSettled) {
-            if (
-              shouldAnchorLiveWorkTail({
-                hasLiveWork: settledLiveBodies.length > 0,
-                shouldStickMessages,
-              })
-            ) {
-              scrollLiveWorkTailAnchorIntoView(settled);
-            } else {
-              scrollToEnd(settled);
-            }
-          }
-          for (const { body, key } of settledLiveBodies) {
-            const previous = liveBodyStates.find(
-              (state) => state.key === key,
-            );
-            if (
-              mayFollowSettled &&
-              shouldFollowNewLiveWorkBody({
-                previousShouldStick: previous?.shouldStick,
-                parentShouldStick: shouldStickMessages,
-              })
-            ) {
-              scrollToEnd(body);
-            }
+            applyVisualTailFollow(settled, { force });
           }
         });
       });
@@ -2012,6 +1996,7 @@
   }
 
   function forceVisualTailFollow(): void {
+    visualPausedLiveWorkBodyKeys = new Set();
     setVisualTailFollowPaused(false);
     scheduleVisualTailFollow({ force: true });
   }
@@ -2359,10 +2344,12 @@
   const CODEX_SETTINGS_KEY = "supergit:codexApp:turnSettings";
   const CODEX_QUEUE_KEY_PREFIX = "supergit:codexApp:queue:";
   const codexSavedSettings = readCodexSettings();
-  let codexModel = codexSavedSettings.model ?? "";
+  let codexModel = codexModelOverride ?? codexSavedSettings.model ?? "";
   let codexSandbox = codexSavedSettings.sandbox ?? "workspaceWrite";
   let codexApproval = codexSavedSettings.approval ?? "on-request";
-  let codexEffort = codexSavedSettings.effort ?? "";
+  let codexEffort = codexEffortOverride ?? codexSavedSettings.effort ?? "";
+  let codexServiceTier =
+    codexServiceTierOverride ?? codexSavedSettings.serviceTier ?? "";
   let codexSummary = codexSavedSettings.summary ?? "auto";
   const codexSeenEvents = new Set<string>();
   const codexUnhandledEventMethods = new Set<string>();
@@ -2474,6 +2461,7 @@
     sandbox?: string;
     approval?: string;
     effort?: string;
+    serviceTier?: string;
     summary?: string;
   } {
     try {
@@ -2487,6 +2475,10 @@
         approval:
           typeof parsed.approval === "string" ? parsed.approval : undefined,
         effort: typeof parsed.effort === "string" ? parsed.effort : undefined,
+        serviceTier:
+          typeof parsed.serviceTier === "string"
+            ? parsed.serviceTier
+            : undefined,
         summary:
           typeof parsed.summary === "string" ? parsed.summary : undefined,
       };
@@ -2503,6 +2495,7 @@
         sandbox: codexSandbox,
         approval: codexApproval,
         effort: codexEffort,
+        serviceTier: codexServiceTier,
         summary: codexSummary,
       }),
     );
@@ -2540,6 +2533,7 @@
   function pickCodexModel(value: string): void {
     codexModel = value;
     persistCodexSettings();
+    onSetCodexModel(value);
   }
   function pickCodexSandbox(value: string): void {
     codexSandbox = value;
@@ -2552,10 +2546,27 @@
   function pickCodexEffort(value: string): void {
     codexEffort = value;
     persistCodexSettings();
+    onSetCodexEffort(value);
+  }
+  function pickCodexServiceTier(value: string): void {
+    codexServiceTier = value;
+    persistCodexSettings();
+    onSetCodexServiceTier(value);
   }
   function pickCodexSummary(value: string): void {
     codexSummary = value;
     persistCodexSettings();
+  }
+
+  function codexTerminalConfigFlags(): string[] {
+    const flags: string[] = [];
+    if (codexEffort) {
+      flags.push("-c", `model_reasoning_effort=${JSON.stringify(codexEffort)}`);
+    }
+    if (codexServiceTier) {
+      flags.push("-c", `service_tier=${JSON.stringify(codexServiceTier)}`);
+    }
+    return flags;
   }
 
   $: codexSettings = codexAgentSettings({
@@ -2565,11 +2576,13 @@
     modelsLoading: codexModelsLoading,
     modelsError: codexModelsError,
     currentEffort: codexEffort,
+    currentServiceTier: codexServiceTier,
     currentSummary: codexSummary,
     currentSandbox: codexSandbox,
     currentApproval: codexApproval,
     onPickModel: pickCodexModel,
     onPickEffort: pickCodexEffort,
+    onPickServiceTier: pickCodexServiceTier,
     onPickSummary: pickCodexSummary,
     onPickSandbox: pickCodexSandbox,
     onPickApproval: pickCodexApproval,
@@ -4137,6 +4150,7 @@
           expectedTurnId: opts.steer ? codexActiveTurnId : undefined,
           model: codexModel || undefined,
           effort: codexEffort || undefined,
+          serviceTier: codexServiceTier || undefined,
           summary: codexSummary || undefined,
           sandboxPolicy: codexSandbox,
           approvalPolicy: codexApproval,
@@ -5028,8 +5042,13 @@
       {onToggleStar}
       onTitleSaved={(next) => onManualTitleSaved(next)}
       onSettingsOpen={() => {
-        if (codexVisualAppSurface && session?.cwd)
-          void loadCodexModels(session.cwd);
+        if (
+          shouldLoadCodexModelCatalog({
+            agent,
+            cwd: effectiveSessionCwd,
+          })
+        )
+          void loadCodexModels(effectiveSessionCwd);
       }}
       onResume={resumeCurrentSurface}
       onEndSession={mode === "read" && codexVisualAppSurface
@@ -5310,6 +5329,8 @@
             // approval policy to the user's codex config.
             "codex",
             "resume",
+            ...(codexModel ? ["--model", codexModel] : []),
+            ...codexTerminalConfigFlags(),
             effectiveSessionId,
           ]
         : [
@@ -5393,6 +5414,7 @@
       {onMessagesLeave}
       {onMessagesWheel}
       {onMessagesScroll}
+      {onLiveWorkBodyScroll}
       active={visualTranscriptActive}
       showLiveThinkingLine={codexVisualAppSurface && codexRunning}
       messageMotionSources={composerMessageMotionSources}
@@ -6348,8 +6370,8 @@
     position: relative;
     z-index: 3;
     align-self: center;
-    width: min(calc(100% - 1.6rem), 56rem);
-    margin: 0.45rem auto 0.6rem;
+    width: calc(100% - 0.8rem);
+    margin: 0.45rem auto 0.45rem;
     flex: 0 0 auto;
   }
   .composer {
@@ -6357,7 +6379,7 @@
     width: 100%;
     min-height: 6.4rem;
     border: 1px solid color-mix(in srgb, var(--surface-3) 72%, transparent);
-    border-radius: 1.25rem;
+    border-radius: 0.5rem;
     background: color-mix(in srgb, var(--surface-2) 82%, var(--surface-1));
     padding: 0.72rem 3.75rem 0.72rem 0.95rem;
     display: flex;

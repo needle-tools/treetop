@@ -254,6 +254,20 @@ export interface PersistedSession {
    *  (`low`/`medium`/`high`/`xhigh`/`max`) picked from the header menu.
    *  Passed as `claude --effort <level>`. Absence ⇒ claude's default. */
   claudeEffort?: ClaudeEffort;
+  /** Optional. For `agent === "codex"` terminal sessions, the model id
+   *  picked from Codex app-server's model catalog. Passed as
+   *  `codex --model <id>` / `codex resume --model <id>`. Absence ⇒
+   *  codex's configured default. */
+  codexModel?: string;
+  /** Optional. For `agent === "codex"` sessions, the reasoning effort
+   *  picked from the app-server model catalog. Visual sessions pass it
+   *  to `turn/start`; terminal sessions pass it via `-c
+   *  model_reasoning_effort=...`. */
+  codexEffort?: string;
+  /** Optional. For `agent === "codex"` sessions, the app-server service
+   *  tier / speed choice. Visual sessions pass it to `turn/start`;
+   *  terminal sessions pass it via `-c service_tier=...`. */
+  codexServiceTier?: string;
   /** Optional. Stamped onto `__new__:claude:` / `__new__:codex:` entries
    *  the first time the daemon's activity-tail surfaces a real agent-side
    *  session id for that (cwd, agent). On a subsequent mount (notably
@@ -485,6 +499,18 @@ function sanitizeSession(item: unknown): PersistedSession | null {
     (CLAUDE_EFFORT_LEVELS as readonly string[]).includes(o.claudeEffort)
   ) {
     out.claudeEffort = o.claudeEffort as ClaudeEffort;
+  }
+  if (typeof o.codexModel === "string" && o.codexModel.length > 0) {
+    out.codexModel = o.codexModel;
+  }
+  if (typeof o.codexEffort === "string" && o.codexEffort.length > 0) {
+    out.codexEffort = o.codexEffort;
+  }
+  if (
+    typeof o.codexServiceTier === "string" &&
+    o.codexServiceTier.length > 0
+  ) {
+    out.codexServiceTier = o.codexServiceTier;
   }
   return out;
 }
@@ -784,6 +810,9 @@ export function cmdForOpenSession(
     contextFilePath?: string;
     claudeModel?: string;
     claudeEffort?: string;
+    codexModel?: string;
+    codexEffort?: string;
+    codexServiceTier?: string;
     shellCmd?: string[];
   },
   defaultShell: string,
@@ -829,14 +858,29 @@ export function cmdForOpenSession(
     return cmd;
   }
   if (s.agent === "codex") {
-    if (sid) return ["codex", "resume", sid];
+    const codexFlags: string[] = [];
+    if (s.codexModel) codexFlags.push("--model", s.codexModel);
+    if (s.codexEffort) {
+      codexFlags.push(
+        "-c",
+        `model_reasoning_effort=${JSON.stringify(s.codexEffort)}`,
+      );
+    }
+    if (s.codexServiceTier) {
+      codexFlags.push(
+        "-c",
+        `service_tier=${JSON.stringify(s.codexServiceTier)}`,
+      );
+    }
+    if (sid) return ["codex", "resume", ...codexFlags, sid];
     if (s.contextFilePath) {
       return [
         "codex",
+        ...codexFlags,
         `Continue this conversation. Read the prior context from ${s.contextFilePath}`,
       ];
     }
-    return ["codex"];
+    return ["codex", ...codexFlags];
   }
   // copilot has no resume semantics in v0; ollama no longer spawns a
   // PTY (chat goes through /api/ollama/chat — see plans/ollama.md).

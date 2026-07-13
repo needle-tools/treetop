@@ -7,6 +7,7 @@
     moveSessionStateKey,
     openSessionHasLiveTerminal,
     openSessionHasDockActivity,
+    sidebarDockRows,
     reconcileLiveAgentTerminals,
     selectSessionsForBackgroundSpawn,
     type BackgroundSpawnCandidate,
@@ -2727,22 +2728,29 @@
     markTransientDiscovery(replacement.source);
   }
 
-  /** Per-source remount counter for Claude columns. Bumped whenever the
+  /** Per-source remount counter for agent columns. Bumped whenever the
    *  user switches model/effort so the `{#key}` wrapping the column tears
    *  down its TerminalView and spawns a fresh one — which, because the
    *  session already has a resumeSessionId, comes back as
-   *  `claude --resume <sid> --model <new>` and continues the same thread.
+   *  `claude --resume <sid> --model <new>` / `codex resume --model <new>`
+   *  and continues the same thread.
    *  This is the exact lifecycle a page reload of a live TUI already
    *  uses (unmount closes the WS → daemon grace-reaps the old PTY → the
    *  remount resumes), so no extra PTY-kill plumbing is needed. */
-  let claudeColGen: Record<string, number> = {};
+  let agentColGen: Record<string, number> = {};
 
-  /** Persist a Claude model/effort choice onto the open-session entry and
+  /** Persist an agent model/effort choice onto the open-session entry and
    *  remount the column so the change takes effect immediately. */
-  function setClaudeSessionFlag(
+  function setAgentSessionFlag(
     wtPath: string,
     source: string,
-    patch: { claudeModel?: string; claudeEffort?: string },
+    patch: {
+      claudeModel?: string;
+      claudeEffort?: string;
+      codexModel?: string;
+      codexEffort?: string;
+      codexServiceTier?: string;
+    },
   ) {
     const list = openSessionsByWt[wtPath];
     if (!list) return;
@@ -2760,11 +2768,20 @@
               patch.claudeEffort as PersistedSession["claudeEffort"],
           }
         : {}),
+      ...(patch.codexModel !== undefined
+        ? { codexModel: patch.codexModel }
+        : {}),
+      ...(patch.codexEffort !== undefined
+        ? { codexEffort: patch.codexEffort }
+        : {}),
+      ...(patch.codexServiceTier !== undefined
+        ? { codexServiceTier: patch.codexServiceTier }
+        : {}),
     };
     openSessionsByWt = { ...openSessionsByWt, [wtPath]: next };
-    claudeColGen = {
-      ...claudeColGen,
-      [source]: (claudeColGen[source] ?? 0) + 1,
+    agentColGen = {
+      ...agentColGen,
+      [source]: (agentColGen[source] ?? 0) + 1,
     };
   }
 
@@ -3018,7 +3035,24 @@
     try {
       const cmd =
         c.agent === "codex"
-          ? ["codex", "resume", c.resumeSessionId]
+          ? [
+              "codex",
+              "resume",
+              ...(c.codexModel ? ["--model", c.codexModel] : []),
+              ...(c.codexEffort
+                ? [
+                    "-c",
+                    `model_reasoning_effort=${JSON.stringify(c.codexEffort)}`,
+                  ]
+                : []),
+              ...(c.codexServiceTier
+                ? [
+                    "-c",
+                    `service_tier=${JSON.stringify(c.codexServiceTier)}`,
+                  ]
+                : []),
+              c.resumeSessionId,
+            ]
           : [
               "claude",
               "--resume",
@@ -6708,6 +6742,20 @@
       return true;
     });
   })();
+  $: dockRows = sidebarDockRows(rows, rowFolded);
+  $: dockVisibleWtByRepo = (() => {
+    const out = new Map<string, Set<string>>();
+    for (const row of dockRows) {
+      if (!row.wt) continue;
+      let paths = out.get(row.repo.id);
+      if (!paths) {
+        paths = new Set<string>();
+        out.set(row.repo.id, paths);
+      }
+      paths.add(row.wt.path);
+    }
+    return out;
+  })();
 
   // Only "real" actions in the dropdown; toggle events are hidden.
   $: visibleEvents = events.filter(
@@ -6848,141 +6896,142 @@
       ioDebugLabel?: string;
     }> => {
       const out: ReturnType<typeof Array> = [] as any;
-      for (const repo of repos) {
-        for (const wt of repo.worktrees ?? []) {
-          const opens = openSessionsByWt[wt.path];
-          if (!opens || opens.length === 0) continue;
-          const known = pickerSessionsByWt[wt.path] ?? [];
-          const bySource = new Map<string, (typeof known)[number]>();
-          for (const a of known) bySource.set(a.source, a);
-          const knownSources = new Set<string>();
-          for (const a of known) {
-            for (const key of sessionSurfaceKeys(a)) knownSources.add(key);
-          }
-          const rowKey = `${repo.id}|${wt.path}`;
-          for (const s of opens) {
-            // Live TUI means the column can point at an actual live PTY
-            // from `/api/terminals`. Persisted terminal mode alone is only
-            // a surface preference, not proof that the agent is still
-            // running.
-            const isLiveTui = openSessionHasLiveTerminal(s, {
-              liveTerminalIds,
-              newTermIds,
-              transientExited,
-            });
-            // Skip real (file-backed) sessions the daemon doesn't associate
-            // with THIS worktree. A session whose JSONL belongs to another
-            // repo but got filed under this worktree's open-sessions list
-            // would otherwise render as a phantom dot labelled with this
-            // worktree's branch (e.g. a needle-logs-view session showing as
-            // "supergit main"). The sessions-strip already drops these via
-            // filterToExistingSessions; this is the same per-worktree gate.
-            // A live TUI is exempt: its PTY cwd is reconcile-matched to this
-            // worktree, so it is authoritative even before the deferred
-            // per-worktree agent scan has populated `knownSources`. A session
-            // the user explicitly opened as a terminal (mode + resumeSessionId)
-            // is likewise theirs for this worktree and must show at startup
-            // before its PTY is (re-)spawned — without these exemptions,
-            // restored agents stay absent from the dock until their row is
-            // scrolled into view and the scan lands.
-            const isRestorableTui = s.mode === "terminal" && !!s.resumeSessionId;
-            if (
-              dockSessionHiddenAsForeign(s, knownSources, {
-                isLiveTui,
-                isRestorableTui,
-              })
-            )
-              continue;
-            // Utility panels (file browser, git history) are browsing
-            // views, not sessions — skip them in the activity dock.
-            // Agent and shell sessions appear regardless of mode
-            // (terminal or read-only).
-            if (
-              s.agent === "files" ||
-              s.agent === "history" ||
-              s.source.startsWith("__files__:") ||
-              s.source.startsWith("__remote__:") ||
-              s.source.startsWith("__restore__:") ||
-              s.source.startsWith("__history__:")
-            )
-              continue;
-            const hasDockActivity = openSessionHasDockActivity(s, {
-              liveTerminalIds,
-              newTermIds,
-              transientExited,
-              transientWorking,
-              transientAwaiting,
-            });
-            // Same lookup precedence as the NewSessionCol render: once a
-            // sid is stamped onto a `__new__:` column, prefer the matched
-            // real-source agent's metadata so the dock shows the title
-            // bound to the live conversation rather than whatever landed
-            // on the disposable synthetic key.
-            const realMeta = s.resumeSessionId
-              ? known.find(
-                  (a) =>
-                    a.agent === s.agent && a.sessionId === s.resumeSessionId,
-                )
-              : undefined;
-            const meta = realMeta ?? bySource.get(s.source);
-            const titleSource = resolveTitleSource(s, known);
-            const terminalIoStats = $terminalIoStatsByKey[s.source];
-            const ioStats =
-              $showTerminalIoDebug === true ? terminalIoStats : undefined;
-            out.push({
-              source: s.source,
-              wtPath: wt.path,
-              rowKey,
-              repoId: repo.id,
-              agent: s.agent,
-              repoColor: repo.color,
-              repoName: repo.name ?? repoName(repo),
-              branch: wt.branch,
-              title: meta?.title,
-              manualTitle:
-                meta?.manualTitle ??
-                newSessionTitles[titleSource] ??
-                newSessionTitles[s.source],
-              aiTitle: meta?.aiTitle,
-              lastUserMessage: meta?.lastUserMessage,
-              lastActive: meta?.lastActive,
-              lastMessageTs: meta?.lastMessageTs,
-              recentMessageCount: meta?.recentMessageCount,
-              resumeSessionId: s.resumeSessionId,
-              transcriptSource:
-                meta?.source && !meta.source.startsWith("__")
-                  ? meta.source
-                  : undefined,
-              // Shells emit output continuously (log tails, dev-server
-              // streams, REPLs) — none of that is "thinking", so we
-              // never surface a working/awaiting state for them in the
-              // dock. The shell dot stays static; its live-PTY state
-              // is conveyed by its dedicated terminal-style square
-              // (vs. the round agent dot).
-              working:
-                s.agent === "shell" ? false : !!transientWorking[s.source],
-              awaiting:
-                s.agent === "shell" ? false : !!transientAwaiting[s.source],
-              // Inactive covers sessions with neither a live terminal
-              // transport nor live visual/API activity. A visual
-              // app-server turn can be active without a PTY, so don't
-              // dim/filter it merely because it is displayed as chat.
-              exited: !hasDockActivity,
-              terminalActive:
-                isLiveTui &&
-                isTerminalRecentlyActive(terminalIoStats, Date.now()),
-              finishedAt: transientFinishedAt[s.source],
-              ioDebugLabel: ioStats
-                ? `in ${formatTerminalIoRate(ioStats.rxBytesPerSec)}`
+      for (const row of dockRows) {
+        const repo = row.repo;
+        const wt = row.wt;
+        if (!wt) continue;
+        const opens = openSessionsByWt[wt.path];
+        if (!opens || opens.length === 0) continue;
+        const known = pickerSessionsByWt[wt.path] ?? [];
+        const bySource = new Map<string, (typeof known)[number]>();
+        for (const a of known) bySource.set(a.source, a);
+        const knownSources = new Set<string>();
+        for (const a of known) {
+          for (const key of sessionSurfaceKeys(a)) knownSources.add(key);
+        }
+        const rowKey = row.key;
+        for (const s of opens) {
+          // Live TUI means the column can point at an actual live PTY
+          // from `/api/terminals`. Persisted terminal mode alone is only
+          // a surface preference, not proof that the agent is still
+          // running.
+          const isLiveTui = openSessionHasLiveTerminal(s, {
+            liveTerminalIds,
+            newTermIds,
+            transientExited,
+          });
+          // Skip real (file-backed) sessions the daemon doesn't associate
+          // with THIS worktree. A session whose JSONL belongs to another
+          // repo but got filed under this worktree's open-sessions list
+          // would otherwise render as a phantom dot labelled with this
+          // worktree's branch (e.g. a needle-logs-view session showing as
+          // "supergit main"). The sessions-strip already drops these via
+          // filterToExistingSessions; this is the same per-worktree gate.
+          // A live TUI is exempt: its PTY cwd is reconcile-matched to this
+          // worktree, so it is authoritative even before the deferred
+          // per-worktree agent scan has populated `knownSources`. A session
+          // the user explicitly opened as a terminal (mode + resumeSessionId)
+          // is likewise theirs for this worktree and must show at startup
+          // before its PTY is (re-)spawned — without these exemptions,
+          // restored agents stay absent from the dock until their row is
+          // scrolled into view and the scan lands.
+          const isRestorableTui = s.mode === "terminal" && !!s.resumeSessionId;
+          if (
+            dockSessionHiddenAsForeign(s, knownSources, {
+              isLiveTui,
+              isRestorableTui,
+            })
+          )
+            continue;
+          // Utility panels (file browser, git history) are browsing
+          // views, not sessions — skip them in the activity dock.
+          // Agent and shell sessions appear regardless of mode
+          // (terminal or read-only).
+          if (
+            s.agent === "files" ||
+            s.agent === "history" ||
+            s.source.startsWith("__files__:") ||
+            s.source.startsWith("__remote__:") ||
+            s.source.startsWith("__restore__:") ||
+            s.source.startsWith("__history__:")
+          )
+            continue;
+          const hasDockActivity = openSessionHasDockActivity(s, {
+            liveTerminalIds,
+            newTermIds,
+            transientExited,
+            transientWorking,
+            transientAwaiting,
+          });
+          // Same lookup precedence as the NewSessionCol render: once a
+          // sid is stamped onto a `__new__:` column, prefer the matched
+          // real-source agent's metadata so the dock shows the title
+          // bound to the live conversation rather than whatever landed
+          // on the disposable synthetic key.
+          const realMeta = s.resumeSessionId
+            ? known.find(
+                (a) =>
+                  a.agent === s.agent && a.sessionId === s.resumeSessionId,
+              )
+            : undefined;
+          const meta = realMeta ?? bySource.get(s.source);
+          const titleSource = resolveTitleSource(s, known);
+          const terminalIoStats = $terminalIoStatsByKey[s.source];
+          const ioStats =
+            $showTerminalIoDebug === true ? terminalIoStats : undefined;
+          out.push({
+            source: s.source,
+            wtPath: wt.path,
+            rowKey,
+            repoId: repo.id,
+            agent: s.agent,
+            repoColor: repo.color,
+            repoName: repo.name ?? repoName(repo),
+            branch: wt.branch,
+            title: meta?.title,
+            manualTitle:
+              meta?.manualTitle ??
+              newSessionTitles[titleSource] ??
+              newSessionTitles[s.source],
+            aiTitle: meta?.aiTitle,
+            lastUserMessage: meta?.lastUserMessage,
+            lastActive: meta?.lastActive,
+            lastMessageTs: meta?.lastMessageTs,
+            recentMessageCount: meta?.recentMessageCount,
+            resumeSessionId: s.resumeSessionId,
+            transcriptSource:
+              meta?.source && !meta.source.startsWith("__")
+                ? meta.source
                 : undefined,
-            });
-          }
+            // Shells emit output continuously (log tails, dev-server
+            // streams, REPLs) — none of that is "thinking", so we
+            // never surface a working/awaiting state for them in the
+            // dock. The shell dot stays static; its live-PTY state
+            // is conveyed by its dedicated terminal-style square
+            // (vs. the round agent dot).
+            working:
+              s.agent === "shell" ? false : !!transientWorking[s.source],
+            awaiting:
+              s.agent === "shell" ? false : !!transientAwaiting[s.source],
+            // Inactive covers sessions with neither a live terminal
+            // transport nor live visual/API activity. A visual
+            // app-server turn can be active without a PTY, so don't
+            // dim/filter it merely because it is displayed as chat.
+            exited: !hasDockActivity,
+            terminalActive:
+              isLiveTui &&
+              isTerminalRecentlyActive(terminalIoStats, Date.now()),
+            finishedAt: transientFinishedAt[s.source],
+            ioDebugLabel: ioStats
+              ? `in ${formatTerminalIoRate(ioStats.rxBytesPerSec)}`
+              : undefined,
+          });
         }
       }
-      // No sort — the iteration order (repos × worktrees × open
-      // sessions) already mirrors the dashboard's vertical layout and
-      // the user's manual session ordering. Reordering within a repo
-      // group causes the dock dots to jump around and is disorienting.
+      // No sort — dockRows is the rendered lane order, so it already
+      // mirrors the dashboard's vertical layout and the user's manual
+      // session ordering. Reordering within a repo group causes the
+      // dock dots to jump around and is disorienting.
       return out as any;
     },
   );
@@ -7025,14 +7074,7 @@
    *  ahead > 0 or behind > 0 render an arrow; the dirty/staged/
    *  unstaged counts surface in the hover label. */
   $: dockRepoStatuses = repos.map((repo) => {
-    const diskPaths = (repo.worktrees ?? []).map((w) => w.path);
-    const visible = new Set(
-      effectiveVisibleWorktrees(
-        repoPrefsKey(repo),
-        diskPaths,
-        visibleWorktreesByRepo,
-      ),
-    );
+    const visible = dockVisibleWtByRepo.get(repo.id) ?? new Set<string>();
     let ahead = 0;
     let behind = 0;
     let aheadDanger = false;
@@ -7089,14 +7131,7 @@
       }>
     > = {};
     for (const repo of repos) {
-      const diskPaths = (repo.worktrees ?? []).map((w) => w.path);
-      const visible = new Set(
-        effectiveVisibleWorktrees(
-          repoPrefsKey(repo),
-          diskPaths,
-          visibleWorktreesByRepo,
-        ),
-      );
+      const visible = dockVisibleWtByRepo.get(repo.id) ?? new Set<string>();
       const rows: Array<{
         path: string;
         branch: string;
@@ -11056,10 +11091,10 @@
                                 wt.agents ?? [],
                               )}
                               <!-- {#key} on a per-source generation counter so a
-                               model/effort switch (setClaudeSessionFlag) tears
+                               model/effort switch (setAgentSessionFlag) tears
                                down the TerminalView and respawns it via resume
                                with the new --model/--effort flag. -->
-                              {#key claudeColGen[s.source] ?? 0}
+                              {#key agentColGen[s.source] ?? 0}
                                 <NewSessionCol
                                   agent={s.agent}
                                   source={titleSource}
@@ -11106,6 +11141,9 @@
                                   model={newAgentMeta?.model}
                                   claudeModel={s.claudeModel}
                                   claudeEffort={s.claudeEffort}
+                                  codexModel={s.codexModel}
+                                  codexEffort={s.codexEffort}
+                                  codexServiceTier={s.codexServiceTier}
                                   lastActivityIso={newAgentMeta?.lastActive}
                                   lastUserMessage={newAgentMeta?.lastUserMessage}
                                   starred={starredSessions.has(titleSource) ||
@@ -11122,12 +11160,24 @@
                                   on:restart={() =>
                                     restartNewAgentSession(wt.path, s)}
                                   on:setModel={(e) =>
-                                    setClaudeSessionFlag(wt.path, s.source, {
+                                    setAgentSessionFlag(wt.path, s.source, {
                                       claudeModel: e.detail.model,
                                     })}
                                   on:setEffort={(e) =>
-                                    setClaudeSessionFlag(wt.path, s.source, {
+                                    setAgentSessionFlag(wt.path, s.source, {
                                       claudeEffort: e.detail.effort,
+                                    })}
+                                  on:setCodexModel={(e) =>
+                                    setAgentSessionFlag(wt.path, s.source, {
+                                      codexModel: e.detail.model,
+                                    })}
+                                  on:setCodexEffort={(e) =>
+                                    setAgentSessionFlag(wt.path, s.source, {
+                                      codexEffort: e.detail.effort,
+                                    })}
+                                  on:setCodexServiceTier={(e) =>
+                                    setAgentSessionFlag(wt.path, s.source, {
+                                      codexServiceTier: e.detail.serviceTier,
                                     })}
                                   on:spawn={(e) => {
                                     markTerminalLive(e.detail.id);
@@ -11333,7 +11383,7 @@
                                 effectiveSessionForView,
                                 wt.agents ?? [],
                               )}
-                              {#key claudeColGen[s.source] ?? 0}
+                              {#key agentColGen[s.source] ?? 0}
                                 <SessionView
                                   agent={s.agent as
                                     | "claude"
@@ -11365,13 +11415,28 @@
                                   model={agentMeta?.model}
                                   claudeModel={s.claudeModel}
                                   claudeEffort={s.claudeEffort}
+                                  codexModelOverride={s.codexModel}
+                                  codexEffortOverride={s.codexEffort}
+                                  codexServiceTierOverride={s.codexServiceTier}
                                   onSetClaudeModel={(m) =>
-                                    setClaudeSessionFlag(wt.path, s.source, {
+                                    setAgentSessionFlag(wt.path, s.source, {
                                       claudeModel: m,
                                     })}
                                   onSetClaudeEffort={(e) =>
-                                    setClaudeSessionFlag(wt.path, s.source, {
+                                    setAgentSessionFlag(wt.path, s.source, {
                                       claudeEffort: e,
+                                    })}
+                                  onSetCodexModel={(m) =>
+                                    setAgentSessionFlag(wt.path, s.source, {
+                                      codexModel: m,
+                                    })}
+                                  onSetCodexEffort={(e) =>
+                                    setAgentSessionFlag(wt.path, s.source, {
+                                      codexEffort: e,
+                                    })}
+                                  onSetCodexServiceTier={(tier) =>
+                                    setAgentSessionFlag(wt.path, s.source, {
+                                      codexServiceTier: tier,
                                     })}
                                   attachTermId={s.attachTermId}
                                   spawnReady={initialTerminalSnapshotReady}

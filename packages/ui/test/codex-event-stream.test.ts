@@ -475,6 +475,63 @@ describe("codex event stream hub", () => {
     });
   });
 
+  test("normalizes live dynamic tool-call requests before item snapshots arrive", () => {
+    const request: CodexAppEvent = {
+      kind: "request",
+      id: 101,
+      method: "item/tool/call",
+      params: {
+        threadId: "thread-1",
+        turnId: "turn-1",
+        callId: "call-logs",
+        namespace: null,
+        tool: "write_stdin",
+        arguments: {
+          session_id: 55249,
+          chars: "",
+          yield_time_ms: 5000,
+          max_output_tokens: 8000,
+        },
+      },
+      threadId: "thread-1",
+      turnId: "turn-1",
+      receivedAt: "2026-06-22T10:00:00.000Z",
+    };
+
+    expect(codexLiveToolUseFromEvent(request)).toEqual({
+      id: "codex-tool-call-logs",
+      toolName: "write_stdin",
+      toolInput: {
+        session_id: 55249,
+        chars: "",
+        yield_time_ms: 5000,
+        max_output_tokens: 8000,
+      },
+      toolUseId: "call-logs",
+      inputQuality: 3,
+    });
+    expect(codexLiveMessagesFromEvent(request)).toEqual([
+      {
+        id: "codex-tool-call-logs",
+        role: "assistant",
+        timestamp: "2026-06-22T10:00:00.000Z",
+        blocks: [
+          {
+            type: "tool_use",
+            toolName: "write_stdin",
+            toolInput: {
+              session_id: 55249,
+              chars: "",
+              yield_time_ms: 5000,
+              max_output_tokens: 8000,
+            },
+            toolUseId: "call-logs",
+          },
+        ],
+      },
+    ]);
+  });
+
   test("preserves command approval metadata on live command items", () => {
     const event: CodexAppEvent = {
       kind: "notification",
@@ -1271,6 +1328,60 @@ describe("codex event stream hub", () => {
       toolName: "write_stdin",
       text: expect.stringContaining("500/700"),
     });
+  });
+
+  test("normalizes app-server write_stdin content items in live and history", () => {
+    const writeStdinItem = {
+      id: "call-logs",
+      type: "dynamicToolCall",
+      tool: "write_stdin",
+      arguments: {
+        session_id: 55249,
+        chars: "",
+        yield_time_ms: 5000,
+        max_output_tokens: 8000,
+      },
+      status: "completed",
+      contentItems: [
+        {
+          type: "inputText",
+          text:
+            "Chunk ID: 07acea\nWall time: 5.0019 seconds\nProcess running with session ID 55249\nOriginal token count: 2\nOutput:\n500/700\n",
+        },
+      ],
+      success: true,
+      durationMs: 5002,
+    };
+    const history = codexAppHistoryMessagesFromThread({
+      turns: [{ id: "turn-1", items: [writeStdinItem] }],
+    });
+    const live = codexLiveMessagesFromEvent({
+      kind: "notification",
+      method: "item/completed",
+      params: {
+        threadId: "thread-1",
+        turnId: "turn-1",
+        item: writeStdinItem,
+      },
+      threadId: "thread-1",
+      turnId: "turn-1",
+      receivedAt: "2026-06-22T10:00:00.000Z",
+    });
+
+    expect(stripTimestamps(live)).toEqual(stripTimestamps(history));
+    expect(live).toContainEqual(
+      expect.objectContaining({
+        id: "codex-output-call-logs",
+        role: "tool",
+        blocks: [
+          expect.objectContaining({
+            type: "tool_result",
+            toolName: "write_stdin",
+            text: expect.stringContaining("500/700"),
+          }),
+        ],
+      }),
+    );
   });
 
   test("normalizes app-server write_stdin starts before results arrive", () => {

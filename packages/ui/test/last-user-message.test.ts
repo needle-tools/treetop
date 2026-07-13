@@ -26,6 +26,7 @@ import {
   visualToolLauncherLabel,
   visualToolPreviewParts,
   visualToolPreviewText,
+  visualToolWaitForDurationLabel,
   visualToolEnvAssignments,
   visualToolEnvSummaryLabel,
   visualToolEnvTooltipText,
@@ -177,6 +178,35 @@ describe("formatVisualWorkDuration", () => {
         canStillRun: false,
       }),
     ).toBe(false);
+  });
+
+  it("formats browser wait timers with elapsed and timeout", () => {
+    const block = {
+      type: "tool_use",
+      toolName: "wait_for",
+      toolInput: {
+        text: ["facevarying_normals_matrix", "Loading done", "Clear"],
+        timeout: 60_000,
+      },
+    };
+    expect(
+      visualToolWaitForDurationLabel(
+        block,
+        "2026-06-22T10:00:00.000Z",
+        "2026-06-22T10:00:04.200Z",
+      ),
+    ).toBe("4s / 60s");
+    expect(
+      visualToolWaitForDurationLabel(
+        {
+          type: "tool_use",
+          toolName: "exec_command",
+          toolInput: { cmd: "sleep 60" },
+        },
+        "2026-06-22T10:00:00.000Z",
+        "2026-06-22T10:00:04.200Z",
+      ),
+    ).toBeUndefined();
   });
 });
 
@@ -2270,6 +2300,13 @@ describe("visualThinkingSummary", () => {
       body: "I am checking the transcript rows.",
     });
   });
+
+  it("removes markdown title wrappers from single-line thinking summaries", () => {
+    expect(visualThinkingSummary("**Extracting PLY scores and visuals**")).toEqual({
+      title: "Extracting PLY scores and visuals",
+      body: "",
+    });
+  });
 });
 
 describe("visual tool payload display helpers", () => {
@@ -2595,6 +2632,18 @@ describe("visual tool payload display helpers", () => {
         toolInput: { cmd: "npx svelte-check --fail-on-warnings=false" },
       }),
     ).toBe("Run Svelte check");
+
+    expect(
+      visualToolPreviewText({
+        type: "tool_use",
+        toolName: "exec_command",
+        toolInput: {
+          cmd: "bash -n scripts/setup_optional_models.sh scripts/moebius/inpaint.sh",
+        },
+      }),
+    ).toBe(
+      "Check shell syntax setup_optional_models.sh, inpaint.sh",
+    );
   });
 
   it("shows test result badges from paired command output", () => {
@@ -2637,6 +2686,25 @@ describe("visual tool payload display helpers", () => {
         {
           type: "tool_use",
           toolName: "exec_command",
+          toolInput: {
+            cmd: "npx playwright test tests/e2e/api-and-pipeline.spec.js --project=chromium",
+          },
+        },
+        {
+          type: "tool_result",
+          text: "Exit code: 1\nWall time: 34.0000 seconds\nOutput:\nRunning 3 tests using 1 worker\n  ✘  1 tests/e2e/api-and-pipeline.spec.js:12:1 › subtitle blocks in Cut mode (30.0s)\n  ✓  2 tests/e2e/api-and-pipeline.spec.js:34:1 › opens timeline (1.0s)\n  ✓  3 tests/e2e/api-and-pipeline.spec.js:52:1 › exports captions (1.2s)",
+        },
+      ),
+    ).toEqual([
+      { label: "✕1", tone: "danger", title: "1 test failed" },
+      { label: "✓2", tone: "success", title: "2 tests passed" },
+    ]);
+
+    expect(
+      visualToolTestResultBadges(
+        {
+          type: "tool_use",
+          toolName: "exec_command",
           toolInput: { cmd: "pytest local-models/server/tests/test_app.py" },
         },
         {
@@ -2647,6 +2715,28 @@ describe("visual tool payload display helpers", () => {
     ).toEqual([
       { label: "⚠2", tone: "warning", title: "2 warnings" },
       { label: "✓7", tone: "success", title: "7 tests passed" },
+    ]);
+
+    const svelte = {
+      type: "tool_use",
+      toolName: "exec_command",
+      toolInput: { cmd: "npx svelte-check --fail-on-warnings=false" },
+    };
+    expect(
+      visualToolTestResultBadges(svelte, {
+        type: "tool_result",
+        text: "Chunk ID: s1\nWall time: 13.0000 seconds\nProcess exited with code 0\nOriginal token count: 10\nOutput:\nLoading svelte-check in workspace: /repo\nGetting Svelte diagnostics...\nsvelte-check found 0 errors and 13 warnings in 8 files",
+      }),
+    ).toEqual([
+      { label: "⚠13", tone: "warning", title: "13 Svelte warnings" },
+    ]);
+    expect(
+      visualToolTestResultBadges(svelte, {
+        type: "tool_result",
+        text: "Chunk ID: s2\nWall time: 13.0000 seconds\nProcess exited with code 0\nOriginal token count: 10\nOutput:\nsvelte-check found 0 errors and 0 warnings",
+      }),
+    ).toEqual([
+      { label: "✓", tone: "success", title: "No Svelte diagnostics" },
     ]);
   });
 
@@ -2740,6 +2830,21 @@ describe("visual tool payload display helpers", () => {
     );
   });
 
+  it("summarizes listener and log chains without setup sleeps", () => {
+    const block = {
+      type: "tool_use",
+      toolName: "exec_command",
+      toolInput: {
+        cmd: "sleep 3; lsof -nP -iTCP:55173 -sTCP:LISTEN || true; tail -n 50 logs/cursor-labeler-vite-55173.log",
+      },
+    };
+
+    expect(visualToolPreviewText(block)).toBe(
+      "Check port 55173 · Read logs cursor-labeler-vite-55173.log last 50",
+    );
+    expect(visualToolCallPayloadText(block)).toContain("sleep 3; lsof");
+  });
+
   it("summarizes tail log reads as log previews", () => {
     const block = {
       type: "tool_use",
@@ -2758,6 +2863,20 @@ describe("visual tool payload display helpers", () => {
       path: "/tmp/usd-wg-assets-5173.log",
       range: "",
     });
+  });
+
+  it("summarizes screen session listings", () => {
+    const block = {
+      type: "tool_use",
+      toolName: "exec_command",
+      toolInput: {
+        cmd: "screen -ls | sed -n '1,80p'",
+      },
+    };
+
+    expect(visualToolPreviewText(block)).toBe("List screen sessions");
+    expect(visualToolIconNameForPreview(block)).toBe("list");
+    expect(visualToolCallPayloadText(block)).toContain("screen -ls");
   });
 
   it("summarizes wc counts", () => {
@@ -3234,6 +3353,49 @@ describe("visual tool payload display helpers", () => {
     expect(visualToolCallPayloadText(block)).toContain("curl -sS");
   });
 
+  it("summarizes curl retry loops as wait-for-url checks", () => {
+    const block = {
+      type: "tool_use",
+      toolName: "exec_command",
+      toolInput: {
+        cmd: "for i in {1..30}; do curl -fsS http://100.120.22.46:18088/health && exit 0; sleep 2; done; exit 1",
+      },
+    };
+
+    expect(visualToolPreviewText(block)).toBe(
+      "Wait for 100.120.22.46:18088/health",
+    );
+    expect(visualToolCallPayloadText(block)).toContain("for i in {1..30}");
+  });
+
+  it("summarizes file loops over checker commands", () => {
+    const block = {
+      type: "tool_use",
+      toolName: "exec_command",
+      toolInput: {
+        cmd: 'for f in catmull_clark_cube.usda catmull_clark_facevarying_st.usda catmull_clark_lefthanded.usda; do usdchecker "$f"; done',
+      },
+    };
+
+    expect(visualToolPreviewText(block)).toBe(
+      "Check USD files catmull_clark_cube.usda, catmull_clark_facevarying_st.usda, catmull_clark_lefthanded.usda",
+    );
+    expect(visualToolPreviewParts(block)).toContainEqual({
+      kind: "path",
+      text: "catmull_clark_cube.usda",
+      path: "catmull_clark_cube.usda",
+      range: "",
+    });
+    expect(visualPathPreviewTargets(["catmull_clark_cube.usda"])).toEqual([
+      {
+        kind: "path",
+        text: "catmull_clark_cube.usda",
+        path: "catmull_clark_cube.usda",
+        range: "",
+      },
+    ]);
+  });
+
   it("shows fetch result size and failures from paired command output", () => {
     const curl = {
       type: "tool_use",
@@ -3440,6 +3602,36 @@ describe("visual tool payload display helpers", () => {
     expect(visualToolLauncherLabel(block)).toBe("zsh");
     expect(visualToolRemoteHostLabel(block)).toBe("cloud-staging");
     expect(visualToolCallPayloadText(block)).toContain("ssh -o BatchMode=yes");
+  });
+
+  it("summarizes ssh local tunnel commands", () => {
+    const block = {
+      type: "tool_use",
+      toolName: "exec_command",
+      toolInput: {
+        cmd: "ssh -N -L 45101:127.0.0.1:45100 felix-win",
+      },
+    };
+
+    expect(visualToolPreviewText(block)).toBe(
+      "Open tunnel localhost:45101 -> felix-win:45100",
+    );
+    expect(visualToolIconNameForPreview(block)).toBe("port_check");
+    expect(visualToolCallPayloadText(block)).toContain(
+      "ssh -N -L 45101:127.0.0.1:45100 felix-win",
+    );
+
+    const boundBlock = {
+      type: "tool_use",
+      toolName: "exec_command",
+      toolInput: {
+        cmd: "ssh -fN -L 0.0.0.0:45101:localhost:45100 user@felix-win",
+      },
+    };
+
+    expect(visualToolPreviewText(boundBlock)).toBe(
+      "Open tunnel *:45101 -> felix-win:45100",
+    );
   });
 
   it("summarizes PowerShell file reads over ssh as remote path chips", () => {
@@ -3676,6 +3868,21 @@ describe("visual tool payload display helpers", () => {
     expect(visualToolCallPayloadText(block)).toContain("sed -n");
   });
 
+  it("ignores label-only print commands between read summaries", () => {
+    const block = {
+      type: "tool_use",
+      toolName: "exec_command",
+      toolInput: {
+        cmd: "printf '%s\\n' '--- ml-sharp root ---'; sed -n '1,80p' README.md; printf '%s\\n' '--- instructions ---'; sed -n '1,120p' AGENTS.md",
+      },
+    };
+
+    expect(visualToolPreviewText(block)).toBe(
+      "Read README.md:1-80, AGENTS.md:1-120",
+    );
+    expect(visualToolCallPayloadText(block)).toContain("printf");
+  });
+
   it("ignores setup ls commands before read summaries", () => {
     expect(
       visualToolPreviewText({
@@ -3892,6 +4099,25 @@ describe("visual tool payload display helpers", () => {
         },
       }),
     ).toBe("Check console messages");
+    expect(
+      visualToolPreviewText({
+        type: "tool_use",
+        toolName: "list_network_requests",
+        toolInput: {
+          pageSize: 120,
+          resourceTypes: ["document", "fetch", "xhr"],
+        },
+      }),
+    ).toBe("Check network requests for documents, fetch, and XHR");
+    expect(
+      visualToolIconNameForPreview({
+        type: "tool_use",
+        toolName: "list_network_requests",
+        toolInput: {
+          resourceTypes: ["fetch"],
+        },
+      }),
+    ).toBe("list_network_requests");
     expect(
       visualToolPreviewText({
         type: "tool_use",
@@ -4380,6 +4606,120 @@ describe("buildVisualWorkDisplayEntries", () => {
     expect(entries).toHaveLength(1);
     expect(entries[0]?.entry).toBe(toolResult);
     expect(entries[0]?.pairedResult).toBeUndefined();
+  });
+
+  it("resolves Chrome DevTools click UIDs from the latest preceding snapshot", () => {
+    const snapshotUse = {
+      message: {
+        role: "assistant",
+        blocks: [
+          {
+            type: "tool_use",
+            toolName: "take_snapshot",
+            toolUseId: "snap-1",
+            toolInput: { verbose: false },
+          },
+        ],
+      },
+      blocks: [
+        {
+          type: "tool_use",
+          toolName: "take_snapshot",
+          toolUseId: "snap-1",
+          toolInput: { verbose: false },
+        },
+      ],
+      messageIndex: 1,
+    };
+    const snapshotResult = {
+      message: {
+        role: "tool",
+        blocks: [
+          {
+            type: "tool_result",
+            toolName: "take_snapshot",
+            toolUseId: "snap-1",
+            text: [
+              "## Latest page snapshot",
+              'uid=3_0 RootWebArea "Demo app"',
+              '  uid=3_12 button "Play" description="Start playback"',
+              '  uid=3_13 tab "Settings" selectable',
+            ].join("\n"),
+          },
+        ],
+      },
+      blocks: [
+        {
+          type: "tool_result",
+          toolName: "take_snapshot",
+          toolUseId: "snap-1",
+          text: [
+            "## Latest page snapshot",
+            'uid=3_0 RootWebArea "Demo app"',
+            '  uid=3_12 button "Play" description="Start playback"',
+            '  uid=3_13 tab "Settings" selectable',
+          ].join("\n"),
+        },
+      ],
+      messageIndex: 2,
+    };
+    const clickUse = {
+      message: {
+        role: "assistant",
+        blocks: [
+          {
+            type: "tool_use",
+            toolName: "click",
+            toolInput: { uid: "3_12", includeSnapshot: true },
+          },
+        ],
+      },
+      blocks: [
+        {
+          type: "tool_use",
+          toolName: "click",
+          toolInput: { uid: "3_12", includeSnapshot: true },
+        },
+      ],
+      messageIndex: 3,
+    };
+    const doubleClickUse = {
+      message: {
+        role: "assistant",
+        blocks: [
+          {
+            type: "tool_use",
+            toolName: "click",
+            toolInput: { uid: "3_13", dblClick: true },
+          },
+        ],
+      },
+      blocks: [
+        {
+          type: "tool_use",
+          toolName: "click",
+          toolInput: { uid: "3_13", dblClick: true },
+        },
+      ],
+      messageIndex: 4,
+    };
+
+    const entries = buildVisualWorkDisplayEntries([
+      snapshotUse,
+      snapshotResult,
+      clickUse,
+      doubleClickUse,
+    ]);
+
+    const clickBlock = entries[1]?.entry.blocks[0];
+    const doubleClickBlock = entries[2]?.entry.blocks[0];
+    expect(visualToolPreviewText(clickBlock)).toBe("Click element 3_12");
+    expect(
+      visualToolPreviewText(clickBlock, entries[1]?.previewContext),
+    ).toBe("Click button Play");
+    expect(
+      visualToolPreviewText(doubleClickBlock, entries[2]?.previewContext),
+    ).toBe("Double-click tab Settings");
   });
 
   it("classifies marker-only rows for badge rendering", () => {

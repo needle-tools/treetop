@@ -1314,14 +1314,22 @@
     pointer-events: auto;
     position: relative;
     z-index: 1;
-    scrollbar-width: thin;
-    scrollbar-color: transparent transparent;
   }
-  .session-dock.show-labels .dock-scroll {
-    scrollbar-color: color-mix(in oklch, var(--text-muted, #9a9aa0) 40%, transparent) transparent;
+  @supports not selector(::-webkit-scrollbar) {
+    .dock-scroll {
+      scrollbar-width: thin;
+      scrollbar-color: transparent transparent;
+    }
+    .session-dock.show-labels .dock-scroll {
+      scrollbar-color: color-mix(in oklch, var(--text-muted, #9a9aa0) 40%, transparent) transparent;
+    }
   }
   .dock-scroll::-webkit-scrollbar {
     width: 5px;
+    background: transparent;
+  }
+  .dock-scroll::-webkit-scrollbar-track {
+    background: transparent;
   }
   .dock-scroll::-webkit-scrollbar-thumb {
     background: transparent;

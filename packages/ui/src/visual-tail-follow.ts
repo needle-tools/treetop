@@ -1,4 +1,5 @@
 export const VISUAL_TAIL_FOLLOW_NEAR_PX = 64;
+export const VISUAL_TAIL_FOLLOW_RESUME_PX = 4;
 
 export interface VisualScrollMetrics {
   scrollHeight: number;
@@ -21,6 +22,28 @@ export function isNearVisualScrollEnd(
   );
 }
 
+export function isAtVisualScrollEnd(
+  metrics: VisualScrollMetrics,
+  endPx = VISUAL_TAIL_FOLLOW_RESUME_PX,
+): boolean {
+  return isNearVisualScrollEnd(metrics, endPx);
+}
+
+export function shouldPauseVisualTailAfterUserScroll(opts: {
+  metrics: VisualScrollMetrics;
+  endPx?: number;
+}): boolean {
+  return !isAtVisualScrollEnd(opts.metrics, opts.endPx);
+}
+
+export function isVisualTailFollowActive(opts: {
+  metrics: VisualScrollMetrics;
+  paused: boolean;
+  nearPx?: number;
+}): boolean {
+  return !opts.paused && isNearVisualScrollEnd(opts.metrics, opts.nearPx);
+}
+
 export function shouldFollowVisualTail(opts: {
   force?: boolean;
   firstRender?: boolean;
@@ -36,18 +59,11 @@ export function shouldFollowVisualTail(opts: {
   );
 }
 
-export function shouldFollowNewLiveWorkBody(opts: {
-  previousShouldStick: boolean | undefined;
+export function shouldFollowLiveWorkBody(opts: {
   parentShouldStick: boolean;
+  bodyPaused?: boolean;
 }): boolean {
-  return opts.previousShouldStick ?? opts.parentShouldStick;
-}
-
-export function shouldAnchorLiveWorkTail(opts: {
-  hasLiveWork: boolean;
-  shouldStickMessages: boolean;
-}): boolean {
-  return opts.hasLiveWork && opts.shouldStickMessages;
+  return opts.parentShouldStick && opts.bodyPaused !== true;
 }
 
 export function replacementVisualScrollTop(opts: {
@@ -74,6 +90,17 @@ export function visualScrollMemoryFromMetrics(opts: {
     anchorKey: opts.anchorKey,
     anchorOffsetTop: opts.anchorOffsetTop,
   };
+}
+
+export function shouldRememberVisualScrollMemory(opts: {
+  layoutUsable: boolean;
+  metrics: VisualScrollMetrics;
+}): boolean {
+  return (
+    opts.layoutUsable &&
+    opts.metrics.clientHeight > 0 &&
+    opts.metrics.scrollHeight > 0
+  );
 }
 
 export function visualScrollTopFromMemory(opts: {

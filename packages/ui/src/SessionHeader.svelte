@@ -901,11 +901,13 @@
     display: flex;
     flex-direction: column;
     gap: 0.7rem;
+    min-width: 0;
   }
   .agent-settings-group {
     display: flex;
     flex-direction: column;
     gap: 0.3rem;
+    min-width: 0;
   }
   .agent-settings-glabel {
     font-size: 0.72rem;
@@ -918,18 +920,22 @@
     display: flex;
     flex-wrap: wrap;
     gap: 0.3rem;
+    min-width: 0;
   }
   .agent-settings-opt {
     display: inline-flex;
     align-items: center;
-    gap: 0.4rem;
-    padding: 0.25rem 0.55rem;
+    gap: 0.32rem;
+    max-width: 100%;
+    min-width: 0;
+    padding: 0.2rem 0.45rem;
     border-radius: var(--radius-sm);
     border: 1px solid color-mix(in srgb, var(--text-muted) 25%, transparent);
     background: transparent;
     color: var(--text-1);
     font: inherit;
-    font-size: 0.8rem;
+    font-size: 0.72rem;
+    line-height: 1.15;
     cursor: pointer;
   }
   .agent-settings-opt:hover {
@@ -940,7 +946,11 @@
     background: color-mix(in srgb, var(--brand) 14%, transparent);
   }
   .agent-settings-opt-label {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
     text-transform: lowercase;
+    white-space: nowrap;
     font-family: ui-monospace, monospace;
   }
   /* Effort gauge in the option — same glyph as the pill badge / menu. */

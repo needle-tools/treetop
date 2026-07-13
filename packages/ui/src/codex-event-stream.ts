@@ -1181,6 +1181,8 @@ export function codexEventItemId(event: CodexAppEvent): string | undefined {
   }
   return typeof event.params.itemId === "string"
     ? event.params.itemId
+    : typeof event.params.callId === "string"
+      ? event.params.callId
     : typeof item?.id === "string"
       ? item.id
     : typeof item?.call_id === "string"
@@ -1224,6 +1226,9 @@ function codexEventToolName(
   }
   if (item?.type === "function_call" || item?.type === "custom_tool_call") {
     return stringField(item, "name") ?? item.type;
+  }
+  if (method === "item/tool/call") {
+    return stringField(params, "tool") ?? "dynamicToolCall";
   }
   if (
     item?.type === "function_call_output" ||
@@ -1274,6 +1279,18 @@ function codexEventToolInput(
   }
   if (item?.type === "mcpToolCall" || item?.type === "dynamicToolCall") {
     const input = codexToolArguments(item.arguments);
+    return input && typeof input === "object"
+      ? (input as Record<string, unknown>)
+      : input === undefined
+        ? undefined
+        : { value: input };
+  }
+  if (
+    typeof params.callId === "string" &&
+    typeof params.tool === "string" &&
+    "arguments" in params
+  ) {
+    const input = codexToolArguments(params.arguments);
     return input && typeof input === "object"
       ? (input as Record<string, unknown>)
       : input === undefined

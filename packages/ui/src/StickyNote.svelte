@@ -1,4 +1,15 @@
 <script lang="ts" context="module">
+  import { marked } from "marked";
+  import { markdownCodeBlockHtml } from "./markdown-code";
+
+  marked.use({
+    renderer: {
+      code(token: { text?: string; lang?: string | null }) {
+        return markdownCodeBlockHtml(token.text ?? "", token.lang);
+      },
+    },
+  });
+
   /** The two attachment kinds the layer carries: a free-form paper
    *  sticky ("note") and a compact chip pointing at a URL / commit /
    *  session / file ("link"). Both share the storage path, anchors,
@@ -60,7 +71,6 @@
    */
   import { onMount, onDestroy, createEventDispatcher } from "svelte";
   import { apiUrl } from "./api";
-  import { marked } from "marked";
   import {
     isAppIconToken,
     appIconNameFromToken,
@@ -986,6 +996,15 @@
    *  standalone link chip without re-rendering Svelte for each one. */
   function onBodyClick(e: MouseEvent): void {
     const t = e.target as HTMLElement | null;
+    const copyButton = t?.closest<HTMLButtonElement>(".md-code-copy");
+    if (copyButton) {
+      e.preventDefault();
+      e.stopPropagation();
+      const frame = copyButton.closest(".md-code-frame");
+      const code = frame?.querySelector("pre code")?.textContent ?? "";
+      if (code) void navigator.clipboard?.writeText(code);
+      return;
+    }
     const a = t?.closest("a") as HTMLAnchorElement | null;
     if (!a) return;
     const href = a.getAttribute("href") ?? "";

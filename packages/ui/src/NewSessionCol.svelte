@@ -28,11 +28,18 @@
   import {
     claudeSessionMenuItems,
     claudeAgentSettings,
+    codexAgentSettings,
     effortIcon,
+    shouldLoadCodexModelCatalog,
+    type CodexModelInfo,
   } from "./claude-session-menu";
   import type { SshSessionInfo } from "./file-browser-utils";
   import { elementNearViewport } from "./col-visibility";
   import { apiWsUrl } from "./api";
+  import {
+    codexModelsCacheKey,
+    loadSharedCodexModels,
+  } from "./codex-model-catalog";
   import { createTerminalHold, type HoldSocket } from "./terminal-hold";
   import {
     shouldHoldOffscreenAttachedTerminal,
@@ -102,6 +109,9 @@
    *  ✓ in the header's Model/Effort menus. claude-only. */
   export let claudeModel: string | undefined = undefined;
   export let claudeEffort: string | undefined = undefined;
+  export let codexModel: string | undefined = undefined;
+  export let codexEffort: string | undefined = undefined;
+  export let codexServiceTier: string | undefined = undefined;
   export let lastActivityIso: string | undefined = undefined;
   /** Text of the user's most recent message in this session — fed
    *  through to SessionHeader so the "last activity" chip's hover
@@ -127,6 +137,9 @@
     restart: void;
     setModel: { model: string };
     setEffort: { effort: string };
+    setCodexModel: { model: string };
+    setCodexEffort: { effort: string };
+    setCodexServiceTier: { serviceTier: string };
     spawn: { id: string };
     awaitingChange: { awaiting: boolean };
     workingChange: { working: boolean };
@@ -195,6 +208,32 @@
     return ic ? { ...ic, title: `effort: ${claudeEffort}` } : undefined;
   })();
 
+  let codexModels: CodexModelInfo[] = [];
+  let codexModelsKey = "";
+  let codexModelsLoadingKey = "";
+  let codexModelsLoading = false;
+  let codexModelsError = "";
+
+  async function loadCodexModels(cwd: string): Promise<void> {
+    const key = cwd ? codexModelsCacheKey(daemonId, cwd) : "";
+    if (!cwd || codexModelsKey === key || codexModelsLoadingKey === key) return;
+    codexModelsLoading = true;
+    codexModelsLoadingKey = key;
+    codexModelsError = "";
+    try {
+      const result = await loadSharedCodexModels(daemonId, cwd);
+      if (codexModelsLoadingKey !== key) return;
+      codexModels = result.models;
+      codexModelsError = result.error;
+      codexModelsKey = key;
+    } finally {
+      if (codexModelsLoadingKey === key) {
+        codexModelsLoadingKey = "";
+        codexModelsLoading = false;
+      }
+    }
+  }
+
   $: claudeMenuItems =
     agent === "claude"
       ? claudeSessionMenuItems({
@@ -216,6 +255,26 @@
           onPickModel: (m) => dispatch("setModel", { model: m }),
           onPickEffort: (e) => dispatch("setEffort", { effort: e }),
         })
+      : agent === "codex"
+        ? codexAgentSettings({
+            models: codexModels,
+            detectedModel: model,
+            currentModel: codexModel ?? "",
+            modelsLoading: codexModelsLoading,
+            modelsError: codexModelsError,
+            currentEffort: codexEffort ?? "",
+            currentServiceTier: codexServiceTier ?? "",
+            currentSummary: "auto",
+            currentSandbox: "workspaceWrite",
+            currentApproval: "on-request",
+            onPickModel: (m) => dispatch("setCodexModel", { model: m }),
+            onPickEffort: (e) => dispatch("setCodexEffort", { effort: e }),
+            onPickServiceTier: (serviceTier) =>
+              dispatch("setCodexServiceTier", { serviceTier }),
+            onPickSummary: () => {},
+            onPickSandbox: () => {},
+            onPickApproval: () => {},
+          })
       : [];
 
   $: menuItems = [
@@ -412,6 +471,9 @@
     {onDragStart}
     {starred}
     {onToggleStar}
+    onSettingsOpen={() => {
+      if (shouldLoadCodexModelCatalog({ agent, cwd })) void loadCodexModels(cwd);
+    }}
     onTitleSaved={(next) => dispatch("titleSave", { title: next })}
     onTitleEditingChange={(e) => dispatch("titleEditingChange", { editing: e })}
     onEndSession={handleEndSession}

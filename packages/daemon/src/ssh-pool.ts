@@ -7,6 +7,13 @@ export interface SshPoolOptions {
   idleTimeoutMs?: number;
 }
 
+export interface OpenSshResolvedHost {
+  host: string;
+  user: string | undefined;
+  port: number;
+  identityAgent: string | undefined;
+}
+
 interface PoolEntry {
   client: Client;
   sftp: SFTPWrapper;
@@ -77,7 +84,17 @@ export class SshPool {
     port: number,
     privateKeyPath?: string,
   ): Promise<SFTPWrapper> {
-    const agentSock = privateKeyPath ? undefined : await resolveAgent(host);
+    const resolved = privateKeyPath
+      ? {
+          host,
+          user: user ?? process.env.USER ?? "root",
+          port,
+          identityAgent: undefined,
+        }
+      : await resolveOpenSshHost(host, user, port);
+    const agentSock = privateKeyPath
+      ? undefined
+      : await resolveAgent(resolved.identityAgent);
     const client = new Client();
 
     return new Promise<SFTPWrapper>((resolve, reject) => {
@@ -112,9 +129,9 @@ export class SshPool {
       });
 
       const connectOpts: Record<string, unknown> = {
-        host,
-        port,
-        username: user ?? process.env.USER ?? "root",
+        host: resolved.host,
+        port: resolved.port,
+        username: resolved.user ?? process.env.USER ?? "root",
       };
 
       if (privateKeyPath) {
@@ -159,6 +176,60 @@ export class SshPool {
   }
 }
 
+export function parseOpenSshGOutput(
+  text: string,
+  fallbackHost: string,
+  fallbackUser: string | undefined,
+  fallbackPort: number,
+): OpenSshResolvedHost {
+  let host = fallbackHost;
+  let user = fallbackUser;
+  let port = fallbackPort;
+  let identityAgent: string | undefined;
+
+  for (const line of text.split("\n")) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith("#")) continue;
+    const space = trimmed.search(/\s/);
+    if (space <= 0) continue;
+    const key = trimmed.slice(0, space).toLowerCase();
+    const value = trimmed.slice(space).trim();
+    if (!value) continue;
+
+    if (key === "hostname") host = value;
+    else if (key === "user" && !fallbackUser) user = value;
+    else if (key === "port" && fallbackPort === 22) {
+      const parsed = Number(value);
+      if (Number.isFinite(parsed) && parsed > 0) port = parsed;
+    } else if (key === "identityagent" && value.toLowerCase() !== "none") {
+      identityAgent = value;
+    }
+  }
+
+  return { host, user, port, identityAgent };
+}
+
+async function resolveOpenSshHost(
+  host: string,
+  user: string | undefined,
+  port: number,
+): Promise<OpenSshResolvedHost> {
+  try {
+    const result = await $`ssh -G ${host}`.quiet().nothrow();
+    if (result.exitCode === 0) {
+      return parseOpenSshGOutput(
+        result.stdout.toString(),
+        host,
+        user,
+        port,
+      );
+    }
+  } catch {
+    // best-effort; direct host connection below still handles DNS/IP hosts.
+  }
+  return { host, user, port, identityAgent: undefined };
+}
+
 /**
  * Resolve the SSH agent socket for a given host.
  *
@@ -168,20 +239,8 @@ export class SshPool {
  * Windows: uses the OpenSSH agent named pipe, or reads ssh -G
  * for custom agent paths.
  */
-async function resolveAgent(host: string): Promise<string | undefined> {
-  try {
-    const result = await $`ssh -G ${host}`.quiet().nothrow();
-    const text = result.stdout.toString();
-    for (const line of text.split("\n")) {
-      const trimmed = line.trim().toLowerCase();
-      if (trimmed.startsWith("identityagent ")) {
-        const val = line.trim().slice("identityagent ".length).trim();
-        if (val && val !== "SSH_AUTH_SOCK") return val;
-      }
-    }
-  } catch {
-    // best-effort
-  }
+async function resolveAgent(identityAgent?: string): Promise<string | undefined> {
+  if (identityAgent && identityAgent !== "SSH_AUTH_SOCK") return identityAgent;
 
   if (process.env.SSH_AUTH_SOCK) return process.env.SSH_AUTH_SOCK;
 

@@ -44,6 +44,7 @@
     visualToolPreviewText,
     visualToolRemoteHostLabel,
     visualToolTestResultBadges,
+    visualToolWaitForDurationLabel,
     visualSubagentLabel,
     visualSubagentMetaFromBlock,
     visualSubagentMetaFromBlocks,
@@ -54,6 +55,7 @@
     type VisualMarkerKind,
     type VisualSubagentMeta,
     type VisualToolResultBadge,
+    type VisualToolPreviewContext,
     type VisualTranscriptItem,
     type VisualWorkDisplayEntry,
     type VisualWorkEntry,
@@ -156,6 +158,10 @@
   export let onMessagesLeave: () => void = () => {};
   export let onMessagesWheel: (e: WheelEvent) => void = () => {};
   export let onMessagesScroll: () => void = () => {};
+  export let onLiveWorkBodyScroll: (
+    workKey: string,
+    body: HTMLElement,
+  ) => void = () => {};
   export let showLiveThinkingLine = false;
   export let messageMotionSources: Map<string, ComposerMotionRect> = new Map();
   export let onMessageMotionDone: (id: string) => void = () => {};
@@ -369,13 +375,35 @@
   function onMediaModalKeydown(event: KeyboardEvent): void {
     if (event.key === "Escape") {
       event.preventDefault();
+      event.stopPropagation();
       closeMediaViewer();
     } else if (event.key === "ArrowLeft") {
       event.preventDefault();
+      event.stopPropagation();
       openMediaByStep(-1);
     } else if (event.key === "ArrowRight") {
       event.preventDefault();
+      event.stopPropagation();
       openMediaByStep(1);
+    }
+  }
+
+  function onMediaWindowKeydown(event: KeyboardEvent): void {
+    if (!openMediaBlock) return;
+    if (
+      event.key !== "Escape" &&
+      event.key !== "ArrowLeft" &&
+      event.key !== "ArrowRight"
+    ) {
+      return;
+    }
+    event.preventDefault();
+    event.stopPropagation();
+    event.stopImmediatePropagation();
+    if (event.key === "Escape") {
+      closeMediaViewer();
+    } else {
+      openMediaByStep(event.key === "ArrowLeft" ? -1 : 1);
     }
   }
 
@@ -660,6 +688,33 @@
     return elapsedDurationSince(entry.message.timestamp, nowIso);
   }
 
+  function toolWaitForDurationLabel(
+    item: Extract<
+      VisualTranscriptItem<NormalizedBlock, NormalizedMessage>,
+      { kind: "work" }
+    >,
+    toolBlock: NormalizedBlock | undefined,
+    startedAt: string | undefined,
+    resultEntry: VisualWorkEntry<NormalizedBlock, NormalizedMessage> | undefined,
+    nowIso: string,
+  ): string | undefined {
+    if (!toolBlock) return undefined;
+    const resultBlock = workEntryToolResultBlock(resultEntry);
+    const hasFinalResult = !!resultEntry && !resultBlock?.streaming;
+    if (
+      !shouldShowLiveToolTimer({
+        active,
+        open: item.open === true,
+        endedAt: item.endedAt,
+        hasFinalResult,
+        canStillRun: visualToolCanStillRun(toolBlock),
+      })
+    ) {
+      return undefined;
+    }
+    return visualToolWaitForDurationLabel(toolBlock, startedAt, nowIso);
+  }
+
   function visualTextForBlock(
     text: string | undefined,
     role: string,
@@ -782,6 +837,26 @@
     return active?.step ?? plan.explanation ?? plan.items[0]?.step ?? "";
   }
 
+  function planRawPayloadText(block: NormalizedBlock): string {
+    const payload =
+      block.toolInput ??
+      ({
+        ...(block.explanation ? { explanation: block.explanation } : {}),
+        plan: block.planItems ?? [],
+      } satisfies Record<string, unknown>);
+    try {
+      return JSON.stringify(payload, null, 2);
+    } catch {
+      return String(payload);
+    }
+  }
+
+  function workEntryPlanBlock(
+    entry: VisualWorkEntry<NormalizedBlock, NormalizedMessage>,
+  ): NormalizedBlock | undefined {
+    return entry.blocks.find((block) => block.type === "plan");
+  }
+
   function planStatusIcon(status: string): string {
     if (status === "completed") return "✓";
     if (status === "in_progress") return "•";
@@ -839,8 +914,12 @@
     return "Edited";
   }
 
-  function workEntryToolPreview(block: NormalizedBlock): string {
-    const text = visualToolPreviewText(block) || inputPreview(block.toolInput);
+  function workEntryToolPreview(
+    block: NormalizedBlock,
+    context?: VisualToolPreviewContext,
+  ): string {
+    const text =
+      visualToolPreviewText(block, context) || inputPreview(block.toolInput);
     return text.replace(/\s+/g, " ").trim();
   }
 
@@ -900,7 +979,7 @@
   }
 
   function resultBadgeSymbol(label: string): string | undefined {
-    return label.match(/^([✓⚠✕])\d+$/)?.[1];
+    return label.match(/^([✓⚠✕])\d*$/)?.[1];
   }
 
   function resultBadgeCount(label: string): string | undefined {
@@ -1331,6 +1410,8 @@
   }
 </script>
 
+<svelte:window on:keydown|capture={onMediaWindowKeydown} />
+
 {#snippet renderThinkingIcon()}
   <svg
     class="thinking-icon"
@@ -1369,6 +1450,29 @@
   </span>
 {/snippet}
 
+{#snippet renderPlanCard(block: NormalizedBlock, extraClass = "")}
+  {@const plan = visualPlanFromBlock(block)}
+  {#if plan}
+    <div class={`plan-block ${extraClass}`}>
+      <div class="plan-title">{planTitle(block)}</div>
+      {#if plan.explanation}
+        <div class="plan-explanation-row">
+          {@render renderThinkingIcon()}
+          <div class="plan-explanation">{plan.explanation}</div>
+        </div>
+      {/if}
+      <div class="plan-items">
+        {#each plan.items as item, i (`${item.status}:${item.step}:${i}`)}
+          <div class="plan-item" class:active={item.status === "in_progress"}>
+            <span class="plan-status">{planStatusIcon(item.status)}</span>
+            <span>{item.step}</span>
+          </div>
+        {/each}
+      </div>
+    </div>
+  {/if}
+{/snippet}
+
 {#snippet renderToolResultBadge(badge: VisualToolResultBadge)}
   {@const symbol = resultBadgeSymbol(badge.label)}
   {@const count = resultBadgeCount(badge.label)}
@@ -1379,9 +1483,11 @@
     class:success={badge.tone === "success"}
     title={badge.title}
   >
-    {#if symbol && count}
+    {#if symbol}
       <span class="work-tool-result-symbol" aria-hidden="true">{symbol}</span>
-      <span>{count}</span>
+      {#if count}
+        <span>{count}</span>
+      {/if}
     {:else}
       {badge.label}
     {/if}
@@ -1456,8 +1562,13 @@
   </button>
 {/snippet}
 
-{#snippet renderToolPreview(block: NormalizedBlock, preview: string, remoteHost: string | undefined)}
-  {@const parts = visualToolPreviewParts(block)}
+{#snippet renderToolPreview(
+  block: NormalizedBlock,
+  preview: string,
+  remoteHost: string | undefined,
+  context?: VisualToolPreviewContext,
+)}
+  {@const parts = visualToolPreviewParts(block, context)}
   <span class="work-tool-preview" title={preview}>
     {#if parts.length > 0}
       {#each parts as part, i (`${part.kind}:${part.text}:${i}`)}
@@ -1580,23 +1691,7 @@
         </div>
       </div>
     {:else if b.type === "plan"}
-      {@const plan = visualPlanFromBlock(b)}
-      {#if plan}
-        <div class="block plan-block">
-          <div class="plan-title">{planTitle(b)}</div>
-          {#if plan.explanation}
-            <div class="plan-explanation">{plan.explanation}</div>
-          {/if}
-          <div class="plan-items">
-            {#each plan.items as item, i (`${item.status}:${item.step}:${i}`)}
-              <div class="plan-item" class:active={item.status === "in_progress"}>
-                <span class="plan-status">{planStatusIcon(item.status)}</span>
-                <span>{item.step}</span>
-              </div>
-            {/each}
-          </div>
-        </div>
-      {/if}
+      {@render renderPlanCard(b)}
     {:else if b.type === "subagent"}
       {@const subagent = visualSubagentMetaFromBlock(b)}
       {#if subagent}
@@ -1776,20 +1871,12 @@
         </div>
       </div>
     {:else if b.type === "plan"}
-      {@const plan = visualPlanFromBlock(b)}
-      {#if plan}
-        <div class="work-step-detail work-plan-detail">
-          <span class="tag-label">{planTitle(b)}</span>
-          <div class="plan-items">
-            {#each plan.items as item, i (`${item.status}:${item.step}:${i}`)}
-              <div class="plan-item" class:active={item.status === "in_progress"}>
-                <span class="plan-status">{planStatusIcon(item.status)}</span>
-                <span>{item.step}</span>
-              </div>
-            {/each}
-          </div>
+      <div class="md work-tool-code">
+        <div class="work-tool-output-label">
+          {b.toolName ?? "update_plan"} input
         </div>
-      {/if}
+        {@html markdownCodeBlockHtml(planRawPayloadText(b), "json")}
+      </div>
     {:else if b.type === "subagent"}
       {@const subagent = visualSubagentMetaFromBlock(b)}
       {#if subagent}
@@ -1981,6 +2068,8 @@
               class="work-foldout-body"
               data-work-key={workKey}
               on:wheel|capture={handOffNestedWheel}
+              on:scroll={(event) =>
+                onLiveWorkBodyScroll(workKey, event.currentTarget as HTMLElement)}
             >
             {#each visibleWorkEntries as displayEntry (getVisualWorkDisplayEntryKey(displayEntry))}
               {@const entry = displayEntry.entry}
@@ -2057,6 +2146,13 @@
                   observedProcessOutput,
                   liveNowIso,
                 )}
+                {@const waitForDuration = toolWaitForDurationLabel(
+                  item,
+                  toolBlock,
+                  entry.message.timestamp,
+                  visibleResultEntry,
+                  liveNowIso,
+                )}
                 {@const fetchResultBadges = toolFetchResultBadges(
                   toolBlock,
                   visibleResultBlock,
@@ -2074,9 +2170,12 @@
                     commandResultBadges.length > 0 ||
                     !!editCountBadge,
                 })}
-                {@const toolPreview = toolBlock ? workEntryToolPreview(toolBlock) : ""}
+                {@const toolPreview = toolBlock
+                  ? workEntryToolPreview(toolBlock, displayEntry.previewContext)
+                  : ""}
                 {@const toolMediaBlocks = workEntryToolMediaBlocks(toolBlock)}
                 {@const entryBlock = entry.blocks[0]}
+                {@const planBlock = workEntryPlanBlock(entry)}
                 {@const resultBlock = workEntryToolResultBlock(entry)}
                 {@const collapsedTitle = workEntryTitle(entry)}
                 {@const collapsedPreview = workEntryCollapsedPreview(entry)}
@@ -2126,7 +2225,16 @@
                     on:click|capture={(event) =>
                       captureDetailsScrollAnchor(event.currentTarget)}
                   >
-                    {#if observedProcessOutput}
+                    {#if planBlock}
+                      <span class="work-tool-chip work-plan-chip">
+                        <span>{planTitle(planBlock)}</span>
+                      </span>
+                      {#if collapsedPreview}
+                        <span class="work-tool-preview" title={collapsedPreview}>
+                          {collapsedPreview}
+                        </span>
+                      {/if}
+                    {:else if observedProcessOutput}
                       <span class="work-tool-chip">
                         <ToolIcon name="write_stdin" />
                         <span>{observedProcessOutput.title}</span>
@@ -2218,7 +2326,12 @@
                           </span>
                         {/if}
                       {:else if toolPreview}
-                        {@render renderToolPreview(toolBlock, toolPreview, remoteHost)}
+                        {@render renderToolPreview(
+                          toolBlock,
+                          toolPreview,
+                          remoteHost,
+                          displayEntry.previewContext,
+                        )}
                       {/if}
                       {@render renderToolApprovalBadge(toolBlock)}
                       {#each commandResultBadges as badge}
@@ -2232,7 +2345,14 @@
                       {#each testResultBadges as badge}
                         {@render renderToolResultBadge(badge)}
                       {/each}
-                      {#if toolElapsedDuration}
+                      {#if waitForDuration}
+                        <span
+                          class="work-tool-meta"
+                          title="Elapsed wait time / timeout"
+                        >
+                          {waitForDuration}
+                        </span>
+                      {:else if toolElapsedDuration}
                         <span class="work-tool-meta">{toolElapsedDuration}</span>
                       {:else if resultMeta}
                         <span class="work-tool-meta">
@@ -2295,6 +2415,9 @@
                       </span>
                     {/if}
                   </summary>
+                  {#if planBlock}
+                    {@render renderPlanCard(planBlock, "work-plan-preview")}
+                  {/if}
                   {#if forceOpenThinkingEntry(workKey, entry) || openWorkEntryKeys.has(entryRenderKey)}
                     <div class="work-entry-body" on:wheel|capture={handOffNestedWheel}>
                       {#if editSummary}
@@ -2641,7 +2764,7 @@
   .msg.user-message .block.text,
   .work-steering-user-bubble .block.text {
     padding: 0.45rem 0.7rem;
-    border-radius: 1rem;
+    border-radius: 0.5rem;
     background: color-mix(in srgb, var(--surface-3) 62%, var(--surface-1));
     border: 1px solid color-mix(in srgb, var(--surface-3) 80%, transparent);
     text-align: left;
@@ -2776,10 +2899,10 @@
   }
   .work-foldout > summary::before,
   .work-entry > summary::before {
-    content: "▸";
+    content: "";
     display: inline-block;
-    flex: 0 0 0.74rem;
-    width: 0.74rem;
+    flex: 0 0 0rem;
+    width: 0.5rem;
     text-align: center;
     line-height: 1;
     color: var(--text-faint);
@@ -2846,7 +2969,7 @@
   }
   .work-foldout-body {
     display: grid;
-    gap: 0.38rem;
+    gap: 0.25rem;
     margin: 0.55rem 0 0.15rem 1.05rem;
     padding-left: 0.65rem;
     border-left: 1px solid color-mix(in srgb, var(--surface-3) 45%, transparent);
@@ -2918,6 +3041,7 @@
     display: inline-flex;
     align-items: center;
     gap: 0.4rem;
+    margin-left: 1rem;
     width: fit-content;
     max-width: 100%;
     padding: 0.16rem 0.46rem 0.18rem;
@@ -2927,6 +3051,13 @@
     color: var(--text-muted);
     font-size: 0.74rem;
     line-height: 1.2;
+    padding-left: .25rem;
+    margin-left: 1.25rem;
+    margin-top: 0.5rem;
+    margin-bottom: 0.5rem;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono",
+      "Courier New", monospace;
+    font-size: 0.7rem;
   }
   .transcript-marker-pill {
     padding-inline: 0.62rem;
@@ -3109,7 +3240,7 @@
   .work-tool-result-badge {
     display: inline-flex;
     align-items: center;
-    gap: 0.12rem;
+    gap: 0.22rem;
     flex: 0 0 auto;
     padding: 0.06rem 0.32rem 0.08rem;
     border-radius: 999px;
@@ -3282,16 +3413,15 @@
   }
   .work-preview-path:hover,
   .work-preview-path:focus-visible {
-    border-color: color-mix(in srgb, var(--accent) 36%, transparent);
-    background: color-mix(in srgb, var(--accent) 18%, transparent);
+    background: color-mix(in srgb, var(--text-muted) 10%, transparent);
     color: var(--text-1);
     outline: none;
   }
   .work-file-edit-preview {
-    color: var(--text-muted);
+    color: var(--text-faint);
   }
   .work-thinking-preview {
-    color: var(--text-2);
+    color: var(--text-faint);
   }
   .work-tool-meta {
     flex: 0 0 auto;
@@ -3733,7 +3863,6 @@
   }
   .media-image-open {
     display: block;
-    width: min(18rem, 100%);
     min-width: 0;
     padding: 0;
     border: 0;
@@ -3744,11 +3873,13 @@
     cursor: zoom-in;
   }
   .user-media-strip .media-image-open {
-    width: 5.2rem;
+    max-width: 10rem;
+    max-height: 8rem;
     flex: 0 0 auto;
   }
   .work-tool-summary-media-strip .media-image-open {
-    width: 4rem;
+    max-width: 10rem;
+    max-height: 8rem;
     flex: 0 0 auto;
   }
   .media-block a:hover,
@@ -3770,7 +3901,6 @@
   .composer-photo-frame {
     box-sizing: border-box;
     width: 100%;
-    padding: 5px 5px 14px;
   }
   .composer-photo-frame img {
     max-height: 3.1rem;
@@ -3911,7 +4041,7 @@
     display: grid;
     gap: 0.35rem;
     margin-top: 0.25rem;
-    padding: 0.25rem 0.5rem;
+    padding: 0.34rem 0.55rem;
     border-radius: var(--radius-sm);
     background: rgba(160, 160, 160, 0.06);
     color: var(--text-2);
@@ -3924,6 +4054,19 @@
   }
   .plan-explanation {
     color: var(--text-muted);
+  }
+  .plan-explanation-row {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    align-items: start;
+    gap: 0.45rem;
+    min-width: 0;
+  }
+  .plan-explanation-row .thinking-icon {
+    width: 0.86rem;
+    height: 0.86rem;
+    margin-top: 0.08rem;
+    color: var(--text-2);
   }
   .plan-items {
     display: grid;
@@ -3942,15 +4085,24 @@
     color: var(--text-faint);
     font-size: 0.82em;
   }
-  .work-plan-detail {
-    align-items: start;
+  .work-plan-chip {
+    border-color: color-mix(in srgb, var(--accent) 28%, var(--surface-3));
+    color: var(--text-1);
+  }
+  .work-plan-preview {
+    margin: 0.08rem 0 0.4rem 1.15rem;
+    max-width: min(44rem, calc(100% - 1.15rem));
+    background: transparent;
+    border-left: 1px solid color-mix(in srgb, var(--surface-3) 35%, transparent);
+    border-radius: 0;
+    padding: 0.1rem 0 0.1rem 0.72rem;
   }
   .thinking-icon {
     flex: 0 0 auto;
     width: 1rem;
     height: 1rem;
     margin-top: 0.1rem;
-    color: var(--text-1);
+    color: var(--text-muted);
     opacity: 0.9;
   }
   .thinking-copy {

@@ -7,6 +7,7 @@ import {
   codexAgentSettings,
   parseCodexAccessValue,
   effortIcon,
+  shouldLoadCodexModelCatalog,
 } from "../src/claude-session-menu";
 import type { SessionMenuItem } from "../src/SessionMenu.svelte";
 
@@ -329,24 +330,34 @@ describe("codexAgentSettings", () => {
     return codexAgentSettings({
       models: [
         {
-          id: "gpt-5-codex",
-          displayName: "GPT-5 Codex",
+          id: "gpt-5.6-sol",
+          displayName: "GPT-5.6-Sol",
           isDefault: true,
           defaultReasoningEffort: "medium",
           supportedReasoningEfforts: [
-            "speed",
-            "minimal",
             "low",
             "medium",
             "high",
             "xhigh",
+            "max",
+            "ultra",
+          ],
+          defaultServiceTier: "priority",
+          serviceTiers: [
+            { id: "default", name: "standard" },
+            { id: "priority", name: "fast" },
           ],
         },
         {
-          id: "gpt-5-codex-mini",
-          displayName: "GPT-5 Codex Mini",
+          id: "gpt-5.6-luna",
+          displayName: "GPT-5.6-Luna",
           defaultReasoningEffort: "low",
-          supportedReasoningEfforts: ["speed", "low"],
+          supportedReasoningEfforts: ["low", "medium", "high", "xhigh", "max"],
+          defaultServiceTier: "priority",
+          serviceTiers: [
+            { id: "default", name: "standard" },
+            { id: "priority", name: "fast" },
+          ],
         },
       ],
       detectedModel: undefined,
@@ -354,11 +365,13 @@ describe("codexAgentSettings", () => {
       modelsLoading: false,
       modelsError: "",
       currentEffort: "",
+      currentServiceTier: "",
       currentSummary: "auto",
       currentSandbox: "workspaceWrite",
       currentApproval: "on-request",
       onPickModel: () => {},
       onPickEffort: () => {},
+      onPickServiceTier: () => {},
       onPickSummary: () => {},
       onPickSandbox: () => {},
       onPickApproval: () => {},
@@ -366,10 +379,11 @@ describe("codexAgentSettings", () => {
     });
   }
 
-  test("exposes model, reasoning, summary, sandbox, and approval groups", () => {
+  test("exposes model, reasoning, speed, summary, sandbox, and approval groups", () => {
     expect(build().map((g) => [g.key, g.label])).toEqual([
       ["codex-model", "Model"],
       ["codex-effort", "Reasoning"],
+      ["codex-service-tier", "Speed"],
       ["codex-summary", "Summary"],
       ["codex-sandbox", "Sandbox"],
       ["codex-approval", "Approvals"],
@@ -377,16 +391,16 @@ describe("codexAgentSettings", () => {
   });
 
   test("model options include Default plus app-server models and preserve the active model", () => {
-    const [model] = build({ currentModel: "gpt-5-codex-mini" });
+    const [model] = build({ currentModel: "gpt-5.6-luna" });
     expect(model!.options.map((o) => o.value)).toEqual([
       "",
-      "gpt-5-codex",
-      "gpt-5-codex-mini",
+      "gpt-5.6-sol",
+      "gpt-5.6-luna",
     ]);
     expect(model!.options.filter((o) => o.selected).map((o) => o.value)).toEqual([
-      "gpt-5-codex-mini",
+      "gpt-5.6-luna",
     ]);
-    expect(model!.options[0]!.label).toBe("Default (GPT-5 Codex)");
+    expect(model!.options[0]!.label).toBe("Default (GPT-5.6-Sol)");
   });
 
   test("current and detected models are kept even when the model endpoint omits them", () => {
@@ -409,27 +423,43 @@ describe("codexAgentSettings", () => {
     const [, effort] = build({ currentEffort: "medium" });
     expect(effort!.options.map((o) => o.value)).toEqual([
       "",
-      "speed",
-      "minimal",
       "low",
       "medium",
       "high",
       "xhigh",
+      "max",
+      "ultra",
     ]);
     expect(effort!.options[0]!.label).toBe("Default (medium)");
-    expect(effort!.options.at(-1)!.label).toBe("extra high");
+    expect(effort!.options.at(-1)!.label).toBe("ultra");
     expect(effort!.options.filter((o) => o.selected).map((o) => o.value)).toEqual([
       "medium",
     ]);
   });
 
   test("reasoning default follows the explicitly selected model when app-server reports one", () => {
-    const [, effort] = build({ currentModel: "gpt-5-codex-mini" });
+    const [, effort] = build({ currentModel: "gpt-5.6-luna" });
     expect(effort!.options[0]!.label).toBe("Default (low)");
     expect(effort!.options.map((o) => o.value)).toEqual([
       "",
-      "speed",
       "low",
+      "medium",
+      "high",
+      "xhigh",
+      "max",
+    ]);
+  });
+
+  test("speed options come from app-server service tiers, not reasoning levels", () => {
+    const [, , speed] = build({ currentServiceTier: "priority" });
+    expect(speed!.options.map((o) => o.value)).toEqual([
+      "",
+      "default",
+      "priority",
+    ]);
+    expect(speed!.options[0]!.label).toBe("Default (fast)");
+    expect(speed!.options.filter((o) => o.selected).map((o) => o.value)).toEqual([
+      "priority",
     ]);
   });
 
@@ -437,8 +467,8 @@ describe("codexAgentSettings", () => {
     const [, effort] = build({
       models: [
         {
-          id: "gpt-5-codex",
-          displayName: "GPT-5 Codex",
+          id: "gpt-5.6-sol",
+          displayName: "GPT-5.6-Sol",
           isDefault: true,
           defaultReasoningEffort: "medium",
         },
@@ -457,18 +487,46 @@ describe("codexAgentSettings", () => {
     const groups = build({
       onPickModel: (v) => picked.push(`model:${v}`),
       onPickEffort: (v) => picked.push(`effort:${v}`),
+      onPickServiceTier: (v) => picked.push(`speed:${v}`),
       onPickSummary: (v) => picked.push(`summary:${v}`),
       onPickSandbox: (v) => picked.push(`sandbox:${v}`),
       onPickApproval: (v) => picked.push(`approval:${v}`),
     });
     for (const group of groups) group.onPick(group.options.at(-1)!.value);
     expect(picked).toEqual([
-      "model:gpt-5-codex-mini",
-      "effort:xhigh",
+      "model:gpt-5.6-luna",
+      "effort:ultra",
+      "speed:priority",
       "summary:none",
       "sandbox:dangerFullAccess",
       "approval:never",
     ]);
+  });
+});
+
+describe("shouldLoadCodexModelCatalog", () => {
+  test("loads the app-server model catalog for any Codex session with a cwd", () => {
+    expect(
+      shouldLoadCodexModelCatalog({
+        agent: "codex",
+        cwd: "/repo",
+      }),
+    ).toBe(true);
+  });
+
+  test("does not start the Codex model API for other agents or missing cwd", () => {
+    expect(
+      shouldLoadCodexModelCatalog({
+        agent: "claude",
+        cwd: "/repo",
+      }),
+    ).toBe(false);
+    expect(
+      shouldLoadCodexModelCatalog({
+        agent: "codex",
+        cwd: "",
+      }),
+    ).toBe(false);
   });
 });
 

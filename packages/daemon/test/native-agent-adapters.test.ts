@@ -229,6 +229,7 @@ describe("CodexAppServerAdapter", () => {
       overrides: {
         model: "gpt-5.1-codex-max",
         effort: "high",
+        serviceTier: "priority",
         summary: "auto",
         approvalPolicy: "on-request",
         sandboxPolicy: {
@@ -261,6 +262,7 @@ describe("CodexAppServerAdapter", () => {
         ],
         model: "gpt-5.1-codex-max",
         effort: "high",
+        serviceTier: "priority",
         summary: "auto",
         approvalPolicy: "on-request",
         sandboxPolicy: {
@@ -305,10 +307,16 @@ describe("CodexAppServerAdapter", () => {
             isDefault: true,
             defaultReasoningEffort: "medium",
             supportedReasoningEfforts: [
-              "speed",
               { reasoningEffort: "low", description: "fast" },
               { reasoningEffort: "high", description: "deep" },
+              { effort: "ultra", description: "deepest" },
             ],
+            defaultServiceTier: "priority",
+            serviceTiers: [
+              { id: "default", name: "standard" },
+              { serviceTier: "priority", displayName: "fast" },
+            ],
+            additionalSpeedTiers: ["priority"],
           },
         ],
         nextCursor: null,
@@ -323,7 +331,13 @@ describe("CodexAppServerAdapter", () => {
         description: "largest Codex model",
         isDefault: true,
         defaultReasoningEffort: "medium",
-        supportedReasoningEfforts: ["speed", "low", "high"],
+        supportedReasoningEfforts: ["low", "high", "ultra"],
+        defaultServiceTier: "priority",
+        serviceTiers: [
+          { id: "default", name: "standard", description: undefined },
+          { id: "priority", name: "fast", description: undefined },
+        ],
+        additionalSpeedTiers: ["priority"],
       },
     ]);
   });

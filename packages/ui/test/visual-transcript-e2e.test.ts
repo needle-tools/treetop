@@ -639,6 +639,10 @@ ${objective}
     const { work } = onlyWorkItem(session.messages);
     expect(work.entries[0]?.blocks[0]).toMatchObject({
       type: "plan",
+      toolName: "update_plan",
+      toolInput: {
+        explanation: "Implement the todo plan surface.",
+      },
       planItems: [
         { step: "Inspect sample JSONL", status: "completed" },
         { step: "Add composer plan pane", status: "in_progress" },

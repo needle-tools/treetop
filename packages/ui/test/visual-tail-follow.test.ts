@@ -1,10 +1,12 @@
 import { describe, expect, it } from "bun:test";
 import {
   isNearVisualScrollEnd,
+  shouldPauseVisualTailAfterUserScroll,
+  isVisualTailFollowActive,
   replacementVisualScrollTop,
-  shouldAnchorLiveWorkTail,
-  shouldFollowNewLiveWorkBody,
+  shouldFollowLiveWorkBody,
   shouldFollowVisualTail,
+  shouldRememberVisualScrollMemory,
   visualScrollMemoryFromMetrics,
   visualScrollTopFromMemory,
 } from "../src/visual-tail-follow";
@@ -39,6 +41,55 @@ describe("visual transcript tail following", () => {
       shouldFollowVisualTail({
         paused: true,
         nearEnd: true,
+      }),
+    ).toBe(false);
+  });
+
+  it("does not show the tail-follow indicator until the scroller is really at the tail", () => {
+    expect(
+      isVisualTailFollowActive({
+        paused: false,
+        metrics: {
+          scrollHeight: 6_000,
+          scrollTop: 0,
+          clientHeight: 600,
+        },
+      }),
+    ).toBe(false);
+
+    expect(
+      isVisualTailFollowActive({
+        paused: false,
+        metrics: {
+          scrollHeight: 6_000,
+          scrollTop: 5_390,
+          clientHeight: 600,
+        },
+      }),
+    ).toBe(true);
+  });
+
+  it("does not re-arm tail follow merely because the user scrolls downward near the end", () => {
+    const nearButStillReading = {
+      scrollHeight: 6_000,
+      scrollTop: 5_350,
+      clientHeight: 600,
+    };
+
+    expect(isNearVisualScrollEnd(nearButStillReading)).toBe(true);
+    expect(
+      shouldPauseVisualTailAfterUserScroll({
+        metrics: nearButStillReading,
+      }),
+    ).toBe(true);
+
+    expect(
+      shouldPauseVisualTailAfterUserScroll({
+        metrics: {
+          scrollHeight: 6_000,
+          scrollTop: 5_397,
+          clientHeight: 600,
+        },
       }),
     ).toBe(false);
   });
@@ -79,44 +130,23 @@ describe("visual transcript tail following", () => {
     ).toBe(false);
   });
 
-  it("uses the parent transcript tail state for newly created live work bodies", () => {
+  it("uses the parent transcript and body tail state for live work bodies", () => {
     expect(
-      shouldFollowNewLiveWorkBody({
-        previousShouldStick: undefined,
+      shouldFollowLiveWorkBody({
         parentShouldStick: true,
+        bodyPaused: false,
       }),
     ).toBe(true);
     expect(
-      shouldFollowNewLiveWorkBody({
-        previousShouldStick: undefined,
+      shouldFollowLiveWorkBody({
         parentShouldStick: false,
+        bodyPaused: false,
       }),
     ).toBe(false);
     expect(
-      shouldFollowNewLiveWorkBody({
-        previousShouldStick: false,
+      shouldFollowLiveWorkBody({
         parentShouldStick: true,
-      }),
-    ).toBe(false);
-  });
-
-  it("anchors the outer transcript on live work only while tail-following", () => {
-    expect(
-      shouldAnchorLiveWorkTail({
-        hasLiveWork: true,
-        shouldStickMessages: true,
-      }),
-    ).toBe(true);
-    expect(
-      shouldAnchorLiveWorkTail({
-        hasLiveWork: false,
-        shouldStickMessages: true,
-      }),
-    ).toBe(false);
-    expect(
-      shouldAnchorLiveWorkTail({
-        hasLiveWork: true,
-        shouldStickMessages: false,
+        bodyPaused: true,
       }),
     ).toBe(false);
   });
@@ -208,5 +238,29 @@ describe("visual transcript tail following", () => {
         },
       }),
     ).toBe(4_200);
+  });
+
+  it("does not let detached transcript bodies overwrite saved scroll memory", () => {
+    expect(
+      shouldRememberVisualScrollMemory({
+        layoutUsable: true,
+        metrics: {
+          scrollHeight: 4_000,
+          scrollTop: 3_380,
+          clientHeight: 600,
+        },
+      }),
+    ).toBe(true);
+
+    expect(
+      shouldRememberVisualScrollMemory({
+        layoutUsable: false,
+        metrics: {
+          scrollHeight: 0,
+          scrollTop: 0,
+          clientHeight: 0,
+        },
+      }),
+    ).toBe(false);
   });
 });
