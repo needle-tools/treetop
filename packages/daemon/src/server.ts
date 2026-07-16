@@ -2433,6 +2433,17 @@ const shellCwds = new Map<string, string>();
  *  hoist reason as shellCwds. */
 const shellTermIds = new Set<string>();
 
+// Count of live terminal WebSockets ("viewers") per termId — incremented when
+// a browser socket subscribes, decremented when it closes. This is the signal
+// the grace timer keys off, NOT handle.subscriberCount(): a shell PTY carries a
+// permanent internal cleanup subscriber (writes the closing JSONL entry on
+// exit), so subscriberCount() is never 0 for a shell and grace would never
+// fire — which is exactly why closed one-shot `cmd.exe` shells were living
+// forever and piling up. A backgrounded/offscreen column keeps its hold-socket
+// open, so its viewer count stays ≥1 and its PTY (e.g. a dev server) survives;
+// only a genuinely CLOSED column drops the last viewer and lets grace reap it.
+const terminalViewers = new Map<string, number>();
+
 function cancelGrace(termId: string) {
   const t = graceTimers.get(termId);
   if (!t) return;
@@ -2443,7 +2454,7 @@ function cancelGrace(termId: string) {
 function startGraceIfIdle(termId: string) {
   const handle = terminalBackend.get(termId);
   if (!handle) return;
-  if (handle.subscriberCount() > 0) return;
+  if ((terminalViewers.get(termId) ?? 0) > 0) return; // a viewer is still attached
   if (graceTimers.has(termId)) return;
   console.log(
     `supergit daemon: terminal grace scheduled id=${termId} pid=${handle.pid} delay=${GRACE_MS}ms`,
@@ -2452,7 +2463,7 @@ function startGraceIfIdle(termId: string) {
     graceTimers.delete(termId);
     const h = terminalBackend.get(termId);
     if (!h) return;
-    if (h.subscriberCount() === 0 && h.isAlive()) {
+    if ((terminalViewers.get(termId) ?? 0) === 0 && h.isAlive()) {
       console.log(
         `supergit daemon: terminal grace reap id=${termId} pid=${h.pid}`,
       );
@@ -10075,6 +10086,7 @@ const server = Bun.serve<TermWsData, never>({
         },
       };
       ws.data.unsubscribe = handle.subscribe(sub);
+      addCount(terminalViewers, termId);
     },
 
     drain(ws) {
@@ -10186,12 +10198,15 @@ const server = Bun.serve<TermWsData, never>({
       if (ws.data.outputDrainable)
         removeCount(drainableTerminalSockets, termId);
       updateTerminalOutputMute(termId);
+      const wasSubscribed = !!ws.data.unsubscribe;
       try {
         ws.data.unsubscribe?.();
       } catch {}
       ws.data.unsubscribe = null;
+      if (wasSubscribed) removeCount(terminalViewers, termId);
       orphanCleaner.onFrontendDisconnected();
-      // If this was the last subscriber, schedule a grace-then-dispose.
+      // If this was the last viewer, schedule a grace-then-dispose. (Keys off
+      // terminalViewers, not subscriberCount — see the map's declaration.)
       startGraceIfIdle(termId);
     },
   },

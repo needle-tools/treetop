@@ -161,12 +161,18 @@ describe("PTY grace timer (GRACE_MS)", () => {
     ).toBeGreaterThanOrEqual(60_000);
   });
 
-  test("startGraceIfIdle only starts a timer when subscriberCount() is 0", () => {
+  test("startGraceIfIdle keys off the WS viewer count, not subscriberCount()", () => {
+    // Grace must fire when the last browser socket ("viewer") detaches. It
+    // deliberately does NOT use handle.subscriberCount(): a shell PTY keeps a
+    // permanent internal cleanup subscriber, so subscriberCount() is never 0
+    // for a shell and grace would never fire — the bug that left closed
+    // one-shot cmd.exe shells alive forever. See terminalViewers in server.ts.
     const fnBody = SERVER_TS.match(
       /function startGraceIfIdle[\s\S]*?\n\}/,
     )?.[0];
     expect(fnBody, "startGraceIfIdle not found").toBeTruthy();
-    expect(fnBody).toContain("subscriberCount()");
+    expect(fnBody).toContain("terminalViewers");
+    expect(fnBody).not.toContain("subscriberCount()");
     expect(fnBody).toContain("return");
   });
 });
