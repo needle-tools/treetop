@@ -21,7 +21,12 @@
     type DockWorktreeStatus,
   } from "./RepoStatusPreview.svelte";
   import StatusBadge from "./StatusBadge.svelte";
-  import { shouldMeasureDockBackdrop, splitDockEntries } from "./dock-split";
+  import {
+    dockToggleOffset,
+    reposWithLiveSessions,
+    shouldMeasureDockBackdrop,
+    splitDockEntries,
+  } from "./dock-split";
   import { GIT_AHEAD, GIT_BEHIND } from "./icons";
   import {
     fetchPreviewItems,
@@ -186,6 +191,20 @@
     );
   }
 
+  /** Repos with at least one live session dot right now. */
+  $: liveRepoIds = reposWithLiveSessions(entries);
+  /** Should this repo's row draw a pull (↓) arrow? Only while the
+   *  repo has a live session — see `reposWithLiveSessions`. Written
+   *  as a reactive arrow (not a plain function) so the template
+   *  re-evaluates it when `liveRepoIds` changes. */
+  $: showPull = (s: DockRepoStatus | undefined): boolean =>
+    !!s && s.behind > 0 && liveRepoIds.has(s.repoId);
+  /** Does an arrow row have anything left to draw? Suppressing the ↓
+   *  can empty a behind-only row, and an empty row would sit in the
+   *  column as an invisible gap. */
+  $: arrowRowHasGlyph = (s: DockRepoStatus | undefined): boolean =>
+    !!s && (s.ahead > 0 || showPull(s) || dockDirtyOf(s) > 0);
+
   /** Quick lookup: repoId → status. Used in the template to render
    *  arrows at repo-group boundaries. A repo qualifies if it has any
    *  of push, pull, or uncommitted non-submodule changes. The
@@ -203,7 +222,10 @@
    *  need a row in the dock. Built from repoStatuses minus any repoId
    *  that appears in the current split. Dirty-only orphans are
    *  suppressed in active-TUIs-only mode (no session anchors the
-   *  signal, so it's just noise); push/pull orphans always show. */
+   *  signal, so it's just noise); push orphans always show. Pull-only
+   *  orphans never show — `showPull` is false without a live session,
+   *  so a repo whose only news is "someone pushed upstream" drops out
+   *  of the strip entirely rather than bouncing a ↓ at you. */
   $: orphanRepoArrows = (() => {
     const inDock = new Set([
       ...split.top.map((e) => e.repoId),
@@ -211,7 +233,7 @@
     ]);
     return dockRepoStatuses.filter(
       (s) =>
-        (s.ahead > 0 || s.behind > 0 || (showInactive && dockDirtyOf(s) > 0)) &&
+        (s.ahead > 0 || showPull(s) || (showInactive && dockDirtyOf(s) > 0)) &&
         !inDock.has(s.repoId),
     );
   })();
@@ -258,6 +280,7 @@
       nowTick = Date.now();
     }, 5_000);
     window.addEventListener("resize", clampPreviewTop);
+    window.addEventListener("resize", updateToggleAnchor);
   });
   onDestroy(() => {
     if (nowTimer) {
@@ -265,8 +288,11 @@
       nowTimer = null;
     }
     window.removeEventListener("resize", clampPreviewTop);
+    window.removeEventListener("resize", updateToggleAnchor);
     previewResizeObs?.disconnect();
     previewResizeObs = null;
+    dockResizeObs?.disconnect();
+    dockResizeObs = null;
   });
   // Whenever the preview node mounts/unmounts, attach a
   // ResizeObserver so content growth (poll-driven new messages,
@@ -324,7 +350,12 @@
     void showLabels;
     void showInactive;
     if (dockEl) {
-      void tick().then(() => requestAnimationFrame(updateBackdrop));
+      void tick().then(() =>
+        requestAnimationFrame(() => {
+          updateBackdrop();
+          updateToggleAnchor();
+        }),
+      );
     }
   }
 
@@ -468,8 +499,39 @@
    *  the preview spill off the visible area. */
   let dockEl: HTMLElement | null = null;
   let backdropEl: HTMLElement | null = null;
+  let toggleEl: HTMLElement | null = null;
+  let scrollEl: HTMLElement | null = null;
   let previewEl: HTMLElement | null = null;
   let previewResizeObs: ResizeObserver | null = null;
+  let dockResizeObs: ResizeObserver | null = null;
+  /** Extra vertical nudge (px) layered on the dock's translateY(-50%)
+   *  so the centre toggle — not the column's midpoint — sits on the
+   *  viewport centre. See `dockToggleOffset`. */
+  let toggleShift = 0;
+
+  function updateToggleAnchor(): void {
+    if (!dockEl || !toggleEl) return;
+    const tRect = toggleEl.getBoundingClientRect();
+    if (tRect.height === 0) return;
+    // Dock-relative measurement: both rects carry the shift that's
+    // already applied, so it cancels and a re-measure taken while the
+    // strip is still gliding can't compound.
+    const dockRect = dockEl.getBoundingClientRect();
+    toggleShift = dockToggleOffset({
+      viewportHeight: window.innerHeight,
+      dockHeight: dockRect.height,
+      toggleCenter: tRect.top - dockRect.top + tRect.height / 2,
+    });
+  }
+
+  // The column's height changes for reasons `split` alone doesn't
+  // capture (arrow rows appearing as repos go ahead/behind, labels
+  // wrapping), so observe the real box rather than guessing deps.
+  $: if (scrollEl) {
+    dockResizeObs?.disconnect();
+    dockResizeObs = new ResizeObserver(() => updateToggleAnchor());
+    dockResizeObs.observe(scrollEl);
+  }
   /** Viewport edge padding for the clamp. */
   const PREVIEW_VIEWPORT_INSET = 8;
   /** Re-clamp `hoveredTop` so the preview's full height stays in the
@@ -756,6 +818,7 @@
   <div
     bind:this={dockEl}
     class="session-dock"
+    style:--dock-shift="{toggleShift}px"
     class:collapsed={collapseAfterClick}
     class:show-labels={showLabels}
     role="toolbar"
@@ -786,9 +849,9 @@
       aria-hidden="true"
     ></div>
 
-    <div class="dock-scroll">
+    <div class="dock-scroll" bind:this={scrollEl}>
       {#each split.top as e, i (e.source)}
-        {#if (i === 0 || split.top[i - 1].repoId !== e.repoId) && repoStatusMap.has(e.repoId)}
+        {#if (i === 0 || split.top[i - 1].repoId !== e.repoId) && arrowRowHasGlyph(repoStatusMap.get(e.repoId))}
           {@const rs = repoStatusMap.get(e.repoId)}
           {@const dirtyCount = rs ? dockDirtyOf(rs) : 0}
           <span
@@ -804,12 +867,12 @@
                   viewBox="0 0 12 12"
                   aria-hidden="true"><path d={GIT_AHEAD} /></svg
                 >{/if}
-              {#if rs?.behind}<svg
+              {#if showPull(rs)}<svg
                   class="dock-arrow-glyph dock-arrow-down"
                   viewBox="0 0 12 12"
                   aria-hidden="true"><path d={GIT_BEHIND} /></svg
                 >{/if}
-              {#if dirtyCount && !rs?.ahead && !rs?.behind}<DirtyGlyph />{/if}
+              {#if dirtyCount && !rs?.ahead && !showPull(rs)}<DirtyGlyph />{/if}
             </span>
             <span class="dock-label">
               <span class="dock-label-repo">{rs?.repoName}</span>
@@ -982,21 +1045,24 @@
         </button>
       {/each}
 
-    <button
-      class="dock-toggle"
-      type="button"
-      title={showInactive ? "Hide inactive sessions" : "Show inactive sessions"}
-      aria-label={showInactive
-        ? "Hide inactive sessions"
-        : "Show inactive sessions"}
-      on:click|stopPropagation={toggleInactive}
-      on:mousedown|stopPropagation
-    >
-      <span class="dock-toggle-inner" class:filtering={!showInactive}></span>
-    </button>
+      <button
+        bind:this={toggleEl}
+        class="dock-toggle"
+        type="button"
+        title={showInactive
+          ? "Hide inactive sessions"
+          : "Show inactive sessions"}
+        aria-label={showInactive
+          ? "Hide inactive sessions"
+          : "Show inactive sessions"}
+        on:click|stopPropagation={toggleInactive}
+        on:mousedown|stopPropagation
+      >
+        <span class="dock-toggle-inner" class:filtering={!showInactive}></span>
+      </button>
 
       {#each split.bottom as e, i (e.source)}
-        {#if (i === 0 || split.bottom[i - 1].repoId !== e.repoId) && repoStatusMap.has(e.repoId)}
+        {#if (i === 0 || split.bottom[i - 1].repoId !== e.repoId) && arrowRowHasGlyph(repoStatusMap.get(e.repoId))}
           {@const rs = repoStatusMap.get(e.repoId)}
           {@const dirtyCount = rs ? dockDirtyOf(rs) : 0}
           <span
@@ -1012,12 +1078,12 @@
                   viewBox="0 0 12 12"
                   aria-hidden="true"><path d={GIT_AHEAD} /></svg
                 >{/if}
-              {#if rs?.behind}<svg
+              {#if showPull(rs)}<svg
                   class="dock-arrow-glyph dock-arrow-down"
                   viewBox="0 0 12 12"
                   aria-hidden="true"><path d={GIT_BEHIND} /></svg
                 >{/if}
-              {#if dirtyCount && !rs?.ahead && !rs?.behind}<DirtyGlyph />{/if}
+              {#if dirtyCount && !rs?.ahead && !showPull(rs)}<DirtyGlyph />{/if}
             </span>
             <span class="dock-label">
               <span class="dock-label-repo">{rs?.repoName}</span>
@@ -1204,12 +1270,12 @@
                 viewBox="0 0 12 12"
                 aria-hidden="true"><path d={GIT_AHEAD} /></svg
               >{/if}
-            {#if rs.behind}<svg
+            {#if showPull(rs)}<svg
                 class="dock-arrow-glyph dock-arrow-down"
                 viewBox="0 0 12 12"
                 aria-hidden="true"><path d={GIT_BEHIND} /></svg
               >{/if}
-            {#if dirtyCount && showInactive && !rs.ahead && !rs.behind}<DirtyGlyph
+            {#if dirtyCount && showInactive && !rs.ahead && !showPull(rs)}<DirtyGlyph
               />{/if}
           </span>
           <span class="dock-label">
@@ -1279,12 +1345,17 @@
     /* Vertically centred anchor. When the scroll column is shorter
        than the viewport the whole dock floats centered; when it
        overflows, max-height caps it at 100vh and the scroll column
-       takes over. The toggle isn't pinned to viewport centre any
-       more — it just sits between the top and bottom lists in the
-       scroll flow (user OK'd this trade-off for a single scrollbar). */
+       takes over. The toggle still lives in the scroll flow between
+       the two lists (one scrollbar, not two) — `--dock-shift` below
+       is what keeps it on the viewport centre anyway. */
     left: 0;
     top: 50%;
-    transform: translateY(-50%);
+    /* `--dock-shift` is measured in JS (see `updateToggleAnchor`) and
+       re-pins the centre toggle to the viewport centre when the two
+       stacks are lopsided — most visibly when inactive dots are
+       hidden and the bottom stack is empty, which otherwise leaves the
+       "centre" toggle dangling at the bottom of the strip. */
+    transform: translateY(calc(-50% + var(--dock-shift, 0px)));
     z-index: 1600;
     max-height: 100vh;
     display: flex;
@@ -1296,7 +1367,18 @@
     pointer-events: none;
     transition:
       background-color 160ms ease,
-      border-color 160ms ease;
+      border-color 160ms ease,
+      /* Glide when the shift changes (toggling inactive dots empties
+         or refills the bottom stack) — a hard jump under the cursor
+         reads as the strip teleporting. */
+      transform 200ms ease;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .session-dock {
+      transition:
+        background-color 160ms ease,
+        border-color 160ms ease;
+    }
   }
   /* Single scrollable column with top dots + toggle + bottom dots.
      `pointer-events: auto` re-enables interaction on the actual
@@ -1321,7 +1403,12 @@
       scrollbar-color: transparent transparent;
     }
     .session-dock.show-labels .dock-scroll {
-      scrollbar-color: color-mix(in oklch, var(--text-muted, #9a9aa0) 40%, transparent) transparent;
+      scrollbar-color: color-mix(
+          in oklch,
+          var(--text-muted, #9a9aa0) 40%,
+          transparent
+        )
+        transparent;
     }
   }
   .dock-scroll::-webkit-scrollbar {
@@ -1336,7 +1423,11 @@
     border-radius: 999px;
   }
   .session-dock.show-labels .dock-scroll::-webkit-scrollbar-thumb {
-    background: color-mix(in oklch, var(--text-muted, #9a9aa0) 40%, transparent);
+    background: color-mix(
+      in oklch,
+      var(--text-muted, #9a9aa0) 40%,
+      transparent
+    );
   }
   /* Faint 20%-text outline on hover so the dock's frame is
      perceptible alongside the page-bg card and revealed labels.
@@ -1423,6 +1514,12 @@
        with the dot-inner centres above/below. Both live directly
        inside `.dock-scroll` now — no extra half-wrapper offset. */
     padding: 0.2rem 8px;
+    /* Equal breathing room above and below so the toggle reads as the
+       midpoint between the live and inactive stacks. Without it the
+       first row underneath (usually a repo-arrow, which carries its
+       own 0.6rem group margin) pushes the toggle visually up into the
+       live stack — see the `+ .dock-dot` reset below. */
+    margin: 0.45rem 0;
     border: 0;
     background: transparent;
     cursor: pointer;
@@ -1434,11 +1531,16 @@
   .dock-toggle:active {
     background: transparent;
   }
-  /* 10px box matching dock-dot-inner so horizontal centres align.
-     The visible circle is inset via border (6px visible area). */
+  /* The toggle's ring is drawn deliberately larger than a session dot
+     (13px vs 10px) so it reads as a control rather than a session.
+     The negative inline margins shrink its *layout* box back to the
+     dots' 10px so the ring grows outward from the shared centre axis
+     — otherwise flex-start alignment parks its centre 1.5px right of
+     every dot in the column. */
   .dock-toggle-inner {
     width: 13px;
     height: 13px;
+    margin: 0 -1.5px;
     border-radius: 999px;
     border: 2px solid
       color-mix(in oklch, var(--text-muted, #9a9aa0) 50%, transparent);
@@ -1495,6 +1597,15 @@
   }
   .dock-repo-arrow-orphan {
     margin-top: 0.3rem;
+  }
+  /* The toggle already separates the live stack from the inactive one,
+     so the first row below it drops its own group margin — otherwise
+     the gap under the toggle is twice the gap above it and the toggle
+     no longer reads as the centre of the column. */
+  .dock-toggle + .dock-dot.dock-dot-repo-first,
+  .dock-toggle + .dock-repo-arrow,
+  .dock-toggle + .dock-repo-arrow-orphan {
+    margin-top: 0;
   }
   /* SVG chevrons (same paths as StatusBadge ↑/↓) so the arrows render
      consistently across platforms — the prior text glyphs ↑↓ leaned on

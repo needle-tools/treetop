@@ -37,6 +37,63 @@ export function splitDockEntries<T extends SplittableDockEntry>(
   return { top: active, bottom: inactive };
 }
 
+/** Repo ids that currently have at least one *live* (non-exited)
+ *  session dot in the dock.
+ *
+ *  Gates the pull (↓ "behind") arrows: upstream commits are only
+ *  actionable while you actually have a session open in that repo, so
+ *  a repo you aren't working in right now just adds a nagging animated
+ *  arrow to the strip. Push (↑) and dirty markers are unaffected —
+ *  those are *your* unshipped work and stay visible everywhere. */
+export function reposWithLiveSessions<T extends SplittableDockEntry>(
+  entries: T[],
+): Set<string> {
+  const ids = new Set<string>();
+  for (const e of entries) if (!e.exited) ids.add(e.repoId);
+  return ids;
+}
+
+/** How far (px, + = down) to nudge the dock on top of its
+ *  `translateY(-50%)` so the *centre toggle* lands on the viewport
+ *  centre rather than the column's midpoint.
+ *
+ *  The toggle sits between the live stack and the inactive one, so its
+ *  position in the flow depends on how many dots are in each. Hide the
+ *  inactive dots and the bottom stack empties — the "centre" toggle
+ *  then dangles at the very bottom of the strip. This nudge re-pins it
+ *  without splitting the column back into two scrollers.
+ *
+ *  `toggleCenter` is measured *relative to the dock's own box*, not
+ *  the viewport, so the shift already applied cancels out of the
+ *  measurement — the result is absolute and re-measuring mid-glide
+ *  can't feed back on itself.
+ *
+ *  The nudge is clamped so the column can never run off a viewport
+ *  edge, and disabled entirely once the column is taller than the
+ *  viewport (then it fills the screen and the single scroll column
+ *  owns the layout). That clamp has a deliberate consequence: pinning
+ *  a *last-row* toggle to the centre requires the whole column to fit
+ *  in the top half of the screen, so a tall dock with the inactive
+ *  stack hidden ends up with the toggle below centre. That's the
+ *  accepted trade — nudging further would push the top dots
+ *  off-screen with nothing to scroll them back (the container is
+ *  sized to content, so it never overflows). A hard 50vh pin needs
+ *  the two-independently-scrolling-halves layout, which we gave up
+ *  for the single scrollbar; don't reintroduce it by loosening this
+ *  clamp. */
+export function dockToggleOffset(opts: {
+  viewportHeight: number;
+  dockHeight: number;
+  /** Centre of the toggle, measured from the dock's top edge. */
+  toggleCenter: number;
+}): number {
+  const { viewportHeight, dockHeight, toggleCenter } = opts;
+  if (dockHeight >= viewportHeight) return 0;
+  const wanted = dockHeight / 2 - toggleCenter;
+  const slack = (viewportHeight - dockHeight) / 2;
+  return Math.max(-slack, Math.min(slack, wanted));
+}
+
 export function shouldMeasureDockBackdrop(
   showLabels: boolean,
   dotCount: number,

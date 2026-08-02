@@ -1,5 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
+  dockToggleOffset,
+  reposWithLiveSessions,
   shouldMeasureDockBackdrop,
   splitDockEntries,
   type SplittableDockEntry,
@@ -145,6 +147,142 @@ describe("splitDockEntries", () => {
       "s1",
       "s2",
     ]);
+  });
+});
+
+describe("reposWithLiveSessions", () => {
+  test("empty list → no repos", () => {
+    expect(reposWithLiveSessions([]).size).toBe(0);
+  });
+
+  test("a live session marks its repo", () => {
+    const ids = reposWithLiveSessions([entry("r1", "s1")]);
+    expect(ids.has("r1")).toBe(true);
+  });
+
+  test("exited-only sessions do not mark their repo", () => {
+    const ids = reposWithLiveSessions([
+      entry("r1", "s1", true),
+      entry("r1", "s2", true),
+    ]);
+    expect(ids.has("r1")).toBe(false);
+  });
+
+  test("one live session among exited ones still marks the repo", () => {
+    const ids = reposWithLiveSessions([
+      entry("r1", "s1", true),
+      entry("r1", "s2"),
+    ]);
+    expect(ids.has("r1")).toBe(true);
+  });
+
+  test("only repos with live sessions are reported", () => {
+    const ids = reposWithLiveSessions([
+      entry("r1", "s1"),
+      entry("r2", "s2", true),
+      entry("r3", "s3"),
+    ]);
+    expect([...ids].sort()).toEqual(["r1", "r3"]);
+  });
+});
+
+describe("dockToggleOffset", () => {
+  const VH = 1000;
+
+  test("toggle already at the column's midpoint → no nudge", () => {
+    expect(
+      dockToggleOffset({
+        viewportHeight: VH,
+        dockHeight: 200,
+        toggleCenter: 100,
+      }),
+    ).toBe(0);
+  });
+
+  test("toggle dangling at the bottom → nudge the dock up", () => {
+    // Inactive dots hidden ⇒ empty bottom stack ⇒ the toggle is the
+    // last row of a 200-tall column, 10px from its bottom edge.
+    expect(
+      dockToggleOffset({
+        viewportHeight: VH,
+        dockHeight: 200,
+        toggleCenter: 190,
+      }),
+    ).toBe(-90);
+  });
+
+  test("toggle near the top → nudge the dock down", () => {
+    expect(
+      dockToggleOffset({
+        viewportHeight: VH,
+        dockHeight: 200,
+        toggleCenter: 30,
+      }),
+    ).toBe(70);
+  });
+
+  test("result is absolute — the shift already applied doesn't feed back", () => {
+    // Same geometry measured twice (the measurement is dock-relative,
+    // so a mid-glide re-measure returns the same target).
+    const once = dockToggleOffset({
+      viewportHeight: VH,
+      dockHeight: 200,
+      toggleCenter: 190,
+    });
+    const twice = dockToggleOffset({
+      viewportHeight: VH,
+      dockHeight: 200,
+      toggleCenter: 190,
+    });
+    expect(twice).toBe(once);
+  });
+
+  test("never nudges the column off screen", () => {
+    // 900-tall column leaves only 50px of slack on either side.
+    expect(
+      dockToggleOffset({
+        viewportHeight: VH,
+        dockHeight: 900,
+        toggleCenter: 860,
+      }),
+    ).toBe(-50);
+    expect(
+      dockToggleOffset({
+        viewportHeight: VH,
+        dockHeight: 900,
+        toggleCenter: 40,
+      }),
+    ).toBe(50);
+  });
+
+  test("a tall column with the toggle last stays clamped, not centred", () => {
+    // The accepted trade-off: centring a last-row toggle needs the
+    // whole column to fit in the top half of the screen. A 700-tall
+    // column can't, so it moves as far as the clamp allows and the
+    // toggle stays below centre rather than clipping the top dots.
+    const dockHeight = 700;
+    const toggleCenter = 690;
+    const shift = dockToggleOffset({
+      viewportHeight: VH,
+      dockHeight,
+      toggleCenter,
+    });
+    expect(shift).toBe(-150); // clamped, not the -340 that would centre it
+    // Dock top after the shift is exactly the viewport top — no clipping.
+    const dockTop = VH / 2 - dockHeight / 2 + shift;
+    expect(dockTop).toBe(0);
+    // …and the toggle genuinely still sits below centre.
+    expect(dockTop + toggleCenter).toBeGreaterThan(VH / 2);
+  });
+
+  test("column taller than the viewport → no nudge, scroll owns layout", () => {
+    expect(
+      dockToggleOffset({
+        viewportHeight: VH,
+        dockHeight: 1200,
+        toggleCenter: 1100,
+      }),
+    ).toBe(0);
   });
 });
 
