@@ -24,6 +24,7 @@
   import { onMount, onDestroy } from "svelte";
   import ManualTitle from "./ManualTitle.svelte";
   import SessionMenu, { type SessionMenuItem } from "./SessionMenu.svelte";
+  import SearchIconButton from "./SearchIconButton.svelte";
   import Popover from "./Popover.svelte";
   import Tooltip from "./Tooltip.svelte";
   import SleepIndicationAnimation from "./SleepIndicationAnimation.svelte";
@@ -141,6 +142,7 @@
     );
   export let sshConnected = false;
   export let onCancelInflight: () => void = () => {};
+  export let onFind: () => void = () => {};
   export let onClose: () => void = () => {};
   export let onDragStart: (e: DragEvent) => void = () => {};
 
@@ -714,6 +716,13 @@
           {/if}
         </button>
       {/if}
+    {/if}
+    {#if mode === "read"}
+      <SearchIconButton
+        title="Find in this session"
+        ariaLabel="Find in this session"
+        on:click={onFind}
+      />
     {/if}
     {#if effectiveMenuItems.length > 0}
       <SessionMenu items={effectiveMenuItems} />

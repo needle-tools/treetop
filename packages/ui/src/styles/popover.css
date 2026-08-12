@@ -192,6 +192,11 @@
   justify-content: space-between;
   gap: 0.5rem;
 }
+.events-head-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+}
 
 /* TUIs overview popover — wider than the actions default; the head
    shows "Active TUIs" + a spinner. `overflow-x: hidden` keeps the
@@ -928,6 +933,23 @@
 }
 .import-error {
   color: var(--error-text, #e57373);
+}
+
+.popover-search-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  width: 100%;
+}
+
+.popover-search-head > span:first-child {
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.popover-search-head .popover-search-field {
+  flex: 0 1 min(15rem, 55%);
 }
 
 /* Inline flex row that holds the two CTAs (Add folder + Import from

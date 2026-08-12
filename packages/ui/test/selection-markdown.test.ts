@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import {
+  buildContextMenuItemsForTargets,
   markdownFromSelectedSources,
   noteBodyFromSelection,
   writeMarkdownSelectionToClipboardData,
@@ -88,5 +89,46 @@ describe("markdownFromSelectedSources", () => {
     expect(
       parseInlineAttachments(body).filter((part) => part.kind === "attachment"),
     ).toHaveLength(1);
+  });
+
+  test("keeps file actions when a markdown selection is on a file target", () => {
+    expect(
+      buildContextMenuItemsForTargets(
+        {
+          markdownSelection: true,
+          noteAnchor: true,
+          filePath: true,
+          fileManagerName: "Finder",
+        },
+        {
+          copyMarkdown() {},
+          moveToNote() {},
+          openFile() {},
+          openInFileManager() {},
+        },
+      ).map((item) => item.label),
+    ).toEqual([
+      "Copy Markdown",
+      "Move to note",
+      "Open",
+      "Open in Finder",
+    ]);
+  });
+
+  test("uses the platform file manager name for file context actions", () => {
+    expect(
+      buildContextMenuItemsForTargets(
+        {
+          markdownSelection: false,
+          noteAnchor: false,
+          filePath: true,
+          fileManagerName: "Explorer",
+        },
+        {
+          openFile() {},
+          openInFileManager() {},
+        },
+      ).map((item) => item.label),
+    ).toEqual(["Open", "Open in Explorer"]);
   });
 });

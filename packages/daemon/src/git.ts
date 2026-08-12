@@ -1352,6 +1352,34 @@ export function parseNumstat(out: string): Record<string, NumstatEntry> {
   return map;
 }
 
+export interface CommitFileStat extends NumstatEntry {
+  path: string;
+}
+
+export function parseNumstatList(out: string): CommitFileStat[] {
+  const rows: CommitFileStat[] = [];
+  for (const line of out.split("\n")) {
+    if (line.length === 0) continue;
+    const t1 = line.indexOf("\t");
+    if (t1 < 0) continue;
+    const t2 = line.indexOf("\t", t1 + 1);
+    if (t2 < 0) continue;
+    const addedStr = line.slice(0, t1);
+    const removedStr = line.slice(t1 + 1, t2);
+    const path = line.slice(t2 + 1);
+    if (path.length === 0) continue;
+    if (addedStr === "-" || removedStr === "-") {
+      rows.push({ path, added: 0, removed: 0, binary: true });
+      continue;
+    }
+    const added = Number.parseInt(addedStr, 10);
+    const removed = Number.parseInt(removedStr, 10);
+    if (!Number.isFinite(added) || !Number.isFinite(removed)) continue;
+    rows.push({ path, added, removed, binary: false });
+  }
+  return rows;
+}
+
 /** Subjects of the commits that are on HEAD but not on the upstream
  *  yet (or, in the inbound direction, commits we haven't fetched/pulled
  *  yet). Drives the "↑N" / "↓N" hover tooltips. Input is the output of
@@ -1456,6 +1484,39 @@ export async function getCommitDiff(
   const ctx = `--unified=${clampContext(context)}`;
   try {
     return await $`git -C ${worktreePath} show --no-color --pretty=fuller ${ctx} ${sha}`
+      .quiet()
+      .text();
+  } catch {
+    return "";
+  }
+}
+
+export async function listCommitFiles(
+  worktreePath: string,
+  sha: string,
+): Promise<CommitFileStat[]> {
+  if (!/^[0-9a-f]{4,64}$/i.test(sha)) return [];
+  try {
+    const out =
+      await $`git -C ${worktreePath} show --no-renames --numstat --format= ${sha}`
+        .quiet()
+        .text();
+    return parseNumstatList(out);
+  } catch {
+    return [];
+  }
+}
+
+export async function getCommitFileDiff(
+  worktreePath: string,
+  sha: string,
+  file: string,
+  context: number = 0,
+): Promise<string> {
+  if (!/^[0-9a-f]{4,64}$/i.test(sha)) return "";
+  const ctx = `--unified=${clampContext(context)}`;
+  try {
+    return await $`git -C ${worktreePath} show --no-color --format= ${ctx} ${sha} -- ${file}`
       .quiet()
       .text();
   } catch {

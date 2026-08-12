@@ -581,9 +581,18 @@ main > header {
   padding-top: 0.25rem;
   border-top: 1px solid color-mix(in srgb, var(--text-muted) 18%, transparent);
 }
-/* "Open from sessions" sits flush under "Add Folder" (no separator of
-   its own — the two share the divider the .projects-virtual-item above
-   draws), so it needs no extra rule beyond the shared .projects-row. */
+.projects-actions {
+  position: sticky;
+  bottom: 0;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+  margin-top: 0.25rem;
+  padding-top: 0.25rem;
+  border-top: 1px solid color-mix(in srgb, var(--text-muted) 18%, transparent);
+  background: color-mix(in srgb, var(--surface-1, #151515) 96%, black);
+}
 .projects-plus {
   width: 14px;
   height: 14px;

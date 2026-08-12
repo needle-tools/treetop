@@ -13,8 +13,10 @@ import {
   listWorktrees,
   getWorktreeDetails,
   listCommits,
+  listCommitFiles,
   getDiff,
   getFileDiff,
+  getCommitFileDiff,
   createWorktree,
   removeWorktree,
   listBranches,
@@ -439,6 +441,48 @@ describe("listCommits against real git", () => {
     expect(first.map((c) => c.subject)).toEqual(["c", "b"]);
     const next = await listCommits(repo, { limit: 5, before: first[1]!.sha });
     expect(next.map((c) => c.subject)).toEqual(["a", "initial"]);
+  });
+});
+
+describe("commit file summaries against real git", () => {
+  test("lists changed files with numstat for a commit", async () => {
+    const repo = await tempRepo();
+    await writeFile(join(repo, "a.txt"), "one\n");
+    await writeFile(join(repo, "b.txt"), "old\n");
+    await $`git -C ${repo} add a.txt b.txt`.quiet();
+    await $`git -C ${repo} commit -m add-files -q`.quiet();
+    await writeFile(join(repo, "a.txt"), "one\ntwo\n");
+    await writeFile(join(repo, "b.txt"), "new\n");
+    await $`git -C ${repo} add a.txt b.txt`.quiet();
+    await $`git -C ${repo} commit -m edit-files -q`.quiet();
+
+    const commits = await listCommits(repo, { limit: 1 });
+    const rows = await listCommitFiles(repo, commits[0]!.sha);
+
+    expect(rows).toEqual([
+      { path: "a.txt", added: 1, removed: 0, binary: false },
+      { path: "b.txt", added: 1, removed: 1, binary: false },
+    ]);
+  });
+
+  test("returns the commit diff for only the requested file", async () => {
+    const repo = await tempRepo();
+    await writeFile(join(repo, "a.txt"), "one\n");
+    await writeFile(join(repo, "b.txt"), "old\n");
+    await $`git -C ${repo} add a.txt b.txt`.quiet();
+    await $`git -C ${repo} commit -m add-files -q`.quiet();
+    await writeFile(join(repo, "a.txt"), "one\ntwo\n");
+    await writeFile(join(repo, "b.txt"), "new\n");
+    await $`git -C ${repo} add a.txt b.txt`.quiet();
+    await $`git -C ${repo} commit -m edit-files -q`.quiet();
+
+    const commits = await listCommits(repo, { limit: 1 });
+    const diff = await getCommitFileDiff(repo, commits[0]!.sha, "a.txt", 0);
+
+    expect(diff).toContain("a.txt");
+    expect(diff).toContain("+two");
+    expect(diff).not.toContain("b.txt");
+    expect(diff).not.toContain("-old");
   });
 });
 

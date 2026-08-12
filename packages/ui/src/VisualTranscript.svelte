@@ -1692,6 +1692,7 @@
     type="button"
     class="work-preview-path"
     class:remote={!!remoteHost}
+    data-supergit-file-href={!remoteHost ? part.path : undefined}
     title={remoteHost
       ? `Open ${part.path}${part.range} on ${remoteHost}`
       : `Open ${resolvePreviewPath(part.path)}`}

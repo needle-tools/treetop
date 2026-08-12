@@ -298,6 +298,13 @@ export function windowsOpenCommand(
   return [CMD_EXE, "/c", "start", "", path];
 }
 
+export function macFileManagerOpenCommand(args: {
+  path: string;
+  isDirectory: boolean;
+}): string[] {
+  return args.isDirectory ? ["open", args.path] : ["open", "-R", args.path];
+}
+
 /** Single-quote `s` for safe substitution into a `bash -c '…'` snippet.
  *  Closes the surrounding quotes around any embedded `'`, escapes the
  *  quote with `\'`, then reopens. Same trick `find -print0 | xargs -0`
@@ -405,12 +412,18 @@ export async function openIn(
   if (app === "files") {
     // Open the path in the OS file manager (Finder / Explorer / xdg).
     if (process.platform === "darwin") {
-      const proc = Bun.spawn(["open", path], {
-        stdout: "ignore",
-        stderr: "ignore",
-      });
+      const st = await stat(path).catch(() => null);
+      const proc = Bun.spawn(
+        macFileManagerOpenCommand({
+          path,
+          isDirectory: !!st?.isDirectory(),
+        }),
+        {
+          stdout: "ignore",
+          stderr: "ignore",
+        },
+      );
       const exitCode = await proc.exited;
-      const st = exitCode === 0 ? null : await stat(path).catch(() => null);
       const fallbackEditor = fallbackEditorForFailedFileManagerOpen({
         platform: process.platform,
         exitCode,

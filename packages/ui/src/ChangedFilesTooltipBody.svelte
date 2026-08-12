@@ -23,7 +23,7 @@
   import { apiUrl } from "./api";
   import { getContext, onDestroy } from "svelte";
   import { TOOLTIP_HOVER_CTX, type TooltipHoverCtx } from "./Tooltip.svelte";
-  import FileDiffTooltipBody from "./FileDiffTooltipBody.svelte";
+  import DiffLoader from "./DiffLoader.svelte";
 
   interface NumstatEntry {
     added: number;
@@ -64,8 +64,14 @@
    *  (older callers), rows render as static text — backwards-safe. */
   export let worktreePath: string | undefined = undefined;
   /** Owning daemon for this worktree. Undefined ⇒ local daemon
-   *  (byte-identical behaviour). Passed through to FileDiffTooltipBody. */
+   *  (byte-identical behaviour). Passed through to DiffLoader. */
   export let daemonId: string | undefined = undefined;
+  /** Optional commit SHA. When present, per-file hover diffs come from
+   *  that commit instead of the current worktree/index. */
+  export let sha: string | undefined = undefined;
+  /** Optional bucket labels for alternate callers. Commit summaries use
+   *  the same row renderer but label their synthetic bucket "changed". */
+  export let labels: Partial<Record<BucketKind, string>> = {};
 
   /** Per-section row cap. Past this the rest collapse into the
    *  footer message below the three columns. With horizontal
@@ -137,7 +143,7 @@
       if (b.paths.length === 0) continue;
       const slice = b.paths.slice(0, PER_SECTION_LIMIT);
       columns.push({
-        label: `${b.kind} (${b.paths.length})`,
+        label: `${labels[b.kind] ?? b.kind} (${b.paths.length})`,
         kind: b.kind,
         rows: slice.map((p) => ({ path: p, stat: b.stats?.[p] })),
         total: b.paths.length,
@@ -333,7 +339,9 @@
               class="wt-tt-row"
               class:wt-tt-row-interactive={interactive}
               role={interactive ? "button" : undefined}
-              tabindex={interactive ? -1 : undefined}
+              data-supergit-session-cwd={worktreePath}
+              data-supergit-daemon-id={daemonId}
+              data-supergit-file-href={row.path}
               on:mouseenter={(e) =>
                 onRowEnter(
                   col.kind,
@@ -390,10 +398,11 @@
         {/if}
       {/if}
     </div>
-    <FileDiffTooltipBody
+    <DiffLoader
       {worktreePath}
       file={hovered.path}
       kind={DIFF_KIND[hovered.kind]}
+      {sha}
       {daemonId}
     />
   </div>
