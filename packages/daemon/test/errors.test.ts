@@ -1,5 +1,5 @@
 import { test, expect, describe } from "bun:test";
-import { mkdtemp } from "node:fs/promises";
+import { appendFile, mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ErrorLog } from "../src/errors";
@@ -51,6 +51,31 @@ describe("ErrorLog", () => {
     expect(five.length).toBe(5);
     expect(five[0]?.message).toBe("m9");
     expect(five[4]?.message).toBe("m5");
+  });
+
+  test("list reads the newest bounded page from a large historical log", async () => {
+    const log = await ErrorLog.open(await tempDir());
+    const oldTimestamp = new Date(Date.now() - 2 * 3600_000).toISOString();
+    const lines: string[] = [];
+    for (let i = 0; i < 5000; i++) {
+      lines.push(
+        JSON.stringify({
+          id: `old-${i}`,
+          timestamp: oldTimestamp,
+          kind: "server",
+          source: "daemon",
+          message: `old-${i}`,
+          extra: { padding: "x".repeat(512) },
+        }),
+      );
+    }
+    await appendFile(log.path, lines.join("\n") + "\n");
+    await log.append({ kind: "server", source: "daemon", message: "new-0" });
+    await log.append({ kind: "server", source: "daemon", message: "new-1" });
+
+    const recent = await log.list({ limit: 2 });
+
+    expect(recent.map((entry) => entry.message)).toEqual(["new-1", "new-0"]);
   });
 
   test("list omits entries older than 24h", async () => {

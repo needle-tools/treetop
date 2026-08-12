@@ -4579,6 +4579,7 @@ const server = Bun.serve<TermWsData, never>({
           });
           return json({
             ok: true,
+            model: result.model,
             thread: turnsLimit > 0
               ? { ...result.thread, turns: result.turns ?? [] }
               : result.thread,

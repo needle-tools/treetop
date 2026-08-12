@@ -6,6 +6,7 @@ import {
   codexAccessValue,
   codexAgentSettings,
   parseCodexAccessValue,
+  resolveCodexSessionModel,
   effortIcon,
   shouldLoadCodexModelCatalog,
 } from "../src/claude-session-menu";
@@ -501,6 +502,34 @@ describe("codexAgentSettings", () => {
       "sandbox:dangerFullAccess",
       "approval:never",
     ]);
+  });
+});
+
+describe("resolveCodexSessionModel", () => {
+  test("uses the detected session model before the saved app default", () => {
+    expect(
+      resolveCodexSessionModel({
+        detectedModel: "gpt-5.5",
+        savedModel: "gpt-5.6-sol",
+      }),
+    ).toBe("gpt-5.5");
+  });
+
+  test("lets an explicit per-session override win, including Default", () => {
+    expect(
+      resolveCodexSessionModel({
+        overrideModel: "gpt-5.6-luna",
+        detectedModel: "gpt-5.5",
+        savedModel: "gpt-5.6-sol",
+      }),
+    ).toBe("gpt-5.6-luna");
+    expect(
+      resolveCodexSessionModel({
+        overrideModel: "",
+        detectedModel: "gpt-5.5",
+        savedModel: "gpt-5.6-sol",
+      }),
+    ).toBe("");
   });
 });
 

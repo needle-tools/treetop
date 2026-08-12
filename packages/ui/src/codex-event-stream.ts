@@ -155,11 +155,16 @@ export function shouldLoadCodexAppThreadHistory(opts: {
   hasSession: boolean;
   loadedHistoryKey: string;
   loadingHistoryKey: string;
+  failedHistoryKey?: string;
 }): boolean {
   if (!opts.visualAppSurface || !opts.hasSession) return false;
   const key = codexAppHistoryKey(opts.threadId, opts.cwd);
   if (!key) return false;
-  return key !== opts.loadedHistoryKey && key !== opts.loadingHistoryKey;
+  return (
+    key !== opts.loadedHistoryKey &&
+    key !== opts.loadingHistoryKey &&
+    key !== opts.failedHistoryKey
+  );
 }
 
 export function canRequestOlderCodexAppThreadHistory(opts: {

@@ -260,6 +260,23 @@ export function uniqueCodexModels(opts: {
   return [...byValue.values()].filter((m) => !!codexModelValue(m));
 }
 
+function cleanCodexModel(value: string | undefined): string | undefined {
+  if (value === undefined) return undefined;
+  const trimmed = value.trim();
+  return trimmed ? trimmed : undefined;
+}
+
+export function resolveCodexSessionModel(opts: {
+  overrideModel?: string;
+  detectedModel?: string;
+  savedModel?: string;
+}): string {
+  if (opts.overrideModel !== undefined) return opts.overrideModel.trim();
+  return (
+    cleanCodexModel(opts.detectedModel) ?? cleanCodexModel(opts.savedModel) ?? ""
+  );
+}
+
 const CODEX_EFFORT_LABELS: Record<string, string> = {
   minimal: "minimal",
   low: "low",
