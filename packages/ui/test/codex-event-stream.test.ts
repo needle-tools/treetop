@@ -213,6 +213,17 @@ describe("codex event stream hub", () => {
     ).toBe(false);
     expect(
       shouldLoadCodexAppThreadHistory({
+        visualAppSurface: true,
+        threadId: "thread-1",
+        cwd: "/repo",
+        hasSession: true,
+        loadedHistoryKey: "",
+        loadingHistoryKey: "",
+        failedHistoryKey: key,
+      }),
+    ).toBe(false);
+    expect(
+      shouldLoadCodexAppThreadHistory({
         visualAppSurface: false,
         threadId: "thread-1",
         cwd: "/repo",

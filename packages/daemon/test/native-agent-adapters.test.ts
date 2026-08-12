@@ -619,7 +619,7 @@ describe("CodexAppServerAdapter", () => {
     await interrupt;
   });
 
-  test("reads Codex app-server thread turns through thread/read", async () => {
+  test("loads Codex app-server threads before reading turns", async () => {
     const fake = fakeCodexProcess();
     const adapter = new CodexAppServerAdapter({ spawn: () => fake.proc });
 
@@ -631,14 +631,26 @@ describe("CodexAppServerAdapter", () => {
     await waitFor(() => fake.writes[0], "initialize request");
     fake.enqueue({ id: 0, result: {} });
 
-    await waitFor(() => fake.writes[2], "thread read request");
+    await waitFor(() => fake.writes[2], "thread resume request");
     expect(parseWrite(fake.writes, 2)).toEqual({
       id: 1,
+      method: "thread/resume",
+      params: {
+        threadId: "thr_existing",
+        cwd: "/repo",
+        excludeTurns: true,
+      },
+    });
+    fake.enqueue({ id: 1, result: { thread: { id: "thr_existing" } } });
+
+    await waitFor(() => fake.writes[3], "thread read request");
+    expect(parseWrite(fake.writes, 3)).toEqual({
+      id: 2,
       method: "thread/read",
       params: { threadId: "thr_existing", includeTurns: true },
     });
     fake.enqueue({
-      id: 1,
+      id: 2,
       result: {
         thread: {
           id: "thr_existing",
@@ -681,7 +693,92 @@ describe("CodexAppServerAdapter", () => {
     });
   });
 
-  test("pages Codex app-server turns instead of reading full history", async () => {
+  test("surfaces the Codex app-server thread model from thread/read", async () => {
+    const fake = fakeCodexProcess();
+    const adapter = new CodexAppServerAdapter({ spawn: () => fake.proc });
+
+    const read = adapter.readThread({
+      threadId: "thr_existing",
+      cwd: "/repo",
+      includeTurns: true,
+    });
+    await waitFor(() => fake.writes[0], "initialize request");
+    fake.enqueue({ id: 0, result: {} });
+
+    await waitFor(() => fake.writes[2], "thread resume request");
+    fake.enqueue({ id: 1, result: { thread: { id: "thr_existing" } } });
+
+    await waitFor(() => fake.writes[3], "thread read request");
+    fake.enqueue({
+      id: 2,
+      result: {
+        thread: {
+          id: "thr_existing",
+          settings: { model: "gpt-5.5" },
+          turns: [],
+        },
+      },
+    });
+
+    await expect(read).resolves.toEqual({
+      thread: {
+        id: "thr_existing",
+        settings: { model: "gpt-5.5" },
+        turns: [],
+      },
+      model: "gpt-5.5",
+    });
+  });
+
+  test("bootstraps the first Codex app-server turns page through thread/resume", async () => {
+    const fake = fakeCodexProcess();
+    const adapter = new CodexAppServerAdapter({ spawn: () => fake.proc });
+
+    const read = adapter.readThread({
+      threadId: "thr_existing",
+      cwd: "/repo",
+      turnsLimit: 50,
+    });
+    await waitFor(() => fake.writes[0], "initialize request");
+    fake.enqueue({ id: 0, result: {} });
+
+    await waitFor(() => fake.writes[2], "thread resume request");
+    expect(parseWrite(fake.writes, 2)).toEqual({
+      id: 1,
+      method: "thread/resume",
+      params: {
+        threadId: "thr_existing",
+        cwd: "/repo",
+        excludeTurns: true,
+        initialTurnsPage: {
+          limit: 50,
+          sortDirection: "desc",
+          itemsView: "full",
+        },
+      },
+    });
+    fake.enqueue({
+      id: 1,
+      result: {
+        thread: { id: "thr_existing" },
+        initialTurnsPage: {
+          data: [{ id: "turn_2" }, { id: "turn_1" }],
+          nextCursor: "cursor-even-older",
+          backwardsCursor: "cursor-newer",
+        },
+      },
+    });
+
+    await expect(read).resolves.toEqual({
+      thread: { id: "thr_existing" },
+      turns: [{ id: "turn_2" }, { id: "turn_1" }],
+      nextCursor: "cursor-even-older",
+      backwardsCursor: "cursor-newer",
+    });
+    expect(fake.writes).toHaveLength(3);
+  });
+
+  test("pages older Codex app-server turns from the loaded thread cursor", async () => {
     const fake = fakeCodexProcess();
     const adapter = new CodexAppServerAdapter({ spawn: () => fake.proc });
 
@@ -694,17 +791,29 @@ describe("CodexAppServerAdapter", () => {
     await waitFor(() => fake.writes[0], "initialize request");
     fake.enqueue({ id: 0, result: {} });
 
-    await waitFor(() => fake.writes[2], "thread read request");
+    await waitFor(() => fake.writes[2], "thread resume request");
     expect(parseWrite(fake.writes, 2)).toEqual({
       id: 1,
-      method: "thread/read",
-      params: { threadId: "thr_existing", includeTurns: false },
+      method: "thread/resume",
+      params: {
+        threadId: "thr_existing",
+        cwd: "/repo",
+        excludeTurns: true,
+      },
     });
     fake.enqueue({ id: 1, result: { thread: { id: "thr_existing" } } });
 
-    await waitFor(() => fake.writes[3], "turns list request");
+    await waitFor(() => fake.writes[3], "thread read request");
     expect(parseWrite(fake.writes, 3)).toEqual({
       id: 2,
+      method: "thread/read",
+      params: { threadId: "thr_existing", includeTurns: false },
+    });
+    fake.enqueue({ id: 2, result: { thread: { id: "thr_existing" } } });
+
+    await waitFor(() => fake.writes[4], "turns list request");
+    expect(parseWrite(fake.writes, 4)).toEqual({
+      id: 3,
       method: "thread/turns/list",
       params: {
         threadId: "thr_existing",
@@ -715,7 +824,7 @@ describe("CodexAppServerAdapter", () => {
       },
     });
     fake.enqueue({
-      id: 2,
+      id: 3,
       result: {
         data: [{ id: "turn_2" }, { id: "turn_1" }],
         nextCursor: "cursor-even-older",
@@ -738,22 +847,15 @@ describe("CodexAppServerAdapter", () => {
     const goal = adapter.getGoal("thr_existing", "/repo");
     await waitFor(() => fake.writes[0], "initialize request");
     fake.enqueue({ id: 0, result: {} });
-    await waitFor(() => fake.writes[2], "thread resume request");
+
+    await waitFor(() => fake.writes[2], "goal get request");
     expect(parseWrite(fake.writes, 2)).toEqual({
       id: 1,
-      method: "thread/resume",
-      params: { threadId: "thr_existing", cwd: "/repo" },
-    });
-    fake.enqueue({ id: 1, result: { thread: { id: "thr_existing" } } });
-
-    await waitFor(() => fake.writes[3], "goal get request");
-    expect(parseWrite(fake.writes, 3)).toEqual({
-      id: 2,
       method: "thread/goal/get",
       params: { threadId: "thr_existing" },
     });
     fake.enqueue({
-      id: 2,
+      id: 1,
       result: {
         goal: {
           threadId: "thr_existing",
@@ -784,14 +886,14 @@ describe("CodexAppServerAdapter", () => {
       cwd: "/repo",
       status: "paused",
     });
-    await waitFor(() => fake.writes[4], "goal pause request");
-    expect(parseWrite(fake.writes, 4)).toEqual({
-      id: 3,
+    await waitFor(() => fake.writes[3], "goal pause request");
+    expect(parseWrite(fake.writes, 3)).toEqual({
+      id: 2,
       method: "thread/goal/set",
       params: { threadId: "thr_existing", status: "paused" },
     });
     fake.enqueue({
-      id: 3,
+      id: 2,
       result: { goal: { threadId: "thr_existing", status: "paused" } },
     });
     await expect(pause).resolves.toMatchObject({
@@ -805,9 +907,9 @@ describe("CodexAppServerAdapter", () => {
       objective: "Make it calm and fast.",
       status: "active",
     });
-    await waitFor(() => fake.writes[5], "goal edit request");
-    expect(parseWrite(fake.writes, 5)).toEqual({
-      id: 4,
+    await waitFor(() => fake.writes[4], "goal edit request");
+    expect(parseWrite(fake.writes, 4)).toEqual({
+      id: 3,
       method: "thread/goal/set",
       params: {
         threadId: "thr_existing",
@@ -816,7 +918,7 @@ describe("CodexAppServerAdapter", () => {
       },
     });
     fake.enqueue({
-      id: 4,
+      id: 3,
       result: {
         goal: {
           threadId: "thr_existing",
@@ -831,13 +933,13 @@ describe("CodexAppServerAdapter", () => {
     });
 
     const clear = adapter.clearGoal("thr_existing", "/repo");
-    await waitFor(() => fake.writes[6], "goal clear request");
-    expect(parseWrite(fake.writes, 6)).toEqual({
-      id: 5,
+    await waitFor(() => fake.writes[5], "goal clear request");
+    expect(parseWrite(fake.writes, 5)).toEqual({
+      id: 4,
       method: "thread/goal/clear",
       params: { threadId: "thr_existing" },
     });
-    fake.enqueue({ id: 5, result: {} });
+    fake.enqueue({ id: 4, result: {} });
     await clear;
   });
 

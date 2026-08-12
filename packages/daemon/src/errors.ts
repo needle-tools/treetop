@@ -1,5 +1,5 @@
 import { join } from "node:path";
-import { appendFile, readFile, access, writeFile } from "node:fs/promises";
+import { appendFile, access, open as openFile, writeFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 
 export type ErrorKind =
@@ -35,6 +35,8 @@ export interface ErrorEntry extends ErrorEntryInput {
 
 const ERRORS_FILE = "errors.jsonl";
 const DEFAULT_LIMIT = 1000;
+const READ_CHUNK_BYTES = 256 * 1024;
+const MAX_TAIL_SCAN_BYTES = 64 * 1024 * 1024;
 /** Entries older than this are omitted from list() — the UI scopes the
  *  Events popover to "what went wrong recently". Matches the 24h bound
  *  the frontend store enforces in packages/ui/src/errors.ts. */
@@ -65,30 +67,74 @@ export class ErrorLog {
 
   async list(opts: { limit?: number } = {}): Promise<ErrorEntry[]> {
     const limit = opts.limit ?? DEFAULT_LIMIT;
-    let raw: string;
+    const cutoff = Date.now() - MAX_AGE_MS;
+    const entries: ErrorEntry[] = [];
+    let file: Awaited<ReturnType<typeof openFile>>;
     try {
-      raw = await readFile(this.path, "utf-8");
+      file = await openFile(this.path, "r");
     } catch {
       return [];
     }
-    const cutoff = Date.now() - MAX_AGE_MS;
-    const entries: ErrorEntry[] = [];
-    for (const line of raw.split("\n")) {
-      if (line.length === 0) continue;
-      try {
-        const entry = JSON.parse(line) as ErrorEntry;
-        const t = Date.parse(entry.timestamp);
-        if (Number.isFinite(t) && t < cutoff) continue;
-        entries.push(entry);
-      } catch {
-        // skip malformed line — disk corruption or a truncated write
+
+    try {
+      const { size } = await file.stat();
+      let position = size;
+      let scanned = 0;
+      let carry = Buffer.alloc(0);
+      while (
+        position > 0 &&
+        scanned < MAX_TAIL_SCAN_BYTES &&
+        entries.length < limit
+      ) {
+        const length = Math.min(READ_CHUNK_BYTES, position);
+        position -= length;
+        scanned += length;
+        const chunk = Buffer.alloc(length);
+        await file.read(chunk, 0, length, position);
+        const data = carry.length ? Buffer.concat([chunk, carry]) : chunk;
+        const firstNewline = data.indexOf(0x0a);
+        const start = position > 0 && firstNewline >= 0 ? firstNewline + 1 : 0;
+        carry =
+          position > 0
+            ? firstNewline >= 0
+              ? data.subarray(0, firstNewline)
+              : data
+            : Buffer.alloc(0);
+
+        let lineEnd = data.length;
+        while (lineEnd >= start && entries.length < limit) {
+          const previousNewline = data.lastIndexOf(0x0a, lineEnd - 1);
+          const lineStart =
+            previousNewline >= start ? previousNewline + 1 : start;
+          this.collectLine(data.subarray(lineStart, lineEnd), cutoff, entries);
+          if (previousNewline < start) break;
+          lineEnd = previousNewline;
+        }
       }
+    } finally {
+      await file.close();
     }
-    entries.reverse();
-    return entries.slice(0, limit);
+
+    return entries;
   }
 
   async clear(): Promise<void> {
     await writeFile(this.path, "");
+  }
+
+  private collectLine(
+    lineBuffer: Buffer,
+    cutoff: number,
+    entries: ErrorEntry[],
+  ): void {
+    if (lineBuffer.length === 0) return;
+    try {
+      const entry = JSON.parse(lineBuffer.toString("utf-8")) as ErrorEntry;
+      const t = Date.parse(entry.timestamp);
+      if (Number.isFinite(t) && t < cutoff) return;
+      entries.push(entry);
+    } catch {
+      // skip malformed line — disk corruption or a truncated write
+    }
   }
 }

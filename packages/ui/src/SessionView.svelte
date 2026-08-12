@@ -56,6 +56,7 @@
     claudeAgentSettings,
     codexAgentSettings,
     effortIcon,
+    resolveCodexSessionModel,
     shouldLoadCodexModelCatalog,
     type CodexModelInfo,
   } from "./claude-session-menu";
@@ -545,6 +546,7 @@
   let visualHistorySourceKey = "";
   let codexAppHistoryLoadedKey = "";
   let codexAppHistoryLoadingKey = "";
+  let codexAppHistoryFailedKey = "";
   let codexAppHistoryNextCursor: string | null = null;
   let visualHistoryScrollAnchor: {
     el: HTMLElement;
@@ -1571,7 +1573,9 @@
         : [];
 
   $: codexAgentLabel =
-    agent === "codex" ? codexModel || model || "Codex App" : undefined;
+    agent === "codex"
+      ? codexModel || codexDetectedModel || "Codex App"
+      : undefined;
 
   /** Pin this session as a sticky-link chip on the current
    *  worktree's row. Thin wrapper over the shared
@@ -2142,6 +2146,8 @@
       resetVisualExpansionState();
       codexAppHistoryLoadedKey = "";
       codexAppHistoryLoadingKey = "";
+      codexAppHistoryFailedKey = "";
+      codexLiveDetectedModel = "";
     }
   }
 
@@ -2228,12 +2234,16 @@
       );
       const body = (await res.json().catch(() => null)) as {
         thread?: unknown;
+        model?: unknown;
         nextCursor?: unknown;
         error?: string;
       } | null;
       if (!res.ok) throw new Error(body?.error ?? `HTTP ${res.status}`);
       if (!body?.thread || effectiveSessionId !== targetThreadId || !session)
         return;
+      if (typeof body.model === "string") {
+        codexLiveDetectedModel = body.model;
+      }
       flushCodexDeltaPatches();
       const historyMessages = codexAppHistoryMessagesFromTurnPage(
         body.thread,
@@ -2247,12 +2257,16 @@
         ) as NormalizedMessage[],
       };
       codexAppHistoryLoadedKey = targetHistoryKey;
+      codexAppHistoryFailedKey = "";
       codexAppHistoryNextCursor =
         typeof body.nextCursor === "string" && body.nextCursor
           ? body.nextCursor
           : null;
       preserveVisualHistoryScrollAnchor();
     } catch (e) {
+      if (effectiveSessionId === targetThreadId) {
+        codexAppHistoryFailedKey = targetHistoryKey;
+      }
       sendError = e instanceof Error ? e.message : String(e);
       preserveVisualHistoryScrollAnchor();
     }
@@ -2352,6 +2366,8 @@
   let codexModelsLoadingKey = "";
   let codexModelsLoading = false;
   let codexModelsError = "";
+  let codexLiveDetectedModel = "";
+  let codexModelResolutionKey = "";
   let codexPendingDeltaPatches: VisualTranscriptDeltaPatch<NormalizedBlock>[] =
     [];
   let codexLiveNormalizeContext: CodexLiveNormalizeContext = {
@@ -2362,7 +2378,13 @@
   const CODEX_SETTINGS_KEY = "supergit:codexApp:turnSettings";
   const CODEX_QUEUE_KEY_PREFIX = "supergit:codexApp:queue:";
   const codexSavedSettings = readCodexSettings();
-  let codexModel = codexModelOverride ?? codexSavedSettings.model ?? "";
+  $: codexDetectedModel =
+    agent === "codex" ? codexLiveDetectedModel || model || "" : "";
+  let codexModel = resolveCodexSessionModel({
+    overrideModel: codexModelOverride,
+    detectedModel: model,
+    savedModel: codexSavedSettings.model,
+  });
   let codexSandbox = codexSavedSettings.sandbox ?? "workspaceWrite";
   let codexApproval = codexSavedSettings.approval ?? "on-request";
   let codexEffort = codexEffortOverride ?? codexSavedSettings.effort ?? "";
@@ -2371,6 +2393,22 @@
   let codexSummary = codexSavedSettings.summary ?? "auto";
   const codexSeenEvents = new Set<string>();
   const codexUnhandledEventMethods = new Set<string>();
+
+  $: {
+    const key = JSON.stringify([
+      codexModelOverride,
+      codexDetectedModel,
+      codexSavedSettings.model,
+    ]);
+    if (key !== codexModelResolutionKey) {
+      codexModelResolutionKey = key;
+      codexModel = resolveCodexSessionModel({
+        overrideModel: codexModelOverride,
+        detectedModel: codexDetectedModel,
+        savedModel: codexSavedSettings.model,
+      });
+    }
+  }
 
   $: liveCodexApp = agent === "codex" && isLiveCodexAppSource(source);
   $: codexVisualAppSurface =
@@ -2442,6 +2480,7 @@
       hasSession: !!session,
       loadedHistoryKey: codexAppHistoryLoadedKey,
       loadingHistoryKey: codexAppHistoryLoadingKey,
+      failedHistoryKey: codexAppHistoryFailedKey,
     })
   ) {
     const key = codexAppHistoryKey(effectiveSessionId, effectiveSessionCwd);
@@ -2589,7 +2628,7 @@
 
   $: codexSettings = codexAgentSettings({
     models: codexModels,
-    detectedModel: model,
+    detectedModel: codexDetectedModel,
     currentModel: codexModel,
     modelsLoading: codexModelsLoading,
     modelsError: codexModelsError,
