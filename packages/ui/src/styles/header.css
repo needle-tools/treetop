@@ -211,6 +211,62 @@ main > header {
   padding: 0.3em 0.35em;
   min-width: 1rem;
 }
+.menubar .voice-btn.active {
+  background: color-mix(in srgb, var(--needle-green) 18%, transparent);
+  color: var(--needle-green);
+}
+.menubar .voice-btn.error {
+  color: var(--status-danger, #ef4444);
+}
+.voice-live-dot {
+  width: 0.42rem;
+  height: 0.42rem;
+  border-radius: 50%;
+  background: currentColor;
+  box-shadow: 0 0 0 0 color-mix(in srgb, currentColor 40%, transparent);
+  animation: voice-live-pulse 1.6s ease-out infinite;
+}
+@keyframes voice-live-pulse {
+  70%,
+  100% {
+    box-shadow: 0 0 0 0.3rem transparent;
+  }
+}
+.voice-status {
+  position: absolute;
+  top: calc(100% + 0.48rem);
+  left: 50%;
+  transform: translateX(-50%);
+  width: min(18rem, 70vw);
+  padding: 0.55rem 0.7rem;
+  display: grid;
+  gap: 0.18rem;
+  border: 1px solid var(--border-muted);
+  border-radius: var(--radius-md);
+  background: var(--surface-2);
+  box-shadow: 0 8px 22px var(--shadow-md);
+  color: var(--text-2);
+  font-size: 0.72rem;
+  line-height: 1.35;
+}
+.voice-status strong {
+  color: var(--text-1);
+}
+.voice-status span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.voice-status.error {
+  border-color: color-mix(
+    in srgb,
+    var(--status-danger, #ef4444) 45%,
+    var(--border-muted)
+  );
+}
+.voice-status.error strong {
+  color: var(--status-danger, #ef4444);
+}
 .actions-btn {
   padding: 0.4rem 0.75rem;
   background: var(--surface-2);

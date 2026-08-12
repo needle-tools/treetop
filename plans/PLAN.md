@@ -1138,3 +1138,24 @@ that was at `:42` when the anchor was created.
 half a week of UX prototyping, easy to scope-creep. Don't ship the
 overlay until the foldout surface has been used enough to know what
 notes are really for.
+
+### Experimental global voice mode
+
+The first hands-on slice is intentionally app-global rather than attached to a
+session column. The menubar owns the toggle and browser microphone/WebRTC
+lifecycle. The daemon reuses its existing authenticated Codex App Server
+process, creates an ephemeral voice thread, and opts into experimental
+realtime methods through the already-required `experimentalApi` capability.
+
+Voice context is derived live from the dashboard's existing `repos`, rendered
+rows, session dock, active-worktree, last-focused-session, and Zen state. The
+ephemeral thread exposes only context/navigation tools: read Treetop context,
+focus a project, focus a session, and toggle Zen mode. It must not become a
+second state store or silently acquire shell/file mutation powers.
+
+The installed App Server schema is the compatibility boundary. WebRTC starts
+explicitly request realtime protocol `v3`; leaving the version unspecified can
+select a non-WebRTC-compatible backend and return `Voice session access denied`
+even when voice access works. Unavailable experimental methods or versions
+surface as a concise UI error. No API key or separate OpenAI auth path is
+introduced.

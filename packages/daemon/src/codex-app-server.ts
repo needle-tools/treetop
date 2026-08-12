@@ -117,9 +117,101 @@ export interface CodexThreadReadResult {
   backwardsCursor?: string | null;
 }
 
+export interface CodexRealtimeVoiceStart {
+  threadId: string;
+  sdp: string;
+}
+
+export const TREETOP_REALTIME_VOICE = "sol";
+
+const TREETOP_VOICE_INSTRUCTIONS =
+  "You are Treetop's global voice assistant. Keep spoken responses concise. " +
+  "Use get_treetop_context whenever the current project, session, notes, or Zen mode matters. " +
+  "Only focus projects or sessions and change Zen mode when the user asks. " +
+  "You may create notes and stickers when the user asks or when preserving useful context helps. " +
+  "Do not run shell commands or edit files from voice mode. " +
+  "Never claim a Treetop UI action succeeded unless its tool response says it did.";
+
+const TREETOP_VOICE_TOOLS: JsonObject[] = [
+  {
+    type: "function",
+    name: "get_treetop_context",
+    description:
+      "Read the current Treetop UI context, including active project, active/latest session, Zen mode, projects, open sessions, and recent notes.",
+    inputSchema: { type: "object", properties: {}, additionalProperties: false },
+  },
+  {
+    type: "function",
+    name: "focus_treetop_project",
+    description: "Bring an existing Treetop project into view.",
+    inputSchema: {
+      type: "object",
+      properties: { repoId: { type: "string" } },
+      required: ["repoId"],
+      additionalProperties: false,
+    },
+  },
+  {
+    type: "function",
+    name: "focus_treetop_session",
+    description: "Bring an existing Treetop session column into view.",
+    inputSchema: {
+      type: "object",
+      properties: { source: { type: "string" } },
+      required: ["source"],
+      additionalProperties: false,
+    },
+  },
+  {
+    type: "function",
+    name: "set_treetop_zen_mode",
+    description:
+      "Turn Treetop Zen mode on or off, optionally focusing a specific project when enabling it.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        enabled: { type: "boolean" },
+        repoId: { type: "string" },
+      },
+      required: ["enabled"],
+      additionalProperties: false,
+    },
+  },
+  {
+    type: "function",
+    name: "create_treetop_note",
+    description:
+      "Create a markdown note in Treetop. When anchors are omitted, Treetop pins it to the active worktree or project.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        body: { type: "string" },
+        anchors: { type: "array", items: { type: "string" } },
+      },
+      required: ["body"],
+      additionalProperties: false,
+    },
+  },
+  {
+    type: "function",
+    name: "create_treetop_sticker",
+    description:
+      "Create a Treetop sticker note. Use a visible emoji, app-icon token, or sticker token as body.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        body: { type: "string" },
+        anchor: { type: "string" },
+      },
+      required: ["body"],
+      additionalProperties: false,
+    },
+  },
+];
+
 function defaultSpawn(cwd: string): CodexAppServerProcess {
   const proc = Bun.spawn({
-    cmd: [resolveCodexBinary(), "app-server"],
+    cmd: codexAppServerCommand(),
     cwd,
     stdin: "pipe",
     stdout: "pipe",
@@ -133,6 +225,49 @@ function defaultSpawn(cwd: string): CodexAppServerProcess {
     kill: (signal?: string) =>
       proc.kill(signal as Parameters<typeof proc.kill>[0]),
   };
+}
+
+export function codexAppServerCommand(binary = resolveCodexBinary()): string[] {
+  return [binary, "app-server", "--enable", "realtime_conversation"];
+}
+
+export function classifyRealtimeVoiceError(
+  message: string,
+): { status: 403 | 501; error: string } | null {
+  if (
+    /method not found|experimentalApi|realtime.*(?:unsupported|not available)|does not support realtime conversation/i.test(
+      message,
+    )
+  ) {
+    return {
+      status: 501,
+      error: "Voice mode is unavailable in this Codex App Server version.",
+    };
+  }
+  if (/voice session access denied/i.test(message)) {
+    return {
+      status: 403,
+      error: "Codex App Server denied this voice session.",
+    };
+  }
+  return null;
+}
+
+export function realtimeVoiceStartParams(req: {
+  threadId: string;
+  sdp: string;
+  prompt?: string;
+  voice?: string;
+}): JsonObject {
+  return cleanObject({
+    threadId: req.threadId,
+    outputModality: "audio",
+    includeStartupContext: true,
+    prompt: cleanString(req.prompt),
+    version: "v3",
+    voice: cleanString(req.voice) ?? TREETOP_REALTIME_VOICE,
+    transport: { type: "webrtc", sdp: req.sdp },
+  });
 }
 
 export class CodexAppServerAdapter implements NativeAgentAdapter {
@@ -181,6 +316,73 @@ export class CodexAppServerAdapter implements NativeAgentAdapter {
         nestedString(result, ["model"]) ??
         nestedString(result, ["thread", "settings", "model"]),
     };
+  }
+
+  async startRealtimeVoice(req: {
+    cwd: string;
+    sdp: string;
+    prompt?: string;
+    voice?: string;
+  }): Promise<CodexRealtimeVoiceStart> {
+    const rpc = await this.ensureRpc(req.cwd);
+    const thread = await rpc.request("thread/start", {
+      cwd: req.cwd,
+      ephemeral: true,
+      serviceName: "treetop_voice",
+      developerInstructions: TREETOP_VOICE_INSTRUCTIONS,
+      dynamicTools: TREETOP_VOICE_TOOLS,
+    });
+    const threadId = nestedString(thread, ["thread", "id"]);
+    if (!threadId) {
+      throw new Error("codex app-server did not return voice thread.id");
+    }
+    this.loadedThreads.add(threadId);
+
+    let unsubscribe = () => {};
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const answer = new Promise<string>((resolve, reject) => {
+      unsubscribe = this.subscribe(threadId, (event) => {
+        if (event.method === "thread/realtime/sdp") {
+          const sdp = cleanString(event.params.sdp);
+          if (sdp) resolve(sdp);
+        } else if (event.method === "thread/realtime/error") {
+          reject(
+            new Error(
+              cleanString(event.params.message) ??
+                "Codex realtime voice failed to start",
+            ),
+          );
+        }
+      });
+      timer = setTimeout(
+        () => reject(new Error("timed out waiting for realtime SDP answer")),
+        15_000,
+      );
+    });
+
+    try {
+      const [, sdp] = await Promise.all([
+        rpc.request(
+          "thread/realtime/start",
+          realtimeVoiceStartParams({
+            threadId,
+            prompt: cleanString(req.prompt),
+            sdp: req.sdp,
+            voice: cleanString(req.voice),
+          }),
+        ),
+        answer,
+      ]);
+      return { threadId, sdp };
+    } finally {
+      if (timer) clearTimeout(timer);
+      unsubscribe();
+    }
+  }
+
+  async stopRealtimeVoice(threadId: string): Promise<void> {
+    const rpc = await this.ensureRpc(process.cwd());
+    await rpc.request("thread/realtime/stop", { threadId });
   }
 
   sendTurn(req: NativeAgentTurnRequest): NativeAgentRun {
