@@ -83,6 +83,7 @@
   import { randomUUID } from "./random-id";
   import Tooltip from "./Tooltip.svelte";
   import ChangedFilesTooltipBody from "./ChangedFilesTooltipBody.svelte";
+  import CommitFileToolbar from "./CommitFileToolbar.svelte";
   import NewSessionCol from "./NewSessionCol.svelte";
   import FileBrowser from "./FileBrowser.svelte";
   import {
@@ -143,7 +144,14 @@
   import LoadingSpinner from "./LoadingSpinner.svelte";
   import SessionSearchList from "./SessionSearchList.svelte";
   import SessionDock from "./SessionDock.svelte";
+  import WorkspaceSearchController from "./WorkspaceSearchController.svelte";
+  import ProjectSearchMenu from "./ProjectSearchMenu.svelte";
   import { filterSessions } from "./sessionSearch";
+  import { buildProjectSearchItems, type SearchKind } from "./workspace-search";
+  import {
+    isContextFindShortcut,
+    openContextFindForTarget,
+  } from "./context-find";
   import {
     computeStripFilterByWt,
     createStripSearchManager,
@@ -658,6 +666,8 @@
   let eventsOpen = false;
   let daemonsMenuOpen = false;
   let projectsMenuOpen = false;
+  let workspaceSearch: { open: (kinds?: SearchKind[] | null) => void } | null =
+    null;
   /** Hover-intent close timer for the Projects dropdown. A short delay
    *  bridges the 0.4rem gap between the button and the popover so moving
    *  the cursor from one to the other doesn't dismiss it. */
@@ -3156,6 +3166,77 @@
     el.classList.add("wt-row-pulse");
     setTimeout(() => el.classList.remove("wt-row-pulse"), 1200);
   }
+
+  function rowForNoteReveal(
+    noteId: string,
+    fallbackWtPath?: string | null,
+  ): (typeof rows)[number] | null {
+    if (fallbackWtPath) {
+      const row = rows.find((r) => r.wt?.path === fallbackWtPath);
+      if (row) return row;
+    }
+    const note = $notesAll.find((n) => n.id === noteId);
+    for (const anchor of note?.anchors ?? []) {
+      if (anchor.startsWith("worktree:")) {
+        const wtPath = anchor.slice("worktree:".length);
+        const row = rows.find((r) => r.wt?.path === wtPath);
+        if (row) return row;
+      }
+      if (anchor.startsWith("repo:")) {
+        const repoPath = anchor.slice("repo:".length);
+        const row =
+          rows.find((r) => !r.wt && r.repo.path === repoPath) ??
+          rows.find((r) => r.repo.path === repoPath);
+        if (row) return row;
+      }
+    }
+    return null;
+  }
+
+  function rowDomKey(row: (typeof rows)[number]): string {
+    return row.wt ? row.wt.path : `${row.repo.id}|none`;
+  }
+
+  async function revealNote(
+    noteId: string,
+    fallbackWtPath?: string | null,
+  ): Promise<boolean> {
+    const row = rowForNoteReveal(noteId, fallbackWtPath);
+    if (row) {
+      unfoldRowIfFolded(row.key);
+      if (zenRowKey !== null) {
+        zenRowKey = row.key;
+        notesShownInZen = true;
+      } else if (notesHiddenByRow[row.key]) {
+        notesHiddenByRow = { ...notesHiddenByRow, [row.key]: false };
+      }
+      await tick();
+      const rowEl = document.querySelector<HTMLElement>(
+        `[data-wt-row="${CSS.escape(rowDomKey(row))}"]`,
+      );
+      rowEl?.scrollIntoView({ behavior: "smooth", block: "center" });
+    }
+
+    for (let attempt = 0; attempt < 8; attempt++) {
+      await tick();
+      await new Promise<void>((resolve) =>
+        requestAnimationFrame(() => resolve()),
+      );
+      const noteEl = document.querySelector<HTMLElement>(
+        `.sticky[data-note-id="${CSS.escape(noteId)}"]`,
+      );
+      if (!noteEl) continue;
+      noteEl.scrollIntoView({
+        behavior: "smooth",
+        block: "center",
+        inline: "nearest",
+      });
+      noteEl.classList.add("wt-row-pulse");
+      setTimeout(() => noteEl.classList.remove("wt-row-pulse"), 1200);
+      return true;
+    }
+    return false;
+  }
   let newWtBranch: Record<string, string> = {};
   let newWtBusy: Record<string, boolean> = {};
 
@@ -3916,6 +3997,10 @@
     s: OpenSession,
     mode: RevealMode,
   ): void {
+    s = applySessionSurfacePreference(
+      normalizeSessionForOpen(wtPath, s, repos),
+      sessionSurfaces,
+    );
     const plan = planReveal({
       rowFolded: !!rowFolded[rowKey],
       isOpen: isSessionOpenInWt(wtPath, s),
@@ -3951,12 +4036,7 @@
    *  session column is the only path to close it; the badge is a
    *  one-way "show me this" affordance. */
   function revealSession(rowKey: string, wtPath: string, s: OpenSession): void {
-    applyRevealPlan(
-      rowKey,
-      wtPath,
-      normalizeSessionForOpen(wtPath, s, repos),
-      "reveal",
-    );
+    applyRevealPlan(rowKey, wtPath, s, "reveal");
   }
 
   /** Dock click handler. The scroll-and-flash path silently returns
@@ -4065,15 +4145,18 @@
     source: string,
   ): Promise<void> {
     await tick();
-    requestAnimationFrame(() => {
+    for (let attempt = 0; attempt < 8; attempt++) {
+      await new Promise<void>((resolve) =>
+        requestAnimationFrame(() => resolve()),
+      );
       const strip = document.querySelector(
         `[data-wt-strip="${CSS.escape(wtPath)}"]`,
       ) as HTMLElement | null;
-      if (!strip) return;
+      if (!strip) continue;
       const col = strip.querySelector<HTMLElement>(
         `.session-col[data-session-source="${CSS.escape(source)}"]`,
       );
-      if (!col) return;
+      if (!col) continue;
       const stripRect = strip.getBoundingClientRect();
       const colRect = col.getBoundingClientRect();
       const colOffsetInStrip =
@@ -4127,7 +4210,8 @@
       });
       col.classList.add("session-col-flash");
       setTimeout(() => col.classList.remove("session-col-flash"), 2000);
-    });
+      return;
+    }
   }
   /** Park a SessionView's messages list at the bottom, then re-stick
    *  as markdown / code-block renders flow in.
@@ -5059,6 +5143,13 @@
       importQuery = "";
       void openImportSessions();
     }
+  }
+
+  function openImportSessionsFromSearch() {
+    importMenuSource = "inline";
+    importFlipUp = false;
+    importQuery = "";
+    void openImportSessions();
   }
 
   async function addRepoFromSuggestion(path: string) {
@@ -7068,6 +7159,7 @@
       awaiting,
     };
   });
+  $: projectSearchItems = buildProjectSearchItems(repos);
 
   /** Per-repo push/pull/dirty status for the dock's arrow indicators.
    *  Aggregates across all worktrees in each repo. Only repos with
@@ -7735,6 +7827,7 @@
     // fullscreen-exit-on-Esc still works independently because the API
     // fires Esc against fullscreen before document keydown ever sees it.
     const handleKey = (e: KeyboardEvent) => {
+      const mod = e.metaKey || e.ctrlKey;
       if (e.key === "Escape" && zenRowKey && !document.fullscreenElement) {
         const el = document.activeElement as HTMLElement | null;
         const inInput =
@@ -7749,13 +7842,18 @@
         resetZenMenu();
         if (wtPath) tick().then(() => jumpToWorktreeRow(wtPath));
       }
+      if (isContextFindShortcut(e)) {
+        e.preventDefault();
+        e.stopPropagation();
+        openContextFindForTarget(e.target);
+        return;
+      }
       // Cmd/Ctrl+Z → undo the most recent reversible workspace event;
       // Cmd/Ctrl+Shift+Z (or Cmd/Ctrl+Y) → redo. Skipped when an input
       // / textarea / contentEditable is focused so the user's local
       // text-undo still works while editing a sticky note or a form.
       // `e.code === "KeyZ"` instead of `e.key` so non-QWERTY layouts
       // and Caps-Lock states still trigger reliably.
-      const mod = e.metaKey || e.ctrlKey;
       const isUndo = mod && !e.altKey && !e.shiftKey && e.code === "KeyZ";
       const isRedo =
         (mod && !e.altKey && e.shiftKey && e.code === "KeyZ") ||
@@ -8109,99 +8207,42 @@
           Projects<span class="count">{repos.length}</span>
         </button>
         {#if projectsMenuOpen}
-          <Popover variant="actions" extraClass="projects-popover" unclamped>
-            <svelte:fragment slot="head"><span>Projects</span></svelte:fragment>
-            {#if repos.length === 0}
-              <p class="muted small nopad">No projects yet.</p>
-            {/if}
-            <ul class="projects-list">
-              {#if repos.length > 0}
-                {#each projectMenuEntries as project (daemonRepoKey(project.repo))}
-                  <li>
-                    <button
-                      class="projects-row"
-                      class:has-live={project.liveCount > 0}
-                      class:is-working={project.working}
-                      class:is-awaiting={project.awaiting}
-                      on:click={() => {
-                        projectsMenuOpen = false;
-                        void focusRepoRow(project.repo.id);
-                      }}
-                      title={project.latestActivity
-                        ? `${project.repo.name}\nLast active ${relTime(project.latestActivity)}`
-                        : project.repo.name}
-                    >
-                      <span
-                        class="projects-dot"
-                        style:--project-color={project.repo.color ||
-                          "var(--text-muted)"}
-                      >
-                        <span class="projects-dot-core"></span>
-                        <svg
-                          class="projects-dot-spinner"
-                          viewBox="0 0 24 24"
-                          aria-hidden="true"
-                        >
-                          <circle cx="12" cy="12" r="9.5" pathLength="100" />
-                        </svg>
-                      </span>
-                      <span class="projects-name">{project.repo.name}</span>
-                      {#if project.latestActivity}
-                        <span class="projects-time">
-                          {relTime(project.latestActivity)}
-                        </span>
-                      {/if}
-                    </button>
-                  </li>
-                {/each}
-              {/if}
-              <li class="projects-virtual-item">
-                <button
-                  class="projects-row projects-add-folder-row"
-                  on:click={() => {
-                    projectsMenuOpen = false;
-                    void pickAndAdd();
-                  }}
-                >
-                  <span class="projects-plus" aria-hidden="true">+</span>
-                  <span class="projects-name">Add Folder</span>
-                </button>
-              </li>
-              <li class="projects-import-item">
-                <button
-                  class="projects-row projects-add-folder-row"
-                  on:click|stopPropagation={(e) => {
-                    projectsMenuOpen = false;
-                    toggleImportSessions(e, "projects");
-                  }}
-                  aria-haspopup="menu"
-                  aria-expanded={importSessionsOpen &&
-                    importMenuSource === "projects"}
-                >
-                  <span class="projects-plus" aria-hidden="true">
-                    <svg
-                      width="11"
-                      height="11"
-                      viewBox="0 0 24 24"
-                      fill="none"
-                      stroke="currentColor"
-                      stroke-width="2"
-                      stroke-linecap="round"
-                      stroke-linejoin="round"
-                      aria-hidden="true"
-                    >
-                      <path d="M12 3v12" />
-                      <path d="M7 10l5 5 5-5" />
-                      <path d="M5 21h14" />
-                    </svg>
-                  </span>
-                  <span class="projects-name">Open from sessions</span>
-                </button>
-              </li>
-            </ul>
-          </Popover>
+          <ProjectSearchMenu
+            {repos}
+            {projectMenuEntries}
+            {projectSearchItems}
+            {importSessionsOpen}
+            {importMenuSource}
+            on:focusRepo={(e) => {
+              projectsMenuOpen = false;
+              void focusRepoRow(e.detail.repoId);
+            }}
+            on:addFolder={() => {
+              projectsMenuOpen = false;
+              void pickAndAdd();
+            }}
+            on:openFromSessions={(e) => {
+              projectsMenuOpen = false;
+              toggleImportSessions(e.detail, "projects");
+            }}
+          />
         {/if}
       </div>
+
+      <WorkspaceSearchController
+        bind:this={workspaceSearch}
+        {repos}
+        sessionsByWorktree={pickerSessionsByWt}
+        {rows}
+        bind:visibleWorktreesByRepo
+        {focusRepoRow}
+        {jumpToWorktreeRow}
+        {revealSession}
+        {revealNote}
+        addFolder={() => void pickAndAdd()}
+        openFromSessions={openImportSessionsFromSearch}
+        on:open={() => (projectsMenuOpen = false)}
+      />
 
       <!-- "Open from sessions" popover. A menubar-level sibling of the
          Projects dropdown — deliberately NOT nested inside it. Two
@@ -9425,6 +9466,14 @@
                                 <span class="wt-tt-subject" title={c.subject}
                                   >{clampSubject(c.subject)}</span
                                 >
+                                <CommitFileToolbar
+                                  worktreePath={wt.path}
+                                  sha={c.sha}
+                                  daemonId={daemonIdForWorktreePath(
+                                    repos,
+                                    wt.path,
+                                  )}
+                                />
                               {/each}
                             </div>
                             {#if s.unpushedCommits.length > COMMIT_TOOLTIP_LIMIT}
@@ -9476,6 +9525,14 @@
                                 <span class="wt-tt-subject" title={c.subject}
                                   >{clampSubject(c.subject)}</span
                                 >
+                                <CommitFileToolbar
+                                  worktreePath={wt.path}
+                                  sha={c.sha}
+                                  daemonId={daemonIdForWorktreePath(
+                                    repos,
+                                    wt.path,
+                                  )}
+                                />
                               {/each}
                             </div>
                             {#if s.unfetchedCommits.length > COMMIT_TOOLTIP_LIMIT}
@@ -10089,7 +10146,15 @@
                     aria-label="agent activity"
                   ></span>
                 {/if}
-                <code class="wt-path">{wt.path}</code>
+                <code
+                  class="wt-path"
+                  data-supergit-session-cwd={wt.path}
+                  data-supergit-daemon-id={daemonIdForWorktreePath(
+                    repos,
+                    wt.path,
+                  )}
+                  data-supergit-file-href={wt.path}>{wt.path}</code
+                >
               {:else if repo.pending || !Array.isArray(repo.worktrees)}
                 <!-- Skeleton from the manifest — its git fan-out hasn't
                    streamed in yet (repo.pending is set; both a skeleton and
@@ -10101,7 +10166,15 @@
                   loading {repoName(repo)}
                 </span>
               {:else}
-                <code class="wt-path">{repo.path}</code>
+                <code
+                  class="wt-path"
+                  data-supergit-session-cwd={repo.path}
+                  data-supergit-daemon-id={daemonIdForWorktreePath(
+                    repos,
+                    repo.path,
+                  )}
+                  data-supergit-file-href={repo.path}>{repo.path}</code
+                >
                 <span class="branch warn">no worktrees</span>
               {/if}
 
@@ -11890,6 +11963,7 @@
   loadWtSummary={(path) => void loadWtSummary(path)}
   zen={zenRowKey !== null}
   on:pick={(e) => void onDockPick(e.detail)}
+  on:search={() => workspaceSearch?.open()}
   on:scrollToRepo={(e) => {
     // In zen, switch zen to this repo instead of scrolling the page.
     if (switchZenToRepo(e.detail.repoId)) return;

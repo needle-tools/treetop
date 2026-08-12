@@ -38,9 +38,11 @@ import {
   mainWorktreePathFor,
   getWorktreeDetails,
   listCommits,
+  listCommitFiles,
   getDiff,
   getFileDiff,
   getCommitDiff,
+  getCommitFileDiff,
   fetchAll,
   createWorktree,
   removeWorktree,
@@ -3825,6 +3827,41 @@ const server = Bun.serve<TermWsData, never>({
           }),
         );
         return json({ repos: body });
+      }
+
+      if (url.pathname === "/api/readmes" && req.method === "GET") {
+        const readmeNames = [
+          "README.md",
+          "README.markdown",
+          "README.mdown",
+          "README.txt",
+          "README",
+        ];
+        const maxChars = 80_000;
+        const repos = await workspace.listRepos();
+        const readmes = (
+          await Promise.all(
+            repos.map(async (repo) => {
+              for (const name of readmeNames) {
+                const path = join(repo.path, name);
+                const st = await fsStat(path).catch(() => null);
+                if (!st?.isFile()) continue;
+                const text = await readFile(path, "utf8").catch(() => "");
+                if (!text) return null;
+                return {
+                  id: repo.id,
+                  repoId: repo.id,
+                  repoName: repo.name,
+                  path,
+                  text: text.slice(0, maxChars),
+                  updatedAt: st.mtime.toISOString(),
+                };
+              }
+              return null;
+            }),
+          )
+        ).filter(Boolean);
+        return json({ readmes });
       }
 
       if (url.pathname === "/api/agents" && req.method === "GET") {
@@ -8322,6 +8359,42 @@ const server = Bun.serve<TermWsData, never>({
           );
         }
         const content = await getCommitDiff(path, sha, context);
+        return new Response(content, {
+          headers: {
+            "Content-Type": "text/plain; charset=utf-8",
+            ...CORS,
+          },
+        });
+      }
+
+      if (url.pathname === "/api/commit-files" && req.method === "GET") {
+        const path = url.searchParams.get("path");
+        const sha = url.searchParams.get("sha");
+        if (!path || !sha) {
+          return json(
+            { error: "?path=<worktree-path>&sha=<commit-sha> required" },
+            { status: 400 },
+          );
+        }
+        return json(await listCommitFiles(path, sha));
+      }
+
+      if (url.pathname === "/api/commit-file-diff" && req.method === "GET") {
+        const path = url.searchParams.get("path");
+        const sha = url.searchParams.get("sha");
+        const file = url.searchParams.get("file");
+        const ctxParam = url.searchParams.get("context");
+        const context = ctxParam ? Number(ctxParam) : 0;
+        if (!path || !sha || !file) {
+          return json(
+            {
+              error:
+                "?path=<worktree-path>&sha=<commit-sha>&file=<file> required",
+            },
+            { status: 400 },
+          );
+        }
+        const content = await getCommitFileDiff(path, sha, file, context);
         return new Response(content, {
           headers: {
             "Content-Type": "text/plain; charset=utf-8",

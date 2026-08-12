@@ -8,6 +8,7 @@ import {
   fallbackEditorForFailedFileManagerOpen,
   findWorkspaceFile,
   isUrlLike,
+  macFileManagerOpenCommand,
   resetDetectEditorsCache,
   windowsOpenCommand,
   windowsOpensWithNotepad,
@@ -152,6 +153,26 @@ describe("windowsOpenCommand", () => {
     // treat a quoted spaced path as a window title and open a blank shell.
     expect(cmd[3]).toBe("");
     expect(cmd[4]).toBe("C:\\Program Files\\app\\config.json");
+  });
+});
+
+describe("macFileManagerOpenCommand", () => {
+  test("reveals files in Finder", () => {
+    expect(
+      macFileManagerOpenCommand({
+        path: "/repo/src/App.svelte",
+        isDirectory: false,
+      }),
+    ).toEqual(["open", "-R", "/repo/src/App.svelte"]);
+  });
+
+  test("opens directories in Finder", () => {
+    expect(
+      macFileManagerOpenCommand({
+        path: "/repo/src",
+        isDirectory: true,
+      }),
+    ).toEqual(["open", "/repo/src"]);
   });
 });
 

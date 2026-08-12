@@ -129,6 +129,7 @@
 <script lang="ts">
   import { onMount, onDestroy, afterUpdate, tick as svelteTick } from "svelte";
   import { apiUrl } from "./api";
+  import ContextFindScope from "./ContextFindScope.svelte";
   import { daemonIdForWorktreePath, daemonIdForRepoId } from "./repo-fanout";
   import StickyNote, {
     type NoteShape as NoteShapeBase,
@@ -2893,9 +2894,10 @@
   }
 
   afterUpdate(() => {
-    if (!rowMarginsDirty) return;
-    rowMarginsDirty = false;
-    applyRowMargins();
+    if (rowMarginsDirty) {
+      rowMarginsDirty = false;
+      applyRowMargins();
+    }
   });
 
   /** Pending fly-restore registrations keyed by note id. App.svelte
@@ -2995,7 +2997,16 @@
   });
 </script>
 
-<div class="sticky-layer" aria-hidden={notes.length === 0} bind:this={layerEl}>
+<div
+  class="sticky-layer"
+  aria-hidden={notes.length === 0}
+  bind:this={layerEl}
+>
+  <ContextFindScope
+    root={layerEl}
+    kind="notes"
+    placeholder="Find in notes..."
+  />
   {#each notes as note (note.id)}
     {@const pos = positionsByNoteId[note.id]}
     {@const stickyEditing = editingId === note.id}

@@ -17,6 +17,7 @@
   import { createEventDispatcher, onDestroy, onMount, tick } from "svelte";
   import ChatPreview from "./ChatPreview.svelte";
   import DirtyGlyph from "./DirtyGlyph.svelte";
+  import SearchIconButton from "./SearchIconButton.svelte";
   import RepoStatusPreview, {
     type DockWorktreeStatus,
   } from "./RepoStatusPreview.svelte";
@@ -150,6 +151,7 @@
   const dispatch = createEventDispatcher<{
     pick: DockEntry;
     scrollToRepo: { repoId: string };
+    search: void;
   }>();
 
   /** User's persistent toggle preference (survives zen enter/exit). */
@@ -306,14 +308,12 @@
     previewResizeObs = null;
   }
 
-  /** Measure the bounding box of all dock dots + toggle and size
+  /** Measure the bounding box of all dock dots + tools and size
    *  the backdrop element to cover exactly that area — one continuous
    *  surface behind the dot column, no per-row gaps. */
   function updateBackdrop(): void {
     if (!backdropEl || !dockEl) return;
-    const dots = dockEl.querySelectorAll<HTMLElement>(
-      ".dock-dot, .dock-toggle",
-    );
+    const dots = dockEl.querySelectorAll<HTMLElement>(".dock-dot, .dock-tools");
     if (!shouldMeasureDockBackdrop(showLabels, dots.length)) {
       backdropEl.style.display = "none";
       return;
@@ -1045,21 +1045,32 @@
         </button>
       {/each}
 
-      <button
-        bind:this={toggleEl}
-        class="dock-toggle"
-        type="button"
-        title={showInactive
-          ? "Hide inactive sessions"
-          : "Show inactive sessions"}
-        aria-label={showInactive
-          ? "Hide inactive sessions"
-          : "Show inactive sessions"}
-        on:click|stopPropagation={toggleInactive}
-        on:mousedown|stopPropagation
-      >
-        <span class="dock-toggle-inner" class:filtering={!showInactive}></span>
-      </button>
+      <div class="dock-tools">
+        <button
+          bind:this={toggleEl}
+          class="dock-toggle"
+          type="button"
+          title={showInactive
+            ? "Hide inactive sessions"
+            : "Show inactive sessions"}
+          aria-label={showInactive
+            ? "Hide inactive sessions"
+            : "Show inactive sessions"}
+          on:click|stopPropagation={toggleInactive}
+          on:mousedown|stopPropagation
+        >
+          <span class="dock-toggle-inner" class:filtering={!showInactive}
+          ></span>
+        </button>
+        <SearchIconButton
+          title="Search workspace"
+          ariaLabel="Search workspace"
+          on:click={(e) => {
+            e.stopPropagation();
+            dispatch("search");
+          }}
+          />
+        </div>
 
       {#each split.bottom as e, i (e.source)}
         {#if (i === 0 || split.bottom[i - 1].repoId !== e.repoId) && arrowRowHasGlyph(repoStatusMap.get(e.repoId))}
@@ -1560,6 +1571,44 @@
   }
   .dock-toggle:hover .dock-toggle-inner {
     border-color: var(--text-1, #e8e8e8);
+  }
+  .dock-tools {
+    position: sticky;
+    bottom: 0;
+    z-index: 3;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.05rem;
+    padding: 0.12rem 0;
+    background: transparent;
+  }
+  :global(.dock-tools .search-icon-button) {
+    width: 29px;
+    height: 24px;
+    padding: 0.2rem 8px;
+    justify-content: flex-start;
+    border: 0;
+    background: transparent;
+    color: var(--text-muted, #9a9aa0);
+    opacity: 0;
+    pointer-events: none;
+    transition:
+      color 160ms ease,
+      opacity 140ms ease;
+  }
+  .session-dock.show-labels :global(.dock-tools .search-icon-button),
+  :global(.dock-tools .search-icon-button:focus-visible) {
+    opacity: 1;
+    pointer-events: auto;
+  }
+  :global(.dock-tools .search-icon-button:hover),
+  :global(.dock-tools .search-icon-button:focus-visible) {
+    background: transparent;
+    color: var(--text-1, #e8e8e8);
+  }
+  :global(.dock-tools .search-icon-button svg) {
+    width: 13px;
+    height: 13px;
   }
 
   /* Push/pull arrow rows per repo group. Rendered as dock-dot-shaped

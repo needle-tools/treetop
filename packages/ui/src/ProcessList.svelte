@@ -2,9 +2,11 @@
   import { apiUrl } from "./api";
   import { onMount, onDestroy, createEventDispatcher } from "svelte";
   import Popover from "./Popover.svelte";
+  import PopoverSearchField from "./PopoverSearchField.svelte";
   import { repoChipFg } from "./repo-color";
   import { ICONS } from "./icons";
   import { repoDaemonStatus, type DaemonStatus } from "./repo-fanout";
+  import { searchItems, type SearchItem } from "./workspace-search";
   import {
     processStore,
     recordSamples,
@@ -43,7 +45,7 @@
     summary: string;
   }
 
-  export interface TuiProc {
+  interface TuiProc {
     id: string;
     pid: number;
     agent?: string;
@@ -99,6 +101,8 @@
   let closing: Record<string, boolean> = {};
   let pendingKill: Record<string, boolean> = {};
   let showExternal = true;
+  let procSearchOpen = false;
+  let procSearchQuery = "";
 
   // Processes within a repo are auto-sorted by usage (CPU avg, then mem).
   // While the cursor is over a repo's list we freeze that group's order
@@ -150,8 +154,7 @@
     hotDebug ||
     procs.some(
       (p) =>
-        p.memBytes > hotMemBytes ||
-        cpuOf(p, avgCpuById) > TUI_HOT_CPU_PERCENT,
+        p.memBytes > hotMemBytes || cpuOf(p, avgCpuById) > TUI_HOT_CPU_PERCENT,
     );
   $: isWarm =
     !isHot &&
@@ -165,7 +168,49 @@
   $: visibleProcs = showExternal
     ? procs
     : procs.filter((p) => p.kind !== "external");
-  $: grouped = groupByRepo(visibleProcs, avgCpuById, daemonsOnline);
+  $: procSearchItems = visibleProcs.map((p): SearchItem => {
+    const ctx = procContext(p);
+    const cpu = cpuOf(p, avgCpuById);
+    const title =
+      p.kind === "external" ? (p.comm ?? p.cmd[0] ?? "process") : prettyName(p);
+    return {
+      id: `proc:${p.id}`,
+      kind: "proc",
+      title,
+      subtitle: ctx.title ?? p.cmd.join(" "),
+      meta: `${formatPercent(cpu)} · ${formatBytes(p.memBytes)}`,
+      text: [
+        p.cmd.join(" "),
+        p.cwd,
+        ctx.repoName ?? "",
+        ctx.relCwd ?? "",
+        ctx.lastActivity ?? "",
+      ].join(" "),
+      path: p.cwd,
+      timestamp: p.lastOutputAt ?? p.createdAt,
+      data: p,
+    };
+  });
+  $: procSearchResultIds =
+    procSearchOpen && procSearchQuery.trim()
+      ? new Set(
+          searchItems(procSearchItems, procSearchQuery, {
+            kinds: new Set(["proc"]),
+          }).map((result) => {
+            const data = result.item.data as TuiProc | undefined;
+            return data?.id ?? result.item.id.replace(/^proc:/, "");
+          }),
+        )
+      : null;
+  $: filteredVisibleProcs = procSearchResultIds
+    ? visibleProcs.filter((p) => procSearchResultIds?.has(p.id))
+    : visibleProcs;
+  $: grouped = groupByRepo(
+    filteredVisibleProcs,
+    avgCpuById,
+    daemonsOnline,
+    !procSearchResultIds,
+  );
 
   // Apply the per-group sort: hovered group keeps its frozen order;
   // every other group sorts live by usage. Depends on grouped,
@@ -215,6 +260,7 @@
     list: TuiProc[],
     avg: Map<string, number>,
     online: Map<string, boolean>,
+    includeEmptyRepos = true,
   ): RepoGroup[] {
     const map = new Map<string, RepoGroup>();
     for (const p of list) {
@@ -236,18 +282,20 @@
       group.totalMem += p.memBytes;
       group.procs.push({ ...p, ctx });
     }
-    for (const repo of repos) {
-      const name =
-        repo.name ?? repo.path.split("/").filter(Boolean).pop() ?? repo.path;
-      if (!map.has(name)) {
-        map.set(name, {
-          repoName: name,
-          repoColor: repo.color ?? null,
-          totalCpu: 0,
-          totalMem: 0,
-          procs: [],
-          daemonStatus: "local",
-        });
+    if (includeEmptyRepos) {
+      for (const repo of repos) {
+        const name =
+          repo.name ?? repo.path.split("/").filter(Boolean).pop() ?? repo.path;
+        if (!map.has(name)) {
+          map.set(name, {
+            repoName: name,
+            repoColor: repo.color ?? null,
+            totalCpu: 0,
+            totalMem: 0,
+            procs: [],
+            daemonStatus: "local",
+          });
+        }
       }
     }
     // Tag groups with their owning daemon's reachability (the process
@@ -351,9 +399,12 @@
   }
   async function sendTerm(p: TuiProc) {
     if (p.kind !== "external") {
-      await fetch(apiUrl(`/api/terminals/${encodeURIComponent(p.id)}`, p.daemonId), {
-        method: "DELETE",
-      }).catch(() => {});
+      await fetch(
+        apiUrl(`/api/terminals/${encodeURIComponent(p.id)}`, p.daemonId),
+        {
+          method: "DELETE",
+        },
+      ).catch(() => {});
     } else {
       await fetch(apiUrl(`/api/processes/${p.pid}/kill`), {
         method: "POST",
@@ -547,6 +598,13 @@
             title="refreshing"
           ></span>
           <span class="proc-head-spacer"></span>
+          <PopoverSearchField
+            bind:open={procSearchOpen}
+            bind:value={procSearchQuery}
+            title="Search processes"
+            ariaLabel="Search processes"
+            placeholder="Search processes..."
+          />
           <label
             class="proc-toggle"
             title="Show processes discovered in repo directories (not spawned by supergit)"
@@ -567,6 +625,9 @@
              correct and an ARIA role would be misleading. -->
         <!-- svelte-ignore a11y_no_static_element_interactions -->
         <div class="proc-groups" on:mouseleave={clearFreeze}>
+          {#if filteredVisibleProcs.length === 0}
+            <p class="muted small nopad">No processes match.</p>
+          {/if}
           {#each displayGroups as group (group.repoName)}
             <div class="proc-group">
               <button
@@ -651,11 +712,9 @@
                         p.kind !== "external" ? procSource(p) : null}
                       {@const isExternal = p.kind === "external"}
                       {@const procWarm =
-                        p.memBytes > warmMemBytes ||
-                        cpu > TUI_WARM_CPU_PERCENT}
+                        p.memBytes > warmMemBytes || cpu > TUI_WARM_CPU_PERCENT}
                       {@const procHot =
-                        p.memBytes > hotMemBytes ||
-                        cpu > TUI_HOT_CPU_PERCENT}
+                        p.memBytes > hotMemBytes || cpu > TUI_HOT_CPU_PERCENT}
                       <li>
                         <div
                           class="agent-row tui-row-static"
@@ -739,12 +798,12 @@
                               CPU_AVG_WINDOW_MS / 1000,
                             )}s (now ${formatPercent(
                               p.cpuPercent,
-                            )})\n${p.cmd.join(" ")}`}
-                            >{formatPercent(cpu)}</span
+                            )})\n${p.cmd.join(" ")}`}>{formatPercent(cpu)}</span
                           >
                           <span
                             class="tui-stat tui-mem"
-                            class:tui-stat-muted={systemMemBytes !== null && p.memBytes < systemMemBytes * 0.02}
+                            class:tui-stat-muted={systemMemBytes !== null &&
+                              p.memBytes < systemMemBytes * 0.02}
                             >{formatBytes(p.memBytes)}</span
                           >
                           {#if p.createdAt}

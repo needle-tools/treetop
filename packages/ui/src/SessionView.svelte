@@ -43,6 +43,7 @@
   import LoadingSpinner from "./LoadingSpinner.svelte";
   import { type SessionMenuItem } from "./SessionMenu.svelte";
   import SessionHeader from "./SessionHeader.svelte";
+  import ContextFindScope from "./ContextFindScope.svelte";
   import { saveSessionAsLink } from "./save-session-as-link";
   import {
     claudeModelAlias,
@@ -408,6 +409,7 @@
    *  from) before flying into the row's pin slot. */
   let sessionEl: HTMLDivElement | null = null;
   let messagesEl: HTMLElement | null = null;
+  let sessionFindScope: { openFind: () => void } | null = null;
   /** True while the cursor sits in the session column's top-right
    *  hotspot. Drives the pinned summary / last-message reveal: at
    *  rest the pin is hidden; the small corner target keeps ordinary
@@ -1689,6 +1691,14 @@
     // Let the browser clamp to the real end; reading scrollHeight here forces
     // layout across large transcript columns during startup.
     el.scrollTop = 1_000_000_000;
+  }
+
+  function openSessionFind(): void {
+    sessionFindScope?.openFind();
+  }
+
+  function sessionFindRoot(): HTMLElement | null {
+    return messagesEl ?? sessionEl;
   }
 
   function liveWorkBodiesAreFollowing(): boolean {
@@ -5055,6 +5065,7 @@
         ? stopCodexVisualAppSession
         : disposeTerminal}
       onCancelInflight={cancelAllInflight}
+      onFind={openSessionFind}
       {onClose}
       {onDragStart}
       resumeTitle={resumeTitleForAgent()}
@@ -5066,6 +5077,12 @@
       endSessionLabel={mode === "read" && codexVisualAppSurface
         ? "Stop"
         : undefined}
+    />
+    <ContextFindScope
+      bind:this={sessionFindScope}
+      root={sessionFindRoot()}
+      kind="session"
+      placeholder="Find in session..."
     />
     {#if mode === "terminal" && ((session && session.messages.length > 0) || (lastUserMessage && lastUserMessage.trim().length > 0))}
       <div
