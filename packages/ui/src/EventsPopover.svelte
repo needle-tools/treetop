@@ -1,10 +1,12 @@
 <script lang="ts">
   import { createEventDispatcher, onDestroy } from "svelte";
   import Popover from "./Popover.svelte";
+  import PopoverSearchField from "./PopoverSearchField.svelte";
   import { apiUrl } from "./api";
   import { errorKindLabel, eventToText } from "./event-format";
   import { relTime } from "./display-helpers";
   import type { FrontendErrorEntry } from "./errors";
+  import { searchItems, type SearchItem } from "./workspace-search";
   export let errorEntries: FrontendErrorEntry[];
   const dispatch = createEventDispatcher();
   type EventsTab = "log" | "perf";
@@ -50,6 +52,8 @@
     detail?: string;
   };
   let activeTab: EventsTab = "log";
+  let eventSearchOpen = false;
+  let eventSearchQuery = "";
   /** id -> true when the user has expanded its stack trace inline. */
   let errorExpanded: Record<string, boolean> = {};
   function toggleErrorExpanded(id: string) {
@@ -122,6 +126,34 @@
   function copyError(e: FrontendErrorEntry) {
     copyText(eventToText(e), () => flashCopied(e.id), "event copy");
   }
+  $: eventSearchItems = errorEntries.map(
+    (e): SearchItem => ({
+      id: `event:${e.id}`,
+      kind: "event",
+      title: e.message,
+      subtitle: [errorKindLabel(e), e.route, e.source]
+        .filter(Boolean)
+        .join(" · "),
+      meta: relTime(e.timestamp),
+      text: eventToText(e),
+      timestamp: e.timestamp,
+      data: e,
+    }),
+  );
+  $: eventSearchResultIds =
+    eventSearchOpen && eventSearchQuery.trim()
+      ? new Set(
+          searchItems(eventSearchItems, eventSearchQuery, {
+            kinds: new Set(["event"]),
+          }).map((result) => {
+            const data = result.item.data as FrontendErrorEntry | undefined;
+            return data?.id ?? result.item.id.replace(/^event:/, "");
+          }),
+        )
+      : null;
+  $: visibleErrorEntries = eventSearchResultIds
+    ? errorEntries.filter((entry) => eventSearchResultIds?.has(entry.id))
+    : errorEntries;
   function copyAnalyzeJson() {
     if (!analyzeJson) return;
     copyText(analyzeJson, flashAnalyzeCopied, "diagnostic analyze copy");
@@ -198,7 +230,10 @@
       }));
   }
   function slowRoutes(entries: FrontendErrorEntry[]): PerfRow[] {
-    const byRoute = new Map<string, { count: number; max: number; method: string }>();
+    const byRoute = new Map<
+      string,
+      { count: number; max: number; method: string }
+    >();
     for (const e of entries) {
       const fetchMs = extraNumber(e, "fetchMs");
       if (fetchMs === null || !e.route) continue;
@@ -263,14 +298,25 @@
 
 <Popover variant="actions" extraClass="events-popover" unclamped>
   <svelte:fragment slot="head">
-    Events
-    {#if errorEntries.length > 0}
-      <button
-        class="undo events-clear"
-        on:click={() => dispatch("clear")}
-        title="Clear the recorded error log">Clear</button
-      >
-    {/if}
+    <span class="popover-search-head">
+      <span>Events</span>
+      <span class="events-head-actions">
+        <PopoverSearchField
+          bind:open={eventSearchOpen}
+          bind:value={eventSearchQuery}
+          title="Search events"
+          ariaLabel="Search events"
+          placeholder="Search events..."
+        />
+        {#if errorEntries.length > 0}
+          <button
+            class="undo events-clear"
+            on:click={() => dispatch("clear")}
+            title="Clear the recorded error log">Clear</button
+          >
+        {/if}
+      </span>
+    </span>
   </svelte:fragment>
   <div class="events-tabs" role="tablist" aria-label="Events view">
     <button
@@ -289,9 +335,11 @@
   {#if activeTab === "log"}
     {#if errorEntries.length === 0}
       <p class="muted small nopad">No errors.</p>
+    {:else if visibleErrorEntries.length === 0}
+      <p class="muted small nopad">No events match.</p>
     {:else}
       <ul class="events err-list">
-        {#each errorEntries.slice(0, 50) as e (e.id)}
+        {#each visibleErrorEntries.slice(0, 50) as e (e.id)}
           <li>
             <div
               class="err-row"
@@ -306,7 +354,8 @@
                 }
               }}
             >
-              <span class="err-kind err-kind-{e.kind}">{errorKindLabel(e)}</span>
+              <span class="err-kind err-kind-{e.kind}">{errorKindLabel(e)}</span
+              >
               <span class="err-msg" title={e.message}>
                 {e.message}
                 {#if e.count && e.count > 1}
@@ -349,7 +398,8 @@
                       : 'user'}">{e.source}</span
                   >
                   {#if e.method || e.route}
-                    <code class="err-route">{e.method ?? ""} {e.route ?? ""}</code
+                    <code class="err-route"
+                      >{e.method ?? ""} {e.route ?? ""}</code
                     >
                   {/if}
                   {#if e.status !== undefined}
@@ -360,7 +410,11 @@
                   <pre class="err-stack">{e.stack}</pre>
                 {/if}
                 {#if e.extra && Object.keys(e.extra).length > 0}
-                  <pre class="err-stack">{JSON.stringify(e.extra, null, 2)}</pre>
+                  <pre class="err-stack">{JSON.stringify(
+                      e.extra,
+                      null,
+                      2,
+                    )}</pre>
                 {/if}
               </div>
             {/if}
@@ -397,13 +451,17 @@
               aria-hidden="true"
             >
               <rect x="9" y="9" width="13" height="13" rx="2" ry="2" />
-              <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+              <path
+                d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"
+              />
             </svg>
             {analyzeCopied ? "Copied" : "Copy JSON"}
           </button>
         {/if}
         {#if analyzeData?.generatedAt}
-          <span class="muted perf-stamp">{relTime(analyzeData.generatedAt)}</span>
+          <span class="muted perf-stamp"
+            >{relTime(analyzeData.generatedAt)}</span
+          >
         {/if}
       </div>
       {#if analyzeError}
@@ -414,7 +472,9 @@
           <h3>Requests</h3>
           <div class="perf-metric">
             <strong>{analyzeData?.requestRate?.total ?? "n/a"}</strong>
-            <span>{analyzeData?.requestRate?.perSec?.toFixed(1) ?? "n/a"}/s</span>
+            <span
+              >{analyzeData?.requestRate?.perSec?.toFixed(1) ?? "n/a"}/s</span
+            >
           </div>
           <ul class="perf-table">
             {#each requestRateRows as row (row.key)}
@@ -472,19 +532,43 @@
         <section class="perf-card compact">
           <h3>Memory</h3>
           <dl class="perf-kv">
-            <div><dt>RSS</dt><dd>{formatBytes(memoryUsage.rss)}</dd></div>
-            <div><dt>Heap</dt><dd>{formatBytes(memoryUsage.heapUsed)}</dd></div>
-            <div><dt>External</dt><dd>{formatBytes(memoryUsage.external)}</dd></div>
-            <div><dt>Buffers</dt><dd>{formatBytes(memoryUsage.arrayBuffers)}</dd></div>
+            <div>
+              <dt>RSS</dt>
+              <dd>{formatBytes(memoryUsage.rss)}</dd>
+            </div>
+            <div>
+              <dt>Heap</dt>
+              <dd>{formatBytes(memoryUsage.heapUsed)}</dd>
+            </div>
+            <div>
+              <dt>External</dt>
+              <dd>{formatBytes(memoryUsage.external)}</dd>
+            </div>
+            <div>
+              <dt>Buffers</dt>
+              <dd>{formatBytes(memoryUsage.arrayBuffers)}</dd>
+            </div>
           </dl>
         </section>
         <section class="perf-card compact">
           <h3>Terminals</h3>
           <dl class="perf-kv">
-            <div><dt>Total</dt><dd>{terminalSummary?.total ?? "n/a"}</dd></div>
-            <div><dt>Alive</dt><dd>{terminalSummary?.alive ?? "n/a"}</dd></div>
-            <div><dt>Visible</dt><dd>{terminalSummary?.visible ?? "n/a"}</dd></div>
-            <div><dt>Pending WS</dt><dd>{terminalSummary?.pendingWs ?? "n/a"}</dd></div>
+            <div>
+              <dt>Total</dt>
+              <dd>{terminalSummary?.total ?? "n/a"}</dd>
+            </div>
+            <div>
+              <dt>Alive</dt>
+              <dd>{terminalSummary?.alive ?? "n/a"}</dd>
+            </div>
+            <div>
+              <dt>Visible</dt>
+              <dd>{terminalSummary?.visible ?? "n/a"}</dd>
+            </div>
+            <div>
+              <dt>Pending WS</dt>
+              <dd>{terminalSummary?.pendingWs ?? "n/a"}</dd>
+            </div>
           </dl>
         </section>
       </div>

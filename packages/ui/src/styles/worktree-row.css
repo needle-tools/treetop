@@ -1287,31 +1287,16 @@ button.branch-button:hover {
 .wt-tt-removed {
   color: var(--error-text, #ffaaaa);
 }
-/* The ↑/↓ tooltip lists commits in a 4-column grid so sha / subject /
-   author / time line up vertically across rows: easier to scan than a
-   flow layout. All three "meta" columns (sha, author, date) render in
-   the muted text color so the eye lands on the subject by default. */
+/* The ↑/↓ tooltip lists commits in a grid so sha / subject / author /
+   time / changed-file chips line up vertically across rows: easier to
+   scan than a flow layout. All three "meta" columns (sha, author, date)
+   render in the muted text color so the eye lands on the subject by
+   default. */
 .wt-tt-commits {
   display: grid;
-  /* Columns: sha | author | date | subject. Subject is the LAST column
-     and the only flexible one — `1fr` so it expands to the right edge
-     of the tooltip's `tt-wide` max-width (≈ 64rem / 92vw). The 40ch
-     floor keeps short subjects from collapsing when author + date
-     happen to be long, while still letting a near-100ch subject use
-     the full remaining width. The JS-side `clampSubject(100)` in
-     App.svelte bounds how big the subject string can get, so this
-     column won't push the tooltip past its outer max-width. */
-  /* sha (auto) · author (auto — content-sized, capped at 30ch via
-     `.wt-tt-author { max-width }` below) · date (auto) · subject
-     (1fr). All three meta columns are `auto` so each sits tight
-     against the next; using `minmax(_, 30ch)` on author made the
-     column GROW toward 30ch when there was free space (after the
-     tooltip got its `min-width` floor), leaving a wide gap between
-     a short name and the date. The extra breathing room before the
-     subject column lives on `.wt-tt-subject` as `margin-left` —
-     intentional, so the eye gets a clear "meta vs. message" break
-     without padding the author↔date pair apart. */
-  grid-template-columns: auto auto auto auto;
+  /* sha · author · date · subject · changed files. The subject gets
+     the one flexible track while the toolbar hugs the right edge. */
+  grid-template-columns: auto auto auto minmax(24ch, 1fr) auto;
   column-gap: 0.5rem;
   row-gap: 0.18rem;
   font-size: 0.72rem;

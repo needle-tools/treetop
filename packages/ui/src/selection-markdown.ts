@@ -183,10 +183,58 @@ function isEditableTarget(target: EventTarget | null): boolean {
   return !!element?.closest("input, textarea, [contenteditable='true']");
 }
 
-function platformFileManagerName(): string {
+export function platformFileManagerName(): string {
   if (/Mac|iPhone|iPad/.test(navigator.userAgent)) return "Finder";
   if (/Win/.test(navigator.userAgent)) return "Explorer";
   return "Files";
+}
+
+export function fileManagerOpenLabel(fileManagerName: string): string {
+  return `Open in ${fileManagerName}`;
+}
+
+export interface MenuItem {
+  label: string;
+  action: () => void;
+}
+
+export interface ContextMenuTargets {
+  markdownSelection: boolean;
+  noteAnchor: boolean;
+  filePath: boolean;
+  fileManagerName: string;
+}
+
+export interface ContextMenuActions {
+  copyMarkdown?: () => void;
+  moveToNote?: () => void;
+  openFile?: () => void;
+  openInFileManager?: () => void;
+}
+
+export function buildContextMenuItemsForTargets(
+  target: ContextMenuTargets,
+  actions: ContextMenuActions,
+): MenuItem[] {
+  const items: MenuItem[] = [];
+  if (target.markdownSelection) {
+    if (actions.copyMarkdown) {
+      items.push({ label: "Copy Markdown", action: actions.copyMarkdown });
+    }
+    if (target.noteAnchor && actions.moveToNote) {
+      items.push({ label: "Move to note", action: actions.moveToNote });
+    }
+  }
+  if (target.filePath) {
+    if (actions.openFile) items.push({ label: "Open", action: actions.openFile });
+    if (actions.openInFileManager) {
+      items.push({
+        label: fileManagerOpenLabel(target.fileManagerName),
+        action: actions.openInFileManager,
+      });
+    }
+  }
+  return items;
 }
 
 function closestElement(target: EventTarget | null): Element | null {
@@ -298,11 +346,6 @@ function moveSelectionToNote(
   );
 }
 
-interface MenuItem {
-  label: string;
-  action: () => void;
-}
-
 export function installMarkdownSelectionContextMenu(): () => void {
   let menu: HTMLDivElement | null = null;
   let activeSelection: MarkdownSelection | null = null;
@@ -343,47 +386,37 @@ export function installMarkdownSelectionContextMenu(): () => void {
   const onContextMenu = (event: MouseEvent) => {
     if (event.defaultPrevented || isEditableTarget(event.target)) return;
     const selection = selectedMarkdown(document.getSelection());
-    if (selection) {
-      const noteAnchor = contextNoteAnchor(event, document.getSelection());
-      const items: MenuItem[] = [
-        {
-          label: "Copy Markdown",
-          action: () => {
-            if (activeSelection)
-              copyText(noteBodyFromSelection(activeSelection));
-          },
-        },
-      ];
-      if (noteAnchor) {
-        items.push({
-          label: "Move to note",
-          action: () => {
-            if (activeSelection && activeContextEvent) {
-              moveSelectionToNote(
-                activeContextEvent,
-                activeSelection,
-                noteAnchor,
-              );
-            }
-          },
-        });
-      }
-      event.preventDefault();
-      show(event, items, selection);
-      return;
-    }
-
     const filePath = contextFilePath(event.target);
-    if (!filePath) return;
-    const daemonId = contextDaemonId(event.target);
-    event.preventDefault();
-    show(event, [
-      { label: "Open", action: () => openFile(filePath, daemonId) },
+    const daemonId = filePath ? contextDaemonId(event.target) : undefined;
+    if (!selection && !filePath) return;
+    const noteAnchor = selection
+      ? contextNoteAnchor(event, document.getSelection())
+      : null;
+    const items = buildContextMenuItemsForTargets(
       {
-        label: `Reveal in ${platformFileManagerName()}`,
-        action: () => revealFile(filePath, daemonId),
+        markdownSelection: !!selection,
+        noteAnchor: !!noteAnchor,
+        filePath: !!filePath,
+        fileManagerName: platformFileManagerName(),
       },
-    ]);
+      {
+        copyMarkdown: () => {
+          if (activeSelection) copyText(noteBodyFromSelection(activeSelection));
+        },
+        moveToNote: () => {
+          if (activeSelection && activeContextEvent && noteAnchor) {
+            moveSelectionToNote(activeContextEvent, activeSelection, noteAnchor);
+          }
+        },
+        openFile: filePath ? () => openFile(filePath, daemonId) : undefined,
+        openInFileManager: filePath
+          ? () => revealFile(filePath, daemonId)
+          : undefined,
+      },
+    );
+    if (items.length === 0) return;
+    event.preventDefault();
+    show(event, items, selection ?? undefined);
   };
   const onCopy = (event: ClipboardEvent) => {
     if (event.defaultPrevented || isEditableTarget(event.target)) return;
