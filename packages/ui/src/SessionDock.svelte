@@ -334,11 +334,12 @@
       return;
     }
     const pad = 4;
+    const sidePad = 6;
     backdropEl.style.display = "block";
     backdropEl.style.top = `${minY - dockRect.top - pad}px`;
-    backdropEl.style.left = "0";
+    backdropEl.style.left = `${-sidePad}px`;
     backdropEl.style.height = `${maxY - minY + pad * 2}px`;
-    backdropEl.style.width = `${maxRight - dockRect.left + pad}px`;
+    backdropEl.style.width = `${maxRight - dockRect.left + pad + sidePad}px`;
   }
 
   // Re-measure backdrop whenever entries/filter change or labels toggle.
@@ -1451,9 +1452,8 @@
     position: absolute;
     display: none;
     background: var(--surface-0, #23261d);
-    border-radius: var(--radius-md, 8px);
-    border: 1px solid
-      color-mix(in oklch, var(--text-1, #e8e8e8) 15%, transparent);
+    border-radius: 12px;
+    border: 1px solid var(--surface-0, #23261d);
     pointer-events: none;
     z-index: 0;
     transition: opacity 160ms ease;
@@ -1578,26 +1578,37 @@
     z-index: 3;
     display: inline-flex;
     align-items: center;
-    gap: 0.05rem;
-    padding: 0.12rem 0;
-    background: transparent;
+    gap: 0;
+    align-self: flex-start;
+    padding: 0.12rem 0.16rem;
+    border-radius: 999px;
+    border: 1px solid var(--surface-0, #23261d);
+    background: var(--surface-0, #23261d);
   }
   :global(.dock-tools .search-icon-button) {
-    width: 29px;
+    width: 0;
+    max-width: 0;
     height: 24px;
-    padding: 0.2rem 8px;
+    padding: 0.2rem 0;
     justify-content: flex-start;
     border: 0;
     background: transparent;
     color: var(--text-muted, #9a9aa0);
     opacity: 0;
+    overflow: hidden;
     pointer-events: none;
+    flex: 0 0 auto;
     transition:
       color 160ms ease,
+      max-width 160ms ease,
+      padding 160ms ease,
       opacity 140ms ease;
   }
   .session-dock.show-labels :global(.dock-tools .search-icon-button),
   :global(.dock-tools .search-icon-button:focus-visible) {
+    width: 29px;
+    max-width: 29px;
+    padding: 0.2rem 8px;
     opacity: 1;
     pointer-events: auto;
   }

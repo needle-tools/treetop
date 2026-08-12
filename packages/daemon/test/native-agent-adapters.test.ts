@@ -3,6 +3,9 @@ import { join } from "node:path";
 import {
   CodexAppServerAdapter,
   CodexAppServerRpc,
+  classifyRealtimeVoiceError,
+  codexAppServerCommand,
+  realtimeVoiceStartParams,
   type CodexAppServerProcess,
 } from "../src/codex-app-server";
 import {
@@ -82,6 +85,53 @@ function parseWrite(writes: string[], index: number): Record<string, unknown> {
 }
 
 describe("CodexAppServerAdapter", () => {
+  test("enables realtime conversations in the app-server process", () => {
+    expect(codexAppServerCommand("/opt/codex")).toEqual([
+      "/opt/codex",
+      "app-server",
+      "--enable",
+      "realtime_conversation",
+    ]);
+  });
+
+  test("classifies realtime availability failures without reporting server errors", () => {
+    expect(
+      classifyRealtimeVoiceError(
+        "thread abc does not support realtime conversation",
+      ),
+    ).toEqual({
+      status: 501,
+      error: "Voice mode is unavailable in this Codex App Server version.",
+    });
+    expect(
+      classifyRealtimeVoiceError(
+        "unexpected status 403 Forbidden: Voice session access denied.",
+      ),
+    ).toEqual({
+      status: 403,
+      error: "Codex App Server denied this voice session.",
+    });
+    expect(classifyRealtimeVoiceError("timed out waiting for SDP")).toBeNull();
+  });
+
+  test("uses the bundled App Server's WebRTC v3 request shape", () => {
+    expect(
+      realtimeVoiceStartParams({
+        threadId: "thr_voice",
+        sdp: "browser-offer",
+        prompt: "Current Treetop context.",
+      }),
+    ).toEqual({
+      threadId: "thr_voice",
+      outputModality: "audio",
+      includeStartupContext: true,
+      prompt: "Current Treetop context.",
+      version: "v3",
+      voice: "sol",
+      transport: { type: "webrtc", sdp: "browser-offer" },
+    });
+  });
+
   test("starts a Codex app-server thread and returns the session source", async () => {
     const fake = fakeCodexProcess();
     const adapter = new CodexAppServerAdapter({ spawn: () => fake.proc });
@@ -92,6 +142,18 @@ describe("CodexAppServerAdapter", () => {
     });
 
     await waitFor(() => fake.writes[0], "initialize request");
+    expect(parseWrite(fake.writes, 0)).toEqual({
+      id: 0,
+      method: "initialize",
+      params: {
+        clientInfo: {
+          name: "supergit",
+          title: "supergit",
+          version: "0.0.0",
+        },
+        capabilities: { experimentalApi: true },
+      },
+    });
     fake.enqueue({ id: 0, result: {} });
     await waitFor(() => fake.writes[2], "thread start request");
     expect(parseWrite(fake.writes, 1)).toEqual({
@@ -123,6 +185,79 @@ describe("CodexAppServerAdapter", () => {
       model: "gpt-5.5",
     });
     expect(fake.killed).toEqual([]);
+  });
+
+  test("starts and stops an ephemeral global realtime voice thread over WebRTC", async () => {
+    const fake = fakeCodexProcess();
+    const adapter = new CodexAppServerAdapter({ spawn: () => fake.proc });
+
+    const started = adapter.startRealtimeVoice({
+      cwd: "/repo",
+      sdp: "browser-offer",
+      prompt: "Current Treetop context: project alpha.",
+    });
+
+    await waitFor(() => fake.writes[0], "initialize request");
+    fake.enqueue({ id: 0, result: {} });
+
+    await waitFor(() => fake.writes[2], "voice thread start request");
+    const voiceStart = parseWrite(fake.writes, 2);
+    expect(voiceStart).toMatchObject({
+      id: 1,
+      method: "thread/start",
+      params: {
+        cwd: "/repo",
+        ephemeral: true,
+        serviceName: "treetop_voice",
+      },
+    });
+    const tools = (
+      voiceStart.params as { dynamicTools?: Array<{ name?: string }> }
+    ).dynamicTools?.map((tool) => tool.name);
+    expect(tools).toEqual([
+      "get_treetop_context",
+      "focus_treetop_project",
+      "focus_treetop_session",
+      "set_treetop_zen_mode",
+      "create_treetop_note",
+      "create_treetop_sticker",
+    ]);
+    fake.enqueue({ id: 1, result: { thread: { id: "thr_voice" } } });
+
+    await waitFor(() => fake.writes[3], "realtime start request");
+    expect(parseWrite(fake.writes, 3)).toEqual({
+      id: 2,
+      method: "thread/realtime/start",
+      params: {
+        threadId: "thr_voice",
+        outputModality: "audio",
+        includeStartupContext: true,
+        prompt: "Current Treetop context: project alpha.",
+        version: "v3",
+        voice: "sol",
+        transport: { type: "webrtc", sdp: "browser-offer" },
+      },
+    });
+    fake.enqueue({ id: 2, result: {} });
+    fake.enqueue({
+      method: "thread/realtime/sdp",
+      params: { threadId: "thr_voice", sdp: "server-answer" },
+    });
+
+    await expect(started).resolves.toEqual({
+      threadId: "thr_voice",
+      sdp: "server-answer",
+    });
+
+    const stopped = adapter.stopRealtimeVoice("thr_voice");
+    await waitFor(() => fake.writes[4], "realtime stop request");
+    expect(parseWrite(fake.writes, 4)).toEqual({
+      id: 3,
+      method: "thread/realtime/stop",
+      params: { threadId: "thr_voice" },
+    });
+    fake.enqueue({ id: 3, result: {} });
+    await stopped;
   });
 
   test("resumes a Codex thread and starts a turn over persistent app-server stdio", async () => {
