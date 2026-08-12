@@ -221,7 +221,11 @@ import { ProvisionManager } from "./provision-manager";
 import { makeProvisionSpawner } from "./provision-spawn";
 import { buildProvisionPlan } from "./provision";
 import { ClaudeCliAdapter } from "./claude-cli-adapter";
-import { CodexAppServerAdapter, resolveCodexBinary } from "./codex-app-server";
+import {
+  CodexAppServerAdapter,
+  classifyRealtimeVoiceError,
+  resolveCodexBinary,
+} from "./codex-app-server";
 import { createNativeAgentRegistry } from "./native-agent-adapters";
 
 const REQUESTED_WORKSPACE_PATH =
@@ -3401,6 +3405,24 @@ const server = Bun.serve<TermWsData, never>({
             },
             {
               method: "POST",
+              path: "/api/voice/start",
+              body: {
+                cwd: "active local project path",
+                sdp: "browser WebRTC SDP offer",
+                context: "current Treetop UI context",
+              },
+              description:
+                "start an experimental app-global Codex realtime voice thread and return its WebRTC SDP answer",
+            },
+            {
+              method: "POST",
+              path: "/api/voice/stop",
+              body: { threadId: "voice thread id" },
+              description:
+                "stop an experimental app-global Codex realtime voice thread",
+            },
+            {
+              method: "POST",
               path: "/api/session/send",
               body: {
                 agent: "claude|codex",
@@ -4323,6 +4345,67 @@ const server = Bun.serve<TermWsData, never>({
             return json({ error: message }, { status: 501 });
           }
           return json({ error: message }, { status: 500 });
+        }
+      }
+
+      if (url.pathname === "/api/voice/start" && req.method === "POST") {
+        const body = (await req.json().catch(() => null)) as {
+          cwd?: unknown;
+          sdp?: unknown;
+          context?: unknown;
+          voice?: unknown;
+        } | null;
+        const requestedCwd =
+          typeof body?.cwd === "string" && body.cwd ? body.cwd : WORKSPACE_PATH;
+        const cwd = existsSync(requestedCwd) ? requestedCwd : WORKSPACE_PATH;
+        const sdp = typeof body?.sdp === "string" ? body.sdp : "";
+        if (!sdp) {
+          return json({ error: "sdp required" }, { status: 400 });
+        }
+        const context =
+          body?.context && typeof body.context === "object"
+            ? body.context
+            : { product: "Treetop" };
+        const prompt =
+          "This is the initial Treetop UI snapshot. Use get_treetop_context " +
+          `for fresh state before acting:\n${JSON.stringify(context).slice(0, 30_000)}`;
+        try {
+          const started = await codexAgent.startRealtimeVoice({
+            cwd,
+            sdp,
+            prompt,
+            voice: typeof body?.voice === "string" ? body.voice : undefined,
+          });
+          return json({ ok: true, ...started });
+        } catch (e) {
+          const message = e instanceof Error ? e.message : String(e);
+          const unavailable = classifyRealtimeVoiceError(message);
+          return json(
+            {
+              error: unavailable?.error ?? message,
+            },
+            { status: unavailable?.status ?? 500 },
+          );
+        }
+      }
+
+      if (url.pathname === "/api/voice/stop" && req.method === "POST") {
+        const body = (await req.json().catch(() => null)) as {
+          threadId?: unknown;
+        } | null;
+        const threadId =
+          typeof body?.threadId === "string" ? body.threadId : "";
+        if (!threadId) {
+          return json({ error: "threadId required" }, { status: 400 });
+        }
+        try {
+          await codexAgent.stopRealtimeVoice(threadId);
+          return json({ ok: true });
+        } catch (e) {
+          return json(
+            { error: e instanceof Error ? e.message : String(e) },
+            { status: 500 },
+          );
         }
       }
 

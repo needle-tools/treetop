@@ -110,6 +110,7 @@
   import NoteIcon from "./NoteIcon.svelte";
   import AgentIcon from "./AgentIcon.svelte";
   import AgentUsageChip from "./AgentUsageChip.svelte";
+  import VoiceSessionLane from "./VoiceSessionLane.svelte";
   import { spawnNote, flyRestoreNote } from "./StickyNotesLayer.svelte";
   import { notesCountByAnchor, notesAll, type NoteShape } from "./notes-counts";
   import { sessionFocusRequest } from "./session-focus-store";
@@ -233,6 +234,14 @@
     isTerminalRecentlyActive,
     terminalIoStatsByKey,
   } from "./terminal-write-buffer";
+  import {
+    GlobalVoiceController,
+    type GlobalVoiceState,
+  } from "./voice-controller";
+  import {
+    deriveVoiceContext,
+    type TreetopVoiceContext,
+  } from "./voice-context";
 
   // Wire fetch + global handlers as early as possible — before the first
   // load() fires — so even the initial /api/repos failure ends up in
@@ -1096,6 +1105,7 @@
     if (!col) return;
     const src = col.getAttribute("data-session-source");
     if (!src) return;
+    lastActiveSessionSource = src;
     startReadGrace(src);
     // Remember which worktree the user is actively in so its git/dirty state
     // gets the priority refresh poll (see startActiveWorktreePoll) — otherwise
@@ -1107,6 +1117,15 @@
    *  zen row). Polled every few seconds via /api/worktree-details so its dirty
    *  state stays live independent of the shared enrich queue. */
   let activeWorktreePath: string | null = null;
+  /** Most recently focused session column. Voice mode reads this alongside
+   *  existing active-worktree and dock state; it is intentionally ephemeral. */
+  let lastActiveSessionSource: string | null = null;
+  let voiceState: GlobalVoiceState = { phase: "off" };
+  let voiceButtonEl: HTMLButtonElement | null = null;
+  const voiceController = new GlobalVoiceController({
+    onState: (state) => (voiceState = state),
+    handleTool: handleVoiceTool,
+  });
   function handleFocusOutForUnread(ev: FocusEvent): void {
     const t = ev.target as Element | null;
     if (!t) return;
@@ -7127,6 +7146,181 @@
     },
   );
 
+  function currentVoiceContext(): TreetopVoiceContext {
+    return deriveVoiceContext({
+      projects: repos,
+      rows: rows.map((row) => ({
+        key: row.key,
+        repoId: row.repo.id,
+        worktreePath: row.wt?.path,
+      })),
+      zenRowKey,
+      activeWorktreePath,
+      lastActiveSessionSource,
+      sessions: dockEntries.map((entry) => ({
+        source: entry.source,
+        agent: entry.agent,
+        worktreePath: entry.wtPath,
+        repoId: entry.repoId,
+        sessionId: entry.resumeSessionId,
+        title:
+          entry.manualTitle ??
+          entry.aiTitle ??
+          entry.title ??
+          entry.branch,
+        lastActive: entry.lastMessageTs ?? entry.lastActive,
+        working: entry.working,
+        awaiting: entry.awaiting,
+        exited: entry.exited,
+      })),
+      notes: $notesAll.map((note) => ({
+        id: note.id,
+        body: note.body,
+        anchors: note.anchors,
+        tags: note.tags,
+        kind: note.kind ?? "note",
+        updatedAt: note.updatedAt,
+      })),
+    });
+  }
+
+  async function focusVoiceSession(source: string): Promise<void> {
+    lastActiveSessionSource = source;
+    const open = document.querySelector(
+      `.session-col[data-session-source="${CSS.escape(source)}"]`,
+    ) as HTMLElement | null;
+    if (!open) {
+      await focusSessionBySource(source);
+      return;
+    }
+    open.scrollIntoView({
+      behavior: "smooth",
+      block: "center",
+      inline: "center",
+    });
+    open.classList.add("session-col-focused");
+    setTimeout(() => open.classList.remove("session-col-focused"), 1800);
+  }
+
+  function voiceToolAnchor(requested?: unknown): string {
+    if (typeof requested === "string" && requested.trim()) {
+      return requested.trim();
+    }
+    const context = currentVoiceContext();
+    if (context.activeProject?.worktreePath) {
+      return `worktree:${context.activeProject.worktreePath}`;
+    }
+    if (context.activeProject?.path) {
+      return `repo:${context.activeProject.path}`;
+    }
+    return "workspace:voice";
+  }
+
+  function voiceOriginRect(): DOMRect {
+    return voiceButtonEl?.getBoundingClientRect() ?? new DOMRect(0, 0, 0, 0);
+  }
+
+  async function createVoiceNote(
+    args: Record<string, unknown>,
+  ): Promise<unknown> {
+    const body = typeof args.body === "string" ? args.body.trim() : "";
+    if (!body) throw new Error("body must be a non-empty string");
+    const anchors = Array.isArray(args.anchors)
+      ? args.anchors.filter(
+          (anchor): anchor is string => typeof anchor === "string",
+        )
+      : [];
+    const anchor = voiceToolAnchor(anchors[0]);
+    await spawnNote({
+      anchor,
+      body,
+      originRect: voiceOriginRect(),
+    });
+    return { ok: true, anchor };
+  }
+
+  async function createVoiceSticker(
+    args: Record<string, unknown>,
+  ): Promise<unknown> {
+    const body = typeof args.body === "string" ? args.body.trim() : "";
+    if (!body) throw new Error("body must be a non-empty string");
+    const anchor = voiceToolAnchor(args.anchor);
+    await spawnNote({
+      anchor,
+      body,
+      kind: "emoji",
+      originRect: voiceOriginRect(),
+    });
+    return { ok: true, anchor };
+  }
+
+  async function handleVoiceTool(
+    tool: string,
+    args: Record<string, unknown>,
+  ): Promise<unknown> {
+    if (tool === "get_treetop_context") return currentVoiceContext();
+    if (tool === "focus_treetop_project") {
+      const repoId = typeof args.repoId === "string" ? args.repoId : "";
+      const repo = repos.find((candidate) => candidate.id === repoId);
+      if (!repo) throw new Error("Treetop project not found");
+      await focusRepoRow(repoId);
+      return { ok: true, project: { id: repo.id, name: repo.name } };
+    }
+    if (tool === "focus_treetop_session") {
+      const source = typeof args.source === "string" ? args.source : "";
+      if (!dockEntries.some((entry) => entry.source === source)) {
+        throw new Error("Treetop session not found");
+      }
+      await focusVoiceSession(source);
+      return { ok: true, source };
+    }
+    if (tool === "set_treetop_zen_mode") {
+      if (typeof args.enabled !== "boolean") {
+        throw new Error("enabled must be a boolean");
+      }
+      if (!args.enabled) {
+        if (zenRowKey) toggleZenRow(zenRowKey);
+        return { ok: true, enabled: false };
+      }
+      const repoId =
+        typeof args.repoId === "string"
+          ? args.repoId
+          : currentVoiceContext().activeProject?.id;
+      const target = rows.find((row) => row.repo.id === repoId && row.wt);
+      if (!target) throw new Error("Treetop project has no visible worktree");
+      if (zenRowKey !== target.key) toggleZenRow(target.key);
+      return { ok: true, enabled: true, repoId: target.repo.id };
+    }
+    if (tool === "create_treetop_note") return createVoiceNote(args);
+    if (tool === "create_treetop_sticker") return createVoiceSticker(args);
+    throw new Error(`Unsupported Treetop voice tool: ${tool}`);
+  }
+
+  async function toggleVoiceMode(): Promise<void> {
+    if (
+      voiceState.phase === "connecting" ||
+      voiceState.phase === "listening" ||
+      voiceState.phase === "speaking"
+    ) {
+      await voiceController.stop();
+      return;
+    }
+    try {
+      await voiceController.start(currentVoiceContext());
+    } catch {
+      // Controller state already contains the concise user-facing error.
+    }
+  }
+
+  function voiceStatusLabel(): string {
+    if (voiceState.phase === "connecting") return "Connecting…";
+    if (voiceState.phase === "listening") return "Listening";
+    if (voiceState.phase === "speaking") return "Speaking";
+    if (voiceState.phase === "stopping") return "Stopping…";
+    if (voiceState.phase === "error") return "Voice unavailable";
+    return "Voice off";
+  }
+
   $: projectMenuEntries = repos.map((repo) => {
     const dock = dockEntries.filter((entry) => entry.repoId === repo.id);
     const sessions = (repo.worktrees ?? []).flatMap(
@@ -8023,6 +8217,7 @@
       clearInterval(nowTimer);
       clearInterval(chimeTimer);
       document.removeEventListener("visibilitychange", maybeChime);
+      void voiceController.stop();
     };
   });
 
@@ -8189,6 +8384,55 @@
          /api/oauth/usage bars; others fall back to local JSONL
          counts. AgentUsageChip iterates and emits the buttons here. -->
       <AgentUsageChip />
+
+      <div class="actions-anchor voice-anchor">
+        <button
+          bind:this={voiceButtonEl}
+          class="actions-btn voice-btn"
+          class:active={voiceState.phase === "listening" ||
+            voiceState.phase === "speaking"}
+          class:error={voiceState.phase === "error"}
+          disabled={voiceState.phase === "stopping"}
+          aria-pressed={voiceState.phase === "listening" ||
+            voiceState.phase === "speaking"}
+          title={voiceState.phase === "off" || voiceState.phase === "error"
+            ? "Start global Treetop voice mode"
+            : "Stop global Treetop voice mode"}
+          on:click={() => void toggleVoiceMode()}
+        >
+          <svg
+            width="14"
+            height="14"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            aria-hidden="true"
+          >
+            <rect x="9" y="2" width="6" height="11" rx="3" />
+            <path d="M5 10a7 7 0 0 0 14 0" />
+            <path d="M12 17v5" />
+            <path d="M8 22h8" />
+          </svg>
+          Voice
+          {#if voiceState.phase !== "off" && voiceState.phase !== "error"}
+            <span class="voice-live-dot" aria-hidden="true"></span>
+          {/if}
+        </button>
+        {#if voiceState.phase === "error"}
+          <div
+            class="voice-status"
+            class:error
+            role="status"
+            aria-live="polite"
+          >
+            <strong>{voiceStatusLabel()}</strong>
+            <span>{voiceState.error}</span>
+          </div>
+        {/if}
+      </div>
 
       <!-- Projects dropdown: jump to an added repo's row. Lists `repos`
          directly so the order matches the on-page row order (both are
@@ -8886,6 +9130,8 @@
       >
     </nav>
   </div>
+
+  <VoiceSessionLane state={voiceState} />
 
   {#if loading && repos.length === 0}
     <div class="loading-screen">

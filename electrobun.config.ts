@@ -20,6 +20,10 @@ export default {
     },
     mac: {
       icons: "icon.iconset",
+      entitlements: {
+        "com.apple.security.device.audio-input":
+          "Treetop uses the microphone for global voice mode.",
+      },
     },
     win: {
       icon: "icon.ico",
