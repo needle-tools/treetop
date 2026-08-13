@@ -22,6 +22,7 @@
     | "click"
     | "screenshot"
     | "snapshot"
+    | "image"
     | "subagent"
     | "configure"
     | "tool";
@@ -30,12 +31,16 @@
     const n = toolName.toLowerCase();
     if (n.includes("cmake") || n.includes("configure")) return "configure";
     if (n.includes("spawn_agent") || n.includes("wait_agent")) return "subagent";
+    if (n === "read_thread_terminal" || n.endsWith(".read_thread_terminal"))
+      return "bash";
     if (n.includes("evaluate_script")) return "bash";
     if (n.includes("reload_page") || n.includes("reload")) return "reload";
     if (n.includes("wait_for") || n.includes("wait")) return "wait";
     if (n === "click" || n.includes(".click")) return "click";
     if (n.includes("take_screenshot") || n.includes("screenshot"))
       return "screenshot";
+    if (n.includes("image_generation") || n.includes("imagegeneration"))
+      return "image";
     if (n.includes("take_snapshot")) return "snapshot";
     if (n.includes("navigate_page") || n.includes("new_page")) return "navigate";
     if (n.includes("filesystem_create")) return "create";
@@ -252,6 +257,13 @@
       <path d="M8 8h8" />
       <path d="M8 12h8" />
       <path d="M8 16h5" />
+    {:else if kind === "image"}
+      <!-- generated image -->
+      <rect x="4" y="5" width="14" height="14" rx="2" />
+      <path d="M7 15l3-3 2 2 2-3 4 4" />
+      <circle cx="9" cy="9" r="1" />
+      <path d="M19 3v4" />
+      <path d="M17 5h4" />
     {:else if kind === "configure"}
       <!-- sliders / configuration -->
       <line x1="4" y1="6" x2="20" y2="6" />

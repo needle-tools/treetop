@@ -66,6 +66,40 @@ export interface BatchSessionPatch {
   };
 }
 
+export function applySessionMessagePatchToMessages<T>(
+  messages: readonly T[],
+  patch: BatchSessionPatch["patch"],
+): T[] {
+  if (
+    !Number.isInteger(patch.oldEnd) ||
+    patch.oldEnd < 0 ||
+    patch.oldEnd > messages.length ||
+    !Array.isArray(patch.messages)
+  ) {
+    return [...messages];
+  }
+  return messages.slice(0, patch.oldEnd).concat(patch.messages as T[]);
+}
+
+export function applySessionMessagePatch(
+  body: string | undefined,
+  result: BatchSessionPatch,
+): string | null {
+  if (!body) return null;
+  try {
+    const parsed = JSON.parse(body) as { messages?: unknown[] };
+    const prevMessages = Array.isArray(parsed.messages) ? parsed.messages : [];
+    parsed.messages = applySessionMessagePatchToMessages(
+      prevMessages,
+      result.patch,
+    );
+    Object.assign(parsed, result.session);
+    return JSON.stringify(parsed);
+  } catch {
+    return null;
+  }
+}
+
 interface MessageCursorEntry {
   index: number;
   hash: string;
@@ -220,26 +254,6 @@ export function createSessionPoller(deps: SessionPollerDeps): SessionPoller {
     return Number.isInteger(value) && value && value > 0 ? value : undefined;
   }
 
-  function applyPatchToBody(
-    body: string | undefined,
-    result: Extract<BatchResult, { status: 206 }>,
-  ): string | null {
-    if (!body) return null;
-    try {
-      const parsed = JSON.parse(body) as { messages?: unknown[] };
-      const prevMessages = Array.isArray(parsed.messages)
-        ? parsed.messages
-        : [];
-      parsed.messages = prevMessages
-        .slice(result.patch.oldStart, result.patch.oldEnd)
-        .concat(result.patch.messages);
-      Object.assign(parsed, result.session);
-      return JSON.stringify(parsed);
-    } catch {
-      return null;
-    }
-  }
-
   async function pollDaemon(daemonId: string | undefined, group: RegState[]) {
     // 1) One batched session request for every source on this daemon.
     const sessionGroup = group.filter(
@@ -293,7 +307,10 @@ export function createSessionPoller(deps: SessionPollerDeps): SessionPoller {
                   result.etag,
                 );
               } else {
-                const patchedBody = applyPatchToBody(g.lastBody, result);
+                const patchedBody = applySessionMessagePatch(
+                  g.lastBody,
+                  result,
+                );
                 if (patchedBody) {
                   g.lastBody = patchedBody;
                   rememberSessionBody(

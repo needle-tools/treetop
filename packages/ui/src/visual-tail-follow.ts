@@ -49,9 +49,17 @@ export function shouldFollowVisualTail(opts: {
   firstRender?: boolean;
   paused: boolean;
   nearEnd: boolean;
+  restoredMemory?: VisualScrollMemory;
   selecting?: boolean;
 }): boolean {
   if (opts.selecting) return false;
+  if (
+    opts.firstRender === true &&
+    opts.restoredMemory &&
+    !opts.restoredMemory.followTail
+  ) {
+    return opts.force === true;
+  }
   return (
     opts.force === true ||
     opts.firstRender === true ||
@@ -95,7 +103,16 @@ export function visualScrollMemoryFromMetrics(opts: {
 export function shouldRememberVisualScrollMemory(opts: {
   layoutUsable: boolean;
   metrics: VisualScrollMetrics;
+  previous?: VisualScrollMemory;
 }): boolean {
+  if (
+    opts.previous &&
+    !opts.previous.followTail &&
+    opts.previous.scrollTop > 0 &&
+    opts.metrics.scrollTop === 0
+  ) {
+    return false;
+  }
   return (
     opts.layoutUsable &&
     opts.metrics.clientHeight > 0 &&

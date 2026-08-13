@@ -20,6 +20,7 @@
     visualFileEditCountBadge,
     visualFileEditSummaryForBlock,
     visualFileEditTotals,
+    visualMediaPathTarget,
     visualObservedProcessOutput,
     visualObservedProcessOwnerToolUseBlock,
     visualPlanFromBlock,
@@ -1247,6 +1248,12 @@
     );
   }
 
+  function mediaPathTarget(
+    block: NormalizedBlock,
+  ): VisualPreviewPathPart | undefined {
+    return visualMediaPathTarget(block);
+  }
+
   function relTimeFromIso(iso: string): string {
     const s = Math.floor((Date.now() - Date.parse(iso)) / 1000);
     if (!Number.isFinite(s)) return "";
@@ -1789,7 +1796,7 @@
               src,
               imageBlock.alt ?? mediaLabel(imageBlock),
               !!imageBlock.hasAlpha,
-              "composer-photo-frame media-photo-frame",
+              "chat-photo-frame media-photo-frame",
               () => markMediaSourceFailed(src),
             )}
           </button>
@@ -1903,6 +1910,7 @@
       {/if}
     {:else if b.type === "media"}
       {@const src = mediaSourceUrl(b, { thumbnail: true })}
+      {@const pathTarget = mediaPathTarget(b)}
       <figure
         class="block media-block"
         class:media-image={b.mediaKind === "image"}
@@ -1921,11 +1929,17 @@
               b.alt ?? mediaLabel(b),
               !!b.hasAlpha,
               m.role === "user"
-                ? "composer-photo-frame media-photo-frame"
+                ? "chat-photo-frame media-photo-frame"
                 : "media-photo-frame",
             )}
           </button>
-          <figcaption>{mediaLabel(b)}</figcaption>
+          {#if pathTarget}
+            <figcaption>
+              {@render renderPreviewPathChip(pathTarget, undefined)}
+            </figcaption>
+          {:else}
+            <figcaption>{mediaLabel(b)}</figcaption>
+          {/if}
         {:else}
           <div class="media-artifact">
             <span class="tag-label">{b.mediaKind ?? "artifact"}</span>
@@ -2117,6 +2131,7 @@
       {/if}
     {:else if b.type === "media"}
       {@const src = mediaSourceUrl(b, { thumbnail: true })}
+      {@const pathTarget = mediaPathTarget(b)}
       <div class="work-step-detail work-media-detail">
         {#if b.mediaKind === "image" && src}
           <button
@@ -2134,6 +2149,9 @@
               "media-photo-frame",
             )}
           </button>
+          {#if pathTarget}
+            {@render renderPreviewPathChip(pathTarget, undefined)}
+          {/if}
         {:else}
           <span class="tag-label">{b.mediaKind ?? "artifact"}</span>
           {#if src}
@@ -4121,12 +4139,13 @@
   .media-photo-frame img {
     max-height: 9rem;
   }
-  .composer-photo-frame {
+  .chat-photo-frame {
     box-sizing: border-box;
     width: 100%;
+    padding: 4px;
   }
-  .composer-photo-frame img {
-    max-height: 3.1rem;
+  .chat-photo-frame img {
+    max-height: 7.2rem;
   }
   .media-block figcaption {
     margin-top: 0.2rem;
