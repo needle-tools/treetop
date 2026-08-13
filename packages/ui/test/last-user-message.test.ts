@@ -41,6 +41,7 @@ import {
   visualToolInlineScriptPreviewText,
   visualToolMediaBlocks,
   visualFileEditCountBadge,
+  visualMediaPathTarget,
   visualObservedProcessOwnerToolUseBlock,
   visualToolRemoteHostLabel,
   visualWorkSummary,
@@ -1216,6 +1217,22 @@ describe("buildVisualTranscriptItems", () => {
     ]);
   });
 
+  it("exposes generated image media paths as normal file link targets", () => {
+    expect(
+      visualMediaPathTarget({
+        type: "media",
+        mediaKind: "image",
+        path: "/Users/herbst/.codex/generated_images/019fb2bd-3916-7893-87eb-22fb0eac1e6e/exec-5ecc041a-d349-42bf-9188-0f73c39570ed.png",
+        title: "exec-5ecc041a-d349-42bf-9188-0f73c39570ed.png",
+      }),
+    ).toEqual({
+      kind: "path",
+      text: "exec-5ecc041a-d349-42bf-9188-0f73c39570ed.png",
+      path: "/Users/herbst/.codex/generated_images/019fb2bd-3916-7893-87eb-22fb0eac1e6e/exec-5ecc041a-d349-42bf-9188-0f73c39570ed.png",
+      range: "",
+    });
+  });
+
   it("folds post-response system chatter into the turn work before the final response", () => {
     const user = msg("user", "fix the bug", "2026-06-19T10:00:00.000Z");
     const earlyResponse = msg(
@@ -1919,6 +1936,94 @@ describe("updateVisualTranscriptItems", () => {
     ]);
   });
 
+  it("keeps steering folded when the optimistic row is replaced by a canonical live row", () => {
+    const user = msg(
+      "user",
+      "build fixture coverage",
+      "2026-07-02T10:00:00.000Z",
+    );
+    user.id = "user-1";
+    const progress = msg(
+      "assistant",
+      "I’m building the fixture set around visible final outcomes.",
+      "2026-07-02T10:00:05.000Z",
+    );
+    progress.id = "progress-1";
+    const taskStarted: Message = {
+      id: "task-started",
+      role: "system",
+      timestamp: "2026-07-02T10:00:01.000Z",
+      blocks: [{ type: "marker", text: "[Task started]" }],
+    };
+    const optimisticSteer = msg(
+      "user",
+      "hey dude what the heck",
+      "2026-07-02T10:00:06.000Z",
+    );
+    optimisticSteer.id = "codex-optimistic-user-steer-local";
+    optimisticSteer.intent = "steer";
+    const thinking: Message = {
+      id: "thinking-1",
+      role: "assistant",
+      timestamp: "2026-07-02T10:00:07.000Z",
+      blocks: [{ type: "thinking", text: "Exploring MaterialX implementation" }],
+    };
+    const previousMessages = [
+      user,
+      taskStarted,
+      progress,
+      optimisticSteer,
+      thinking,
+    ];
+    const previousItems = buildVisualTranscriptItems(previousMessages, {
+      active: true,
+    });
+    expect(previousItems.map((item) => item.kind)).toEqual([
+      "message",
+      "work",
+    ]);
+
+    const canonicalSteer = msg(
+      "user",
+      "hey dude what the heck",
+      "2026-07-02T10:00:06.500Z",
+    );
+    canonicalSteer.id = "canonical-steer";
+    const nextThinking: Message = {
+      ...thinking,
+      blocks: [{ type: "thinking", text: "Exploring MaterialX implementation" }],
+    };
+    const next = updateVisualTranscriptItems({
+      previousMessages,
+      previousItems,
+      previousActive: true,
+      messages: [user, taskStarted, progress, canonicalSteer, nextThinking],
+      active: true,
+    });
+
+    expect(next.map((item) => item.kind)).toEqual(["message", "work"]);
+    if (next[1]?.kind !== "work") throw new Error("expected active work item");
+    expect(visualWorkSummary(next[1].entries)).toMatchObject({
+      steerings: 1,
+    });
+    expect(
+      next[1].entries.map((entry) => [
+        entry.message.role,
+        entry.message.intent,
+        entry.blocks[0]?.text ?? entry.blocks[0]?.type,
+      ]),
+    ).toEqual([
+      ["system", undefined, "[Task started]"],
+      [
+        "assistant",
+        undefined,
+        "I’m building the fixture set around visible final outcomes.",
+      ],
+      ["user", "steer", "hey dude what the heck"],
+      ["assistant", undefined, "Exploring MaterialX implementation"],
+    ]);
+  });
+
   it("keeps a normal live follow-up after a completed turn out of steering", () => {
     const firstUser = msg(
       "user",
@@ -2306,6 +2411,36 @@ describe("cleanVisualToolResultText", () => {
     });
   });
 
+  it("strips script command result metadata and nested command output", () => {
+    expect(
+      cleanVisualToolResultText(
+        'Script completed\nWall time 0.0 seconds\nOutput:\n\n{"chunk_id":"3330f2","wall_time_seconds":14.798036375,"exit_code":0,"original_token_count":171,"output":"\\nRunning 1 test using 1 worker\\n  1 passed (14.0s)\\n"}',
+      ),
+    ).toEqual({
+      title: "Command output",
+      body: "Running 1 test using 1 worker\n  1 passed (14.0s)",
+      wrappedCodexChunk: true,
+      wallTimeSeconds: 14.798036375,
+      exitCode: 0,
+      originalTokenCount: 171,
+    });
+  });
+
+  it("strips script running process metadata and keeps the session id", () => {
+    expect(
+      cleanVisualToolResultText(
+        "Script completed\nWall time 16.5 seconds\nOutput:\nRunning 49 tests using 3 workers\nSESSION_ID=10233",
+      ),
+    ).toEqual({
+      title: "Process output",
+      body: "Running 49 tests using 3 workers\nSESSION_ID=10233",
+      wrappedCodexChunk: true,
+      wallTimeSeconds: 16.5,
+      processRunning: true,
+      processSessionId: 10233,
+    });
+  });
+
   it("leaves ordinary tool results alone", () => {
     expect(cleanVisualToolResultText("tests passed")).toEqual({
       title: "Tool result",
@@ -2330,6 +2465,30 @@ describe("visualThinkingSummary", () => {
   it("removes markdown title wrappers from single-line thinking summaries", () => {
     expect(visualThinkingSummary("**Extracting PLY scores and visuals**")).toEqual({
       title: "Extracting PLY scores and visuals",
+      body: "",
+    });
+  });
+
+  it("joins adjacent markdown title fragments into one readable title", () => {
+    expect(
+      visualThinkingSummary(
+        "**Refactoring narration fragment projection for cut mode****Verifying fragment merging and render order**",
+      ),
+    ).toEqual({
+      title:
+        "Refactoring narration fragment projection for cut mode, Verifying fragment merging and render order",
+      body: "",
+    });
+  });
+
+  it("joins separated markdown title fragments into one readable title", () => {
+    expect(
+      visualThinkingSummary(
+        "**Refactoring narration fragment projection for cut mode**\n\n**Verifying fragment merging and render order**",
+      ),
+    ).toEqual({
+      title:
+        "Refactoring narration fragment projection for cut mode, Verifying fragment merging and render order",
       body: "",
     });
   });
@@ -2709,8 +2868,8 @@ describe("visual tool payload display helpers", () => {
         text: "Chunk ID: b1\nWall time: 0.1000 seconds\nProcess exited with code 0\nOriginal token count: 10\nOutput:\n(pass) one\n(pass) two\n(skip) later\n1 todo\n\n 2 pass\n 0 fail\n 1 skip\n 1 todo",
       }),
     ).toEqual([
-      { label: "✓2", tone: "success", title: "2 tests passed" },
-      { label: "skip 1", tone: "neutral", title: "1 test skipped" },
+      { label: "✓2", tone: "success", title: "2 tests passed\n- one\n- two" },
+      { label: "skip 1", tone: "neutral", title: "1 test skipped\n- later" },
       { label: "todo 1", tone: "neutral", title: "1 todo test" },
     ]);
 
@@ -2747,8 +2906,41 @@ describe("visual tool payload display helpers", () => {
         },
       ),
     ).toEqual([
-      { label: "✕1", tone: "danger", title: "1 test failed" },
-      { label: "✓2", tone: "success", title: "2 tests passed" },
+      {
+        label: "✕1",
+        tone: "danger",
+        title:
+          "1 test failed\n- tests/e2e/api-and-pipeline.spec.js:12:1 › subtitle blocks in Cut mode",
+      },
+      {
+        label: "✓2",
+        tone: "success",
+        title:
+          "2 tests passed\n- tests/e2e/api-and-pipeline.spec.js:34:1 › opens timeline\n- tests/e2e/api-and-pipeline.spec.js:52:1 › exports captions",
+      },
+    ]);
+
+    expect(
+      visualToolTestResultBadges(
+        {
+          type: "tool_use",
+          toolName: "exec_command",
+          toolInput: {
+            cmd: "FORCE_COLOR=0 npx playwright test e2e/graph-editor-authoring.spec.ts e2e/graph-editor.spec.ts --reporter=dot",
+          },
+        },
+        {
+          type: "tool_result",
+          text: 'Script completed\nWall time 0.0 seconds\nOutput:\n\n{"chunk_id":"986178","wall_time_seconds":0.000002542,"exit_code":1,"original_token_count":302,"output":"·······\\n\\n  1) e2e/graph-editor-authoring.spec.ts:297:5 › Graph editor authoring UX › Rhino subgraph edits can be reapplied without invalid multioutput handles \\n\\n    Error: expected locator to be visible\\n\\n  1 failed\\n    e2e/graph-editor-authoring.spec.ts:297:5 › Graph editor authoring UX › Rhino subgraph edits can be reapplied without invalid multioutput handles \\n  48 passed (3.6m)\\n"}',
+        },
+      ),
+    ).toEqual([
+      {
+        label: "✕1",
+        tone: "danger",
+        title: "1 test failed",
+      },
+      { label: "✓48", tone: "success", title: "48 tests passed" },
     ]);
 
     expect(
@@ -2894,6 +3086,22 @@ describe("visual tool payload display helpers", () => {
       "Check port 55173 · Read logs cursor-labeler-vite-55173.log last 50",
     );
     expect(visualToolCallPayloadText(block)).toContain("sleep 3; lsof");
+  });
+
+  it("summarizes setup probes and port checks around the meaningful commands", () => {
+    const block = {
+      type: "tool_use",
+      toolName: "exec_command",
+      toolInput: {
+        cmd: "command -v agent-browser || npx agent-browser --version; lsof -ti tcp:3000; lsof -ti tcp:5173",
+      },
+    };
+
+    expect(visualToolPreviewText(block)).toBe(
+      "Check port 3000 · Check port 5173",
+    );
+    expect(visualToolIconNameForPreview(block)).toBe("port_check");
+    expect(visualToolCallPayloadText(block)).toContain("command -v agent-browser");
   });
 
   it("summarizes tail log reads as log previews", () => {
@@ -3305,6 +3513,44 @@ describe("visual tool payload display helpers", () => {
   });
 
   it("promotes image-producing tools to inline media blocks", () => {
+    const imageGenerationTool = {
+      type: "tool_use",
+      toolName: "image_generation_call",
+      toolUseId: "image-1",
+      toolInput: {
+        prompt: "a heroic Duberman sticker",
+        status: "completed",
+      },
+    };
+
+    expect(visualToolPreviewText(imageGenerationTool)).toBe("Generate image");
+    expect(visualToolIconNameForPreview(imageGenerationTool)).toBe(
+      "image_generation",
+    );
+    expect(visualToolCallPayloadText(imageGenerationTool)).toContain(
+      "a heroic Duberman sticker",
+    );
+    expect(
+      visualToolMediaBlocks(imageGenerationTool, {
+        type: "tool_result",
+        toolName: "image_generation_call",
+        toolUseId: "image-1",
+        text: JSON.stringify({
+          status: "completed",
+          savedPath: "/tmp/exec-duberman.png",
+        }),
+      }),
+    ).toEqual([
+      expect.objectContaining({
+        type: "media",
+        mediaKind: "image",
+        path: "/tmp/exec-duberman.png",
+        title: "Generated image",
+        toolName: "image_generation_call",
+        toolUseId: "image-1",
+      }),
+    ]);
+
     expect(
       visualToolMediaBlocks({
         type: "tool_use",
@@ -3867,6 +4113,23 @@ describe("visual tool payload display helpers", () => {
         },
       }),
     ).toBe("Read browser body text");
+
+    const evalBlock = {
+      type: "tool_use",
+      toolName: "exec_command",
+      toolInput: {
+        cmd: "npx --yes agent-browser --session sf3d-quicklook eval '(async()=>{const {ModelPreviewRenderer}=await import(\"/src/three/ModelPreviewRenderer.js\"); await window.refreshPreview();})()'",
+      },
+    };
+    expect(visualToolPreviewText(evalBlock)).toBe("Run browser script");
+    expect(visualToolIconNameForPreview(evalBlock)).toBe("evaluate_script");
+    expect(visualToolInlineScriptLanguageLabel(evalBlock)).toBe("JavaScript");
+    expect(visualToolInlineScriptPreviewText(evalBlock)).toContain(
+      "const {ModelPreviewRenderer}",
+    );
+    expect(visualToolInlineScript(evalBlock)?.code).toContain(
+      "await window.refreshPreview();",
+    );
   });
 
   it("summarizes CMake configure commands after newline-separated setup", () => {
@@ -3933,6 +4196,44 @@ describe("visual tool payload display helpers", () => {
     expect(visualToolPreviewText(boundBlock)).toBe(
       "Open tunnel *:45101 -> felix-win:45100",
     );
+  });
+
+  it("summarizes scp transfers without noisy ssh options", () => {
+    const uploadBlock = {
+      type: "tool_use",
+      toolName: "exec_command",
+      toolInput: {
+        cmd: "scp -q -o BatchMode=yes -o IdentitiesOnly=yes -i '/Users/herbst/Library/CloudStorage/GoogleDrive-felix@needle.tools/My Drive/pw/aitlscale/id_ed25519' /tmp/maik-auth.html root@100.127.5.67:/tmp/maik-auth.html",
+      },
+    };
+
+    expect(visualToolPreviewText(uploadBlock)).toBe(
+      "Upload maik-auth.html to 100.127.5.67:maik-auth.html",
+    );
+    expect(visualToolRemoteHostLabel(uploadBlock)).toBe("100.127.5.67");
+    expect(visualToolIconNameForPreview(uploadBlock)).toBe("upload_file");
+    expect(visualToolPreviewParts(uploadBlock)).toContainEqual({
+      kind: "path",
+      text: "maik-auth.html",
+      path: "/tmp/maik-auth.html",
+      range: "",
+    });
+    expect(visualToolCallPayloadText(uploadBlock)).toContain(
+      "IdentitiesOnly=yes",
+    );
+
+    const downloadBlock = {
+      type: "tool_use",
+      toolName: "exec_command",
+      toolInput: {
+        cmd: "scp -P 2222 deploy@cloud-staging:/var/log/app.log ./app.log",
+      },
+    };
+    expect(visualToolPreviewText(downloadBlock)).toBe(
+      "Download app.log from cloud-staging:app.log",
+    );
+    expect(visualToolRemoteHostLabel(downloadBlock)).toBe("cloud-staging");
+    expect(visualToolIconNameForPreview(downloadBlock)).toBe("download_file");
   });
 
   it("summarizes PowerShell file reads over ssh as remote path chips", () => {
@@ -4223,6 +4524,122 @@ describe("visual tool payload display helpers", () => {
     ]);
   });
 
+  it("shows console warning and error badges for agent-browser console output", () => {
+    const block = {
+      type: "tool_use",
+      toolName: "exec_command",
+      toolInput: {
+        cmd: "npx --yes agent-browser --session needle-playable console",
+      },
+    };
+    const result = {
+      type: "tool_result",
+      toolName: "exec_command",
+      text: [
+        "Chunk ID: abc123 Wall time: 0.7334 seconds Process exited with code 0 Original token count: 180 Output:",
+        "[debug] booted",
+        "[warning] Camera fit size is zero",
+        "[warn] Deprecated material option",
+        "[error] Failed to load asset",
+        "",
+      ].join("\n"),
+    };
+
+    expect(visualToolPreviewText(block)).toBe("Check console messages");
+    expect(visualToolCommandResultBadges(block, result)).toEqual([
+      {
+        label: "✕1",
+        tone: "danger",
+        title: "1 console error",
+      },
+      {
+        label: "⚠2",
+        tone: "warning",
+        title: "2 console warnings",
+      },
+    ]);
+  });
+
+  it("shows console badges for JSON console message output", () => {
+    const block = {
+      type: "tool_use",
+      toolName: "exec_command",
+      toolInput: {
+        cmd: "npx --yes agent-browser --session needle-playable console --json",
+      },
+    };
+    const result = {
+      type: "tool_result",
+      toolName: "exec_command",
+      text: [
+        "Chunk ID: abc123 Wall time: 0.7334 seconds Process exited with code 0 Original token count: 180 Output:",
+        "Script completed",
+        "Wall time 1.1 seconds",
+        'Output: {"success":true,"data":{"messages":[{"type":"error","text":"boom"},{"type":"warning","text":"careful"},{"type":"log","text":"ok"}]},"error":null}',
+      ].join("\n"),
+    };
+
+    expect(visualToolCommandResultBadges(block, result)).toEqual([
+      {
+        label: "✕1",
+        tone: "danger",
+        title: "1 console error",
+      },
+      {
+        label: "⚠1",
+        tone: "warning",
+        title: "1 console warning",
+      },
+    ]);
+  });
+
+  it("shows console badges for structured browser console tool output", () => {
+    const block = {
+      type: "tool_use",
+      toolName: "list_console_messages",
+      toolInput: {
+        pageSize: 100,
+        types: ["warn", "error"],
+      },
+    };
+    const result = {
+      type: "tool_result",
+      toolName: "list_console_messages",
+      text: [
+        "Wall time: 0.0027 seconds",
+        "Output:",
+        JSON.stringify([
+          {
+            type: "text",
+            text: [
+              "## Console messages",
+              "Showing 1-3 of 3 (Page 1 of 1).",
+              "msgid=137 [error] Uncaught Svelte error",
+              "msgid=146 [warn] Deprecated endpoint",
+              "msgid=149 [debug] connected",
+            ].join("\n"),
+          },
+        ]),
+      ].join("\n"),
+    };
+
+    expect(visualToolPreviewText(block)).toBe(
+      "Check console for warnings and errors",
+    );
+    expect(visualToolCommandResultBadges(block, result)).toEqual([
+      {
+        label: "✕1",
+        tone: "danger",
+        title: "1 console error",
+      },
+      {
+        label: "⚠1",
+        tone: "warning",
+        title: "1 console warning",
+      },
+    ]);
+  });
+
   it("ignores label-only print commands between read summaries", () => {
     const block = {
       type: "tool_use",
@@ -4498,6 +4915,17 @@ describe("visual tool payload display helpers", () => {
         },
       }),
     ).toBe("Emulate Slow 3G");
+    const terminalReadBlock = {
+      type: "tool_use",
+      toolName: "read_thread_terminal",
+      toolInput: {},
+    };
+    expect(visualToolPreviewText(terminalReadBlock)).toBe(
+      "Read terminal output",
+    );
+    expect(visualToolIconNameForPreview(terminalReadBlock)).toBe(
+      "read_thread_terminal",
+    );
   });
 
   it("summarizes rg searches without hiding the real command", () => {
@@ -4513,6 +4941,18 @@ describe("visual tool payload display helpers", () => {
       'Search src for "GetStage()"',
     );
     expect(visualToolCallPayloadText(block)).toContain("rg -n");
+
+    const pipedSearch = {
+      type: "tool_use",
+      toolName: "exec_command",
+      toolInput: {
+        cmd: 'rg -n "sf3d-web|Image to 3D" index.html app.html | sed -n "1,180p"',
+      },
+    };
+    expect(visualToolPreviewText(pipedSearch)).toBe(
+      'Search index.html, app.html for "sf3d-web|Image to 3D"',
+    );
+    expect(visualToolIconNameForPreview(pipedSearch)).toBe("search");
   });
 
   it("normalizes Windows command launch wrappers before previewing commands", () => {
@@ -4877,7 +5317,11 @@ describe("buildVisualWorkDisplayEntries", () => {
     expect(owner).toBe(testToolUse.blocks[0]);
     expect(visualToolTestResultBadges(owner, pollResult.blocks[0])).toEqual([
       { label: "⚠1", tone: "warning", title: "1 warning" },
-      { label: "✓2", tone: "success", title: "2 tests passed" },
+      {
+        label: "✓2",
+        tone: "success",
+        title: "2 tests passed\n- loads assets\n- renders thumbnail",
+      },
     ]);
   });
 

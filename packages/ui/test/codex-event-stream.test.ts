@@ -822,6 +822,48 @@ describe("codex event stream hub", () => {
     ]);
   });
 
+  test("normalizes structured app-server reasoning summaries into thinking text", () => {
+    const messages = codexAppHistoryMessagesFromThread({
+      id: "thread-1",
+      turns: [
+        {
+          id: "turn-1",
+          startedAt: 1782122400,
+          items: [
+            {
+              id: "reasoning-1",
+              type: "reasoning",
+              summary: [
+                {
+                  type: "summary_text",
+                  text: "**Refactoring narration fragment projection for cut mode**",
+                },
+                {
+                  type: "summary_text",
+                  text: "**Verifying fragment merging and render order**",
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    });
+
+    expect(messages).toEqual([
+      {
+        id: "codex-plan-reasoning-1",
+        role: "assistant",
+        timestamp: "2026-06-22T10:00:00.000Z",
+        blocks: [
+          {
+            type: "thinking",
+            text: "**Refactoring narration fragment projection for cut mode**\n\n**Verifying fragment merging and render order**",
+          },
+        ],
+      },
+    ]);
+  });
+
   test("normalizes app-server paged turns from newest-first to chronological messages", () => {
     const messages = codexAppHistoryMessagesFromTurnPage({
       id: "thread-1",
@@ -1490,6 +1532,79 @@ describe("codex event stream hub", () => {
     );
   });
 
+  test("normalizes app-server tool output image content in live and history", () => {
+    const dataUrl = `data:image/png;base64,${Buffer.from("image bytes").toString("base64")}`;
+    const toolUse = {
+      id: "call-preview",
+      call_id: "call-preview",
+      type: "function_call",
+      name: "exec_command",
+      arguments: JSON.stringify({ cmd: "node render-preview.mjs" }),
+    };
+    const toolResult = {
+      id: "call-preview",
+      call_id: "call-preview",
+      type: "function_call_output",
+      output: [
+        { type: "input_text", text: "Preview generated." },
+        {
+          type: "input_image",
+          image_url: {
+            url: dataUrl,
+          },
+        },
+      ],
+    };
+    const historyContext = {};
+    const history = codexAppHistoryMessagesFromThread(
+      { turns: [{ id: "turn-1", items: [toolUse, toolResult] }] },
+      historyContext,
+    );
+    const liveContext = {};
+    const live = [
+      ...codexLiveMessagesFromEvent(
+        {
+          kind: "notification",
+          method: "item/started",
+          params: { item: toolUse, threadId: "thread-1", turnId: "turn-1" },
+          threadId: "thread-1",
+          turnId: "turn-1",
+          receivedAt: "2026-06-22T10:00:00.000Z",
+        },
+        liveContext,
+      ),
+      ...codexLiveMessagesFromEvent(
+        {
+          kind: "notification",
+          method: "item/completed",
+          params: { item: toolResult, threadId: "thread-1", turnId: "turn-1" },
+          threadId: "thread-1",
+          turnId: "turn-1",
+          receivedAt: "2026-06-22T10:00:01.000Z",
+        },
+        liveContext,
+      ),
+    ];
+
+    expect(stripTimestamps(live)).toEqual(stripTimestamps(history));
+    expect(live[1]?.blocks).toEqual([
+      {
+        type: "tool_result",
+        toolName: "exec_command",
+        toolUseId: "call-preview",
+        text: "Preview generated.",
+      },
+      {
+        type: "media",
+        mediaKind: "image",
+        mimeType: "image/png",
+        url: dataUrl,
+        title: "Image",
+        alt: "Image",
+      },
+    ]);
+  });
+
   test("normalizes app-server write_stdin starts before results arrive", () => {
     const messages = codexLiveMessagesFromEvent({
       kind: "notification",
@@ -1613,6 +1728,76 @@ describe("codex event stream hub", () => {
         ],
       },
     ]);
+  });
+
+  test("keeps prompt-bearing image generation input when live completion updates are sparse", () => {
+    const context = {};
+    const start = codexLiveMessagesFromEvent(
+      {
+        kind: "notification",
+        method: "item/started",
+        params: {
+          threadId: "thread-1",
+          turnId: "turn-1",
+          item: {
+            id: "image-1",
+            type: "imageGeneration",
+            prompt: "a heroic Duberman sticker",
+            status: "generating",
+          },
+        },
+        threadId: "thread-1",
+        turnId: "turn-1",
+        receivedAt: "2026-07-02T15:41:04.000Z",
+      },
+      context,
+    );
+    const completed = codexLiveMessagesFromEvent(
+      {
+        kind: "notification",
+        method: "item/updated",
+        params: {
+          threadId: "thread-1",
+          turnId: "turn-1",
+          item: {
+            id: "image-1",
+            type: "imageGeneration",
+            status: "completed",
+            savedPath: "/tmp/duberman.png",
+          },
+        },
+        threadId: "thread-1",
+        turnId: "turn-1",
+        receivedAt: "2026-07-02T15:42:10.000Z",
+      },
+      context,
+    );
+
+    expect(start[0]?.blocks[0]).toMatchObject({
+      type: "tool_use",
+      toolInput: {
+        prompt: "a heroic Duberman sticker",
+        status: "generating",
+      },
+    });
+    expect(completed[0]?.blocks[0]).toMatchObject({
+      type: "tool_use",
+      toolName: "image_generation_call",
+      toolInput: {
+        prompt: "a heroic Duberman sticker",
+        status: "generating",
+      },
+    });
+    expect(completed[1]?.blocks[0]).toMatchObject({
+      type: "tool_result",
+      text: "Generated image",
+      toolName: "image_generation_call",
+    });
+    expect(completed[2]?.blocks[0]).toMatchObject({
+      type: "media",
+      path: "/tmp/duberman.png",
+      toolName: "image_generation_call",
+    });
   });
 
   test("normalizes app-server image generation history and live snapshots to the same visual contract", () => {

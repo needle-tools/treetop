@@ -1,8 +1,10 @@
 import {
   cleanVisualToolResultText,
   visualObservedProcessOutput,
+  visualPathPreviewTargets,
   visualSnapshotUidLabelsFromToolResult,
   visualToolIsTestCommand,
+  type VisualToolPreviewPart,
 } from "./visual-nicifiers";
 
 export {
@@ -84,6 +86,15 @@ export interface VisualMediaBlock extends MessageBlock {
   title?: string;
   alt?: string;
   mimeType?: string;
+}
+
+export function visualMediaPathTarget(
+  block: MessageBlock,
+): Extract<VisualToolPreviewPart, { kind: "path" }> | undefined {
+  if (block.type !== "media") return undefined;
+  const media = block as VisualMediaBlock;
+  if (!media.path) return undefined;
+  return visualPathPreviewTargets([media.path])[0];
 }
 
 export type VisualPlanStatus = "pending" | "in_progress" | "completed" | string;
@@ -696,11 +707,47 @@ function formatWaitTimeoutSeconds(seconds: number): string {
 }
 
 function cleanThinkingTitle(text: string): string {
+  const fragments = markdownTitleFragments(text);
+  if (fragments) return fragments.join(", ");
   return text
     .trim()
     .replace(/^(?:\*\*|__)(.*?)(?:\*\*|__)$/s, "$1")
     .replace(/^(?:\*|_)(.*?)(?:\*|_)$/s, "$1")
     .trim();
+}
+
+function markdownTitleFragments(text: string): string[] | null {
+  const lines = text
+    .split(/\n+/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+  if (!lines.length) return null;
+  const fragments: string[] = [];
+  for (const line of lines) {
+    const lineFragments = markdownTitleLineFragments(line);
+    if (!lineFragments) return null;
+    fragments.push(...lineFragments);
+  }
+  if (fragments.length < 2) return null;
+  return fragments;
+}
+
+function markdownTitleLineFragments(text: string): string[] | null {
+  const raw = text.trim();
+  if (!raw) return null;
+  const fragments: string[] = [];
+  const pattern = /(\*\*|__)(.*?)\1/gs;
+  let lastIndex = 0;
+  for (const match of raw.matchAll(pattern)) {
+    const between = raw.slice(lastIndex, match.index).trim();
+    if (between) return null;
+    const fragment = (match[2] ?? "").trim();
+    if (fragment) fragments.push(fragment);
+    lastIndex = (match.index ?? 0) + match[0].length;
+  }
+  if (raw.slice(lastIndex).trim()) return null;
+  if (!fragments.length) return null;
+  return fragments;
 }
 
 export function visualThinkingSummary(text: string | undefined): {
@@ -712,9 +759,14 @@ export function visualThinkingSummary(text: string | undefined): {
     .replace(/^thinking(?:\s*[:—–-]\s*|\s+)/i, "")
     .trim();
   if (!cleaned) return { title: "", body: "" };
+  const cleanedTitleFragments = markdownTitleFragments(cleaned);
+  if (cleanedTitleFragments) {
+    return { title: cleanedTitleFragments.join(", "), body: "" };
+  }
   const [firstLine = "", ...rest] = cleaned.split("\n");
   const title = cleanThinkingTitle(firstLine);
   const body = rest.join("\n").trim();
+  if (markdownTitleFragments(firstLine) && title) return { title, body };
   if (title && body && title.length <= 96) return { title, body };
   if (title && !body && title.length <= 96) return { title, body: "" };
   return { title: "", body: cleaned };

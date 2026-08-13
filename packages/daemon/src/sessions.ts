@@ -11,6 +11,7 @@
 
 import { createHash } from "node:crypto";
 import { readFile, stat, open } from "node:fs/promises";
+import { basename, join } from "node:path";
 import type { AgentKind } from "./agents";
 
 export type NormalizedRole = "user" | "assistant" | "system" | "tool";
@@ -166,6 +167,10 @@ export interface NormalizedSession {
   manualTitle?: string;
 }
 
+interface CodexParseContext {
+  sourcePath?: string;
+}
+
 function emptySession(agent: AgentKind): NormalizedSession {
   return { agent, cwd: "", sessionId: "", messages: [] };
 }
@@ -269,16 +274,48 @@ function imageGenerationToolUseId(
   );
 }
 
-function imageGenerationMediaBlock(
+function codexSessionIdFromSourcePath(sourcePath: string | undefined): string | undefined {
+  if (!sourcePath) return undefined;
+  return basename(sourcePath).match(
+    /([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl$/i,
+  )?.[1];
+}
+
+function codexHomeFromSessionPath(sourcePath: string | undefined): string | undefined {
+  if (!sourcePath) return undefined;
+  const marker = `${"/"}.codex${"/"}sessions${"/"}`;
+  const normalized = sourcePath.replace(/\\/g, "/");
+  const index = normalized.indexOf(marker);
+  if (index < 0) return undefined;
+  return sourcePath.slice(0, index + "/.codex".length);
+}
+
+function codexGeneratedImagePath(
   raw: Record<string, unknown>,
-): NormalizedBlock | null {
-  const type = stringProp(raw, "type");
-  if (!type || !/image.*(?:call|generation|end)/i.test(type)) return null;
-  const path =
+  context: CodexParseContext = {},
+): string | undefined {
+  const explicit =
     stringProp(raw, "path") ??
     stringProp(raw, "file_path") ??
     stringProp(raw, "filePath") ??
-    stringProp(raw, "savedPath");
+    stringProp(raw, "savedPath") ??
+    stringProp(raw, "saved_path");
+  if (explicit) return explicit;
+  const callId = imageGenerationToolUseId(raw);
+  if (!callId) return undefined;
+  const sessionId = codexSessionIdFromSourcePath(context.sourcePath);
+  const codexHome = codexHomeFromSessionPath(context.sourcePath);
+  if (!sessionId || !codexHome) return undefined;
+  return join(codexHome, "generated_images", sessionId, `${callId}.png`);
+}
+
+function imageGenerationMediaBlock(
+  raw: Record<string, unknown>,
+  context: CodexParseContext = {},
+): NormalizedBlock | null {
+  const type = stringProp(raw, "type");
+  if (!type || !/image.*(?:call|generation|end)/i.test(type)) return null;
+  const path = codexGeneratedImagePath(raw, context);
   const mimeType =
     stringProp(raw, "mime_type") ??
     stringProp(raw, "mimeType") ??
@@ -394,6 +431,43 @@ function mediaBlockFromContent(
     }
   }
   return block;
+}
+
+function codexToolOutputBlocksFromPayload(output: unknown): {
+  text: string;
+  mediaBlocks: NormalizedBlock[];
+} {
+  if (typeof output === "string") return { text: output, mediaBlocks: [] };
+  if (!Array.isArray(output)) return { text: "", mediaBlocks: [] };
+  const textParts: string[] = [];
+  const mediaBlocks: NormalizedBlock[] = [];
+  for (const raw of output) {
+    if (typeof raw === "string") {
+      if (raw.trim()) textParts.push(raw);
+      continue;
+    }
+    if (!raw || typeof raw !== "object") continue;
+    const item = raw as Record<string, unknown>;
+    const media = mediaBlockFromContent(item);
+    if (media) {
+      mediaBlocks.push(media);
+      continue;
+    }
+    const text = stringProp(item, "text") ?? stringProp(item, "content");
+    if (!text) continue;
+    const type = stringProp(item, "type");
+    if (
+      type === undefined ||
+      type === "text" ||
+      type === "input_text" ||
+      type === "output_text" ||
+      type === "inputText" ||
+      type === "outputText"
+    ) {
+      textParts.push(text);
+    }
+  }
+  return { text: textParts.join("\n"), mediaBlocks };
 }
 
 function mediaTitleFromPath(path: string): string {
@@ -721,7 +795,11 @@ function codexToolInput(input: unknown): unknown {
 }
 
 function canonicalCodexToolName(name: string): string {
-  return name === "exec" ? "exec_command" : name;
+  if (name === "exec") return "exec_command";
+  if (name === "image_gen.imagegen" || name === "imagegen.imagegen") {
+    return "image_generation_call";
+  }
+  return name;
 }
 
 interface CodexToolInvocation {
@@ -1209,7 +1287,11 @@ function codexSandboxPolicyLabel(value: unknown): string | undefined {
 }
 
 /** Per-line Codex parser, used by the batch + tail variants. */
-function parseCodexJsonlLine(line: string, out: NormalizedSession): void {
+function parseCodexJsonlLine(
+  line: string,
+  out: NormalizedSession,
+  context: CodexParseContext = {},
+): void {
   if (!line) return;
   let obj: Record<string, unknown>;
   try {
@@ -1318,8 +1400,10 @@ function parseCodexJsonlLine(line: string, out: NormalizedSession): void {
       p.type === "function_call_output" ||
       p.type === "custom_tool_call_output"
     ) {
-      const text = typeof p.output === "string" ? p.output : "";
+      const { text, mediaBlocks } = codexToolOutputBlocksFromPayload(p.output);
       const toolName = codexToolNameForResult(out, p.call_id);
+      const toolUseId =
+        typeof p.call_id === "string" ? p.call_id : undefined;
       if (
         toolName === "get_goal" ||
         toolName === "create_goal" ||
@@ -1339,9 +1423,14 @@ function parseCodexJsonlLine(line: string, out: NormalizedSession): void {
             type: "tool_result",
             text: clipText(text),
             toolName,
-            toolUseId: typeof p.call_id === "string" ? p.call_id : undefined,
+            toolUseId,
             ...codexSubagentBlockFromToolOutput(toolName, text),
           },
+          ...mediaBlocks.map((block) => ({
+            ...block,
+            ...(toolName ? { toolName } : {}),
+            ...(toolUseId ? { toolUseId } : {}),
+          })),
         ],
         ts,
       );
@@ -1387,7 +1476,8 @@ function parseCodexJsonlLine(line: string, out: NormalizedSession): void {
         ],
         ts,
       );
-      const media = imageGenerationMediaBlock(p) ?? mediaBlockFromContent(p);
+      const media =
+        imageGenerationMediaBlock(p, context) ?? mediaBlockFromContent(p);
       if (media && (media.path || media.url || media.mimeType)) {
         pushSessionMessage(
           out,
@@ -1512,6 +1602,41 @@ function parseCodexJsonlLine(line: string, out: NormalizedSession): void {
       );
       return;
     }
+    if (p.type === "image_generation_end") {
+      const toolUseId = imageGenerationToolUseId(p);
+      const toolName =
+        codexToolNameForResult(out, toolUseId) ?? "image_generation_call";
+      pushSessionMessage(
+        out,
+        "tool",
+        [
+          {
+            type: "tool_result",
+            text: "Generated image",
+            toolName,
+            toolUseId,
+          },
+        ],
+        ts,
+      );
+      const media =
+        imageGenerationMediaBlock(p, context) ?? mediaBlockFromContent(p);
+      if (media && (media.path || media.url || media.mimeType)) {
+        pushSessionMessage(
+          out,
+          "assistant",
+          [
+            {
+              ...media,
+              toolName,
+              toolUseId,
+            },
+          ],
+          ts,
+        );
+      }
+      return;
+    }
     return;
   }
   if (obj.type === "turn_context") {
@@ -1578,11 +1703,14 @@ function parseCodexJsonlLine(line: string, out: NormalizedSession): void {
 
 /** Best-effort Codex parser. Format varies across versions; we look for
  *  `role` + string `content` and fall back to top-level `text`/`message`. */
-export function parseCodexJsonl(text: string): NormalizedSession {
+export function parseCodexJsonl(
+  text: string,
+  context: CodexParseContext = {},
+): NormalizedSession {
   const out = emptySession("codex");
   if (!text) return out;
   for (const line of text.split("\n")) {
-    parseCodexJsonlLine(line, out);
+    parseCodexJsonlLine(line, out, context);
   }
   return out;
 }
@@ -1663,7 +1791,7 @@ export async function parseSessionFile(
     return emptySession(agent);
   }
   if (agent === "claude") return parseClaudeJsonl(text);
-  if (agent === "codex") return parseCodexJsonl(text);
+  if (agent === "codex") return parseCodexJsonl(text, { sourcePath: path });
   if (agent === "ollama") return parseOllamaJsonl(text);
   // No reader for copilot yet — its data isn't a tail-friendly JSONL.
   return emptySession(agent);
@@ -1824,6 +1952,7 @@ function appendChunk(
   agent: AgentKind,
   chunk: string,
   out: NormalizedSession,
+  context: CodexParseContext = {},
 ): string {
   const endsWithNewline = chunk.endsWith("\n");
   const lines = chunk.split("\n");
@@ -1832,7 +1961,7 @@ function appendChunk(
   if (endsWithNewline) lines.pop();
   for (const line of lines) {
     if (agent === "claude") parseClaudeJsonlLine(line, out);
-    else if (agent === "codex") parseCodexJsonlLine(line, out);
+    else if (agent === "codex") parseCodexJsonlLine(line, out, context);
   }
   return trailing;
 }
@@ -2026,7 +2155,9 @@ export async function tailParseSessionFile(
       text = text.slice(firstNewline + 1);
     }
     const parsed =
-      agent === "claude" ? parseClaudeJsonl(text) : parseCodexJsonl(text);
+      agent === "claude"
+        ? parseClaudeJsonl(text)
+        : parseCodexJsonl(text, { sourcePath: path });
     // Overlay head meta — the head wins for identity fields. The tail
     // keeps the messages (those are the recent ones the UI wants).
     if (headMeta.cwd) parsed.cwd = headMeta.cwd;
@@ -2133,7 +2264,9 @@ async function getSessionResponseData(
         const buf = Buffer.alloc(length);
         await fh.read(buf, 0, length, cached.size);
         const chunk = cached.partialLine + buf.toString("utf-8");
-        const newPartial = appendChunk(agent, chunk, cached.parsed);
+        const newPartial = appendChunk(agent, chunk, cached.parsed, {
+          sourcePath: path,
+        });
         cached.partialLine = newPartial;
         cached.size = st.size;
         cached.mtimeMs = st.mtimeMs;

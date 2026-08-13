@@ -16,6 +16,60 @@ export interface VisualToolResultText {
   processSessionId?: number;
 }
 
+function finiteNumber(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value)
+    ? value
+    : undefined;
+}
+
+function parsedToolResultPayload(output: string):
+  | {
+      output?: string;
+      exitCode?: number;
+      wallTimeSeconds?: number;
+      originalTokenCount?: number;
+      processSessionId?: number;
+    }
+  | undefined {
+  const trimmed = output.trim();
+  if (!trimmed.startsWith("{")) return undefined;
+  try {
+    const parsed = JSON.parse(trimmed) as Record<string, unknown>;
+    if (!parsed || typeof parsed !== "object") return undefined;
+    const exitCode = finiteNumber(parsed.exit_code);
+    const wallTimeSeconds = finiteNumber(parsed.wall_time_seconds);
+    const originalTokenCount = finiteNumber(parsed.original_token_count);
+    const processSessionId = finiteNumber(parsed.session_id);
+    return {
+      output: typeof parsed.output === "string" ? parsed.output : undefined,
+      exitCode,
+      wallTimeSeconds,
+      originalTokenCount,
+      processSessionId,
+    };
+  } catch {
+    return undefined;
+  }
+}
+
+function sessionIdFromResultOutput(output: string): number | undefined {
+  const match = output.match(/\bSESSION_ID=(\d+)\b/);
+  if (!match) return undefined;
+  const sessionId = Number.parseInt(match[1]!, 10);
+  return Number.isFinite(sessionId) ? sessionId : undefined;
+}
+
+function commandResultTitle(
+  output: string,
+  exitCode: number | undefined,
+  processRunning: boolean,
+): string {
+  if (processRunning) return output ? "Process output" : "Process still running";
+  if (output) return "Command output";
+  if (exitCode === 0) return "Command completed";
+  if (exitCode !== undefined) return "Command failed";
+  return "Command completed";
+}
 
 export function visualFileEditTotals(
   summary: VisualFileEditSummary | undefined,
@@ -63,7 +117,19 @@ export function cleanVisualToolResultText(
   const plainCommandResult = trimmed.match(
     /^Exit code:\s+(-?\d+)\s+Wall time:\s+([\d.]+)\s+seconds?\s+Output:\s*([\s\S]*)$/i,
   );
-  if (!codexChunk && !codexRunningChunk && !plainCommandResult) {
+  const scriptCompletedResult = trimmed.match(
+    /^Script completed\s+Wall time\s+([\d.]+)\s+seconds?\s+Output:\s*([\s\S]*)$/i,
+  );
+  const scriptRunningResult = trimmed.match(
+    /^Script running with cell ID\s+\d+\s+Wall time\s+([\d.]+)\s+seconds?\s+Output:\s*([\s\S]*)$/i,
+  );
+  if (
+    !codexChunk &&
+    !codexRunningChunk &&
+    !plainCommandResult &&
+    !scriptCompletedResult &&
+    !scriptRunningResult
+  ) {
     return {
       title: "Tool result",
       body: trimmed,
@@ -89,6 +155,47 @@ export function cleanVisualToolResultText(
       processSessionId: Number.isFinite(processSessionId)
         ? processSessionId
         : undefined,
+    };
+  }
+
+  if (scriptRunningResult) {
+    const wallTimeSeconds = Number(scriptRunningResult[1]);
+    const output = (scriptRunningResult[2] ?? "").trim();
+    const processSessionId = sessionIdFromResultOutput(output);
+    return {
+      title: output ? "Process output" : "Process still running",
+      body: output,
+      wrappedCodexChunk: true,
+      wallTimeSeconds: Number.isFinite(wallTimeSeconds)
+        ? wallTimeSeconds
+        : undefined,
+      processRunning: true,
+      processSessionId,
+    };
+  }
+
+  if (scriptCompletedResult) {
+    const wrapperWallTimeSeconds = Number(scriptCompletedResult[1]);
+    const rawOutput = (scriptCompletedResult[2] ?? "").trim();
+    const payload = parsedToolResultPayload(rawOutput);
+    const output = (payload?.output ?? rawOutput).trim();
+    const processSessionId =
+      payload?.processSessionId ?? sessionIdFromResultOutput(output);
+    const processRunning =
+      payload?.exitCode === undefined && processSessionId !== undefined;
+    return {
+      title: commandResultTitle(output, payload?.exitCode, processRunning),
+      body: output,
+      wrappedCodexChunk: true,
+      wallTimeSeconds:
+        payload?.wallTimeSeconds ??
+        (Number.isFinite(wrapperWallTimeSeconds)
+          ? wrapperWallTimeSeconds
+          : undefined),
+      exitCode: payload?.exitCode,
+      originalTokenCount: payload?.originalTokenCount,
+      processRunning: processRunning ? true : undefined,
+      processSessionId,
     };
   }
 
@@ -260,6 +367,7 @@ export function visualToolIconNameForPreview(
   preview = visualToolPreviewText(block),
 ): string | undefined {
   const toolName = (block?.toolName ?? "").toLowerCase();
+  if (isImageGenerationToolName(toolName)) return "image_generation";
   if (toolName === "click" || toolName.endsWith(".click")) return "click";
   if (
     toolName === "take_screenshot" ||
@@ -282,6 +390,7 @@ export function visualToolIconNameForPreview(
   ) {
     return "git";
   }
+  if (/^Search\b/.test(preview)) return "search";
   if (/^Read logs?\b/.test(preview)) return "read";
   if (/^Count\b/.test(preview)) return "read";
   if (/^Query JSON\b/.test(preview)) return "read";
@@ -297,9 +406,11 @@ export function visualToolIconNameForPreview(
   if (/^Capture browser screenshot\b/.test(preview)) return "take_screenshot";
   if (/^Click browser element\b/.test(preview)) return "click";
   if (/^Upload\b/.test(preview)) return "upload_file";
+  if (/^Download\b/.test(preview)) return "download_file";
   if (/^Download from browser\b/.test(preview)) return "download_file";
   if (/^Read browser\b/.test(preview)) return "read_browser";
   if (/^Scroll browser\b/.test(preview)) return "scroll_browser";
+  if (/^Run browser script\b/.test(preview)) return "evaluate_script";
   if (/^List screen sessions\b/.test(preview)) return "list";
   if (/^Emulate\b/.test(preview)) return "emulate";
   if (/^Open tunnel\b/.test(preview)) return "port_check";
@@ -445,13 +556,19 @@ export function visualToolTestResultBadges(
     const svelteBadges = svelteCheckResultBadges(result.body);
     if (svelteBadges.length > 0) return svelteBadges;
   }
-  const counts = testResultCounts(result.body);
+  const summary = testResultSummary(result.body);
+  const counts = summary.counts;
   const badges: VisualToolResultBadge[] = [];
   if (counts.failed > 0) {
     badges.push({
       label: `✕${counts.failed}`,
       tone: "danger",
-      title: `${counts.failed} ${plural(counts.failed, "test")} failed`,
+      title: testBadgeTitle(
+        counts.failed,
+        "test",
+        "failed",
+        summary.details.failed,
+      ),
     });
   } else if (result.exitCode !== undefined && result.exitCode !== 0) {
     badges.push({
@@ -464,28 +581,48 @@ export function visualToolTestResultBadges(
     badges.push({
       label: `⚠${counts.warnings}`,
       tone: "warning",
-      title: `${counts.warnings} ${plural(counts.warnings, "warning")}`,
+      title: testBadgeTitle(
+        counts.warnings,
+        "warning",
+        "",
+        summary.details.warnings,
+      ),
     });
   }
   if (counts.passed > 0) {
     badges.push({
       label: `✓${counts.passed}`,
       tone: "success",
-      title: `${counts.passed} ${plural(counts.passed, "test")} passed`,
+      title: testBadgeTitle(
+        counts.passed,
+        "test",
+        "passed",
+        summary.details.passed,
+      ),
     });
   }
   if (counts.skipped > 0) {
     badges.push({
       label: `skip ${counts.skipped}`,
       tone: "neutral",
-      title: `${counts.skipped} ${plural(counts.skipped, "test")} skipped`,
+      title: testBadgeTitle(
+        counts.skipped,
+        "test",
+        "skipped",
+        summary.details.skipped,
+      ),
     });
   }
   if (counts.todo > 0) {
     badges.push({
       label: `todo ${counts.todo}`,
       tone: "neutral",
-      title: `${counts.todo} todo ${plural(counts.todo, "test")}`,
+      title: testBadgeTitle(
+        counts.todo,
+        "todo test",
+        "",
+        summary.details.todo,
+      ),
     });
   }
   return badges;
@@ -532,6 +669,12 @@ export function visualToolCommandResultBadges(
   toolResultBlock?: MessageBlock | undefined,
 ): VisualToolResultBadge[] {
   const summaries = visualToolCommandSummaries(toolUseBlock);
+  const consoleBadges = commandConsoleResultBadges(
+    toolUseBlock,
+    summaries,
+    toolResultBlock,
+  );
+  if (consoleBadges.length > 0) return consoleBadges;
   const searchBadge = commandSearchResultBadge(summaries, toolResultBlock);
   if (searchBadge) return [searchBadge];
   const infos = summaries
@@ -543,6 +686,123 @@ export function visualToolCommandResultBadges(
   const noun = sharedInfoValue(infos, "noun") ?? "path";
   const action = sharedInfoValue(infos, "action") ?? "touched";
   return [fileCountBadge(count, noun, action)];
+}
+
+interface ConsoleMessageCounts {
+  errors: number;
+  warnings: number;
+}
+
+function commandConsoleResultBadges(
+  toolUseBlock: MessageBlock | undefined,
+  summaries: readonly VisualCommandSummary[],
+  toolResultBlock: MessageBlock | undefined,
+): VisualToolResultBadge[] {
+  const toolName = (toolUseBlock?.toolName ?? "").toLowerCase();
+  const isConsoleTool =
+    toolName === "list_console_messages" ||
+    toolName.endsWith(".list_console_messages");
+  const isConsoleCommand = summaries.some(
+    (summary) => summary.kind === "browser" && summary.action === "console",
+  );
+  if (!isConsoleTool && !isConsoleCommand) return [];
+  if (!toolResultBlock || toolResultBlock.type !== "tool_result") return [];
+
+  const result = cleanVisualToolResultText(toolResultBlock.text);
+  const counts = countConsoleMessages(result.body || toolResultBlock.text || "");
+  const badges: VisualToolResultBadge[] = [];
+  if (counts.errors > 0) {
+    badges.push({
+      label: `✕${counts.errors}`,
+      tone: "danger",
+      title: `${counts.errors} console ${plural(counts.errors, "error")}`,
+    });
+  }
+  if (counts.warnings > 0) {
+    badges.push({
+      label: `⚠${counts.warnings}`,
+      tone: "warning",
+      title: `${counts.warnings} console ${plural(counts.warnings, "warning")}`,
+    });
+  }
+  return badges;
+}
+
+function countConsoleMessages(text: string): ConsoleMessageCounts {
+  const jsonCounts = countConsoleMessagesFromJson(text);
+  if (jsonCounts.errors > 0 || jsonCounts.warnings > 0) return jsonCounts;
+  const lineCounts = countConsoleMessagesFromLines(text);
+  return {
+    errors: lineCounts.errors,
+    warnings: lineCounts.warnings,
+  };
+}
+
+function countConsoleMessagesFromJson(text: string): ConsoleMessageCounts {
+  const counts: ConsoleMessageCounts = { errors: 0, warnings: 0 };
+  for (const value of parseJsonCandidates(text)) {
+    collectConsoleMessageTypes(value, counts);
+  }
+  return counts;
+}
+
+function parseJsonCandidates(text: string): unknown[] {
+  const candidates: unknown[] = [];
+  const trimmed = text.trim();
+  const seen = new Set<string>();
+  for (const candidate of [
+    trimmed,
+    ...trimmed
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter((line) => line.startsWith("{") || line.startsWith("[")),
+    trimmed.slice(Math.max(0, trimmed.indexOf("{"))),
+  ]) {
+    if (!candidate) continue;
+    if (seen.has(candidate)) continue;
+    seen.add(candidate);
+    try {
+      candidates.push(JSON.parse(candidate));
+    } catch {
+      // Console payloads are often embedded below command-wrapper prose.
+    }
+  }
+  return candidates;
+}
+
+function collectConsoleMessageTypes(
+  value: unknown,
+  counts: ConsoleMessageCounts,
+): void {
+  if (!value || typeof value !== "object") return;
+  if (Array.isArray(value)) {
+    for (const item of value) collectConsoleMessageTypes(item, counts);
+    return;
+  }
+  const record = value as Record<string, unknown>;
+  const type = typeof record.type === "string" ? record.type.toLowerCase() : "";
+  if (type === "error") counts.errors += 1;
+  if (type === "warn" || type === "warning") counts.warnings += 1;
+  if (typeof record.text === "string") {
+    const textCounts = countConsoleMessagesFromLines(record.text);
+    counts.errors += textCounts.errors;
+    counts.warnings += textCounts.warnings;
+  }
+  for (const key of ["messages", "data", "result", "results"]) {
+    collectConsoleMessageTypes(record[key], counts);
+  }
+}
+
+function countConsoleMessagesFromLines(text: string): ConsoleMessageCounts {
+  const counts: ConsoleMessageCounts = { errors: 0, warnings: 0 };
+  for (const line of text.split(/\r?\n/)) {
+    const match = line.match(/(?:^|\s)\[(error|warn|warning)\]/i);
+    if (!match) continue;
+    const type = match[1]!.toLowerCase();
+    if (type === "error") counts.errors += 1;
+    if (type === "warn" || type === "warning") counts.warnings += 1;
+  }
+  return counts;
 }
 
 function commandSearchResultBadge(
@@ -692,24 +952,39 @@ function visualToolTestSummary(
   );
 }
 
-function testResultCounts(body: string): {
+interface TestResultSummary {
+  counts: TestResultCounts;
+  details: Record<keyof TestResultCounts, string[]>;
+}
+
+interface TestResultCounts {
   passed: number;
   failed: number;
   warnings: number;
   skipped: number;
   todo: number;
-} {
-  const summary = {
+}
+
+function testResultSummary(body: string): TestResultSummary {
+  const counts: TestResultCounts = {
     passed: 0,
     failed: 0,
     warnings: 0,
     skipped: 0,
     todo: 0,
   };
+  const details: TestResultSummary["details"] = {
+    passed: [],
+    failed: [],
+    warnings: [],
+    skipped: [],
+    todo: [],
+  };
   const normalizedBody = stripAnsiEscapes(body);
   for (const line of normalizedBody.split(/\r?\n/)) {
     const trimmed = line.trim();
     if (!trimmed) continue;
+    collectTestResultDetail(trimmed, details);
     const failed = countFromLine(trimmed, [
       /\b(\d+)\s+fail(?:ed|s)?\b/i,
       /\bfailed\s+(\d+)\b/i,
@@ -732,36 +1007,124 @@ function testResultCounts(body: string): {
       /\b(\d+)\s+todo(?:s)?\b/i,
       /\btodos?\s+(\d+)\b/i,
     ]);
-    if (failed !== undefined) summary.failed = Math.max(summary.failed, failed);
-    if (passed !== undefined) summary.passed = Math.max(summary.passed, passed);
+    if (failed !== undefined) counts.failed = Math.max(counts.failed, failed);
+    if (passed !== undefined) counts.passed = Math.max(counts.passed, passed);
     if (warnings !== undefined) {
-      summary.warnings = Math.max(summary.warnings, warnings);
+      counts.warnings = Math.max(counts.warnings, warnings);
     }
     if (skipped !== undefined) {
-      summary.skipped = Math.max(summary.skipped, skipped);
+      counts.skipped = Math.max(counts.skipped, skipped);
     }
-    if (todo !== undefined) summary.todo = Math.max(summary.todo, todo);
+    if (todo !== undefined) counts.todo = Math.max(counts.todo, todo);
   }
-  summary.failed = Math.max(
-    summary.failed,
+  counts.failed = Math.max(
+    counts.failed,
     matchCount(normalizedBody, /^\s*\(fail\)/gm),
     matchCount(normalizedBody, /^\s*[✘×]\s+\d+\b/gm),
   );
-  summary.passed = Math.max(
-    summary.passed,
+  counts.passed = Math.max(
+    counts.passed,
     matchCount(normalizedBody, /^\s*\(pass\)/gm),
     matchCount(normalizedBody, /^\s*[✓✔]\s+\d+\b/gm),
   );
-  summary.skipped = Math.max(
-    summary.skipped,
+  counts.skipped = Math.max(
+    counts.skipped,
     matchCount(normalizedBody, /^\s*\(skip\)/gm),
     matchCount(normalizedBody, /^\s*-\s+\d+\b/gm),
   );
-  summary.todo = Math.max(summary.todo, matchCount(normalizedBody, /^\s*\(todo\)/gm));
-  if (summary.warnings === 0) {
-    summary.warnings = matchCount(normalizedBody, /\bwarning\b/gi);
+  counts.todo = Math.max(counts.todo, matchCount(normalizedBody, /^\s*\(todo\)/gm));
+  if (counts.warnings === 0) {
+    counts.warnings = matchCount(normalizedBody, /\bwarning\b/gi);
   }
-  return summary;
+  return { counts, details };
+}
+
+function collectTestResultDetail(
+  line: string,
+  details: TestResultSummary["details"],
+): void {
+  const bun = line.match(/^\((pass|fail|skip|todo)\)\s+(.+)$/i);
+  if (bun) {
+    addTestDetail(details, testDetailKey(bun[1]!), bun[2]!);
+    return;
+  }
+
+  const playwright = line.match(/^[✓✔✘×]\s+\d+\s+(.+?)(?:\s+\([^)]*\))?$/);
+  if (playwright) {
+    addTestDetail(
+      details,
+      /^[✓✔]/.test(line) ? "passed" : "failed",
+      playwright[1]!,
+    );
+    return;
+  }
+
+  const vitest = line.match(/^[✓✔✘×]\s+(.+?)(?:\s+\d+ms)?$/);
+  if (vitest) {
+    addTestDetail(
+      details,
+      /^[✓✔]/.test(line) ? "passed" : "failed",
+      vitest[1]!,
+    );
+    return;
+  }
+
+  const tap = line.match(/^(not\s+ok|ok)\s+\d+\s+-\s+(.+)$/i);
+  if (tap) {
+    addTestDetail(details, /^ok$/i.test(tap[1]!) ? "passed" : "failed", tap[2]!);
+    return;
+  }
+
+  const pytest = line.match(/^(\S+::\S.*?)\s+(PASSED|FAILED|SKIPPED|XFAIL|XPASS)\b/);
+  if (pytest) {
+    const status = pytest[2]!.toUpperCase();
+    addTestDetail(
+      details,
+      status === "PASSED" ? "passed" : status === "FAILED" ? "failed" : "skipped",
+      pytest[1]!,
+    );
+    return;
+  }
+
+  if (/^(warn|warning):/i.test(line)) {
+    addTestDetail(details, "warnings", line.replace(/^(warn|warning):\s*/i, ""));
+  }
+}
+
+function testDetailKey(value: string): keyof TestResultCounts {
+  const normalized = value.toLowerCase();
+  if (normalized === "pass") return "passed";
+  if (normalized === "fail") return "failed";
+  if (normalized === "skip") return "skipped";
+  return "todo";
+}
+
+function addTestDetail(
+  details: TestResultSummary["details"],
+  key: keyof TestResultCounts,
+  value: string,
+): void {
+  const cleaned = value.replace(/\s+/g, " ").trim();
+  if (!cleaned || details[key].includes(cleaned)) return;
+  details[key].push(cleaned);
+}
+
+function testBadgeTitle(
+  count: number,
+  noun: string,
+  verb: string,
+  details: readonly string[],
+): string {
+  const base =
+    verb.length > 0
+      ? `${count} ${plural(count, noun)} ${verb}`
+      : `${count} ${plural(count, noun)}`;
+  if (details.length === 0) return base;
+  const shown = details.slice(0, 12).map((detail) => `- ${detail}`);
+  if (details.length > shown.length) {
+    shown.push(`+ ${details.length - shown.length} more`);
+  }
+  return `${base}\n${shown.join("\n")}`;
 }
 
 function stripAnsiEscapes(text: string): string {
@@ -834,7 +1197,17 @@ export function visualToolMediaBlocks(
   const toolName = (block.toolName ?? "").toLowerCase();
   if (block.toolInput && typeof block.toolInput === "object") {
     const obj = block.toolInput as Record<string, unknown>;
-    if (
+    if (isImageGenerationToolName(toolName)) {
+      addImagePath(
+        stringField(obj, "savedPath") ??
+          stringField(obj, "saved_path") ??
+          stringField(obj, "filePath") ??
+          stringField(obj, "file_path") ??
+          stringField(obj, "path") ??
+          stringField(obj, "output"),
+        "Generated image",
+      );
+    } else if (
       toolName.includes("take_screenshot") ||
       toolName.includes("screenshot")
     ) {
@@ -876,8 +1249,13 @@ export function visualToolMediaBlocks(
       }
     }
   }
-  for (const path of imagePathsFromToolResult(resultBlock)) {
-    addImagePath(path, "Screenshot", commandResultCwd);
+  const resultImageTitle = isImageGenerationToolName(toolName)
+    ? "Generated image"
+    : "Screenshot";
+  for (const path of imagePathsFromToolResult(resultBlock, {
+    allowImageGeneration: isImageGenerationToolName(toolName),
+  })) {
+    addImagePath(path, resultImageTitle, commandResultCwd);
   }
   return out;
 }
@@ -1053,11 +1431,13 @@ function isAbsoluteLocalFilePath(path: string): boolean {
 
 function imagePathsFromToolResult(
   block: MessageBlock | undefined,
+  opts: { allowImageGeneration?: boolean } = {},
 ): string[] {
   if (!block || block.type !== "tool_result" || !block.text) return [];
   const cleaned = cleanVisualToolResultText(block.text);
   const text = `${cleaned.body}\n${block.text}`;
-  if (!/\b(?:screenshot|snapshot|image)\b/i.test(text)) return [];
+  if (!/\b(?:screenshot|snapshot|image)\b/i.test(text) && !opts.allowImageGeneration)
+    return [];
 
   const out: string[] = [];
   const seen = new Set<string>();
@@ -1076,6 +1456,7 @@ function imagePathsFromToolResult(
     /\b(?:screenshot|snapshot|image)\s+(?:saved|written|captured|created)\s+to\s+(.+?\.(?:png|jpe?g|webp|gif|avif))(?:\s|$|["'`),.;:\]}])/gi,
     /\bsaved\s+(?:screenshot|snapshot|image)\s+to\s+(.+?\.(?:png|jpe?g|webp|gif|avif))(?:\s|$|["'`),.;:\]}])/gi,
     /["'](?:filePath|file_path|path)["']\s*:\s*["']([^"']+\.(?:png|jpe?g|webp|gif|avif))["']/gi,
+    /["'](?:savedPath|saved_path|output)["']\s*:\s*["']([^"']+\.(?:png|jpe?g|webp|gif|avif))["']/gi,
   ] as const;
 
   for (const pattern of patterns) {
@@ -1086,6 +1467,15 @@ function imagePathsFromToolResult(
     }
   }
   return out;
+}
+
+function isImageGenerationToolName(toolName: string): boolean {
+  return (
+    toolName === "image_generation_call" ||
+    toolName.endsWith(".image_generation_call") ||
+    toolName.includes("image_generation") ||
+    toolName.includes("imagegeneration")
+  );
 }
 
 function fetchResultByteCount(
@@ -1151,6 +1541,12 @@ export function visualToolPreviewParts(
       ? inlineScriptFromCommandPreservingHeredoc(command)
       : undefined
     : undefined;
+  if (inlineScript && command && agentBrowserEvalScriptFromCommand(command)) {
+    const commandPreview = visualCommandPreview(command, context);
+    if (commandPreview && commandPreview.parts.length > 0) {
+      return commandPreview.parts;
+    }
+  }
   if (inlineScript) return textPreviewParts(visualToolInlineScriptPreviewText(block));
   const commandPreview = command ? visualCommandPreview(command, context) : undefined;
   if (commandPreview && commandPreview.parts.length > 0) {
@@ -1273,7 +1669,15 @@ export function visualToolRemoteHostLabel(
   if (!block || block.type !== "tool_use") return undefined;
   const command = commandTextFromToolInput(block.toolInput, block.toolName);
   if (!command) return undefined;
-  return normalizeLaunchedCommand(command).remoteHost;
+  const normalized = normalizeLaunchedCommand(command);
+  if (normalized.remoteHost) return normalized.remoteHost;
+  const transfer = visualCommandPreview(command).summaries.find(
+    (
+      summary,
+    ): summary is Extract<VisualCommandSummary, { kind: "remote-transfer" }> =>
+      summary.kind === "remote-transfer",
+  );
+  return transfer?.host;
 }
 
 export interface VisualToolEnvAssignment {
@@ -1433,6 +1837,13 @@ type VisualCommandSummary =
   | { kind: "drive-check" }
   | { kind: "port-check"; ports: string[] }
   | { kind: "ssh-tunnel"; local: string; remote: string }
+  | {
+      kind: "remote-transfer";
+      action: "upload" | "download";
+      host: string;
+      local: string;
+      remotePath: string;
+    }
   | { kind: "screen-sessions" }
   | { kind: "listener-check"; terms: string[] }
   | {
@@ -1460,7 +1871,8 @@ type VisualCommandSummary =
         | "network"
         | "pages"
         | "reload"
-        | "emulate";
+        | "emulate"
+        | "script";
       target?: string;
       targetLabel?: string;
       detail?: string;
@@ -1494,6 +1906,15 @@ function visualStructuredToolPreviewParts(
     return undefined;
   }
   const obj = input as Record<string, unknown>;
+  if (isImageGenerationToolName(toolName)) {
+    return textPreviewParts("Generate image");
+  }
+  if (
+    toolName === "read_thread_terminal" ||
+    toolName.endsWith(".read_thread_terminal")
+  ) {
+    return textPreviewParts("Read terminal output");
+  }
   if (toolName.includes("evaluate_script")) {
     const fn = stringField(obj, "function");
     if (fn) return textPreviewParts("Run browser script");
@@ -1949,7 +2370,8 @@ function visualCommandPreview(
   const meaningfulParts = parts.filter(
     (part) =>
       !isShellContextCommand(part) &&
-      !(parts.length > 1 && isShellSetupWaitCommand(part)),
+      !(parts.length > 1 && isShellSetupWaitCommand(part)) &&
+      !(parts.length > 1 && isShellSetupProbeCommand(part)),
   );
   if (meaningfulParts.length === 0) {
     return {
@@ -2400,6 +2822,87 @@ function readableTunnelHost(host: string, options: { local: boolean }): string {
   return cleaned;
 }
 
+function summarizeScp(
+  tokens: string[],
+): Extract<VisualCommandSummary, { kind: "remote-transfer" }> | undefined {
+  const command = shellLauncherName(tokens[0] ?? "");
+  if (command !== "scp") return undefined;
+
+  const endpoints = scpEndpointTokens(tokens.slice(1));
+  if (endpoints.length < 2) return undefined;
+
+  const source = endpoints[0]!;
+  const destination = endpoints[endpoints.length - 1]!;
+  const sourceRemote = parseScpRemoteEndpoint(source);
+  const destinationRemote = parseScpRemoteEndpoint(destination);
+
+  if (!!sourceRemote === !!destinationRemote) return undefined;
+
+  if (destinationRemote) {
+    return {
+      kind: "remote-transfer",
+      action: "upload",
+      host: destinationRemote.host,
+      local: source,
+      remotePath: destinationRemote.path,
+    };
+  }
+
+  return {
+    kind: "remote-transfer",
+    action: "download",
+    host: sourceRemote!.host,
+    local: destination,
+    remotePath: sourceRemote!.path,
+  };
+}
+
+function scpEndpointTokens(tokens: string[]): string[] {
+  const endpoints: string[] = [];
+  for (let i = 0; i < tokens.length; i += 1) {
+    const token = tokens[i]!;
+    if (token === "--") {
+      endpoints.push(...tokens.slice(i + 1));
+      break;
+    }
+    if (!token.startsWith("-") || token === "-") {
+      endpoints.push(token);
+      continue;
+    }
+    const option = token.slice(0, 2);
+    if (SCP_OPTIONS_WITH_VALUE.has(token) || SCP_OPTIONS_WITH_VALUE.has(option)) {
+      if (token === option) i += 1;
+      continue;
+    }
+  }
+  return endpoints;
+}
+
+function parseScpRemoteEndpoint(
+  endpoint: string,
+): { host: string; path: string } | undefined {
+  if (/^[A-Za-z]:[\\/]/.test(endpoint)) return undefined;
+  const match = endpoint.match(/^((?:[^@:\s]+@)?[^:\s]+):(.+)$/);
+  if (!match) return undefined;
+  return {
+    host: readableSshHost(match[1]!),
+    path: match[2]!,
+  };
+}
+
+const SCP_OPTIONS_WITH_VALUE = new Set([
+  "-B",
+  "-c",
+  "-D",
+  "-F",
+  "-i",
+  "-J",
+  "-l",
+  "-o",
+  "-P",
+  "-S",
+]);
+
 function summarizeScreenSessions(
   tokens: string[],
 ): Extract<VisualCommandSummary, { kind: "screen-sessions" }> | undefined {
@@ -2592,6 +3095,29 @@ function isShellSetupWaitCommand(command: string): boolean {
   const name = tokens[0]?.split("/").pop()?.toLowerCase();
   if (name !== "sleep") return false;
   return tokens.length === 2 && /^\d+(?:\.\d+)?$/.test(tokens[1] ?? "");
+}
+
+function isShellSetupProbeCommand(command: string): boolean {
+  const probes = command
+    .split(/\s+\|\|\s+/)
+    .map((part) => part.trim())
+    .filter(Boolean);
+  return probes.length > 0 && probes.every(isSingleShellSetupProbeCommand);
+}
+
+function isSingleShellSetupProbeCommand(command: string): boolean {
+  const tokens = shellTokens(command);
+  const name = shellLauncherName(tokens[0] ?? "");
+  if (name === "command") {
+    return tokens[1] === "-v" && !!tokens[2];
+  }
+  if (name === "which" || name === "where") {
+    return tokens.length >= 2;
+  }
+  if (name === "npx" || name === "npm" || name === "bun" || name === "pnpm") {
+    return tokens.includes("--version") || tokens.includes("-v");
+  }
+  return false;
 }
 
 function shellContextCwd(parts: readonly string[]): string | undefined {
@@ -2788,6 +3314,8 @@ function summarizeShellCommand(command: string): VisualCommandSummary | undefine
   const lowerName = name.toLowerCase();
   const sshTunnel = summarizeSshTunnel(tokens);
   if (sshTunnel) return sshTunnel;
+  const scpTransfer = summarizeScp(tokens);
+  if (scpTransfer) return scpTransfer;
   const screen = summarizeScreenSessions(tokens);
   if (screen) return screen;
   const test = summarizeTestCommand(tokens);
@@ -3555,24 +4083,9 @@ function summarizeCMake(tokens: string[]): VisualCommandSummary | undefined {
 function summarizeAgentBrowser(
   tokens: string[],
 ): Extract<VisualCommandSummary, { kind: "browser" }> | undefined {
-  const browserIndex = agentBrowserTokenIndex(tokens);
-  if (browserIndex < 0) return undefined;
-  let i = browserIndex + 1;
-  for (; i < tokens.length; i += 1) {
-    const token = tokens[i]!;
-    if (token === "--") {
-      i += 1;
-      break;
-    }
-    if (!token.startsWith("-")) break;
-    const option = token.split("=")[0]!;
-    if (AGENT_BROWSER_OPTIONS_WITH_VALUE.has(option) && !token.includes("=")) {
-      i += 1;
-    }
-  }
-  const command = tokens[i]?.toLowerCase();
-  if (!command) return undefined;
-  const args = tokens.slice(i + 1);
+  const browserCommand = agentBrowserCommand(tokens);
+  if (!browserCommand) return undefined;
+  const { command, args } = browserCommand;
   if (command === "open" || command === "goto" || command === "navigate") {
     return { kind: "browser", action: "open", target: firstPositionalArg(args) };
   }
@@ -3663,6 +4176,9 @@ function summarizeAgentBrowser(
   }
   if (command === "pages") return { kind: "browser", action: "pages" };
   if (command === "reload") return { kind: "browser", action: "reload" };
+  if (command === "eval" || command === "evaluate" || command === "evaluate_script") {
+    return { kind: "browser", action: "script" };
+  }
   if (command === "set") {
     const target = args[0]?.toLowerCase();
     if (target === "viewport" || target === "device") {
@@ -3722,6 +4238,29 @@ function agentBrowserTokenIndex(tokens: readonly string[]): number {
     if (name === "agent-browser") return i;
   }
   return -1;
+}
+
+function agentBrowserCommand(
+  tokens: readonly string[],
+): { command: string; args: string[] } | undefined {
+  const browserIndex = agentBrowserTokenIndex(tokens);
+  if (browserIndex < 0) return undefined;
+  let i = browserIndex + 1;
+  for (; i < tokens.length; i += 1) {
+    const token = tokens[i]!;
+    if (token === "--") {
+      i += 1;
+      break;
+    }
+    if (!token.startsWith("-")) break;
+    const option = token.split("=")[0]!;
+    if (AGENT_BROWSER_OPTIONS_WITH_VALUE.has(option) && !token.includes("=")) {
+      i += 1;
+    }
+  }
+  const command = tokens[i]?.toLowerCase();
+  if (!command) return undefined;
+  return { command, args: tokens.slice(i + 1) };
 }
 
 function firstPositionalArg(args: readonly string[]): string | undefined {
@@ -3969,7 +4508,8 @@ function summarizePipeCommand(command: string): VisualCommandSummary | undefined
     summarizePipeRead(command) ??
     summarizePipeJsonQuery(command) ??
     summarizePipeCount(command) ??
-    summarizePipeTextProcess(command)
+    summarizePipeTextProcess(command) ??
+    summarizePipeSearch(command)
   );
 }
 
@@ -3992,6 +4532,23 @@ function summarizePipeRead(command: string): Extract<
     kind: "read",
     targets: sed.ranges.map((range) => `${path}${sedRangeSuffix(range)}`),
   };
+}
+
+function summarizePipeSearch(command: string): Extract<
+  VisualCommandSummary,
+  { kind: "search" }
+> | undefined {
+  const parts = splitShellPipeline(command);
+  if (parts.length < 2) return undefined;
+  const left = shellTokens(parts[0]!);
+  if (!isSearchCommandName(left[0])) return undefined;
+  return summarizeSearch(left);
+}
+
+function isSearchCommandName(command: string | undefined): boolean {
+  if (!command) return false;
+  const name = shellLauncherName(command);
+  return name === "rg" || name === "grep" || name === "egrep" || name === "fgrep";
 }
 
 function summarizePipeJsonQuery(
@@ -4430,6 +4987,19 @@ function commandSummaryParts(
       },
     ];
   }
+  if (summary.kind === "remote-transfer") {
+    return [
+      {
+        kind: "text",
+        text: summary.action === "upload" ? "Upload " : "Download ",
+      },
+      ...interspersePathParts([summary.local]),
+      { kind: "text", text: " " },
+      { kind: "text", text: summary.action === "upload" ? "to " : "from " },
+      { kind: "text", text: `${summary.host}:` },
+      ...interspersePathParts([summary.remotePath]),
+    ];
+  }
   if (summary.kind === "screen-sessions") {
     return [{ kind: "text", text: "List screen sessions" }];
   }
@@ -4845,6 +5415,7 @@ function browserSummaryParts(
       summary.target ? `Emulate ${summary.target}` : "Emulate browser",
     );
   }
+  if (summary.action === "script") return textPreviewParts("Run browser script");
   return textPreviewParts("Use browser");
 }
 
@@ -4931,9 +5502,27 @@ function inlineScriptFromCommandPreservingHeredoc(
   command: string,
 ): VisualToolInlineScript | undefined {
   return (
+    agentBrowserEvalScriptFromCommand(command) ??
+    agentBrowserEvalScriptFromCommand(normalizeLaunchedCommand(command).command) ??
     inlineScriptFromCommand(command) ??
     inlineScriptFromCommand(normalizeLaunchedCommand(command).command)
   );
+}
+
+function agentBrowserEvalScriptFromCommand(
+  command: string,
+): VisualToolInlineScript | undefined {
+  const browserCommand = agentBrowserCommand(shellTokens(command));
+  if (!browserCommand) return undefined;
+  if (
+    browserCommand.command !== "eval" &&
+    browserCommand.command !== "evaluate" &&
+    browserCommand.command !== "evaluate_script"
+  ) {
+    return undefined;
+  }
+  const script = firstPositionalArg(browserCommand.args);
+  return script ? inlineScriptDisplay("node", script) : undefined;
 }
 
 function directScriptCommand(

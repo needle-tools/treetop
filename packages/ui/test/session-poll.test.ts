@@ -7,7 +7,7 @@
  */
 
 import { test, expect, describe } from "bun:test";
-import { createSessionPoller } from "../src/session-poll";
+import { applySessionMessagePatch, createSessionPoller } from "../src/session-poll";
 
 function jsonResponse(
   obj: unknown,
@@ -43,6 +43,34 @@ function makeFetch(handler: (url: string, init?: RequestInit) => Response) {
 const noop = () => {};
 
 describe("createSessionPoller", () => {
+  test("applies session message patches without dropping cached scrollback", () => {
+    const body = JSON.stringify({
+      agent: "codex",
+      messages: [
+        { id: "older", role: "user" },
+        { id: "anchor", role: "assistant" },
+      ],
+    });
+    const patched = applySessionMessagePatch(body, {
+      session: { cwd: "/repo" },
+      patch: {
+        oldStart: 1,
+        oldEnd: 2,
+        messages: [{ id: "newer", role: "assistant" }],
+      },
+    });
+
+    expect(JSON.parse(patched ?? "")).toEqual({
+      agent: "codex",
+      cwd: "/repo",
+      messages: [
+        { id: "older", role: "user" },
+        { id: "anchor", role: "assistant" },
+        { id: "newer", role: "assistant" },
+      ],
+    });
+  });
+
   test("does not overlap poll cycles when ticks fire while a request is in flight", async () => {
     let resolveBatch!: () => void;
     const batchGate = new Promise<void>((resolve) => {

@@ -37,6 +37,7 @@ export interface CodexLiveToolResult {
   toolName: string;
   text: string;
   toolUseId: string;
+  mediaBlocks?: CodexAppHistoryBlock[];
   subagentId?: string;
   subagentNickname?: string;
   subagentAction?: "spawn" | "wait" | "notification";
@@ -55,6 +56,7 @@ export interface CodexLiveMarker {
 
 export interface CodexLiveNormalizeContext {
   toolNames?: Map<string, string>;
+  toolInputs?: Map<string, unknown>;
 }
 
 function codexLiveToolNameMap(
@@ -62,6 +64,13 @@ function codexLiveToolNameMap(
 ): Map<string, string> {
   context.toolNames ??= new Map<string, string>();
   return context.toolNames;
+}
+
+function codexLiveToolInputMap(
+  context: CodexLiveNormalizeContext,
+): Map<string, unknown> {
+  context.toolInputs ??= new Map<string, unknown>();
+  return context.toolInputs;
 }
 
 export interface CodexAppHistoryBlock {
@@ -271,7 +280,17 @@ export function codexLiveToolUseFromEvent(
       : { name: toolName, input: rawToolInput };
   codexLiveToolNameMap(context).set(itemId, normalizedTool.name);
   const id = `${normalizedTool.name === "file change" ? "codex-file" : "codex-tool"}-${itemId}`;
-  const toolInput = normalizedTool.input;
+  let toolInput = normalizedTool.input;
+  const inputMap = codexLiveToolInputMap(context);
+  const previousInput = inputMap.get(itemId);
+  if (
+    previousInput !== undefined &&
+    codexToolInputQuality(previousInput) > codexToolInputQuality(toolInput)
+  ) {
+    toolInput = previousInput;
+  } else {
+    inputMap.set(itemId, toolInput);
+  }
   const mediaBlock =
     normalizedTool.name === "view_image"
       ? codexViewImageMediaBlock(toolInput)
@@ -330,12 +349,13 @@ export function codexLiveToolResultFromEvent(
   ) {
     const result = codexGenericToolResultPayload(item);
     if (result === undefined) return null;
-    const text = stringifyPayload(result);
+    const { text, mediaBlocks } = codexToolOutputBlocksFromPayload(result);
     return {
       id: `codex-output-${itemId}`,
       toolName,
       text,
       toolUseId: itemId,
+      ...(mediaBlocks.length > 0 ? { mediaBlocks } : {}),
       ...codexSubagentBlockFromToolOutput(toolName, text),
     };
   }
@@ -410,6 +430,7 @@ export function codexLiveMessagesFromEvent(
           liveToolResult.toolName,
           liveToolResult.text,
         ),
+        extraBlocks: liveToolResult.mediaBlocks,
       }),
     );
   }
@@ -625,10 +646,9 @@ function codexAppMessagesFromThreadItem(
   ) {
     const callId = stringField(item, "call_id") ?? itemId;
     const tool = toolNames.get(callId) ?? stringField(item, "name") ?? itemType;
-    const output =
-      typeof item.output === "string"
-        ? item.output
-        : stringifyPayload(item.output ?? item.result ?? "");
+    const { text: output, mediaBlocks } = codexToolOutputBlocksFromPayload(
+      item.output ?? item.result ?? "",
+    );
     return [
       codexToolResultMessage({
         id: `codex-output-${callId}`,
@@ -637,6 +657,7 @@ function codexAppMessagesFromThreadItem(
         toolUseId: callId,
         text: output,
         extraFields: codexSubagentBlockFromToolOutput(tool, output),
+        extraBlocks: mediaBlocks,
       }),
     ];
   }
@@ -712,35 +733,18 @@ function codexUserInputBlocks(input: unknown): CodexAppHistoryBlock[] {
   for (const raw of input) {
     if (!raw || typeof raw !== "object") continue;
     const item = raw as Record<string, unknown>;
+    const media = codexMediaBlockFromContent(item);
+    if (media) {
+      blocks.push(media);
+      continue;
+    }
     const type = stringField(item, "type");
-    if (type === "text") {
+    if (type === "text" || type === "input_text" || type === "inputText") {
       const part = stringField(item, "text");
       if (part) {
         const subagent = codexSubagentNotificationBlock(part);
         if (subagent) blocks.push(subagent);
         else text += part;
-      }
-    } else if (type === "image") {
-      const url = stringField(item, "url");
-      if (url) {
-        blocks.push({
-          type: "media",
-          mediaKind: "image",
-          url,
-          title: "Image",
-          alt: "Image",
-        });
-      }
-    } else if (type === "localImage") {
-      const path = stringField(item, "path");
-      if (path) {
-        blocks.push({
-          type: "media",
-          mediaKind: "image",
-          path,
-          title: "Image",
-          alt: "Image",
-        });
       }
     }
   }
@@ -834,7 +838,7 @@ function codexGenericToolMessages(
   ];
   const result = codexGenericToolResultPayload(item);
   if (result !== undefined && result !== null) {
-    const text = stringifyPayload(result);
+    const { text, mediaBlocks } = codexToolOutputBlocksFromPayload(result);
     messages.push(
       codexToolResultMessage({
         id: `codex-output-${itemId}`,
@@ -843,6 +847,7 @@ function codexGenericToolMessages(
         toolUseId: itemId,
         text,
         extraFields: codexSubagentBlockFromToolOutput(tool, text),
+        extraBlocks: mediaBlocks,
       }),
     );
   }
@@ -1016,6 +1021,7 @@ function codexToolResultMessage(opts: {
   toolUseId: string;
   text: string;
   extraFields?: Partial<CodexAppHistoryBlock>;
+  extraBlocks?: CodexAppHistoryBlock[];
 }): CodexAppHistoryMessage {
   return {
     id: opts.id,
@@ -1029,6 +1035,7 @@ function codexToolResultMessage(opts: {
         text: opts.text,
         ...(opts.extraFields ?? {}),
       },
+      ...(opts.extraBlocks ?? []),
     ],
   };
 }
@@ -1068,6 +1075,148 @@ function codexViewImageMediaBlock(
     title,
     alt: title,
   };
+}
+
+function codexObjectField(
+  record: Record<string, unknown>,
+  key: string,
+): Record<string, unknown> | undefined {
+  const value = record[key];
+  return value && typeof value === "object"
+    ? (value as Record<string, unknown>)
+    : undefined;
+}
+
+const CODEX_DATA_URL_PREFIX_RE = /^data:([^;,]+)?(?:;[^,]*)?,/i;
+
+function codexDataUrlMimeType(url: string | undefined): string | undefined {
+  const match = url?.match(CODEX_DATA_URL_PREFIX_RE);
+  return match?.[1] || undefined;
+}
+
+function codexMediaKindFrom(
+  type: string | undefined,
+  mimeType: string | undefined,
+  source: string | undefined,
+): "image" | "file" | "artifact" {
+  const t = type?.toLowerCase() ?? "";
+  const mime = mimeType?.toLowerCase() ?? "";
+  const src = source?.toLowerCase() ?? "";
+  if (
+    t.includes("image") ||
+    mime.startsWith("image/") ||
+    /\.(png|jpe?g|gif|webp|svg|bmp|avif)(?:$|[?#])/i.test(src)
+  ) {
+    return "image";
+  }
+  return src || mime ? "file" : "artifact";
+}
+
+function codexMediaBlockFromContent(
+  raw: Record<string, unknown>,
+): CodexAppHistoryBlock | null {
+  const type = stringField(raw, "type");
+  const source = codexObjectField(raw, "source");
+  const imageUrl = codexObjectField(raw, "image_url");
+  const outputImage = codexObjectField(raw, "output_image");
+  const file = codexObjectField(raw, "file");
+  const container = outputImage ?? imageUrl ?? source ?? file ?? raw;
+  const path =
+    stringField(raw, "path") ??
+    stringField(raw, "file_path") ??
+    stringField(raw, "filePath") ??
+    stringField(container, "path") ??
+    stringField(container, "file_path") ??
+    stringField(container, "filePath");
+  const url =
+    stringField(raw, "url") ??
+    stringField(raw, "image_url") ??
+    stringField(container, "url") ??
+    stringField(container, "image_url");
+  const dataUrlMimeType = codexDataUrlMimeType(url);
+  const mimeType =
+    stringField(raw, "mime_type") ??
+    stringField(raw, "mimeType") ??
+    stringField(raw, "media_type") ??
+    stringField(container, "mime_type") ??
+    stringField(container, "mimeType") ??
+    stringField(container, "media_type") ??
+    dataUrlMimeType;
+  const sourceRef = path ?? url;
+  const kind = codexMediaKindFrom(type, mimeType, sourceRef);
+  const isMediaType =
+    type === "image" ||
+    type === "input_image" ||
+    type === "output_image" ||
+    type === "localImage" ||
+    type === "file" ||
+    type === "artifact" ||
+    type === "input_file" ||
+    type === "output_file";
+  if (!isMediaType && !sourceRef && !mimeType) return null;
+  const title =
+    stringField(raw, "title") ??
+    stringField(raw, "name") ??
+    stringField(raw, "filename") ??
+    stringField(container, "title") ??
+    stringField(container, "name") ??
+    stringField(container, "filename") ??
+    (kind === "image" ? "Image" : path ? codexMediaTitleFromPath(path) : "Artifact");
+  const alt =
+    stringField(raw, "alt") ??
+    stringField(raw, "alt_text") ??
+    stringField(container, "alt") ??
+    stringField(container, "alt_text") ??
+    title;
+  const block: CodexAppHistoryBlock = {
+    type: "media",
+    mediaKind: kind,
+    title,
+    alt,
+  };
+  if (mimeType) block.mimeType = mimeType;
+  if (path) block.path = path;
+  if (url) block.url = url;
+  return block;
+}
+
+function codexToolOutputBlocksFromPayload(output: unknown): {
+  text: string;
+  mediaBlocks: CodexAppHistoryBlock[];
+} {
+  if (typeof output === "string") return { text: output, mediaBlocks: [] };
+  if (!Array.isArray(output)) {
+    return { text: stringifyPayload(output), mediaBlocks: [] };
+  }
+  const textParts: string[] = [];
+  const mediaBlocks: CodexAppHistoryBlock[] = [];
+  for (const raw of output) {
+    if (typeof raw === "string") {
+      if (raw.trim()) textParts.push(raw);
+      continue;
+    }
+    if (!raw || typeof raw !== "object") continue;
+    const item = raw as Record<string, unknown>;
+    const media = codexMediaBlockFromContent(item);
+    if (media) {
+      mediaBlocks.push(media);
+      continue;
+    }
+    const text = stringField(item, "text") ?? stringField(item, "content");
+    if (!text) continue;
+    const type = stringField(item, "type");
+    if (
+      type === undefined ||
+      type === "text" ||
+      type === "input_text" ||
+      type === "output_text" ||
+      type === "inputText" ||
+      type === "outputText"
+    ) {
+      textParts.push(text);
+    }
+  }
+  return { text: textParts.join("\n"), mediaBlocks };
 }
 
 function codexImageGenerationInput(
@@ -1134,7 +1283,11 @@ function codexToolArguments(input: unknown): unknown {
 }
 
 function canonicalCodexToolName(name: string): string {
-  return name === "exec" ? "exec_command" : name;
+  if (name === "exec") return "exec_command";
+  if (name === "image_gen.imagegen" || name === "imagegen.imagegen") {
+    return "image_generation_call";
+  }
+  return name;
 }
 
 interface CodexWrappedToolInvocation {
@@ -1246,10 +1399,18 @@ function codexReasoningText(item: Record<string, unknown>): string | undefined {
   const summary = Array.isArray(item.summary) ? item.summary : [];
   const content = Array.isArray(item.content) ? item.content : [];
   const text = [...summary, ...content]
+    .map(codexReasoningPartText)
     .filter((part): part is string => typeof part === "string" && !!part.trim())
     .join("\n\n")
     .trim();
   return text || undefined;
+}
+
+function codexReasoningPartText(part: unknown): string | undefined {
+  if (typeof part === "string") return part.trim() ? part : undefined;
+  if (!part || typeof part !== "object") return undefined;
+  const text = stringField(part as Record<string, unknown>, "text");
+  return text?.trim() ? text : undefined;
 }
 
 function stringifyPayload(value: unknown): string {

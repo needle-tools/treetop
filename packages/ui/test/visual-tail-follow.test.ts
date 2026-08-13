@@ -94,7 +94,7 @@ describe("visual transcript tail following", () => {
     ).toBe(false);
   });
 
-  it("allows explicit user actions and first render to jump to the newest message", () => {
+  it("allows explicit user actions and a fresh first render to jump to the newest message", () => {
     expect(
       shouldFollowVisualTail({
         force: true,
@@ -107,6 +107,36 @@ describe("visual transcript tail following", () => {
         firstRender: true,
         paused: true,
         nearEnd: false,
+      }),
+    ).toBe(true);
+  });
+
+  it("does not let first render override a saved paused reader position", () => {
+    const restoredMemory = visualScrollMemoryFromMetrics({
+      metrics: {
+        scrollHeight: 6_000,
+        scrollTop: 2_400,
+        clientHeight: 700,
+      },
+      paused: true,
+    });
+
+    expect(
+      shouldFollowVisualTail({
+        firstRender: true,
+        paused: true,
+        nearEnd: false,
+        restoredMemory,
+      }),
+    ).toBe(false);
+
+    expect(
+      shouldFollowVisualTail({
+        firstRender: true,
+        force: true,
+        paused: true,
+        nearEnd: false,
+        restoredMemory,
       }),
     ).toBe(true);
   });
@@ -259,6 +289,31 @@ describe("visual transcript tail following", () => {
           scrollHeight: 0,
           scrollTop: 0,
           clientHeight: 0,
+        },
+      }),
+    ).toBe(false);
+  });
+
+  it("does not let a remount at top overwrite a paused reader position", () => {
+    const previous = visualScrollMemoryFromMetrics({
+      metrics: {
+        scrollHeight: 6_000,
+        scrollTop: 2_400,
+        clientHeight: 700,
+      },
+      paused: true,
+      anchorKey: "message:mid",
+      anchorOffsetTop: 80,
+    });
+
+    expect(
+      shouldRememberVisualScrollMemory({
+        layoutUsable: true,
+        previous,
+        metrics: {
+          scrollHeight: 6_200,
+          scrollTop: 0,
+          clientHeight: 700,
         },
       }),
     ).toBe(false);

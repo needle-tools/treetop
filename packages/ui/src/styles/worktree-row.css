@@ -1585,6 +1585,13 @@ body.platform-windows .sessions-strip::-webkit-scrollbar-thumb:active {
 .session-col-flash {
   outline-color: var(--brand);
 }
+.session-col-working {
+  outline-color: color-mix(
+    in srgb,
+    var(--status-clean, #5bbf76) 78%,
+    transparent
+  );
+}
 /* Outline applied for ~1.8s when the user clicks a saved session
    sticky-link. Same brand-coloured crisp ring as .session-col-flash,
    but slightly thicker so the user can clearly trace WHERE the
