@@ -970,7 +970,7 @@ export function installGlobalErrorHandlers(): void {
 /** Hydrate from /api/errors. Best-effort. */
 export async function hydrateFromServer(): Promise<void> {
   try {
-    const res = await originalFetch("/api/errors", {
+    const res = await originalFetch("/api/errors?limit=200", {
       signal: timeoutSignal(ERROR_POST_TIMEOUT_MS),
     });
     if (!res.ok) return;

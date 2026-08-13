@@ -1,5 +1,5 @@
 import { test, expect, describe } from "bun:test";
-import { appendFile, mkdtemp } from "node:fs/promises";
+import { appendFile, mkdtemp, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ErrorLog } from "../src/errors";
@@ -51,6 +51,88 @@ describe("ErrorLog", () => {
     expect(five.length).toBe(5);
     expect(five[0]?.message).toBe("m9");
     expect(five[4]?.message).toBe("m5");
+  });
+
+  test("list clamps oversized limits to the configured cap", async () => {
+    const log = await ErrorLog.open(await tempDir(), { defaultLimit: 3 });
+    for (let i = 0; i < 10; i++) {
+      await log.append({
+        kind: "server",
+        source: "daemon",
+        message: `m${i}`,
+      });
+    }
+
+    const all = await log.list({ limit: 10_000 });
+
+    expect(all.map((e) => e.message)).toEqual(["m9", "m8", "m7"]);
+  });
+
+  test("append truncates oversized entries before persisting them", async () => {
+    const log = await ErrorLog.open(await tempDir(), {
+      maxEntryBytes: 1024,
+      maxExtraBytes: 256,
+      maxMessageChars: 128,
+      maxStackChars: 128,
+    });
+
+    const entry = await log.append({
+      kind: "diagnostic",
+      source: "browser",
+      message: "m".repeat(10_000),
+      stack: "s".repeat(10_000),
+      extra: { blob: "x".repeat(10_000) },
+    });
+    const size = (await stat(log.path)).size;
+
+    expect(size).toBeLessThanOrEqual(1024 + 1);
+    expect(entry.message.length).toBeLessThan(10_000);
+    expect(entry.message).toContain("truncated");
+    expect(entry.stack?.length).toBeLessThan(10_000);
+    expect(entry.extra).toEqual(
+      expect.objectContaining({ truncated: true }),
+    );
+    expect((await log.list()).length).toBe(1);
+  });
+
+  test("open prunes an oversized persisted log to a recent tail", async () => {
+    const dir = await tempDir();
+    const bootstrap = await ErrorLog.open(dir, {
+      maxBytes: 10_000,
+      pruneTargetBytes: 4096,
+    });
+    for (let i = 0; i < 100; i++) {
+      await appendFile(
+        bootstrap.path,
+        JSON.stringify({
+          id: `old-${i}`,
+          timestamp: new Date(Date.now() - 2 * 3600_000).toISOString(),
+          kind: "server",
+          source: "daemon",
+          message: `old-${i}`,
+          extra: { padding: "x".repeat(512) },
+        }) + "\n",
+      );
+    }
+    await appendFile(
+      bootstrap.path,
+      JSON.stringify({
+        id: "recent",
+        timestamp: new Date().toISOString(),
+        kind: "server",
+        source: "daemon",
+        message: "recent",
+      }) + "\n",
+    );
+    expect((await stat(bootstrap.path)).size).toBeGreaterThan(10_000);
+
+    const log = await ErrorLog.open(dir, {
+      maxBytes: 10_000,
+      pruneTargetBytes: 4096,
+    });
+
+    expect((await stat(log.path)).size).toBeLessThanOrEqual(4096);
+    expect((await log.list()).map((e) => e.message)).toContain("recent");
   });
 
   test("list reads the newest bounded page from a large historical log", async () => {
