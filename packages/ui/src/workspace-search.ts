@@ -32,6 +32,8 @@ export interface SearchItem {
 export interface SearchResult {
   item: SearchItem;
   score: number;
+  activityMs: number | null;
+  relativeTime: string;
 }
 
 export interface SearchOptions {
@@ -77,6 +79,26 @@ function parseTimestamp(iso: string | undefined): number | null {
   if (!iso) return null;
   const ms = Date.parse(iso);
   return Number.isFinite(ms) ? ms : null;
+}
+
+export function formatSearchRelativeTime(
+  iso: string | undefined,
+  now: number = Date.now(),
+): string {
+  const ms = parseTimestamp(iso);
+  if (ms === null) return "";
+  const diff = Math.max(0, now - ms);
+  const seconds = Math.floor(diff / 1000);
+  if (seconds < 60) return "now";
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h`;
+  const days = Math.floor(hours / 24);
+  if (days < 30) return `${days}d`;
+  const months = Math.floor(days / 30);
+  if (months < 12) return `${months}mo`;
+  return `${Math.floor(months / 12)}y`;
 }
 
 function ageRange(mode: AgeMode, now: number): { start: number; end: number } {
@@ -138,16 +160,31 @@ function fieldBonus(item: SearchItem, needle: string): number {
   if (!q) return 1;
   let score = 0;
   const title = item.title.toLowerCase();
+  const wordMatch = new RegExp(`(^|[\\s_./-])${escapeRegExp(q)}`);
   if (title === q) score += 900;
   if (title.startsWith(q)) score += 520;
-  if (new RegExp(`(^|[\\s_./-])${escapeRegExp(q)}`).test(title)) score += 260;
+  if (wordMatch.test(title)) score += 260;
   if (title.includes(q)) score += 180;
   if ((item.subtitle ?? "").toLowerCase().includes(q)) score += 60;
   if ((item.meta ?? "").toLowerCase().includes(q)) score += 35;
   if ((item.path ?? "").toLowerCase().includes(q)) score += 25;
   if ((item.text ?? "").toLowerCase().includes(q)) score += 20;
   for (const keyword of item.keywords ?? []) {
-    if (keyword.toLowerCase().includes(q)) score += 20;
+    const normalized = keyword.toLowerCase();
+    if (normalized === q) score += 220;
+    else if (normalized.startsWith(q)) score += 140;
+    else if (wordMatch.test(normalized)) score += 85;
+    else if (normalized.includes(q)) score += 20;
+  }
+  if (item.kind === "project" || item.kind === "session") {
+    const identity = [item.title, item.path, ...(item.keywords ?? [])]
+      .filter((v): v is string => typeof v === "string")
+      .map((v) => v.toLowerCase());
+    if (identity.some((v) => v === q)) score += 360;
+    else if (identity.some((v) => v.startsWith(q))) score += 220;
+    else if (identity.some((v) => wordMatch.test(v))) {
+      score += item.kind === "project" ? 620 : 140;
+    }
   }
   return score;
 }
@@ -161,7 +198,8 @@ export function searchItems(
   rawQuery: string,
   options: SearchOptions = {},
 ): SearchResult[] {
-  const parsed = parseAgeQuery(rawQuery, options.now ?? Date.now());
+  const now = options.now ?? Date.now();
+  const parsed = parseAgeQuery(rawQuery, now);
   const pool = items.filter((item) => {
     if (options.kinds && !options.kinds.has(item.kind)) return false;
     if (parsed.range && !inAgeRange(item, parsed.range)) return false;
@@ -170,7 +208,15 @@ export function searchItems(
   const q = parsed.text;
   if (!q) {
     return pool
-      .map((item) => ({ item, score: parseTimestamp(item.timestamp) ?? 0 }))
+      .map((item) => {
+        const activityMs = parseTimestamp(item.timestamp);
+        return {
+          item,
+          activityMs,
+          relativeTime: formatSearchRelativeTime(item.timestamp, now),
+          score: activityMs ?? 0,
+        };
+      })
       .sort((a, b) => b.score - a.score)
       .slice(0, options.limit ?? pool.length);
   }
@@ -181,9 +227,12 @@ export function searchItems(
   const ordered = info && order ? order.map((i) => idxs[i]) : idxs;
   const results = ordered.map((idx, rank) => {
     const item = pool[idx];
-    const activity = parseTimestamp(item.timestamp) ?? 0;
+    const activityMs = parseTimestamp(item.timestamp);
+    const activity = activityMs ?? 0;
     return {
       item,
+      activityMs,
+      relativeTime: formatSearchRelativeTime(item.timestamp, now),
       score: fieldBonus(item, q) + (ordered.length - rank) + activity / 1e14,
     };
   });
