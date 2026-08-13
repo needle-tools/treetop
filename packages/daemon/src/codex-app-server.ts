@@ -688,6 +688,35 @@ export class CodexAppServerAdapter implements NativeAgentAdapter {
     return this.activeTurns.get(threadId);
   }
 
+  private observeTurnLifecycle(event: CodexAppServerEvent): void {
+    const threadId = event.threadId;
+    if (!threadId) return;
+
+    if (event.method === "turn/started") {
+      if (event.turnId) this.activeTurns.set(threadId, event.turnId);
+      return;
+    }
+
+    if (event.method === "turn/status") {
+      if (event.params.active === true && event.turnId) {
+        this.activeTurns.set(threadId, event.turnId);
+      } else if (event.params.active === false) {
+        const currentTurnId = this.activeTurns.get(threadId);
+        if (!event.turnId || currentTurnId === event.turnId) {
+          this.activeTurns.delete(threadId);
+        }
+      }
+      return;
+    }
+
+    if (event.method === "turn/completed") {
+      const currentTurnId = this.activeTurns.get(threadId);
+      if (!event.turnId || currentTurnId === event.turnId) {
+        this.activeTurns.delete(threadId);
+      }
+    }
+  }
+
   private async ensureRpc(cwd: string): Promise<CodexAppServerRpc> {
     if (this.rpc && this.proc) return this.rpc;
     const proc = this.spawnProc(cwd);
@@ -764,6 +793,7 @@ export class CodexAppServerAdapter implements NativeAgentAdapter {
   }
 
   private emit(event: CodexAppServerEvent): void {
+    this.observeTurnLifecycle(event);
     this.globalHistory.push(event);
     trim(this.globalHistory, this.historyLimit);
     if (event.threadId) {

@@ -619,6 +619,58 @@ describe("CodexAppServerAdapter", () => {
     await interrupt;
   });
 
+  test("interrupts active Codex turns observed from app-server events", async () => {
+    const fake = fakeCodexProcess();
+    const adapter = new CodexAppServerAdapter({ spawn: () => fake.proc });
+
+    const session = adapter.startSession({ agent: "codex", cwd: "/repo" });
+    await waitFor(() => fake.writes[0], "initialize request");
+    fake.enqueue({ id: 0, result: {} });
+    await waitFor(() => fake.writes[2], "thread start request");
+    fake.enqueue({
+      id: 1,
+      result: { thread: { id: "thr_boot", cwd: "/repo" }, model: "gpt-5.5" },
+    });
+    await session;
+
+    fake.enqueue({
+      method: "turn/started",
+      params: {
+        threadId: "thr_existing",
+        turnId: "turn_external",
+        turn: { id: "turn_external" },
+      },
+    });
+    await waitFor(
+      () => adapter.activeTurn("thr_existing"),
+      "event-derived active turn",
+    );
+    expect(adapter.activeTurn("thr_existing")).toBe("turn_external");
+
+    const interrupt = adapter.interruptTurn("thr_existing");
+    await waitFor(() => fake.writes[3], "turn interrupt request");
+    expect(parseWrite(fake.writes, 3)).toEqual({
+      id: 2,
+      method: "turn/interrupt",
+      params: { threadId: "thr_existing", turnId: "turn_external" },
+    });
+    fake.enqueue({ id: 2, result: {} });
+    await interrupt;
+
+    fake.enqueue({
+      method: "turn/completed",
+      params: {
+        threadId: "thr_existing",
+        turn: { id: "turn_external" },
+      },
+    });
+    await waitFor(
+      () =>
+        adapter.activeTurn("thr_existing") === undefined ? true : undefined,
+      "event-derived active turn cleared",
+    );
+  });
+
   test("loads Codex app-server threads before reading turns", async () => {
     const fake = fakeCodexProcess();
     const adapter = new CodexAppServerAdapter({ spawn: () => fake.proc });
