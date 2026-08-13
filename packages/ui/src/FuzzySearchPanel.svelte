@@ -36,7 +36,10 @@
   };
 
   let inputEl: HTMLInputElement | null = null;
+  let resultsEl: HTMLUListElement | null = null;
   let activeIndex = 0;
+  let activeItemId = "";
+  let previousResultsKey = "";
   let initialKindsKey = initialKinds?.join("|") ?? "";
 
   $: {
@@ -53,8 +56,20 @@
     kinds: kindSet,
     limit: maxResults,
   });
-  $: if (activeIndex >= results.length)
-    activeIndex = Math.max(0, results.length - 1);
+  $: {
+    const resultsKey = results.map((result) => result.item.id).join("\n");
+    if (resultsKey !== previousResultsKey) {
+      previousResultsKey = resultsKey;
+      const stableIndex = activeItemId
+        ? results.findIndex((result) => result.item.id === activeItemId)
+        : -1;
+      activeIndex =
+        stableIndex >= 0
+          ? stableIndex
+          : Math.min(activeIndex, Math.max(0, results.length - 1));
+      activeItemId = results[activeIndex]?.item.id ?? "";
+    }
+  }
   $: availableKinds = (
     [
       "action",
@@ -99,20 +114,44 @@
     dispatch("pick", result.item);
   }
 
+  function resultDomId(index: number): string {
+    return `fuzzy-result-${mode}-${index}`;
+  }
+
+  function moveActive(delta: number): void {
+    if (results.length === 0) return;
+    activeIndex = Math.max(0, Math.min(results.length - 1, activeIndex + delta));
+    activeItemId = results[activeIndex]?.item.id ?? "";
+    scrollActiveResultIntoView();
+  }
+
+  function scrollActiveResultIntoView(): void {
+    void tick().then(() => {
+      const row = resultsEl?.querySelector<HTMLElement>(
+        `[data-result-index="${activeIndex}"]`,
+      );
+      row?.scrollIntoView({ block: "nearest" });
+    });
+  }
+
   function onKeydown(e: KeyboardEvent): void {
     if (e.key === "Escape") {
       e.preventDefault();
+      if (query.trim().length > 0) {
+        query = "";
+        return;
+      }
       dispatch("close");
       return;
     }
     if (e.key === "ArrowDown") {
       e.preventDefault();
-      activeIndex = Math.min(results.length - 1, activeIndex + 1);
+      moveActive(1);
       return;
     }
     if (e.key === "ArrowUp") {
       e.preventDefault();
-      activeIndex = Math.max(0, activeIndex - 1);
+      moveActive(-1);
       return;
     }
     if (e.key === "Enter" && results[activeIndex]) {
@@ -122,7 +161,7 @@
   }
 </script>
 
-<div class="fuzzy-panel fuzzy-panel-{mode}">
+<div class="fuzzy-panel fuzzy-panel-{mode}" on:keydown={onKeydown}>
   <div class="fuzzy-input-row">
     <svg class="fuzzy-search-icon" viewBox="0 0 16 16" aria-hidden="true">
       <path
@@ -138,7 +177,12 @@
       type="search"
       bind:value={query}
       {placeholder}
-      on:keydown={onKeydown}
+      role="combobox"
+      aria-autocomplete="list"
+      aria-expanded={results.length > 0}
+      aria-activedescendant={results[activeIndex]
+        ? resultDomId(activeIndex)
+        : undefined}
     />
     {#if showKindFilters && availableKinds.length > 1}
       <div class="fuzzy-kind-filters" aria-label="Search type filters">
@@ -169,14 +213,21 @@
   {#if results.length === 0}
     <p class="fuzzy-empty">{emptyLabel}</p>
   {:else}
-    <ul class="fuzzy-results">
+    <ul bind:this={resultsEl} class="fuzzy-results" role="listbox">
       {#each results as result, i (result.item.id)}
         <li>
           <button
+            id={resultDomId(i)}
             type="button"
+            data-result-index={i}
             class="fuzzy-result"
             class:active={i === activeIndex}
-            on:mouseenter={() => (activeIndex = i)}
+            aria-selected={i === activeIndex}
+            role="option"
+            on:mouseenter={() => {
+              activeIndex = i;
+              activeItemId = result.item.id;
+            }}
             on:click={() => pick(result)}
           >
             <span
@@ -203,7 +254,9 @@
               {/if}
             </span>
             <span class="fuzzy-result-meta">
-              {result.item.meta || kindLabels[result.item.kind]}
+              {result.relativeTime ||
+                result.item.meta ||
+                kindLabels[result.item.kind]}
             </span>
           </button>
         </li>
