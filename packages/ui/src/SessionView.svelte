@@ -96,6 +96,7 @@
     type VisualTranscriptItem,
   } from "./last-user-message";
   import {
+    applySessionMessagePatchToMessages,
     registerSessionPoll,
     requestSessionPollNow,
     type BatchSessionPatch,
@@ -1809,6 +1810,7 @@
       !shouldRememberVisualScrollMemory({
         layoutUsable: hasUsableScrollLayout(el),
         metrics,
+        previous: visualScrollMemoryByKey.get(visualScrollMemoryKey),
       })
     ) {
       return;
@@ -1978,6 +1980,7 @@
       firstRender,
       paused: visualTailFollowPaused,
       nearEnd: isNearScrollEnd(el),
+      restoredMemory: visualScrollMemoryByKey.get(visualScrollMemoryKey),
       selecting,
     });
     syncVisualTailFollowActive(el);
@@ -2198,9 +2201,11 @@
     applyParsedSession({
       ...session,
       ...(update.session as Partial<NormalizedSession>),
-      messages: session.messages
-        .slice(oldStart, oldEnd)
-        .concat(messages as NormalizedMessage[]),
+      messages: applySessionMessagePatchToMessages(session.messages, {
+        oldStart,
+        oldEnd,
+        messages,
+      }) as NormalizedMessage[],
     });
   }
 
@@ -6855,10 +6860,10 @@
   }
   .codex-queue-photo {
     width: 3.5rem;
-    padding: 4px 4px 10px;
+    padding: 3px;
   }
   .codex-queue-photo img {
-    max-height: 2rem;
+    max-height: 2.7rem;
   }
   .codex-queue-actions {
     display: flex;
@@ -6955,7 +6960,7 @@
   .composer-attachment {
     position: relative;
     flex: 0 0 auto;
-    width: 4.8rem;
+    width: 5.4rem;
   }
   .composer-attachment-open {
     display: block;
@@ -6975,16 +6980,16 @@
   .composer-photo-frame {
     box-sizing: border-box;
     width: 100%;
-    padding: 5px 5px 14px;
+    padding: 4px;
   }
   .composer-photo-frame img {
-    max-height: 3.1rem;
+    max-height: 4.4rem;
   }
   .composer-photo-frame-uploading {
     display: flex;
     align-items: center;
     justify-content: center;
-    min-height: 4.25rem;
+    min-height: 4.8rem;
   }
   .composer-photo-frame-uploading-mark {
     width: 1.4rem;

@@ -11200,6 +11200,9 @@
                         {#each visibleSessions as s, i (openSessionRenderKey(s))}
                           <div
                             class="session-col"
+                            class:session-col-working={!!transientWorking[
+                              s.source
+                            ]}
                             class:session-col-filtered={stripFilter &&
                               !stripFilter.matched.has(s.source)}
                             class:session-col-pickable={!!stripFilter &&

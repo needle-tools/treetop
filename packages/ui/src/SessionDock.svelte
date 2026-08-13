@@ -1070,8 +1070,8 @@
             e.stopPropagation();
             dispatch("search");
           }}
-          />
-        </div>
+        />
+      </div>
 
       {#each split.bottom as e, i (e.source)}
         {#if (i === 0 || split.bottom[i - 1].repoId !== e.repoId) && arrowRowHasGlyph(repoStatusMap.get(e.repoId))}
@@ -1520,17 +1520,13 @@
     pointer-events: auto;
     display: inline-flex;
     align-items: center;
-    justify-content: flex-start;
-    /* Same padding as dock-dot so the toggle-inner centre aligns
-       with the dot-inner centres above/below. Both live directly
-       inside `.dock-scroll` now — no extra half-wrapper offset. */
-    padding: 0.2rem 8px;
-    /* Equal breathing room above and below so the toggle reads as the
-       midpoint between the live and inactive stacks. Without it the
-       first row underneath (usually a repo-arrow, which carries its
-       own 0.6rem group margin) pushes the toggle visually up into the
-       live stack — see the `+ .dock-dot` reset below. */
-    margin: 0.45rem 0;
+    justify-content: center;
+    /* Match the dock-dot click slot exactly: 8px + 10px dot + 8px.
+       The surrounding tools pill must not add another offset, or the
+       toggle/search centers drift away from the session dots. */
+    width: 26px;
+    height: 24px;
+    padding: 0;
     border: 0;
     background: transparent;
     cursor: pointer;
@@ -1542,16 +1538,11 @@
   .dock-toggle:active {
     background: transparent;
   }
-  /* The toggle's ring is drawn deliberately larger than a session dot
-     (13px vs 10px) so it reads as a control rather than a session.
-     The negative inline margins shrink its *layout* box back to the
-     dots' 10px so the ring grows outward from the shared centre axis
-     — otherwise flex-start alignment parks its centre 1.5px right of
-     every dot in the column. */
+  /* 10px box matching dock-dot-inner so horizontal centres align.
+     The visible circle is inset via border (6px visible area). */
   .dock-toggle-inner {
     width: 13px;
     height: 13px;
-    margin: 0 -1.5px;
     border-radius: 999px;
     border: 2px solid
       color-mix(in oklch, var(--text-muted, #9a9aa0) 50%, transparent);
@@ -1573,42 +1564,48 @@
     border-color: var(--text-1, #e8e8e8);
   }
   .dock-tools {
-    position: sticky;
-    bottom: 0;
+    position: relative;
     z-index: 3;
     display: inline-flex;
     align-items: center;
     gap: 0;
     align-self: flex-start;
-    padding: 0.12rem 0.16rem;
+    flex: 0 0 auto;
+    width: 26px;
+    padding: 0;
+    margin: 0.18rem 0;
     border-radius: 999px;
     border: 1px solid var(--surface-0, #23261d);
     background: var(--surface-0, #23261d);
+    overflow: hidden;
+    transition: width 160ms ease;
+  }
+  .session-dock.show-labels .dock-tools,
+  .dock-tools:focus-within {
+    width: 52px;
   }
   :global(.dock-tools .search-icon-button) {
-    width: 0;
-    max-width: 0;
+    width: 26px;
+    max-width: 26px;
     height: 24px;
-    padding: 0.2rem 0;
-    justify-content: flex-start;
+    padding: 0;
+    justify-content: center;
     border: 0;
     background: transparent;
     color: var(--text-muted, #9a9aa0);
     opacity: 0;
-    overflow: hidden;
+    overflow: visible;
     pointer-events: none;
     flex: 0 0 auto;
     transition:
       color 160ms ease,
-      max-width 160ms ease,
-      padding 160ms ease,
       opacity 140ms ease;
   }
   .session-dock.show-labels :global(.dock-tools .search-icon-button),
   :global(.dock-tools .search-icon-button:focus-visible) {
-    width: 29px;
-    max-width: 29px;
-    padding: 0.2rem 8px;
+    width: 26px;
+    max-width: 26px;
+    padding: 0;
     opacity: 1;
     pointer-events: auto;
   }
@@ -1754,9 +1751,8 @@
   /* Shell sessions render as a small terminal-styled square instead
      of the agent's round dot: dark center + repo-coloured border,
      2px rounded corners. Reads as "this is a literal terminal, not
-     a conversational agent" at a glance, and `working` / `awaiting`
-     are forced off in the host so log-stream output doesn't trigger
-     the spinner. */
+     a conversational agent" at a glance. Active terminals keep the
+     square still and animate a square path around it. */
   .dock-dot.agent-shell .dock-dot-inner {
     background: var(--surface-0, #1a1a1a);
     border: 2px solid var(--dot-fill);
@@ -2120,64 +2116,35 @@
        read as motion, short enough that the gap is unambiguous. */
     stroke-dasharray: 35 65;
   }
-  /* Shell sessions don't use the SVG spinner — they snap-rotate the
-     square itself 90° each second instead, which reads more like
-     "terminal flipping through output" than the agent's smooth
-     ring sweep. */
-  .dock-dot-spinner-rect {
-    display: none;
-  }
   .dock-dot.agent-shell .dock-dot-spinner {
-    display: none;
+    /* The terminal activity outline sits just outside the 10px terminal
+       square. Keeping it outside avoids the old "circle inside a square"
+       artifact from a thick, inset SVG stroke at tiny sizes. */
+    inset: -2px;
+    width: calc(100% + 4px);
+    height: calc(100% + 4px);
   }
-  .dock-dot.agent-shell.dot-working .dock-dot-inner,
-  .dock-dot.agent-shell.dot-terminal-active .dock-dot-inner {
-    animation: dock-shell-step 4s linear infinite;
+  .dock-dot.agent-shell .dock-dot-spinner-rect {
+    stroke-width: 3.2;
+    stroke-linecap: round;
+    stroke-dasharray: 26 74;
   }
-  /* Per-keyframe `animation-timing-function` controls the ease for
-     the segment STARTING at that keyframe. Rotation segments get a
-     smooth s-curve; hold segments stay frozen via `step-end` so
-     they don't try to interpolate. */
-  @keyframes dock-shell-step {
-    0% {
-      transform: rotate(0deg);
-      animation-timing-function: cubic-bezier(0.5, 0, 0.5, 1);
-    }
-    20% {
-      transform: rotate(90deg);
-      animation-timing-function: step-end;
-    }
-    25% {
-      transform: rotate(90deg);
-      animation-timing-function: cubic-bezier(0.5, 0, 0.5, 1);
-    }
-    45% {
-      transform: rotate(180deg);
-      animation-timing-function: step-end;
-    }
-    50% {
-      transform: rotate(180deg);
-      animation-timing-function: cubic-bezier(0.5, 0, 0.5, 1);
-    }
-    70% {
-      transform: rotate(270deg);
-      animation-timing-function: step-end;
-    }
-    75% {
-      transform: rotate(270deg);
-      animation-timing-function: cubic-bezier(0.5, 0, 0.5, 1);
-    }
-    95% {
-      transform: rotate(360deg);
-      animation-timing-function: step-end;
-    }
-    100% {
-      transform: rotate(360deg);
-    }
+  .dock-dot.dot-terminal-active.agent-shell .dock-dot-spinner {
+    /* Shell terminals should not rotate the terminal square or the SVG
+       viewport. The motion is the dash travelling around the square path. */
+    animation: none;
+  }
+  .dock-dot.dot-terminal-active.agent-shell .dock-dot-spinner-rect {
+    animation: dock-shell-dash 0.9s linear infinite;
   }
   @keyframes dock-spin {
     to {
       transform: rotate(360deg);
+    }
+  }
+  @keyframes dock-shell-dash {
+    to {
+      stroke-dashoffset: -100;
     }
   }
 

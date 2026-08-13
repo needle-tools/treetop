@@ -1,6 +1,6 @@
 import { test, expect, describe, beforeEach } from "bun:test";
 import { createHash } from "node:crypto";
-import { mkdtemp, writeFile, appendFile, utimes } from "node:fs/promises";
+import { mkdir, mkdtemp, writeFile, appendFile, utimes } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -668,6 +668,62 @@ describe("parseCodexJsonl", () => {
     ]);
   });
 
+  test("renders Codex tool output image content as visible media", () => {
+    const dataUrl = `data:image/png;base64,${Buffer.from("image bytes").toString("base64")}`;
+    const hash = createHash("sha256").update(dataUrl).digest("hex");
+    const text = [
+      JSON.stringify({
+        timestamp: "2026-08-09T12:10:00.000Z",
+        type: "response_item",
+        payload: {
+          type: "function_call",
+          name: "exec_command",
+          arguments: JSON.stringify({ cmd: "node render-preview.mjs" }),
+          call_id: "call-preview",
+        },
+      }),
+      JSON.stringify({
+        timestamp: "2026-08-09T12:10:01.000Z",
+        type: "response_item",
+        payload: {
+          type: "function_call_output",
+          call_id: "call-preview",
+          output: [
+            { type: "input_text", text: "Preview generated." },
+            {
+              type: "input_image",
+              image_url: {
+                url: dataUrl,
+              },
+            },
+          ],
+        },
+      }),
+    ].join("\n");
+
+    const session = parseCodexJsonl(text);
+
+    expect(session.messages[1]?.blocks).toEqual([
+      {
+        type: "tool_result",
+        text: "Preview generated.",
+        toolName: "exec_command",
+        toolUseId: "call-preview",
+      },
+      {
+        type: "media",
+        mediaKind: "image",
+        mimeType: "image/png",
+        title: "Image",
+        alt: "Image",
+        text: "[image/png data stored in source transcript]",
+        inlineDataHash: hash,
+        toolName: "exec_command",
+        toolUseId: "call-preview",
+      },
+    ]);
+  });
+
   test("keeps Codex image generation calls visible before media exists", () => {
     const line = JSON.stringify({
       timestamp: "2026-06-19T10:00:00.000Z",
@@ -691,6 +747,34 @@ describe("parseCodexJsonl", () => {
           status: "in_progress",
         },
         toolUseId: "call-img-1",
+      },
+    ]);
+  });
+
+  test("unwraps Codex Desktop image generation exec scripts as prompt-bearing image tools", () => {
+    const line = JSON.stringify({
+      timestamp: "2026-08-13T09:07:58.268Z",
+      type: "response_item",
+      payload: {
+        type: "custom_tool_call",
+        call_id: "call-image-wrapper",
+        name: "exec",
+        input:
+          'const result = await tools.image_gen__imagegen({prompt:"a heroic Duberman sticker",referenced_image_paths:["/tmp/reference.png"]}); text(result.output);',
+      },
+    });
+
+    const session = parseCodexJsonl(line);
+
+    expect(session.messages[0]?.blocks).toEqual([
+      {
+        type: "tool_use",
+        toolName: "image_generation_call",
+        toolInput: {
+          prompt: "a heroic Duberman sticker",
+          referenced_image_paths: ["/tmp/reference.png"],
+        },
+        toolUseId: "call-image-wrapper",
       },
     ]);
   });
@@ -760,6 +844,114 @@ describe("parseCodexJsonl", () => {
         ],
       },
     ]);
+  });
+
+  test("renders Codex image generation completion events as results instead of promptless inputs", () => {
+    const text = [
+      JSON.stringify({
+        timestamp: "2026-08-13T09:07:58.268Z",
+        type: "response_item",
+        payload: {
+          type: "custom_tool_call",
+          call_id: "call-image-wrapper",
+          name: "exec",
+          input:
+            'const result = await tools.image_gen__imagegen({prompt:"a corrected ship icon"}); text(result.output);',
+        },
+      }),
+      JSON.stringify({
+        timestamp: "2026-08-13T09:08:29.205Z",
+        type: "event_msg",
+        payload: {
+          type: "image_generation_end",
+          call_id: "call-image-wrapper",
+          status: "completed",
+          revised_prompt: "a corrected ship icon with clearer direction",
+          savedPath: "/tmp/exec-ship.png",
+        },
+      }),
+    ].join("\n");
+
+    const session = parseCodexJsonl(text);
+
+    expect(session.messages.map((message) => message.blocks[0])).toEqual([
+      {
+        type: "tool_use",
+        toolName: "image_generation_call",
+        toolInput: {
+          prompt: "a corrected ship icon",
+        },
+        toolUseId: "call-image-wrapper",
+      },
+      {
+        type: "tool_result",
+        text: "Generated image",
+        toolName: "image_generation_call",
+        toolUseId: "call-image-wrapper",
+      },
+      expect.objectContaining({
+        type: "media",
+        mediaKind: "image",
+        path: "/tmp/exec-ship.png",
+        title: "exec-ship.png",
+        toolName: "image_generation_call",
+        toolUseId: "call-image-wrapper",
+      }),
+    ]);
+  });
+
+  test("resolves Codex image generation completion media from the source session path", async () => {
+    const root = await mkdtemp(join(tmpdir(), "supergit-codex-home-"));
+    const sessionId = "019fb2bd-3916-7893-87eb-22fb0eac1e6e";
+    const sessionDir = join(root, ".codex", "sessions", "2026", "07", "30");
+    const source = join(
+      sessionDir,
+      `rollout-2026-07-30T13-16-13-${sessionId}.jsonl`,
+    );
+    const callId = "exec-d3e8e3d9-d3ce-4996-a078-d3aa87d13cdf";
+    await mkdir(sessionDir, { recursive: true });
+    await writeFile(
+      source,
+      [
+        JSON.stringify({
+          timestamp: "2026-08-13T09:07:58.268Z",
+          type: "response_item",
+          payload: {
+            type: "custom_tool_call",
+            call_id: callId,
+            name: "exec",
+            input:
+              'const result = await tools.image_gen__imagegen({prompt:"correct the ship direction"}); text(result.output);',
+          },
+        }),
+        JSON.stringify({
+          timestamp: "2026-08-13T09:08:29.205Z",
+          type: "event_msg",
+          payload: {
+            type: "image_generation_end",
+            call_id: callId,
+            status: "completed",
+            revised_prompt: "correct the ship direction",
+          },
+        }),
+      ].join("\n") + "\n",
+    );
+
+    const session = await parseSessionFile("codex", source);
+
+    expect(session.messages[0]?.blocks[0]).toMatchObject({
+      type: "tool_use",
+      toolName: "image_generation_call",
+      toolInput: { prompt: "correct the ship direction" },
+    });
+    expect(session.messages[2]?.blocks[0]).toMatchObject({
+      type: "media",
+      mediaKind: "image",
+      path: join(root, ".codex", "generated_images", sessionId, `${callId}.png`),
+      title: `${callId}.png`,
+      toolName: "image_generation_call",
+      toolUseId: callId,
+    });
   });
 
   test("renders Codex view_image tool calls as visible media", () => {
