@@ -5,6 +5,7 @@ import {
   buildProjectSearchItems,
   buildReadmeSearchItems,
   buildSessionSearchItems,
+  formatSearchRelativeTime,
   nextSearchKindsSelection,
   parseAgeQuery,
   searchItems,
@@ -70,6 +71,50 @@ describe("workspace fuzzy search", () => {
     );
 
     expect(results.map((r) => r.item.id)).toEqual(["repo"]);
+  });
+
+  test("empty query defaults to recent timestamped work", () => {
+    const results = searchItems(
+      [
+        item({
+          id: "action",
+          kind: "action",
+          title: "Add folder",
+        }),
+        item({
+          id: "old",
+          kind: "session",
+          title: "Older session",
+          timestamp: "2026-07-29T12:00:00+02:00",
+        }),
+        item({
+          id: "recent",
+          kind: "session",
+          title: "Recent session",
+          timestamp: "2026-07-30T11:45:00+02:00",
+        }),
+      ],
+      "",
+      { now: NOW },
+    );
+
+    expect(results.map((r) => r.item.id)).toEqual(["recent", "old", "action"]);
+    expect(results[0]?.relativeTime).toBe("15m");
+  });
+
+  test("formats compact result activity time", () => {
+    expect(formatSearchRelativeTime("2026-07-30T11:59:30+02:00", NOW)).toBe(
+      "now",
+    );
+    expect(formatSearchRelativeTime("2026-07-30T11:55:00+02:00", NOW)).toBe(
+      "5m",
+    );
+    expect(formatSearchRelativeTime("2026-07-30T09:00:00+02:00", NOW)).toBe(
+      "3h",
+    );
+    expect(formatSearchRelativeTime("2026-07-25T12:00:00+02:00", NOW)).toBe(
+      "5d",
+    );
   });
 
   test("matches English and German age phrases against timestamps", () => {
@@ -185,6 +230,47 @@ describe("workspace fuzzy search", () => {
     expect(
       searchItems(items, "fast", { now: NOW }).map((r) => r.item.id),
     ).toEqual(["project:fastvid", "project:stable"]);
+  });
+
+  test("ranks project identity matches ahead of cloud snippets and readmes", () => {
+    const items = [
+      ...buildProjectSearchItems([
+        {
+          id: "needle-cloud",
+          name: "needle-cloud",
+          path: "/Users/herbst/git/needle-cloud",
+          color: "#33aacc",
+        },
+      ]),
+      ...buildReadmeSearchItems([
+        {
+          id: "needle-cloud",
+          repoId: "needle-cloud",
+          repoName: "needle-cloud",
+          path: "/Users/herbst/git/needle-cloud/README.md",
+          text: "Cloud deployment and service notes",
+        },
+      ]),
+      item({
+        id: "session:cloud-update",
+        kind: "session",
+        title: "Cloud update",
+        subtitle: "gltf-workspace-viewer · codex",
+        timestamp: new Date(NOW).toISOString(),
+      }),
+      item({
+        id: "snippet:deploy",
+        kind: "snippet",
+        title: "ok thanks set up deploy command",
+        subtitle: "needle-cloud",
+        text: "npx needle-cloud deploy",
+        timestamp: new Date(NOW).toISOString(),
+      }),
+    ];
+
+    expect(searchItems(items, "cloud", { now: NOW })[0]?.item.id).toBe(
+      "project:needle-cloud",
+    );
   });
 
   test("builds searchable project action records with common aliases", () => {
