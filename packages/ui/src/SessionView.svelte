@@ -6980,7 +6980,7 @@
   .composer-photo-frame {
     box-sizing: border-box;
     width: 100%;
-    padding: 4px;
+    padding: 2px;
   }
   .composer-photo-frame img {
     max-height: 4.4rem;
