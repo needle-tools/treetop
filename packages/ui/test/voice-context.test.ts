@@ -1,5 +1,8 @@
 import { describe, expect, test } from "bun:test";
-import { deriveVoiceContext } from "../src/voice-context";
+import {
+  deriveVoiceContext,
+  resolveVoiceSessionMessageTarget,
+} from "../src/voice-context";
 
 describe("deriveVoiceContext", () => {
   test("uses the zen row and last-focused session without inventing another state source", () => {
@@ -141,5 +144,57 @@ describe("deriveVoiceContext", () => {
     });
     expect(context.activeSession?.source).toBe("/sessions/new.jsonl");
     expect(context.latestSession?.source).toBe("/sessions/new.jsonl");
+  });
+
+  test("resolves voice session message targets from active or explicit source", () => {
+    const context = deriveVoiceContext({
+      projects: [
+        {
+          id: "repo-a",
+          name: "Alpha",
+          path: "/alpha",
+          worktrees: [
+            { path: "/alpha", branch: "main" },
+            { path: "/alpha/wt", branch: "feature" },
+          ],
+        },
+      ],
+      rows: [],
+      zenRowKey: null,
+      activeWorktreePath: "/alpha/wt",
+      lastActiveSessionSource: "/sessions/new.jsonl",
+      sessions: [
+        {
+          source: "/sessions/old.jsonl",
+          agent: "codex",
+          worktreePath: "/alpha",
+          repoId: "repo-a",
+          sessionId: "sid-old",
+          lastActive: "2026-07-28T09:00:00.000Z",
+        },
+        {
+          source: "/sessions/new.jsonl",
+          agent: "codex",
+          worktreePath: "/alpha/wt",
+          repoId: "repo-a",
+          sessionId: "sid-new",
+          lastActive: "2026-07-29T09:00:00.000Z",
+        },
+      ],
+    });
+
+    expect(resolveVoiceSessionMessageTarget(context)).toMatchObject({
+      source: "/sessions/new.jsonl",
+      sessionId: "sid-new",
+    });
+    expect(
+      resolveVoiceSessionMessageTarget(context, "/sessions/old.jsonl"),
+    ).toMatchObject({
+      source: "/sessions/old.jsonl",
+      sessionId: "sid-old",
+    });
+    expect(() =>
+      resolveVoiceSessionMessageTarget(context, "/sessions/missing.jsonl"),
+    ).toThrow("Treetop session not found");
   });
 });

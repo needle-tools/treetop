@@ -218,6 +218,7 @@ describe("CodexAppServerAdapter", () => {
       "get_treetop_context",
       "focus_treetop_project",
       "focus_treetop_session",
+      "send_treetop_session_message",
       "set_treetop_zen_mode",
       "create_treetop_note",
       "create_treetop_sticker",
