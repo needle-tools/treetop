@@ -4285,6 +4285,53 @@ describe("visual tool payload display helpers", () => {
     expect(visualToolRemoteHostLabel(directoriesBlock)).toBe("felix-win");
   });
 
+  it("summarizes PowerShell process inspection after launcher normalization", () => {
+    const localWrapperBlock = {
+      type: "tool_use",
+      toolName: "exec_command",
+      toolInput: {
+        cmd: 'powershell.exe -NoProfile -Command "Get-Process -Id 23836 | Select-Object Id,MainWindowTitle,StartTime,CPU,WorkingSet64 | Format-List"',
+      },
+    };
+    expect(visualToolPreviewText(localWrapperBlock)).toBe(
+      "Check process 23836",
+    );
+    expect(visualToolLauncherLabel(localWrapperBlock)).toBe("powershell");
+
+    const processByIdBlock = {
+      type: "tool_use",
+      toolName: "exec_command",
+      toolInput: {
+        cmd: "ssh felix-win 'Get-Process -Id 23836 | Select-Object Id,MainWindowTitle,StartTime,CPU,WorkingSet64 | Format-List'",
+      },
+    };
+    expect(visualToolPreviewText(processByIdBlock)).toBe("Check process 23836");
+    expect(visualToolRemoteHostLabel(processByIdBlock)).toBe("felix-win");
+
+    const processWithSetupBlock = {
+      type: "tool_use",
+      toolName: "exec_command",
+      toolInput: {
+        cmd: "ssh felix-win 'Get-Process -Id 23836 | Select-Object Id,MainWindowHandle,Responding,Path | Format-List; Add-Type -AssemblyName UIAutomationClient'",
+      },
+    };
+    expect(visualToolPreviewText(processWithSetupBlock)).toBe(
+      "Check process 23836",
+    );
+
+    const processSearchBlock = {
+      type: "tool_use",
+      toolName: "exec_command",
+      toolInput: {
+        cmd: "ssh felix-win 'Get-CimInstance Win32_Process | Where-Object { $_.Name -like \"*Licht*\" -or $_.ExecutablePath -like \"*Licht*\" }'",
+      },
+    };
+    expect(visualToolPreviewText(processSearchBlock)).toBe(
+      'Check processes for "Licht"',
+    );
+    expect(visualToolRemoteHostLabel(processSearchBlock)).toBe("felix-win");
+  });
+
   it("normalizes ssh launch wrappers before previewing remote searches", () => {
     const block = {
       type: "tool_use",

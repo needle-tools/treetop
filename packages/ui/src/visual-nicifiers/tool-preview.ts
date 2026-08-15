@@ -1794,7 +1794,7 @@ type VisualCommandSummary =
       source?: string;
     }
   | { kind: "script-file"; language: string; script: string; args: string[] }
-  | { kind: "process-check"; pattern?: string }
+  | { kind: "process-check"; pattern?: string; pids?: string[] }
   | { kind: "container-check"; pattern?: string }
   | {
       kind: "git";
@@ -3059,6 +3059,7 @@ function splitShellCommandChain(command: string): string[] {
 function isShellContextCommand(command: string): boolean {
   const tokens = shellTokens(command);
   const name = tokens[0]?.split("/").pop();
+  const lowerName = name?.toLowerCase();
   if (tokens.length === 1 && /^[A-Za-z_][A-Za-z0-9_]*=.*$/.test(tokens[0]!)) {
     return true;
   }
@@ -3071,7 +3072,13 @@ function isShellContextCommand(command: string): boolean {
     );
   }
   if (name === "echo" || name === "printf") return isLabelPrintCommand(command);
-  return name === "cd" || name === "pwd" || name === "true" || name === "set";
+  return (
+    lowerName === "add-type" ||
+    name === "cd" ||
+    name === "pwd" ||
+    name === "true" ||
+    name === "set"
+  );
 }
 
 function isLabelPrintCommand(command: string): boolean {
@@ -4860,6 +4867,8 @@ function looksLikeDirectoryTarget(target: string): boolean {
 function summarizeProcessCheck(
   command: string,
 ): VisualCommandSummary | undefined {
+  const powershellProcess = summarizePowerShellProcessCheck(command);
+  if (powershellProcess) return powershellProcess;
   const tokens = shellTokens(command);
   const name = tokens[0]?.split("/").pop()?.toLowerCase();
   if (name === "pgrep") {
@@ -4877,6 +4886,66 @@ function summarizeProcessCheck(
     .slice(pipeIndex + 2)
     .find((token) => token && !token.startsWith("-"));
   return { kind: "process-check", pattern };
+}
+
+function summarizePowerShellProcessCheck(
+  command: string,
+): Extract<VisualCommandSummary, { kind: "process-check" }> | undefined {
+  const parts = splitShellPipeline(command);
+  const first = shellTokens(parts[0] ?? command).map(cleanPowerShellBoundaryToken);
+  const name = first[0]?.split("/").pop()?.toLowerCase();
+  if (name === "get-process" || name === "gps") {
+    return {
+      kind: "process-check",
+      pids: powershellProcessIds(first),
+    };
+  }
+  if (
+    name === "get-ciminstance" ||
+    name === "gcim" ||
+    name === "get-wmiobject" ||
+    name === "gwmi"
+  ) {
+    const className = first
+      .slice(1)
+      .find((token) => token && !token.startsWith("-"));
+    if (!className || !/^win32_process$/i.test(className)) return undefined;
+    return {
+      kind: "process-check",
+      pattern: powershellProcessPattern(command),
+    };
+  }
+  return undefined;
+}
+
+function powershellProcessIds(tokens: string[]): string[] | undefined {
+  const ids = new Set<string>();
+  for (let index = 1; index < tokens.length; index += 1) {
+    const token = tokens[index]!;
+    const lower = token.toLowerCase();
+    if (lower === "-id" || lower === "-pid") {
+      const value = tokens[index + 1];
+      if (value) {
+        for (const part of value.split(",")) {
+          if (/^\d+$/.test(part)) ids.add(part);
+        }
+        index += 1;
+      }
+      continue;
+    }
+    const inline = token.match(/^-(?:id|pid):?(\d+(?:,\d+)*)$/i);
+    if (inline) {
+      for (const part of inline[1]!.split(",")) ids.add(part);
+    }
+  }
+  return ids.size > 0 ? [...ids] : undefined;
+}
+
+function powershellProcessPattern(command: string): string | undefined {
+  const like = command.match(/-like\s+["']?\*?([^*"'\s)]+)\*?["']?/i)?.[1];
+  if (like) return like;
+  const match = command.match(/\b(?:rg|grep)\b\s+(?:-[A-Za-z]+\s+)*["']?([^"'\s|)]+)/i);
+  return match?.[1];
 }
 
 function summarizeContainerCheck(
@@ -4949,6 +5018,15 @@ function commandSummaryParts(
     ];
   }
   if (summary.kind === "process-check") {
+    if (summary.pids?.length) {
+      const label = summary.pids.length === 1 ? "Check process" : "Check processes";
+      return [
+        {
+          kind: "text",
+          text: `${label} ${summary.pids.join(", ")}`,
+        },
+      ];
+    }
     return [
       {
         kind: "text",
