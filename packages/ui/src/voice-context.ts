@@ -201,3 +201,20 @@ export function deriveVoiceContext(input: {
     notes,
   };
 }
+
+export function resolveVoiceSessionMessageTarget(
+  context: TreetopVoiceContext,
+  requestedSource?: string,
+): VoiceSessionInput {
+  const source = requestedSource?.trim();
+  if (source) {
+    const target = context.sessions.find((session) => session.source === source);
+    if (!target) throw new Error("Treetop session not found");
+    if (!target.sessionId) throw new Error("Treetop session cannot be resumed");
+    return target;
+  }
+  const target = context.activeSession ?? context.latestSession;
+  if (!target) throw new Error("No Treetop session is available");
+  if (!target.sessionId) throw new Error("Treetop session cannot be resumed");
+  return target;
+}
