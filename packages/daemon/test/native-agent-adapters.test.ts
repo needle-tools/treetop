@@ -208,20 +208,25 @@ describe("CodexAppServerAdapter", () => {
       params: {
         cwd: "/repo",
         ephemeral: true,
-        serviceName: "treetop_voice",
+        serviceName: "voice",
       },
     });
     const tools = (
       voiceStart.params as { dynamicTools?: Array<{ name?: string }> }
     ).dynamicTools?.map((tool) => tool.name);
     expect(tools).toEqual([
-      "get_treetop_context",
-      "focus_treetop_project",
-      "focus_treetop_session",
-      "send_treetop_session_message",
-      "set_treetop_zen_mode",
-      "create_treetop_note",
-      "create_treetop_sticker",
+      "get_context",
+      "focus_project",
+      "focus_session",
+      "scroll_to",
+      "read_session_messages",
+      "read_recent_completions",
+      "send_session_message",
+      "set_zen_mode",
+      "create_note",
+      "read_note",
+      "update_note",
+      "create_sticker",
     ]);
     fake.enqueue({ id: 1, result: { thread: { id: "thr_voice" } } });
 

@@ -123,29 +123,31 @@ export interface CodexRealtimeVoiceStart {
   sdp: string;
 }
 
-export const TREETOP_REALTIME_VOICE = "sol";
+export const DEFAULT_REALTIME_VOICE = "sol";
 
-const TREETOP_VOICE_INSTRUCTIONS =
+const VOICE_INSTRUCTIONS =
   "You are Treetop's global voice assistant. Keep spoken responses concise. " +
-  "Use get_treetop_context whenever the current project, session, notes, or Zen mode matters. " +
+  "Use get_context whenever the current project, session, notes, or Zen mode matters. " +
   "Only focus projects or sessions and change Zen mode when the user asks. " +
-  "When the user asks you to tell, ask, reply, continue, or send instructions to an existing Treetop agent session, use send_treetop_session_message. " +
-  "Only create notes and stickers when the user explicitly asks for a note, reminder, sticker, or persistent workspace artifact. " +
+  "Use scroll_to when the user asks to show, jump to, or scroll to a session, note, project, worktree, or lane. " +
+  "Use read_session_messages to inspect recent session prompts and read_recent_completions to inspect recently completed sessions. " +
+  "When the user asks you to tell, ask, reply, continue, or send instructions to an existing agent session, use send_session_message. " +
+  "Only create or update notes and stickers when the user explicitly asks for a note, reminder, sticker, or persistent workspace artifact. " +
   "Do not run shell commands or edit files from voice mode. " +
-  "Never claim a Treetop UI action succeeded unless its tool response says it did.";
+  "Never claim a UI action succeeded unless its tool response says it did.";
 
-const TREETOP_VOICE_TOOLS: JsonObject[] = [
+const VOICE_TOOLS: JsonObject[] = [
   {
     type: "function",
-    name: "get_treetop_context",
+    name: "get_context",
     description:
-      "Read the current Treetop UI context, including active project, active/latest session, Zen mode, projects, open sessions, and recent notes.",
+      "Read the current UI context, including active project, active/latest session, Zen mode, projects, open sessions, and recent notes.",
     inputSchema: { type: "object", properties: {}, additionalProperties: false },
   },
   {
     type: "function",
-    name: "focus_treetop_project",
-    description: "Bring an existing Treetop project into view.",
+    name: "focus_project",
+    description: "Bring an existing project into view.",
     inputSchema: {
       type: "object",
       properties: { repoId: { type: "string" } },
@@ -155,20 +157,71 @@ const TREETOP_VOICE_TOOLS: JsonObject[] = [
   },
   {
     type: "function",
-    name: "focus_treetop_session",
-    description: "Bring an existing Treetop session column into view.",
+    name: "focus_session",
+    description:
+      "Bring an existing session column into view by source or session id.",
     inputSchema: {
       type: "object",
-      properties: { source: { type: "string" } },
-      required: ["source"],
+      properties: {
+        source: { type: "string" },
+        sessionId: { type: "string" },
+        id: { type: "string" },
+      },
       additionalProperties: false,
     },
   },
   {
     type: "function",
-    name: "send_treetop_session_message",
+    name: "scroll_to",
     description:
-      "Send a user message into an existing Treetop agent session. Omit source to use the active/focused session.",
+      "Scroll to a session, note, project, worktree, or lane. Use sessionId/id when the user gives a session id.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        kind: {
+          type: "string",
+          enum: ["session", "note", "project", "worktree", "lane"],
+        },
+        id: { type: "string" },
+        source: { type: "string" },
+        sessionId: { type: "string" },
+        title: { type: "string" },
+        repoId: { type: "string" },
+        worktreePath: { type: "string" },
+        path: { type: "string" },
+      },
+      required: ["kind"],
+      additionalProperties: false,
+    },
+  },
+  {
+    type: "function",
+    name: "read_session_messages",
+    description:
+      "Read recent messages and status metadata for an existing session.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        source: { type: "string" },
+        sessionId: { type: "string" },
+        title: { type: "string" },
+        limit: { type: "number" },
+      },
+      additionalProperties: false,
+    },
+  },
+  {
+    type: "function",
+    name: "read_recent_completions",
+    description:
+      "Read sessions that recently completed a turn and are waiting for the user to notice.",
+    inputSchema: { type: "object", properties: {}, additionalProperties: false },
+  },
+  {
+    type: "function",
+    name: "send_session_message",
+    description:
+      "Send a user message into an existing agent session. Omit source to use the active/focused session.",
     inputSchema: {
       type: "object",
       properties: {
@@ -181,9 +234,9 @@ const TREETOP_VOICE_TOOLS: JsonObject[] = [
   },
   {
     type: "function",
-    name: "set_treetop_zen_mode",
+    name: "set_zen_mode",
     description:
-      "Turn Treetop Zen mode on or off, optionally focusing a specific project when enabling it.",
+      "Turn Zen mode on or off, optionally focusing a specific project when enabling it.",
     inputSchema: {
       type: "object",
       properties: {
@@ -196,9 +249,9 @@ const TREETOP_VOICE_TOOLS: JsonObject[] = [
   },
   {
     type: "function",
-    name: "create_treetop_note",
+    name: "create_note",
     description:
-      "Create a markdown note in Treetop. When anchors are omitted, Treetop pins it to the active worktree or project.",
+      "Create a markdown note. When anchors are omitted, it is pinned to the active worktree or project.",
     inputSchema: {
       type: "object",
       properties: {
@@ -211,9 +264,36 @@ const TREETOP_VOICE_TOOLS: JsonObject[] = [
   },
   {
     type: "function",
-    name: "create_treetop_sticker",
+    name: "read_note",
+    description: "Read a full note body by note id.",
+    inputSchema: {
+      type: "object",
+      properties: { id: { type: "string" } },
+      required: ["id"],
+      additionalProperties: false,
+    },
+  },
+  {
+    type: "function",
+    name: "update_note",
+    description: "Update an existing note body, anchors, or tags by note id.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        id: { type: "string" },
+        body: { type: "string" },
+        anchors: { type: "array", items: { type: "string" } },
+        tags: { type: "array", items: { type: "string" } },
+      },
+      required: ["id"],
+      additionalProperties: false,
+    },
+  },
+  {
+    type: "function",
+    name: "create_sticker",
     description:
-      "Create a Treetop sticker note. Use a visible emoji, app-icon token, or sticker token as body.",
+      "Create a sticker note. Use a visible emoji, app-icon token, or sticker token as body.",
     inputSchema: {
       type: "object",
       properties: {
@@ -282,7 +362,7 @@ export function realtimeVoiceStartParams(req: {
     includeStartupContext: true,
     prompt: cleanString(req.prompt),
     version: "v3",
-    voice: cleanString(req.voice) ?? TREETOP_REALTIME_VOICE,
+    voice: cleanString(req.voice) ?? DEFAULT_REALTIME_VOICE,
     transport: { type: "webrtc", sdp: req.sdp },
   });
 }
@@ -345,9 +425,9 @@ export class CodexAppServerAdapter implements NativeAgentAdapter {
     const thread = await rpc.request("thread/start", {
       cwd: req.cwd,
       ephemeral: true,
-      serviceName: "treetop_voice",
-      developerInstructions: TREETOP_VOICE_INSTRUCTIONS,
-      dynamicTools: TREETOP_VOICE_TOOLS,
+      serviceName: "voice",
+      developerInstructions: VOICE_INSTRUCTIONS,
+      dynamicTools: VOICE_TOOLS,
     });
     const threadId = nestedString(thread, ["thread", "id"]);
     if (!threadId) {

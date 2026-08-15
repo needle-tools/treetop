@@ -240,6 +240,7 @@
   } from "./voice-controller";
   import {
     deriveVoiceContext,
+    resolveVoiceSessionTarget,
     resolveVoiceSessionMessageTarget,
     type TreetopVoiceContext,
   } from "./voice-context";
@@ -6990,6 +6991,9 @@
       manualTitle?: string;
       aiTitle?: string;
       lastUserMessage?: string;
+      lastUserMessages?: string[];
+      messageCount?: number;
+      recentMessageCount?: number;
       lastActive?: string;
       lastMessageTs?: string;
       /** JSONL path the dock can fetch via `/api/session?source=…` to
@@ -7112,6 +7116,8 @@
               newSessionTitles[s.source],
             aiTitle: meta?.aiTitle,
             lastUserMessage: meta?.lastUserMessage,
+            lastUserMessages: meta?.lastUserMessages,
+            messageCount: meta?.messageCount,
             lastActive: meta?.lastActive,
             lastMessageTs: meta?.lastMessageTs,
             recentMessageCount: meta?.recentMessageCount,
@@ -7170,11 +7176,16 @@
         worktreePath: entry.wtPath,
         repoId: entry.repoId,
         sessionId: entry.resumeSessionId,
+        transcriptSource: entry.transcriptSource,
         title:
           entry.manualTitle ??
           entry.aiTitle ??
           entry.title ??
           entry.branch,
+        lastUserMessage: entry.lastUserMessage,
+        lastUserMessages: entry.lastUserMessages,
+        messageCount: entry.messageCount,
+        recentMessageCount: entry.recentMessageCount,
         lastActive: entry.lastMessageTs ?? entry.lastActive,
         working: entry.working,
         awaiting: entry.awaiting,
@@ -7188,6 +7199,7 @@
         kind: note.kind ?? "note",
         updatedAt: note.updatedAt,
       })),
+      finishedAt: transientFinishedAt,
     });
   }
 
@@ -7305,6 +7317,259 @@
     return { ok: true, anchor };
   }
 
+  async function readVoiceNote(
+    args: Record<string, unknown>,
+  ): Promise<unknown> {
+    const id = typeof args.id === "string" ? args.id.trim() : "";
+    if (!id) throw new Error("id must be a non-empty string");
+    const note = $notesAll.find((candidate) => candidate.id === id);
+    if (!note) throw new Error("Note not found");
+    await revealNote(note.id);
+    return {
+      ok: true,
+      note: {
+        id: note.id,
+        body: note.body,
+        anchors: note.anchors,
+        tags: note.tags,
+        kind: note.kind ?? "note",
+        updatedAt: note.updatedAt,
+      },
+    };
+  }
+
+  async function updateVoiceNote(
+    args: Record<string, unknown>,
+  ): Promise<unknown> {
+    const id = typeof args.id === "string" ? args.id.trim() : "";
+    if (!id) throw new Error("id must be a non-empty string");
+    const note = $notesAll.find((candidate) => candidate.id === id);
+    if (!note) throw new Error("Note not found");
+    const patch: Record<string, unknown> = {};
+    if (typeof args.body === "string") patch.body = args.body;
+    if (Array.isArray(args.anchors)) {
+      patch.anchors = args.anchors.filter(
+        (anchor): anchor is string => typeof anchor === "string",
+      );
+    }
+    if (Array.isArray(args.tags)) {
+      patch.tags = args.tags.filter(
+        (tag): tag is string => typeof tag === "string",
+      );
+    }
+    if (Object.keys(patch).length === 0) {
+      throw new Error("body, anchors, or tags required");
+    }
+    const res = await fetch(
+      apiUrl(`/api/notes/${encodeURIComponent(note.id)}`, note.daemonId),
+      {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(patch),
+      },
+    );
+    const body = await res.json().catch(() => null);
+    if (!res.ok) {
+      const message =
+        body &&
+        typeof body === "object" &&
+        typeof (body as { error?: unknown }).error === "string"
+          ? (body as { error: string }).error
+          : `HTTP ${res.status}`;
+      throw new Error(message);
+    }
+    const updated = body as typeof note;
+    updated.daemonId = note.daemonId;
+    notesAll.set(
+      $notesAll.map((candidate) =>
+        candidate.id === updated.id ? updated : candidate,
+      ),
+    );
+    await revealNote(updated.id);
+    return { ok: true, note: updated };
+  }
+
+  function voiceMessageText(message: {
+    role?: unknown;
+    blocks?: Array<{
+      type?: unknown;
+      text?: unknown;
+      title?: unknown;
+      toolName?: unknown;
+    }>;
+    timestamp?: unknown;
+  }): { role: string; text: string; timestamp?: string } {
+    const role = typeof message.role === "string" ? message.role : "unknown";
+    const text = (message.blocks ?? [])
+      .map((block) => {
+        if (typeof block.text === "string" && block.text.trim()) {
+          return block.text.trim();
+        }
+        if (typeof block.title === "string" && block.title.trim()) {
+          return block.title.trim();
+        }
+        if (typeof block.toolName === "string" && block.toolName.trim()) {
+          return `[${block.toolName.trim()}]`;
+        }
+        return "";
+      })
+      .filter(Boolean)
+      .join("\n\n");
+    return {
+      role,
+      text,
+      ...(typeof message.timestamp === "string"
+        ? { timestamp: message.timestamp }
+        : {}),
+    };
+  }
+
+  async function readVoiceSessionMessages(
+    args: Record<string, unknown>,
+  ): Promise<unknown> {
+    const requested =
+      typeof args.source === "string"
+        ? args.source
+        : typeof args.sessionId === "string"
+          ? args.sessionId
+          : typeof args.title === "string"
+            ? args.title
+            : undefined;
+    const session = resolveVoiceSessionTarget(currentVoiceContext(), requested);
+    const limit =
+      typeof args.limit === "number" && Number.isFinite(args.limit)
+        ? Math.max(1, Math.min(20, Math.floor(args.limit)))
+        : 5;
+    const source =
+      session.transcriptSource && !session.transcriptSource.startsWith("__")
+        ? session.transcriptSource
+        : !session.source.startsWith("__")
+          ? session.source
+          : undefined;
+    let messages: Array<{ role: string; text: string; timestamp?: string }> =
+      [];
+    if (source) {
+      const res = await fetch(
+        `/api/session?source=${encodeURIComponent(source)}`,
+      );
+      if (!res.ok) {
+        const body = (await res.json().catch(() => null)) as {
+          error?: unknown;
+        } | null;
+        const message =
+          typeof body?.error === "string"
+            ? body.error
+            : `HTTP ${res.status}`;
+        throw new Error(message);
+      }
+      const body = (await res.json()) as {
+        messages?: Array<{
+          role?: unknown;
+          blocks?: Array<{
+            type?: unknown;
+            text?: unknown;
+            title?: unknown;
+            toolName?: unknown;
+          }>;
+          timestamp?: unknown;
+        }>;
+      };
+      messages = (body.messages ?? []).map(voiceMessageText).slice(-limit);
+    }
+    if (messages.length === 0) {
+      messages = [
+        ...(session.lastUserMessages ?? []),
+        ...(session.lastUserMessage &&
+        !(session.lastUserMessages ?? []).includes(session.lastUserMessage)
+          ? [session.lastUserMessage]
+          : []),
+      ]
+        .slice(-limit)
+        .map((text) => ({ role: "user", text }));
+    }
+    return {
+      ok: true,
+      session: {
+        source: session.source,
+        sessionId: session.sessionId,
+        agent: session.agent,
+        title: session.title,
+        transcriptSource: session.transcriptSource,
+        worktreePath: session.worktreePath,
+        repoId: session.repoId,
+        working: session.working,
+        awaiting: session.awaiting,
+        exited: session.exited,
+        messageCount: session.messageCount,
+        recentMessageCount: session.recentMessageCount,
+        lastActive: session.lastActive,
+      },
+      messages,
+    };
+  }
+
+  async function scrollVoiceTo(
+    args: Record<string, unknown>,
+  ): Promise<unknown> {
+    const kind =
+      typeof args.kind === "string" ? args.kind.trim().toLowerCase() : "";
+    if (kind === "session") {
+      const requested =
+        typeof args.source === "string"
+          ? args.source
+          : typeof args.sessionId === "string"
+            ? args.sessionId
+            : typeof args.id === "string"
+              ? args.id
+              : typeof args.title === "string"
+                ? args.title
+                : undefined;
+      const session = resolveVoiceSessionTarget(
+        currentVoiceContext(),
+        requested,
+      );
+      await focusVoiceSession(session.source);
+      return { ok: true, kind, source: session.source };
+    }
+    if (kind === "note") {
+      const id = typeof args.id === "string" ? args.id.trim() : "";
+      if (!id) throw new Error("note id required");
+      const ok = await revealNote(id);
+      if (!ok) throw new Error("Note not found");
+      return { ok: true, kind, id };
+    }
+    if (kind === "project") {
+      const repoId =
+        typeof args.repoId === "string"
+          ? args.repoId
+          : typeof args.id === "string"
+            ? args.id
+            : "";
+      const repo = repos.find((candidate) => candidate.id === repoId);
+      if (!repo) throw new Error("Project not found");
+      await focusRepoRow(repo.id);
+      return { ok: true, kind, repoId: repo.id };
+    }
+    if (kind === "worktree" || kind === "lane") {
+      const path =
+        typeof args.worktreePath === "string"
+          ? args.worktreePath
+          : typeof args.path === "string"
+            ? args.path
+            : typeof args.id === "string"
+              ? args.id
+              : "";
+      if (!path) throw new Error("worktree path required");
+      const row = rows.find((candidate) => candidate.wt?.path === path);
+      if (!row) throw new Error("Lane not found");
+      unfoldRowIfFolded(row.key);
+      await tick();
+      jumpToWorktreeRow(path);
+      return { ok: true, kind, worktreePath: path };
+    }
+    throw new Error("kind must be session, note, project, worktree, or lane");
+  }
+
   async function sendVoiceSessionMessage(
     args: Record<string, unknown>,
   ): Promise<unknown> {
@@ -7325,8 +7590,8 @@
     const sessionId = entry?.resumeSessionId ?? target.sessionId;
     const wtPath = entry?.wtPath ?? target.worktreePath;
     const agent = entry?.agent ?? target.agent;
-    if (!sessionId) throw new Error("Treetop session cannot be resumed");
-    if (!wtPath) throw new Error("Treetop session has no worktree path");
+    if (!sessionId) throw new Error("Session cannot be resumed");
+    if (!wtPath) throw new Error("Session has no worktree path");
 
     const res = await fetch(
       apiUrl("/api/session/send", daemonIdForWorktreePath(repos, wtPath)),
@@ -7359,23 +7624,40 @@
     tool: string,
     args: Record<string, unknown>,
   ): Promise<unknown> {
-    if (tool === "get_treetop_context") return currentVoiceContext();
-    if (tool === "focus_treetop_project") {
+    if (tool === "get_context") return currentVoiceContext();
+    if (tool === "read_recent_completions") {
+      return { ok: true, completions: currentVoiceContext().recentCompletions };
+    }
+    if (tool === "read_note") return readVoiceNote(args);
+    if (tool === "update_note") return updateVoiceNote(args);
+    if (tool === "read_session_messages") {
+      return readVoiceSessionMessages(args);
+    }
+    if (tool === "scroll_to") return scrollVoiceTo(args);
+    if (tool === "focus_project") {
       const repoId = typeof args.repoId === "string" ? args.repoId : "";
       const repo = repos.find((candidate) => candidate.id === repoId);
-      if (!repo) throw new Error("Treetop project not found");
+      if (!repo) throw new Error("Project not found");
       await focusRepoRow(repoId);
       return { ok: true, project: { id: repo.id, name: repo.name } };
     }
-    if (tool === "focus_treetop_session") {
-      const source = typeof args.source === "string" ? args.source : "";
-      if (!dockEntries.some((entry) => entry.source === source)) {
-        throw new Error("Treetop session not found");
-      }
-      await focusVoiceSession(source);
-      return { ok: true, source };
+    if (tool === "focus_session") {
+      const requested =
+        typeof args.source === "string"
+          ? args.source
+          : typeof args.sessionId === "string"
+            ? args.sessionId
+            : typeof args.id === "string"
+              ? args.id
+              : undefined;
+      const session = resolveVoiceSessionTarget(
+        currentVoiceContext(),
+        requested,
+      );
+      await focusVoiceSession(session.source);
+      return { ok: true, source: session.source, sessionId: session.sessionId };
     }
-    if (tool === "set_treetop_zen_mode") {
+    if (tool === "set_zen_mode") {
       if (typeof args.enabled !== "boolean") {
         throw new Error("enabled must be a boolean");
       }
@@ -7388,16 +7670,16 @@
           ? args.repoId
           : currentVoiceContext().activeProject?.id;
       const target = rows.find((row) => row.repo.id === repoId && row.wt);
-      if (!target) throw new Error("Treetop project has no visible worktree");
+      if (!target) throw new Error("Project has no visible worktree");
       if (zenRowKey !== target.key) toggleZenRow(target.key);
       return { ok: true, enabled: true, repoId: target.repo.id };
     }
-    if (tool === "create_treetop_note") return createVoiceNote(args);
-    if (tool === "create_treetop_sticker") return createVoiceSticker(args);
-    if (tool === "send_treetop_session_message") {
+    if (tool === "create_note") return createVoiceNote(args);
+    if (tool === "create_sticker") return createVoiceSticker(args);
+    if (tool === "send_session_message") {
       return sendVoiceSessionMessage(args);
     }
-    throw new Error(`Unsupported Treetop voice tool: ${tool}`);
+    throw new Error(`Unsupported voice tool: ${tool}`);
   }
 
   async function toggleVoiceMode(): Promise<void> {
