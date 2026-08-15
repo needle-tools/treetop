@@ -162,6 +162,8 @@
   import {
     LINK_TARGET_DRAG_MIME,
     SESSION_LINK_DRAG_MIME,
+    appendInlineAttachmentRef,
+    makeEmojiAttachmentRef,
     sessionIdFromValue,
   } from "./note-inline-attachments";
   import { updateTabIndicator } from "./awaitingBadge";
@@ -240,6 +242,7 @@
   } from "./voice-controller";
   import {
     deriveVoiceContext,
+    resolveVoiceStickerMove,
     resolveVoiceSessionTarget,
     resolveVoiceSessionMessageTarget,
     type TreetopVoiceContext,
@@ -7338,28 +7341,10 @@
     };
   }
 
-  async function updateVoiceNote(
-    args: Record<string, unknown>,
-  ): Promise<unknown> {
-    const id = typeof args.id === "string" ? args.id.trim() : "";
-    if (!id) throw new Error("id must be a non-empty string");
-    const note = $notesAll.find((candidate) => candidate.id === id);
-    if (!note) throw new Error("Note not found");
-    const patch: Record<string, unknown> = {};
-    if (typeof args.body === "string") patch.body = args.body;
-    if (Array.isArray(args.anchors)) {
-      patch.anchors = args.anchors.filter(
-        (anchor): anchor is string => typeof anchor === "string",
-      );
-    }
-    if (Array.isArray(args.tags)) {
-      patch.tags = args.tags.filter(
-        (tag): tag is string => typeof tag === "string",
-      );
-    }
-    if (Object.keys(patch).length === 0) {
-      throw new Error("body, anchors, or tags required");
-    }
+  async function persistVoiceNotePatch(
+    note: NoteShape,
+    patch: Record<string, unknown>,
+  ): Promise<NoteShape> {
     const res = await fetch(
       apiUrl(`/api/notes/${encodeURIComponent(note.id)}`, note.daemonId),
       {
@@ -7385,8 +7370,85 @@
         candidate.id === updated.id ? updated : candidate,
       ),
     );
+    return updated;
+  }
+
+  async function updateVoiceNote(
+    args: Record<string, unknown>,
+  ): Promise<unknown> {
+    const id = typeof args.id === "string" ? args.id.trim() : "";
+    if (!id) throw new Error("id must be a non-empty string");
+    const note = $notesAll.find((candidate) => candidate.id === id);
+    if (!note) throw new Error("Note not found");
+    const patch: Record<string, unknown> = {};
+    if (typeof args.body === "string") patch.body = args.body;
+    if (Array.isArray(args.anchors)) {
+      patch.anchors = args.anchors.filter(
+        (anchor): anchor is string => typeof anchor === "string",
+      );
+    }
+    if (Array.isArray(args.tags)) {
+      patch.tags = args.tags.filter(
+        (tag): tag is string => typeof tag === "string",
+      );
+    }
+    if (Object.keys(patch).length === 0) {
+      throw new Error("body, anchors, or tags required");
+    }
+    const updated = await persistVoiceNotePatch(note, patch);
     await revealNote(updated.id);
     return { ok: true, note: updated };
+  }
+
+  async function moveVoiceSticker(
+    args: Record<string, unknown>,
+  ): Promise<unknown> {
+    const defaultAnchor = voiceToolAnchor();
+    const move = resolveVoiceStickerMove(args, $notesAll, defaultAnchor);
+    const sticker = $notesAll.find((note) => note.id === move.stickerId);
+    if (!sticker) throw new Error("Sticker not found");
+    if (move.kind === "move") {
+      const updated = await persistVoiceNotePatch(sticker, {
+        anchors: move.anchors.map((anchor) => voiceToolAnchor(anchor)),
+      });
+      await revealNote(updated.id);
+      return { ok: true, action: "move", sticker: updated };
+    }
+
+    const targetNote = $notesAll.find((note) => note.id === move.targetNoteId);
+    if (!targetNote) throw new Error("Target note not found");
+    if (targetNote.kind === "link" || targetNote.kind === "emoji") {
+      throw new Error("Target note cannot receive stickers");
+    }
+    const updatedTarget = await persistVoiceNotePatch(targetNote, {
+      body: appendInlineAttachmentRef(
+        targetNote.body,
+        makeEmojiAttachmentRef({ body: sticker.body }),
+      ),
+    });
+    const deleteRes = await fetch(
+      apiUrl(`/api/notes/${encodeURIComponent(sticker.id)}`, sticker.daemonId),
+      { method: "DELETE" },
+    );
+    if (!deleteRes.ok) {
+      await persistVoiceNotePatch(updatedTarget, { body: targetNote.body });
+      const body = await deleteRes.json().catch(() => null);
+      const message =
+        body &&
+        typeof body === "object" &&
+        typeof (body as { error?: unknown }).error === "string"
+          ? (body as { error: string }).error
+          : `HTTP ${deleteRes.status}`;
+      throw new Error(message);
+    }
+    notesAll.set($notesAll.filter((note) => note.id !== sticker.id));
+    await revealNote(updatedTarget.id);
+    return {
+      ok: true,
+      action: "attach",
+      stickerId: sticker.id,
+      note: updatedTarget,
+    };
   }
 
   function voiceMessageText(message: {
@@ -7676,6 +7738,7 @@
     }
     if (tool === "create_note") return createVoiceNote(args);
     if (tool === "create_sticker") return createVoiceSticker(args);
+    if (tool === "move_sticker") return moveVoiceSticker(args);
     if (tool === "send_session_message") {
       return sendVoiceSessionMessage(args);
     }

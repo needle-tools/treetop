@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
   deriveVoiceContext,
+  resolveVoiceStickerMove,
   resolveVoiceSessionTarget,
   resolveVoiceSessionMessageTarget,
 } from "../src/voice-context";
@@ -115,6 +116,54 @@ describe("deriveVoiceContext", () => {
         transcriptSource: "/real/beta.jsonl",
       },
     ]);
+  });
+
+  test("resolves sticker moves and note attachments", () => {
+    const notes = [
+      {
+        id: "sticker-a",
+        body: "sparkle-star",
+        anchors: ["worktree:/old"],
+        kind: "emoji",
+      },
+      {
+        id: "note-a",
+        body: "Target note",
+        anchors: ["worktree:/new"],
+      },
+    ];
+
+    expect(
+      resolveVoiceStickerMove(
+        { id: "sticker-a", anchor: "worktree:/new" },
+        notes,
+        "workspace:voice",
+      ),
+    ).toEqual({
+      kind: "move",
+      stickerId: "sticker-a",
+      anchors: ["worktree:/new"],
+    });
+
+    expect(
+      resolveVoiceStickerMove(
+        { id: "sticker-a", attachToNoteId: "note-a" },
+        notes,
+        "workspace:voice",
+      ),
+    ).toEqual({
+      kind: "attach",
+      stickerId: "sticker-a",
+      targetNoteId: "note-a",
+    });
+
+    expect(() =>
+      resolveVoiceStickerMove(
+        { id: "note-a", anchor: "worktree:/new" },
+        notes,
+        "workspace:voice",
+      ),
+    ).toThrow("Sticker not found");
   });
 
   test("falls back to the active worktree and newest session outside zen", () => {
