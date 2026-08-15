@@ -3256,18 +3256,24 @@
     }
     const note = $notesAll.find((n) => n.id === noteId);
     for (const anchor of note?.anchors ?? []) {
-      if (anchor.startsWith("worktree:")) {
-        const wtPath = anchor.slice("worktree:".length);
-        const row = rows.find((r) => r.wt?.path === wtPath);
-        if (row) return row;
-      }
-      if (anchor.startsWith("repo:")) {
-        const repoPath = anchor.slice("repo:".length);
-        const row =
-          rows.find((r) => !r.wt && r.repo.path === repoPath) ??
-          rows.find((r) => r.repo.path === repoPath);
-        if (row) return row;
-      }
+      const row = rowForAnchor(anchor);
+      if (row) return row;
+    }
+    return null;
+  }
+
+  function rowForAnchor(anchor: string): (typeof rows)[number] | null {
+    if (anchor.startsWith("worktree:")) {
+      const wtPath = anchor.slice("worktree:".length);
+      return rows.find((r) => r.wt?.path === wtPath) ?? null;
+    }
+    if (anchor.startsWith("repo:")) {
+      const repoPath = anchor.slice("repo:".length);
+      return (
+        rows.find((r) => !r.wt && r.repo.path === repoPath) ??
+        rows.find((r) => r.repo.path === repoPath) ??
+        null
+      );
     }
     return null;
   }
@@ -7308,6 +7314,47 @@
     return voiceButtonEl?.getBoundingClientRect() ?? new DOMRect(0, 0, 0, 0);
   }
 
+  async function voiceNoteOriginRect(
+    anchor: string,
+    preferActiveSession: boolean,
+  ): Promise<DOMRect> {
+    const row = rowForAnchor(anchor);
+    if (row) {
+      unfoldRowIfFolded(row.key);
+      if (zenRowKey !== null) {
+        zenRowKey = row.key;
+        notesShownInZen = true;
+      } else if (notesHiddenByRow[row.key]) {
+        notesHiddenByRow = { ...notesHiddenByRow, [row.key]: false };
+      }
+      await tick();
+    }
+
+    const context = currentVoiceContext();
+    const sessionSource = preferActiveSession
+      ? context.activeSession?.source
+      : undefined;
+    const sessionEl = sessionSource
+      ? (document.querySelector(
+          `.session-col[data-session-source="${CSS.escape(sessionSource)}"]`,
+        ) as HTMLElement | null)
+      : null;
+    const sessionRowKey = sessionEl
+      ?.closest("[data-wt-row]")
+      ?.getAttribute("data-wt-row");
+    if (sessionEl && (!row || sessionRowKey === rowDomKey(row))) {
+      return sessionEl.getBoundingClientRect();
+    }
+
+    if (row) {
+      const rowEl = document.querySelector<HTMLElement>(
+        `[data-wt-row="${CSS.escape(rowDomKey(row))}"]`,
+      );
+      if (rowEl) return rowEl.getBoundingClientRect();
+    }
+    return voiceOriginRect();
+  }
+
   async function createVoiceNote(
     args: Record<string, unknown>,
   ): Promise<unknown> {
@@ -7322,7 +7369,7 @@
     await spawnNote({
       anchor,
       body,
-      originRect: voiceOriginRect(),
+      originRect: await voiceNoteOriginRect(anchor, anchors.length === 0),
     });
     return { ok: true, anchor };
   }
@@ -7337,7 +7384,10 @@
       anchor,
       body,
       kind: "emoji",
-      originRect: voiceOriginRect(),
+      originRect: await voiceNoteOriginRect(
+        anchor,
+        typeof args.anchor !== "string",
+      ),
     });
     return { ok: true, anchor };
   }
