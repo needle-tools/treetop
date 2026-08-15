@@ -132,7 +132,7 @@ const VOICE_INSTRUCTIONS =
   "Use scroll_to when the user asks to show, jump to, or scroll to a session, note, project, worktree, or lane. " +
   "Use read_session_messages to inspect recent session prompts and read_recent_completions to inspect recently completed sessions. " +
   "When the user asks you to tell, ask, reply, continue, or send instructions to an existing agent session, use send_session_message. " +
-  "Only create or update notes and stickers when the user explicitly asks for a note, reminder, sticker, or persistent workspace artifact. " +
+  "Only create, update, or move notes and stickers when the user explicitly asks for a note, reminder, sticker, or persistent workspace artifact. " +
   "Do not run shell commands or edit files from voice mode. " +
   "Never claim a UI action succeeded unless its tool response says it did.";
 
@@ -301,6 +301,23 @@ const VOICE_TOOLS: JsonObject[] = [
         anchor: { type: "string" },
       },
       required: ["body"],
+      additionalProperties: false,
+    },
+  },
+  {
+    type: "function",
+    name: "move_sticker",
+    description:
+      "Move an existing sticker by note id. Provide an anchor to pin it elsewhere, or attachToNoteId to attach it into another note.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        id: { type: "string" },
+        anchor: { type: "string" },
+        anchors: { type: "array", items: { type: "string" } },
+        attachToNoteId: { type: "string" },
+      },
+      required: ["id"],
       additionalProperties: false,
     },
   },
