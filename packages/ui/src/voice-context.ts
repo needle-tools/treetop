@@ -257,6 +257,48 @@ export function deriveVoiceContext(input: {
   };
 }
 
+export type VoiceStickerMove =
+  | { kind: "move"; stickerId: string; anchors: string[] }
+  | { kind: "attach"; stickerId: string; targetNoteId: string };
+
+function cleanVoiceString(value: unknown): string {
+  return typeof value === "string" ? value.trim() : "";
+}
+
+export function resolveVoiceStickerMove(
+  args: Record<string, unknown>,
+  notes: readonly Pick<VoiceNoteInput, "id" | "kind">[],
+  defaultAnchor: string,
+): VoiceStickerMove {
+  const stickerId = cleanVoiceString(args.id);
+  if (!stickerId) throw new Error("id must be a non-empty string");
+  const sticker = notes.find((note) => note.id === stickerId);
+  if (!sticker || sticker.kind !== "emoji") throw new Error("Sticker not found");
+
+  const targetNoteId = cleanVoiceString(args.attachToNoteId);
+  if (targetNoteId) {
+    if (targetNoteId === stickerId) {
+      throw new Error("sticker cannot attach to itself");
+    }
+    if (!notes.some((note) => note.id === targetNoteId)) {
+      throw new Error("Target note not found");
+    }
+    return { kind: "attach", stickerId, targetNoteId };
+  }
+
+  const anchors = Array.isArray(args.anchors)
+    ? args.anchors
+        .map((anchor) => cleanVoiceString(anchor))
+        .filter((anchor) => anchor.length > 0)
+    : [];
+  const singleAnchor = cleanVoiceString(args.anchor);
+  return {
+    kind: "move",
+    stickerId,
+    anchors: anchors.length > 0 ? anchors : [singleAnchor || defaultAnchor],
+  };
+}
+
 export function resolveVoiceSessionTarget(
   context: TreetopVoiceContext,
   requested?: string,
