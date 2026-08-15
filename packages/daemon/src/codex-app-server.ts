@@ -129,7 +129,8 @@ const TREETOP_VOICE_INSTRUCTIONS =
   "You are Treetop's global voice assistant. Keep spoken responses concise. " +
   "Use get_treetop_context whenever the current project, session, notes, or Zen mode matters. " +
   "Only focus projects or sessions and change Zen mode when the user asks. " +
-  "You may create notes and stickers when the user asks or when preserving useful context helps. " +
+  "When the user asks you to tell, ask, reply, continue, or send instructions to an existing Treetop agent session, use send_treetop_session_message. " +
+  "Only create notes and stickers when the user explicitly asks for a note, reminder, sticker, or persistent workspace artifact. " +
   "Do not run shell commands or edit files from voice mode. " +
   "Never claim a Treetop UI action succeeded unless its tool response says it did.";
 
@@ -160,6 +161,21 @@ const TREETOP_VOICE_TOOLS: JsonObject[] = [
       type: "object",
       properties: { source: { type: "string" } },
       required: ["source"],
+      additionalProperties: false,
+    },
+  },
+  {
+    type: "function",
+    name: "send_treetop_session_message",
+    description:
+      "Send a user message into an existing Treetop agent session. Omit source to use the active/focused session.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        source: { type: "string" },
+        text: { type: "string" },
+      },
+      required: ["text"],
       additionalProperties: false,
     },
   },

@@ -240,6 +240,7 @@
   } from "./voice-controller";
   import {
     deriveVoiceContext,
+    resolveVoiceSessionMessageTarget,
     type TreetopVoiceContext,
   } from "./voice-context";
 
@@ -7254,6 +7255,56 @@
     return { ok: true, anchor };
   }
 
+  async function sendVoiceSessionMessage(
+    args: Record<string, unknown>,
+  ): Promise<unknown> {
+    const text = typeof args.text === "string" ? args.text.trim() : "";
+    if (!text) throw new Error("text must be a non-empty string");
+    const requestedSource =
+      typeof args.source === "string" ? args.source.trim() : undefined;
+    const target = resolveVoiceSessionMessageTarget(
+      currentVoiceContext(),
+      requestedSource,
+    );
+    if (target.agent !== "claude" && target.agent !== "codex") {
+      throw new Error("Only Claude and Codex sessions can receive messages");
+    }
+    const entry = dockEntries.find(
+      (candidate) => candidate.source === target.source,
+    );
+    const sessionId = entry?.resumeSessionId ?? target.sessionId;
+    const wtPath = entry?.wtPath ?? target.worktreePath;
+    const agent = entry?.agent ?? target.agent;
+    if (!sessionId) throw new Error("Treetop session cannot be resumed");
+    if (!wtPath) throw new Error("Treetop session has no worktree path");
+
+    const res = await fetch(
+      apiUrl("/api/session/send", daemonIdForWorktreePath(repos, wtPath)),
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          agent,
+          sessionId,
+          cwd: wtPath,
+          text,
+        }),
+      },
+    );
+    const body = await res.json().catch(() => null);
+    if (!res.ok) {
+      const error =
+        body &&
+        typeof body === "object" &&
+        typeof (body as { error?: unknown }).error === "string"
+          ? (body as { error: string }).error
+          : `HTTP ${res.status}`;
+      throw new Error(error);
+    }
+    await focusVoiceSession(target.source);
+    return { ok: true, source: target.source, agent, sessionId };
+  }
+
   async function handleVoiceTool(
     tool: string,
     args: Record<string, unknown>,
@@ -7293,6 +7344,9 @@
     }
     if (tool === "create_treetop_note") return createVoiceNote(args);
     if (tool === "create_treetop_sticker") return createVoiceSticker(args);
+    if (tool === "send_treetop_session_message") {
+      return sendVoiceSessionMessage(args);
+    }
     throw new Error(`Unsupported Treetop voice tool: ${tool}`);
   }
 
