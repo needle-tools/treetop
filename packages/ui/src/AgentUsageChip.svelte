@@ -22,29 +22,15 @@
   import { getAudioContext, play } from "./sound";
   import { pushToast } from "./toast-bus";
   import { classifyWeeklyPace } from "./usage-pace";
-
-  /** Per-agent + per-condition 8h dedup for usage warnings. The
-   *  reactive triggers below fire every time the poll refreshes
-   *  `report`; without this every refresh would replay the sound /
-   *  re-toast. localStorage is intentional: this is per-device, per-
-   *  tab quiet — one tab firing the warning shouldn't silence another. */
-  const WARN_COOLDOWN_MS = 8 * 60 * 60 * 1000;
-
-  type WarnCondition = "pace" | "weekly90" | "session95";
+  import {
+    claimUsageWarnSlot,
+    type UsageWarnCondition,
+  } from "./usage-warnings";
 
   /** Returns true if the per-agent / per-condition slot is open and
-   *  was just claimed; false if still in cooldown. Catches localStorage
-   *  failures by returning true (sound/toast still fire once). */
-  function claimWarnSlot(agent: string, cond: WarnCondition): boolean {
-    const key = `supergit.usage-warn-last.${agent}.${cond}`;
-    try {
-      const last = Number(localStorage.getItem(key)) || 0;
-      if (Date.now() - last < WARN_COOLDOWN_MS) return false;
-      localStorage.setItem(key, String(Date.now()));
-    } catch {
-      // localStorage unavailable → skip dedup, still fire once.
-    }
-    return true;
+   *  was just claimed; false if still in cooldown. */
+  function claimWarnSlot(agent: string, cond: UsageWarnCondition): boolean {
+    return claimUsageWarnSlot(agent, cond);
   }
 
   function maybeAlertOverPace(
