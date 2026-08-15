@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
   deriveVoiceContext,
+  resolveVoiceSessionTarget,
   resolveVoiceSessionMessageTarget,
 } from "../src/voice-context";
 
@@ -36,6 +37,9 @@ describe("deriveVoiceContext", () => {
       zenRowKey: "repo-b|/beta/wt",
       activeWorktreePath: "/alpha",
       lastActiveSessionSource: "/sessions/beta.jsonl",
+      finishedAt: {
+        "/sessions/beta.jsonl": Date.parse("2026-07-29T12:30:00.000Z"),
+      },
       sessions: [
         {
           source: "/sessions/alpha.jsonl",
@@ -47,6 +51,7 @@ describe("deriveVoiceContext", () => {
         {
           source: "/sessions/beta.jsonl",
           agent: "codex",
+          transcriptSource: "/real/beta.jsonl",
           worktreePath: "/beta/wt",
           repoId: "repo-b",
           title: "Voice experiment",
@@ -99,6 +104,17 @@ describe("deriveVoiceContext", () => {
       kind: "note",
     });
     expect(context.cwd).toBe("/beta/wt");
+    expect(context.recentCompletions).toEqual([
+      {
+        source: "/sessions/beta.jsonl",
+        agent: "codex",
+        repoId: "repo-b",
+        worktreePath: "/beta/wt",
+        title: "Voice experiment",
+        finishedAt: "2026-07-29T12:30:00.000Z",
+        transcriptSource: "/real/beta.jsonl",
+      },
+    ]);
   });
 
   test("falls back to the active worktree and newest session outside zen", () => {
@@ -195,6 +211,43 @@ describe("deriveVoiceContext", () => {
     });
     expect(() =>
       resolveVoiceSessionMessageTarget(context, "/sessions/missing.jsonl"),
-    ).toThrow("Treetop session not found");
+    ).toThrow("Session not found");
+  });
+
+  test("resolves session navigation by provider session id without requiring resume metadata", () => {
+    const context = deriveVoiceContext({
+      projects: [
+        {
+          id: "repo-a",
+          name: "Alpha",
+          path: "/alpha",
+          worktrees: [{ path: "/alpha", branch: "main" }],
+        },
+      ],
+      rows: [],
+      zenRowKey: null,
+      activeWorktreePath: "/alpha",
+      lastActiveSessionSource: null,
+      sessions: [
+        {
+          source: "/sessions/alpha.jsonl",
+          agent: "codex",
+          worktreePath: "/alpha",
+          repoId: "repo-a",
+          sessionId: "019ed710-1a0a-7200-98ec-53f8aa8fab6b",
+          title: "Performance Testing",
+        },
+      ],
+    });
+
+    expect(
+      resolveVoiceSessionTarget(
+        context,
+        "019ed710-1a0a-7200-98ec-53f8aa8fab6b",
+      ),
+    ).toMatchObject({
+      source: "/sessions/alpha.jsonl",
+      title: "Performance Testing",
+    });
   });
 });

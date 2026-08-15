@@ -20,7 +20,12 @@ export interface VoiceSessionInput {
   worktreePath: string;
   repoId: string;
   sessionId?: string;
+  transcriptSource?: string;
   title?: string;
+  lastUserMessage?: string;
+  lastUserMessages?: string[];
+  messageCount?: number;
+  recentMessageCount?: number;
   lastActive?: string;
   working?: boolean;
   awaiting?: boolean;
@@ -64,6 +69,16 @@ export interface TreetopVoiceContext {
     }>;
   }>;
   sessions: VoiceSessionInput[];
+  recentCompletions: Array<{
+    source: string;
+    sessionId?: string;
+    transcriptSource?: string;
+    title?: string;
+    agent: string;
+    repoId: string;
+    worktreePath: string;
+    finishedAt: string;
+  }>;
   notes: Array<{
     id: string;
     excerpt: string;
@@ -92,6 +107,7 @@ export function deriveVoiceContext(input: {
   lastActiveSessionSource: string | null;
   sessions: VoiceSessionInput[];
   notes?: VoiceNoteInput[];
+  finishedAt?: Record<string, number | undefined>;
 }): TreetopVoiceContext {
   const zenRow = input.zenRowKey
     ? input.rows.find((row) => row.key === input.zenRowKey)
@@ -158,6 +174,44 @@ export function deriveVoiceContext(input: {
       kind: note.kind ?? "note",
       ...(note.updatedAt ? { updatedAt: note.updatedAt } : {}),
     }));
+  const sessionBySource = new Map(
+    input.sessions.map((session) => [session.source, session]),
+  );
+  const recentCompletions = Object.entries(input.finishedAt ?? {})
+    .filter((entry): entry is [string, number] => typeof entry[1] === "number")
+    .map(([source, finishedAt]) => {
+      const session = sessionBySource.get(source);
+      return session
+        ? {
+            source,
+            ...(session.sessionId ? { sessionId: session.sessionId } : {}),
+            ...(session.transcriptSource
+              ? { transcriptSource: session.transcriptSource }
+              : {}),
+            ...(session.title ? { title: session.title } : {}),
+            agent: session.agent,
+            repoId: session.repoId,
+            worktreePath: session.worktreePath,
+            finishedAt: new Date(finishedAt).toISOString(),
+          }
+        : undefined;
+    })
+    .filter(
+      (
+        completion,
+      ): completion is {
+        source: string;
+        sessionId?: string;
+        transcriptSource?: string;
+        title?: string;
+        agent: string;
+        repoId: string;
+        worktreePath: string;
+        finishedAt: string;
+      } => !!completion,
+    )
+    .sort((a, b) => timestamp(b.finishedAt) - timestamp(a.finishedAt))
+    .slice(0, 12);
 
   return {
     product: "Treetop",
@@ -198,23 +252,37 @@ export function deriveVoiceContext(input: {
     sessions: [...input.sessions]
       .sort((a, b) => timestamp(b.lastActive) - timestamp(a.lastActive))
       .slice(0, 30),
+    recentCompletions,
     notes,
   };
+}
+
+export function resolveVoiceSessionTarget(
+  context: TreetopVoiceContext,
+  requested?: string,
+): VoiceSessionInput {
+  const value = requested?.trim();
+  if (value) {
+    const lower = value.toLowerCase();
+    const target = context.sessions.find(
+      (session) =>
+        session.source === value ||
+        session.sessionId === value ||
+        session.title?.toLowerCase() === lower,
+    );
+    if (!target) throw new Error("Session not found");
+    return target;
+  }
+  const target = context.activeSession ?? context.latestSession;
+  if (!target) throw new Error("No session is available");
+  return target;
 }
 
 export function resolveVoiceSessionMessageTarget(
   context: TreetopVoiceContext,
   requestedSource?: string,
 ): VoiceSessionInput {
-  const source = requestedSource?.trim();
-  if (source) {
-    const target = context.sessions.find((session) => session.source === source);
-    if (!target) throw new Error("Treetop session not found");
-    if (!target.sessionId) throw new Error("Treetop session cannot be resumed");
-    return target;
-  }
-  const target = context.activeSession ?? context.latestSession;
-  if (!target) throw new Error("No Treetop session is available");
-  if (!target.sessionId) throw new Error("Treetop session cannot be resumed");
+  const target = resolveVoiceSessionTarget(context, requestedSource);
+  if (!target.sessionId) throw new Error("Session cannot be resumed");
   return target;
 }
