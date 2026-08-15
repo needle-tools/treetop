@@ -8799,6 +8799,7 @@
     });
     el.classList.add("session-col-focused");
     setTimeout(() => el.classList.remove("session-col-focused"), 1800);
+    requestComposerFocus(source);
   }
 </script>
 
