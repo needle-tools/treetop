@@ -4,6 +4,8 @@ import {
   visualPathPreviewTargets,
   visualSnapshotUidLabelsFromToolResult,
   visualToolIsTestCommand,
+  type VisualObservedProcessOutput,
+  type VisualToolPreviewContext,
   type VisualToolPreviewPart,
 } from "./visual-nicifiers";
 
@@ -37,6 +39,8 @@ export {
   visualToolPreviewParts,
   visualToolPreviewText,
   visualToolRemoteHostLabel,
+  visualWorkDetailEntries,
+  visualWorkOverview,
   visualSnapshotUidLabelsFromToolResult,
   visualToolTestResultBadges,
   type VisualToolPreviewContext,
@@ -47,6 +51,9 @@ export {
   type VisualToolInlineScript,
   type VisualToolPreviewPart,
   type VisualToolResultBadge,
+  type VisualWorkArtifact,
+  type VisualWorkOverview,
+  type VisualWorkTimeOverview,
 } from "./visual-nicifiers";
 
 export interface MessageBlock {
@@ -232,7 +239,9 @@ export interface VisualSubagentMeta {
   result?: string;
 }
 
-function recordFromUnknown(value: unknown): Record<string, unknown> | undefined {
+function recordFromUnknown(
+  value: unknown,
+): Record<string, unknown> | undefined {
   return value && typeof value === "object"
     ? (value as Record<string, unknown>)
     : undefined;
@@ -257,7 +266,8 @@ export function visualSubagentMetaFromBlocks(
   toolUseBlock: MessageBlock | undefined,
   resultBlock?: MessageBlock | undefined,
 ): VisualSubagentMeta | undefined {
-  const direct = visualSubagentMetaFromToolResult(toolUseBlock, resultBlock) ??
+  const direct =
+    visualSubagentMetaFromToolResult(toolUseBlock, resultBlock) ??
     visualSubagentMetaFromBlock(resultBlock) ??
     visualSubagentMetaFromBlock(toolUseBlock);
   if (!direct) return undefined;
@@ -313,7 +323,7 @@ function visualSubagentMetaFromToolResult(
   const state = recordFromUnknown(rawState);
   const completed = state ? stringFromUnknown(state.completed) : undefined;
   const failed = state
-    ? stringFromUnknown(state.failed) ?? stringFromUnknown(state.error)
+    ? (stringFromUnknown(state.failed) ?? stringFromUnknown(state.error))
     : undefined;
   return {
     id,
@@ -346,14 +356,15 @@ export function visualSubagentMetaFromBlock(
   }
   const input = recordFromUnknown(block.toolInput);
   const targets = Array.isArray(input?.targets)
-    ? input.targets.filter((target): target is string => typeof target === "string")
+    ? input.targets.filter(
+        (target): target is string => typeof target === "string",
+      )
     : [];
   return {
     id: block.subagentId ?? stringFromUnknown(input?.agent_id) ?? targets[0],
     nickname: block.subagentNickname,
     action:
-      block.subagentAction ??
-      (toolName === "spawn_agent" ? "spawn" : "wait"),
+      block.subagentAction ?? (toolName === "spawn_agent" ? "spawn" : "wait"),
     status:
       block.subagentStatus ??
       (toolName === "spawn_agent" ? "running" : "unknown"),
@@ -366,7 +377,9 @@ export function visualSubagentMetaFromBlock(
 }
 
 export function visualSubagentLabel(meta: VisualSubagentMeta): string {
-  return meta.nickname || meta.type || (meta.id ? meta.id.slice(0, 8) : "agent");
+  return (
+    meta.nickname || meta.type || (meta.id ? meta.id.slice(0, 8) : "agent")
+  );
 }
 
 export function visualPlanFromPayload(input: unknown): VisualPlan | undefined {
@@ -399,7 +412,9 @@ export function visualPlanFromPayload(input: unknown): VisualPlan | undefined {
       ? record.explanation.trim()
       : undefined;
   const completed = items.filter((item) => item.status === "completed").length;
-  const inProgress = items.filter((item) => item.status === "in_progress").length;
+  const inProgress = items.filter(
+    (item) => item.status === "in_progress",
+  ).length;
   return {
     explanation,
     items,
@@ -425,10 +440,18 @@ export function visualPlanFromBlock(
 export function latestVisualPlan(
   messages: readonly Message[],
 ): VisualPlan | undefined {
-  for (let messageIndex = messages.length - 1; messageIndex >= 0; messageIndex -= 1) {
+  for (
+    let messageIndex = messages.length - 1;
+    messageIndex >= 0;
+    messageIndex -= 1
+  ) {
     const message = messages[messageIndex];
     if (!message) continue;
-    for (let blockIndex = message.blocks.length - 1; blockIndex >= 0; blockIndex -= 1) {
+    for (
+      let blockIndex = message.blocks.length - 1;
+      blockIndex >= 0;
+      blockIndex -= 1
+    ) {
       const plan = visualPlanFromBlock(message.blocks[blockIndex]);
       if (plan) return plan;
     }
@@ -755,9 +778,7 @@ export function visualThinkingSummary(text: string | undefined): {
   body: string;
 } {
   const raw = (text ?? "").replace(/\r\n/g, "\n").trim();
-  const cleaned = raw
-    .replace(/^thinking(?:\s*[:—–-]\s*|\s+)/i, "")
-    .trim();
+  const cleaned = raw.replace(/^thinking(?:\s*[:—–-]\s*|\s+)/i, "").trim();
   if (!cleaned) return { title: "", body: "" };
   const cleanedTitleFragments = markdownTitleFragments(cleaned);
   if (cleanedTitleFragments) {
@@ -771,7 +792,10 @@ export function visualThinkingSummary(text: string | undefined): {
   if (title && !body && title.length <= 96) return { title, body: "" };
   return { title: "", body: cleaned };
 }
-function hasBlockType(entry: VisualWorkEntry | undefined, type: string): boolean {
+function hasBlockType(
+  entry: VisualWorkEntry | undefined,
+  type: string,
+): boolean {
   return !!entry && entry.blocks.some((block) => block.type === type);
 }
 
@@ -782,7 +806,9 @@ function blockToolUseIds(entry: VisualWorkEntry | undefined): string[] {
     .filter((id): id is string => typeof id === "string" && id.length > 0);
 }
 
-function firstToolUseName(entry: VisualWorkEntry | undefined): string | undefined {
+function firstToolUseName(
+  entry: VisualWorkEntry | undefined,
+): string | undefined {
   return entry?.blocks.find(
     (block) =>
       block.type === "tool_use" &&
@@ -840,7 +866,9 @@ function isObservedProcessOutputPair(
 
 const QUICK_TOOL_RESULT_COLLAPSE_MS = 1000;
 
-function visualEntryTimestampMs(entry: VisualWorkEntry | undefined): number | undefined {
+function visualEntryTimestampMs(
+  entry: VisualWorkEntry | undefined,
+): number | undefined {
   const timestamp = entry?.message.timestamp;
   if (!timestamp) return undefined;
   const parsed = Date.parse(timestamp);
@@ -897,10 +925,7 @@ function isRedundantSubagentNotification(
   return isSameSubagentCompletion(resultMeta, notificationMeta);
 }
 
-function withToolResultName<
-  B extends MessageBlock,
-  M extends Message<B>,
->(
+function withToolResultName<B extends MessageBlock, M extends Message<B>>(
   entry: VisualWorkEntry<B, M>,
   toolName: string | undefined,
 ): VisualWorkEntry<B, M> {
@@ -940,7 +965,8 @@ export function visualMarkerLabel(text: string | undefined): string {
   if (/(?:codex\s+)?turn failed/i.test(cleaned)) return "Turn failed";
   if (/(?:codex\s+)?task complete/i.test(cleaned)) return "Task complete";
   if (/(?:codex\s+)?task started/i.test(cleaned)) return "Task started";
-  if (/(?:codex\s+)?context compacted/i.test(cleaned)) return "Context compacted";
+  if (/(?:codex\s+)?context compacted/i.test(cleaned))
+    return "Context compacted";
   if (/(?:codex\s+)?turn aborted/i.test(cleaned)) return "Turn aborted";
   return cleaned || "Marker";
 }
@@ -967,9 +993,7 @@ function isTerminalVisualMarkerKind(
 export function buildVisualWorkDisplayEntries<
   B extends MessageBlock,
   M extends Message<B>,
->(
-  entries: readonly VisualWorkEntry<B, M>[],
-): VisualWorkDisplayEntry<B, M>[] {
+>(entries: readonly VisualWorkEntry<B, M>[]): VisualWorkDisplayEntry<B, M>[] {
   const toolUseByResult = new Map<number, VisualWorkEntry<B, M>>();
   const resultByToolUse = new Map<number, VisualWorkEntry<B, M>>();
   const toolUseById = new Map<string, number>();
@@ -1003,10 +1027,7 @@ export function buildVisualWorkDisplayEntries<
     );
     if (pairedToolUseIndex === undefined) continue;
 
-    toolUseByResult.set(
-      index,
-      entries[pairedToolUseIndex]!,
-    );
+    toolUseByResult.set(index, entries[pairedToolUseIndex]!);
     resultByToolUse.set(
       pairedToolUseIndex,
       withToolResultName(entry, firstToolUseName(entries[pairedToolUseIndex])),
@@ -1073,9 +1094,7 @@ export function buildVisualWorkDisplayEntries<
         : entry,
       pairedResult: resultByToolUse.get(index),
       pairedToolUse,
-      previewContext: snapshotUidLabels
-        ? { snapshotUidLabels }
-        : undefined,
+      previewContext: snapshotUidLabels ? { snapshotUidLabels } : undefined,
     };
     out.push(displayEntry);
 
@@ -1178,10 +1197,9 @@ function hasTurnMarker<B extends MessageBlock, M extends Message<B>>(
   );
 }
 
-export function visualWorkSummary<
-  B extends MessageBlock,
-  M extends Message<B>,
->(entries: readonly VisualWorkEntry<B, M>[]): VisualWorkSummary {
+export function visualWorkSummary<B extends MessageBlock, M extends Message<B>>(
+  entries: readonly VisualWorkEntry<B, M>[],
+): VisualWorkSummary {
   let compactions = 0;
   let steerings = 0;
   const subagentIdByToolUseId = new Map<string, string>();
@@ -1220,7 +1238,7 @@ export function visualWorkSummary<
       subagents.add(
         meta.id ??
           (block.toolUseId
-            ? subagentIdByToolUseId.get(block.toolUseId) ?? block.toolUseId
+            ? (subagentIdByToolUseId.get(block.toolUseId) ?? block.toolUseId)
             : `${entry.messageIndex}`),
       );
     }
@@ -1238,10 +1256,9 @@ export function visualWorkSummary<
   };
 }
 
-function compactionMarkerEntry<
-  B extends MessageBlock,
-  M extends Message<B>,
->(entry: VisualWorkEntry<B, M>): VisualTranscriptItem<B, M> | undefined {
+function compactionMarkerEntry<B extends MessageBlock, M extends Message<B>>(
+  entry: VisualWorkEntry<B, M>,
+): VisualTranscriptItem<B, M> | undefined {
   const markerBlock = visualMarkerBlock(entry);
   if (!markerBlock || visualMarkerKind(markerBlock.text) !== "compacted")
     return undefined;
@@ -1254,10 +1271,7 @@ function compactionMarkerEntry<
   };
 }
 
-function terminalWorkMarker<
-  B extends MessageBlock,
-  M extends Message<B>,
->(
+function terminalWorkMarker<B extends MessageBlock, M extends Message<B>>(
   entries: readonly VisualWorkEntry<B, M>[],
 ): Pick<
   Extract<VisualTranscriptItem<B, M>, { kind: "work" }>,
@@ -1296,10 +1310,9 @@ export function userMessageIntent<B extends MessageBlock>(
   return undefined;
 }
 
-function hasSteeringEligibleWork<
-  B extends MessageBlock,
-  M extends Message<B>,
->(entries: readonly VisualWorkEntry<B, M>[]): boolean {
+function hasSteeringEligibleWork<B extends MessageBlock, M extends Message<B>>(
+  entries: readonly VisualWorkEntry<B, M>[],
+): boolean {
   return entries.some(
     (entry) =>
       entry.message.role !== "user" &&
@@ -1307,10 +1320,9 @@ function hasSteeringEligibleWork<
   );
 }
 
-function isBoundaryMarkerOnlyWork<
-  B extends MessageBlock,
-  M extends Message<B>,
->(entries: readonly VisualWorkEntry<B, M>[]): boolean {
+function isBoundaryMarkerOnlyWork<B extends MessageBlock, M extends Message<B>>(
+  entries: readonly VisualWorkEntry<B, M>[],
+): boolean {
   return (
     entries.length > 0 &&
     entries.every((entry) =>
@@ -1323,10 +1335,10 @@ function isBoundaryMarkerOnlyWork<
   );
 }
 
-function withUserMessageIntent<
-  B extends MessageBlock,
-  M extends Message<B>,
->(message: M, intent: "steer" | undefined): M {
+function withUserMessageIntent<B extends MessageBlock, M extends Message<B>>(
+  message: M,
+  intent: "steer" | undefined,
+): M {
   if (!intent || message.intent === intent) return message;
   return { ...message, intent } as M;
 }
@@ -1334,9 +1346,7 @@ function withUserMessageIntent<
 function coalesceAdjacentVisualWorkItems<
   B extends MessageBlock,
   M extends Message<B>,
->(
-  items: VisualTranscriptItem<B, M>[],
-): VisualTranscriptItem<B, M>[] {
+>(items: VisualTranscriptItem<B, M>[]): VisualTranscriptItem<B, M>[] {
   const out: VisualTranscriptItem<B, M>[] = [];
   for (const item of items) {
     const previous = out[out.length - 1];
@@ -1466,7 +1476,10 @@ export function mergeVisualSessionMessages<
   B extends MessageBlock,
   M extends Message<B>,
 >(messages: readonly M[], overlays: readonly M[]): M[] {
-  const messagesWithIntent = withOptimisticUserMessageIntent(messages, overlays);
+  const messagesWithIntent = withOptimisticUserMessageIntent(
+    messages,
+    overlays,
+  );
   if (overlays.length === 0)
     return withoutDuplicateOptimisticUserMessages(messagesWithIntent);
   const pendingOverlays = overlays.filter(
@@ -1494,10 +1507,10 @@ export function mergeVisualSessionMessages<
   return withoutDuplicateOptimisticUserMessages(merged);
 }
 
-function optimisticInsertionIndex<
-  B extends MessageBlock,
-  M extends Message<B>,
->(messages: readonly M[], overlay: M): number {
+function optimisticInsertionIndex<B extends MessageBlock, M extends Message<B>>(
+  messages: readonly M[],
+  overlay: M,
+): number {
   if (typeof overlay.optimisticAfterMessageId === "string") {
     const byId = messages.findIndex(
       (message) => message.id === overlay.optimisticAfterMessageId,
@@ -1510,7 +1523,10 @@ function optimisticInsertionIndex<
   ) {
     return Math.max(
       -1,
-      Math.min(messages.length - 1, Math.trunc(overlay.optimisticAfterMessageIndex)),
+      Math.min(
+        messages.length - 1,
+        Math.trunc(overlay.optimisticAfterMessageIndex),
+      ),
     );
   }
   return messages.length - 1;
@@ -1603,9 +1619,8 @@ function messageKey<B extends MessageBlock, M extends Message<B>>(
 
 function blockSignature(block: MessageBlock): string {
   const planKey =
-    block.planItems
-      ?.map((item) => `${item.status}:${item.step}`)
-      .join("\n") ?? "";
+    block.planItems?.map((item) => `${item.status}:${item.step}`).join("\n") ??
+    "";
   return [
     block.type,
     block.text ?? "",
@@ -1793,7 +1808,9 @@ export function reuseStableVisualTranscriptItems<
     });
     let reusedAny = false;
     const entries = item.entries.map((entry) => {
-      const previousEntry = previousEntriesByKey.get(getVisualWorkEntryKey(entry));
+      const previousEntry = previousEntriesByKey.get(
+        getVisualWorkEntryKey(entry),
+      );
       if (
         previousEntry &&
         (sameEntryReferences(previousEntry, entry) ||
@@ -1869,7 +1886,8 @@ export function buildVisualTranscriptItems<
   function canImplicitlySteer(message: M | undefined): boolean {
     if (!message || message.role !== "user") return false;
     return (
-      userMessageIntent(message) === "steer" || !isOptimisticUserMessage(message)
+      userMessageIntent(message) === "steer" ||
+      !isOptimisticUserMessage(message)
     );
   }
 
@@ -1956,8 +1974,8 @@ export function buildVisualTranscriptItems<
       return;
     }
 
-    const finalResponseIndex = entries.findLastIndex(
-      (entry) => isAssistantResponseEntry(entry),
+    const finalResponseIndex = entries.findLastIndex((entry) =>
+      isAssistantResponseEntry(entry),
     );
     const finalResponse = entries[finalResponseIndex]!;
     const workEntries: VisualWorkEntry<B, M>[] = [];
@@ -2165,10 +2183,10 @@ function lastUserMessageIndexAtOrBefore<
   return 0;
 }
 
-function itemIsBeforeMessageIndex<
-  B extends MessageBlock,
-  M extends Message<B>,
->(item: VisualTranscriptItem<B, M>, messageIndex: number): boolean {
+function itemIsBeforeMessageIndex<B extends MessageBlock, M extends Message<B>>(
+  item: VisualTranscriptItem<B, M>,
+  messageIndex: number,
+): boolean {
   if (item.kind === "message") return item.messageIndex < messageIndex;
   if (item.kind === "marker") return item.entry.messageIndex < messageIndex;
   return item.entries.every((entry) => entry.messageIndex < messageIndex);

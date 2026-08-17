@@ -64,7 +64,8 @@ function commandResultTitle(
   exitCode: number | undefined,
   processRunning: boolean,
 ): string {
-  if (processRunning) return output ? "Process output" : "Process still running";
+  if (processRunning)
+    return output ? "Process output" : "Process still running";
   if (output) return "Command output";
   if (exitCode === 0) return "Command completed";
   if (exitCode !== undefined) return "Command failed";
@@ -316,8 +317,7 @@ export function visualToolInlineScript(
     block.toolInput,
   );
   if (structuredScript) return structuredScript;
-  const command =
-    commandTextFromToolInput(block.toolInput, block.toolName);
+  const command = commandTextFromToolInput(block.toolInput, block.toolName);
   if (!command) return undefined;
   return inlineScriptFromCommandPreservingHeredoc(command);
 }
@@ -328,8 +328,7 @@ export function visualToolInlineScriptLanguageLabel(
   const inlineScript = visualToolInlineScript(block);
   if (inlineScript) return inlineScriptLanguageLabel(inlineScript.language);
   if (!block || block.type !== "tool_use") return "";
-  const command =
-    commandTextFromToolInput(block.toolInput, block.toolName);
+  const command = commandTextFromToolInput(block.toolInput, block.toolName);
   if (!command) return "";
   const scriptFile = directScriptCommand(
     normalizeLaunchedCommand(command).command,
@@ -369,10 +368,7 @@ export function visualToolIconNameForPreview(
   const toolName = (block?.toolName ?? "").toLowerCase();
   if (isImageGenerationToolName(toolName)) return "image_generation";
   if (toolName === "click" || toolName.endsWith(".click")) return "click";
-  if (
-    toolName === "take_screenshot" ||
-    toolName.endsWith(".take_screenshot")
-  )
+  if (toolName === "take_screenshot" || toolName.endsWith(".take_screenshot"))
     return "take_screenshot";
   if (toolName === "take_snapshot" || toolName.endsWith(".take_snapshot"))
     return "take_snapshot";
@@ -381,7 +377,9 @@ export function visualToolIconNameForPreview(
     /^Check (?:staged )?diff whitespace\b/.test(preview) ||
     /^Review (?:staged )?diff\b/.test(preview) ||
     /^Search .* from \S+ for\b/.test(preview) ||
-    /^Show (?:recent commits|current branch|current commit|HEAD)\b/.test(preview) ||
+    /^Show (?:recent commits|current branch|current commit|HEAD)\b/.test(
+      preview,
+    ) ||
     /^Count commits\b/.test(preview) ||
     /^List tracked files\b/.test(preview) ||
     /^Stage\b/.test(preview) ||
@@ -414,7 +412,8 @@ export function visualToolIconNameForPreview(
   if (/^List screen sessions\b/.test(preview)) return "list";
   if (/^Emulate\b/.test(preview)) return "emulate";
   if (/^Open tunnel\b/.test(preview)) return "port_check";
-  if (/^(?:Navigate to|Open|Open browser)\b/.test(preview)) return "navigate_page";
+  if (/^(?:Navigate to|Open|Open browser)\b/.test(preview))
+    return "navigate_page";
   if (/^Check processes?\b/.test(preview)) return "process_check";
   if (/^Check containers?\b/.test(preview)) return "process_check";
   if (/^Stop process(?:es)?\b/.test(preview)) return "process_end";
@@ -617,12 +616,7 @@ export function visualToolTestResultBadges(
     badges.push({
       label: `todo ${counts.todo}`,
       tone: "neutral",
-      title: testBadgeTitle(
-        counts.todo,
-        "todo test",
-        "",
-        summary.details.todo,
-      ),
+      title: testBadgeTitle(counts.todo, "todo test", "", summary.details.todo),
     });
   }
   return badges;
@@ -709,7 +703,9 @@ function commandConsoleResultBadges(
   if (!toolResultBlock || toolResultBlock.type !== "tool_result") return [];
 
   const result = cleanVisualToolResultText(toolResultBlock.text);
-  const counts = countConsoleMessages(result.body || toolResultBlock.text || "");
+  const counts = countConsoleMessages(
+    result.body || toolResultBlock.text || "",
+  );
   const badges: VisualToolResultBadge[] = [];
   if (counts.errors > 0) {
     badges.push({
@@ -868,6 +864,7 @@ interface CommandFileBadgeInfo {
     | "copied"
     | "moved"
     | "converted"
+    | "edited"
     | "written"
     | "touched";
 }
@@ -886,9 +883,7 @@ function commandFileBadgeInfo(
 ): CommandFileBadgeInfo | undefined {
   if (summary.kind === "git" && summary.action === "add") {
     const count = countDistinctTargets(summary.targets);
-    return count > 0
-      ? { count, noun: "file", action: "staged" }
-      : undefined;
+    return count > 0 ? { count, noun: "file", action: "staged" } : undefined;
   }
   if (summary.kind === "filesystem") {
     const count = countDistinctTargets(summary.targets);
@@ -924,7 +919,9 @@ function sharedInfoValue<K extends "noun" | "action">(
   key: K,
 ): CommandFileBadgeInfo[K] | undefined {
   const first = infos[0]?.[key];
-  return first && infos.every((info) => info[key] === first) ? first : undefined;
+  return first && infos.every((info) => info[key] === first)
+    ? first
+    : undefined;
 }
 
 function fileCountBadge(
@@ -1032,7 +1029,10 @@ function testResultSummary(body: string): TestResultSummary {
     matchCount(normalizedBody, /^\s*\(skip\)/gm),
     matchCount(normalizedBody, /^\s*-\s+\d+\b/gm),
   );
-  counts.todo = Math.max(counts.todo, matchCount(normalizedBody, /^\s*\(todo\)/gm));
+  counts.todo = Math.max(
+    counts.todo,
+    matchCount(normalizedBody, /^\s*\(todo\)/gm),
+  );
   if (counts.warnings === 0) {
     counts.warnings = matchCount(normalizedBody, /\bwarning\b/gi);
   }
@@ -1071,23 +1071,37 @@ function collectTestResultDetail(
 
   const tap = line.match(/^(not\s+ok|ok)\s+\d+\s+-\s+(.+)$/i);
   if (tap) {
-    addTestDetail(details, /^ok$/i.test(tap[1]!) ? "passed" : "failed", tap[2]!);
+    addTestDetail(
+      details,
+      /^ok$/i.test(tap[1]!) ? "passed" : "failed",
+      tap[2]!,
+    );
     return;
   }
 
-  const pytest = line.match(/^(\S+::\S.*?)\s+(PASSED|FAILED|SKIPPED|XFAIL|XPASS)\b/);
+  const pytest = line.match(
+    /^(\S+::\S.*?)\s+(PASSED|FAILED|SKIPPED|XFAIL|XPASS)\b/,
+  );
   if (pytest) {
     const status = pytest[2]!.toUpperCase();
     addTestDetail(
       details,
-      status === "PASSED" ? "passed" : status === "FAILED" ? "failed" : "skipped",
+      status === "PASSED"
+        ? "passed"
+        : status === "FAILED"
+          ? "failed"
+          : "skipped",
       pytest[1]!,
     );
     return;
   }
 
   if (/^(warn|warning):/i.test(line)) {
-    addTestDetail(details, "warnings", line.replace(/^(warn|warning):\s*/i, ""));
+    addTestDetail(
+      details,
+      "warnings",
+      line.replace(/^(warn|warning):\s*/i, ""),
+    );
   }
 }
 
@@ -1230,10 +1244,7 @@ export function visualToolMediaBlocks(
   if (command) {
     const preview = visualCommandPreview(command);
     commandRunsRemotely = !!preview.remoteHost;
-    const mediaSummaries = visualCommandMediaSummaries(
-      command,
-      cwd,
-    );
+    const mediaSummaries = visualCommandMediaSummaries(command, cwd);
     commandResultCwd =
       mediaSummaries.at(-1)?.cwd ?? localCommandFinalCwd(command, cwd);
     for (const { summary, cwd: summaryCwd } of mediaSummaries) {
@@ -1243,8 +1254,15 @@ export function visualToolMediaBlocks(
       } else if (summary.kind === "fetch") {
         addImagePath(summary.output, "Fetched image", summaryCwd);
       } else if (summary.kind === "browser" && summary.action === "upload") {
-        addImagePath(summary.detail ?? summary.target, "Uploaded image", summaryCwd);
-      } else if (summary.kind === "browser" && summary.action === "screenshot") {
+        addImagePath(
+          summary.detail ?? summary.target,
+          "Uploaded image",
+          summaryCwd,
+        );
+      } else if (
+        summary.kind === "browser" &&
+        summary.action === "screenshot"
+      ) {
         addImagePath(summary.target, "Screenshot", summaryCwd);
       }
     }
@@ -1350,7 +1368,10 @@ function visualCommandMediaSummaries(
     }));
   }
   let currentCwd = baseCwd;
-  const summaries: { summary: VisualCommandSummary; cwd: string | undefined }[] = [];
+  const summaries: {
+    summary: VisualCommandSummary;
+    cwd: string | undefined;
+  }[] = [];
   for (const part of parts) {
     const next = normalizeLaunchedCommand(part);
     const tokens = shellTokens(next.command);
@@ -1423,9 +1444,7 @@ function cleanImagePathCandidate(path: string): string {
 
 function isAbsoluteLocalFilePath(path: string): boolean {
   return (
-    path.startsWith("/") ||
-    /^[A-Za-z]:[\\/]/.test(path) ||
-    /^\\\\/.test(path)
+    path.startsWith("/") || /^[A-Za-z]:[\\/]/.test(path) || /^\\\\/.test(path)
   );
 }
 
@@ -1436,7 +1455,10 @@ function imagePathsFromToolResult(
   if (!block || block.type !== "tool_result" || !block.text) return [];
   const cleaned = cleanVisualToolResultText(block.text);
   const text = `${cleaned.body}\n${block.text}`;
-  if (!/\b(?:screenshot|snapshot|image)\b/i.test(text) && !opts.allowImageGeneration)
+  if (
+    !/\b(?:screenshot|snapshot|image)\b/i.test(text) &&
+    !opts.allowImageGeneration
+  )
     return [];
 
   const out: string[] = [];
@@ -1547,8 +1569,11 @@ export function visualToolPreviewParts(
       return commandPreview.parts;
     }
   }
-  if (inlineScript) return textPreviewParts(visualToolInlineScriptPreviewText(block));
-  const commandPreview = command ? visualCommandPreview(command, context) : undefined;
+  if (inlineScript)
+    return textPreviewParts(visualToolInlineScriptPreviewText(block));
+  const commandPreview = command
+    ? visualCommandPreview(command, context)
+    : undefined;
   if (commandPreview && commandPreview.parts.length > 0) {
     return commandPreview.parts;
   }
@@ -1970,7 +1995,8 @@ function visualStructuredToolPreviewParts(
   }
   if (toolName === "click" || toolName.endsWith(".click")) {
     const uid = stringField(obj, "uid");
-    const dblClick = booleanField(obj, "dblClick") ?? booleanField(obj, "doubleClick");
+    const dblClick =
+      booleanField(obj, "dblClick") ?? booleanField(obj, "doubleClick");
     const label = dblClick ? "Double-click element" : "Click element";
     const target = uid ? context?.snapshotUidLabels?.get(uid) : undefined;
     if (target) {
@@ -1979,11 +2005,9 @@ function visualStructuredToolPreviewParts(
     }
     return textPreviewParts(uid ? `${label} ${uid}` : label);
   }
-  if (
-    toolName === "take_screenshot" ||
-    toolName.endsWith(".take_screenshot")
-  ) {
-    const output = stringField(obj, "filePath") ?? stringField(obj, "file_path");
+  if (toolName === "take_screenshot" || toolName.endsWith(".take_screenshot")) {
+    const output =
+      stringField(obj, "filePath") ?? stringField(obj, "file_path");
     if (output) {
       return [
         { kind: "text", text: "Capture screenshot " },
@@ -1993,7 +2017,8 @@ function visualStructuredToolPreviewParts(
     return textPreviewParts("Capture screenshot");
   }
   if (toolName === "take_snapshot" || toolName.endsWith(".take_snapshot")) {
-    const output = stringField(obj, "filePath") ?? stringField(obj, "file_path");
+    const output =
+      stringField(obj, "filePath") ?? stringField(obj, "file_path");
     if (output) {
       return [
         { kind: "text", text: "Capture snapshot " },
@@ -2164,7 +2189,10 @@ function pathBasename(path: string): string {
   return segments[segments.length - 1] ?? path;
 }
 
-function shortestUniquePathSuffix(path: string, peers: readonly string[]): string {
+function shortestUniquePathSuffix(
+  path: string,
+  peers: readonly string[],
+): string {
   const segments = pathSegments(path);
   if (segments.length <= 1) return segments[0] ?? path;
   for (let depth = 2; depth <= segments.length; depth += 1) {
@@ -2220,7 +2248,8 @@ function formatPathTargetParts(
   const distinctPathsByBase = new Map<string, Set<string>>();
   for (const item of parsed) {
     const base = pathBasename(item.path);
-    if (!distinctPathsByBase.has(base)) distinctPathsByBase.set(base, new Set());
+    if (!distinctPathsByBase.has(base))
+      distinctPathsByBase.set(base, new Set());
     distinctPathsByBase.get(base)!.add(item.path);
   }
   return parsed.map((item) => {
@@ -2231,10 +2260,14 @@ function formatPathTargetParts(
         ? shortestUniquePathSuffix(item.path, ambiguousPaths)
         : /[*?[]/.test(item.path)
           ? globContextPathSuffix(item.path)
-        : basenameNeedsParentContext(base)
-          ? parentContextPathSuffix(item.path)
-          : base;
-    return { label: `${label}${item.range}`, path: item.path, range: item.range };
+          : basenameNeedsParentContext(base)
+            ? parentContextPathSuffix(item.path)
+            : base;
+    return {
+      label: `${label}${item.range}`,
+      path: item.path,
+      range: item.range,
+    };
   });
 }
 
@@ -2268,7 +2301,10 @@ function directoryPreviewParts(
   targets: readonly string[],
 ): VisualToolPreviewPart[] {
   return [
-    { kind: "text", text: targets.length === 1 ? "Read directory " : "Read directories " },
+    {
+      kind: "text",
+      text: targets.length === 1 ? "Read directory " : "Read directories ",
+    },
     ...interspersePathParts(targets),
   ];
 }
@@ -2315,6 +2351,38 @@ function visualCommandPreview(
   const normalized = normalizeLaunchedCommand(command);
   const unwrapped = normalized.command;
   const env = [...normalized.env];
+  const delayedCommand = splitLeadingSleepPrefix(unwrapped);
+  if (delayedCommand) {
+    const delayedPreview = visualCommandPreview(
+      delayedCommand.command,
+      context,
+    );
+    if (
+      delayedPreview.summaries.length > 0 ||
+      delayedPreview.parts.length > 0
+    ) {
+      const waitSummary: Extract<VisualCommandSummary, { kind: "browser" }> = {
+        kind: "browser",
+        action: "wait",
+        target: formatSeconds(delayedCommand.seconds),
+      };
+      const summaries = [waitSummary, ...delayedPreview.summaries];
+      const parts = summaries.flatMap(
+        (summary, index): VisualToolPreviewPart[] => [
+          ...(index === 0 ? [] : [{ kind: "text" as const, text: " · " }]),
+          ...commandSummaryParts(summary, context),
+        ],
+      );
+      return {
+        text: parts.map((part) => part.text).join(""),
+        parts,
+        launcher: normalized.launcher ?? delayedPreview.launcher,
+        remoteHost: normalized.remoteHost ?? delayedPreview.remoteHost,
+        env: [...env, ...delayedPreview.env],
+        summaries,
+      };
+    }
+  }
   const waitSummary = summarizeWaitFetchLoop(unwrapped);
   if (waitSummary) {
     const parts = commandSummaryParts(waitSummary);
@@ -2399,7 +2467,10 @@ function visualCommandPreview(
     .map((pair) => pair.summary)
     .filter((summary): summary is VisualCommandSummary => !!summary);
   const summaries = normalizeCommandSummaries(rawSummaries);
-  if (rawSummaries.length > 0 && rawSummaries.length !== meaningfulParts.length) {
+  if (
+    rawSummaries.length > 0 &&
+    rawSummaries.length !== meaningfulParts.length
+  ) {
     if (rawSummaries.length === summaryPairs.length) {
       const parts = summaries.flatMap(
         (summary, index): VisualToolPreviewPart[] => [
@@ -2416,12 +2487,14 @@ function visualCommandPreview(
         summaries,
       };
     }
-    const parts = summaryPairs.flatMap((pair, index): VisualToolPreviewPart[] => [
-      ...(index === 0 ? [] : [{ kind: "text" as const, text: " · " }]),
-      ...(pair.summary
-        ? commandSummaryParts(pair.summary, context)
-        : textPreviewParts(pair.part.replace(/\s+/g, " ").trim())),
-    ]);
+    const parts = summaryPairs.flatMap(
+      (pair, index): VisualToolPreviewPart[] => [
+        ...(index === 0 ? [] : [{ kind: "text" as const, text: " · " }]),
+        ...(pair.summary
+          ? commandSummaryParts(pair.summary, context)
+          : textPreviewParts(pair.part.replace(/\s+/g, " ").trim())),
+      ],
+    );
     return {
       text: parts.map((part) => part.text).join(""),
       parts,
@@ -2507,10 +2580,12 @@ function visualCommandPreview(
     };
   }
   if (summaries.length > 1) {
-    const parts = summaries.flatMap((summary, index): VisualToolPreviewPart[] => [
-      ...(index === 0 ? [] : [{ kind: "text" as const, text: " · " }]),
-      ...commandSummaryParts(summary, context),
-    ]);
+    const parts = summaries.flatMap(
+      (summary, index): VisualToolPreviewPart[] => [
+        ...(index === 0 ? [] : [{ kind: "text" as const, text: " · " }]),
+        ...commandSummaryParts(summary, context),
+      ],
+    );
     return {
       text: parts.map((part) => part.text).join(""),
       parts,
@@ -2574,7 +2649,8 @@ function normalizeLaunchedCommand(command: string): {
       current = setup.command.trim();
     }
     const tokens = shellTokens(current);
-    if (tokens.length < 2) return { command: current, launcher, remoteHost, env };
+    if (tokens.length < 2)
+      return { command: current, launcher, remoteHost, env };
     const shell = shellLauncherName(tokens[0]!);
     const next = unwrappedShellPayload(tokens, shell);
     const unwrapped:
@@ -2669,8 +2745,7 @@ function unwrappedShellPayload(
   if (shell === "powershell" || shell === "pwsh") {
     const flagIndex = tokens.findIndex(
       (token, index) =>
-        index > 0 &&
-        /^-(?:command|c|encodedcommand|ec)$/i.test(token),
+        index > 0 && /^-(?:command|c|encodedcommand|ec)$/i.test(token),
     );
     if (flagIndex < 0) return undefined;
     const payload = tokens[flagIndex + 1];
@@ -2710,7 +2785,10 @@ function unwrappedSshPayload(
     if (token === "--") continue;
     if (!host && token.startsWith("-")) {
       const option = token.slice(0, 2);
-      if (SSH_OPTIONS_WITH_VALUE.has(token) || SSH_OPTIONS_WITH_VALUE.has(option)) {
+      if (
+        SSH_OPTIONS_WITH_VALUE.has(token) ||
+        SSH_OPTIONS_WITH_VALUE.has(option)
+      ) {
         if (token === option) i += 1;
       }
       continue;
@@ -2759,7 +2837,10 @@ function summarizeSshTunnel(
     }
     if (token.startsWith("-")) {
       const option = token.slice(0, 2);
-      if (SSH_OPTIONS_WITH_VALUE.has(token) || SSH_OPTIONS_WITH_VALUE.has(option)) {
+      if (
+        SSH_OPTIONS_WITH_VALUE.has(token) ||
+        SSH_OPTIONS_WITH_VALUE.has(option)
+      ) {
         if (token === option) i += 1;
       }
       continue;
@@ -2789,9 +2870,7 @@ function summarizeSshTunnel(
   };
 }
 
-function parseSshLocalForward(
-  spec: string,
-):
+function parseSshLocalForward(spec: string):
   | {
       localHost?: string;
       localPort: string;
@@ -2870,7 +2949,10 @@ function scpEndpointTokens(tokens: string[]): string[] {
       continue;
     }
     const option = token.slice(0, 2);
-    if (SCP_OPTIONS_WITH_VALUE.has(token) || SCP_OPTIONS_WITH_VALUE.has(option)) {
+    if (
+      SCP_OPTIONS_WITH_VALUE.has(token) ||
+      SCP_OPTIONS_WITH_VALUE.has(option)
+    ) {
       if (token === option) i += 1;
       continue;
     }
@@ -3104,6 +3186,18 @@ function isShellSetupWaitCommand(command: string): boolean {
   return tokens.length === 2 && /^\d+(?:\.\d+)?$/.test(tokens[1] ?? "");
 }
 
+function splitLeadingSleepPrefix(
+  command: string,
+): { seconds: string; command: string } | undefined {
+  const match = command.match(
+    /^\s*(?:\S*\/)?sleep\s+(\d+(?:\.\d+)?)\s+([\s\S]+)$/i,
+  );
+  if (!match) return undefined;
+  const rest = (match[2] ?? "").trim();
+  if (!rest || /^(?:&&|\|\||;)/.test(rest)) return undefined;
+  return { seconds: match[1]!, command: rest };
+}
+
 function isShellSetupProbeCommand(command: string): boolean {
   const probes = command
     .split(/\s+\|\|\s+/)
@@ -3224,7 +3318,8 @@ function isAbsoluteOrSpecialPath(path: string): boolean {
 }
 
 function joinRemotePath(cwd: string, path: string): string {
-  const separator = /^[A-Za-z]:[\\/]/.test(cwd) || cwd.includes("\\") ? "\\" : "/";
+  const separator =
+    /^[A-Za-z]:[\\/]/.test(cwd) || cwd.includes("\\") ? "\\" : "/";
   return `${cwd.replace(/[\\/]+$/, "")}${separator}${path.replace(/^[\\/]+/, "")}`;
 }
 
@@ -3302,7 +3397,9 @@ function cleanPowerShellBoundaryToken(token: string): string {
   return token.replace(/^[(&]+/, "").replace(/[);]+$/, "");
 }
 
-function summarizeShellCommand(command: string): VisualCommandSummary | undefined {
+function summarizeShellCommand(
+  command: string,
+): VisualCommandSummary | undefined {
   const portCheck = summarizePortCheck(command);
   if (portCheck) return portCheck;
   const processCheck = summarizeProcessCheck(command);
@@ -3317,7 +3414,8 @@ function summarizeShellCommand(command: string): VisualCommandSummary | undefine
   if (pipeSize) return pipeSize;
   const tokens = shellTokens(command);
   if (tokens.length === 0) return undefined;
-  const name = cleanPowerShellBoundaryToken(tokens[0]!).split("/").pop() ?? tokens[0]!;
+  const name =
+    cleanPowerShellBoundaryToken(tokens[0]!).split("/").pop() ?? tokens[0]!;
   const lowerName = name.toLowerCase();
   const sshTunnel = summarizeSshTunnel(tokens);
   if (sshTunnel) return sshTunnel;
@@ -3374,10 +3472,7 @@ function summarizeShellCommand(command: string): VisualCommandSummary | undefine
     return summarizeLs(tokens) ?? summarizeGetChildItem(tokens);
   }
   if (lowerName === "get-psdrive") return summarizeGetPsDrive(tokens);
-  if (
-    lowerName === "get-childitem" ||
-    lowerName === "gci"
-  )
+  if (lowerName === "get-childitem" || lowerName === "gci")
     return summarizeGetChildItem(tokens);
   if (lowerName === "get-content" || lowerName === "gc") {
     return summarizeGetContentRead(tokens.map(cleanPowerShellBoundaryToken));
@@ -3427,14 +3522,19 @@ function summarizeFileLoop(
     .filter((token) => looksLikePathToken(token));
   if (targets.length === 0) return undefined;
   const bodyTokens = shellTokens(match[3]!);
-  const firstCommand = bodyTokens.find((token) => !token.includes(`$${variable}`));
+  const firstCommand = bodyTokens.find(
+    (token) => !token.includes(`$${variable}`),
+  );
   const tool = firstCommand?.split("/").pop() ?? "";
   if (!tool || tool === "echo" || tool === "printf") return undefined;
   if (!bodyReferencesLoopVariable(bodyTokens, variable)) return undefined;
   return { kind: "batch-files", tool, targets };
 }
 
-function bodyReferencesLoopVariable(tokens: readonly string[], variable: string): boolean {
+function bodyReferencesLoopVariable(
+  tokens: readonly string[],
+  variable: string,
+): boolean {
   return tokens.some((token) => {
     const normalized = token.replace(/[{}]/g, "");
     return normalized === `$${variable}` || normalized.includes(`$${variable}`);
@@ -3459,7 +3559,9 @@ function numberFromMatch(match: RegExpMatchArray | null): number | undefined {
   return Number.isFinite(value) ? value : undefined;
 }
 
-function summarizeGitShowSearch(command: string): VisualCommandSummary | undefined {
+function summarizeGitShowSearch(
+  command: string,
+): VisualCommandSummary | undefined {
   const parts = splitShellPipeline(command);
   if (parts.length < 2) return undefined;
   const show = summarizeGit(shellTokens(parts[0]!));
@@ -3481,7 +3583,8 @@ function summarizeGit(tokens: string[]): VisualCommandSummary | undefined {
   const subcommandIndex = gitSubcommandIndex(tokens);
   const subcommand = tokens[subcommandIndex]?.toLowerCase();
   if (!subcommand) return undefined;
-  if (subcommand === "status") return { kind: "git", action: "status", targets: [] };
+  if (subcommand === "status")
+    return { kind: "git", action: "status", targets: [] };
   if (subcommand === "diff") {
     const targets = gitPathArgs(tokens.slice(subcommandIndex + 1));
     const staged = tokens.includes("--cached") || tokens.includes("--staged");
@@ -3558,7 +3661,12 @@ function summarizeGit(tokens: string[]): VisualCommandSummary | undefined {
 function gitSubcommandIndex(tokens: string[]): number {
   for (let index = 1; index < tokens.length; index += 1) {
     const token = tokens[index]!;
-    if (token === "-C" || token === "-c" || token === "--git-dir" || token === "--work-tree") {
+    if (
+      token === "-C" ||
+      token === "-c" ||
+      token === "--git-dir" ||
+      token === "--work-tree"
+    ) {
       index += 1;
       continue;
     }
@@ -3608,7 +3716,9 @@ function gitPathArgs(tokens: string[]): string[] {
   return targets.filter((target) => target !== "." && target !== "HEAD");
 }
 
-function summarizeTestCommand(tokens: string[]): VisualCommandSummary | undefined {
+function summarizeTestCommand(
+  tokens: string[],
+): VisualCommandSummary | undefined {
   const command = shellLauncherName(tokens[0] ?? "");
   if (/^(?:bash|dash|ksh|sh|zsh)$/.test(command) && tokens.includes("-n")) {
     return {
@@ -3619,13 +3729,21 @@ function summarizeTestCommand(tokens: string[]): VisualCommandSummary | undefine
     };
   }
   if (command === "bun" && tokens[1] === "test") {
-    return { kind: "test", runner: "Bun", targets: testPathArgs(tokens.slice(2)) };
+    return {
+      kind: "test",
+      runner: "Bun",
+      targets: testPathArgs(tokens.slice(2)),
+    };
   }
   if (
     (command === "npm" || command === "pnpm" || command === "yarn") &&
     tokens[1] === "test"
   ) {
-    return { kind: "test", runner: "npm", targets: testPathArgs(tokens.slice(2)) };
+    return {
+      kind: "test",
+      runner: "npm",
+      targets: testPathArgs(tokens.slice(2)),
+    };
   }
   if (
     (command === "npm" || command === "pnpm" || command === "yarn") &&
@@ -3640,10 +3758,16 @@ function summarizeTestCommand(tokens: string[]): VisualCommandSummary | undefine
   }
   const npxOffset =
     command === "npx" || command === "bunx" ? skipNpxOptions(tokens, 1) : 0;
-  const npxCommand = npxOffset > 0 ? shellLauncherName(tokens[npxOffset] ?? "") : "";
+  const npxCommand =
+    npxOffset > 0 ? shellLauncherName(tokens[npxOffset] ?? "") : "";
   if (npxCommand === "vitest") {
-    const start = tokens[npxOffset + 1] === "run" ? npxOffset + 2 : npxOffset + 1;
-    return { kind: "test", runner: "Vitest", targets: testPathArgs(tokens.slice(start)) };
+    const start =
+      tokens[npxOffset + 1] === "run" ? npxOffset + 2 : npxOffset + 1;
+    return {
+      kind: "test",
+      runner: "Vitest",
+      targets: testPathArgs(tokens.slice(start)),
+    };
   }
   if (npxCommand === "playwright" && tokens[npxOffset + 1] === "test") {
     return {
@@ -3659,7 +3783,8 @@ function summarizeTestCommand(tokens: string[]): VisualCommandSummary | undefine
     return { kind: "test", runner: "Svelte", targets: [], check: true };
   }
   const pytestIndex = tokens.findIndex(
-    (token) => shellLauncherName(token) === "pytest" || token.endsWith("/pytest"),
+    (token) =>
+      shellLauncherName(token) === "pytest" || token.endsWith("/pytest"),
   );
   if (pytestIndex >= 0) {
     return {
@@ -3684,7 +3809,8 @@ function summarizeTestCommand(tokens: string[]): VisualCommandSummary | undefine
 function skipNpxOptions(tokens: string[], start: number): number {
   for (let index = start; index < tokens.length; index += 1) {
     const token = tokens[index]!;
-    if (token === "--yes" || token === "-y" || token === "--no-install") continue;
+    if (token === "--yes" || token === "-y" || token === "--no-install")
+      continue;
     if (token === "--package" || token === "-p") {
       index += 1;
       continue;
@@ -3724,9 +3850,7 @@ function testPathArgs(tokens: string[]): string[] {
 }
 
 function summarizeKill(tokens: string[]): VisualCommandSummary | undefined {
-  const pids = tokens
-    .slice(1)
-    .filter((token) => /^\d+$/.test(token));
+  const pids = tokens.slice(1).filter((token) => /^\d+$/.test(token));
   if (pids.length === 0) return undefined;
   return { kind: "process-end", pids };
 }
@@ -3745,14 +3869,19 @@ function summarizePortCheck(command: string): VisualCommandSummary | undefined {
     addPort(token.match(/^tcp:(\d+)$/i)?.[1]);
     addPort(token.match(/^-i(?:tcp)?:(\d+)$/i)?.[1]);
     addPort(token.match(/^:(\d+)$/)?.[1]);
-    if ((token === "-i" || token.toLowerCase() === "-itcp") && tokens[index + 1]) {
+    if (
+      (token === "-i" || token.toLowerCase() === "-itcp") &&
+      tokens[index + 1]
+    ) {
       const next = tokens[index + 1]!;
       addPort(next.match(/^(?:tcp:)?(\d+)$/i)?.[1]);
       addPort(next.match(/^:(\d+)$/)?.[1]);
       index += 1;
     }
   }
-  for (const match of command.matchAll(/(?:^|[^\w/])(?:tcp:|TCP:|:)(\d{2,5})/g)) {
+  for (const match of command.matchAll(
+    /(?:^|[^\w/])(?:tcp:|TCP:|:)(\d{2,5})/g,
+  )) {
     addPort(match[1]);
   }
   const listenerTerms = lsofListenerTerms(command);
@@ -3775,17 +3904,15 @@ function lsofListenerTerms(command: string): string[] {
   const right = shellTokens(parts[1]!);
   const filter = right[0]?.split("/").pop()?.toLowerCase();
   if (filter !== "rg" && filter !== "grep") return [];
-  const pattern = right.slice(1).find((token) => token && !token.startsWith("-"));
+  const pattern = right
+    .slice(1)
+    .find((token) => token && !token.startsWith("-"));
   if (!pattern) return [];
   const terms: string[] = [];
   return pattern
     .split("|")
     .map((term) =>
-      term
-        .trim()
-        .replace(/^\\b/, "")
-        .replace(/\\b$/, "")
-        .replace(/^:/, ""),
+      term.trim().replace(/^\\b/, "").replace(/\\b$/, "").replace(/^:/, ""),
     )
     .filter((term) => {
       if (!term || terms.includes(term)) return false;
@@ -4094,11 +4221,19 @@ function summarizeAgentBrowser(
   if (!browserCommand) return undefined;
   const { command, args } = browserCommand;
   if (command === "open" || command === "goto" || command === "navigate") {
-    return { kind: "browser", action: "open", target: firstPositionalArg(args) };
+    return {
+      kind: "browser",
+      action: "open",
+      target: firstPositionalArg(args),
+    };
   }
   if (command === "close") return { kind: "browser", action: "close" };
   if (command === "snapshot")
-    return { kind: "browser", action: "snapshot", detail: browserFlagDetail(args) };
+    return {
+      kind: "browser",
+      action: "snapshot",
+      detail: browserFlagDetail(args),
+    };
   if (command === "screenshot") {
     return {
       kind: "browser",
@@ -4107,7 +4242,11 @@ function summarizeAgentBrowser(
       detail: browserFlagDetail(args),
     };
   }
-  if (command === "click" || command === "dblclick" || command === "doubleclick") {
+  if (
+    command === "click" ||
+    command === "dblclick" ||
+    command === "doubleclick"
+  ) {
     return {
       kind: "browser",
       action: "click",
@@ -4130,7 +4269,9 @@ function summarizeAgentBrowser(
       kind: "browser",
       action: "download",
       target,
-      detail: target ? firstPositionalArg(args.slice(args.indexOf(target) + 1)) : undefined,
+      detail: target
+        ? firstPositionalArg(args.slice(args.indexOf(target) + 1))
+        : undefined,
     };
   }
   if (command === "fill" || command === "type" || command === "select") {
@@ -4146,7 +4287,8 @@ function summarizeAgentBrowser(
       kind: "browser",
       action: "press",
       target: firstPositionalArg(args),
-      detail: command === "keyboard" ? firstPositionalArg(args.slice(1)) : undefined,
+      detail:
+        command === "keyboard" ? firstPositionalArg(args.slice(1)) : undefined,
     };
   }
   if (command === "wait") {
@@ -4178,12 +4320,17 @@ function summarizeAgentBrowser(
     return {
       kind: "browser",
       action: "network",
-      target: subcommand && !subcommand.startsWith("-") ? subcommand : undefined,
+      target:
+        subcommand && !subcommand.startsWith("-") ? subcommand : undefined,
     };
   }
   if (command === "pages") return { kind: "browser", action: "pages" };
   if (command === "reload") return { kind: "browser", action: "reload" };
-  if (command === "eval" || command === "evaluate" || command === "evaluate_script") {
+  if (
+    command === "eval" ||
+    command === "evaluate" ||
+    command === "evaluate_script"
+  ) {
     return { kind: "browser", action: "script" };
   }
   if (command === "set") {
@@ -4236,6 +4383,7 @@ const AGENT_BROWSER_OPTIONS_WITH_VALUE = new Set([
   "--timeout",
   "--browser",
   "--user-data-dir",
+  "--cdp",
   "--cdp-url",
 ]);
 
@@ -4275,7 +4423,10 @@ function firstPositionalArg(args: readonly string[]): string | undefined {
     const arg = args[i]!;
     if (arg === "--") return args[i + 1];
     if (!arg.startsWith("-")) return arg;
-    if (AGENT_BROWSER_OPTIONS_WITH_VALUE.has(arg.split("=")[0]!) && !arg.includes("=")) {
+    if (
+      AGENT_BROWSER_OPTIONS_WITH_VALUE.has(arg.split("=")[0]!) &&
+      !arg.includes("=")
+    ) {
       i += 1;
     }
   }
@@ -4283,7 +4434,8 @@ function firstPositionalArg(args: readonly string[]): string | undefined {
 }
 
 function browserFlagDetail(args: readonly string[]): string | undefined {
-  if (args.includes("-i") || args.includes("--interactive")) return "interactive";
+  if (args.includes("-i") || args.includes("--interactive"))
+    return "interactive";
   if (args.includes("--full")) return "full page";
   if (args.includes("--annotate")) return "annotated";
   return undefined;
@@ -4308,7 +4460,9 @@ function browserGetTarget(args: readonly string[]): string | undefined {
   if (!subject) return undefined;
   const subjectIndex = args.indexOf(subject);
   const target =
-    subjectIndex >= 0 ? firstPositionalArg(args.slice(subjectIndex + 1)) : undefined;
+    subjectIndex >= 0
+      ? firstPositionalArg(args.slice(subjectIndex + 1))
+      : undefined;
   if (subject === "text" && target === "body") return "body text";
   if (target) return `${target} ${subject}`;
   return subject;
@@ -4319,7 +4473,9 @@ function browserScrollTarget(args: readonly string[]): string | undefined {
   if (!direction) return undefined;
   const directionIndex = args.indexOf(direction);
   const amount =
-    directionIndex >= 0 ? firstPositionalArg(args.slice(directionIndex + 1)) : undefined;
+    directionIndex >= 0
+      ? firstPositionalArg(args.slice(directionIndex + 1))
+      : undefined;
   return amount ? `${direction} ${amount}` : direction;
 }
 
@@ -4328,6 +4484,12 @@ function formatMillisecondsAsSeconds(value: string): string {
   if (!Number.isFinite(ms) || ms <= 0) return value;
   if (ms < 1000) return `${ms}ms`;
   const seconds = ms / 1000;
+  return Number.isInteger(seconds) ? `${seconds}s` : `${seconds.toFixed(1)}s`;
+}
+
+function formatSeconds(value: string): string {
+  const seconds = Number(value);
+  if (!Number.isFinite(seconds) || seconds <= 0) return value;
   return Number.isInteger(seconds) ? `${seconds}s` : `${seconds.toFixed(1)}s`;
 }
 
@@ -4369,11 +4531,7 @@ function cmakeFlagAssignmentsFromTokens(
       if (value && !value.startsWith("-")) {
         assignments.push({
           name:
-            token === "-S"
-              ? "SOURCE"
-              : token === "-B"
-                ? "BUILD"
-                : "GENERATOR",
+            token === "-S" ? "SOURCE" : token === "-B" ? "BUILD" : "GENERATOR",
           value,
         });
         i += 1;
@@ -4406,7 +4564,10 @@ function cmakeDefinitionAssignment(value: string): VisualToolConfigAssignment {
 
 function summarizeRemove(tokens: string[]): VisualCommandSummary | undefined {
   const command = tokens[0]?.split("/").pop()?.toLowerCase();
-  const targets = positionalPathTokens(tokens.slice(1), powershellOptionsWithValue());
+  const targets = positionalPathTokens(
+    tokens.slice(1),
+    powershellOptionsWithValue(),
+  );
   if (targets.length === 0) return undefined;
   const recursive = tokens.some((token) =>
     /^(?:-r|-R|-rf|-fr|--recursive|-recurse)$/i.test(token),
@@ -4428,7 +4589,10 @@ function summarizeCreate(tokens: string[]): VisualCommandSummary | undefined {
       : command === "touch" || itemType === "file"
         ? "file"
         : "path";
-  const targets = positionalPathTokens(tokens.slice(1), powershellOptionsWithValue());
+  const targets = positionalPathTokens(
+    tokens.slice(1),
+    powershellOptionsWithValue(),
+  );
   if (targets.length === 0) return undefined;
   return {
     kind: "filesystem",
@@ -4444,7 +4608,10 @@ function summarizeCopyMove(tokens: string[]): VisualCommandSummary | undefined {
     command === "mv" || command === "move" || command === "move-item"
       ? "move"
       : "copy";
-  const targets = positionalPathTokens(tokens.slice(1), powershellOptionsWithValue());
+  const targets = positionalPathTokens(
+    tokens.slice(1),
+    powershellOptionsWithValue(),
+  );
   if (targets.length < 2) return undefined;
   return {
     kind: "filesystem",
@@ -4509,7 +4676,9 @@ function positionalPathTokens(
   return targets;
 }
 
-function summarizePipeCommand(command: string): VisualCommandSummary | undefined {
+function summarizePipeCommand(
+  command: string,
+): VisualCommandSummary | undefined {
   return (
     summarizeContainerCheck(command) ??
     summarizePipeRead(command) ??
@@ -4520,10 +4689,9 @@ function summarizePipeCommand(command: string): VisualCommandSummary | undefined
   );
 }
 
-function summarizePipeRead(command: string): Extract<
-  VisualCommandSummary,
-  { kind: "read" }
-> | undefined {
+function summarizePipeRead(
+  command: string,
+): Extract<VisualCommandSummary, { kind: "read" }> | undefined {
   const parts = splitShellPipeline(command);
   if (parts.length !== 2) return undefined;
   const left = shellTokens(parts[0]!);
@@ -4541,21 +4709,23 @@ function summarizePipeRead(command: string): Extract<
   };
 }
 
-function summarizePipeSearch(command: string): Extract<
-  VisualCommandSummary,
-  { kind: "search" }
-> | undefined {
+function summarizePipeSearch(
+  command: string,
+): Extract<VisualCommandSummary, { kind: "search" }> | undefined {
   const parts = splitShellPipeline(command);
   if (parts.length < 2) return undefined;
   const left = shellTokens(parts[0]!);
   if (!isSearchCommandName(left[0])) return undefined;
-  return summarizeSearch(left);
+  const summary = summarizeSearch(left);
+  return summary?.kind === "search" ? summary : undefined;
 }
 
 function isSearchCommandName(command: string | undefined): boolean {
   if (!command) return false;
   const name = shellLauncherName(command);
-  return name === "rg" || name === "grep" || name === "egrep" || name === "fgrep";
+  return (
+    name === "rg" || name === "grep" || name === "egrep" || name === "fgrep"
+  );
 }
 
 function summarizePipeJsonQuery(
@@ -4623,7 +4793,8 @@ function summarizePipeTextProcess(
 }
 
 function summaryTargetsForPipeSource(summary: VisualCommandSummary): string[] {
-  if (summary.kind === "read" || summary.kind === "logs") return summary.targets;
+  if (summary.kind === "read" || summary.kind === "logs")
+    return summary.targets;
   if (summary.kind === "search") return summary.paths;
   if (summary.kind === "find") return [summary.root];
   if (summary.kind === "git") return summary.targets;
@@ -4670,7 +4841,10 @@ function splitShellPipeline(command: string): string[] {
 type SedLineRange = { start: string; end?: string };
 
 function parseSedRangeScript(script: string): SedLineRange[] | undefined {
-  const clauses = script.split(";").map((part) => part.trim()).filter(Boolean);
+  const clauses = script
+    .split(";")
+    .map((part) => part.trim())
+    .filter(Boolean);
   if (clauses.length === 0) return undefined;
   const ranges: SedLineRange[] = [];
   for (const clause of clauses) {
@@ -4697,10 +4871,11 @@ function sedRangeSuffix(range: SedLineRange): string {
 
 function summarizeSedRead(tokens: string[]): VisualCommandSummary | undefined {
   const sed = summarizeSedRanges(tokens);
-  const path =
-    sed
-      ? tokens.slice(sed.tokenIndex + 1).find((candidate) => !candidate.startsWith("-"))
-      : undefined;
+  const path = sed
+    ? tokens
+        .slice(sed.tokenIndex + 1)
+        .find((candidate) => !candidate.startsWith("-"))
+    : undefined;
   if (!sed || !path) return undefined;
   return {
     kind: "read",
@@ -4737,7 +4912,9 @@ function summarizeGetContentRead(
   return {
     kind: "read",
     targets: targets.map((target) =>
-      totalCount && /^\d+$/.test(totalCount) ? `${target}:1-${totalCount}` : target,
+      totalCount && /^\d+$/.test(totalCount)
+        ? `${target}:1-${totalCount}`
+        : target,
     ),
   };
 }
@@ -4819,16 +4996,23 @@ function summarizeGetPsDrive(
   return { kind: "drive-check" };
 }
 
-function summarizeGetChildItem(tokens: string[]): VisualCommandSummary | undefined {
+function summarizeGetChildItem(
+  tokens: string[],
+): VisualCommandSummary | undefined {
   const recursive = tokens.some((token) =>
     /^(?:-recurse|-recursive)$/i.test(token),
   );
   const wantsDirectories = tokens.some((token) =>
     /(?:^|\s)(?:-directory|-dir|-ad)(?:\s|$)/i.test(token),
   );
-  const targets = positionalPathTokens(tokens.slice(1), powershellOptionsWithValue())
+  const targets = positionalPathTokens(
+    tokens.slice(1),
+    powershellOptionsWithValue(),
+  )
     .flatMap(splitPowerShellPathList)
-    .filter((target) => target && !/[|<>]/.test(target) && !target.startsWith("-"));
+    .filter(
+      (target) => target && !/[|<>]/.test(target) && !target.startsWith("-"),
+    );
   if (targets.length === 0) {
     return wantsDirectories || !recursive
       ? { kind: "directory", targets: ["."] }
@@ -4841,10 +5025,7 @@ function summarizeGetChildItem(tokens: string[]): VisualCommandSummary | undefin
 }
 
 function splitPowerShellPathList(token: string): string[] {
-  return token
-    .split(",")
-    .map(cleanPowerShellPathToken)
-    .filter(Boolean);
+  return token.split(",").map(cleanPowerShellPathToken).filter(Boolean);
 }
 
 function cleanPowerShellPathToken(token: string): string {
@@ -4892,7 +5073,9 @@ function summarizePowerShellProcessCheck(
   command: string,
 ): Extract<VisualCommandSummary, { kind: "process-check" }> | undefined {
   const parts = splitShellPipeline(command);
-  const first = shellTokens(parts[0] ?? command).map(cleanPowerShellBoundaryToken);
+  const first = shellTokens(parts[0] ?? command).map(
+    cleanPowerShellBoundaryToken,
+  );
   const name = first[0]?.split("/").pop()?.toLowerCase();
   if (name === "get-process" || name === "gps") {
     return {
@@ -4944,7 +5127,9 @@ function powershellProcessIds(tokens: string[]): string[] | undefined {
 function powershellProcessPattern(command: string): string | undefined {
   const like = command.match(/-like\s+["']?\*?([^*"'\s)]+)\*?["']?/i)?.[1];
   if (like) return like;
-  const match = command.match(/\b(?:rg|grep)\b\s+(?:-[A-Za-z]+\s+)*["']?([^"'\s|)]+)/i);
+  const match = command.match(
+    /\b(?:rg|grep)\b\s+(?:-[A-Za-z]+\s+)*["']?([^"'\s|)]+)/i,
+  );
   return match?.[1];
 }
 
@@ -4977,8 +5162,7 @@ function commandSummaryParts(
   summary: VisualCommandSummary,
   context?: VisualToolPreviewContext,
 ): VisualToolPreviewPart[] {
-  if (summary.kind === "read")
-    return readPreviewParts(summary.targets);
+  if (summary.kind === "read") return readPreviewParts(summary.targets);
   if (summary.kind === "directory") {
     return directoryPreviewParts(summary.targets);
   }
@@ -5019,7 +5203,8 @@ function commandSummaryParts(
   }
   if (summary.kind === "process-check") {
     if (summary.pids?.length) {
-      const label = summary.pids.length === 1 ? "Check process" : "Check processes";
+      const label =
+        summary.pids.length === 1 ? "Check process" : "Check processes";
       return [
         {
           kind: "text",
@@ -5177,13 +5362,18 @@ function batchFilePreviewParts(
     lowerTool === "usdchecker" || lowerTool === "usdchecker.py"
       ? "Check USD files "
       : `Run ${summary.tool} on `;
-  return [{ kind: "text", text: label }, ...interspersePathParts(summary.targets)];
+  return [
+    { kind: "text", text: label },
+    ...interspersePathParts(summary.targets),
+  ];
 }
 
 function textProcessPreviewParts(
   summary: Extract<VisualCommandSummary, { kind: "text-process" }>,
 ): VisualToolPreviewPart[] {
-  const parts: VisualToolPreviewPart[] = [{ kind: "text", text: "Process text" }];
+  const parts: VisualToolPreviewPart[] = [
+    { kind: "text", text: "Process text" },
+  ];
   if (summary.targets.length > 0) {
     parts.push(
       { kind: "text", text: " in " },
@@ -5247,7 +5437,8 @@ function jsonQueryPreviewParts(
     parts.push({ kind: "text", text: ` ${readableUrl(summary.source)}` });
   }
   const filter = compactJsonQueryFilter(summary.filter);
-  if (filter && filter !== ".") parts.push({ kind: "text", text: ` ${filter}` });
+  if (filter && filter !== ".")
+    parts.push({ kind: "text", text: ` ${filter}` });
   return parts;
 }
 
@@ -5292,7 +5483,10 @@ function gitSummaryParts(
       { kind: "text", text: "Search " },
       ...interspersePathParts(summary.targets),
       { kind: "text", text: ` from ${summary.rev ?? "git"} ` },
-      { kind: "text", text: `for "${readableSearchPattern(summary.pattern ?? "")}"` },
+      {
+        kind: "text",
+        text: `for "${readableSearchPattern(summary.pattern ?? "")}"`,
+      },
     ];
   }
   if (summary.action === "show-file") {
@@ -5340,7 +5534,10 @@ function gitSummaryParts(
     ];
   }
   if (summary.action === "add") {
-    return [{ kind: "text", text: "Stage" }, ...prefixedPathList(summary.targets)];
+    return [
+      { kind: "text", text: "Stage" },
+      ...prefixedPathList(summary.targets),
+    ];
   }
   if (summary.action === "commit") {
     return [{ kind: "text", text: "Commit changes" }];
@@ -5389,7 +5586,10 @@ function browserSummaryParts(
   if (summary.action === "open") {
     return [
       { kind: "text", text: "Open browser " },
-      { kind: "text", text: summary.target ? readableUrl(summary.target) : "page" },
+      {
+        kind: "text",
+        text: summary.target ? readableUrl(summary.target) : "page",
+      },
     ];
   }
   if (summary.action === "close") return textPreviewParts("Close browser");
@@ -5436,7 +5636,10 @@ function browserSummaryParts(
       { kind: "text", text: "Download from browser" },
     ];
     if (summary.detail) {
-      parts.push({ kind: "text", text: " to " }, ...interspersePathParts([summary.detail]));
+      parts.push(
+        { kind: "text", text: " to " },
+        ...interspersePathParts([summary.detail]),
+      );
     } else if (summary.target) {
       parts.push({ kind: "text", text: ` ${summary.target}` });
     }
@@ -5461,7 +5664,9 @@ function browserSummaryParts(
   }
   if (summary.action === "wait") {
     return textPreviewParts(
-      summary.target ? `Wait for browser ${summary.target}` : "Wait for browser",
+      summary.target
+        ? `Wait for browser ${summary.target}`
+        : "Wait for browser",
     );
   }
   if (summary.action === "get") {
@@ -5493,7 +5698,8 @@ function browserSummaryParts(
       summary.target ? `Emulate ${summary.target}` : "Emulate browser",
     );
   }
-  if (summary.action === "script") return textPreviewParts("Run browser script");
+  if (summary.action === "script")
+    return textPreviewParts("Run browser script");
   return textPreviewParts("Use browser");
 }
 
@@ -5533,7 +5739,9 @@ function looksLikePathTarget(target: string): boolean {
     target.includes("/") ||
     target.includes("\\") ||
     /(?:^|[.-])(?:test|spec)\./i.test(target) ||
-    /\.(?:[cm]?[jt]sx?|svelte|py|rb|go|rs|java|cs|php|mjs|cjs)$/i.test(target) ||
+    /\.(?:[cm]?[jt]sx?|svelte|py|rb|go|rs|java|cs|php|mjs|cjs)$/i.test(
+      target,
+    ) ||
     /\.(?:bash|sh|zsh|fish|ksh)$/i.test(target)
   );
 }
@@ -5581,7 +5789,9 @@ function inlineScriptFromCommandPreservingHeredoc(
 ): VisualToolInlineScript | undefined {
   return (
     agentBrowserEvalScriptFromCommand(command) ??
-    agentBrowserEvalScriptFromCommand(normalizeLaunchedCommand(command).command) ??
+    agentBrowserEvalScriptFromCommand(
+      normalizeLaunchedCommand(command).command,
+    ) ??
     inlineScriptFromCommand(command) ??
     inlineScriptFromCommand(normalizeLaunchedCommand(command).command)
   );
@@ -5614,7 +5824,8 @@ function directScriptCommand(
     ),
   );
   if (runtimeIndex < 0) return undefined;
-  const runtime = tokens[runtimeIndex]!.split("/").pop() ?? tokens[runtimeIndex]!;
+  const runtime =
+    tokens[runtimeIndex]!.split("/").pop() ?? tokens[runtimeIndex]!;
   for (let i = runtimeIndex + 1; i < tokens.length; i += 1) {
     const token = tokens[i]!;
     if (token === "-c" || token === "-e" || token === "--eval") {
@@ -5654,7 +5865,8 @@ function inlineScriptFromCommand(
     ),
   );
   if (runtimeIndex < 0) return undefined;
-  const runtime = tokens[runtimeIndex]!.split("/").pop() ?? tokens[runtimeIndex]!;
+  const runtime =
+    tokens[runtimeIndex]!.split("/").pop() ?? tokens[runtimeIndex]!;
   for (let i = runtimeIndex + 1; i < tokens.length; i += 1) {
     const token = tokens[i]!;
     if (token === "-c" || token === "-e" || token === "--eval") {
@@ -5714,7 +5926,9 @@ function editActionLabel(action: VisualFileEdit["action"]): string {
   return "Edited";
 }
 
-function summarizeFileEdits(files: VisualFileEdit[]): VisualFileEditSummary | undefined {
+function summarizeFileEdits(
+  files: VisualFileEdit[],
+): VisualFileEditSummary | undefined {
   if (files.length === 0) return undefined;
   const title =
     files.length === 1
@@ -5723,7 +5937,9 @@ function summarizeFileEdits(files: VisualFileEdit[]): VisualFileEditSummary | un
   return { title, files };
 }
 
-function parseApplyPatchEdits(patch: string): VisualFileEditSummary | undefined {
+function parseApplyPatchEdits(
+  patch: string,
+): VisualFileEditSummary | undefined {
   const byPath = new Map<string, VisualFileEdit>();
   const rawByPath = new Map<string, string[]>();
   let current: VisualFileEdit | undefined;
@@ -5764,7 +5980,9 @@ function parseApplyPatchEdits(patch: string): VisualFileEditSummary | undefined 
   return summarizeFileEdits([...byPath.values()]);
 }
 
-function filePathFromObject(input: Record<string, unknown>): string | undefined {
+function filePathFromObject(
+  input: Record<string, unknown>,
+): string | undefined {
   const value =
     input.file_path ??
     input.filePath ??
@@ -5782,9 +6000,9 @@ function changedLineCount(value: unknown): number | undefined {
     : value.split("\n").length;
 }
 
-function countUnifiedDiffLines(diff: unknown):
-  | { additions: number; deletions: number }
-  | undefined {
+function countUnifiedDiffLines(
+  diff: unknown,
+): { additions: number; deletions: number } | undefined {
   if (typeof diff !== "string") return undefined;
   let additions = 0;
   let deletions = 0;
