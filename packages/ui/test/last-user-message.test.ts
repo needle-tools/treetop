@@ -44,6 +44,8 @@ import {
   visualMediaPathTarget,
   visualObservedProcessOwnerToolUseBlock,
   visualToolRemoteHostLabel,
+  visualWorkDetailEntries,
+  visualWorkOverview,
   visualWorkSummary,
   visualUserImageAttachments,
   visualFileEditTotals,
@@ -97,9 +99,9 @@ describe("formatVisualWorkDuration", () => {
   it("reuses the same duration formatter for elapsed tool timers", () => {
     expect(formatVisualDurationSeconds(1)).toBe("1s");
     expect(formatVisualDurationSeconds(119 * 60 + 32)).toBe("1hr 59m 32s");
-    expect(formatVisualDurationSeconds(3 * 86400 + 4 * 3600 + 12 * 60 + 5)).toBe(
-      "3d 4h 12m 5s",
-    );
+    expect(
+      formatVisualDurationSeconds(3 * 86400 + 4 * 3600 + 12 * 60 + 5),
+    ).toBe("3d 4h 12m 5s");
   });
 
   it("shows work timers only for the active open tail", () => {
@@ -543,7 +545,9 @@ describe("visual plan extraction", () => {
               type: "tool_use",
               toolName: "update_plan",
               toolInput: {
-                plan: [{ step: "Should be normalized first", status: "pending" }],
+                plan: [
+                  { step: "Should be normalized first", status: "pending" },
+                ],
               },
             },
           ],
@@ -583,12 +587,7 @@ describe("buildVisualTranscriptItems", () => {
     };
     const response = msg("assistant", "Done.", "2026-06-19T10:01:15.000Z");
 
-    const items = buildVisualTranscriptItems([
-      user,
-      thinking,
-      tool,
-      response,
-    ]);
+    const items = buildVisualTranscriptItems([user, thinking, tool, response]);
 
     expect(items.map((item) => item.kind)).toEqual([
       "message",
@@ -656,7 +655,8 @@ describe("buildVisualTranscriptItems", () => {
       "message",
       "message",
     ]);
-    if (items[1]?.kind !== "work") throw new Error("expected steering work item");
+    if (items[1]?.kind !== "work")
+      throw new Error("expected steering work item");
     expect(
       items[1].entries
         .filter((entry) => entry.message.role === "user")
@@ -690,11 +690,7 @@ describe("buildVisualTranscriptItems", () => {
         timestamp: "2026-06-01T10:00:01.000Z",
         blocks: [{ type: "marker", text: "[Task started]" }],
       },
-      msg(
-        "assistant",
-        "One remaining cleanup.",
-        "2026-06-20T15:09:39.000Z",
-      ),
+      msg("assistant", "One remaining cleanup.", "2026-06-20T15:09:39.000Z"),
       msg("user", "also run tests", "2026-06-20T15:10:00.000Z"),
       {
         role: "assistant",
@@ -728,7 +724,8 @@ describe("buildVisualTranscriptItems", () => {
       ["assistant", undefined, "tool_use"],
       ["system", undefined, "[Task complete]"],
     ]);
-    if (items[2]?.kind !== "message") throw new Error("expected final response");
+    if (items[2]?.kind !== "message")
+      throw new Error("expected final response");
     expect(items[2].blocks).toEqual([{ type: "text", text: "Done." }]);
   });
 
@@ -806,16 +803,8 @@ describe("buildVisualTranscriptItems", () => {
         timestamp: "2026-07-02T05:39:56.344Z",
         blocks: [{ type: "marker", text: "[Task started]" }],
       },
-      msg(
-        "user",
-        "OK, time for an audit",
-        "2026-07-02T05:39:56.660Z",
-      ),
-      msg(
-        "assistant",
-        "npm run check is running.",
-        "2026-07-02T05:41:45.416Z",
-      ),
+      msg("user", "OK, time for an audit", "2026-07-02T05:39:56.660Z"),
+      msg("assistant", "npm run check is running.", "2026-07-02T05:41:45.416Z"),
       msg(
         "user",
         "my question was in particular about that active goal.",
@@ -859,11 +848,7 @@ describe("buildVisualTranscriptItems", () => {
         "steer",
         "my question was in particular about that active goal.",
       ],
-      [
-        "assistant",
-        undefined,
-        "Got it. I’ll answer specifically as an audit.",
-      ],
+      ["assistant", undefined, "Got it. I’ll answer specifically as an audit."],
       ["system", undefined, "[Task complete]"],
     ]);
   });
@@ -877,11 +862,7 @@ describe("buildVisualTranscriptItems", () => {
           timestamp: "2026-06-19T10:00:10.000Z",
           blocks: [{ type: "thinking", text: "checking" }],
         },
-        msg(
-          "assistant",
-          "Partial streamed answer",
-          "2026-06-19T10:00:20.000Z",
-        ),
+        msg("assistant", "Partial streamed answer", "2026-06-19T10:00:20.000Z"),
       ],
       { active: true },
     );
@@ -1043,7 +1024,11 @@ describe("buildVisualTranscriptItems", () => {
           timestamp: "2026-06-19T10:00:01.000Z",
           blocks: [{ type: "marker", text: "[Task started]" }],
         },
-        msg("user", "that env file stays the same?", "2026-06-19T15:56:00.000Z"),
+        msg(
+          "user",
+          "that env file stays the same?",
+          "2026-06-19T15:56:00.000Z",
+        ),
         msg("assistant", "Correct.", "2026-06-19T15:56:11.000Z"),
       ],
       { active: false },
@@ -1140,7 +1125,9 @@ describe("buildVisualTranscriptItems", () => {
       "message",
     ]);
     if (items[2]?.kind !== "message") throw new Error("expected message item");
-    expect(items[2].blocks).toEqual([{ type: "media", text: "generated image" }]);
+    expect(items[2].blocks).toEqual([
+      { type: "media", text: "generated image" },
+    ]);
   });
 
   it("attaches generated image media from the work range to the final response", () => {
@@ -1250,11 +1237,7 @@ describe("buildVisualTranscriptItems", () => {
       timestamp: "2026-06-19T10:01:00.000Z",
       blocks: [{ type: "text", text: "[task complete]" }],
     };
-    const finalResponse = msg(
-      "assistant",
-      "Done.",
-      "2026-06-19T10:01:15.000Z",
-    );
+    const finalResponse = msg("assistant", "Done.", "2026-06-19T10:01:15.000Z");
 
     const items = buildVisualTranscriptItems([
       user,
@@ -1404,11 +1387,7 @@ describe("buildVisualTranscriptItems", () => {
         timestamp: "2026-06-19T14:21:34.526Z",
         blocks: [{ type: "tool_result", text: "Chunk ID: def Output: ok" }],
       },
-      msg(
-        "assistant",
-        "Done, both are fixed.",
-        "2026-06-19T14:22:20.000Z",
-      ),
+      msg("assistant", "Done, both are fixed.", "2026-06-19T14:22:20.000Z"),
     ]);
 
     expect(items.map((item) => item.kind)).toEqual([
@@ -1502,11 +1481,7 @@ describe("buildVisualTranscriptItems", () => {
         messageIndex: 0,
       },
       {
-        message: msg(
-          "assistant",
-          "Still running.",
-          "2026-07-02T15:40:02.000Z",
-        ),
+        message: msg("assistant", "Still running.", "2026-07-02T15:40:02.000Z"),
         blocks: [{ type: "text", text: "Still running." }],
         messageIndex: 1,
       },
@@ -1762,11 +1737,7 @@ describe("reuseStableVisualTranscriptItems", () => {
 describe("updateVisualTranscriptItems", () => {
   it("rebuilds only from the affected tail user turn when a live message grows", () => {
     const firstUser = msg("user", "fix it", "2026-06-19T10:00:00.000Z");
-    const firstAnswer = msg(
-      "assistant",
-      "Done.",
-      "2026-06-19T10:00:02.000Z",
-    );
+    const firstAnswer = msg("assistant", "Done.", "2026-06-19T10:00:02.000Z");
     const secondUser = msg("user", "continue", "2026-06-19T10:00:10.000Z");
     const liveTool: Message = {
       id: "tool-use",
@@ -1816,11 +1787,7 @@ describe("updateVisualTranscriptItems", () => {
   });
 
   it("keeps an appended live steering message inside the open work round", () => {
-    const user = msg(
-      "user",
-      "validate externally",
-      "2026-06-20T15:00:00.000Z",
-    );
+    const user = msg("user", "validate externally", "2026-06-20T15:00:00.000Z");
     const taskStarted: Message = {
       role: "system",
       timestamp: "2026-06-20T15:00:01.000Z",
@@ -1835,11 +1802,7 @@ describe("updateVisualTranscriptItems", () => {
     const previousItems = buildVisualTranscriptItems(previousMessages, {
       active: true,
     });
-    const steering = msg(
-      "user",
-      "also run tests",
-      "2026-06-20T15:10:00.000Z",
-    );
+    const steering = msg("user", "also run tests", "2026-06-20T15:10:00.000Z");
     const toolUse: Message = {
       id: "test-tool-use",
       role: "assistant",
@@ -1902,7 +1865,9 @@ describe("updateVisualTranscriptItems", () => {
     const thinking: Message = {
       role: "assistant",
       timestamp: "2026-07-02T10:00:07.000Z",
-      blocks: [{ type: "thinking", text: "Exploring MaterialX implementation" }],
+      blocks: [
+        { type: "thinking", text: "Exploring MaterialX implementation" },
+      ],
     };
 
     const next = updateVisualTranscriptItems({
@@ -1966,7 +1931,9 @@ describe("updateVisualTranscriptItems", () => {
       id: "thinking-1",
       role: "assistant",
       timestamp: "2026-07-02T10:00:07.000Z",
-      blocks: [{ type: "thinking", text: "Exploring MaterialX implementation" }],
+      blocks: [
+        { type: "thinking", text: "Exploring MaterialX implementation" },
+      ],
     };
     const previousMessages = [
       user,
@@ -1978,10 +1945,7 @@ describe("updateVisualTranscriptItems", () => {
     const previousItems = buildVisualTranscriptItems(previousMessages, {
       active: true,
     });
-    expect(previousItems.map((item) => item.kind)).toEqual([
-      "message",
-      "work",
-    ]);
+    expect(previousItems.map((item) => item.kind)).toEqual(["message", "work"]);
 
     const canonicalSteer = msg(
       "user",
@@ -1991,7 +1955,9 @@ describe("updateVisualTranscriptItems", () => {
     canonicalSteer.id = "canonical-steer";
     const nextThinking: Message = {
       ...thinking,
-      blocks: [{ type: "thinking", text: "Exploring MaterialX implementation" }],
+      blocks: [
+        { type: "thinking", text: "Exploring MaterialX implementation" },
+      ],
     };
     const next = updateVisualTranscriptItems({
       previousMessages,
@@ -2025,26 +1991,14 @@ describe("updateVisualTranscriptItems", () => {
   });
 
   it("keeps a normal live follow-up after a completed turn out of steering", () => {
-    const firstUser = msg(
-      "user",
-      "fix the layout",
-      "2026-07-06T10:00:00.000Z",
-    );
+    const firstUser = msg("user", "fix the layout", "2026-07-06T10:00:00.000Z");
     const taskStarted: Message = {
       role: "system",
       timestamp: "2026-07-06T10:00:01.000Z",
       blocks: [{ type: "marker", text: "[Task started]" }],
     };
-    const finalAnswer = msg(
-      "assistant",
-      "Done.",
-      "2026-07-06T10:00:10.000Z",
-    );
-    const secondUser = msg(
-      "user",
-      "now commit it",
-      "2026-07-06T10:00:20.000Z",
-    );
+    const finalAnswer = msg("assistant", "Done.", "2026-07-06T10:00:10.000Z");
+    const secondUser = msg("user", "now commit it", "2026-07-06T10:00:20.000Z");
     secondUser.id = "codex-optimistic-user-normal";
     const nextThinking: Message = {
       role: "assistant",
@@ -2067,19 +2021,16 @@ describe("updateVisualTranscriptItems", () => {
     if (followUp?.kind !== "message") throw new Error("expected follow-up");
     expect(followUp.message.role).toBe("user");
     expect(followUp.message.intent).toBeUndefined();
-    expect(visualWorkSummary(items[3]?.kind === "work" ? items[3].entries : []))
-      .toMatchObject({
-        steerings: 0,
-      });
+    expect(
+      visualWorkSummary(items[3]?.kind === "work" ? items[3].entries : []),
+    ).toMatchObject({
+      steerings: 0,
+    });
   });
 
   it("appends a new user turn without remaking earlier transcript items", () => {
     const firstUser = msg("user", "fix it", "2026-06-19T10:00:00.000Z");
-    const firstAnswer = msg(
-      "assistant",
-      "Done.",
-      "2026-06-19T10:00:02.000Z",
-    );
+    const firstAnswer = msg("assistant", "Done.", "2026-06-19T10:00:02.000Z");
     const previousMessages = [firstUser, firstAnswer];
     const previousItems = buildVisualTranscriptItems(previousMessages);
     const secondUser = msg("user", "continue", "2026-06-19T10:00:10.000Z");
@@ -2312,7 +2263,7 @@ describe("cleanVisualToolResultText", () => {
   it("strips Codex command chunk metadata and keeps the command output", () => {
     expect(
       cleanVisualToolResultText(
-        'Chunk ID: 5f747b Wall time: 0.0000 seconds Process exited with code 0 Original token count: 538 Output: src/App.svelte | 2 +-',
+        "Chunk ID: 5f747b Wall time: 0.0000 seconds Process exited with code 0 Original token count: 538 Output: src/App.svelte | 2 +-",
       ),
     ).toEqual({
       title: "Command output",
@@ -2463,7 +2414,9 @@ describe("visualThinkingSummary", () => {
   });
 
   it("removes markdown title wrappers from single-line thinking summaries", () => {
-    expect(visualThinkingSummary("**Extracting PLY scores and visuals**")).toEqual({
+    expect(
+      visualThinkingSummary("**Extracting PLY scores and visuals**"),
+    ).toEqual({
       title: "Extracting PLY scores and visuals",
       body: "",
     });
@@ -2532,7 +2485,9 @@ describe("visual tool payload display helpers", () => {
       },
     };
 
-    expect(visualToolPreviewText(block)).toBe("Run Bun tests last-user-message.test.ts");
+    expect(visualToolPreviewText(block)).toBe(
+      "Run Bun tests last-user-message.test.ts",
+    );
     expect(visualToolCallPayloadLanguage(block)).toBe("json");
     expect(visualToolCallPayloadText(block)).toContain(
       '"workdir": "/Users/herbst/git/supergit"',
@@ -2757,9 +2712,7 @@ describe("visual tool payload display helpers", () => {
           cmd: "git check-ignore -v full_assets/Kitchen_set full_assets/Kitchen_set_draco/Kitchen_set_draco.usda || true",
         },
       }),
-    ).toBe(
-      "Check git ignore for Kitchen_set, Kitchen_set_draco.usda",
-    );
+    ).toBe("Check git ignore for Kitchen_set, Kitchen_set_draco.usda");
 
     expect(
       visualToolPreviewText({
@@ -2823,7 +2776,9 @@ describe("visual tool payload display helpers", () => {
       visualToolPreviewText({
         type: "tool_use",
         toolName: "exec_command",
-        toolInput: { cmd: "npx playwright test tests/e2e/app.spec.js --project=chromium" },
+        toolInput: {
+          cmd: "npx playwright test tests/e2e/app.spec.js --project=chromium",
+        },
       }),
     ).toBe("Run Playwright tests app.spec.js");
 
@@ -2851,9 +2806,7 @@ describe("visual tool payload display helpers", () => {
           cmd: "bash -n scripts/setup_optional_models.sh scripts/moebius/inpaint.sh",
         },
       }),
-    ).toBe(
-      "Check shell syntax setup_optional_models.sh, inpaint.sh",
-    );
+    ).toBe("Check shell syntax setup_optional_models.sh, inpaint.sh");
   });
 
   it("shows test result badges from paired command output", () => {
@@ -3101,7 +3054,9 @@ describe("visual tool payload display helpers", () => {
       "Check port 3000 · Check port 5173",
     );
     expect(visualToolIconNameForPreview(block)).toBe("port_check");
-    expect(visualToolCallPayloadText(block)).toContain("command -v agent-browser");
+    expect(visualToolCallPayloadText(block)).toContain(
+      "command -v agent-browser",
+    );
   });
 
   it("summarizes tail log reads as log previews", () => {
@@ -3268,7 +3223,7 @@ describe("visual tool payload display helpers", () => {
       type: "tool_use",
       toolName: "exec_command",
       toolInput: {
-        cmd: "powershell -NoProfile -Command \"Remove-Item -Recurse -Force C:\\Users\\needle\\nextcloud-maik-test -ErrorAction SilentlyContinue; New-Item -ItemType Directory -Force C:\\Users\\needle\\nextcloud-maik-test\"",
+        cmd: 'powershell -NoProfile -Command "Remove-Item -Recurse -Force C:\\Users\\needle\\nextcloud-maik-test -ErrorAction SilentlyContinue; New-Item -ItemType Directory -Force C:\\Users\\needle\\nextcloud-maik-test"',
       },
     };
 
@@ -3335,7 +3290,7 @@ describe("visual tool payload display helpers", () => {
       type: "tool_use",
       toolName: "exec_command",
       toolInput: {
-        cmd: "set -euo pipefail; mkdir -p .git/info; exclude=.git/info/exclude; touch \"$exclude\"",
+        cmd: 'set -euo pipefail; mkdir -p .git/info; exclude=.git/info/exclude; touch "$exclude"',
       },
     };
 
@@ -3508,7 +3463,9 @@ describe("visual tool payload display helpers", () => {
     };
 
     expect(visualToolPreviewText(click)).toBe("Click element 12_45");
-    expect(visualToolPreviewText(doubleClick)).toBe("Double-click element 12_45");
+    expect(visualToolPreviewText(doubleClick)).toBe(
+      "Double-click element 12_45",
+    );
     expect(visualToolIconNameForPreview(click)).toBe("click");
   });
 
@@ -3834,7 +3791,7 @@ describe("visual tool payload display helpers", () => {
     expect(
       visualToolFetchResultBadges(curl, {
         type: "tool_result",
-        text: "Chunk ID: c1\nWall time: 0.1000 seconds\nProcess exited with code 0\nOriginal token count: 1\nOutput:\n{\"ok\":true}",
+        text: 'Chunk ID: c1\nWall time: 0.1000 seconds\nProcess exited with code 0\nOriginal token count: 1\nOutput:\n{"ok":true}',
       }),
     ).toEqual([
       {
@@ -4083,7 +4040,9 @@ describe("visual tool payload display helpers", () => {
           cmd: "npx agent-browser --session obj-debug click @e8 && npx agent-browser --session obj-debug snapshot -i",
         },
       }),
-    ).toBe("Click browser element @e8 · Capture browser snapshot (interactive)");
+    ).toBe(
+      "Click browser element @e8 · Capture browser snapshot (interactive)",
+    );
     expect(
       visualToolPreviewText({
         type: "tool_use",
@@ -4092,9 +4051,7 @@ describe("visual tool payload display helpers", () => {
           cmd: "npx --yes agent-browser --session mlsharp upload @e20 /Users/herbst/Downloads/round_of_57/03_lanczos_4k/06.png && npx --yes agent-browser --session mlsharp snapshot -i",
         },
       }),
-    ).toBe(
-      "Upload 06.png to @e20 · Capture browser snapshot (interactive)",
-    );
+    ).toBe("Upload 06.png to @e20 · Capture browser snapshot (interactive)");
     expect(
       visualToolPreviewText({
         type: "tool_use",
@@ -4113,6 +4070,19 @@ describe("visual tool payload display helpers", () => {
         },
       }),
     ).toBe("Read browser body text");
+    const delayedRead = {
+      type: "tool_use",
+      toolName: "exec_command",
+      toolInput: {
+        cmd: "sleep 25 AGENT_BROWSER_CONTENT_BOUNDARIES=1 npx agent-browser --cdp 9333 get text '#status'",
+      },
+    };
+    expect(visualToolPreviewText(delayedRead)).toBe(
+      "Wait for browser 25s · Read browser #status text",
+    );
+    expect(visualToolEnvAssignments(delayedRead)).toEqual([
+      { name: "AGENT_BROWSER_CONTENT_BOUNDARIES", value: "1" },
+    ]);
 
     const evalBlock = {
       type: "tool_use",
@@ -4323,7 +4293,7 @@ describe("visual tool payload display helpers", () => {
       type: "tool_use",
       toolName: "exec_command",
       toolInput: {
-        cmd: "ssh felix-win 'Get-CimInstance Win32_Process | Where-Object { $_.Name -like \"*Licht*\" -or $_.ExecutablePath -like \"*Licht*\" }'",
+        cmd: 'ssh felix-win \'Get-CimInstance Win32_Process | Where-Object { $_.Name -like "*Licht*" -or $_.ExecutablePath -like "*Licht*" }\'',
       },
     };
     expect(visualToolPreviewText(processSearchBlock)).toBe(
@@ -4511,7 +4481,7 @@ describe("visual tool payload display helpers", () => {
         range: ":1-90",
       },
       { kind: "text", text: " · " },
-      { kind: "text", text: 'Search ' },
+      { kind: "text", text: "Search " },
       { kind: "text", text: 'for "needle-engine-usdc|geometryBackend"' },
     ]);
     expect(visualToolCallPayloadText(block)).toContain("sed -n");
@@ -4522,7 +4492,7 @@ describe("visual tool payload display helpers", () => {
       type: "tool_use",
       toolName: "exec_command",
       toolInput: {
-        cmd: "rg -n \"get(By|AllBy|queryBy)(Text|Role).*name:\" packages/ui/test",
+        cmd: 'rg -n "get(By|AllBy|queryBy)(Text|Role).*name:" packages/ui/test',
       },
     };
     const result = {
@@ -4554,7 +4524,7 @@ describe("visual tool payload display helpers", () => {
         {
           type: "tool_use",
           toolName: "exec_command",
-          toolInput: { cmd: "rg -n \"missing\" src" },
+          toolInput: { cmd: 'rg -n "missing" src' },
         },
         {
           type: "tool_result",
@@ -4984,9 +4954,7 @@ describe("visual tool payload display helpers", () => {
       },
     };
 
-    expect(visualToolPreviewText(block)).toBe(
-      'Search src for "GetStage()"',
-    );
+    expect(visualToolPreviewText(block)).toBe('Search src for "GetStage()"');
     expect(visualToolCallPayloadText(block)).toContain("rg -n");
 
     const pipedSearch = {
@@ -5020,9 +4988,7 @@ describe("visual tool payload display helpers", () => {
         cmd: 'cmd.exe /d /s /c "type packages\\ui\\src\\last-user-message.ts"',
       },
     };
-    expect(visualToolPreviewText(cmdBlock)).toBe(
-      "Read last-user-message.ts",
-    );
+    expect(visualToolPreviewText(cmdBlock)).toBe("Read last-user-message.ts");
     expect(visualToolLauncherLabel(cmdBlock)).toBe("cmd");
   });
 
@@ -5031,13 +4997,11 @@ describe("visual tool payload display helpers", () => {
       type: "tool_use",
       toolName: "exec_command",
       toolInput: {
-        cmd: '/bin/zsh -lc "nl -ba src/lib/projectModel.js | sed -n \'414,424p\'"',
+        cmd: "/bin/zsh -lc \"nl -ba src/lib/projectModel.js | sed -n '414,424p'\"",
       },
     };
 
-    expect(visualToolPreviewText(block)).toBe(
-      "Read projectModel.js:414-424",
-    );
+    expect(visualToolPreviewText(block)).toBe("Read projectModel.js:414-424");
     expect(visualToolCallPayloadText(block)).toContain("nl -ba");
   });
 
@@ -5560,9 +5524,9 @@ describe("buildVisualWorkDisplayEntries", () => {
     const clickBlock = entries[1]?.entry.blocks[0];
     const doubleClickBlock = entries[2]?.entry.blocks[0];
     expect(visualToolPreviewText(clickBlock)).toBe("Click element 3_12");
-    expect(
-      visualToolPreviewText(clickBlock, entries[1]?.previewContext),
-    ).toBe("Click button Play");
+    expect(visualToolPreviewText(clickBlock, entries[1]?.previewContext)).toBe(
+      "Click button Play",
+    );
     expect(
       visualToolPreviewText(doubleClickBlock, entries[2]?.previewContext),
     ).toBe("Double-click tab Settings");
@@ -5604,9 +5568,9 @@ describe("buildVisualWorkDisplayEntries", () => {
             toolName: "exec_command",
             toolUseId: "snap-1",
             text: [
-              "@e18 [heading] \"Upload source files\"",
-              "@e20 [button] \"Select image\"",
-              "@e21 [input] \"Caption\"",
+              '@e18 [heading] "Upload source files"',
+              '@e20 [button] "Select image"',
+              '@e21 [input] "Caption"',
             ].join("\n"),
           },
         ],
@@ -5617,9 +5581,9 @@ describe("buildVisualWorkDisplayEntries", () => {
           toolName: "exec_command",
           toolUseId: "snap-1",
           text: [
-            "@e18 [heading] \"Upload source files\"",
-            "@e20 [button] \"Select image\"",
-            "@e21 [input] \"Caption\"",
+            '@e18 [heading] "Upload source files"',
+            '@e20 [button] "Select image"',
+            '@e21 [input] "Caption"',
           ].join("\n"),
         },
       ],
@@ -5683,9 +5647,9 @@ describe("buildVisualWorkDisplayEntries", () => {
 
     const uploadBlock = entries[1]?.entry.blocks[0];
     const fillBlock = entries[2]?.entry.blocks[0];
-    expect(
-      visualToolPreviewText(uploadBlock, entries[1]?.previewContext),
-    ).toBe("Upload 06.png to button Select image");
+    expect(visualToolPreviewText(uploadBlock, entries[1]?.previewContext)).toBe(
+      "Upload 06.png to button Select image",
+    );
     expect(visualToolPreviewText(fillBlock, entries[2]?.previewContext)).toBe(
       "Fill browser element input Caption",
     );
@@ -5744,6 +5708,234 @@ describe("buildVisualWorkDisplayEntries", () => {
         markerLabel: "Turn aborted",
       },
     ]);
+  });
+});
+
+describe("visualWorkOverview", () => {
+  it("summarizes a normalized work round without depending on the source", () => {
+    const entries = buildVisualWorkDisplayEntries([
+      {
+        message: {
+          role: "assistant",
+          timestamp: "2026-08-16T10:00:00.000Z",
+          blocks: [
+            {
+              type: "tool_use",
+              toolName: "exec_command",
+              toolUseId: "read",
+              toolInput: {
+                cmd: "sed -n '1,40p' packages/ui/src/VisualTranscript.svelte",
+                cwd: "/Users/herbst/git/supergit",
+              },
+            },
+          ],
+        },
+        blocks: [
+          {
+            type: "tool_use",
+            toolName: "exec_command",
+            toolUseId: "read",
+            toolInput: {
+              cmd: "sed -n '1,40p' packages/ui/src/VisualTranscript.svelte",
+              cwd: "/Users/herbst/git/supergit",
+            },
+          },
+        ],
+        messageIndex: 1,
+      },
+      {
+        message: {
+          role: "tool",
+          timestamp: "2026-08-16T10:00:01.000Z",
+          blocks: [
+            {
+              type: "tool_result",
+              toolUseId: "read",
+              text: "Chunk ID: read Wall time: 1.0000 seconds Process exited with code 0 Original token count: 120 Output: ok",
+            },
+          ],
+        },
+        blocks: [
+          {
+            type: "tool_result",
+            toolUseId: "read",
+            text: "Chunk ID: read Wall time: 1.0000 seconds Process exited with code 0 Original token count: 120 Output: ok",
+          },
+        ],
+        messageIndex: 2,
+      },
+      {
+        message: {
+          role: "assistant",
+          timestamp: "2026-08-16T10:00:05.000Z",
+          blocks: [
+            {
+              type: "tool_use",
+              toolName: "apply_patch",
+              toolUseId: "patch",
+              toolInput: [
+                "*** Begin Patch",
+                "*** Update File: packages/ui/src/VisualTranscript.svelte",
+                "@@",
+                "-  old line",
+                "+  new line",
+                "+  another line",
+                "*** End Patch",
+              ].join("\n"),
+            },
+          ],
+        },
+        blocks: [
+          {
+            type: "tool_use",
+            toolName: "apply_patch",
+            toolUseId: "patch",
+            toolInput: [
+              "*** Begin Patch",
+              "*** Update File: packages/ui/src/VisualTranscript.svelte",
+              "@@",
+              "-  old line",
+              "+  new line",
+              "+  another line",
+              "*** End Patch",
+            ].join("\n"),
+          },
+        ],
+        messageIndex: 3,
+      },
+      {
+        message: {
+          role: "tool",
+          timestamp: "2026-08-16T10:00:05.250Z",
+          blocks: [
+            {
+              type: "tool_result",
+              toolUseId: "patch",
+              text: "Chunk ID: patch Wall time: 0.2500 seconds Process exited with code 0 Original token count: 10 Output: Success",
+            },
+          ],
+        },
+        blocks: [
+          {
+            type: "tool_result",
+            toolUseId: "patch",
+            text: "Chunk ID: patch Wall time: 0.2500 seconds Process exited with code 0 Original token count: 10 Output: Success",
+          },
+        ],
+        messageIndex: 4,
+      },
+      {
+        message: {
+          role: "assistant",
+          timestamp: "2026-08-16T10:00:07.000Z",
+          blocks: [
+            {
+              type: "tool_use",
+              toolName: "exec_command",
+              toolUseId: "ssh",
+              toolInput: {
+                cmd: "ssh felix-win 'docker ps --format \"{{.Names}}\"'",
+                cwd: "/Users/herbst/git/supergit",
+              },
+            },
+          ],
+        },
+        blocks: [
+          {
+            type: "tool_use",
+            toolName: "exec_command",
+            toolUseId: "ssh",
+            toolInput: {
+              cmd: "ssh felix-win 'docker ps --format \"{{.Names}}\"'",
+              cwd: "/Users/herbst/git/supergit",
+            },
+          },
+        ],
+        messageIndex: 5,
+      },
+      {
+        message: {
+          role: "tool",
+          timestamp: "2026-08-16T10:00:08.000Z",
+          blocks: [
+            {
+              type: "tool_result",
+              toolUseId: "ssh",
+              text: "Chunk ID: ssh Wall time: 1.0000 seconds Process exited with code 0 Original token count: 4 Output: app",
+            },
+          ],
+        },
+        blocks: [
+          {
+            type: "tool_result",
+            toolUseId: "ssh",
+            text: "Chunk ID: ssh Wall time: 1.0000 seconds Process exited with code 0 Original token count: 4 Output: app",
+          },
+        ],
+        messageIndex: 6,
+      },
+    ]);
+
+    const overview = visualWorkOverview(
+      {
+        kind: "work",
+        entries: [],
+        startedAt: "2026-08-16T10:00:00.000Z",
+        endedAt: "2026-08-16T10:00:10.000Z",
+      },
+      entries,
+    );
+
+    expect(overview.time).toEqual({
+      elapsedMs: 10_000,
+      toolWaitMs: 2_250,
+      agentMs: 7_750,
+      toolWaitPercent: 23,
+      agentPercent: 77,
+    });
+    expect(overview.tokenCount).toBe(134);
+    expect(overview.lines).toContain(
+      "Changed 1 file (+2 −1): VisualTranscript.svelte",
+    );
+    expect(overview.lines).toContain(
+      "Ran 3 tools: 1 docker action, 1 edit, 1 read",
+    );
+    expect(overview.lines).toContain("Accessed SSH: felix-win");
+    expect(overview.artifacts.map((artifact) => artifact.label)).toEqual([
+      "VisualTranscript.svelte:1-40",
+      "VisualTranscript.svelte",
+    ]);
+  });
+
+  it("keeps only the recent live actions unless full detail is requested", () => {
+    const entries = Array.from({ length: 8 }, (_, index) => ({
+      kind: "entry" as const,
+      entry: {
+        message: {
+          role: "assistant",
+          timestamp: `2026-08-16T10:00:0${index}.000Z`,
+          blocks: [{ type: "thinking", text: `step ${index}` }],
+        },
+        blocks: [{ type: "thinking", text: `step ${index}` }],
+        messageIndex: index,
+      },
+    }));
+
+    expect(
+      visualWorkDetailEntries(
+        { kind: "work", entries: [], open: true },
+        entries,
+        { full: false, recentLimit: 5 },
+      ).map((entry) => entry.entry.messageIndex),
+    ).toEqual([3, 4, 5, 6, 7]);
+
+    expect(
+      visualWorkDetailEntries(
+        { kind: "work", entries: [], open: true },
+        entries,
+        { full: true, recentLimit: 5 },
+      ).map((entry) => entry.entry.messageIndex),
+    ).toEqual([0, 1, 2, 3, 4, 5, 6, 7]);
   });
 });
 
