@@ -439,7 +439,13 @@ export interface VisualToolResultBadge {
 
 export type VisualToolPreviewPart =
   | { kind: "text"; text: string }
-  | { kind: "path"; text: string; path: string; range: string };
+  | {
+      kind: "path";
+      text: string;
+      path: string;
+      range: string;
+      diffKind?: "workdir" | "staged";
+    };
 
 export interface VisualToolPreviewContext {
   snapshotUidLabels?: ReadonlyMap<string, string>;
@@ -2293,8 +2299,11 @@ export function visualPathPreviewTargets(
 
 function interspersePathParts(
   targets: readonly string[],
+  options?: { diffKind?: "workdir" | "staged" },
 ): VisualToolPreviewPart[] {
-  const formatted = visualPathPreviewTargets(targets);
+  const formatted = visualPathPreviewTargets(targets).map((target) =>
+    options?.diffKind ? { ...target, diffKind: options.diffKind } : target,
+  );
   return formatted.flatMap((target, index): VisualToolPreviewPart[] => {
     const prefix: VisualToolPreviewPart[] =
       index === 0 ? [] : [{ kind: "text", text: ", " }];
@@ -5682,7 +5691,9 @@ function gitSummaryParts(
         kind: "text",
         text: `${summary.staged ? "Review staged" : "Review"} diff stats${summary.targets.length ? " " : ""}`,
       },
-      ...interspersePathParts(summary.targets),
+      ...interspersePathParts(summary.targets, {
+        diffKind: summary.staged ? "staged" : "workdir",
+      }),
     ];
   }
   if (summary.action === "diff") {
@@ -5691,7 +5702,9 @@ function gitSummaryParts(
         kind: "text",
         text: `${summary.staged ? "Review staged diff" : "Review diff"}${summary.targets.length ? " " : ""}`,
       },
-      ...interspersePathParts(summary.targets),
+      ...interspersePathParts(summary.targets, {
+        diffKind: summary.staged ? "staged" : "workdir",
+      }),
     ];
   }
   if (summary.action === "show-file-search") {
