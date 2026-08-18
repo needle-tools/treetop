@@ -13,6 +13,7 @@
     | "list"
     | "test"
     | "fetch"
+    | "database"
     | "end"
     | "create"
     | "delete"
@@ -30,7 +31,8 @@
   function kindFor(toolName: string): IconKind {
     const n = toolName.toLowerCase();
     if (n.includes("cmake") || n.includes("configure")) return "configure";
-    if (n.includes("spawn_agent") || n.includes("wait_agent")) return "subagent";
+    if (n.includes("spawn_agent") || n.includes("wait_agent"))
+      return "subagent";
     if (n === "read_thread_terminal" || n.endsWith(".read_thread_terminal"))
       return "bash";
     if (n.includes("evaluate_script")) return "bash";
@@ -42,13 +44,15 @@
     if (n.includes("image_generation") || n.includes("imagegeneration"))
       return "image";
     if (n.includes("take_snapshot")) return "snapshot";
-    if (n.includes("navigate_page") || n.includes("new_page")) return "navigate";
+    if (n.includes("navigate_page") || n.includes("new_page"))
+      return "navigate";
     if (n.includes("filesystem_create")) return "create";
     if (n.includes("filesystem_delete")) return "delete";
     if (n.includes("process_end") || n.includes("kill")) return "end";
     if (n.includes("upload")) return "write";
     if (n.includes("download")) return "fetch";
     if (n.includes("port_check")) return "fetch";
+    if (n.includes("database")) return "database";
     if (n === "git" || n.includes("git_")) return "git";
     if (n === "test" || n.includes("test")) return "test";
     if (n.includes("bash") || n.includes("shell") || n.includes("exec"))
@@ -162,14 +166,10 @@
     {:else if kind === "edit"}
       <!-- pencil -->
       <path d="M12 20h9" />
-      <path
-        d="M16.5 3.5a2.121 2.121 0 1 1 3 3L7 19l-4 1 1-4 12.5-12.5z"
-      />
+      <path d="M16.5 3.5a2.121 2.121 0 1 1 3 3L7 19l-4 1 1-4 12.5-12.5z" />
     {:else if kind === "write"}
       <!-- file-edit-like -->
-      <path
-        d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"
-      />
+      <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
       <polyline points="14 2 14 8 20 8" />
       <line x1="9" y1="14" x2="15" y2="14" />
       <line x1="9" y1="18" x2="15" y2="18" />
@@ -203,6 +203,12 @@
       <circle cx="12" cy="12" r="9" />
       <line x1="3" y1="12" x2="21" y2="12" />
       <path d="M12 3a14 14 0 0 1 0 18a14 14 0 0 1 0 -18z" />
+    {:else if kind === "database"}
+      <!-- database cylinder -->
+      <ellipse cx="12" cy="5" rx="7" ry="3" />
+      <path d="M5 5v10c0 1.7 3.1 3 7 3s7-1.3 7-3V5" />
+      <path d="M5 10c0 1.7 3.1 3 7 3s7-1.3 7-3" />
+      <path d="M5 15c0 1.7 3.1 3 7 3s7-1.3 7-3" />
     {:else if kind === "end"}
       <!-- skull / process cleanup -->
       <path
@@ -214,9 +220,7 @@
       <path d="M9 18h6" />
     {:else if kind === "create"}
       <!-- file-plus -->
-      <path
-        d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"
-      />
+      <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
       <polyline points="14 2 14 8 20 8" />
       <line x1="12" y1="12" x2="12" y2="18" />
       <line x1="9" y1="15" x2="15" y2="15" />

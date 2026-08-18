@@ -394,6 +394,8 @@ export function visualToolIconNameForPreview(
   if (/^Query JSON\b/.test(preview)) return "read";
   if (/^Process text\b/.test(preview)) return "read";
   if (/^Check listeners\b/.test(preview)) return "port_check";
+  if (/^Query (?:PostgreSQL|MySQL|MariaDB|SQLite)\b/.test(preview))
+    return "database";
   if (/^Run .*(?:tests|check)\b/.test(preview)) return "test";
   if (/^Reload page\b/.test(preview)) return "reload_page";
   if (/^Wait for\b/.test(preview)) return "wait_for";
@@ -1871,11 +1873,18 @@ type VisualCommandSummary =
     }
   | { kind: "screen-sessions" }
   | { kind: "listener-check"; terms: string[] }
+  | { kind: "wait"; seconds: string }
   | {
       kind: "wait-url";
       url: string;
       attempts?: number;
       intervalSeconds?: number;
+    }
+  | {
+      kind: "database";
+      engine: "PostgreSQL" | "MySQL" | "MariaDB" | "SQLite";
+      database?: string;
+      query?: string;
     }
   | {
       kind: "browser";
@@ -2361,10 +2370,9 @@ function visualCommandPreview(
       delayedPreview.summaries.length > 0 ||
       delayedPreview.parts.length > 0
     ) {
-      const waitSummary: Extract<VisualCommandSummary, { kind: "browser" }> = {
-        kind: "browser",
-        action: "wait",
-        target: formatSeconds(delayedCommand.seconds),
+      const waitSummary: Extract<VisualCommandSummary, { kind: "wait" }> = {
+        kind: "wait",
+        seconds: delayedCommand.seconds,
       };
       const summaries = [waitSummary, ...delayedPreview.summaries];
       const parts = summaries.flatMap(
@@ -3190,11 +3198,11 @@ function splitLeadingSleepPrefix(
   command: string,
 ): { seconds: string; command: string } | undefined {
   const match = command.match(
-    /^\s*(?:\S*\/)?sleep\s+(\d+(?:\.\d+)?)\s+([\s\S]+)$/i,
+    /^\s*(?:\S*\/)?sleep\s+(\d+(?:\.\d+)?)(?:(?:\s*(?:;|&&)\s*)|\s+)([\s\S]+)$/i,
   );
   if (!match) return undefined;
   const rest = (match[2] ?? "").trim();
-  if (!rest || /^(?:&&|\|\||;)/.test(rest)) return undefined;
+  if (!rest || /^\|\|/.test(rest)) return undefined;
   return { seconds: match[1]!, command: rest };
 }
 
@@ -3427,6 +3435,8 @@ function summarizeShellCommand(
   if (test) return test;
   const browser = summarizeAgentBrowser(tokens);
   if (browser) return browser;
+  const database = summarizeDatabase(tokens);
+  if (database) return database;
   const scriptFile = directScriptCommand(command);
   if (scriptFile) return scriptFile;
   if (lowerName === "git") return summarizeGit(tokens);
@@ -4109,6 +4119,192 @@ function summarizeAwk(
   }
   if (!expression && targets.length === 0) return undefined;
   return { kind: "text-process", tool: "awk", expression, targets };
+}
+
+function summarizeDatabase(
+  tokens: string[],
+): Extract<VisualCommandSummary, { kind: "database" }> | undefined {
+  const command = shellLauncherName(
+    cleanPowerShellBoundaryToken(tokens[0] ?? ""),
+  );
+  if (command === "psql") return summarizePostgres(tokens);
+  if (command === "mysql") return summarizeMysql(tokens, "MySQL");
+  if (command === "mariadb") return summarizeMysql(tokens, "MariaDB");
+  if (command === "sqlite3") return summarizeSqlite(tokens);
+  return undefined;
+}
+
+function summarizePostgres(
+  tokens: string[],
+): Extract<VisualCommandSummary, { kind: "database" }> {
+  let database: string | undefined;
+  let query: string | undefined;
+  const optionsWithValue = new Set(
+    [
+      "-h",
+      "--host",
+      "-p",
+      "--port",
+      "-u",
+      "-U",
+      "--username",
+      "-f",
+      "--file",
+      "-P",
+      "--pset",
+      "-v",
+      "--set",
+      "--variable",
+    ].map((option) => option.toLowerCase()),
+  );
+  for (let index = 1; index < tokens.length; index += 1) {
+    const token = tokens[index]!;
+    const lower = token.toLowerCase();
+    if (token === "--") continue;
+    if (lower === "-d" || lower === "--dbname") {
+      database = tokens[index + 1] ?? database;
+      index += 1;
+      continue;
+    }
+    if (lower.startsWith("--dbname=")) {
+      database = token.slice("--dbname=".length);
+      continue;
+    }
+    if (/^-d\S+/.test(token)) {
+      database = token.slice(2);
+      continue;
+    }
+    if (lower === "-c" || lower === "--command") {
+      query = tokens.slice(index + 1).join(" ") || query;
+      index = tokens.length;
+      continue;
+    }
+    if (lower.startsWith("--command=")) {
+      query = token.slice("--command=".length);
+      continue;
+    }
+    if (/^-[a-z]*c[a-z]*$/i.test(token)) {
+      query = tokens.slice(index + 1).join(" ") || query;
+      index = tokens.length;
+      continue;
+    }
+    if (token.startsWith("-")) {
+      if (!token.includes("=") && optionsWithValue.has(lower)) index += 1;
+      continue;
+    }
+    if (!database && !looksLikeSqlStatement(token)) database = token;
+  }
+  return {
+    kind: "database",
+    engine: "PostgreSQL",
+    database,
+    query: query ? compactSql(query) : undefined,
+  };
+}
+
+function summarizeMysql(
+  tokens: string[],
+  engine: "MySQL" | "MariaDB",
+): Extract<VisualCommandSummary, { kind: "database" }> {
+  let database: string | undefined;
+  let query: string | undefined;
+  const optionsWithValue = new Set(
+    [
+      "--host",
+      "-h",
+      "--port",
+      "-P",
+      "--socket",
+      "-S",
+      "--user",
+      "-u",
+      "--password",
+      "-p",
+      "--defaults-file",
+      "--defaults-extra-file",
+    ].map((option) => option.toLowerCase()),
+  );
+  for (let index = 1; index < tokens.length; index += 1) {
+    const token = tokens[index]!;
+    const lower = token.toLowerCase();
+    if (token === "--") continue;
+    if (lower === "-d" || lower === "--database") {
+      database = tokens[index + 1] ?? database;
+      index += 1;
+      continue;
+    }
+    if (lower.startsWith("--database=")) {
+      database = token.slice("--database=".length);
+      continue;
+    }
+    if (/^-D\S+/.test(token)) {
+      database = token.slice(2);
+      continue;
+    }
+    if (lower === "-e" || lower === "--execute") {
+      query = tokens.slice(index + 1).join(" ") || query;
+      index = tokens.length;
+      continue;
+    }
+    if (lower.startsWith("--execute=")) {
+      query = token.slice("--execute=".length);
+      continue;
+    }
+    if (token.startsWith("-")) {
+      if (!token.includes("=") && optionsWithValue.has(lower)) index += 1;
+      continue;
+    }
+    if (!database && !looksLikeSqlStatement(token)) database = token;
+  }
+  return {
+    kind: "database",
+    engine,
+    database,
+    query: query ? compactSql(query) : undefined,
+  };
+}
+
+function summarizeSqlite(
+  tokens: string[],
+): Extract<VisualCommandSummary, { kind: "database" }> {
+  let database: string | undefined;
+  let query: string | undefined;
+  const optionsWithValue = new Set([
+    "-cmd",
+    "-init",
+    "-separator",
+    "-nullvalue",
+  ]);
+  for (let index = 1; index < tokens.length; index += 1) {
+    const token = tokens[index]!;
+    const lower = token.toLowerCase();
+    if (token === "--") continue;
+    if (token.startsWith("-")) {
+      if (!token.includes("=") && optionsWithValue.has(lower)) index += 1;
+      continue;
+    }
+    if (!database) {
+      database = token;
+      continue;
+    }
+    if (!query) query = token;
+  }
+  return {
+    kind: "database",
+    engine: "SQLite",
+    database,
+    query: query ? compactSql(query) : undefined,
+  };
+}
+
+function looksLikeSqlStatement(value: string): boolean {
+  return /^(?:select|with|insert|update|delete|create|alter|drop|show|describe|desc|pragma|vacuum|\\[a-z])/i.test(
+    value.trim(),
+  );
+}
+
+function compactSql(value: string): string {
+  return value.replace(/\s+/g, " ").replace(/;\s*$/, "").trim();
 }
 
 function summarizeFetch(tokens: string[]): VisualCommandSummary | undefined {
@@ -5274,11 +5470,31 @@ function commandSummaryParts(
       },
     ];
   }
+  if (summary.kind === "wait") {
+    return [
+      { kind: "text", text: `Wait for ${formatSeconds(summary.seconds)}` },
+    ];
+  }
   if (summary.kind === "wait-url") {
     return [
       { kind: "text", text: "Wait for " },
       { kind: "text", text: readableUrl(summary.url) },
     ];
+  }
+  if (summary.kind === "database") {
+    const parts: VisualToolPreviewPart[] = [
+      { kind: "text", text: `Query ${summary.engine}` },
+    ];
+    if (summary.database) {
+      parts.push({ kind: "text", text: " " });
+      if (summary.engine === "SQLite" && looksLikePathToken(summary.database)) {
+        parts.push(...interspersePathParts([summary.database]));
+      } else {
+        parts.push({ kind: "text", text: summary.database });
+      }
+    }
+    if (summary.query) parts.push({ kind: "text", text: ` ${summary.query}` });
+    return parts;
   }
   if (summary.kind === "browser") {
     return browserSummaryParts(summary, context);
