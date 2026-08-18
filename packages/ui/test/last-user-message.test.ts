@@ -2635,6 +2635,7 @@ describe("visual tool payload display helpers", () => {
         text: "SessionView.svelte",
         path: "packages/ui/src/SessionView.svelte",
         range: "",
+        diffKind: "workdir",
       },
       { kind: "text", text: ", " },
       {
@@ -2642,6 +2643,26 @@ describe("visual tool payload display helpers", () => {
         text: "codex-event-stream.ts",
         path: "packages/ui/src/codex-event-stream.ts",
         range: "",
+        diffKind: "workdir",
+      },
+    ]);
+
+    expect(
+      visualToolPreviewParts({
+        type: "tool_use",
+        toolName: "exec_command",
+        toolInput: {
+          cmd: "git diff --cached -- packages/ui/src/SessionView.svelte",
+        },
+      }),
+    ).toEqual([
+      { kind: "text", text: "Review staged diff " },
+      {
+        kind: "path",
+        text: "SessionView.svelte",
+        path: "packages/ui/src/SessionView.svelte",
+        range: "",
+        diffKind: "staged",
       },
     ]);
 
