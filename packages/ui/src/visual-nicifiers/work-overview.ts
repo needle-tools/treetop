@@ -180,6 +180,13 @@ function inferToolCategory(toolBlock: MessageBlock | undefined): string {
     return "file";
   if (preview.includes("docker") || preview.includes("container"))
     return "docker";
+  if (
+    preview.includes("PostgreSQL") ||
+    preview.includes("MySQL") ||
+    preview.includes("MariaDB") ||
+    preview.includes("SQLite")
+  )
+    return "database";
   return "command";
 }
 
@@ -199,6 +206,8 @@ function categoryLabel(category: string): string {
       return "browser action";
     case "docker":
       return "docker action";
+    case "database":
+      return "database query";
     case "file":
       return "file operation";
     case "image":

@@ -2923,9 +2923,7 @@ describe("visual tool payload display helpers", () => {
         type: "tool_result",
         text: "Chunk ID: s1\nWall time: 13.0000 seconds\nProcess exited with code 0\nOriginal token count: 10\nOutput:\nLoading svelte-check in workspace: /repo\nGetting Svelte diagnostics...\nsvelte-check found 0 errors and 13 warnings in 8 files",
       }),
-    ).toEqual([
-      { label: "⚠13", tone: "warning", title: "13 Svelte warnings" },
-    ]);
+    ).toEqual([{ label: "⚠13", tone: "warning", title: "13 Svelte warnings" }]);
     expect(
       visualToolTestResultBadges(svelte, {
         type: "tool_result",
@@ -3036,7 +3034,7 @@ describe("visual tool payload display helpers", () => {
     };
 
     expect(visualToolPreviewText(block)).toBe(
-      "Check port 55173 · Read logs cursor-labeler-vite-55173.log last 50",
+      "Wait for 3s · Check port 55173 · Read logs cursor-labeler-vite-55173.log last 50",
     );
     expect(visualToolCallPayloadText(block)).toContain("sleep 3; lsof");
   });
@@ -4078,11 +4076,22 @@ describe("visual tool payload display helpers", () => {
       },
     };
     expect(visualToolPreviewText(delayedRead)).toBe(
-      "Wait for browser 25s · Read browser #status text",
+      "Wait for 25s · Read browser #status text",
     );
     expect(visualToolEnvAssignments(delayedRead)).toEqual([
       { name: "AGENT_BROWSER_CONTENT_BOUNDARIES", value: "1" },
     ]);
+
+    const delayedRemoteRead = {
+      type: "tool_use",
+      toolName: "exec_command",
+      toolInput: {
+        cmd: "sleep 30; ssh -o BatchMode=yes cloud-staging 'cd /srv/app && sed -n \"1,40p\" logs/current.log'",
+      },
+    };
+    expect(visualToolPreviewText(delayedRemoteRead)).toBe(
+      "Wait for 30s · Read current.log:1-40",
+    );
 
     const evalBlock = {
       type: "tool_use",
@@ -4100,6 +4109,40 @@ describe("visual tool payload display helpers", () => {
     expect(visualToolInlineScript(evalBlock)?.code).toContain(
       "await window.refreshPreview();",
     );
+  });
+
+  it("summarizes database shell commands after ssh and docker wrappers", () => {
+    const postgres = {
+      type: "tool_use",
+      toolName: "exec_command",
+      toolInput: {
+        cmd: "ssh -i '/Users/herbst/Library/CloudStorage/GoogleDrive-felix@needle.tools/My Drive/pw/coolify-labs-maik' -o BatchMode=yes root@labs.anhaltintelligence.com 'docker exec coolify-db psql -U coolify -d coolify -Atc \"select status,created_at,updated_at from application_deployment_queues order by created_at desc limit 5\"'",
+      },
+    };
+    expect(visualToolPreviewText(postgres)).toBe(
+      "Query PostgreSQL coolify select status,created_at,updated_at from application_deployment_queues order by created_at desc limit 5",
+    );
+    expect(visualToolIconNameForPreview(postgres)).toBe("database");
+
+    const sqlite = {
+      type: "tool_use",
+      toolName: "exec_command",
+      toolInput: {
+        cmd: "sqlite3 data/auth.sqlite '.tables' && sqlite3 data/auth.sqlite 'select id,userId,token,expiresAt from session limit 3;'",
+      },
+    };
+    expect(visualToolPreviewText(sqlite)).toBe(
+      "Query SQLite auth.sqlite .tables · Query SQLite auth.sqlite select id,userId,token,expiresAt from session limit 3",
+    );
+
+    const mysql = {
+      type: "tool_use",
+      toolName: "exec_command",
+      toolInput: {
+        cmd: "mysql -u root -D app -e 'show tables'",
+      },
+    };
+    expect(visualToolPreviewText(mysql)).toBe("Query MySQL app show tables");
   });
 
   it("summarizes CMake configure commands after newline-separated setup", () => {
