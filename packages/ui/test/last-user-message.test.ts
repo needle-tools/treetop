@@ -4103,6 +4103,30 @@ describe("visual tool payload display helpers", () => {
       { name: "AGENT_BROWSER_CONTENT_BOUNDARIES", value: "1" },
     ]);
 
+    const sessionNameHelpSearch = {
+      type: "tool_use",
+      toolName: "exec_command",
+      toolInput: {
+        cmd: "npx agent-browser --session-name fastvid-trim-repro --help | rg -n 'drag|mouse' | head -20",
+      },
+    };
+    expect(visualToolPreviewText(sessionNameHelpSearch)).toBe(
+      'Search agent-browser help for "drag|mouse"',
+    );
+    expect(visualToolIconNameForPreview(sessionNameHelpSearch)).toBe("search");
+
+    const mouseChain = {
+      type: "tool_use",
+      toolName: "exec_command",
+      toolInput: {
+        cmd: "npx agent-browser --session-name fastvid-trim-repro mouse move 1134 870 && npx agent-browser --session-name fastvid-trim-repro mouse drag 25",
+      },
+    };
+    expect(visualToolPreviewText(mouseChain)).toBe(
+      "Move browser mouse to 1134,870 · Drag browser element 25",
+    );
+    expect(visualToolIconNameForPreview(mouseChain)).toBe("click");
+
     const delayedRemoteRead = {
       type: "tool_use",
       toolName: "exec_command",
