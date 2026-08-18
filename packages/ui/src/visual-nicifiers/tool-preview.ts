@@ -404,7 +404,8 @@ export function visualToolIconNameForPreview(
   if (/^List browser pages\b/.test(preview)) return "list_pages";
   if (/^Capture browser snapshot\b/.test(preview)) return "take_snapshot";
   if (/^Capture browser screenshot\b/.test(preview)) return "take_screenshot";
-  if (/^Click browser element\b/.test(preview)) return "click";
+  if (/^(?:Click|Double-click|Move|Drag|Use) browser\b/.test(preview))
+    return "click";
   if (/^Upload\b/.test(preview)) return "upload_file";
   if (/^Download\b/.test(preview)) return "download_file";
   if (/^Download from browser\b/.test(preview)) return "download_file";
@@ -1809,7 +1810,7 @@ type VisualCommandSummary =
   | { kind: "read"; targets: string[] }
   | { kind: "directory"; targets: string[] }
   | { kind: "logs"; targets: string[]; tailLines?: number }
-  | { kind: "search"; pattern: string; paths: string[] }
+  | { kind: "search"; pattern: string; paths: string[]; source?: string }
   | { kind: "find"; root: string; patterns: string[] }
   | { kind: "batch-files"; tool: string; targets: string[] }
   | {
@@ -1912,6 +1913,7 @@ type VisualCommandSummary =
         | "pages"
         | "reload"
         | "emulate"
+        | "mouse"
         | "script";
       target?: string;
       targetLabel?: string;
@@ -2330,11 +2332,14 @@ function directoryPreviewParts(
 function searchPreviewParts(
   pattern: string,
   paths: readonly string[],
+  source?: string,
 ): VisualToolPreviewPart[] {
   return [
     { kind: "text", text: "Search " },
     ...(paths.length
       ? [...interspersePathParts(paths), { kind: "text" as const, text: " " }]
+      : source
+        ? [{ kind: "text" as const, text: `${source} ` }]
       : []),
     { kind: "text", text: `for "${readableSearchPattern(pattern)}"` },
   ];
@@ -2438,7 +2443,7 @@ function visualCommandPreview(
   if (parts.length === 1) {
     const pipeSummary = summarizePipeCommand(unwrapped);
     if (pipeSummary) {
-      const previewParts = commandSummaryParts(pipeSummary);
+      const previewParts = commandSummaryParts(pipeSummary, context);
       return {
         text: previewParts.map((part) => part.text).join(""),
         parts: previewParts,
@@ -2564,7 +2569,11 @@ function visualCommandPreview(
   }
   if (summaries.length === 1 && summaries[0]!.kind === "search") {
     const summary = summaries[0]!;
-    const parts = searchPreviewParts(summary.pattern, summary.paths);
+    const parts = searchPreviewParts(
+      summary.pattern,
+      summary.paths,
+      summary.source,
+    );
     return {
       text: parts.map((part) => part.text).join(""),
       parts,
@@ -4517,6 +4526,20 @@ function summarizeAgentBrowser(
       target: browserScrollTarget(args),
     };
   }
+  if (command === "mouse" || command === "drag") {
+    const subcommand = command === "mouse" ? args[0]?.toLowerCase() : "drag";
+    const mouseArgs = command === "mouse" ? args.slice(1) : args;
+    const target =
+      subcommand === "move" && mouseArgs.length >= 2
+        ? `${mouseArgs[0]},${mouseArgs[1]}`
+        : firstPositionalArg(mouseArgs);
+    return {
+      kind: "browser",
+      action: "mouse",
+      target,
+      detail: subcommand,
+    };
+  }
   if (command === "console") {
     return { kind: "browser", action: "console" };
   }
@@ -4920,9 +4943,35 @@ function summarizePipeSearch(
   const parts = splitShellPipeline(command);
   if (parts.length < 2) return undefined;
   const left = shellTokens(parts[0]!);
-  if (!isSearchCommandName(left[0])) return undefined;
-  const summary = summarizeSearch(left);
-  return summary?.kind === "search" ? summary : undefined;
+  if (isSearchCommandName(left[0])) {
+    const summary = summarizeSearch(left);
+    return summary?.kind === "search" ? summary : undefined;
+  }
+  const searchIndex = parts.findIndex((part, index) => {
+    if (index === 0) return false;
+    return isSearchCommandName(shellTokens(part)[0]);
+  });
+  if (searchIndex < 1) return undefined;
+  const summary = summarizeSearch(shellTokens(parts[searchIndex]!));
+  if (summary?.kind !== "search") return undefined;
+  const source = agentBrowserHelpSource(shellTokens(parts[0]!));
+  if (!source) return undefined;
+  return { ...summary, paths: [], source };
+}
+
+function agentBrowserHelpSource(tokens: string[]): string | undefined {
+  if (agentBrowserTokenIndex(tokens) < 0) return undefined;
+  if (
+    tokens.some(
+      (token) =>
+        token === "--help" ||
+        token === "-h" ||
+        token.toLowerCase() === "help",
+    )
+  ) {
+    return "agent-browser help";
+  }
+  return undefined;
 }
 
 function isSearchCommandName(command: string | undefined): boolean {
@@ -5381,7 +5430,7 @@ function commandSummaryParts(
     ];
   }
   if (summary.kind === "search") {
-    return searchPreviewParts(summary.pattern, summary.paths);
+    return searchPreviewParts(summary.pattern, summary.paths, summary.source);
   }
   if (summary.kind === "batch-files") {
     return batchFilePreviewParts(summary);
@@ -5906,6 +5955,29 @@ function browserSummaryParts(
   if (summary.action === "scroll") {
     return textPreviewParts(
       summary.target ? `Scroll browser ${summary.target}` : "Scroll browser",
+    );
+  }
+  if (summary.action === "mouse") {
+    if (summary.detail === "move") {
+      return textPreviewParts(
+        summary.target
+          ? `Move browser mouse to ${summary.target}`
+          : "Move browser mouse",
+      );
+    }
+    if (summary.detail === "drag") {
+      return textPreviewParts(
+        summary.target
+          ? `Drag browser element ${summary.target}`
+          : "Drag browser element",
+      );
+    }
+    return textPreviewParts(
+      summary.detail
+        ? `Use browser mouse ${summary.detail}${
+            summary.target ? ` ${summary.target}` : ""
+          }`
+        : "Use browser mouse",
     );
   }
   if (summary.action === "console") {
