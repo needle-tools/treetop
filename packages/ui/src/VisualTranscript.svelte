@@ -5,7 +5,9 @@
   import { apiUrl } from "./api";
   import { isLocalFileMarkdownHref } from "./open-url";
   import Diff from "./Diff.svelte";
+  import DiffLoader from "./DiffLoader.svelte";
   import LoadingSpinner from "./LoadingSpinner.svelte";
+  import Tooltip from "./Tooltip.svelte";
   import ToolIcon from "./ToolIcon.svelte";
   import { formatAbsoluteTimeTitle } from "./display-helpers";
   import {
@@ -1738,7 +1740,7 @@
   </button>
 {/snippet}
 
-{#snippet renderPreviewPathChip(
+{#snippet renderPreviewPathButton(
   part: VisualPreviewPathPart,
   remoteHost: string | undefined,
 )}
@@ -1759,6 +1761,33 @@
   </button>
 {/snippet}
 
+{#snippet renderPreviewPathChip(
+  part: VisualPreviewPathPart,
+  remoteHost: string | undefined,
+)}
+  {#if part.diffKind && !remoteHost && sessionCwd}
+    <Tooltip variant="wide" escapeClip>
+      <span slot="trigger" class="work-preview-path-trigger">
+        {@render renderPreviewPathButton(part, remoteHost)}
+      </span>
+      <span slot="content" class="visual-preview-diff-tooltip">
+        <span class="visual-preview-diff-head">
+          {part.path}
+          {#if part.range}{part.range}{/if}
+        </span>
+        <DiffLoader
+          worktreePath={sessionCwd}
+          file={stripPreviewPathRange(part.path)}
+          kind={part.diffKind}
+          {daemonId}
+        />
+      </span>
+    </Tooltip>
+  {:else}
+    {@render renderPreviewPathButton(part, remoteHost)}
+  {/if}
+{/snippet}
+
 {#snippet renderToolPreview(
   block: NormalizedBlock,
   preview: string,
@@ -1766,7 +1795,7 @@
   context?: VisualToolPreviewContext,
 )}
   {@const parts = visualToolPreviewParts(block, context)}
-  <span class="work-tool-preview" title={preview}>
+  <div class="work-tool-preview" title={preview}>
     {#if parts.length > 0}
       {#each parts as part, i (`${part.kind}:${part.text}:${i}`)}
         {#if part.kind === "path"}
@@ -1778,7 +1807,7 @@
     {:else}
       {preview}
     {/if}
-  </span>
+  </div>
 {/snippet}
 
 {#snippet renderWorkArtifact(artifact: VisualWorkArtifact)}
@@ -4044,11 +4073,40 @@
     white-space: inherit;
     cursor: pointer;
   }
+  .work-preview-path-trigger {
+    display: inline;
+  }
   .work-preview-path:hover,
   .work-preview-path:focus-visible {
     background: color-mix(in srgb, var(--text-muted) 10%, transparent);
     color: var(--text-1);
     outline: none;
+  }
+  :global(.visual-preview-diff-tooltip) {
+    display: block;
+    min-width: min(34rem, 80vw);
+    max-width: min(46rem, 88vw);
+  }
+  :global(.visual-preview-diff-head) {
+    display: flex;
+    align-items: baseline;
+    gap: 0.35rem;
+    min-width: 0;
+    margin: 0 0 0.35rem;
+    color: var(--text-2);
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas,
+      "Liberation Mono", "Courier New", monospace;
+    font-size: 0.7rem;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  :global(.visual-preview-diff-tooltip .diff) {
+    max-height: min(22rem, 44vh);
+    border: none;
+    border-radius: 0;
+    background: transparent;
+    overscroll-behavior: contain;
   }
   .work-file-edit-preview {
     color: var(--text-faint);
