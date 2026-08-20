@@ -1193,6 +1193,176 @@ describe("parseCodexJsonl", () => {
     expect(s.messages[4]?.blocks[0]?.text).toContain("Context compacted");
   });
 
+  test("normalizes Codex token_count rows as assistant token usage", () => {
+    const text = JSON.stringify({
+      timestamp: "2026-05-26T12:00:01.000Z",
+      type: "event_msg",
+      payload: {
+        type: "token_count",
+        info: {
+          last_token_usage: {
+            input_tokens: 1234,
+            cached_input_tokens: 1000,
+            output_tokens: 41,
+            reasoning_output_tokens: 7,
+            total_tokens: 1275,
+          },
+        },
+      },
+    });
+    const s = parseCodexJsonl(text);
+    expect(s.messages).toEqual([
+      {
+        role: "assistant",
+        blocks: [],
+        timestamp: "2026-05-26T12:00:01.000Z",
+        tokensUsed: 48,
+        tokenUsage: {
+          input: 1234,
+          cachedInput: 1000,
+          cacheWriteInput: 0,
+          output: 41,
+          reasoningOutput: 7,
+          total: 1275,
+        },
+      },
+    ]);
+  });
+
+  test("normalizes cumulative Codex token_count rows as deltas", () => {
+    const text = [
+      JSON.stringify({
+        timestamp: "2026-05-26T12:00:01.000Z",
+        type: "event_msg",
+        payload: {
+          type: "token_count",
+          info: {
+            total_token_usage: {
+              input_tokens: 100,
+              output_tokens: 20,
+              total_tokens: 120,
+            },
+          },
+        },
+      }),
+      JSON.stringify({
+        timestamp: "2026-05-26T12:00:02.000Z",
+        type: "event_msg",
+        payload: {
+          type: "token_count",
+          info: {
+            total_token_usage: {
+              input_tokens: 145,
+              output_tokens: 35,
+              total_tokens: 180,
+            },
+          },
+        },
+      }),
+    ].join("\n");
+    const s = parseCodexJsonl(text);
+    expect(s.messages.map((message) => message.tokenUsage?.total)).toEqual([
+      120,
+      60,
+    ]);
+    expect(s.messages.map((message) => message.tokenUsage?.input)).toEqual([
+      100,
+      45,
+    ]);
+    expect(s.messages.map((message) => message.tokenUsage?.output)).toEqual([
+      20,
+      15,
+    ]);
+  });
+
+  test("prefers Codex last_token_usage over cumulative totals", () => {
+    const text = [
+      JSON.stringify({
+        timestamp: "2026-05-26T12:00:01.000Z",
+        type: "event_msg",
+        payload: {
+          type: "token_count",
+          info: {
+            total_token_usage: {
+              input_tokens: 1000,
+              output_tokens: 200,
+              total_tokens: 1200,
+            },
+            last_token_usage: {
+              input_tokens: 120,
+              output_tokens: 30,
+              total_tokens: 150,
+            },
+          },
+        },
+      }),
+      JSON.stringify({
+        timestamp: "2026-05-26T12:00:02.000Z",
+        type: "event_msg",
+        payload: {
+          type: "token_count",
+          info: {
+            total_token_usage: {
+              input_tokens: 1300,
+              output_tokens: 250,
+              total_tokens: 1550,
+            },
+          },
+        },
+      }),
+    ].join("\n");
+    const s = parseCodexJsonl(text);
+    expect(s.messages.map((message) => message.tokenUsage?.total)).toEqual([
+      150,
+      350,
+    ]);
+    expect(s.messages.map((message) => message.tokenUsage?.input)).toEqual([
+      120,
+      300,
+    ]);
+  });
+
+  test("normalizes Codex patch_apply_end changes with raw diffs", () => {
+    const text = JSON.stringify({
+      timestamp: "2026-05-26T12:00:01.000Z",
+      type: "event_msg",
+      payload: {
+        type: "patch_apply_end",
+        call_id: "call-patch",
+        stdout: "Success. Updated files\n",
+        stderr: "",
+        success: true,
+        changes: {
+          "/repo/src/App.svelte": {
+            type: "update",
+            unified_diff: "@@\n-old\n+new\n",
+          },
+        },
+      },
+    });
+    const s = parseCodexJsonl(text);
+    expect(s.messages.map((m) => m.role)).toEqual(["assistant", "tool"]);
+    expect(s.messages[0]?.blocks[0]).toEqual({
+      type: "tool_use",
+      toolName: "file change",
+      toolUseId: "call-patch",
+      toolInput: {
+        changes: {
+          "/repo/src/App.svelte": {
+            type: "update",
+            unified_diff: "@@\n-old\n+new\n",
+          },
+        },
+      },
+    });
+    expect(s.messages[1]?.blocks[0]).toEqual({
+      type: "tool_result",
+      toolName: "apply_patch",
+      toolUseId: "call-patch",
+      text: "Success. Updated files\n",
+    });
+  });
+
   test("still skips duplicate Codex message events and metadata noise", () => {
     const text = [
       JSON.stringify({ type: "event_msg", payload: { type: "user_message" } }),

@@ -57,6 +57,7 @@ export interface CodexLiveMarker {
 export interface CodexLiveNormalizeContext {
   toolNames?: Map<string, string>;
   toolInputs?: Map<string, unknown>;
+  previousTotalTokenUsage?: CodexAppTokenUsage;
 }
 
 function codexLiveToolNameMap(
@@ -111,6 +112,17 @@ export interface CodexAppHistoryMessage {
   blocks: CodexAppHistoryBlock[];
   timestamp?: string;
   id?: string;
+  tokensUsed?: number;
+  tokenUsage?: CodexAppTokenUsage;
+}
+
+export interface CodexAppTokenUsage {
+  input: number;
+  cachedInput: number;
+  cacheWriteInput: number;
+  output: number;
+  reasoningOutput: number;
+  total: number;
 }
 
 export type CodexEventStreamState =
@@ -397,6 +409,17 @@ export function codexLiveMessagesFromEvent(
 ): CodexAppHistoryMessage[] {
   const messages: CodexAppHistoryMessage[] = [];
   const timestamp = codexLiveItemTimestamp(event);
+  const tokenUsage = codexTokenUsageFromEvent(event, context);
+  if (tokenUsage !== undefined) {
+    messages.push({
+      id: `codex-usage-${event.turnId ?? event.params.turnId ?? "turn"}-${event.seq ?? event.receivedAt}`,
+      role: "assistant",
+      timestamp,
+      tokensUsed: codexOutputTokensFromUsage(tokenUsage),
+      tokenUsage,
+      blocks: [],
+    });
+  }
   const liveToolUse = codexLiveToolUseFromEvent(event, context);
   if (liveToolUse && !event.method.endsWith("/outputDelta")) {
     messages.push(
@@ -463,6 +486,7 @@ export function codexAppHistoryMessagesFromThread(
   if (!Array.isArray(turns)) return [];
   const messages: CodexAppHistoryMessage[] = [];
   const toolNames = codexLiveToolNameMap(context);
+  const usageContext: CodexLiveNormalizeContext = {};
   for (const turn of turns) {
     if (!turn || typeof turn !== "object") continue;
     const turnRecord = turn as Record<string, unknown>;
@@ -475,6 +499,7 @@ export function codexAppHistoryMessagesFromThread(
         turnId,
         timestamp,
         toolNames,
+        usageContext,
       );
       messages.push(...itemMessages);
     }
@@ -532,12 +557,26 @@ function codexAppMessagesFromThreadItem(
   turnId: string | undefined,
   timestamp: string | undefined,
   toolNames: Map<string, string>,
+  usageContext: CodexLiveNormalizeContext = {},
 ): CodexAppHistoryMessage[] {
   if (!rawItem || typeof rawItem !== "object") return [];
   const item = rawItem as Record<string, unknown>;
   const itemType = stringField(item, "type");
   const itemId =
     stringField(item, "id") ?? stringField(item, "call_id") ?? turnId ?? "item";
+  const tokenUsage = codexTokenUsageFromPayload(item, usageContext);
+  if (tokenUsage !== undefined) {
+    return [
+      {
+        id: `codex-usage-${itemId}`,
+        role: "assistant",
+        timestamp,
+        tokensUsed: codexOutputTokensFromUsage(tokenUsage),
+        tokenUsage,
+        blocks: [],
+      },
+    ];
+  }
   if (itemType === "userMessage") {
     const blocks = codexUserInputBlocks(item.content);
     return blocks.length
@@ -724,6 +763,115 @@ function codexAppMessagesFromThreadItem(
     ];
   }
   return [];
+}
+
+function codexTokenUsageFromEvent(
+  event: CodexAppEvent,
+  context: CodexLiveNormalizeContext = {},
+): CodexAppTokenUsage | undefined {
+  if (event.method !== "token_count" && event.params.type !== "token_count") {
+    return undefined;
+  }
+  return codexTokenUsageFromPayload(event.params, context);
+}
+
+function codexTokenUsageFromObject(
+  usage: Record<string, unknown> | undefined,
+): CodexAppTokenUsage | undefined {
+  if (!usage) return undefined;
+  const input = finiteNumber(usage.input_tokens ?? usage.inputTokens) ?? 0;
+  const cachedInput =
+    finiteNumber(usage.cached_input_tokens ?? usage.cachedInputTokens) ?? 0;
+  const cacheWriteInput =
+    finiteNumber(
+      usage.cache_write_input_tokens ??
+        usage.cacheWriteInputTokens ??
+        usage.cache_creation_input_tokens ??
+        usage.cacheCreationInputTokens,
+    ) ?? 0;
+  const output = finiteNumber(usage.output_tokens ?? usage.outputTokens) ?? 0;
+  const reasoning =
+    finiteNumber(
+      usage.reasoning_output_tokens ?? usage.reasoningOutputTokens,
+    ) ?? 0;
+  const total =
+    finiteNumber(usage.total_tokens ?? usage.totalTokens) ?? input + output;
+  if (total <= 0 && output + reasoning <= 0) return undefined;
+  return {
+    input,
+    cachedInput,
+    cacheWriteInput,
+    output,
+    reasoningOutput: reasoning,
+    total,
+  };
+}
+
+function codexTokenUsageHasContent(
+  usage: CodexAppTokenUsage | undefined,
+): usage is CodexAppTokenUsage {
+  return (
+    usage !== undefined &&
+    (usage.total > 0 ||
+      usage.input > 0 ||
+      usage.output > 0 ||
+      usage.reasoningOutput > 0)
+  );
+}
+
+function codexTokenUsageDelta(
+  current: CodexAppTokenUsage,
+  previous: CodexAppTokenUsage | undefined,
+): CodexAppTokenUsage {
+  if (!previous || current.total < previous.total) return current;
+  return {
+    input: Math.max(0, current.input - previous.input),
+    cachedInput: Math.max(0, current.cachedInput - previous.cachedInput),
+    cacheWriteInput: Math.max(
+      0,
+      current.cacheWriteInput - previous.cacheWriteInput,
+    ),
+    output: Math.max(0, current.output - previous.output),
+    reasoningOutput: Math.max(
+      0,
+      current.reasoningOutput - previous.reasoningOutput,
+    ),
+    total: Math.max(0, current.total - previous.total),
+  };
+}
+
+function codexTokenUsageFromPayload(
+  payload: Record<string, unknown>,
+  context: CodexLiveNormalizeContext = {},
+): CodexAppTokenUsage | undefined {
+  const info = codexObjectField(payload, "info") ?? payload;
+  const lastUsage = codexTokenUsageFromObject(
+    codexObjectField(info, "last_token_usage") ??
+      codexObjectField(payload, "lastTokenUsage") ??
+      codexObjectField(payload, "usage"),
+  );
+  const totalUsage = codexTokenUsageFromObject(
+    codexObjectField(info, "total_token_usage") ??
+      codexObjectField(payload, "totalTokenUsage"),
+  );
+  if (lastUsage) {
+    if (totalUsage) context.previousTotalTokenUsage = totalUsage;
+    return lastUsage;
+  }
+  if (!totalUsage) return undefined;
+  const delta = codexTokenUsageDelta(totalUsage, context.previousTotalTokenUsage);
+  context.previousTotalTokenUsage = totalUsage;
+  return codexTokenUsageHasContent(delta) ? delta : undefined;
+}
+
+function codexOutputTokensFromUsage(usage: CodexAppTokenUsage): number {
+  return usage.output + usage.reasoningOutput;
+}
+
+function finiteNumber(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value)
+    ? Math.max(0, value)
+    : undefined;
 }
 
 function codexUserInputBlocks(input: unknown): CodexAppHistoryBlock[] {
@@ -1519,7 +1667,7 @@ function codexEventToolName(
   if (item?.type === "function_call" || item?.type === "custom_tool_call") {
     return canonicalCodexToolName(stringField(item, "name") ?? item.type);
   }
-  if (method === "item/tool/call") {
+  if (method === "item/tool/call" && params) {
     return stringField(params, "tool") ?? "dynamicToolCall";
   }
   if (
