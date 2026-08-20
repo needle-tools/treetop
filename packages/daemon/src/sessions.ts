@@ -142,6 +142,10 @@ export interface NormalizedMessage {
   role: NormalizedRole;
   blocks: NormalizedBlock[];
   timestamp?: string;
+  /** Assistant output token delta reported by the agent runtime. */
+  tokensUsed?: number;
+  /** Full model token usage delta reported by the agent runtime. */
+  tokenUsage?: NormalizedTokenUsage;
   /** Per-agent event id (uuid for Claude, free-form elsewhere). */
   id?: string;
   /** Optional override for the assistant's display name on this turn.
@@ -152,6 +156,15 @@ export interface NormalizedMessage {
    *  turn correctly. Other agents leave this unset and fall back to
    *  the agent-name label. */
   author?: string;
+}
+
+export interface NormalizedTokenUsage {
+  input: number;
+  cachedInput: number;
+  cacheWriteInput: number;
+  output: number;
+  reasoningOutput: number;
+  total: number;
 }
 
 export interface NormalizedSession {
@@ -169,6 +182,7 @@ export interface NormalizedSession {
 
 interface CodexParseContext {
   sourcePath?: string;
+  previousTotalTokenUsage?: NormalizedTokenUsage;
 }
 
 function emptySession(agent: AgentKind): NormalizedSession {
@@ -778,11 +792,17 @@ function pushSessionMessage(
   role: NormalizedRole,
   blocks: NormalizedBlock[],
   timestamp?: string,
+  options: { tokensUsed?: number; tokenUsage?: NormalizedTokenUsage } = {},
 ): void {
-  if (blocks.length === 0) return;
+  if (
+    blocks.length === 0 &&
+    options.tokensUsed === undefined &&
+    options.tokenUsage === undefined
+  )
+    return;
   if (timestamp && !out.startedAt) out.startedAt = timestamp;
   if (timestamp) out.endedAt = timestamp;
-  out.messages.push({ role, blocks, timestamp });
+  out.messages.push({ role, blocks, timestamp, ...options });
 }
 
 function codexToolInput(input: unknown): unknown {
@@ -800,6 +820,116 @@ function canonicalCodexToolName(name: string): string {
     return "image_generation_call";
   }
   return name;
+}
+
+function finiteCodexNumber(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value)
+    ? Math.max(0, value)
+    : undefined;
+}
+
+function objectField(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === "object"
+    ? (value as Record<string, unknown>)
+    : undefined;
+}
+
+function codexTokenUsageFromObject(
+  usage: Record<string, unknown> | undefined,
+): NormalizedTokenUsage | undefined {
+  if (!usage) return undefined;
+  const input =
+    finiteCodexNumber(usage.input_tokens ?? usage.inputTokens) ?? 0;
+  const cachedInput =
+    finiteCodexNumber(usage.cached_input_tokens ?? usage.cachedInputTokens) ?? 0;
+  const cacheWriteInput =
+    finiteCodexNumber(
+      usage.cache_write_input_tokens ??
+        usage.cacheWriteInputTokens ??
+        usage.cache_creation_input_tokens ??
+        usage.cacheCreationInputTokens,
+    ) ?? 0;
+  const output =
+    finiteCodexNumber(usage.output_tokens ?? usage.outputTokens) ?? 0;
+  const reasoning =
+    finiteCodexNumber(
+      usage.reasoning_output_tokens ?? usage.reasoningOutputTokens,
+    ) ?? 0;
+  const total =
+    finiteCodexNumber(usage.total_tokens ?? usage.totalTokens) ??
+    input + output;
+  if (total <= 0 && output + reasoning <= 0) return undefined;
+  return {
+    input,
+    cachedInput,
+    cacheWriteInput,
+    output,
+    reasoningOutput: reasoning,
+    total,
+  };
+}
+
+function codexTokenUsageHasContent(
+  usage: NormalizedTokenUsage | undefined,
+): usage is NormalizedTokenUsage {
+  return (
+    usage !== undefined &&
+    (usage.total > 0 ||
+      usage.input > 0 ||
+      usage.output > 0 ||
+      usage.reasoningOutput > 0)
+  );
+}
+
+function codexTokenUsageDelta(
+  current: NormalizedTokenUsage,
+  previous: NormalizedTokenUsage | undefined,
+): NormalizedTokenUsage {
+  if (!previous || current.total < previous.total) return current;
+  return {
+    input: Math.max(0, current.input - previous.input),
+    cachedInput: Math.max(0, current.cachedInput - previous.cachedInput),
+    cacheWriteInput: Math.max(
+      0,
+      current.cacheWriteInput - previous.cacheWriteInput,
+    ),
+    output: Math.max(0, current.output - previous.output),
+    reasoningOutput: Math.max(
+      0,
+      current.reasoningOutput - previous.reasoningOutput,
+    ),
+    total: Math.max(0, current.total - previous.total),
+  };
+}
+
+function codexOutputTokenUsageFromPayload(
+  payload: Record<string, unknown>,
+  context?: CodexParseContext,
+): NormalizedTokenUsage | undefined {
+  const info = objectField(payload.info) ?? payload;
+  const lastUsage = codexTokenUsageFromObject(
+    objectField(info.last_token_usage) ??
+      objectField(payload.lastTokenUsage) ??
+      objectField(payload.usage),
+  );
+  const totalUsage = codexTokenUsageFromObject(
+    objectField(info.total_token_usage) ?? objectField(payload.totalTokenUsage),
+  );
+  if (lastUsage) {
+    if (totalUsage && context) {
+      context.previousTotalTokenUsage = totalUsage;
+    }
+    return lastUsage;
+  }
+  if (!totalUsage) return undefined;
+  const delta = codexTokenUsageDelta(
+    totalUsage,
+    context?.previousTotalTokenUsage,
+  );
+  if (context) {
+    context.previousTotalTokenUsage = totalUsage;
+  }
+  return codexTokenUsageHasContent(delta) ? delta : undefined;
 }
 
 interface CodexToolInvocation {
@@ -1565,12 +1695,37 @@ function parseCodexJsonlLine(
   ) {
     const p = obj.payload as Record<string, unknown>;
     const ts = codexTimestamp(obj);
+    const tokenUsage = codexOutputTokenUsageFromPayload(p, context);
+    if (tokenUsage !== undefined) {
+      pushSessionMessage(out, "assistant", [], ts, {
+        tokensUsed: tokenUsage.output + tokenUsage.reasoningOutput,
+        tokenUsage,
+      });
+      return;
+    }
     const marker = codexEventMarker(p);
     if (marker) {
       pushSessionMessage(out, "system", [{ type: "marker", text: marker }], ts);
       return;
     }
     if (p.type === "patch_apply_end") {
+      const toolUseId =
+        typeof p.call_id === "string" ? p.call_id : undefined;
+      if (p.changes && typeof p.changes === "object") {
+        pushSessionMessage(
+          out,
+          "assistant",
+          [
+            {
+              type: "tool_use",
+              toolName: "file change",
+              toolInput: { changes: p.changes },
+              toolUseId,
+            },
+          ],
+          ts,
+        );
+      }
       pushSessionMessage(
         out,
         "tool",
@@ -1579,7 +1734,7 @@ function parseCodexJsonlLine(
             type: "tool_result",
             text: clipText(codexPatchApplyText(p)),
             toolName: codexToolNameForResult(out, p.call_id) ?? "apply_patch",
-            toolUseId: typeof p.call_id === "string" ? p.call_id : undefined,
+            toolUseId,
           },
         ],
         ts,

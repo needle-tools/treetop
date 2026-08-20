@@ -1011,6 +1011,194 @@ describe("codex event stream hub", () => {
     );
   });
 
+  test("normalizes app-server token_count rows as assistant token usage", () => {
+    const live = codexLiveMessagesFromEvent({
+      kind: "notification",
+      method: "token_count",
+      params: {
+        type: "token_count",
+        turnId: "turn-usage",
+        info: {
+          last_token_usage: {
+            input_tokens: 1234,
+            cached_input_tokens: 1000,
+            output_tokens: 286,
+            reasoning_output_tokens: 29,
+            total_tokens: 1520,
+          },
+        },
+      },
+      turnId: "turn-usage",
+      receivedAt: "2026-06-22T10:00:00.000Z",
+    });
+
+    expect(live).toEqual([
+      {
+        id: "codex-usage-turn-usage-2026-06-22T10:00:00.000Z",
+        role: "assistant",
+        timestamp: "2026-06-22T10:00:00.000Z",
+        tokensUsed: 315,
+        tokenUsage: {
+          input: 1234,
+          cachedInput: 1000,
+          cacheWriteInput: 0,
+          output: 286,
+          reasoningOutput: 29,
+          total: 1520,
+        },
+        blocks: [],
+      },
+    ]);
+
+    const history = codexAppHistoryMessagesFromThread({
+      turns: [
+        {
+          id: "turn-usage",
+          startedAt: 1782122400,
+          items: [
+            {
+              id: "usage-item",
+              type: "token_count",
+              info: {
+                last_token_usage: {
+                  input_tokens: 1234,
+                  cached_input_tokens: 1000,
+                  output_tokens: 286,
+                  reasoning_output_tokens: 29,
+                  total_tokens: 1520,
+                },
+              },
+            },
+          ],
+        },
+      ],
+    });
+
+    expect(history).toEqual([
+      {
+        id: "codex-usage-usage-item",
+        role: "assistant",
+        timestamp: "2026-06-22T10:00:00.000Z",
+        tokensUsed: 315,
+        tokenUsage: {
+          input: 1234,
+          cachedInput: 1000,
+          cacheWriteInput: 0,
+          output: 286,
+          reasoningOutput: 29,
+          total: 1520,
+        },
+        blocks: [],
+      },
+    ]);
+  });
+
+  test("normalizes cumulative app-server token_count history as deltas", () => {
+    const history = codexAppHistoryMessagesFromThread({
+      turns: [
+        {
+          id: "turn-usage",
+          startedAt: 1782122400,
+          items: [
+            {
+              id: "usage-1",
+              type: "token_count",
+              info: {
+                total_token_usage: {
+                  input_tokens: 100,
+                  output_tokens: 20,
+                  total_tokens: 120,
+                },
+              },
+            },
+            {
+              id: "usage-2",
+              type: "token_count",
+              info: {
+                total_token_usage: {
+                  input_tokens: 145,
+                  output_tokens: 35,
+                  total_tokens: 180,
+                },
+              },
+            },
+          ],
+        },
+      ],
+    });
+
+    expect(history.map((message) => message.tokenUsage?.total)).toEqual([
+      120,
+      60,
+    ]);
+    expect(history.map((message) => message.tokenUsage?.input)).toEqual([
+      100,
+      45,
+    ]);
+    expect(history.map((message) => message.tokenUsage?.output)).toEqual([
+      20,
+      15,
+    ]);
+  });
+
+  test("prefers app-server last_token_usage over cumulative totals", () => {
+    const context = {};
+    const first = codexLiveMessagesFromEvent(
+      {
+        kind: "notification",
+        method: "token_count",
+        params: {
+          type: "token_count",
+          turnId: "turn-usage",
+          info: {
+            total_token_usage: {
+              input_tokens: 1000,
+              output_tokens: 200,
+              total_tokens: 1200,
+            },
+            last_token_usage: {
+              input_tokens: 120,
+              output_tokens: 30,
+              total_tokens: 150,
+            },
+          },
+        },
+        turnId: "turn-usage",
+        receivedAt: "2026-06-22T10:00:00.000Z",
+      },
+      context,
+    );
+    const second = codexLiveMessagesFromEvent(
+      {
+        kind: "notification",
+        method: "token_count",
+        params: {
+          type: "token_count",
+          turnId: "turn-usage",
+          info: {
+            total_token_usage: {
+              input_tokens: 1300,
+              output_tokens: 250,
+              total_tokens: 1550,
+            },
+          },
+        },
+        turnId: "turn-usage",
+        receivedAt: "2026-06-22T10:00:01.000Z",
+      },
+      context,
+    );
+
+    expect([
+      first[0]?.tokenUsage?.total,
+      second[0]?.tokenUsage?.total,
+    ]).toEqual([150, 350]);
+    expect([
+      first[0]?.tokenUsage?.input,
+      second[0]?.tokenUsage?.input,
+    ]).toEqual([120, 300]);
+  });
+
   test("normalizes app-server history and live view_image snapshots to the same visual contract", () => {
     const viewImageItem = {
       id: "view-1",

@@ -2377,6 +2377,7 @@
     [];
   let codexLiveNormalizeContext: CodexLiveNormalizeContext = {
     toolNames: new Map(),
+    toolInputs: new Map(),
   };
   let codexDeltaFlushFrame: number | null = null;
   let codexDeltaFlushTimer: ReturnType<typeof setTimeout> | null = null;
@@ -2913,7 +2914,7 @@
   function openCodexEventStream(threadId: string): void {
     if (unsubscribeCodexEvents && codexEventsThreadId === threadId) return;
     closeCodexEventStream();
-    codexLiveNormalizeContext = { toolNames: new Map() };
+    codexLiveNormalizeContext = { toolNames: new Map(), toolInputs: new Map() };
     codexEventsThreadId = threadId;
     codexEventStreamState = "connecting";
     unsubscribeCodexEvents = subscribeCodexEvents(daemonId, threadId, {
@@ -2934,7 +2935,7 @@
     unsubscribeCodexEvents = null;
     codexEventsThreadId = null;
     codexEventStreamState = "closed";
-    codexLiveNormalizeContext = { toolNames: new Map() };
+    codexLiveNormalizeContext = { toolNames: new Map(), toolInputs: new Map() };
   }
 
   function scheduleCodexDeltaFlush(): void {
