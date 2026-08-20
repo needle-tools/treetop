@@ -1,4 +1,8 @@
-import type { MessageBlock, VisualMediaBlock } from "../last-user-message";
+import type {
+  MessageBlock,
+  TokenUsage,
+  VisualMediaBlock,
+} from "../last-user-message";
 import {
   cleanVisualToolResultText,
   visualFileEditSummaryForBlock,
@@ -13,6 +17,8 @@ interface VisualWorkEntryLike {
   message: {
     role: string;
     timestamp?: string;
+    tokensUsed?: number;
+    tokenUsage?: TokenUsage;
   };
   blocks: MessageBlock[];
   messageIndex: number;
@@ -41,11 +47,60 @@ export interface VisualWorkTimeOverview {
 }
 
 export interface VisualWorkArtifact {
+  id: string;
   kind: "file" | "image" | "remote" | "container" | "other";
   action: "used" | "changed" | "produced";
   label: string;
   path?: string;
   title?: string;
+  additions?: number;
+  deletions?: number;
+  diff?: string;
+  diffKind?: "workdir" | "staged" | "untracked";
+  changes?: VisualWorkArtifactChange[];
+}
+
+export interface VisualWorkArtifactChange {
+  action: VisualWorkArtifact["action"];
+  label: string;
+  path?: string;
+  title?: string;
+  additions?: number;
+  deletions?: number;
+  diff?: string;
+  diffKind?: "workdir" | "staged" | "untracked";
+}
+
+export interface VisualWorkCategoryCount {
+  category: string;
+  label: string;
+  iconName: string;
+  count: number;
+}
+
+export interface VisualWorkChangedFile {
+  path: string;
+  label: string;
+  additions?: number;
+  deletions?: number;
+  diff?: string;
+}
+
+export interface VisualWorkTokenOverview {
+  agent: number;
+  tool: number;
+  input: number;
+  cachedInput: number;
+  cacheWriteInput: number;
+  freshInput: number;
+  output: number;
+  reasoningOutput: number;
+  generatedOutput: number;
+  reportedTotal: number;
+  total: number;
+  perSecond: number;
+  agentPerSecond: number;
+  toolPerSecond: number;
 }
 
 export interface VisualWorkOverview {
@@ -53,11 +108,28 @@ export interface VisualWorkOverview {
   artifacts: VisualWorkArtifact[];
   time: VisualWorkTimeOverview;
   tokenCount: number;
+  tokens: VisualWorkTokenOverview;
+  actionCount: number;
+  responseCount: number;
+  categories: VisualWorkCategoryCount[];
+  changedFiles: VisualWorkChangedFile[];
+  remoteHosts: string[];
 }
 
 export interface VisualWorkDetailOptions {
   full: boolean;
   recentLimit?: number;
+}
+
+export interface VisualWorkOverviewOptions {
+  now?: string | number | Date;
+  timeScope?: "item" | "entries";
+}
+
+export interface VisualWorkDetailGroup<T extends VisualWorkDisplayEntryLike> {
+  id: string;
+  kind: "actions" | "response";
+  entries: T[];
 }
 
 interface ToolTimingInterval {
@@ -76,6 +148,10 @@ function isoMs(value: string | undefined): number | undefined {
   if (!value) return undefined;
   const parsed = Date.parse(value);
   return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+function isoString(value: number): string {
+  return new Date(value).toISOString();
 }
 
 function basename(path: string): string {
@@ -217,10 +293,179 @@ function categoryLabel(category: string): string {
   }
 }
 
-function resultTokenCount(entry: VisualWorkDisplayEntryLike): number {
-  const result = toolResultBlock(entry);
-  if (!result || result.type !== "tool_result") return 0;
-  return cleanVisualToolResultText(result.text).originalTokenCount ?? 0;
+function categoryIconName(category: string): string {
+  switch (category) {
+    case "edit":
+      return "apply_patch";
+    case "read":
+      return "view_image";
+    case "search":
+      return "search";
+    case "git":
+      return "git";
+    case "test":
+      return "test";
+    case "browser":
+      return "list_pages";
+    case "docker":
+      return "docker";
+    case "database":
+      return "database";
+    case "file":
+      return "filesystem_create";
+    case "image":
+      return "image_generation_call";
+    default:
+      return "exec_command";
+  }
+}
+
+function actionCategoryCounts(
+  entries: readonly VisualWorkDisplayEntryLike[],
+): VisualWorkCategoryCount[] {
+  const counts = new Map<string, number>();
+  for (const entry of toolDisplayEntries(entries)) {
+    const toolBlock = toolUseBlock(entry);
+    const category = inferToolCategory(toolBlock);
+    counts.set(category, (counts.get(category) ?? 0) + 1);
+  }
+  return [...counts.entries()]
+    .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+    .map(([category, count]) => ({
+      category,
+      count,
+      label: categoryLabel(category),
+      iconName: categoryIconName(category),
+    }));
+}
+
+function numericField(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value)
+    ? Math.max(0, value)
+    : undefined;
+}
+
+function tokenRate(tokens: number, elapsed: number): number {
+  if (tokens <= 0 || elapsed <= 0) return 0;
+  return Math.round((tokens / (elapsed / 1000)) * 10) / 10;
+}
+
+function tokenUsageFromEntry(
+  entry: VisualWorkDisplayEntryLike,
+): TokenUsage | undefined {
+  const usage = entry.entry.message.tokenUsage;
+  if (
+    usage &&
+    Number.isFinite(usage.total) &&
+    usage.total > 0
+  ) {
+    return usage;
+  }
+  const output = numericField(entry.entry.message.tokensUsed);
+  if (output !== undefined && output > 0) {
+    return {
+      input: 0,
+      cachedInput: 0,
+      cacheWriteInput: 0,
+      output,
+      reasoningOutput: 0,
+      total: output,
+    };
+  }
+  if (!isAgentResponseEntry(entry)) return undefined;
+  const blockOutput = entry.entry.blocks.reduce(
+    (sum, block) =>
+      sum +
+      (numericField((block as { tokensUsed?: unknown }).tokensUsed) ?? 0),
+    0,
+  );
+  if (blockOutput <= 0) return undefined;
+  return {
+    input: 0,
+    cachedInput: 0,
+    cacheWriteInput: 0,
+    output: blockOutput,
+    reasoningOutput: 0,
+    total: blockOutput,
+  };
+}
+
+function tokenOverview(
+  entries: readonly VisualWorkDisplayEntryLike[],
+  time: VisualWorkTimeOverview,
+): VisualWorkTokenOverview {
+  // Command-output "Original token count" describes tool payload size, not
+  // model usage. Keep token accounting on reported model usage only. Codex
+  // reports cached input as part of input, so the headline uses fresh input
+  // plus generated output; raw reported totals stay available for tooltips.
+  const tool = 0;
+  const totals = entries.reduce(
+    (acc, entry) => {
+      const usage = tokenUsageFromEntry(entry);
+      if (!usage) return acc;
+      acc.input += usage.input;
+      acc.cachedInput += usage.cachedInput;
+      acc.cacheWriteInput += usage.cacheWriteInput;
+      acc.output += usage.output;
+      acc.reasoningOutput += usage.reasoningOutput;
+      acc.total += usage.total;
+      return acc;
+    },
+    {
+      input: 0,
+      cachedInput: 0,
+      cacheWriteInput: 0,
+      output: 0,
+      reasoningOutput: 0,
+      total: 0,
+    },
+  );
+  const freshInput = Math.max(0, totals.input - totals.cachedInput);
+  const generatedOutput = totals.output + totals.reasoningOutput;
+  const total = freshInput + generatedOutput;
+  const agent = total;
+  return {
+    agent,
+    tool,
+    input: totals.input,
+    cachedInput: totals.cachedInput,
+    cacheWriteInput: totals.cacheWriteInput,
+    freshInput,
+    output: totals.output,
+    reasoningOutput: totals.reasoningOutput,
+    generatedOutput,
+    reportedTotal: totals.total,
+    total,
+    perSecond: tokenRate(totals.output, time.elapsedMs),
+    agentPerSecond: tokenRate(agent, time.elapsedMs),
+    toolPerSecond: tokenRate(tool, time.elapsedMs),
+  };
+}
+
+export function visualWorkDisplayEntryIsAgentResponse(
+  entry: VisualWorkDisplayEntryLike,
+): boolean {
+  return isAgentResponseEntry(entry);
+}
+
+function isAgentResponseEntry(entry: VisualWorkDisplayEntryLike): boolean {
+  if (entry.kind !== "entry") return false;
+  if (
+    firstBlockOfType(entry.entry, "tool_use") ||
+    firstBlockOfType(entry.entry, "tool_result") ||
+    firstBlockOfType(entry.entry, "marker") ||
+    firstBlockOfType(entry.entry, "thinking") ||
+    firstBlockOfType(entry.entry, "plan") ||
+    firstBlockOfType(entry.entry, "subagent")
+  ) {
+    return false;
+  }
+  return (
+    entry.entry.message.role === "assistant" &&
+    entry.entry.blocks.some(
+      (block) => block.type === "text" && !!block.text?.trim(),
+    )
+  );
 }
 
 function toolTimingInterval(
@@ -315,6 +560,36 @@ function elapsedMs(
   return Math.max(0, end - start);
 }
 
+function entryTimeBounds(
+  entries: readonly VisualWorkDisplayEntryLike[],
+): { start: number; end: number } | undefined {
+  const times = entries
+    .flatMap((entry) => [
+      isoMs(entry.entry.message.timestamp),
+      isoMs(entry.pairedToolUse?.message.timestamp),
+      isoMs(entry.pairedResult?.message.timestamp),
+    ])
+    .filter((value): value is number => value !== undefined);
+  if (times.length === 0) return undefined;
+  return { start: Math.min(...times), end: Math.max(...times) };
+}
+
+function itemScopedToEntries(
+  item: VisualWorkItemLike,
+  entries: readonly VisualWorkDisplayEntryLike[],
+): VisualWorkItemLike {
+  const bounds = entryTimeBounds(entries);
+  if (!bounds) return item;
+  const hasUnresolvedTool =
+    item.open === true &&
+    entries.some((entry) => !!toolUseEntry(entry) && !toolResultEntry(entry));
+  return {
+    startedAt: isoString(bounds.start),
+    endedAt: hasUnresolvedTool ? undefined : isoString(bounds.end),
+    open: hasUnresolvedTool,
+  };
+}
+
 function workTimeOverview(
   item: VisualWorkItemLike,
   entries: readonly VisualWorkDisplayEntryLike[],
@@ -335,9 +610,115 @@ function workTimeOverview(
 
 function addArtifact(
   artifacts: VisualWorkArtifact[],
-  artifact: VisualWorkArtifact,
+  artifact: Omit<VisualWorkArtifact, "id">,
 ): void {
-  artifacts.push(artifact);
+  const stablePath = artifact.path
+    ? artifact.path.replace(/\\/g, "/").replace(/\/+$/, "")
+    : "";
+  const id = [
+    artifact.kind,
+    stablePath || artifact.title || artifact.label,
+  ].join("\u0000");
+  const change: VisualWorkArtifactChange = {
+    action: artifact.action,
+    label: artifact.label,
+    path: artifact.path,
+    title: artifact.title,
+    additions: artifact.additions,
+    deletions: artifact.deletions,
+    diff: artifact.diff?.trim() || artifact.diff,
+    diffKind: artifact.diffKind,
+  };
+  artifacts.push({ ...artifact, id, changes: [change] });
+}
+
+function preferredArtifactAction(
+  a: VisualWorkArtifact["action"],
+  b: VisualWorkArtifact["action"],
+): VisualWorkArtifact["action"] {
+  const rank: Record<VisualWorkArtifact["action"], number> = {
+    used: 0,
+    changed: 1,
+    produced: 2,
+  };
+  return rank[b] > rank[a] ? b : a;
+}
+
+function mergeArtifactDiff(
+  a: string | undefined,
+  b: string | undefined,
+): string | undefined {
+  const left = a?.trim();
+  const right = b?.trim();
+  if (!left) return right || undefined;
+  if (!right || left === right) return left;
+  return `${left}\n${right}`;
+}
+
+function mergeArtifact(
+  current: VisualWorkArtifact,
+  next: VisualWorkArtifact,
+): VisualWorkArtifact {
+  const currentDiff = current.diff?.trim();
+  const nextDiff = next.diff?.trim();
+  const newDiff = !!nextDiff && nextDiff !== currentDiff;
+  return {
+    ...current,
+    action: preferredArtifactAction(current.action, next.action),
+    label: next.label || current.label,
+    path: next.path ?? current.path,
+    title: next.title ?? current.title,
+    additions:
+      current.additions === undefined
+        ? next.additions
+        : next.additions === undefined
+          ? current.additions
+          : newDiff
+            ? current.additions + next.additions
+            : Math.max(current.additions, next.additions),
+    deletions:
+      current.deletions === undefined
+        ? next.deletions
+        : next.deletions === undefined
+          ? current.deletions
+          : newDiff
+            ? current.deletions + next.deletions
+            : Math.max(current.deletions, next.deletions),
+    diff: mergeArtifactDiff(current.diff, next.diff),
+    diffKind: next.diffKind ?? current.diffKind,
+    changes: [...(current.changes ?? []), ...(next.changes ?? [])],
+  };
+}
+
+function isShellSyntaxFragment(value: string): boolean {
+  const trimmed = value.trim();
+  if (!trimmed) return true;
+  if (/^[|&;(){}[\]<>]+$/.test(trimmed)) return true;
+  return [
+    "|",
+    "||",
+    "&&",
+    ";",
+    "head",
+    "tail",
+    "sed",
+    "rg",
+    "grep",
+    "awk",
+    "jq",
+    "sort",
+    "xargs",
+  ].includes(trimmed);
+}
+
+function looksLikeArtifactPath(path: string, label: string): boolean {
+  const clean = path.trim();
+  if (isShellSyntaxFragment(clean)) return false;
+  if (clean.startsWith("/") || clean.startsWith("./") || clean.startsWith("../"))
+    return true;
+  if (clean.includes("\\") || clean.includes("/")) return true;
+  if (/:\d+(?:-\d+)?$/.test(label)) return true;
+  return /\.[A-Za-z0-9][A-Za-z0-9_-]{0,12}(?::\d+(?:-\d+)?)?$/.test(clean);
 }
 
 function artifactsForEntry(
@@ -354,7 +735,9 @@ function artifactsForEntry(
         action: "changed",
         label: basename(file.path),
         path: file.path,
-        title: file.path,
+        additions: file.additions,
+        deletions: file.deletions,
+        diff: file.raw,
       });
     }
   }
@@ -364,12 +747,12 @@ function artifactsForEntry(
   if (!editSummary) {
     for (const part of visualToolPreviewParts(toolBlock)) {
       if (part.kind !== "path") continue;
+      if (!looksLikeArtifactPath(part.path, part.text)) continue;
       addArtifact(artifacts, {
         kind: "file",
         action: "used",
         label: part.text,
         path: part.path,
-        title: part.path,
       });
     }
   }
@@ -379,7 +762,7 @@ function artifactsForEntry(
 function mediaArtifact(
   media: VisualMediaBlock,
   toolBlock: MessageBlock | undefined,
-): VisualWorkArtifact {
+): Omit<VisualWorkArtifact, "id"> {
   const toolName = (toolBlock?.toolName ?? "").toLowerCase();
   return {
     kind: "image",
@@ -401,26 +784,20 @@ function mediaArtifact(
 function commandSummaryLine(
   entries: readonly VisualWorkDisplayEntryLike[],
 ): string | undefined {
-  const counts = new Map<string, number>();
-  for (const entry of toolDisplayEntries(entries)) {
-    const toolBlock = toolUseBlock(entry);
-    const category = inferToolCategory(toolBlock);
-    counts.set(category, (counts.get(category) ?? 0) + 1);
-  }
-  const total = [...counts.values()].reduce((sum, count) => sum + count, 0);
+  const categories = actionCategoryCounts(entries);
+  const total = categories.reduce((sum, category) => sum + category.count, 0);
   if (total === 0) return undefined;
-  const parts = [...counts.entries()]
-    .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+  const parts = categories
     .map(
-      ([category, count]) =>
-        `${count} ${plural(count, categoryLabel(category))}`,
+      (category) =>
+        `${category.count} ${plural(category.count, category.label)}`,
     );
   return `Ran ${total} ${plural(total, "tool")}: ${parts.join(", ")}`;
 }
 
-function editSummaryLine(
+function changedFileSummary(
   entries: readonly VisualWorkDisplayEntryLike[],
-): string | undefined {
+): VisualWorkChangedFile[] {
   const files = new Map<
     string,
     {
@@ -429,6 +806,7 @@ function editSummaryLine(
       deletions: number;
       sawAdd: boolean;
       sawDel: boolean;
+      diffs: string[];
     }
   >();
   for (const entry of entries) {
@@ -442,6 +820,7 @@ function editSummaryLine(
         deletions: 0,
         sawAdd: false,
         sawDel: false,
+        diffs: [],
       };
       if (file.additions !== undefined) {
         existing.additions += file.additions;
@@ -451,6 +830,7 @@ function editSummaryLine(
         existing.deletions += file.deletions;
         existing.sawDel = true;
       }
+      if (file.raw?.trim()) existing.diffs.push(file.raw.trim());
       files.set(file.path, existing);
     }
     if (summary.files.length === 0 && totals.additions === undefined) {
@@ -458,24 +838,53 @@ function editSummaryLine(
     }
   }
   const changed = [...files.values()];
+  return changed
+    .sort((a, b) => basename(a.path).localeCompare(basename(b.path)))
+    .map((file) => ({
+      path: file.path,
+      label: basename(file.path),
+      additions: file.sawAdd ? file.additions : undefined,
+      deletions: file.sawDel ? file.deletions : undefined,
+      diff: file.diffs.length > 0 ? file.diffs.join("\n") : undefined,
+    }));
+}
+
+function editSummaryLine(
+  entries: readonly VisualWorkDisplayEntryLike[],
+): string | undefined {
+  const changed = changedFileSummary(entries);
   if (changed.length === 0) return undefined;
-  const additions = changed.reduce((sum, file) => sum + file.additions, 0);
-  const deletions = changed.reduce((sum, file) => sum + file.deletions, 0);
-  const labels = uniqueSorted(changed.map((file) => basename(file.path)));
-  const counts = changed.some((file) => file.sawAdd || file.sawDel)
+  const additions = changed.reduce(
+    (sum, file) => sum + (file.additions ?? 0),
+    0,
+  );
+  const deletions = changed.reduce(
+    (sum, file) => sum + (file.deletions ?? 0),
+    0,
+  );
+  const labels = uniqueSorted(changed.map((file) => file.label));
+  const counts = changed.some(
+    (file) => file.additions !== undefined || file.deletions !== undefined,
+  )
     ? ` (+${additions} −${deletions})`
     : "";
   return `Changed ${changed.length} ${plural(changed.length, "file")}${counts}: ${joinPreview(labels)}`;
 }
 
-function remoteSummaryLine(
+function remoteHosts(
   entries: readonly VisualWorkDisplayEntryLike[],
-): string | undefined {
-  const hosts = uniqueSorted(
+): string[] {
+  return uniqueSorted(
     entries
       .map((entry) => visualToolRemoteHostLabel(toolUseBlock(entry)))
       .filter((host): host is string => !!host),
   );
+}
+
+function remoteSummaryLine(
+  entries: readonly VisualWorkDisplayEntryLike[],
+): string | undefined {
+  const hosts = remoteHosts(entries);
   if (hosts.length === 0) return undefined;
   return `Accessed SSH: ${joinPreview(hosts)}`;
 }
@@ -483,13 +892,31 @@ function remoteSummaryLine(
 function artifactSummary(
   entries: readonly VisualWorkDisplayEntryLike[],
 ): VisualWorkArtifact[] {
-  return entries.flatMap(artifactsForEntry);
+  const artifacts = entries.flatMap(artifactsForEntry);
+  const deduped = new Map<string, VisualWorkArtifact>();
+  for (const artifact of artifacts) {
+    const existing = deduped.get(artifact.id);
+    deduped.set(
+      artifact.id,
+      existing ? mergeArtifact(existing, artifact) : artifact,
+    );
+  }
+  return [...deduped.values()];
+}
+
+function responseSummaryLine(
+  entries: readonly VisualWorkDisplayEntryLike[],
+): string | undefined {
+  const count = entries.filter(isAgentResponseEntry).length;
+  return count > 0
+    ? `Captured ${count} agent ${plural(count, "response")}`
+    : undefined;
 }
 
 export function visualWorkOverview(
   item: VisualWorkItemLike,
   entries: readonly VisualWorkDisplayEntryLike[],
-  options: { now?: string | number | Date } = {},
+  options: VisualWorkOverviewOptions = {},
 ): VisualWorkOverview {
   const nowMs =
     options.now instanceof Date
@@ -500,19 +927,30 @@ export function visualWorkOverview(
           ? Date.parse(options.now)
           : Date.now();
   const safeNowMs = Number.isFinite(nowMs) ? nowMs : Date.now();
+  const scopedItem =
+    options.timeScope === "entries" ? itemScopedToEntries(item, entries) : item;
+  const time = workTimeOverview(scopedItem, entries, safeNowMs);
+  const tokens = tokenOverview(entries, time);
+  const categories = actionCategoryCounts(entries);
+  const changedFiles = changedFileSummary(entries);
+  const hosts = remoteHosts(entries);
   const lines = [
     editSummaryLine(entries),
     commandSummaryLine(entries),
+    responseSummaryLine(entries),
     remoteSummaryLine(entries),
   ].filter((line): line is string => !!line);
   return {
     lines,
     artifacts: artifactSummary(entries),
-    time: workTimeOverview(item, entries, safeNowMs),
-    tokenCount: entries.reduce(
-      (sum, entry) => sum + resultTokenCount(entry),
-      0,
-    ),
+    time,
+    tokenCount: tokens.total,
+    tokens,
+    actionCount: categories.reduce((sum, category) => sum + category.count, 0),
+    responseCount: entries.filter(isAgentResponseEntry).length,
+    categories,
+    changedFiles,
+    remoteHosts: hosts,
   };
 }
 
@@ -526,4 +964,44 @@ export function visualWorkDetailEntries<T extends VisualWorkDisplayEntryLike>(
   const limit = Math.max(0, options.recentLimit ?? 5);
   if (limit === 0) return [];
   return entries.slice(-limit);
+}
+
+function visualWorkDisplayEntryGroupKey(
+  entry: VisualWorkDisplayEntryLike,
+): string {
+  return String(entry.entry.messageIndex);
+}
+
+export function visualWorkDetailGroups<T extends VisualWorkDisplayEntryLike>(
+  entries: readonly T[],
+): VisualWorkDetailGroup<T>[] {
+  const groups: VisualWorkDetailGroup<T>[] = [];
+  let pendingActions: T[] = [];
+
+  function flushActions(): void {
+    if (pendingActions.length === 0) return;
+    const first = pendingActions[0]!;
+    const last = pendingActions[pendingActions.length - 1]!;
+    groups.push({
+      id: `actions:${visualWorkDisplayEntryGroupKey(first)}:${visualWorkDisplayEntryGroupKey(last)}`,
+      kind: "actions",
+      entries: pendingActions,
+    });
+    pendingActions = [];
+  }
+
+  for (const entry of entries) {
+    if (!isAgentResponseEntry(entry)) {
+      pendingActions.push(entry);
+      continue;
+    }
+    flushActions();
+    groups.push({
+      id: `response:${visualWorkDisplayEntryGroupKey(entry)}`,
+      kind: "response",
+      entries: [entry],
+    });
+  }
+  flushActions();
+  return groups;
 }
