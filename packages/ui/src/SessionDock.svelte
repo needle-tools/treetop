@@ -1,42 +1,4 @@
-<script lang="ts">
-  /**
-   * Persistent bottom strip of dots, one per currently-open session.
-   * Acts as a "where did I leave off?" launcher across the dashboard.
-   *
-   *  - Fill = repo accent color (falls back to a neutral surface).
-   *  - Outline = agent brand color (orange Claude / cyan Codex / grey
-   *    Copilot / dim Shell), so two attributes are encoded in one chip.
-   *  - Activity state shows on top of the dot:
-   *      working    -> slow rotating gradient ring (subtle, ambient).
-   *      awaiting   -> stronger blinking outline + scaled dot.
-   *      idle/open  -> static.
-   *  - Click  -> reveal the session column (unfold the row if needed,
-   *              scroll the strip, flash the column briefly).
-   *  - Hover  -> tooltip with repo/branch + title + last user prompt.
-   */
-  import { createEventDispatcher, onDestroy, onMount, tick } from "svelte";
-  import ChatPreview from "./ChatPreview.svelte";
-  import DirtyGlyph from "./DirtyGlyph.svelte";
-  import SearchIconButton from "./SearchIconButton.svelte";
-  import RepoStatusPreview, {
-    type DockWorktreeStatus,
-  } from "./RepoStatusPreview.svelte";
-  import StatusBadge from "./StatusBadge.svelte";
-  import {
-    dockToggleOffset,
-    reposWithLiveSessions,
-    shouldMeasureDockBackdrop,
-    splitDockEntries,
-  } from "./dock-split";
-  import { GIT_AHEAD, GIT_BEHIND } from "./icons";
-  import {
-    fetchPreviewItems,
-    type PreviewAction,
-    type PreviewGap,
-    type PreviewMsg,
-    type PreviewSummary,
-  } from "./preview-action";
-
+<script module lang="ts">
   /** Minimal shape this component needs per session. The host computes
    *  these from its open-sessions / agents / repos state and hands them
    *  over already merged. Keeps the component dumb. */
@@ -93,14 +55,6 @@
     ioDebugLabel?: string;
   }
 
-  export let entries: DockEntry[];
-  /** Source of the session the user most recently focused via this
-   *  dock. The matching row paints a small left-pointing triangle so
-   *  the user can scan the strip and instantly see which dot maps to
-   *  the column they're currently looking at. `null` ⇒ no row is
-   *  marked as focused. */
-  export let focusedSource: string | null = null;
-
   export interface DockRepoStatus {
     repoId: string;
     repoColor?: string;
@@ -118,6 +72,56 @@
      *  doing its own thing doesn't keep the parent's row lit up. */
     submoduleChanges?: number;
   }
+</script>
+
+<script lang="ts">
+  /**
+   * Persistent bottom strip of dots, one per currently-open session.
+   * Acts as a "where did I leave off?" launcher across the dashboard.
+   *
+   *  - Fill = repo accent color (falls back to a neutral surface).
+   *  - Outline = agent brand color (orange Claude / cyan Codex / grey
+   *    Copilot / dim Shell), so two attributes are encoded in one chip.
+   *  - Activity state shows on top of the dot:
+   *      working    -> slow rotating gradient ring (subtle, ambient).
+   *      awaiting   -> stronger blinking outline + scaled dot.
+   *      idle/open  -> static.
+   *  - Click  -> reveal the session column (unfold the row if needed,
+   *              scroll the strip, flash the column briefly).
+   *  - Hover  -> tooltip with repo/branch + title + last user prompt.
+   */
+  import { createEventDispatcher, onDestroy, onMount, tick } from "svelte";
+  import ChatPreview from "./ChatPreview.svelte";
+  import DirtyGlyph from "./DirtyGlyph.svelte";
+  import SearchIconButton from "./SearchIconButton.svelte";
+  import RepoStatusPreview, {
+    type DockWorktreeStatus,
+    type WtSummaryLike,
+  } from "./RepoStatusPreview.svelte";
+  import StatusBadge from "./StatusBadge.svelte";
+  import {
+    dockToggleOffset,
+    reposWithLiveSessions,
+    shouldMeasureDockBackdrop,
+    splitDockEntries,
+  } from "./dock-split";
+  import { GIT_AHEAD, GIT_BEHIND } from "./icons";
+  import {
+    fetchPreviewItems,
+    type PreviewAction,
+    type PreviewGap,
+    type PreviewMsg,
+    type PreviewSummary,
+  } from "./preview-action";
+
+  export let entries: DockEntry[];
+  /** Source of the session the user most recently focused via this
+   *  dock. The matching row paints a small left-pointing triangle so
+   *  the user can scan the strip and instantly see which dot maps to
+   *  the column they're currently looking at. `null` ⇒ no row is
+   *  marked as focused. */
+  export let focusedSource: string | null = null;
+
   /** Per-repo push/pull status. Repos with ahead or behind > 0 get
    *  an animated arrow; all counts show in the hover label. */
   export let dockRepoStatuses: DockRepoStatus[] = [];
@@ -134,7 +138,7 @@
    *  (App.svelte's `wtSummaryByPath`). Threaded through here so the
    *  arrow-row preview can render commit lists + file lists without
    *  re-fetching. */
-  export let wtSummaries: Record<string, unknown> = {};
+  export let wtSummaries: Record<string, WtSummaryLike | "loading"> = {};
   /** Worktrees with an in-place summary refresh in flight → inline spinner. */
   export let wtRefreshing: Record<string, boolean> = {};
   /** Trigger function — called on arrow-row hover for each worktree

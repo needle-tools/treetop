@@ -86,6 +86,7 @@
           {daemonId}
           {sha}
           labels={{ unstaged: "changed" }}
+          layout="tree"
         />
       </span>
     </Tooltip>
