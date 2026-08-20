@@ -10311,6 +10311,7 @@
                           worktreePath={wt.path}
                           daemonId={daemonIdForWorktreePath(repos, wt.path)}
                           refreshing={!!wtSummaryRefreshing[wt.path]}
+                          layout="tree"
                         />
                       </span>
                     </Tooltip>
