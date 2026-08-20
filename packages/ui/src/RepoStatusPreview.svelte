@@ -1,3 +1,40 @@
+<script module lang="ts">
+  export interface DockWorktreeStatus {
+    path: string;
+    branch: string;
+    ahead: number;
+    aheadDanger?: boolean;
+    behind: number;
+    dirty: number;
+    upstream: string | null;
+    daemonId: string | undefined;
+  }
+
+  export interface WtCommit {
+    sha: string;
+    subject: string;
+    author?: string;
+    date?: string;
+  }
+
+  export interface NumstatEntry {
+    added: number;
+    removed: number;
+    binary: boolean;
+  }
+
+  export interface WtSummaryLike {
+    staged: string[];
+    unstaged: string[];
+    untracked: string[];
+    unpushedCommits?: WtCommit[];
+    unfetchedCommits?: WtCommit[];
+    stats?: Record<string, NumstatEntry>;
+    stagedStats?: Record<string, NumstatEntry>;
+    mtimes?: Record<string, number>;
+  }
+</script>
+
 <script lang="ts">
   /** Side-panel hover preview for the dock's per-repo arrow rows
    *  (push / pull / dirty). Mirrors the worktree-row tooltips that
@@ -16,34 +53,6 @@
 
   import ChangedFilesTooltipBody from "./ChangedFilesTooltipBody.svelte";
   import { GIT_AHEAD, GIT_BEHIND, GIT_DIRTY } from "./icons";
-
-  interface WtCommit {
-    sha: string;
-    subject: string;
-    author?: string;
-    date?: string;
-  }
-  interface WtSummaryLike {
-    staged: string[];
-    unstaged: string[];
-    untracked: string[];
-    unpushedCommits?: WtCommit[];
-    unfetchedCommits?: WtCommit[];
-    stats?: Record<string, unknown>;
-    stagedStats?: Record<string, unknown>;
-    mtimes?: Record<string, number>;
-  }
-
-  export interface DockWorktreeStatus {
-    path: string;
-    branch: string;
-    ahead: number;
-    aheadDanger?: boolean;
-    behind: number;
-    dirty: number;
-    upstream: string | null;
-    daemonId: string | undefined;
-  }
 
   export let worktrees: DockWorktreeStatus[] = [];
   export let wtSummaries: Record<string, WtSummaryLike | "loading"> = {};
@@ -155,6 +164,7 @@
             worktreePath={wt.path}
             daemonId={wt.daemonId}
             refreshing={!!refreshingPaths[wt.path]}
+            layout="tree"
           />
         </div>
       {/if}

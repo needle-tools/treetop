@@ -13,17 +13,21 @@
    *  buckets appear in fixed order (staged → unstaged → untracked).
    *
    *  When `worktreePath` is provided, hovering a file row spawns a
-   *  nested popup that fetches and renders that one file's diff via
-   *  /api/file-diff. Anchored to the row, portal'd to <body> so it
-   *  isn't clipped by the parent tooltip's bounds. The popup also
-   *  reaches out to the enclosing Tooltip (via Svelte context) and
-   *  pins it open so moving the cursor onto the diff popup doesn't
-   *  close the parent. */
+   *  nested popup with that one file's diff. For transcript/live
+   *  callers the diff is the session-owned payload; for git callers
+   *  the tree layout can fall back to DiffLoader. Anchored to the row,
+   *  portal'd to <body> so it isn't clipped by the parent tooltip's
+   *  bounds. The popup also reaches out to the enclosing Tooltip (via
+   *  Svelte context) and pins it open so moving the cursor onto the
+   *  diff popup doesn't close the parent. */
 
   import { apiUrl } from "./api";
   import { getContext, onDestroy } from "svelte";
   import { TOOLTIP_HOVER_CTX, type TooltipHoverCtx } from "./Tooltip.svelte";
+  import Diff from "./Diff.svelte";
   import DiffLoader from "./DiffLoader.svelte";
+  import SparseArtifactTree from "./SparseArtifactTree.svelte";
+  import type { VisualWorkArtifact } from "./last-user-message";
 
   interface NumstatEntry {
     added: number;
@@ -36,6 +40,8 @@
     untracked: string[];
     stats?: Record<string, NumstatEntry>;
     stagedStats?: Record<string, NumstatEntry>;
+    /** Optional session/live-owned textual diffs keyed by the rendered row path. */
+    diffs?: Record<string, string>;
     /** Per-path mtime in epoch ms. Missing entries (deleted files,
      *  older daemon builds) sort to the bottom. */
     mtimes?: Record<string, number>;
@@ -72,6 +78,9 @@
   /** Optional bucket labels for alternate callers. Commit summaries use
    *  the same row renderer but label their synthetic bucket "changed". */
   export let labels: Partial<Record<BucketKind, string>> = {};
+  /** Alternate callers with longer related path lists can use the same
+   *  row/diff primitives as a sparse tree instead of three flat buckets. */
+  export let layout: "columns" | "tree" = "columns";
 
   /** Per-section row cap. Past this the rest collapse into the
    *  footer message below the three columns. With horizontal
@@ -155,6 +164,34 @@
     return { columns, hiddenCount: hidden, total };
   }
 
+  function artifactsForTree(columns: readonly Column[]): VisualWorkArtifact[] {
+    const artifacts: VisualWorkArtifact[] = [];
+    for (const column of columns) {
+      for (const row of column.rows) {
+        const diff =
+          shownSummary?.diffs?.[row.path] ??
+          shownSummary?.diffs?.[
+            worktreePath
+              ? `${worktreePath.replace(/\/$/, "")}/${row.path}`
+              : row.path
+          ];
+        artifacts.push({
+          id: `${column.kind}:${row.path}`,
+          kind: "file",
+          action:
+            column.kind === "untracked" || row.stat ? "changed" : "used",
+          label: row.path,
+          path: row.path,
+          additions: row.stat?.binary ? undefined : row.stat?.added,
+          deletions: row.stat?.binary ? undefined : row.stat?.removed,
+          diff,
+          diffKind: DIFF_KIND[column.kind],
+        });
+      }
+    }
+    return artifacts;
+  }
+
   // --- per-row diff hover -------------------------------------------
 
   /** Reach up to the enclosing Tooltip (if any) to keep it pinned
@@ -164,8 +201,12 @@
     TOOLTIP_HOVER_CTX,
   );
 
-  let hovered: { kind: BucketKind; path: string; stat?: NumstatEntry } | null =
-    null;
+  let hovered: {
+    kind: BucketKind;
+    path: string;
+    stat?: NumstatEntry;
+    diff?: string;
+  } | null = null;
   let anchorEl: HTMLElement | null = null;
   let showTimer: ReturnType<typeof setTimeout> | null = null;
   let hideTimer: ReturnType<typeof setTimeout> | null = null;
@@ -195,19 +236,20 @@
     kind: BucketKind,
     path: string,
     stat: NumstatEntry | undefined,
+    diff: string | undefined,
     el: HTMLElement,
   ) {
     if (!worktreePath) return;
     clearHide();
     // Already showing a popup → switch instantly to the new row.
     if (hovered) {
-      hovered = { kind, path, stat };
+      hovered = { kind, path, stat, diff };
       anchorEl = el;
       return;
     }
     clearShow();
     showTimer = setTimeout(() => {
-      hovered = { kind, path, stat };
+      hovered = { kind, path, stat, diff };
       anchorEl = el;
       showTimer = null;
     }, SHOW_DELAY_MS);
@@ -318,7 +360,25 @@
   {/if}
 {:else}
   {@const p = plan(shownSummary)}
-  <div class="wt-tt-cols">
+  {#if layout === "tree"}
+    <div class="wt-tt-tree-shell">
+      {#if showRefreshSpinner}
+        <span
+          class="popover-spinner wt-tt-refresh-spinner wt-tt-refresh-spinner-float"
+          aria-label="Refreshing"
+        ></span>
+      {/if}
+      <SparseArtifactTree
+        artifacts={artifactsForTree(p.columns)}
+        {worktreePath}
+        {daemonId}
+        {sha}
+        diffFallback="git"
+        onOpenPath={(artifact) => artifact.path && openFileDefault(artifact.path)}
+      />
+    </div>
+  {:else}
+    <div class="wt-tt-cols">
     {#if showRefreshSpinner}
       <span
         class="popover-spinner wt-tt-refresh-spinner wt-tt-refresh-spinner-float"
@@ -347,12 +407,13 @@
                   col.kind,
                   row.path,
                   row.stat,
+                  shownSummary?.diffs?.[row.path],
                   e.currentTarget as HTMLElement,
                 )}
               on:mouseleave={onRowLeave}
               on:dblclick={() => openFileDefault(row.path)}
             >
-              <span class="wt-tt-path" title={row.path}>{row.path}</span>
+              <span class="wt-tt-path">{row.path}</span>
               <span class="wt-tt-added"
                 >{row.stat
                   ? row.stat.binary
@@ -370,7 +431,8 @@
         </div>
       </div>
     {/each}
-  </div>
+    </div>
+  {/if}
   {#if p.hiddenCount > 0}
     <div class="wt-tt-more-files">
       + {p.hiddenCount} change{p.hiddenCount === 1 ? "" : "s"} (in total {p.total}
@@ -398,13 +460,21 @@
         {/if}
       {/if}
     </div>
-    <DiffLoader
-      {worktreePath}
-      file={hovered.path}
-      kind={DIFF_KIND[hovered.kind]}
-      {sha}
-      {daemonId}
-    />
+    {#if hovered.diff !== undefined}
+      {#if hovered.diff.trim()}
+        <Diff text={hovered.diff} />
+      {:else}
+        <span class="file-diff-empty">No textual diff in this session.</span>
+      {/if}
+    {:else}
+      <DiffLoader
+        {worktreePath}
+        file={hovered.path}
+        kind={DIFF_KIND[hovered.kind]}
+        {sha}
+        {daemonId}
+      />
+    {/if}
   </div>
 {/if}
 
@@ -425,6 +495,13 @@
   }
   .wt-tt-row-interactive:hover {
     background: color-mix(in srgb, var(--text-1, #e8e8e8) 8%, transparent);
+  }
+  .wt-tt-tree-shell {
+    display: block;
+    min-width: min(28rem, 78vw);
+    font-family: ui-monospace, monospace;
+    font-size: 0.72rem;
+    line-height: 1.32;
   }
 
   /* Portal'd per-file diff popup. Sits above almost everything (1100
@@ -478,6 +555,11 @@
   }
   .file-diff-head-bin {
     color: var(--text-muted, #8a8a8a);
+    font-style: italic;
+  }
+  .file-diff-empty {
+    color: var(--text-muted, #8a8a8a);
+    font-size: 0.72rem;
     font-style: italic;
   }
 </style>
