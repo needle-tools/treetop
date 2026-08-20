@@ -40,6 +40,7 @@ export {
   visualToolPreviewText,
   visualToolRemoteHostLabel,
   visualWorkDetailEntries,
+  visualWorkDetailGroups,
   visualWorkOverview,
   visualSnapshotUidLabelsFromToolResult,
   visualToolTestResultBadges,
@@ -52,6 +53,7 @@ export {
   type VisualToolPreviewPart,
   type VisualToolResultBadge,
   type VisualWorkArtifact,
+  type VisualWorkArtifactChange,
   type VisualWorkOverview,
   type VisualWorkTimeOverview,
 } from "./visual-nicifiers";
@@ -128,11 +130,22 @@ export interface VisualGoal {
   threadId?: string;
 }
 
+export interface TokenUsage {
+  input: number;
+  cachedInput: number;
+  cacheWriteInput: number;
+  output: number;
+  reasoningOutput: number;
+  total: number;
+}
+
 export interface Message<B extends MessageBlock = MessageBlock> {
   role: string;
   blocks: B[];
   timestamp?: string;
   id?: string;
+  tokensUsed?: number;
+  tokenUsage?: TokenUsage;
   intent?: "steer";
   optimisticAfterMessageId?: string;
   optimisticAfterMessageIndex?: number;
@@ -1845,6 +1858,27 @@ export function buildVisualTranscriptItems<
     );
   }
 
+  function isTokenOnlyUsageMessage(message: M | undefined): boolean {
+    return (
+      message?.role === "assistant" &&
+      (hasReportedTokenUsage(message) ||
+        (typeof message.tokensUsed === "number" &&
+          Number.isFinite(message.tokensUsed) &&
+          message.tokensUsed > 0)) &&
+      displayBlocks(message).length === 0
+    );
+  }
+
+  function hasReportedTokenUsage(message: M | undefined): boolean {
+    const usage = message?.tokenUsage;
+    return (
+      !!usage &&
+      typeof usage.total === "number" &&
+      Number.isFinite(usage.total) &&
+      usage.total > 0
+    );
+  }
+
   function pushMessage(entry: VisualWorkEntry<B, M>): void {
     out.push({
       kind: "message",
@@ -1984,7 +2018,7 @@ export function buildVisualTranscriptItems<
         entryIndex === finalResponseIndex
           ? entry.blocks.filter((block) => !isResponseBlock(block))
           : entry.blocks;
-      if (blocks.length > 0) {
+      if (blocks.length > 0 || isTokenOnlyUsageMessage(entry.message)) {
         workEntries.push({ ...entry, blocks });
       }
     });
@@ -2107,6 +2141,13 @@ export function buildVisualTranscriptItems<
       const turnMessage = messages[messageIndex]!;
       const turnBlocks = displayBlocks(turnMessage);
       if (turnBlocks.length === 0) {
+        if (isTokenOnlyUsageMessage(turnMessage)) {
+          turnEntries.push({
+            message: turnMessage,
+            blocks: [],
+            messageIndex: messageIndex + messageIndexOffset,
+          });
+        }
         messageIndex += 1;
         continue;
       }

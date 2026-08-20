@@ -4,9 +4,11 @@
   import DOMPurify from "dompurify";
   import { apiUrl } from "./api";
   import { isLocalFileMarkdownHref } from "./open-url";
+  import ChangedFilesTooltipBody from "./ChangedFilesTooltipBody.svelte";
   import Diff from "./Diff.svelte";
   import DiffLoader from "./DiffLoader.svelte";
   import LoadingSpinner from "./LoadingSpinner.svelte";
+  import SparseArtifactTree from "./SparseArtifactTree.svelte";
   import Tooltip from "./Tooltip.svelte";
   import ToolIcon from "./ToolIcon.svelte";
   import { formatAbsoluteTimeTitle } from "./display-helpers";
@@ -52,6 +54,7 @@
     visualToolTestResultBadges,
     visualToolWaitForDurationLabel,
     visualWorkDetailEntries,
+    visualWorkDetailGroups,
     visualWorkOverview,
     visualSubagentLabel,
     visualSubagentMetaFromBlock,
@@ -77,6 +80,16 @@
   } from "./scroll-util";
 
   type Agent = "claude" | "codex" | "copilot" | "ollama";
+
+  interface WorkChangedSummary {
+    staged: string[];
+    unstaged: string[];
+    untracked: string[];
+    stats: Record<string, { added: number; removed: number; binary: boolean }>;
+    diffs?: Record<string, string>;
+  }
+
+  type VisualWorkOverview = ReturnType<typeof visualWorkOverview>;
 
   interface NormalizedBlock {
     type:
@@ -677,6 +690,22 @@
       return;
     }
     const path = resolvePreviewPath(part.path);
+    if (!path) return;
+    await fetch(apiUrl("/api/open", daemonId), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path, app: "files" }),
+    }).catch(() => {});
+  }
+
+  async function openWorkArtifact(
+    artifact: VisualWorkArtifact,
+    event: MouseEvent,
+  ): Promise<void> {
+    event.preventDefault();
+    event.stopPropagation();
+    if (!artifact.path) return;
+    const path = resolvePreviewPath(artifact.path);
     if (!path) return;
     await fetch(apiUrl("/api/open", daemonId), {
       method: "POST",
@@ -1451,20 +1480,74 @@
     restoreDetailsScrollAnchor();
   }
 
-  function workOverviewTimeLabel(
-    overview: ReturnType<typeof visualWorkOverview>,
-  ): string {
+  function workOverviewTimeLabel(overview: VisualWorkOverview): string {
     const elapsed = formatVisualDurationSeconds(overview.time.elapsedMs / 1000);
     return `${elapsed} elapsed · tools ${overview.time.toolWaitPercent}% · agent ${overview.time.agentPercent}%`;
   }
 
-  function workOverviewTokenLabel(tokenCount: number): string {
-    if (tokenCount <= 0) return "no tool tokens";
-    return `${tokenCount.toLocaleString()} tool ${tokenCount === 1 ? "token" : "tokens"}`;
+  function workOverviewTokenLabel(overview: VisualWorkOverview): string {
+    if (overview.tokens.total <= 0) return "no tokens reported";
+    const total = overview.tokens.total.toLocaleString();
+    const perSecond =
+      overview.tokens.perSecond > 0
+        ? ` · ${overview.tokens.perSecond.toLocaleString()} output tok/s`
+        : "";
+    return `${total} new tokens${perSecond}`;
   }
 
-  function workArtifactTone(artifact: VisualWorkArtifact): string {
-    return `${artifact.action}-${artifact.kind}`;
+  function workOverviewDiffTotals(
+    overview: VisualWorkOverview,
+  ): { additions: number; deletions: number } | undefined {
+    const additions = overview.changedFiles.reduce(
+      (total, file) => total + (file.additions ?? 0),
+      0,
+    );
+    const deletions = overview.changedFiles.reduce(
+      (total, file) => total + (file.deletions ?? 0),
+      0,
+    );
+    return additions > 0 || deletions > 0 ? { additions, deletions } : undefined;
+  }
+
+  function workChangedSummaryForOverview(
+    overview: VisualWorkOverview,
+  ): WorkChangedSummary {
+    const paths = overview.changedFiles.map((file) =>
+      worktreeRelativePreviewPath(file.path),
+    );
+    const stats = Object.fromEntries(
+      overview.changedFiles.map((file) => [
+        worktreeRelativePreviewPath(file.path),
+        {
+          added: file.additions ?? 0,
+          removed: file.deletions ?? 0,
+          binary: false,
+        },
+      ]),
+    );
+    const diffs = Object.fromEntries(
+      overview.changedFiles
+        .filter((file) => file.diff !== undefined)
+        .map((file) => [worktreeRelativePreviewPath(file.path), file.diff!]),
+    );
+    return { staged: [], unstaged: paths, untracked: [], stats, diffs };
+  }
+
+  function normalizedPreviewPath(path: string): string {
+    return stripPreviewPathRange(path)
+      .replace(/\\/g, "/")
+      .replace(/\/+/g, "/");
+  }
+
+  function worktreeRelativePreviewPath(path: string): string {
+    const clean = normalizedPreviewPath(path);
+    const root = sessionCwd
+      ?.replace(/\\/g, "/")
+      .replace(/\/+/g, "/")
+      .replace(/\/$/, "");
+    if (!root) return clean;
+    if (clean === root) return ".";
+    return clean.startsWith(`${root}/`) ? clean.slice(root.length + 1) : clean;
   }
 
   function setWorkEntryBodyRendered(entryKey: string, open: boolean): void {
@@ -1810,25 +1893,112 @@
   </div>
 {/snippet}
 
-{#snippet renderWorkArtifact(artifact: VisualWorkArtifact)}
-  {#if artifact.path && artifact.kind === "file"}
-    {@const part = {
-      kind: "path" as const,
-      text: artifact.label,
-      path: artifact.path,
-      range: "",
-    }}
-    {@render renderPreviewPathChip(part, undefined)}
-  {:else}
-    <span
-      class="work-artifact-chip"
-      class:produced={artifact.action === "produced"}
-      class:changed={artifact.action === "changed"}
-      class:used={artifact.action === "used"}
-      title={artifact.title ?? artifact.path ?? artifact.label}
-      data-work-artifact-tone={workArtifactTone(artifact)}
-    >
-      {artifact.label}
+{#snippet renderWorkChangedSummary(
+  overview: VisualWorkOverview,
+)}
+  {#if overview.changedFiles.length > 0}
+    <Tooltip variant="wide" escapeClip>
+      <span slot="trigger" class="work-summary-chip dim">
+        <ToolIcon name="apply_patch" />
+        <span>
+          Changed {overview.changedFiles.length}
+          {overview.changedFiles.length === 1 ? "file" : "files"}
+        </span>
+      </span>
+      <span slot="content" class="work-changed-tooltip">
+        <ChangedFilesTooltipBody
+          summary={workChangedSummaryForOverview(overview)}
+          worktreePath={sessionCwd}
+          {daemonId}
+          layout="tree"
+          labels={{ unstaged: "changed" }}
+        />
+      </span>
+    </Tooltip>
+  {/if}
+{/snippet}
+
+{#snippet renderWorkOverviewPills(
+  overview: VisualWorkOverview,
+  showInlineMeta = true,
+)}
+  <span class="work-summary-pills">
+    {@render renderWorkChangedSummary(overview)}
+    {#if overview.responseCount > 0}
+      <span
+        class="work-summary-chip"
+        title={`${overview.responseCount} agent responses`}
+      >
+        <ToolIcon name="thinking" />
+        <span>{overview.responseCount}</span>
+      </span>
+    {/if}
+    {#each overview.categories as category (category.category)}
+      <span
+        class="work-summary-chip dim"
+        title={`${category.count} ${category.label}${
+          category.count === 1 ? "" : "s"
+        }`}
+      >
+        <ToolIcon name={category.iconName} />
+        <span>{category.count}</span>
+      </span>
+    {/each}
+    {#each overview.remoteHosts as remoteHost (remoteHost)}
+      {@render renderRemoteHostBadge(remoteHost)}
+    {/each}
+    {#if showInlineMeta && overview.time.elapsedMs > 0}
+      <span
+        class="work-summary-chip dim numeric"
+        title={workOverviewTimeLabel(overview)}
+      >
+        {formatVisualDurationSeconds(overview.time.elapsedMs / 1000)}
+      </span>
+    {/if}
+    {#if overview.tokens.total > 0}
+      <span
+        class="work-summary-chip dim numeric"
+        title={`${overview.tokens.total.toLocaleString()} new tokens · ${overview.tokens.freshInput.toLocaleString()} fresh input · ${overview.tokens.input.toLocaleString()} reported input · ${overview.tokens.cachedInput.toLocaleString()} cached · ${overview.tokens.output.toLocaleString()} output${
+          overview.tokens.reasoningOutput > 0
+            ? ` · ${overview.tokens.reasoningOutput.toLocaleString()} reasoning`
+            : ""
+        } · ${overview.tokens.reportedTotal.toLocaleString()} reported total`}
+      >
+        {overview.tokens.total.toLocaleString()} tok
+      </span>
+    {/if}
+    {#if showInlineMeta && overview.time.elapsedMs > 0}
+      <span
+        class="work-summary-chip dim numeric"
+        title={`${overview.time.toolWaitPercent}% tool wait · ${overview.time.agentPercent}% agent`}
+      >
+        {overview.time.toolWaitPercent}% tools
+      </span>
+    {/if}
+  </span>
+{/snippet}
+
+{#snippet renderWorkOverviewRightMeta(overview: VisualWorkOverview)}
+  {@const diffTotals = workOverviewDiffTotals(overview)}
+  {#if diffTotals || overview.time.elapsedMs > 0}
+    <span class="work-summary-right-meta">
+      {#if diffTotals}
+        <span
+          class="work-summary-diff-meta"
+          title={`${diffTotals.additions} added · ${diffTotals.deletions} removed`}
+        >
+          <span class="work-file-add">+{diffTotals.additions}</span>
+          <span class="work-file-del">−{diffTotals.deletions}</span>
+        </span>
+      {/if}
+      {#if overview.time.elapsedMs > 0}
+        <span
+          class="work-tool-meta"
+          title={workOverviewTimeLabel(overview)}
+        >
+          {formatVisualDurationSeconds(overview.time.elapsedMs / 1000)}
+        </span>
+      {/if}
     </span>
   {/if}
 {/snippet}
@@ -2304,157 +2474,16 @@
   {/each}
 {/snippet}
 
-<ul
-  class="messages"
-  class:terminal-transcript={transcriptSurface === "terminal"}
-  bind:this={messagesEl}
-  on:mouseenter={onMessagesEnter}
-  on:mouseleave={onMessagesLeave}
-  on:wheel={onMessagesWheel}
-  on:scroll={onMessagesScroll}
-  use:codeCopy
-  data-supergit-session-cwd={sessionCwd}
-  data-supergit-daemon-id={daemonId}
->
-  {#each items as item, itemIndex (getVisualTranscriptItemKey(item, itemIndex))}
-    {#if item.kind === "work"}
-      {@const workKey = getVisualTranscriptItemKey(item, itemIndex)}
-      {@const workSummary = visualWorkSummary(item.entries)}
-      {@const liveWorkOpen = shouldShowLiveWorkTimer({
-        active,
-        open: item.open === true,
-        endedAt: item.endedAt,
-      })}
-      {@const workFoldoutOpen =
-        item.open === true || openWorkFoldoutKeys.has(workKey)}
-      {@const visibleWorkEntries = buildVisibleVisualWorkDisplayEntries(item)}
-      {@const workDetailOpen = openWorkDetailKeys.has(workKey)}
-      {@const shownWorkEntries = visualWorkDetailEntries(
-        item,
-        visibleWorkEntries,
-        { full: workDetailOpen, recentLimit: 5 },
-      )}
-      {@const workOverview = visualWorkOverview(item, visibleWorkEntries, {
-        now: liveNowIso,
-      })}
-      {@const summarySubagents = workSummarySubagents(visibleWorkEntries)}
-      <li class="work-row" data-visual-scroll-anchor={workKey}>
-        <details
-          class="work-foldout"
-          class:work-foldout-live={liveWorkOpen}
-          class:work-foldout-aborted={item.terminalMarkerKind === "aborted"}
-          class:work-foldout-failed={item.terminalMarkerKind === "failed"}
-          open={workFoldoutOpen}
-          use:preserveDetailsToggleScroll
-          on:toggle={(event) =>
-            onWorkFoldoutToggle(event, workKey, item.open === true)}
-        >
-          <summary
-            on:click|capture={(event) =>
-              captureDetailsScrollAnchor(event.currentTarget)}
-          >
-            {#if item.terminalMarkerKind}
-              <span class="work-summary-marker-icon" aria-hidden="true">
-                {workMarkerIcon(item.terminalMarkerKind)}
-              </span>
-            {/if}
-            <span
-              >{item.terminalMarkerLabel ??
-                workDurationLabel(item, liveNowIso)}</span
-            >
-            {#if liveWorkOpen && !item.terminalMarkerKind}
-              {@render renderLiveDots()}
-            {/if}
-            <span class="work-count">
-              {workCountLabel(
-                workSummary.steps,
-                workSummary.compactions,
-                workSummary.steerings,
-                workSummary.subagents,
-              )}
-            </span>
-            {#if summarySubagents.length > 0}
-              <span class="work-summary-subagents">
-                {#each summarySubagents as meta (meta.id ?? visualSubagentLabel(meta))}
-                  {@render renderSubagentBadge(meta)}
-                {/each}
-              </span>
-            {/if}
-          </summary>
-          {#if workFoldoutOpen}
-            <div
-              class="work-foldout-body"
-              data-work-key={workKey}
-              on:wheel|capture={handOffNestedWheel}
-              on:scroll={(event) =>
-                onLiveWorkBodyScroll(
-                  workKey,
-                  event.currentTarget as HTMLElement,
-                )}
-            >
-              <div class="work-overview">
-                {#if workOverview.lines.length > 0}
-                  <div class="work-overview-lines">
-                    {#each workOverview.lines as line}
-                      <div>{line}</div>
-                    {/each}
-                  </div>
-                {:else}
-                  <div class="work-overview-lines muted">
-                    No summarized tool activity.
-                  </div>
-                {/if}
-                <div class="work-overview-meta">
-                  <span>{workOverviewTimeLabel(workOverview)}</span>
-                  <span>{workOverviewTokenLabel(workOverview.tokenCount)}</span>
-                </div>
-                {#if workOverview.artifacts.length > 0}
-                  <details
-                    class="work-artifacts"
-                    open={workOverview.artifacts.length <= 6}
-                    use:preserveDetailsToggleScroll
-                    on:toggle={restoreDetailsScrollAnchor}
-                  >
-                    <summary
-                      on:click|capture={(event) =>
-                        captureDetailsScrollAnchor(event.currentTarget)}
-                    >
-                      Artifacts {workOverview.artifacts.length}
-                    </summary>
-                    <div class="work-artifact-list">
-                      {#each workOverview.artifacts as artifact, artifactIndex (`${artifact.action}:${artifact.kind}:${artifact.path ?? artifact.label}:${artifactIndex}`)}
-                        {@render renderWorkArtifact(artifact)}
-                      {/each}
-                    </div>
-                  </details>
-                {/if}
-                <div
-                  class="work-detail-list"
-                  class:work-detail-list-live={item.open === true &&
-                    !workDetailOpen}
-                >
-                  <button
-                    type="button"
-                    class="work-detail-toggle"
-                    on:click={(event) => {
-                      captureDetailsScrollAnchor(event.currentTarget);
-                      toggleWorkDetail(workKey);
-                    }}
-                  >
-                    {#if workDetailOpen}
-                      Showing all {visibleWorkEntries.length}
-                      {visibleWorkEntries.length === 1 ? "action" : "actions"}
-                    {:else if item.open === true && shownWorkEntries.length > 0}
-                      Latest {shownWorkEntries.length}
-                      {shownWorkEntries.length === 1 ? "action" : "actions"}
-                    {:else}
-                      Show {visibleWorkEntries.length}
-                      {visibleWorkEntries.length === 1 ? "action" : "actions"}
-                    {/if}
-                  </button>
-                  {#if workDetailOpen || (item.open === true && shownWorkEntries.length > 0)}
-                    <div class="work-detail-entries">
-                      {#each shownWorkEntries as displayEntry (getVisualWorkDisplayEntryKey(displayEntry))}
+
+{#snippet renderWorkDisplayEntry(
+  displayEntry: VisualWorkDisplayEntry<NormalizedBlock, NormalizedMessage>,
+  item: Extract<
+    VisualTranscriptItem<NormalizedBlock, NormalizedMessage>,
+    { kind: "work" }
+  >,
+  workKey: string,
+  visibleWorkEntries: VisualWorkDisplayEntry<NormalizedBlock, NormalizedMessage>[],
+)}
                         {@const entry = displayEntry.entry}
                         {#if isPlainAssistantWorkText(entry)}
                           <div
@@ -2764,9 +2793,6 @@
                                   {#if editSummary}
                                     <span
                                       class="work-tool-preview work-file-edit-preview"
-                                      title={editSummary.files
-                                        .map((file) => file.path)
-                                        .join("\n")}
                                     >
                                       {editSummary.title}
                                     </span>
@@ -2962,6 +2988,218 @@
                               {/if}
                             </details>
                           {/if}
+                        {/if}
+{/snippet}
+<ul
+  class="messages"
+  class:terminal-transcript={transcriptSurface === "terminal"}
+  bind:this={messagesEl}
+  on:mouseenter={onMessagesEnter}
+  on:mouseleave={onMessagesLeave}
+  on:wheel={onMessagesWheel}
+  on:scroll={onMessagesScroll}
+  use:codeCopy
+  data-supergit-session-cwd={sessionCwd}
+  data-supergit-daemon-id={daemonId}
+>
+  {#each items as item, itemIndex (getVisualTranscriptItemKey(item, itemIndex))}
+    {#if item.kind === "work"}
+      {@const workKey = getVisualTranscriptItemKey(item, itemIndex)}
+      {@const workSummary = visualWorkSummary(item.entries)}
+      {@const liveWorkOpen = shouldShowLiveWorkTimer({
+        active,
+        open: item.open === true,
+        endedAt: item.endedAt,
+      })}
+      {@const workFoldoutOpen =
+        item.open === true || openWorkFoldoutKeys.has(workKey)}
+      {@const visibleWorkEntries = buildVisibleVisualWorkDisplayEntries(item)}
+      {@const workDetailOpen = openWorkDetailKeys.has(workKey)}
+      {@const shownWorkEntries = visualWorkDetailEntries(
+        item,
+        visibleWorkEntries,
+        { full: workDetailOpen, recentLimit: 5 },
+      )}
+      {@const shownWorkGroups = visualWorkDetailGroups(shownWorkEntries)}
+      {@const workOverview = visualWorkOverview(item, visibleWorkEntries, {
+        now: liveNowIso,
+      })}
+      {@const summarySubagents = workSummarySubagents(visibleWorkEntries)}
+      <li class="work-row" data-visual-scroll-anchor={workKey}>
+        <details
+          class="work-foldout"
+          class:work-foldout-live={liveWorkOpen}
+          class:work-foldout-aborted={item.terminalMarkerKind === "aborted"}
+          class:work-foldout-failed={item.terminalMarkerKind === "failed"}
+          open={workFoldoutOpen}
+          use:preserveDetailsToggleScroll
+          on:toggle={(event) =>
+            onWorkFoldoutToggle(event, workKey, item.open === true)}
+        >
+          <summary
+            on:click|capture={(event) =>
+              captureDetailsScrollAnchor(event.currentTarget)}
+          >
+            {#if item.terminalMarkerKind}
+              <span class="work-summary-marker-icon" aria-hidden="true">
+                {workMarkerIcon(item.terminalMarkerKind)}
+              </span>
+            {/if}
+            <span
+              >{item.terminalMarkerLabel ??
+                workDurationLabel(item, liveNowIso)}</span
+            >
+            {#if liveWorkOpen && !item.terminalMarkerKind}
+              {@render renderLiveDots()}
+            {/if}
+            <span class="work-count">
+              {workCountLabel(
+                workSummary.steps,
+                workSummary.compactions,
+                workSummary.steerings,
+                workSummary.subagents,
+              )}
+            </span>
+            {#if summarySubagents.length > 0}
+              <span class="work-summary-subagents">
+                {#each summarySubagents as meta (meta.id ?? visualSubagentLabel(meta))}
+                  {@render renderSubagentBadge(meta)}
+                {/each}
+              </span>
+            {/if}
+            {@render renderWorkOverviewPills(workOverview)}
+          </summary>
+          {#if workFoldoutOpen}
+            <div
+              class="work-foldout-body"
+              data-work-key={workKey}
+              on:wheel|capture={handOffNestedWheel}
+              on:scroll={(event) =>
+                onLiveWorkBodyScroll(
+                  workKey,
+                  event.currentTarget as HTMLElement,
+                )}
+            >
+              <div class="work-overview">
+                {#if workOverview.lines.length > 0}
+                  <div class="work-overview-lines">
+                    {#each workOverview.lines as line}
+                      <div>{line}</div>
+                    {/each}
+                  </div>
+                {:else}
+                  <div class="work-overview-lines muted">
+                    No summarized tool activity.
+                  </div>
+                {/if}
+                <div class="work-overview-meta">
+                  <span>{workOverviewTimeLabel(workOverview)}</span>
+                  <span>{workOverviewTokenLabel(workOverview)}</span>
+                  {#if workOverview.tokens.total > 0}
+                    <span>
+                      fresh input {workOverview.tokens.freshInput.toLocaleString()} · cached {workOverview.tokens.cachedInput.toLocaleString()} · output {workOverview.tokens.output.toLocaleString()}{#if workOverview.tokens.reasoningOutput > 0} · reasoning {workOverview.tokens.reasoningOutput.toLocaleString()}{/if}
+                    </span>
+                  {/if}
+                </div>
+                {#if workOverview.artifacts.length > 0}
+                  <details
+                    class="work-artifacts"
+                    open={workOverview.artifacts.length <= 6}
+                    use:preserveDetailsToggleScroll
+                    on:toggle={restoreDetailsScrollAnchor}
+                  >
+                    <summary
+                      on:click|capture={(event) =>
+                        captureDetailsScrollAnchor(event.currentTarget)}
+                    >
+                      Artifacts {workOverview.artifacts.length}
+                    </summary>
+                    <SparseArtifactTree
+                      artifacts={workOverview.artifacts}
+                      worktreePath={sessionCwd}
+                      {daemonId}
+                      onOpenPath={openWorkArtifact}
+                    />
+                  </details>
+                {/if}
+                <div
+                  class="work-detail-list"
+                  class:work-detail-list-live={item.open === true &&
+                    !workDetailOpen}
+                >
+                  <button
+                    type="button"
+                    class="work-detail-toggle"
+                    on:click={(event) => {
+                      captureDetailsScrollAnchor(event.currentTarget);
+                      toggleWorkDetail(workKey);
+                    }}
+                  >
+                    {#if workDetailOpen}
+                      Showing all {visibleWorkEntries.length}
+                      {visibleWorkEntries.length === 1 ? "action" : "actions"}
+                    {:else if item.open === true && shownWorkEntries.length > 0}
+                      Latest {shownWorkEntries.length}
+                      {shownWorkEntries.length === 1 ? "action" : "actions"}
+                    {:else}
+                      Show {visibleWorkEntries.length}
+                      {visibleWorkEntries.length === 1 ? "action" : "actions"}
+                    {/if}
+                  </button>
+                  {#if workDetailOpen || (item.open === true && shownWorkEntries.length > 0)}
+                    <div class="work-detail-entries">
+                      {#each shownWorkGroups as workGroup (workGroup.id)}
+                        {@const groupIsCollapsible =
+                          workGroup.kind === "actions" &&
+                          workGroup.entries.length > 1}
+                        {#if groupIsCollapsible}
+                          {@const groupOverview = visualWorkOverview(
+                            item,
+                            workGroup.entries,
+                            { now: liveNowIso, timeScope: "entries" },
+                          )}
+                          <details
+                            class="work-action-group"
+                            open={item.open === true && !workDetailOpen}
+                            use:preserveDetailsToggleScroll
+                            on:toggle={restoreDetailsScrollAnchor}
+                          >
+                            <summary
+                              on:click|capture={(event) =>
+                                captureDetailsScrollAnchor(
+                                  event.currentTarget,
+                                )}
+                            >
+                              <span class="work-action-group-summary-main">
+                                {@render renderWorkOverviewPills(
+                                  groupOverview,
+                                  false,
+                                )}
+                              </span>
+                              {@render renderWorkOverviewRightMeta(
+                                groupOverview,
+                              )}
+                            </summary>
+                            <div class="work-action-group-entries">
+                              {#each workGroup.entries as displayEntry (getVisualWorkDisplayEntryKey(displayEntry))}
+                                {@render renderWorkDisplayEntry(
+                                  displayEntry,
+                                  item,
+                                  workKey,
+                                  visibleWorkEntries,
+                                )}
+                              {/each}
+                            </div>
+                          </details>
+                        {:else}
+                          {#each workGroup.entries as displayEntry (getVisualWorkDisplayEntryKey(displayEntry))}
+                            {@render renderWorkDisplayEntry(
+                              displayEntry,
+                              item,
+                              workKey,
+                              visibleWorkEntries,
+                            )}
+                          {/each}
                         {/if}
                       {/each}
                       {#if isLiveTailWork(item, itemIndex)}
@@ -3551,6 +3789,40 @@
   .work-artifacts {
     min-width: 0;
   }
+  .work-summary-pills {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.18rem;
+    min-width: 0;
+    overflow: hidden;
+  }
+  .work-summary-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.22rem;
+    flex: 0 0 auto;
+    max-width: 14rem;
+    min-width: 0;
+    padding: 0.05rem 0.32rem 0.07rem;
+    border: 1px solid color-mix(in srgb, var(--surface-3) 52%, transparent);
+    border-radius: 999px;
+    background: color-mix(in srgb, var(--surface-2) 55%, transparent);
+    color: var(--text-2);
+    font-size: 0.69rem;
+    line-height: 1.1;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .work-summary-chip.dim {
+    color: var(--text-muted);
+  }
+  .work-summary-chip.numeric {
+    font-variant-numeric: tabular-nums;
+  }
+  .work-changed-tooltip {
+    min-width: min(32rem, calc(100vw - 3rem));
+  }
   .work-artifacts > summary,
   .work-detail-toggle {
     width: fit-content;
@@ -3572,33 +3844,6 @@
   .work-detail-toggle:hover {
     color: var(--text-1);
   }
-  .work-artifact-list {
-    display: flex;
-    flex-wrap: wrap;
-    align-items: center;
-    gap: 0.22rem 0.28rem;
-    min-width: 0;
-    margin-top: 0.28rem;
-  }
-  .work-artifact-chip {
-    display: inline-flex;
-    align-items: center;
-    max-width: 100%;
-    min-width: 0;
-    padding: 0.07rem 0.35rem 0.09rem;
-    border-radius: 999px;
-    background: color-mix(in srgb, var(--surface-2) 72%, transparent);
-    color: var(--text-muted);
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-  }
-  .work-artifact-chip.changed {
-    color: var(--accent);
-  }
-  .work-artifact-chip.produced {
-    color: var(--success, #58d68d);
-  }
   .work-detail-list {
     display: grid;
     gap: 0.35rem;
@@ -3608,6 +3853,62 @@
     display: grid;
     gap: 0.25rem;
     min-width: 0;
+  }
+  .work-action-group {
+    min-width: 0;
+  }
+  .work-action-group > summary {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 0.3rem;
+    width: calc(100% - 1.25rem);
+    max-width: 100%;
+    min-height: 1.5rem;
+    margin-left: 0.7rem;
+    padding: 0.08rem 0.22rem;
+    border-radius: 999px;
+    color: var(--text-muted);
+    font-size: 0.74rem;
+    line-height: 1.2;
+    cursor: pointer;
+  }
+  .work-action-group > summary:hover {
+    background: color-mix(in srgb, var(--surface-2) 42%, transparent);
+    color: var(--text-1);
+  }
+  .work-action-group-summary-main {
+    display: inline-flex;
+    align-items: center;
+    min-width: 0;
+    overflow: hidden;
+  }
+  .work-summary-right-meta {
+    display: inline-flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 0.45rem;
+    min-width: max-content;
+    color: var(--text-faint);
+  }
+  .work-summary-diff-meta {
+    display: inline-flex;
+    align-items: baseline;
+    gap: 0.34rem;
+    min-width: max-content;
+    font-variant-numeric: tabular-nums;
+  }
+  .work-action-group-entries {
+    display: grid;
+    gap: 0.22rem;
+    min-width: 0;
+    margin-left: 0.7rem;
+    padding-left: 0.55rem;
+    border-left: 1px solid
+      color-mix(in srgb, var(--surface-3) 52%, transparent);
+  }
+  .work-action-group:not([open]) > summary .work-summary-pills {
+    max-width: 100%;
   }
   .work-entry {
     padding: 0;

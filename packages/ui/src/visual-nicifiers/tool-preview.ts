@@ -6456,7 +6456,7 @@ export function visualFileEditSummaryForBlock(
     const rawChanges =
       Array.isArray(input) || filePathFromObject(obj)
         ? input
-        : (obj.changes ?? obj.files ?? obj.edits);
+        : (obj.changes ?? obj.files ?? obj.edits ?? input);
     return summarizeFileEdits(fileChangesFromInput(rawChanges));
   }
 

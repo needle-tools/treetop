@@ -45,6 +45,7 @@ import {
   visualObservedProcessOwnerToolUseBlock,
   visualToolRemoteHostLabel,
   visualWorkDetailEntries,
+  visualWorkDetailGroups,
   visualWorkOverview,
   visualWorkSummary,
   visualUserImageAttachments,
@@ -5855,6 +5856,16 @@ describe("visualWorkOverview", () => {
       {
         message: {
           role: "assistant",
+          timestamp: "2026-08-16T10:00:03.000Z",
+          tokensUsed: 21,
+          blocks: [{ type: "text", text: "I found the transcript surface." }],
+        },
+        blocks: [{ type: "text", text: "I found the transcript surface." }],
+        messageIndex: 7,
+      },
+      {
+        message: {
+          role: "assistant",
           timestamp: "2026-08-16T10:00:05.000Z",
           blocks: [
             {
@@ -5911,6 +5922,26 @@ describe("visualWorkOverview", () => {
           },
         ],
         messageIndex: 4,
+      },
+      {
+        message: {
+          role: "assistant",
+          timestamp: "2026-08-16T10:00:06.000Z",
+          tokensUsed: 19,
+          blocks: [{ type: "text", text: "The patch is in." }],
+        },
+        blocks: [{ type: "text", text: "The patch is in." }],
+        messageIndex: 8,
+      },
+      {
+        message: {
+          role: "assistant",
+          timestamp: "2026-08-16T10:00:06.500Z",
+          tokensUsed: 315,
+          blocks: [],
+        },
+        blocks: [],
+        messageIndex: 9,
       },
       {
         message: {
@@ -5981,17 +6012,344 @@ describe("visualWorkOverview", () => {
       toolWaitPercent: 23,
       agentPercent: 77,
     });
-    expect(overview.tokenCount).toBe(134);
+    expect(overview.actionCount).toBe(3);
+    expect(overview.responseCount).toBe(2);
+    expect(overview.tokenCount).toBe(355);
+    expect(overview.tokens).toEqual({
+      agent: 355,
+      tool: 0,
+      input: 0,
+      cachedInput: 0,
+      cacheWriteInput: 0,
+      freshInput: 0,
+      output: 355,
+      reasoningOutput: 0,
+      generatedOutput: 355,
+      reportedTotal: 355,
+      total: 355,
+      perSecond: 35.5,
+      agentPerSecond: 35.5,
+      toolPerSecond: 0,
+    });
+    expect(overview.categories.map(({ category, count }) => [category, count]))
+      .toEqual([
+        ["docker", 1],
+        ["edit", 1],
+        ["read", 1],
+      ]);
+    expect(overview.changedFiles).toEqual([
+      {
+        path: "packages/ui/src/VisualTranscript.svelte",
+        label: "VisualTranscript.svelte",
+        additions: 2,
+        deletions: 1,
+        diff: [
+          "*** Update File: packages/ui/src/VisualTranscript.svelte",
+          "@@",
+          "-  old line",
+          "+  new line",
+          "+  another line",
+        ].join("\n"),
+      },
+    ]);
+    expect(overview.remoteHosts).toEqual(["felix-win"]);
     expect(overview.lines).toContain(
       "Changed 1 file (+2 −1): VisualTranscript.svelte",
     );
     expect(overview.lines).toContain(
       "Ran 3 tools: 1 docker action, 1 edit, 1 read",
     );
+    expect(overview.lines).toContain("Captured 2 agent responses");
     expect(overview.lines).toContain("Accessed SSH: felix-win");
-    expect(overview.artifacts.map((artifact) => artifact.label)).toEqual([
-      "VisualTranscript.svelte:1-40",
-      "VisualTranscript.svelte",
+    expect(overview.artifacts).toMatchObject([
+      {
+        label: "VisualTranscript.svelte",
+        action: "changed",
+        additions: 2,
+        deletions: 1,
+      },
+    ]);
+  });
+
+  it("can summarize a grouped action span without borrowing the whole turn time", () => {
+    const entries = buildVisualWorkDisplayEntries([
+      {
+        message: {
+          role: "assistant",
+          timestamp: "2026-08-16T10:05:00.000Z",
+          blocks: [
+            {
+              type: "tool_use",
+              toolName: "exec_command",
+              toolUseId: "read",
+              toolInput: {
+                cmd: "sed -n '1,40p' packages/ui/src/VisualTranscript.svelte",
+              },
+            },
+          ],
+        },
+        blocks: [
+          {
+            type: "tool_use",
+            toolName: "exec_command",
+            toolUseId: "read",
+            toolInput: {
+              cmd: "sed -n '1,40p' packages/ui/src/VisualTranscript.svelte",
+            },
+          },
+        ],
+        messageIndex: 1,
+      },
+      {
+        message: {
+          role: "tool",
+          timestamp: "2026-08-16T10:05:02.000Z",
+          blocks: [
+            {
+              type: "tool_result",
+              toolUseId: "read",
+              text: "Chunk ID: read Wall time: 2.0000 seconds Process exited with code 0 Original token count: 10 Output: ok",
+            },
+          ],
+        },
+        blocks: [
+          {
+            type: "tool_result",
+            toolUseId: "read",
+            text: "Chunk ID: read Wall time: 2.0000 seconds Process exited with code 0 Original token count: 10 Output: ok",
+          },
+        ],
+        messageIndex: 2,
+      },
+    ]);
+
+    const overview = visualWorkOverview(
+      {
+        kind: "work",
+        entries: [],
+        startedAt: "2026-08-16T10:00:00.000Z",
+        endedAt: "2026-08-16T10:10:00.000Z",
+      },
+      entries,
+      { timeScope: "entries" },
+    );
+
+    expect(overview.time.elapsedMs).toBe(2_000);
+    expect(overview.time.toolWaitMs).toBe(2_000);
+    expect(overview.time.agentPercent).toBe(0);
+  });
+
+  it("summarizes fresh token work without using cached context as the headline", () => {
+    const entries = buildVisualWorkDisplayEntries([
+      {
+        message: {
+          role: "assistant",
+          timestamp: "2026-08-16T10:00:02.000Z",
+          tokenUsage: {
+            input: 120_000,
+            cachedInput: 118_000,
+            cacheWriteInput: 0,
+            output: 500,
+            reasoningOutput: 100,
+            total: 120_500,
+          },
+          blocks: [],
+        },
+        blocks: [],
+        messageIndex: 1,
+      },
+    ]);
+
+    const overview = visualWorkOverview(
+      {
+        kind: "work",
+        entries: [],
+        startedAt: "2026-08-16T10:00:00.000Z",
+        endedAt: "2026-08-16T10:00:10.000Z",
+      },
+      entries,
+    );
+
+    expect(overview.tokenCount).toBe(2_600);
+    expect(overview.tokens).toMatchObject({
+      input: 120_000,
+      cachedInput: 118_000,
+      freshInput: 2_000,
+      output: 500,
+      reasoningOutput: 100,
+      generatedOutput: 600,
+      reportedTotal: 120_500,
+      total: 2_600,
+      perSecond: 50,
+    });
+  });
+
+  it("preserves ordered transcript change provenance for file artifacts", () => {
+    const path = "packages/ui/src/SessionView.svelte";
+    const firstDiff = [
+      "@@ -1,2 +1,3 @@",
+      " one",
+      "-two",
+      "+three",
+      "+four",
+      "",
+    ].join("\n");
+    const secondDiff = [
+      "@@ -8,2 +9,2 @@",
+      "-five",
+      "+six",
+      "",
+    ].join("\n");
+    const entries = buildVisualWorkDisplayEntries([
+      {
+        message: {
+          role: "assistant",
+          timestamp: "2026-08-16T10:00:00.000Z",
+          blocks: [
+            {
+              type: "tool_use",
+              toolName: "exec_command",
+              toolUseId: "read",
+              toolInput: {
+                cmd: `sed -n '1,40p' ${path}`,
+                cwd: "/Users/herbst/git/supergit",
+              },
+            },
+          ],
+        },
+        blocks: [
+          {
+            type: "tool_use",
+            toolName: "exec_command",
+            toolUseId: "read",
+            toolInput: {
+              cmd: `sed -n '1,40p' ${path}`,
+              cwd: "/Users/herbst/git/supergit",
+            },
+          },
+        ],
+        messageIndex: 1,
+      },
+      {
+        message: {
+          role: "assistant",
+          timestamp: "2026-08-16T10:00:01.000Z",
+          blocks: [
+            {
+              type: "tool_use",
+              toolName: "file change",
+              toolUseId: "change",
+              toolInput: {
+                [path]: {
+                  type: "update",
+                  unified_diff: firstDiff,
+                },
+              },
+            },
+          ],
+        },
+        blocks: [
+          {
+            type: "tool_use",
+            toolName: "file change",
+            toolUseId: "change",
+            toolInput: {
+              [path]: {
+                type: "update",
+                unified_diff: firstDiff,
+              },
+            },
+          },
+        ],
+        messageIndex: 2,
+      },
+      {
+        message: {
+          role: "assistant",
+          timestamp: "2026-08-16T10:00:02.000Z",
+          blocks: [
+            {
+              type: "tool_use",
+              toolName: "file change",
+              toolUseId: "change-again",
+              toolInput: {
+                [path]: {
+                  type: "update",
+                  unified_diff: secondDiff,
+                },
+              },
+            },
+          ],
+        },
+        blocks: [
+          {
+            type: "tool_use",
+            toolName: "file change",
+            toolUseId: "change-again",
+            toolInput: {
+              [path]: {
+                type: "update",
+                unified_diff: secondDiff,
+              },
+            },
+          },
+        ],
+        messageIndex: 3,
+      },
+    ]);
+
+    const overview = visualWorkOverview(
+      {
+        kind: "work",
+        entries: [],
+        startedAt: "2026-08-16T10:00:00.000Z",
+        endedAt: "2026-08-16T10:00:02.000Z",
+      },
+      entries,
+    );
+
+    const sessionViewArtifact = overview.artifacts.find(
+      (artifact) => artifact.path === path,
+    );
+    expect(sessionViewArtifact).toMatchObject({
+      action: "changed",
+      additions: 3,
+      deletions: 2,
+      diff: [firstDiff.trim(), secondDiff.trim()].join("\n"),
+    });
+    expect(sessionViewArtifact?.changes).toMatchObject([
+      {
+        action: "used",
+        label: "SessionView.svelte:1-40",
+        path,
+      },
+      {
+        action: "changed",
+        additions: 2,
+        deletions: 1,
+        diff: firstDiff.trim(),
+      },
+      {
+        action: "changed",
+        additions: 1,
+        deletions: 1,
+        diff: secondDiff.trim(),
+      },
+    ]);
+    expect(
+      sessionViewArtifact?.changes?.map((change) => change.diff),
+    ).toEqual([undefined, firstDiff.trim(), secondDiff.trim()]);
+    expect(
+      overview.artifacts.filter((artifact) => artifact.path === path),
+    ).toHaveLength(1);
+    expect(overview.changedFiles).toEqual([
+      {
+        path,
+        label: "SessionView.svelte",
+        additions: 3,
+        deletions: 2,
+        diff: [firstDiff.trim(), secondDiff.trim()].join("\n"),
+      },
     ]);
   });
 
@@ -6024,6 +6382,146 @@ describe("visualWorkOverview", () => {
         { full: true, recentLimit: 5 },
       ).map((entry) => entry.entry.messageIndex),
     ).toEqual([0, 1, 2, 3, 4, 5, 6, 7]);
+  });
+
+  it("groups tool runs between agent responses for collapsible detail", () => {
+    const entries = buildVisualWorkDisplayEntries([
+      {
+        message: {
+          role: "assistant",
+          timestamp: "2026-08-16T10:00:00.000Z",
+          blocks: [{ type: "thinking", text: "planning" }],
+        },
+        blocks: [{ type: "thinking", text: "planning" }],
+        messageIndex: 1,
+      },
+      {
+        message: {
+          role: "assistant",
+          timestamp: "2026-08-16T10:00:01.000Z",
+          blocks: [
+            {
+              type: "tool_use",
+              toolName: "exec_command",
+              toolUseId: "search",
+              toolInput: { cmd: "rg -n summary packages/ui/src" },
+            },
+          ],
+        },
+        blocks: [
+          {
+            type: "tool_use",
+            toolName: "exec_command",
+            toolUseId: "search",
+            toolInput: { cmd: "rg -n summary packages/ui/src" },
+          },
+        ],
+        messageIndex: 2,
+      },
+      {
+        message: {
+          role: "assistant",
+          timestamp: "2026-08-16T10:00:02.000Z",
+          blocks: [{ type: "text", text: "I found the target." }],
+        },
+        blocks: [{ type: "text", text: "I found the target." }],
+        messageIndex: 3,
+      },
+      {
+        message: {
+          role: "assistant",
+          timestamp: "2026-08-16T10:00:03.000Z",
+          blocks: [
+            {
+              type: "tool_use",
+              toolName: "apply_patch",
+              toolUseId: "patch",
+              toolInput:
+                "*** Begin Patch\n*** Update File: packages/ui/src/VisualTranscript.svelte\n@@\n-old\n+new\n*** End Patch",
+            },
+          ],
+        },
+        blocks: [
+          {
+            type: "tool_use",
+            toolName: "apply_patch",
+            toolUseId: "patch",
+            toolInput:
+              "*** Begin Patch\n*** Update File: packages/ui/src/VisualTranscript.svelte\n@@\n-old\n+new\n*** End Patch",
+          },
+        ],
+        messageIndex: 4,
+      },
+      {
+        message: {
+          role: "system",
+          timestamp: "2026-08-16T10:00:04.000Z",
+          blocks: [{ type: "marker", text: "[Codex task complete]" }],
+        },
+        blocks: [{ type: "marker", text: "[Codex task complete]" }],
+        messageIndex: 5,
+      },
+    ]);
+
+    const groups = visualWorkDetailGroups(entries);
+    expect(groups.map((group) => [group.kind, group.entries.length])).toEqual([
+      ["actions", 2],
+      ["response", 1],
+      ["actions", 2],
+    ]);
+    expect(groups[0]?.id).toBe("actions:1:2");
+    expect(groups[1]?.id).toBe("response:3");
+    expect(groups[2]?.id).toBe("actions:4:5");
+  });
+
+  it("keeps shell syntax fragments out of overview artifacts", () => {
+    const cmd = [
+      "sed -n '1,90p' src/conversionFamilies.ts",
+      "&&",
+      'rg -n "needle-engine-usdc|geometryBackend" src/routes/+page.svelte',
+      "|",
+      "head",
+    ].join(" ");
+    const entries = buildVisualWorkDisplayEntries([
+      {
+        message: {
+          role: "assistant",
+          timestamp: "2026-08-16T10:00:00.000Z",
+          blocks: [
+            {
+              type: "tool_use",
+              toolName: "exec_command",
+              toolUseId: "mixed-read",
+              toolInput: { cmd },
+            },
+          ],
+        },
+        blocks: [
+          {
+            type: "tool_use",
+            toolName: "exec_command",
+            toolUseId: "mixed-read",
+            toolInput: { cmd },
+          },
+        ],
+        messageIndex: 1,
+      },
+    ]);
+
+    const overview = visualWorkOverview(
+      {
+        kind: "work",
+        entries: [],
+        startedAt: "2026-08-16T10:00:00.000Z",
+        endedAt: "2026-08-16T10:00:01.000Z",
+      },
+      entries,
+    );
+
+    expect(overview.artifacts.map((artifact) => artifact.label)).toEqual([
+      "conversionFamilies.ts:1-90",
+      "routes/+page.svelte",
+    ]);
   });
 });
 
@@ -6196,6 +6694,39 @@ describe("visualFileEditSummaryForBlock", () => {
           additions: 1,
           deletions: 0,
           raw: "@@ -11 +11,2 @@\n MEDIKIT_LOGTO_BOOTSTRAP_IMAGE=latest\n+MEDIKIT_DOCKER_FLAVOR=remote\n",
+        },
+      ],
+    });
+  });
+
+  it("summarizes direct keyed Codex file changes with raw diffs", () => {
+    expect(
+      visualFileEditSummaryForBlock({
+        type: "tool_use",
+        toolName: "file change",
+        toolInput: {
+          "packages/ui/src/SessionView.svelte": {
+            type: "update",
+            unified_diff: [
+              "@@ -1,2 +1,3 @@",
+              " one",
+              "-two",
+              "+three",
+              "+four",
+              "",
+            ].join("\n"),
+          },
+        },
+      }),
+    ).toEqual({
+      title: "Edited SessionView.svelte",
+      files: [
+        {
+          path: "packages/ui/src/SessionView.svelte",
+          action: "edited",
+          additions: 2,
+          deletions: 1,
+          raw: "@@ -1,2 +1,3 @@\n one\n-two\n+three\n+four\n",
         },
       ],
     });
