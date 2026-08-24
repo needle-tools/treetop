@@ -1,12 +1,14 @@
 import type {
   MessageBlock,
   TokenUsage,
+  VisualFileEdit,
   VisualMediaBlock,
 } from "../last-user-message";
 import {
   cleanVisualToolResultText,
   visualFileEditSummaryForBlock,
   visualFileEditTotals,
+  visualToolInlineScriptLanguageLabel,
   visualToolMediaBlocks,
   visualToolPreviewParts,
   visualToolPreviewText,
@@ -57,6 +59,7 @@ export interface VisualWorkArtifact {
   deletions?: number;
   diff?: string;
   diffKind?: "workdir" | "staged" | "untracked";
+  fileAction?: VisualFileEdit["action"];
   changes?: VisualWorkArtifactChange[];
 }
 
@@ -69,12 +72,18 @@ export interface VisualWorkArtifactChange {
   deletions?: number;
   diff?: string;
   diffKind?: "workdir" | "staged" | "untracked";
+  fileAction?: VisualFileEdit["action"];
 }
 
 export interface VisualWorkCategoryCount {
   category: string;
   label: string;
   iconName: string;
+  count: number;
+}
+
+export interface VisualWorkLanguageCount {
+  label: string;
   count: number;
 }
 
@@ -112,13 +121,13 @@ export interface VisualWorkOverview {
   actionCount: number;
   responseCount: number;
   categories: VisualWorkCategoryCount[];
+  languages: VisualWorkLanguageCount[];
   changedFiles: VisualWorkChangedFile[];
   remoteHosts: string[];
 }
 
 export interface VisualWorkDetailOptions {
   full: boolean;
-  recentLimit?: number;
 }
 
 export interface VisualWorkOverviewOptions {
@@ -366,6 +375,20 @@ function toolCategoryCounts(
       label: categoryLabel(category),
       iconName: categoryIconName(category),
     }));
+}
+
+function languageCounts(
+  entries: readonly VisualWorkDisplayEntryLike[],
+): VisualWorkLanguageCount[] {
+  const counts = new Map<string, number>();
+  for (const entry of toolDisplayEntries(entries)) {
+    const label = visualToolInlineScriptLanguageLabel(toolUseBlock(entry));
+    if (!label) continue;
+    counts.set(label, (counts.get(label) ?? 0) + 1);
+  }
+  return [...counts.entries()]
+    .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+    .map(([label, count]) => ({ label, count }));
 }
 
 function numericField(value: unknown): number | undefined {
@@ -657,6 +680,7 @@ function addArtifact(
     deletions: artifact.deletions,
     diff: artifact.diff?.trim() || artifact.diff,
     diffKind: artifact.diffKind,
+    fileAction: artifact.fileAction,
   };
   artifacts.push({ ...artifact, id, changes: [change] });
 }
@@ -715,6 +739,7 @@ function mergeArtifact(
             : Math.max(current.deletions, next.deletions),
     diff: mergeArtifactDiff(current.diff, next.diff),
     diffKind: next.diffKind ?? current.diffKind,
+    fileAction: next.fileAction ?? current.fileAction,
     changes: [...(current.changes ?? []), ...(next.changes ?? [])],
   };
 }
@@ -767,6 +792,7 @@ function artifactsForEntry(
         additions: file.additions,
         deletions: file.deletions,
         diff: file.raw,
+        fileAction: file.action,
       });
     }
   }
@@ -952,6 +978,7 @@ export function visualWorkOverview(
   const time = workTimeOverview(scopedItem, entries, safeNowMs);
   const tokens = tokenOverview(entries, time);
   const categories = actionCategoryCounts(entries);
+  const languages = languageCounts(entries);
   const changedFiles = changedFileSummary(entries);
   const hosts = remoteHosts(entries);
   const lines = [
@@ -968,6 +995,7 @@ export function visualWorkOverview(
     actionCount: categories.reduce((sum, category) => sum + category.count, 0),
     responseCount: entries.filter(isAgentResponseEntry).length,
     categories,
+    languages,
     changedFiles,
     remoteHosts: hosts,
   };
@@ -980,9 +1008,7 @@ export function visualWorkDetailEntries<T extends VisualWorkDisplayEntryLike>(
 ): T[] {
   if (options.full) return [...entries];
   if (item.open !== true) return [];
-  const limit = Math.max(0, options.recentLimit ?? 5);
-  if (limit === 0) return [];
-  return entries.slice(-limit);
+  return [...entries];
 }
 
 function visualWorkDisplayEntryGroupKey(

@@ -103,9 +103,13 @@
         category: VisualWorkOverview["categories"][number];
         pulseValue: number;
       }
+    | {
+        kind: "language";
+        key: string;
+        language: VisualWorkOverview["languages"][number];
+        pulseValue: number;
+      }
     | { kind: "remote"; key: string; remoteHost: string }
-    | { kind: "time"; key: string }
-    | { kind: "tokens"; key: string; pulseValue: number }
     | { kind: "tool-percent"; key: string; pulseValue: number };
 
   interface NormalizedBlock {
@@ -215,6 +219,8 @@
   export let openWorkEntryKeys = new Set<string>();
 
   let openWorkDetailKeys = new Set<string>();
+  let openWorkActionGroupKeys = new Set<string>();
+  let closedWorkActionGroupKeys = new Set<string>();
   let openWorkArtifactKeys = new Set<string>();
   let closedWorkArtifactKeys = new Set<string>();
 
@@ -1534,6 +1540,51 @@
     restoreDetailsScrollAnchor();
   }
 
+  function workActionGroupOpen(
+    groupId: string,
+    autoOpen: boolean,
+  ): boolean {
+    if (closedWorkActionGroupKeys.has(groupId)) return false;
+    return autoOpen || openWorkActionGroupKeys.has(groupId);
+  }
+
+  function pinWorkActionGroupOpen(groupId: string): void {
+    if (openWorkActionGroupKeys.has(groupId)) return;
+    openWorkActionGroupKeys = new Set([...openWorkActionGroupKeys, groupId]);
+    if (closedWorkActionGroupKeys.has(groupId)) {
+      const nextClosed = new Set(closedWorkActionGroupKeys);
+      nextClosed.delete(groupId);
+      closedWorkActionGroupKeys = nextClosed;
+    }
+  }
+
+  function onWorkActionGroupToggle(
+    event: Event,
+    groupId: string,
+    autoOpen: boolean,
+  ): void {
+    const details = event.currentTarget as HTMLDetailsElement | null;
+    if (!details) return;
+    if (details.open) {
+      if (!autoOpen) {
+        pinWorkActionGroupOpen(groupId);
+      } else if (closedWorkActionGroupKeys.has(groupId)) {
+        const nextClosed = new Set(closedWorkActionGroupKeys);
+        nextClosed.delete(groupId);
+        closedWorkActionGroupKeys = nextClosed;
+      }
+    } else {
+      const nextOpen = new Set(openWorkActionGroupKeys);
+      nextOpen.delete(groupId);
+      openWorkActionGroupKeys = nextOpen;
+      closedWorkActionGroupKeys = new Set([
+        ...closedWorkActionGroupKeys,
+        groupId,
+      ]);
+    }
+    restoreDetailsScrollAnchor();
+  }
+
   function workArtifactsOpen(workKey: string, artifactCount: number): boolean {
     if (closedWorkArtifactKeys.has(workKey)) return false;
     return openWorkArtifactKeys.has(workKey) || artifactCount <= 6;
@@ -1612,21 +1663,19 @@
         pulseValue: category.count,
       });
     }
+    for (const language of overview.languages) {
+      pills.push({
+        kind: "language",
+        key: `language:${language.label}`,
+        language,
+        pulseValue: language.count,
+      });
+    }
     for (const remoteHost of overview.remoteHosts) {
       pills.push({
         kind: "remote",
         key: `remote:${remoteHost}`,
         remoteHost,
-      });
-    }
-    if (showInlineMeta && overview.time.elapsedMs > 0) {
-      pills.push({ kind: "time", key: "time" });
-    }
-    if (overview.tokens.total > 0) {
-      pills.push({
-        kind: "tokens",
-        key: "tokens",
-        pulseValue: overview.tokens.total,
       });
     }
     if (showInlineMeta && overview.time.elapsedMs > 0) {
@@ -2081,29 +2130,22 @@
               {pill.category.count}
             </span>
           </span>
+        {:else if pill.kind === "language"}
+          <span
+            class="work-summary-chip dim work-code-language-badge"
+            title={`${pill.language.count} ${pill.language.label} script${
+              pill.language.count === 1 ? "" : "s"
+            }`}
+          >
+            <span>{pill.language.label}</span>
+            {#if pill.language.count > 1}
+              <span use:pulseOnValueChange={pill.pulseValue}>
+                {pill.language.count}
+              </span>
+            {/if}
+          </span>
         {:else if pill.kind === "remote"}
           {@render renderRemoteHostBadge(pill.remoteHost)}
-        {:else if pill.kind === "time"}
-          <span
-            class="work-summary-chip dim numeric"
-            title={workOverviewTimeLabel(overview)}
-          >
-            {formatVisualDurationSeconds(overview.time.elapsedMs / 1000)}
-          </span>
-        {:else if pill.kind === "tokens"}
-          <span
-            class="work-summary-chip dim numeric"
-            title={`${overview.tokens.total.toLocaleString()} new tokens · ${overview.tokens.freshInput.toLocaleString()} fresh input · ${overview.tokens.input.toLocaleString()} reported input · ${overview.tokens.cachedInput.toLocaleString()} cached · ${overview.tokens.output.toLocaleString()} output${
-              overview.tokens.reasoningOutput > 0
-                ? ` · ${overview.tokens.reasoningOutput.toLocaleString()} reasoning`
-                : ""
-            } · ${overview.tokens.reportedTotal.toLocaleString()} reported total`}
-          >
-            <span use:pulseOnValueChange={pill.pulseValue}>
-              {overview.tokens.total.toLocaleString()}
-            </span>
-            <span>tok</span>
-          </span>
         {:else if pill.kind === "tool-percent"}
           <span
             class="work-summary-chip dim numeric"
@@ -2122,7 +2164,7 @@
 
 {#snippet renderWorkOverviewRightMeta(overview: VisualWorkOverview)}
   {@const diffTotals = workOverviewDiffTotals(overview)}
-  {#if diffTotals || overview.time.elapsedMs > 0}
+  {#if diffTotals || overview.tokens.total > 0 || overview.time.elapsedMs > 0}
     <span class="work-summary-right-meta">
       {#if diffTotals}
         <span
@@ -2132,6 +2174,21 @@
           <span class="work-file-add">+{diffTotals.additions}</span>
           <span class="work-file-del">−{diffTotals.deletions}</span>
         </span>
+      {/if}
+      {#if overview.tokens.total > 0}
+        <span
+          class="work-tool-meta"
+          title={`${overview.tokens.total.toLocaleString()} new tokens · ${overview.tokens.freshInput.toLocaleString()} fresh input · ${overview.tokens.input.toLocaleString()} reported input · ${overview.tokens.cachedInput.toLocaleString()} cached · ${overview.tokens.output.toLocaleString()} output${
+            overview.tokens.reasoningOutput > 0
+              ? ` · ${overview.tokens.reasoningOutput.toLocaleString()} reasoning`
+              : ""
+          } · ${overview.tokens.reportedTotal.toLocaleString()} reported total`}
+        >
+          {overview.tokens.total.toLocaleString()} tok
+        </span>
+      {/if}
+      {#if overview.tokens.total > 0 && overview.time.elapsedMs > 0}
+        <span class="work-summary-meta-dot" aria-hidden="true">·</span>
       {/if}
       {#if overview.time.elapsedMs > 0}
         <span
@@ -3166,7 +3223,7 @@
       {@const shownWorkEntries = visualWorkDetailEntries(
         item,
         visibleWorkEntries,
-        { full: workDetailOpen, recentLimit: 5 },
+        { full: workDetailOpen },
       )}
       {@const shownWorkGroups = visualWorkDetailGroups(shownWorkEntries)}
       {@const autoOpenActionGroupId = visualWorkAutoOpenActionGroupId(
@@ -3233,6 +3290,7 @@
               </span>
             {/if}
             {@render renderWorkOverviewPills(workOverview)}
+            {@render renderWorkOverviewRightMeta(workOverview)}
           </summary>
           {#if workFoldoutOpen}
             <div
@@ -3310,8 +3368,7 @@
                       Showing all {visibleWorkEntries.length}
                       {visibleWorkEntries.length === 1 ? "step" : "steps"}
                     {:else if item.open === true && shownWorkEntries.length > 0}
-                      Latest {shownWorkEntries.length}
-                      {shownWorkEntries.length === 1 ? "step" : "steps"}
+                      Showing timeline
                     {:else}
                       Show {visibleWorkEntries.length}
                       {visibleWorkEntries.length === 1 ? "step" : "steps"}
@@ -3320,10 +3377,14 @@
                   {#if workDetailOpen || (item.open === true && shownWorkEntries.length > 0)}
                     <div class="work-detail-entries">
                       {#each shownWorkGroups as workGroup (workGroup.id)}
-                        {@const groupIsCollapsible =
-                          workGroup.kind === "actions" &&
-                          workGroup.entries.length > 1}
+                        {@const groupIsCollapsible = workGroup.kind === "actions"}
                         {#if groupIsCollapsible}
+                          {@const groupAutoOpen =
+                            workGroup.id === autoOpenActionGroupId}
+                          {@const groupOpen = workActionGroupOpen(
+                            workGroup.id,
+                            groupAutoOpen,
+                          )}
                           {@const groupOverview = visualWorkOverview(
                             item,
                             workGroup.entries,
@@ -3331,9 +3392,20 @@
                           )}
                           <details
                             class="work-action-group"
-                            open={workGroup.id === autoOpenActionGroupId}
+                            open={groupOpen}
                             use:preserveDetailsToggleScroll
-                            on:toggle={restoreDetailsScrollAnchor}
+                            on:toggle={(event) =>
+                              onWorkActionGroupToggle(
+                                event,
+                                workGroup.id,
+                                groupAutoOpen,
+                              )}
+                            on:pointerdown|capture={() =>
+                              groupOpen &&
+                                pinWorkActionGroupOpen(workGroup.id)}
+                            on:wheel|capture={() =>
+                              groupOpen &&
+                                pinWorkActionGroupOpen(workGroup.id)}
                           >
                             <summary
                               on:click|capture={(event) =>
@@ -4125,6 +4197,9 @@
     gap: 0.45rem;
     min-width: max-content;
     color: var(--text-faint);
+  }
+  .work-summary-meta-dot {
+    opacity: 0.7;
   }
   .work-summary-diff-meta {
     display: inline-flex;

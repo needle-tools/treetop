@@ -4495,6 +4495,34 @@ const server = Bun.serve<TermWsData, never>({
         });
       }
 
+      if (url.pathname === "/api/codex-app/recording" && req.method === "POST") {
+        return json({ ok: true, recording: codexAgent.startRecording() });
+      }
+
+      if (url.pathname === "/api/codex-app/recording" && req.method === "GET") {
+        return json({
+          ok: true,
+          recording: codexAgent.recordingSnapshot(),
+        });
+      }
+
+      if (
+        url.pathname === "/api/codex-app/recording" &&
+        req.method === "DELETE"
+      ) {
+        const recording = codexAgent.stopRecording();
+        if (!recording) return json({ ok: true, recording: null });
+        const recordingDir = join(
+          workspace.path,
+          ".debugging",
+          "codex-app-recordings",
+        );
+        await fsMkdir(recordingDir, { recursive: true });
+        const file = join(recordingDir, `${recording.id}.json`);
+        await fsWriteFile(file, JSON.stringify(recording, null, 2));
+        return json({ ok: true, recording, path: file });
+      }
+
       if (url.pathname === "/api/codex-app/models" && req.method === "GET") {
         const cwd = url.searchParams.get("cwd") || WORKSPACE_PATH;
         try {
