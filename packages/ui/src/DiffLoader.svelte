@@ -15,6 +15,7 @@
   /** Owning daemon for this worktree. Undefined ⇒ local daemon
    *  (byte-identical behaviour). Set for remote daemon folder rows. */
   export let daemonId: string | undefined = undefined;
+  export let hideSingleFileHeader = false;
 
   let state: "loading" | "ready" | "error" = "loading";
   let diffText = "";
@@ -70,7 +71,7 @@
 {:else if diffText.trim().length === 0}
   <span class="fd-muted">No textual changes.</span>
 {:else}
-  <Diff text={diffText} compact />
+  <Diff text={diffText} compact {hideSingleFileHeader} />
 {/if}
 
 <style>

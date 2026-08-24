@@ -54,6 +54,13 @@ export interface OllamaExitEntry {
   signal?: string;
 }
 
+export interface OllamaImageAttachment {
+  path: string;
+  mimeType?: string;
+  title?: string;
+  hasAlpha?: boolean;
+}
+
 /** Structured user/assistant turn written by the daemon's
  *  `/api/ollama/chat` endpoint — the canonical record for an
  *  Ollama session. One entry per turn, not per chunk; the endpoint
@@ -67,6 +74,10 @@ export interface OllamaTurnEntry {
   /** The user's input or the model's reply, verbatim. No markdown
    *  processing — the renderer handles that. */
   content: string;
+  /** User-supplied local image attachments. Stored as paths so the
+   *  transcript can render the same media the model saw; converted to
+   *  Ollama's base64 `images[]` payload only when sending upstream. */
+  attachments?: OllamaImageAttachment[];
   /** Model that produced this turn. Overrides the header's model on
    *  a per-turn basis so multi-model conversations attribute each
    *  assistant bubble correctly. */
@@ -166,7 +177,11 @@ export class OllamaSessionsLog {
    *  header-only file (no turns yet) returns an empty messages[]. */
   async readMessagesForChat(termId: string): Promise<{
     model: string;
-    messages: { role: "user" | "assistant"; content: string }[];
+    messages: {
+      role: "user" | "assistant";
+      content: string;
+      images?: string[];
+    }[];
   } | null> {
     let raw: string;
     try {
@@ -176,7 +191,11 @@ export class OllamaSessionsLog {
     }
     let header: OllamaHeader | null = null;
     let activeModel: string | undefined;
-    const turns: { role: "user" | "assistant"; content: string }[] = [];
+    const turns: {
+      role: "user" | "assistant";
+      content: string;
+      images?: string[];
+    }[] = [];
     for (const line of raw.split("\n")) {
       if (!line) continue;
       let obj: Record<string, unknown>;
@@ -195,11 +214,20 @@ export class OllamaSessionsLog {
       } else if (kind === "turn") {
         const role = obj.role;
         const content = obj.content;
+        const attachments = parseOllamaImageAttachments(obj.attachments);
         if (
           (role === "user" || role === "assistant") &&
           typeof content === "string"
         ) {
-          turns.push({ role, content });
+          const images =
+            role === "user" && attachments.length > 0
+              ? await readOllamaAttachmentImages(attachments)
+              : [];
+          turns.push({
+            role,
+            content,
+            ...(images.length > 0 ? { images } : {}),
+          });
           if (typeof obj.model === "string") activeModel = obj.model;
         }
       }
@@ -239,6 +267,44 @@ export class OllamaSessionsLog {
     }
     return out;
   }
+}
+
+function parseOllamaImageAttachments(
+  value: unknown,
+): OllamaImageAttachment[] {
+  if (!Array.isArray(value)) return [];
+  const out: OllamaImageAttachment[] = [];
+  for (const item of value) {
+    if (!item || typeof item !== "object") continue;
+    const record = item as Record<string, unknown>;
+    if (typeof record.path !== "string" || !record.path) continue;
+    out.push({
+      path: record.path,
+      ...(typeof record.mimeType === "string"
+        ? { mimeType: record.mimeType }
+        : {}),
+      ...(typeof record.title === "string" ? { title: record.title } : {}),
+      ...(typeof record.hasAlpha === "boolean"
+        ? { hasAlpha: record.hasAlpha }
+        : {}),
+    });
+  }
+  return out;
+}
+
+async function readOllamaAttachmentImages(
+  attachments: OllamaImageAttachment[],
+): Promise<string[]> {
+  const images: string[] = [];
+  for (const attachment of attachments) {
+    try {
+      images.push((await readFile(attachment.path)).toString("base64"));
+    } catch {
+      // A missing old attachment should not make the whole conversation
+      // unsendable; the persisted transcript still shows the stale path.
+    }
+  }
+  return images;
 }
 
 /** Parse a single header line. Exported for tests. */

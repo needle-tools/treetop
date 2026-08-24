@@ -4,6 +4,7 @@ import {
   classifyLine,
   parseDiffStructured,
   extractCommitHeader,
+  withoutSingleFileDiffHeader,
 } from "../src/diff";
 
 describe("classifyLine", () => {
@@ -108,6 +109,43 @@ describe("parseDiff", () => {
     expect(out[6]?.kind).toBe("file");
     expect(out[7]?.kind).toBe("hunk");
     expect(out[8]?.kind).toBe("add");
+  });
+});
+
+describe("withoutSingleFileDiffHeader", () => {
+  test("drops redundant git file prologue for single-file diffs", () => {
+    const sample = [
+      "diff --git a/packages/ui/src/App.svelte b/packages/ui/src/App.svelte",
+      "index 1..2 100644",
+      "--- a/packages/ui/src/App.svelte",
+      "+++ b/packages/ui/src/App.svelte",
+      "@@ -1 +1 @@",
+      "-old",
+      "+new",
+    ].join("\n");
+
+    expect(withoutSingleFileDiffHeader(parseDiff(sample))).toEqual([
+      { kind: "hunk", text: "@@ -1 +1 @@" },
+      { kind: "remove", text: "-old" },
+      { kind: "add", text: "+new" },
+    ]);
+  });
+
+  test("keeps full headers when a diff contains multiple files", () => {
+    const sample = [
+      "diff --git a/a.txt b/a.txt",
+      "@@ -1 +1 @@",
+      "-a",
+      "+b",
+      "diff --git a/b.txt b/b.txt",
+      "@@ -1 +1 @@",
+      "-c",
+      "+d",
+    ].join("\n");
+
+    expect(withoutSingleFileDiffHeader(parseDiff(sample))).toEqual(
+      parseDiff(sample),
+    );
   });
 });
 

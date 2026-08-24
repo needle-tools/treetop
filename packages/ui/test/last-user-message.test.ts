@@ -6060,7 +6060,7 @@ describe("visualWorkOverview", () => {
     expect(overview.lines).toContain(
       "Ran 3 tools: 1 docker action, 1 edit, 1 read",
     );
-    expect(overview.lines).toContain("Captured 2 agent responses");
+    expect(overview.lines).not.toContain("Captured 2 agent responses");
     expect(overview.lines).toContain("Accessed SSH: felix-win");
     expect(overview.artifacts).toMatchObject([
       {
@@ -6436,6 +6436,37 @@ describe("visualWorkOverview", () => {
       iconName: "thinking",
       label: "thinking",
     });
+    expect(overview.lines).toContain("Ran 1 tool: 1 git check");
+    expect(overview.lines.some((line) => line.includes("thinking"))).toBe(
+      false,
+    );
+  });
+
+  it("does not summarize thinking entries as tools", () => {
+    const entries = buildVisualWorkDisplayEntries([
+      {
+        message: {
+          role: "assistant",
+          timestamp: "2026-08-16T10:00:00.000Z",
+          blocks: [{ type: "thinking", text: "verifying insertion counts" }],
+        },
+        blocks: [{ type: "thinking", text: "verifying insertion counts" }],
+        messageIndex: 1,
+      },
+    ]);
+
+    const overview = visualWorkOverview(
+      { kind: "work", entries: [], open: true },
+      entries,
+    );
+
+    expect(overview.categories).toContainEqual({
+      category: "thinking",
+      count: 1,
+      iconName: "thinking",
+      label: "thinking",
+    });
+    expect(overview.lines.some((line) => line.startsWith("Ran "))).toBe(false);
   });
 
   it("groups tool runs between agent responses for collapsible detail", () => {
