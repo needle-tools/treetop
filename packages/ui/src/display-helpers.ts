@@ -102,6 +102,10 @@ export function duplicateRepoNotice(repo: {
   };
 }
 
+export function agentSupportsVisualImageAttachments(agent: string): boolean {
+  return agent === "codex" || agent === "ollama";
+}
+
 // ---------------------------------------------------------------------------
 // repoChipFg  (was App.svelte ~line 4145)
 // ---------------------------------------------------------------------------

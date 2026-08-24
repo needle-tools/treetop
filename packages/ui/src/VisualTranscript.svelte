@@ -199,6 +199,8 @@
   export let openWorkEntryKeys = new Set<string>();
 
   let openWorkDetailKeys = new Set<string>();
+  let openWorkArtifactKeys = new Set<string>();
+  let closedWorkArtifactKeys = new Set<string>();
 
   const MEDIA_IMAGE_ROOT_MARGIN = "300px 0px";
 
@@ -1493,6 +1495,28 @@
     restoreDetailsScrollAnchor();
   }
 
+  function workArtifactsOpen(workKey: string, artifactCount: number): boolean {
+    if (closedWorkArtifactKeys.has(workKey)) return false;
+    return openWorkArtifactKeys.has(workKey) || artifactCount <= 6;
+  }
+
+  function onWorkArtifactsToggle(event: Event, workKey: string): void {
+    const details = event.currentTarget as HTMLDetailsElement | null;
+    if (!details) return;
+    if (details.open) {
+      const nextClosed = new Set(closedWorkArtifactKeys);
+      nextClosed.delete(workKey);
+      closedWorkArtifactKeys = nextClosed;
+      openWorkArtifactKeys = new Set([...openWorkArtifactKeys, workKey]);
+    } else {
+      const nextOpen = new Set(openWorkArtifactKeys);
+      nextOpen.delete(workKey);
+      openWorkArtifactKeys = nextOpen;
+      closedWorkArtifactKeys = new Set([...closedWorkArtifactKeys, workKey]);
+    }
+    restoreDetailsScrollAnchor();
+  }
+
   function workOverviewTimeLabel(overview: VisualWorkOverview): string {
     const elapsed = formatVisualDurationSeconds(overview.time.elapsedMs / 1000);
     return `${elapsed} elapsed · tools ${overview.time.toolWaitPercent}% · agent ${overview.time.agentPercent}%`;
@@ -1942,7 +1966,7 @@
         class="work-summary-chip"
         title={`${overview.responseCount} agent responses`}
       >
-        <ToolIcon name="thinking" />
+        <ToolIcon name="agent_response" />
         <span>{overview.responseCount}</span>
       </span>
     {/if}
@@ -2299,7 +2323,13 @@
               {/if}
             </summary>
             <div class="work-file-raw">
-              <Diff text={file.raw} label="diff" copyable compact />
+              <Diff
+                text={file.raw}
+                label="diff"
+                copyable
+                compact
+                hideSingleFileHeader
+              />
             </div>
           </details>
         {:else}
@@ -3134,9 +3164,12 @@
                 {#if workOverview.artifacts.length > 0}
                   <details
                     class="work-artifacts"
-                    open={workOverview.artifacts.length <= 6}
+                    open={workArtifactsOpen(
+                      workKey,
+                      workOverview.artifacts.length,
+                    )}
                     use:preserveDetailsToggleScroll
-                    on:toggle={restoreDetailsScrollAnchor}
+                    on:toggle={(event) => onWorkArtifactsToggle(event, workKey)}
                   >
                     <summary
                       on:click|capture={(event) =>
@@ -3165,15 +3198,18 @@
                       toggleWorkDetail(workKey);
                     }}
                   >
+                    <span class="work-detail-toggle-caret" aria-hidden="true">
+                      {workDetailOpen ? "▾" : "▸"}
+                    </span>
                     {#if workDetailOpen}
                       Showing all {visibleWorkEntries.length}
-                      {visibleWorkEntries.length === 1 ? "action" : "actions"}
+                      {visibleWorkEntries.length === 1 ? "step" : "steps"}
                     {:else if item.open === true && shownWorkEntries.length > 0}
                       Latest {shownWorkEntries.length}
-                      {shownWorkEntries.length === 1 ? "action" : "actions"}
+                      {shownWorkEntries.length === 1 ? "step" : "steps"}
                     {:else}
                       Show {visibleWorkEntries.length}
-                      {visibleWorkEntries.length === 1 ? "action" : "actions"}
+                      {visibleWorkEntries.length === 1 ? "step" : "steps"}
                     {/if}
                   </button>
                   {#if workDetailOpen || (item.open === true && shownWorkEntries.length > 0)}
@@ -3875,16 +3911,25 @@
     line-height: 1.25;
   }
   .work-artifacts > summary {
-    cursor: default;
+    padding: 0.08rem 0.22rem;
+    border-radius: 999px;
+    cursor: pointer;
   }
   .work-detail-toggle {
     border: 0;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.25rem;
     background: transparent;
-    padding: 0;
+    padding: 0.08rem 0.22rem;
+    border-radius: 999px;
     cursor: pointer;
   }
-  .work-detail-toggle:hover {
-    color: var(--text-1);
+  .work-detail-toggle-caret {
+    width: 0.75em;
+    flex: 0 0 auto;
+    color: inherit;
+    text-align: center;
   }
   .work-detail-list {
     display: grid;
@@ -3915,7 +3960,9 @@
     line-height: 1.2;
     cursor: pointer;
   }
-  .work-action-group > summary:hover {
+  .work-artifacts > summary:hover,
+  .work-action-group > summary:hover,
+  .work-detail-toggle:hover {
     background: color-mix(in srgb, var(--surface-2) 42%, transparent);
     color: var(--text-1);
   }
@@ -4932,7 +4979,6 @@
   .chat-photo-frame {
     box-sizing: border-box;
     width: 100%;
-    padding: 2px;
   }
   .chat-photo-frame img {
     max-height: 7.2rem;

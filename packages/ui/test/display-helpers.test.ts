@@ -15,6 +15,7 @@ import {
   pushCount,
   pushBadgeDanger,
   formatAbsoluteTimeTitle,
+  agentSupportsVisualImageAttachments,
 } from "../src/display-helpers";
 import type { RemoteRef } from "../src/display-helpers";
 
@@ -137,6 +138,19 @@ describe("formatAbsoluteTimeTitle", () => {
       "Jun 23, 2026, 05:20:08",
     );
     expect(calls).toEqual([Date.parse(iso)]);
+  });
+});
+
+describe("agentSupportsVisualImageAttachments", () => {
+  it("allows visual image attachments for Codex and Ollama", () => {
+    expect(agentSupportsVisualImageAttachments("codex")).toBe(true);
+    expect(agentSupportsVisualImageAttachments("ollama")).toBe(true);
+  });
+
+  it("does not enable visual image attachments for terminal-style agents", () => {
+    expect(agentSupportsVisualImageAttachments("claude")).toBe(false);
+    expect(agentSupportsVisualImageAttachments("copilot")).toBe(false);
+    expect(agentSupportsVisualImageAttachments("shell")).toBe(false);
   });
 });
 

@@ -139,6 +139,7 @@
     type ImageInlineAttachment,
     type InlineAttachment,
   } from "./note-inline-attachments";
+  import { agentSupportsVisualImageAttachments } from "./display-helpers";
   import { randomUUID } from "./random-id";
   import {
     canSaveCodexQueueEdit,
@@ -1624,7 +1625,9 @@
       ? null
       : (composerAttachments[openComposerAttachmentIndex] ?? null);
   $: composerCanSend =
-    !!inputText.trim() || (agent === "codex" && composerAttachments.length > 0);
+    !!inputText.trim() ||
+    ((agent === "codex" || agent === "ollama") &&
+      composerAttachments.length > 0);
   // Track whether we've already shown a session at least once. First render
   // = scroll to bottom. Subsequent renders = only auto-scroll if the user
   // was already near the bottom (so polling can't snatch them away when
@@ -2678,7 +2681,14 @@
 
   async function sendOllamaMessage(): Promise<void> {
     const text = inputText.trim();
-    if (!text || sending || !session?.sessionId) return;
+    const attachments = [...composerAttachments];
+    if (
+      (!text && attachments.length === 0) ||
+      sending ||
+      !session?.sessionId
+    ) {
+      return;
+    }
     sending = true;
     sendError = "";
     // Optimistic local update: drop the user turn + an empty
@@ -2687,7 +2697,20 @@
     // in flight.
     const optimisticUser: NormalizedMessage = {
       role: "user",
-      blocks: [{ type: "text", text }],
+      blocks: [
+        ...attachments.map(
+          (attachment): NormalizedBlock => ({
+            type: "media",
+            mediaKind: "image",
+            path: attachment.path,
+            title: inlineAttachmentLabel(attachment),
+            alt: inlineAttachmentLabel(attachment),
+            mimeType: attachment.mimeType,
+            hasAlpha: attachment.hasAlpha,
+          }),
+        ),
+        ...(text ? [{ type: "text" as const, text }] : []),
+      ],
       timestamp: new Date().toISOString(),
     };
     const optimisticAssistant: NormalizedMessage = {
@@ -2705,13 +2728,24 @@
       ollamaStreamingIdx = session.messages.length - 1;
     }
     inputText = "";
+    composerAttachments = [];
+    openComposerAttachmentIndex = null;
     const ac = new AbortController();
     ollamaAbort = ac;
     try {
       const res = await fetch(apiUrl("/api/ollama/chat"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ termId: session.sessionId, content: text }),
+        body: JSON.stringify({
+          termId: session.sessionId,
+          content: text,
+          attachments: attachments.map((attachment) => ({
+            path: attachment.path,
+            title: inlineAttachmentLabel(attachment),
+            mimeType: attachment.mimeType,
+            hasAlpha: attachment.hasAlpha,
+          })),
+        }),
         signal: ac.signal,
       });
       if (!res.ok || !res.body) {
@@ -3894,7 +3928,7 @@
   }
 
   function onComposerPaste(e: ClipboardEvent): void {
-    if (agent !== "codex") return;
+    if (!agentSupportsVisualImageAttachments(agent)) return;
     const cd = e.clipboardData;
     const images = composerTransferImages(cd);
     if (!images.length) return;
@@ -3911,7 +3945,7 @@
 
   function onComposerDragOver(e: DragEvent): void {
     if (
-      agent !== "codex" ||
+      !agentSupportsVisualImageAttachments(agent) ||
       (!composerHasImageTransfer(e.dataTransfer) &&
         !composerHasNoteTransfer(e.dataTransfer))
     )
@@ -3921,7 +3955,7 @@
   }
 
   function onComposerDrop(e: DragEvent): void {
-    if (agent !== "codex") return;
+    if (!agentSupportsVisualImageAttachments(agent)) return;
     const inlineAttachment = composerInlineAttachmentFromTransfer(
       e.dataTransfer,
     );
@@ -5878,7 +5912,7 @@
         class:wide-actions={agent === "codex" && codexRunning}
         class:tail-following={visualTranscriptActive && visualTailFollowActive}
       >
-        {#if agent === "codex" && (composerAttachments.length || composerUploadingImages || composerAttachmentError)}
+        {#if (agent === "codex" || agent === "ollama") && (composerAttachments.length || composerUploadingImages || composerAttachmentError)}
           <div class="composer-attachments" aria-label="Message attachments">
             {#each composerAttachments as attachment, i (`${attachment.path}:${i}`)}
               <div class="composer-attachment">
@@ -6995,10 +7029,9 @@
   .composer-photo-frame {
     box-sizing: border-box;
     width: 100%;
-    padding: 2px;
   }
   .composer-photo-frame img {
-    max-height: 4.4rem;
+    max-height: 7.2rem;
   }
   .composer-photo-frame-uploading {
     display: flex;

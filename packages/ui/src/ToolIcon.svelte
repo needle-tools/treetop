@@ -26,12 +26,15 @@
     | "screenshot"
     | "snapshot"
     | "image"
+    | "message"
     | "subagent"
     | "configure"
     | "tool";
 
   function kindFor(toolName: string): IconKind {
     const n = toolName.toLowerCase();
+    if (n === "agent_response" || n === "assistant_response")
+      return "message";
     if (n.includes("cmake") || n.includes("configure")) return "configure";
     if (n.includes("spawn_agent") || n.includes("wait_agent"))
       return "subagent";
@@ -189,6 +192,9 @@
       <circle cx="9" cy="9" r="1" />
       <path d="M19 3v4" />
       <path d="M17 5h4" />
+    </symbol>
+    <symbol id="${ICON_PREFIX}-message" viewBox="0 0 24 24">
+      <path d="M21 14a4 4 0 0 1-4 4H9l-6 3V7a4 4 0 0 1 4-4h10a4 4 0 0 1 4 4z" />
     </symbol>
     <symbol id="${ICON_PREFIX}-configure" viewBox="0 0 24 24">
       <line x1="4" y1="6" x2="20" y2="6" />

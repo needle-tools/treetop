@@ -1,5 +1,9 @@
 <script lang="ts">
-  import { parseDiff, type DiffLine } from "./diff";
+  import {
+    parseDiff,
+    withoutSingleFileDiffHeader,
+    type DiffLine,
+  } from "./diff";
 
   export let text: string = "";
   export let lines: DiffLine[] | null = null;
@@ -7,7 +11,11 @@
   export let copyText = "";
   export let copyable = false;
   export let compact = false;
-  $: rendered = lines ?? parseDiff(text);
+  export let hideSingleFileHeader = false;
+  $: rawRendered = lines ?? parseDiff(text);
+  $: rendered = hideSingleFileHeader
+    ? withoutSingleFileDiffHeader(rawRendered)
+    : rawRendered;
   $: effectiveCopyText =
     copyText || (lines ? rendered.map((line) => line.text).join("\n") : text);
   $: showHead = !!label || copyable;

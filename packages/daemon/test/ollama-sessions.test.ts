@@ -1,5 +1,5 @@
 import { test, expect, describe, beforeEach, afterEach } from "bun:test";
-import { mkdtemp, rm, readFile } from "node:fs/promises";
+import { mkdtemp, rm, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { OllamaSessionsLog } from "../src/ollama-sessions";
@@ -117,6 +117,44 @@ describe("OllamaSessionsLog", () => {
     expect(out!.messages).toEqual([
       { role: "user", content: "q1" },
       { role: "assistant", content: "a1" },
+    ]);
+  });
+
+  test("readMessagesForChat converts user image attachments to Ollama images", async () => {
+    const imagePath = join(workspace, "image.png");
+    await writeFile(imagePath, Buffer.from("hello image"));
+    await log.writeHeader({
+      kind: "header",
+      termId: "vision",
+      wt: "/p",
+      spawnCwd: "/p",
+      model: "qwen2.5vl:0.8b",
+      createdAt: "2026-01-01T00:00:00Z",
+    });
+    await log.appendTurn("vision", {
+      kind: "turn",
+      ts: "2026-01-01T00:00:01Z",
+      role: "user",
+      content: "what is this?",
+      attachments: [
+        {
+          path: imagePath,
+          mimeType: "image/png",
+          title: "image.png",
+        },
+      ],
+      model: "qwen2.5vl:0.8b",
+    });
+
+    const out = await log.readMessagesForChat("vision");
+
+    expect(out).not.toBeNull();
+    expect(out!.messages).toEqual([
+      {
+        role: "user",
+        content: "what is this?",
+        images: [Buffer.from("hello image").toString("base64")],
+      },
     ]);
   });
 

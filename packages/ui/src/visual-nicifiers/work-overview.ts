@@ -349,6 +349,25 @@ function actionCategoryCounts(
     }));
 }
 
+function toolCategoryCounts(
+  entries: readonly VisualWorkDisplayEntryLike[],
+): VisualWorkCategoryCount[] {
+  const counts = new Map<string, number>();
+  for (const entry of toolDisplayEntries(entries)) {
+    const toolBlock = toolUseBlock(entry);
+    const category = inferToolCategory(toolBlock);
+    counts.set(category, (counts.get(category) ?? 0) + 1);
+  }
+  return [...counts.entries()]
+    .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+    .map(([category, count]) => ({
+      category,
+      count,
+      label: categoryLabel(category),
+      iconName: categoryIconName(category),
+    }));
+}
+
 function numericField(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value)
     ? Math.max(0, value)
@@ -794,7 +813,7 @@ function mediaArtifact(
 function commandSummaryLine(
   entries: readonly VisualWorkDisplayEntryLike[],
 ): string | undefined {
-  const categories = actionCategoryCounts(entries);
+  const categories = toolCategoryCounts(entries);
   const total = categories.reduce((sum, category) => sum + category.count, 0);
   if (total === 0) return undefined;
   const parts = categories
@@ -914,15 +933,6 @@ function artifactSummary(
   return [...deduped.values()];
 }
 
-function responseSummaryLine(
-  entries: readonly VisualWorkDisplayEntryLike[],
-): string | undefined {
-  const count = entries.filter(isAgentResponseEntry).length;
-  return count > 0
-    ? `Captured ${count} agent ${plural(count, "response")}`
-    : undefined;
-}
-
 export function visualWorkOverview(
   item: VisualWorkItemLike,
   entries: readonly VisualWorkDisplayEntryLike[],
@@ -947,7 +957,6 @@ export function visualWorkOverview(
   const lines = [
     editSummaryLine(entries),
     commandSummaryLine(entries),
-    responseSummaryLine(entries),
     remoteSummaryLine(entries),
   ].filter((line): line is string => !!line);
   return {
