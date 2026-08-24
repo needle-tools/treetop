@@ -1,12 +1,17 @@
 <script lang="ts">
   import Diff from "./Diff.svelte";
   import DiffLoader from "./DiffLoader.svelte";
+  import FileSystemIcon from "./FileSystemIcon.svelte";
   import Tooltip from "./Tooltip.svelte";
-  import ToolIcon from "./ToolIcon.svelte";
   import type {
     VisualWorkArtifact,
     VisualWorkArtifactChange,
   } from "./last-user-message";
+  import {
+    buildSparseArtifactRows,
+    sparseArtifactSignature,
+    type SparseArtifactTreeRow,
+  } from "./sparse-artifact-tree";
 
   export let artifacts: readonly VisualWorkArtifact[] = [];
   export let worktreePath: string | undefined = undefined;
@@ -17,143 +22,16 @@
     | ((artifact: VisualWorkArtifact, event: MouseEvent) => void)
     | undefined = undefined;
 
-  interface TreeNode {
-    id: string;
-    label: string;
-    path: string;
-    hrefPath: string;
-    depth: number;
-    kind: "folder" | "file" | "other";
-    artifacts: VisualWorkArtifact[];
-  }
-
   let cachedSignature = "";
-  let cachedRows: TreeNode[] = [];
+  let cachedRows: SparseArtifactTreeRow[] = [];
 
-  function stripRange(path: string): string {
-    return path.trim().replace(/:\d+(?:-\d+)?$/, "");
-  }
-
-  function normalizePath(path: string | undefined): string {
-    if (!path) return "";
-    return stripRange(path).replace(/\\/g, "/").replace(/\/+/g, "/");
-  }
-
-  function normalizedWorktreePath(): string {
-    return normalizePath(worktreePath).replace(/\/$/, "");
-  }
-
-  function displayPathForArtifact(path: string): string {
-    const clean = normalizePath(path);
-    const root = normalizedWorktreePath();
-    if (!root) return clean;
-    if (clean === root) return ".";
-    return clean.startsWith(`${root}/`) ? clean.slice(root.length + 1) : clean;
-  }
-
-  function isInsideWorktree(path: string): boolean {
-    const clean = normalizePath(path);
-    const root = normalizedWorktreePath();
-    return !!root && (clean === root || clean.startsWith(`${root}/`));
-  }
-
-  function artifactLabel(artifact: VisualWorkArtifact): string {
-    return artifact.label || normalizePath(artifact.path) || "artifact";
-  }
-
-  function artifactSignature(values: readonly VisualWorkArtifact[]): string {
-    return values
-      .map((artifact) =>
-        [
-          artifact.id,
-          artifact.action,
-          artifact.kind,
-          normalizePath(artifact.path),
-          artifact.label,
-          artifact.additions ?? "",
-          artifact.deletions ?? "",
-          artifact.diff ?? "",
-          ...(artifact.changes ?? []).map((change) =>
-            [
-              change.action,
-              normalizePath(change.path),
-              change.label,
-              change.additions ?? "",
-              change.deletions ?? "",
-              change.diff ?? "",
-            ].join("\u0003"),
-          ),
-        ].join("\u0001"),
-      )
-      .join("\u0002");
-  }
-
-  function buildRows(values: readonly VisualWorkArtifact[]): TreeNode[] {
-    const fileArtifacts = values.filter((artifact) => artifact.path);
-    const rows = new Map<string, TreeNode>();
-    const ordered: TreeNode[] = [];
-
-    function addRow(row: TreeNode): TreeNode {
-      const existing = rows.get(row.id);
-      if (existing) return existing;
-      rows.set(row.id, row);
-      ordered.push(row);
-      return row;
-    }
-
-    for (const artifact of fileArtifacts) {
-      const clean = normalizePath(artifact.path);
-      const displayPath = displayPathForArtifact(clean);
-      const displayParts = displayPath.split("/").filter(Boolean);
-      let currentPath = "";
-      displayParts.slice(0, -1).forEach((part, index) => {
-        currentPath = currentPath ? `${currentPath}/${part}` : part;
-        addRow({
-          id: `folder:${currentPath}`,
-          label: part,
-          path: currentPath,
-          hrefPath: currentPath,
-          depth: index,
-          kind: "folder",
-          artifacts: [],
-        });
-      });
-      const fileLabel =
-        displayParts[displayParts.length - 1] ?? artifactLabel(artifact);
-      const filePath = clean || artifact.path!;
-      const hrefPath = isInsideWorktree(filePath) ? displayPath : filePath;
-      const fileRow = addRow({
-        id: `file:${filePath}`,
-        label: fileLabel,
-        path: filePath,
-        hrefPath,
-        depth: Math.max(0, displayParts.length - 1),
-        kind: artifact.kind === "image" ? "file" : "file",
-        artifacts: [],
-      });
-      fileRow.artifacts.push(artifact);
-    }
-
-    for (const artifact of values.filter((value) => !value.path)) {
-      addRow({
-        id: artifact.id,
-        label: artifactLabel(artifact),
-        path: artifact.label,
-        hrefPath: artifact.label,
-        depth: 0,
-        kind: "other",
-        artifacts: [artifact],
-      });
-    }
-
-    return ordered;
-  }
-
-  function stableRows(values: readonly VisualWorkArtifact[]): TreeNode[] {
-    const signature = artifactSignature(values);
+  function stableRows(
+    values: readonly VisualWorkArtifact[],
+  ): SparseArtifactTreeRow[] {
+    const signature = sparseArtifactSignature(values, worktreePath);
     if (signature === cachedSignature) return cachedRows;
     cachedSignature = signature;
-    cachedRows = buildRows(values);
+    cachedRows = buildSparseArtifactRows(values, worktreePath);
     return cachedRows;
   }
 
@@ -255,20 +133,6 @@
     };
   }
 
-  function rowIconName(row: TreeNode): string {
-    if (row.kind === "folder") return "list_directory";
-    if (row.artifacts.some((artifact) => artifact.kind === "image")) {
-      return "image_generation_call";
-    }
-    if (row.artifacts.some((artifact) => artifact.action === "changed")) {
-      return "apply_patch";
-    }
-    if (row.artifacts.some((artifact) => artifact.action === "produced")) {
-      return "filesystem_create";
-    }
-    return "read_file";
-  }
-
   $: rows = stableRows(artifacts);
 </script>
 
@@ -283,7 +147,7 @@
       >
         <span class="sparse-artifact-indent" aria-hidden="true"></span>
         <span class="sparse-artifact-icon" aria-hidden="true">
-          <ToolIcon name={rowIconName(row)} />
+          <FileSystemIcon kind={row.kind === "folder" ? "folder" : "file"} />
         </span>
         {#if row.kind === "file" && row.artifacts[0]}
           {@const artifact = row.artifacts[0]}
@@ -390,6 +254,7 @@
     color: var(--text-muted);
     font-size: 0.74rem;
     line-height: 1.35;
+    padding: 2px 0;
   }
   .sparse-artifact-icon {
     display: inline-flex;
@@ -412,6 +277,7 @@
   }
   button.sparse-artifact-name {
     cursor: pointer;
+    padding: 0;
   }
   button.sparse-artifact-name:hover {
     color: var(--text-1);

@@ -27,7 +27,7 @@
     confirmRemoteUpload,
     dismissRemoteUpload,
   } from "./file-browser-utils";
-  import { ICONS } from "./icons";
+  import FileSystemIcon from "./FileSystemIcon.svelte";
   import FileTreeNode from "./FileTreeNode.svelte";
   import FilePathBar from "./FilePathBar.svelte";
   import type { SessionMenuItem } from "./SessionMenu.svelte";
@@ -856,31 +856,7 @@
               >
                 <span class="fb-arrow-spacer" aria-hidden="true"></span>
                 <span class="fb-icon">
-                  {#if isDir}
-                    <svg
-                      viewBox="0 0 24 24"
-                      fill="none"
-                      stroke="currentColor"
-                      stroke-width="1.8"
-                      stroke-linecap="round"
-                      stroke-linejoin="round"
-                      >{#each ICONS.folder.paths ?? [] as d}<path
-                          {d}
-                        />{/each}</svg
-                    >
-                  {:else}
-                    <svg
-                      viewBox="0 0 24 24"
-                      fill="none"
-                      stroke="currentColor"
-                      stroke-width="1.8"
-                      stroke-linecap="round"
-                      stroke-linejoin="round"
-                      >{#each ICONS.document.paths ?? [] as d}<path
-                          {d}
-                        />{/each}</svg
-                    >
-                  {/if}
+                  <FileSystemIcon kind={isDir ? "folder" : "file"} />
                 </span>
                 <span class="fb-name fb-name-rel">{item.rel}</span>
                 {#if missing}

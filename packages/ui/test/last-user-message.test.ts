@@ -44,6 +44,7 @@ import {
   visualMediaPathTarget,
   visualObservedProcessOwnerToolUseBlock,
   visualToolRemoteHostLabel,
+  visualWorkAutoOpenActionGroupId,
   visualWorkDetailEntries,
   visualWorkDetailGroups,
   visualWorkOverview,
@@ -6384,6 +6385,59 @@ describe("visualWorkOverview", () => {
     ).toEqual([0, 1, 2, 3, 4, 5, 6, 7]);
   });
 
+  it("counts thinking entries in the work overview summary", () => {
+    const entries = buildVisualWorkDisplayEntries([
+      {
+        message: {
+          role: "assistant",
+          timestamp: "2026-08-16T10:00:00.000Z",
+          blocks: [{ type: "thinking", text: "verifying insertion counts" }],
+        },
+        blocks: [{ type: "thinking", text: "verifying insertion counts" }],
+        messageIndex: 1,
+      },
+      {
+        message: {
+          role: "assistant",
+          timestamp: "2026-08-16T10:00:01.000Z",
+          blocks: [
+            {
+              type: "tool_use",
+              toolName: "exec_command",
+              toolUseId: "stage",
+              toolInput: {
+                cmd: "git add packages/ui/src/VisualTranscript.svelte",
+              },
+            },
+          ],
+        },
+        blocks: [
+          {
+            type: "tool_use",
+            toolName: "exec_command",
+            toolUseId: "stage",
+            toolInput: {
+              cmd: "git add packages/ui/src/VisualTranscript.svelte",
+            },
+          },
+        ],
+        messageIndex: 2,
+      },
+    ]);
+
+    const overview = visualWorkOverview(
+      { kind: "work", entries: [], open: true },
+      entries,
+    );
+
+    expect(overview.categories).toContainEqual({
+      category: "thinking",
+      count: 1,
+      iconName: "thinking",
+      label: "thinking",
+    });
+  });
+
   it("groups tool runs between agent responses for collapsible detail", () => {
     const entries = buildVisualWorkDisplayEntries([
       {
@@ -6472,6 +6526,17 @@ describe("visualWorkOverview", () => {
     expect(groups[0]?.id).toBe("actions:1:2");
     expect(groups[1]?.id).toBe("response:3");
     expect(groups[2]?.id).toBe("actions:4:5");
+  });
+
+  it("auto-opens only the latest live action group", () => {
+    const groups = [
+      { id: "actions:1:2", kind: "actions" as const, entries: [] },
+      { id: "response:3", kind: "response" as const, entries: [] },
+      { id: "actions:4:5", kind: "actions" as const, entries: [] },
+    ];
+
+    expect(visualWorkAutoOpenActionGroupId(groups, true)).toBe("actions:4:5");
+    expect(visualWorkAutoOpenActionGroupId(groups, false)).toBeUndefined();
   });
 
   it("keeps shell syntax fragments out of overview artifacts", () => {
