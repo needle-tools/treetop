@@ -177,6 +177,7 @@ export function shouldLoadCodexAppThreadHistory(opts: {
   loadedHistoryKey: string;
   loadingHistoryKey: string;
   failedHistoryKey?: string;
+  failedHistoryKeys?: ReadonlySet<string>;
 }): boolean {
   if (!opts.visualAppSurface || !opts.hasSession) return false;
   const key = codexAppHistoryKey(opts.threadId, opts.cwd);
@@ -184,7 +185,8 @@ export function shouldLoadCodexAppThreadHistory(opts: {
   return (
     key !== opts.loadedHistoryKey &&
     key !== opts.loadingHistoryKey &&
-    key !== opts.failedHistoryKey
+    key !== opts.failedHistoryKey &&
+    !opts.failedHistoryKeys?.has(key)
   );
 }
 
@@ -769,7 +771,11 @@ function codexTokenUsageFromEvent(
   event: CodexAppEvent,
   context: CodexLiveNormalizeContext = {},
 ): CodexAppTokenUsage | undefined {
-  if (event.method !== "token_count" && event.params.type !== "token_count") {
+  if (
+    event.method !== "token_count" &&
+    event.params.type !== "token_count" &&
+    !codexPayloadHasTokenUsage(event.params)
+  ) {
     return undefined;
   }
   return codexTokenUsageFromPayload(event.params, context);
@@ -844,15 +850,17 @@ function codexTokenUsageFromPayload(
   payload: Record<string, unknown>,
   context: CodexLiveNormalizeContext = {},
 ): CodexAppTokenUsage | undefined {
-  const info = codexObjectField(payload, "info") ?? payload;
-  const lastUsage = codexTokenUsageFromObject(
-    codexObjectField(info, "last_token_usage") ??
-      codexObjectField(payload, "lastTokenUsage") ??
-      codexObjectField(payload, "usage"),
+  const sources = codexTokenUsageSources(payload);
+  const lastUsage = codexTokenUsageFromSources(
+    sources,
+    "last_token_usage",
+    "lastTokenUsage",
+    "usage",
   );
-  const totalUsage = codexTokenUsageFromObject(
-    codexObjectField(info, "total_token_usage") ??
-      codexObjectField(payload, "totalTokenUsage"),
+  const totalUsage = codexTokenUsageFromSources(
+    sources,
+    "total_token_usage",
+    "totalTokenUsage",
   );
   if (lastUsage) {
     if (totalUsage) context.previousTotalTokenUsage = totalUsage;
@@ -862,6 +870,51 @@ function codexTokenUsageFromPayload(
   const delta = codexTokenUsageDelta(totalUsage, context.previousTotalTokenUsage);
   context.previousTotalTokenUsage = totalUsage;
   return codexTokenUsageHasContent(delta) ? delta : undefined;
+}
+
+function codexPayloadHasTokenUsage(payload: Record<string, unknown>): boolean {
+  return codexTokenUsageSources(payload).some((source) =>
+    [
+      "last_token_usage",
+      "lastTokenUsage",
+      "usage",
+      "total_token_usage",
+      "totalTokenUsage",
+    ].some((key) => codexObjectField(source, key) !== undefined),
+  );
+}
+
+function codexTokenUsageSources(
+  payload: Record<string, unknown>,
+): Record<string, unknown>[] {
+  const sources: Record<string, unknown>[] = [];
+  const seen = new Set<Record<string, unknown>>();
+  const add = (value: Record<string, unknown> | undefined) => {
+    if (!value || seen.has(value)) return;
+    seen.add(value);
+    sources.push(value);
+  };
+
+  add(payload);
+  const info = codexObjectField(payload, "info");
+  add(info);
+  const item = codexObjectField(payload, "item");
+  add(item);
+  if (item) add(codexObjectField(item, "info"));
+  return sources;
+}
+
+function codexTokenUsageFromSources(
+  sources: Record<string, unknown>[],
+  ...keys: string[]
+): CodexAppTokenUsage | undefined {
+  for (const source of sources) {
+    for (const key of keys) {
+      const usage = codexTokenUsageFromObject(codexObjectField(source, key));
+      if (usage) return usage;
+    }
+  }
+  return undefined;
 }
 
 function codexOutputTokensFromUsage(usage: CodexAppTokenUsage): number {

@@ -53,6 +53,7 @@
     visualToolRemoteHostLabel,
     visualToolTestResultBadges,
     visualToolWaitForDurationLabel,
+    visualWorkAutoOpenActionGroupId,
     visualWorkDetailEntries,
     visualWorkDetailGroups,
     visualWorkOverview,
@@ -714,13 +715,13 @@
     }).catch(() => {});
   }
 
-  function workDurationLabel(
+  function workDurationParts(
     item: Extract<
       VisualTranscriptItem<NormalizedBlock, NormalizedMessage>,
       { kind: "work" }
     >,
     nowIso: string,
-  ): string | undefined {
+  ): { label: string; duration: string | undefined } {
     const running = shouldShowLiveWorkTimer({
       active,
       open: item.open === true,
@@ -731,34 +732,46 @@
       running ? nowIso : item.endedAt,
     );
     const prefix = running ? "Working" : "Worked";
-    return duration ? `${prefix} for ${duration}` : prefix;
+    return { label: `${prefix} for`, duration };
   }
 
-  function workCountLabel(
+  function workCountLines(
     steps: number,
     compactions: number,
     steerings: number,
     subagents: number,
-  ): string {
-    const parts: string[] = [];
+  ): { primary: string; secondary: string | undefined } {
+    let primary: string | undefined;
+    const secondaryParts: string[] = [];
     if (
       steps > 0 ||
       (steerings === 0 && compactions === 0 && subagents === 0)
     ) {
-      parts.push(`${steps} ${steps === 1 ? "step" : "steps"}`);
+      primary = `${steps} ${steps === 1 ? "step" : "steps"}`;
     }
     if (subagents > 0) {
-      parts.push(`${subagents} ${subagents === 1 ? "subagent" : "subagents"}`);
+      secondaryParts.push(
+        `${subagents} ${subagents === 1 ? "subagent" : "subagents"}`,
+      );
     }
     if (steerings > 0) {
-      parts.push(`${steerings} ${steerings === 1 ? "steering" : "steerings"}`);
+      secondaryParts.push(
+        `${steerings} ${steerings === 1 ? "steering" : "steerings"}`,
+      );
     }
     if (compactions > 0) {
-      parts.push(
+      secondaryParts.push(
         `${compactions} ${compactions === 1 ? "compaction" : "compactions"}`,
       );
     }
-    return parts.join(", ");
+    if (!primary) {
+      primary = secondaryParts.shift() ?? "";
+    }
+    return {
+      primary,
+      secondary:
+        secondaryParts.length > 0 ? secondaryParts.join(", ") : undefined,
+    };
   }
 
   function formatToolWallTime(seconds: number | undefined): string | undefined {
@@ -3021,10 +3034,21 @@
         { full: workDetailOpen, recentLimit: 5 },
       )}
       {@const shownWorkGroups = visualWorkDetailGroups(shownWorkEntries)}
+      {@const autoOpenActionGroupId = visualWorkAutoOpenActionGroupId(
+        shownWorkGroups,
+        item.open === true && !workDetailOpen,
+      )}
       {@const workOverview = visualWorkOverview(item, visibleWorkEntries, {
         now: liveNowIso,
       })}
       {@const summarySubagents = workSummarySubagents(visibleWorkEntries)}
+      {@const durationParts = workDurationParts(item, liveNowIso)}
+      {@const countLines = workCountLines(
+        workSummary.steps,
+        workSummary.compactions,
+        workSummary.steerings,
+        workSummary.subagents,
+      )}
       <li class="work-row" data-visual-scroll-anchor={workKey}>
         <details
           class="work-foldout"
@@ -3045,20 +3069,26 @@
                 {workMarkerIcon(item.terminalMarkerKind)}
               </span>
             {/if}
-            <span
-              >{item.terminalMarkerLabel ??
-                workDurationLabel(item, liveNowIso)}</span
-            >
+            {#if item.terminalMarkerLabel}
+              <span class="work-duration-label single">
+                {item.terminalMarkerLabel}
+              </span>
+            {:else}
+              <span class="work-duration-label">
+                <span>{durationParts.label}</span>
+                {#if durationParts.duration}
+                  <span>{durationParts.duration}</span>
+                {/if}
+              </span>
+            {/if}
             {#if liveWorkOpen && !item.terminalMarkerKind}
               {@render renderLiveDots()}
             {/if}
             <span class="work-count">
-              {workCountLabel(
-                workSummary.steps,
-                workSummary.compactions,
-                workSummary.steerings,
-                workSummary.subagents,
-              )}
+              <span>{countLines.primary}</span>
+              {#if countLines.secondary}
+                <span>{countLines.secondary}</span>
+              {/if}
             </span>
             {#if summarySubagents.length > 0}
               <span class="work-summary-subagents">
@@ -3160,7 +3190,7 @@
                           )}
                           <details
                             class="work-action-group"
-                            open={item.open === true && !workDetailOpen}
+                            open={workGroup.id === autoOpenActionGroupId}
                             use:preserveDetailsToggleScroll
                             on:toggle={restoreDetailsScrollAnchor}
                           >
@@ -3631,6 +3661,18 @@
     line-height: 1.2;
     font-variant-numeric: tabular-nums;
     font-feature-settings: "tnum";
+  }
+  .work-duration-label,
+  .work-count {
+    display: inline-flex;
+    flex-direction: column;
+    align-items: flex-start;
+    justify-content: center;
+    gap: 0.02rem;
+    white-space: nowrap;
+  }
+  .work-duration-label.single {
+    display: inline;
   }
   .work-foldout > summary:hover {
     color: var(--text-1);

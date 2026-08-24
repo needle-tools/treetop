@@ -1,5 +1,4 @@
 <script lang="ts">
-  import { ICONS } from "./icons";
   import { apiUrl } from "./api";
   import {
     joinPath,
@@ -9,6 +8,7 @@
   } from "./file-browser-utils";
   import Tooltip from "./Tooltip.svelte";
   import Diff from "./Diff.svelte";
+  import FileSystemIcon from "./FileSystemIcon.svelte";
   import LoadingSpinner from "./LoadingSpinner.svelte";
 
   export let entry: FileEntry;
@@ -190,17 +190,9 @@
         onShow={loadFolderStats}
         escapeClip
       >
-        <span slot="trigger" class="fb-icon"
-          ><svg
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            stroke-width="1.8"
-            stroke-linecap="round"
-            stroke-linejoin="round"
-            >{#each ICONS.folder.paths ?? [] as d}<path {d} />{/each}</svg
-          ></span
-        >
+        <span slot="trigger" class="fb-icon">
+          <FileSystemIcon kind="folder" />
+        </span>
         <div slot="content" class="fb-git-tooltip">
           {#if folderStatsLoading}
             <LoadingSpinner size="0.9rem" />
@@ -255,17 +247,9 @@
       </Tooltip>
     {:else}
       <span class="fb-arrow-spacer" aria-hidden="true"></span>
-      <span class="fb-icon"
-        ><svg
-          viewBox="0 0 24 24"
-          fill="none"
-          stroke="currentColor"
-          stroke-width="1.8"
-          stroke-linecap="round"
-          stroke-linejoin="round"
-          >{#each ICONS.document.paths ?? [] as d}<path {d} />{/each}</svg
-        ></span
-      >
+      <span class="fb-icon">
+        <FileSystemIcon kind="file" />
+      </span>
     {/if}
     <span class="fb-name">{entry.name}</span>
     {#if !hideActions}
