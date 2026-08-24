@@ -227,6 +227,7 @@ describe("CodexAppServerAdapter", () => {
       "read_note",
       "update_note",
       "create_sticker",
+      "move_note",
       "move_sticker",
     ]);
     fake.enqueue({ id: 1, result: { thread: { id: "thr_voice" } } });

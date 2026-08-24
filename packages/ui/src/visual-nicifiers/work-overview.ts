@@ -302,7 +302,7 @@ function categoryIconName(category: string): string {
     case "edit":
       return "apply_patch";
     case "read":
-      return "view_image";
+      return "read";
     case "search":
       return "search";
     case "git":

@@ -366,6 +366,11 @@ export function visualToolIconNameForPreview(
   preview = visualToolPreviewText(block),
 ): string | undefined {
   const toolName = (block?.toolName ?? "").toLowerCase();
+  const commandLikeTool =
+    toolName === "exec_command" ||
+    toolName === "bash" ||
+    toolName === "shell" ||
+    toolName === "write_stdin";
   if (isImageGenerationToolName(toolName)) return "image_generation";
   if (toolName === "click" || toolName.endsWith(".click")) return "click";
   if (toolName === "take_screenshot" || toolName.endsWith(".take_screenshot"))
@@ -389,7 +394,7 @@ export function visualToolIconNameForPreview(
     return "git";
   }
   if (/^Search\b/.test(preview)) return "search";
-  if (/^Read logs?\b/.test(preview)) return "read";
+  if (commandLikeTool && /^Read\b/.test(preview)) return "read";
   if (/^Count\b/.test(preview)) return "read";
   if (/^Query JSON\b/.test(preview)) return "read";
   if (/^Process text\b/.test(preview)) return "read";

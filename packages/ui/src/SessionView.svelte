@@ -3110,6 +3110,9 @@
       if (event.method === "item/started" || event.method === "item/completed") {
         return;
       }
+      if (event.method === "thread/tokenUsage/updated") {
+        return;
+      }
     }
 
     if (event.method === "turn/started") {
