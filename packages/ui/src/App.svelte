@@ -208,6 +208,7 @@
     hydrateFromServer,
     pushError,
     clearErrors,
+    recordBrowserDiagnostic,
     type FrontendErrorEntry,
   } from "./errors";
   import { anchorLabel, eventLabel, type Event } from "./event-format";
@@ -242,6 +243,7 @@
   } from "./voice-controller";
   import {
     deriveVoiceContext,
+    resolveVoiceNoteMove,
     resolveVoiceStickerMove,
     resolveVoiceSessionTarget,
     resolveVoiceSessionMessageTarget,
@@ -7400,22 +7402,27 @@
     return { ok: true, note: updated };
   }
 
-  async function moveVoiceSticker(
-    args: Record<string, unknown>,
+  async function applyVoiceNoteMove(
+    move:
+      | { kind: "move"; noteId: string; anchors: string[] }
+      | { kind: "attach"; noteId: string; targetNoteId: string },
   ): Promise<unknown> {
-    const defaultAnchor = voiceToolAnchor();
-    const move = resolveVoiceStickerMove(args, $notesAll, defaultAnchor);
-    const sticker = $notesAll.find((note) => note.id === move.stickerId);
-    if (!sticker) throw new Error("Sticker not found");
+    const note = $notesAll.find((candidate) => candidate.id === move.noteId);
+    if (!note) throw new Error("Note not found");
     if (move.kind === "move") {
-      const updated = await persistVoiceNotePatch(sticker, {
+      const updated = await persistVoiceNotePatch(note, {
         anchors: move.anchors.map((anchor) => voiceToolAnchor(anchor)),
       });
       await revealNote(updated.id);
-      return { ok: true, action: "move", sticker: updated };
+      return { ok: true, action: "move", note: updated };
     }
 
-    const targetNote = $notesAll.find((note) => note.id === move.targetNoteId);
+    if (note.kind !== "emoji") {
+      throw new Error("Only stickers can attach to a note");
+    }
+    const targetNote = $notesAll.find(
+      (candidate) => candidate.id === move.targetNoteId,
+    );
     if (!targetNote) throw new Error("Target note not found");
     if (targetNote.kind === "link" || targetNote.kind === "emoji") {
       throw new Error("Target note cannot receive stickers");
@@ -7423,11 +7430,11 @@
     const updatedTarget = await persistVoiceNotePatch(targetNote, {
       body: appendInlineAttachmentRef(
         targetNote.body,
-        makeEmojiAttachmentRef({ body: sticker.body }),
+        makeEmojiAttachmentRef({ body: note.body }),
       ),
     });
     const deleteRes = await fetch(
-      apiUrl(`/api/notes/${encodeURIComponent(sticker.id)}`, sticker.daemonId),
+      apiUrl(`/api/notes/${encodeURIComponent(note.id)}`, note.daemonId),
       { method: "DELETE" },
     );
     if (!deleteRes.ok) {
@@ -7441,14 +7448,36 @@
           : `HTTP ${deleteRes.status}`;
       throw new Error(message);
     }
-    notesAll.set($notesAll.filter((note) => note.id !== sticker.id));
+    notesAll.set($notesAll.filter((candidate) => candidate.id !== note.id));
     await revealNote(updatedTarget.id);
     return {
       ok: true,
       action: "attach",
-      stickerId: sticker.id,
+      stickerId: note.id,
       note: updatedTarget,
     };
+  }
+
+  async function moveVoiceNote(
+    args: Record<string, unknown>,
+  ): Promise<unknown> {
+    const move = resolveVoiceNoteMove(args, $notesAll, voiceToolAnchor());
+    return applyVoiceNoteMove(move);
+  }
+
+  async function moveVoiceSticker(
+    args: Record<string, unknown>,
+  ): Promise<unknown> {
+    const move = resolveVoiceStickerMove(args, $notesAll, voiceToolAnchor());
+    return applyVoiceNoteMove(
+      move.kind === "attach"
+        ? {
+            kind: "attach",
+            noteId: move.stickerId,
+            targetNoteId: move.targetNoteId,
+          }
+        : { kind: "move", noteId: move.stickerId, anchors: move.anchors },
+    );
   }
 
   function voiceMessageText(message: {
@@ -7682,7 +7711,45 @@
     return { ok: true, source: target.source, agent, sessionId };
   }
 
-  async function handleVoiceTool(
+  function summarizeVoiceToolArgs(args: Record<string, unknown>) {
+    const summary: Record<string, unknown> = {};
+    for (const key of [
+      "id",
+      "source",
+      "sessionId",
+      "repoId",
+      "kind",
+      "anchor",
+      "area",
+      "destination",
+      "attachToNoteId",
+      "enabled",
+    ]) {
+      if (args[key] !== undefined) summary[key] = args[key];
+    }
+    if (Array.isArray(args.anchors)) summary.anchors = args.anchors.slice(0, 6);
+    if (typeof args.body === "string") summary.bodyLength = args.body.length;
+    if (typeof args.text === "string") summary.textLength = args.text.length;
+    return summary;
+  }
+
+  function summarizeVoiceToolResult(result: unknown) {
+    if (!result || typeof result !== "object") return {};
+    const record = result as Record<string, unknown>;
+    const summary: Record<string, unknown> = {};
+    for (const key of ["ok", "action", "kind", "source", "sessionId", "agent"]) {
+      if (record[key] !== undefined) summary[key] = record[key];
+    }
+    const note = record.note as { id?: unknown; anchors?: unknown } | undefined;
+    if (note && typeof note === "object") {
+      summary.noteId = note.id;
+      summary.noteAnchors = note.anchors;
+    }
+    if (record.stickerId !== undefined) summary.stickerId = record.stickerId;
+    return summary;
+  }
+
+  async function runVoiceTool(
     tool: string,
     args: Record<string, unknown>,
   ): Promise<unknown> {
@@ -7738,11 +7805,40 @@
     }
     if (tool === "create_note") return createVoiceNote(args);
     if (tool === "create_sticker") return createVoiceSticker(args);
+    if (tool === "move_note") return moveVoiceNote(args);
     if (tool === "move_sticker") return moveVoiceSticker(args);
     if (tool === "send_session_message") {
       return sendVoiceSessionMessage(args);
     }
     throw new Error(`Unsupported voice tool: ${tool}`);
+  }
+
+  async function handleVoiceTool(
+    tool: string,
+    args: Record<string, unknown>,
+  ): Promise<unknown> {
+    const startedAt = performance.now();
+    recordBrowserDiagnostic(`voice tool ${tool} started`, {
+      tool,
+      args: summarizeVoiceToolArgs(args),
+    });
+    try {
+      const result = await runVoiceTool(tool, args);
+      recordBrowserDiagnostic(`voice tool ${tool} ok`, {
+        tool,
+        elapsedMs: Math.round(performance.now() - startedAt),
+        result: summarizeVoiceToolResult(result),
+      });
+      return result;
+    } catch (error) {
+      recordBrowserDiagnostic(`voice tool ${tool} failed`, {
+        tool,
+        elapsedMs: Math.round(performance.now() - startedAt),
+        args: summarizeVoiceToolArgs(args),
+        error: error instanceof Error ? error.message : String(error),
+      });
+      throw error;
+    }
   }
 
   async function toggleVoiceMode(): Promise<void> {
@@ -11651,9 +11747,9 @@
                         {#each visibleSessions as s, i (openSessionRenderKey(s))}
                           <div
                             class="session-col"
-                            class:session-col-working={!!transientWorking[
-                              s.source
-                            ]}
+                            class:session-col-working={s.agent !== "shell" &&
+                              !transientExited[s.source] &&
+                              !!transientWorking[s.source]}
                             class:session-col-filtered={stripFilter &&
                               !stripFilter.matched.has(s.source)}
                             class:session-col-pickable={!!stripFilter &&

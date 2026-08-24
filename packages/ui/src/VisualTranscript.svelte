@@ -1,5 +1,7 @@
 <script lang="ts">
   import { onDestroy, tick } from "svelte";
+  import { flip } from "svelte/animate";
+  import { scale } from "svelte/transition";
   import { marked } from "marked";
   import DOMPurify from "dompurify";
   import { apiUrl } from "./api";
@@ -91,6 +93,20 @@
   }
 
   type VisualWorkOverview = ReturnType<typeof visualWorkOverview>;
+
+  type WorkSummaryPillItem =
+    | { kind: "changed"; key: string; pulseValue: number }
+    | { kind: "response"; key: string; pulseValue: number }
+    | {
+        kind: "category";
+        key: string;
+        category: VisualWorkOverview["categories"][number];
+        pulseValue: number;
+      }
+    | { kind: "remote"; key: string; remoteHost: string }
+    | { kind: "time"; key: string }
+    | { kind: "tokens"; key: string; pulseValue: number }
+    | { kind: "tool-percent"; key: string; pulseValue: number };
 
   interface NormalizedBlock {
     type:
@@ -255,6 +271,29 @@
         watch(next);
       },
       destroy: stop,
+    };
+  }
+
+  function pulseOnValueChange(node: HTMLElement, value: unknown) {
+    let current = value;
+    let timeout: ReturnType<typeof setTimeout> | null = null;
+
+    return {
+      update(next: unknown) {
+        if (Object.is(next, current)) return;
+        current = next;
+        node.classList.remove("work-summary-value-changed");
+        void node.offsetWidth;
+        node.classList.add("work-summary-value-changed");
+        if (timeout) clearTimeout(timeout);
+        timeout = setTimeout(() => {
+          node.classList.remove("work-summary-value-changed");
+          timeout = null;
+        }, 320);
+      },
+      destroy() {
+        if (timeout) clearTimeout(timeout);
+      },
     };
   }
 
@@ -1546,6 +1585,60 @@
     return additions > 0 || deletions > 0 ? { additions, deletions } : undefined;
   }
 
+  function workSummaryPillItems(
+    overview: VisualWorkOverview,
+    showInlineMeta: boolean,
+  ): WorkSummaryPillItem[] {
+    const pills: WorkSummaryPillItem[] = [];
+    if (overview.changedFiles.length > 0) {
+      pills.push({
+        kind: "changed",
+        key: "changed",
+        pulseValue: overview.changedFiles.length,
+      });
+    }
+    if (overview.responseCount > 0) {
+      pills.push({
+        kind: "response",
+        key: "response",
+        pulseValue: overview.responseCount,
+      });
+    }
+    for (const category of overview.categories) {
+      pills.push({
+        kind: "category",
+        key: `category:${category.category}`,
+        category,
+        pulseValue: category.count,
+      });
+    }
+    for (const remoteHost of overview.remoteHosts) {
+      pills.push({
+        kind: "remote",
+        key: `remote:${remoteHost}`,
+        remoteHost,
+      });
+    }
+    if (showInlineMeta && overview.time.elapsedMs > 0) {
+      pills.push({ kind: "time", key: "time" });
+    }
+    if (overview.tokens.total > 0) {
+      pills.push({
+        kind: "tokens",
+        key: "tokens",
+        pulseValue: overview.tokens.total,
+      });
+    }
+    if (showInlineMeta && overview.time.elapsedMs > 0) {
+      pills.push({
+        kind: "tool-percent",
+        key: "tool-percent",
+        pulseValue: overview.time.toolWaitPercent,
+      });
+    }
+    return pills;
+  }
+
   function workChangedSummaryForOverview(
     overview: VisualWorkOverview,
   ): WorkChangedSummary {
@@ -1933,26 +2026,24 @@
 {#snippet renderWorkChangedSummary(
   overview: VisualWorkOverview,
 )}
-  {#if overview.changedFiles.length > 0}
-    <Tooltip variant="wide" escapeClip>
-      <span slot="trigger" class="work-summary-chip dim">
-        <ToolIcon name="apply_patch" />
-        <span>
-          Changed {overview.changedFiles.length}
-          {overview.changedFiles.length === 1 ? "file" : "files"}
-        </span>
+  <Tooltip variant="wide" escapeClip>
+    <span slot="trigger" class="work-summary-chip dim">
+      <ToolIcon name="apply_patch" />
+      <span use:pulseOnValueChange={overview.changedFiles.length}>
+        Changed {overview.changedFiles.length}
+        {overview.changedFiles.length === 1 ? "file" : "files"}
       </span>
-      <span slot="content" class="work-changed-tooltip">
-        <ChangedFilesTooltipBody
-          summary={workChangedSummaryForOverview(overview)}
-          worktreePath={sessionCwd}
-          {daemonId}
-          layout="tree"
-          labels={{ unstaged: "changed" }}
-        />
-      </span>
-    </Tooltip>
-  {/if}
+    </span>
+    <span slot="content" class="work-changed-tooltip">
+      <ChangedFilesTooltipBody
+        summary={workChangedSummaryForOverview(overview)}
+        worktreePath={sessionCwd}
+        {daemonId}
+        layout="tree"
+        labels={{ unstaged: "changed" }}
+      />
+    </span>
+  </Tooltip>
 {/snippet}
 
 {#snippet renderWorkOverviewPills(
@@ -1960,58 +2051,72 @@
   showInlineMeta = true,
 )}
   <span class="work-summary-pills">
-    {@render renderWorkChangedSummary(overview)}
-    {#if overview.responseCount > 0}
+    {#each workSummaryPillItems(overview, showInlineMeta) as pill (pill.key)}
       <span
-        class="work-summary-chip"
-        title={`${overview.responseCount} agent responses`}
+        class="work-summary-pill-shell"
+        animate:flip={{ duration: 180 }}
+        transition:scale={{ duration: 130, start: 0.92 }}
       >
-        <ToolIcon name="agent_response" />
-        <span>{overview.responseCount}</span>
-      </span>
-    {/if}
-    {#each overview.categories as category (category.category)}
-      <span
-        class="work-summary-chip dim"
-        title={`${category.count} ${category.label}${
-          category.count === 1 ? "" : "s"
-        }`}
-      >
-        <ToolIcon name={category.iconName} />
-        <span>{category.count}</span>
+        {#if pill.kind === "changed"}
+          {@render renderWorkChangedSummary(overview)}
+        {:else if pill.kind === "response"}
+          <span
+            class="work-summary-chip"
+            title={`${overview.responseCount} agent responses`}
+          >
+            <ToolIcon name="agent_response" />
+            <span use:pulseOnValueChange={pill.pulseValue}>
+              {overview.responseCount}
+            </span>
+          </span>
+        {:else if pill.kind === "category"}
+          <span
+            class="work-summary-chip dim"
+            title={`${pill.category.count} ${pill.category.label}${
+              pill.category.count === 1 ? "" : "s"
+            }`}
+          >
+            <ToolIcon name={pill.category.iconName} />
+            <span use:pulseOnValueChange={pill.pulseValue}>
+              {pill.category.count}
+            </span>
+          </span>
+        {:else if pill.kind === "remote"}
+          {@render renderRemoteHostBadge(pill.remoteHost)}
+        {:else if pill.kind === "time"}
+          <span
+            class="work-summary-chip dim numeric"
+            title={workOverviewTimeLabel(overview)}
+          >
+            {formatVisualDurationSeconds(overview.time.elapsedMs / 1000)}
+          </span>
+        {:else if pill.kind === "tokens"}
+          <span
+            class="work-summary-chip dim numeric"
+            title={`${overview.tokens.total.toLocaleString()} new tokens · ${overview.tokens.freshInput.toLocaleString()} fresh input · ${overview.tokens.input.toLocaleString()} reported input · ${overview.tokens.cachedInput.toLocaleString()} cached · ${overview.tokens.output.toLocaleString()} output${
+              overview.tokens.reasoningOutput > 0
+                ? ` · ${overview.tokens.reasoningOutput.toLocaleString()} reasoning`
+                : ""
+            } · ${overview.tokens.reportedTotal.toLocaleString()} reported total`}
+          >
+            <span use:pulseOnValueChange={pill.pulseValue}>
+              {overview.tokens.total.toLocaleString()}
+            </span>
+            <span>tok</span>
+          </span>
+        {:else if pill.kind === "tool-percent"}
+          <span
+            class="work-summary-chip dim numeric"
+            title={`${overview.time.toolWaitPercent}% tool wait · ${overview.time.agentPercent}% agent`}
+          >
+            <span use:pulseOnValueChange={pill.pulseValue}>
+              {overview.time.toolWaitPercent}%
+            </span>
+            <span>tools</span>
+          </span>
+        {/if}
       </span>
     {/each}
-    {#each overview.remoteHosts as remoteHost (remoteHost)}
-      {@render renderRemoteHostBadge(remoteHost)}
-    {/each}
-    {#if showInlineMeta && overview.time.elapsedMs > 0}
-      <span
-        class="work-summary-chip dim numeric"
-        title={workOverviewTimeLabel(overview)}
-      >
-        {formatVisualDurationSeconds(overview.time.elapsedMs / 1000)}
-      </span>
-    {/if}
-    {#if overview.tokens.total > 0}
-      <span
-        class="work-summary-chip dim numeric"
-        title={`${overview.tokens.total.toLocaleString()} new tokens · ${overview.tokens.freshInput.toLocaleString()} fresh input · ${overview.tokens.input.toLocaleString()} reported input · ${overview.tokens.cachedInput.toLocaleString()} cached · ${overview.tokens.output.toLocaleString()} output${
-          overview.tokens.reasoningOutput > 0
-            ? ` · ${overview.tokens.reasoningOutput.toLocaleString()} reasoning`
-            : ""
-        } · ${overview.tokens.reportedTotal.toLocaleString()} reported total`}
-      >
-        {overview.tokens.total.toLocaleString()} tok
-      </span>
-    {/if}
-    {#if showInlineMeta && overview.time.elapsedMs > 0}
-      <span
-        class="work-summary-chip dim numeric"
-        title={`${overview.time.toolWaitPercent}% tool wait · ${overview.time.agentPercent}% agent`}
-      >
-        {overview.time.toolWaitPercent}% tools
-      </span>
-    {/if}
   </span>
 {/snippet}
 
@@ -3874,6 +3979,13 @@
     min-width: 0;
     overflow: hidden;
   }
+  .work-summary-pill-shell {
+    display: inline-flex;
+    align-items: center;
+    flex: 0 0 auto;
+    min-width: 0;
+    will-change: transform;
+  }
   .work-summary-chip {
     display: inline-flex;
     align-items: center;
@@ -3891,12 +4003,46 @@
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
+    transition:
+      border-color 130ms ease,
+      background 130ms ease,
+      color 130ms ease,
+      transform 130ms ease;
   }
   .work-summary-chip.dim {
     color: var(--text-muted);
   }
   .work-summary-chip.numeric {
     font-variant-numeric: tabular-nums;
+  }
+  .work-summary-value-changed {
+    display: inline-block;
+    animation: work-summary-value-pop 320ms cubic-bezier(0.2, 0.9, 0.2, 1);
+  }
+  @keyframes work-summary-value-pop {
+    0% {
+      color: var(--text-muted);
+      transform: translateY(0) scale(1);
+    }
+    38% {
+      color: var(--text-1);
+      transform: translateY(-0.06rem) scale(1.22);
+    }
+    100% {
+      color: inherit;
+      transform: translateY(0) scale(1);
+    }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .work-summary-pill-shell {
+      will-change: auto;
+    }
+    .work-summary-chip {
+      transition: none;
+    }
+    .work-summary-value-changed {
+      animation: none;
+    }
   }
   .work-changed-tooltip {
     min-width: min(32rem, calc(100vw - 3rem));
