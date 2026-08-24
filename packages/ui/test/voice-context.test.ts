@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
   deriveVoiceContext,
+  resolveVoiceNoteMove,
   resolveVoiceStickerMove,
   resolveVoiceSessionTarget,
   resolveVoiceSessionMessageTarget,
@@ -164,6 +165,66 @@ describe("deriveVoiceContext", () => {
         "workspace:voice",
       ),
     ).toThrow("Sticker not found");
+  });
+
+  test("resolves note moves to semantic anchors and sticker attachments", () => {
+    const notes = [
+      {
+        id: "sticker-a",
+        body: "sparkle-star",
+        anchors: ["worktree:/old"],
+        kind: "emoji",
+      },
+      {
+        id: "note-a",
+        body: "Target note",
+        anchors: ["worktree:/new"],
+      },
+    ];
+
+    expect(
+      resolveVoiceNoteMove(
+        { id: "note-a", area: "top area" },
+        notes,
+        "worktree:/active",
+      ),
+    ).toEqual({
+      kind: "move",
+      noteId: "note-a",
+      anchors: ["workspace:voice"],
+    });
+
+    expect(
+      resolveVoiceNoteMove(
+        { id: "note-a", anchors: ["global", "worktree:/other"] },
+        notes,
+        "worktree:/active",
+      ),
+    ).toEqual({
+      kind: "move",
+      noteId: "note-a",
+      anchors: ["workspace:voice", "worktree:/other"],
+    });
+
+    expect(
+      resolveVoiceNoteMove(
+        { id: "sticker-a", attachToNoteId: "note-a" },
+        notes,
+        "worktree:/active",
+      ),
+    ).toEqual({
+      kind: "attach",
+      noteId: "sticker-a",
+      targetNoteId: "note-a",
+    });
+
+    expect(() =>
+      resolveVoiceNoteMove(
+        { id: "note-a", attachToNoteId: "sticker-a" },
+        notes,
+        "worktree:/active",
+      ),
+    ).toThrow("Only stickers can attach to a note");
   });
 
   test("falls back to the active worktree and newest session outside zen", () => {

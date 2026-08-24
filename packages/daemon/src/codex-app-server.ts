@@ -126,13 +126,14 @@ export interface CodexRealtimeVoiceStart {
 export const DEFAULT_REALTIME_VOICE = "sol";
 
 const VOICE_INSTRUCTIONS =
-  "You are Treetop's global voice assistant. Keep spoken responses concise. " +
+  "You are Treetop's global voice assistant. Reply briefly, usually in one short sentence. " +
   "Use get_context whenever the current project, session, notes, or Zen mode matters. " +
   "Only focus projects or sessions and change Zen mode when the user asks. " +
   "Use scroll_to when the user asks to show, jump to, or scroll to a session, note, project, worktree, or lane. " +
   "Use read_session_messages to inspect recent session prompts and read_recent_completions to inspect recently completed sessions. " +
   "When the user asks you to tell, ask, reply, continue, or send instructions to an existing agent session, use send_session_message. " +
   "Only create, update, or move notes and stickers when the user explicitly asks for a note, reminder, sticker, or persistent workspace artifact. " +
+  "Use move_note to move notes or stickers between semantic areas such as the top area, active project, session, lane, worktree, or workspace; use attachToNoteId only when putting a sticker into a note. " +
   "Do not run shell commands or edit files from voice mode. " +
   "Never claim a UI action succeeded unless its tool response says it did.";
 
@@ -306,9 +307,31 @@ const VOICE_TOOLS: JsonObject[] = [
   },
   {
     type: "function",
+    name: "move_note",
+    description:
+      "Move an existing note or sticker by note id to another semantic anchor/top area, or attach a sticker into another note. Use area:'top' for the global top area.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        id: { type: "string" },
+        anchor: { type: "string" },
+        anchors: { type: "array", items: { type: "string" } },
+        area: {
+          type: "string",
+          enum: ["top", "top area", "global", "workspace", "active"],
+        },
+        destination: { type: "string" },
+        attachToNoteId: { type: "string" },
+      },
+      required: ["id"],
+      additionalProperties: false,
+    },
+  },
+  {
+    type: "function",
     name: "move_sticker",
     description:
-      "Move an existing sticker by note id. Provide an anchor to pin it elsewhere, or attachToNoteId to attach it into another note.",
+      "Compatibility alias for moving an existing sticker by note id. Prefer move_note unless the user specifically says sticker.",
     inputSchema: {
       type: "object",
       properties: {

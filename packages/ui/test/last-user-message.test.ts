@@ -3100,6 +3100,19 @@ describe("visual tool payload display helpers", () => {
     });
   });
 
+  it("uses the read icon for file read previews", () => {
+    const block = {
+      type: "tool_use",
+      toolName: "exec_command",
+      toolInput: {
+        cmd: "sed -n '1,220p' packages/ui/test/icons.test.ts",
+      },
+    };
+
+    expect(visualToolPreviewText(block)).toBe("Read icons.test.ts:1-220");
+    expect(visualToolIconNameForPreview(block)).toBe("read");
+  });
+
   it("summarizes screen session listings", () => {
     const block = {
       type: "tool_use",
@@ -6038,6 +6051,13 @@ describe("visualWorkOverview", () => {
         ["edit", 1],
         ["read", 1],
       ]);
+    expect(overview.categories.find(({ category }) => category === "read"))
+      .toEqual({
+        category: "read",
+        count: 1,
+        label: "read",
+        iconName: "read",
+      });
     expect(overview.changedFiles).toEqual([
       {
         path: "packages/ui/src/VisualTranscript.svelte",

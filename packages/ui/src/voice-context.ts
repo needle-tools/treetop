@@ -261,8 +261,84 @@ export type VoiceStickerMove =
   | { kind: "move"; stickerId: string; anchors: string[] }
   | { kind: "attach"; stickerId: string; targetNoteId: string };
 
+export type VoiceNoteMove =
+  | { kind: "move"; noteId: string; anchors: string[] }
+  | { kind: "attach"; noteId: string; targetNoteId: string };
+
 function cleanVoiceString(value: unknown): string {
   return typeof value === "string" ? value.trim() : "";
+}
+
+function voiceAreaAnchor(value: string): string | null {
+  const normalized = value.toLowerCase().replace(/[\s_-]+/g, "");
+  if (
+    normalized === "top" ||
+    normalized === "toparea" ||
+    normalized === "global" ||
+    normalized === "workspace" ||
+    normalized === "voice" ||
+    normalized === "home"
+  ) {
+    return "workspace:voice";
+  }
+  return null;
+}
+
+function voiceMoveAnchors(
+  args: Record<string, unknown>,
+  defaultAnchor: string,
+): string[] {
+  const anchors = Array.isArray(args.anchors)
+    ? args.anchors
+        .map((anchor) => cleanVoiceString(anchor))
+        .map((anchor) => voiceAreaAnchor(anchor) ?? anchor)
+        .filter((anchor) => anchor.length > 0)
+    : [];
+  if (anchors.length > 0) return anchors;
+
+  const area = cleanVoiceString(args.area);
+  const areaAnchor = area ? voiceAreaAnchor(area) : null;
+  if (areaAnchor) return [areaAnchor];
+
+  const destination = cleanVoiceString(args.destination);
+  const destinationAnchor = destination ? voiceAreaAnchor(destination) : null;
+  if (destinationAnchor) return [destinationAnchor];
+
+  const singleAnchor = cleanVoiceString(args.anchor);
+  if (singleAnchor) return [voiceAreaAnchor(singleAnchor) ?? singleAnchor];
+
+  return [defaultAnchor];
+}
+
+export function resolveVoiceNoteMove(
+  args: Record<string, unknown>,
+  notes: readonly Pick<VoiceNoteInput, "id" | "kind">[],
+  defaultAnchor: string,
+): VoiceNoteMove {
+  const noteId = cleanVoiceString(args.id);
+  if (!noteId) throw new Error("id must be a non-empty string");
+  const note = notes.find((candidate) => candidate.id === noteId);
+  if (!note) throw new Error("Note not found");
+
+  const targetNoteId = cleanVoiceString(args.attachToNoteId);
+  if (targetNoteId) {
+    if (targetNoteId === noteId) {
+      throw new Error("note cannot attach to itself");
+    }
+    if (note.kind !== "emoji") {
+      throw new Error("Only stickers can attach to a note");
+    }
+    if (!notes.some((candidate) => candidate.id === targetNoteId)) {
+      throw new Error("Target note not found");
+    }
+    return { kind: "attach", noteId, targetNoteId };
+  }
+
+  return {
+    kind: "move",
+    noteId,
+    anchors: voiceMoveAnchors(args, defaultAnchor),
+  };
 }
 
 export function resolveVoiceStickerMove(
@@ -270,33 +346,16 @@ export function resolveVoiceStickerMove(
   notes: readonly Pick<VoiceNoteInput, "id" | "kind">[],
   defaultAnchor: string,
 ): VoiceStickerMove {
-  const stickerId = cleanVoiceString(args.id);
-  if (!stickerId) throw new Error("id must be a non-empty string");
-  const sticker = notes.find((note) => note.id === stickerId);
+  const move = resolveVoiceNoteMove(args, notes, defaultAnchor);
+  const sticker = notes.find((note) => note.id === move.noteId);
   if (!sticker || sticker.kind !== "emoji") throw new Error("Sticker not found");
-
-  const targetNoteId = cleanVoiceString(args.attachToNoteId);
-  if (targetNoteId) {
-    if (targetNoteId === stickerId) {
-      throw new Error("sticker cannot attach to itself");
-    }
-    if (!notes.some((note) => note.id === targetNoteId)) {
-      throw new Error("Target note not found");
-    }
-    return { kind: "attach", stickerId, targetNoteId };
-  }
-
-  const anchors = Array.isArray(args.anchors)
-    ? args.anchors
-        .map((anchor) => cleanVoiceString(anchor))
-        .filter((anchor) => anchor.length > 0)
-    : [];
-  const singleAnchor = cleanVoiceString(args.anchor);
-  return {
-    kind: "move",
-    stickerId,
-    anchors: anchors.length > 0 ? anchors : [singleAnchor || defaultAnchor],
-  };
+  return move.kind === "attach"
+    ? {
+        kind: "attach",
+        stickerId: move.noteId,
+        targetNoteId: move.targetNoteId,
+      }
+    : { kind: "move", stickerId: move.noteId, anchors: move.anchors };
 }
 
 export function resolveVoiceSessionTarget(

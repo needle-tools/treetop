@@ -1209,6 +1209,56 @@ describe("codex event stream hub", () => {
     });
   });
 
+  test("normalizes live app-server thread token usage notifications", () => {
+    const live = codexLiveMessagesFromEvent({
+      kind: "notification",
+      method: "thread/tokenUsage/updated",
+      params: {
+        threadId: "thread-usage",
+        turnId: "turn-usage",
+        tokenUsage: {
+          last: {
+            inputTokens: 2345,
+            cachedInputTokens: 2000,
+            cacheWriteInputTokens: 12,
+            outputTokens: 91,
+            reasoningOutputTokens: 17,
+            totalTokens: 2453,
+          },
+          total: {
+            inputTokens: 3000,
+            cachedInputTokens: 2500,
+            cacheWriteInputTokens: 12,
+            outputTokens: 121,
+            reasoningOutputTokens: 22,
+            totalTokens: 3143,
+          },
+        },
+      },
+      threadId: "thread-usage",
+      turnId: "turn-usage",
+      receivedAt: "2026-06-22T10:00:02.000Z",
+    });
+
+    expect(live).toEqual([
+      {
+        id: "codex-usage-turn-usage-2026-06-22T10:00:02.000Z",
+        role: "assistant",
+        timestamp: "2026-06-22T10:00:02.000Z",
+        tokensUsed: 108,
+        tokenUsage: {
+          input: 2345,
+          cachedInput: 2000,
+          cacheWriteInput: 12,
+          output: 91,
+          reasoningOutput: 17,
+          total: 2453,
+        },
+        blocks: [],
+      },
+    ]);
+  });
+
   test("normalizes root app-server usage fields in live events", () => {
     const live = codexLiveMessagesFromEvent({
       kind: "notification",

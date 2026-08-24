@@ -851,6 +851,8 @@ function codexTokenUsageFromPayload(
   context: CodexLiveNormalizeContext = {},
 ): CodexAppTokenUsage | undefined {
   const sources = codexTokenUsageSources(payload);
+  const threadUsage = codexThreadTokenUsageFromSources(sources, context);
+  if (threadUsage) return threadUsage;
   const lastUsage = codexTokenUsageFromSources(
     sources,
     "last_token_usage",
@@ -875,6 +877,7 @@ function codexTokenUsageFromPayload(
 function codexPayloadHasTokenUsage(payload: Record<string, unknown>): boolean {
   return codexTokenUsageSources(payload).some((source) =>
     [
+      "tokenUsage",
       "last_token_usage",
       "lastTokenUsage",
       "usage",
@@ -882,6 +885,34 @@ function codexPayloadHasTokenUsage(payload: Record<string, unknown>): boolean {
       "totalTokenUsage",
     ].some((key) => codexObjectField(source, key) !== undefined),
   );
+}
+
+function codexThreadTokenUsageFromSources(
+  sources: Record<string, unknown>[],
+  context: CodexLiveNormalizeContext,
+): CodexAppTokenUsage | undefined {
+  for (const source of sources) {
+    const tokenUsage = codexObjectField(source, "tokenUsage");
+    if (!tokenUsage) continue;
+    const lastUsage = codexTokenUsageFromObject(
+      codexObjectField(tokenUsage, "last"),
+    );
+    const totalUsage = codexTokenUsageFromObject(
+      codexObjectField(tokenUsage, "total"),
+    );
+    if (lastUsage) {
+      if (totalUsage) context.previousTotalTokenUsage = totalUsage;
+      return lastUsage;
+    }
+    if (!totalUsage) continue;
+    const delta = codexTokenUsageDelta(
+      totalUsage,
+      context.previousTotalTokenUsage,
+    );
+    context.previousTotalTokenUsage = totalUsage;
+    if (codexTokenUsageHasContent(delta)) return delta;
+  }
+  return undefined;
 }
 
 function codexTokenUsageSources(
