@@ -462,7 +462,7 @@
     </div>
     {#if hovered.diff !== undefined}
       {#if hovered.diff.trim()}
-        <Diff text={hovered.diff} />
+        <Diff text={hovered.diff} hideSingleFileHeader />
       {:else}
         <span class="file-diff-empty">No textual diff in this session.</span>
       {/if}
@@ -473,6 +473,7 @@
         kind={DIFF_KIND[hovered.kind]}
         {sha}
         {daemonId}
+        hideSingleFileHeader
       />
     {/if}
   </div>

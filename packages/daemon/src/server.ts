@@ -86,7 +86,10 @@ import { openIn, openDefault, detectEditors } from "./open";
 import { EventLog } from "./events";
 import { ErrorLog, type ErrorKind, type ErrorSource } from "./errors";
 import { ShellsLog } from "./shells";
-import { OllamaSessionsLog } from "./ollama-sessions";
+import {
+  OllamaSessionsLog,
+  type OllamaImageAttachment,
+} from "./ollama-sessions";
 import { feedShellInput, clearShellInputBuffer } from "./shell-input";
 import { handleMcp, mcpServerInfo, type JsonRpcRequest } from "./mcp";
 import * as inflight from "./inflight";
@@ -641,6 +644,43 @@ const externalProcessRows = throttleAsync(async () => {
  *  user's Stop button has bite. One generation per termId at a time
  *  — a POST while another is running cancels the prior. */
 const ollamaChatAborts = new Map<string, AbortController>();
+
+function normalizeOllamaChatAttachments(value: unknown): OllamaImageAttachment[] {
+  if (!Array.isArray(value)) return [];
+  const out: OllamaImageAttachment[] = [];
+  for (const item of value) {
+    if (!item || typeof item !== "object") continue;
+    const record = item as Record<string, unknown>;
+    if (typeof record.path !== "string" || !record.path) continue;
+    out.push({
+      path: record.path,
+      ...(typeof record.mimeType === "string"
+        ? { mimeType: record.mimeType }
+        : {}),
+      ...(typeof record.title === "string" ? { title: record.title } : {}),
+      ...(typeof record.hasAlpha === "boolean"
+        ? { hasAlpha: record.hasAlpha }
+        : {}),
+    });
+  }
+  return out;
+}
+
+async function ollamaAttachmentImagesForApi(
+  attachments: readonly OllamaImageAttachment[],
+): Promise<string[]> {
+  const images: string[] = [];
+  for (const attachment of attachments) {
+    try {
+      images.push((await readFile(attachment.path)).toString("base64"));
+    } catch {
+      // The transcript still records the attachment path, but a missing
+      // file should not crash an existing Ollama conversation.
+    }
+  }
+  return images;
+}
+
 const summaries = await SummariesStore.open(WORKSPACE_PATH);
 const repoSummaries = await RepoSummariesStore.open(WORKSPACE_PATH);
 /** In-memory `source.toLowerCase()` → AI title map, mirroring the
@@ -5266,11 +5306,13 @@ const server = Bun.serve<TermWsData, never>({
         const body = (await req.json().catch(() => null)) as {
           termId?: unknown;
           content?: unknown;
+          attachments?: unknown;
         } | null;
         const termId = typeof body?.termId === "string" ? body.termId : "";
         const content = typeof body?.content === "string" ? body.content : "";
+        const attachments = normalizeOllamaChatAttachments(body?.attachments);
         if (!termId) return json({ error: "termId required" }, { status: 400 });
-        if (!content.trim()) {
+        if (!content.trim() && attachments.length === 0) {
           return json({ error: "content required" }, { status: 400 });
         }
         // Read the prior conversation up front so we can fail fast on a
@@ -5291,6 +5333,7 @@ const server = Bun.serve<TermWsData, never>({
             ts: userTs,
             role: "user",
             content,
+            ...(attachments.length > 0 ? { attachments } : {}),
             model: prior.model,
           });
         } catch (e) {
@@ -5307,7 +5350,13 @@ const server = Bun.serve<TermWsData, never>({
 
         const messagesForUpstream = [
           ...prior.messages,
-          { role: "user" as const, content },
+          {
+            role: "user" as const,
+            content,
+            ...(attachments.length > 0
+              ? { images: await ollamaAttachmentImagesForApi(attachments) }
+              : {}),
+          },
         ];
         const stream = new ReadableStream<Uint8Array>({
           async start(controller) {

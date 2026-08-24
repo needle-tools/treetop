@@ -55,6 +55,26 @@ export function parseDiff(text: string): DiffLine[] {
   return text.split("\n").map(classifyLine);
 }
 
+export function withoutSingleFileDiffHeader(
+  lines: readonly DiffLine[],
+): DiffLine[] {
+  const firstFile = lines.findIndex((line) => line.kind === "file");
+  if (firstFile < 0) return [...lines];
+  const nextFile = lines.findIndex(
+    (line, index) => index > firstFile && line.kind === "file",
+  );
+  if (nextFile >= 0) return [...lines];
+
+  let firstBody = firstFile;
+  while (
+    firstBody < lines.length &&
+    (lines[firstBody]?.kind === "file" || lines[firstBody]?.kind === "meta")
+  ) {
+    firstBody++;
+  }
+  return [...lines.slice(0, firstFile), ...lines.slice(firstBody)];
+}
+
 /**
  * Group a parsed diff by file. Useful for rendering a sidebar of files with
  * per-file add/remove counts. `header` collects everything before the first

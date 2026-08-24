@@ -148,6 +148,54 @@ describe("parseOllamaJsonl", () => {
     ]);
   });
 
+  test("renders Ollama user image attachments as media blocks", () => {
+    const text = build([
+      {
+        kind: "header",
+        termId: "t-vision",
+        wt: "/p",
+        spawnCwd: "/p",
+        model: "qwen2.5vl:0.8b",
+        createdAt: "2026-01-01T00:00:00Z",
+      },
+      {
+        kind: "turn",
+        ts: "2026-01-01T00:00:01Z",
+        role: "user",
+        content: "describe this",
+        attachments: [
+          {
+            path: "/tmp/ollama-image.png",
+            title: "ollama-image.png",
+            mimeType: "image/png",
+            hasAlpha: false,
+          },
+        ],
+      },
+    ]);
+
+    const out = parseOllamaJsonl(text);
+
+    expect(out.messages).toEqual([
+      {
+        role: "user",
+        blocks: [
+          {
+            type: "media",
+            mediaKind: "image",
+            path: "/tmp/ollama-image.png",
+            title: "ollama-image.png",
+            alt: "ollama-image.png",
+            mimeType: "image/png",
+            hasAlpha: false,
+          },
+          { type: "text", text: "describe this" },
+        ],
+        timestamp: "2026-01-01T00:00:01Z",
+      },
+    ]);
+  });
+
   test("turn entries beat output entries in the same file", () => {
     // Mixed file: a pre-cleanup session captured via PTY (output
     // entries) that was later continued via the chat API (turn

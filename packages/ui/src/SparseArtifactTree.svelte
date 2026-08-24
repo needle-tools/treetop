@@ -169,7 +169,7 @@
               <span slot="content" class="sparse-artifact-diff">
                 {#if diffChanges.length === 1}
                   {@const change = diffChanges[0]}
-                  <Diff text={change.diff ?? ""} />
+                  <Diff text={change.diff ?? ""} hideSingleFileHeader />
                 {:else if diffChanges.length > 1}
                   <span class="sparse-artifact-change-chain">
                     {#each diffChanges as change, index}
@@ -177,7 +177,7 @@
                         <span class="sparse-artifact-change-label">
                           {changeLabel(change, index)}
                         </span>
-                        <Diff text={change.diff ?? ""} />
+                        <Diff text={change.diff ?? ""} hideSingleFileHeader />
                       </span>
                     {/each}
                   </span>
@@ -188,6 +188,7 @@
                     kind={gitDiffKind}
                     {sha}
                     {daemonId}
+                    hideSingleFileHeader
                   />
                 {/if}
               </span>

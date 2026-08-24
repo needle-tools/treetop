@@ -79,6 +79,7 @@ export interface NormalizedBlock {
   inlineDataHash?: string;
   title?: string;
   alt?: string;
+  hasAlpha?: boolean;
   /** subagent only, and mirrored onto related subagent tool rows. */
   subagentId?: string;
   subagentNickname?: string;
@@ -1909,15 +1910,31 @@ export function parseOllamaJsonl(text: string): NormalizedSession {
       // A garbled turn shouldn't lose the rest of the conversation.
       const role = obj.role;
       const content = obj.content;
+      const attachments = parseOllamaTurnAttachments(obj.attachments);
       if (
         (role !== "user" && role !== "assistant") ||
         typeof content !== "string"
       ) {
         continue;
       }
+      const blocks: NormalizedBlock[] = [
+        ...attachments.map(
+          (attachment): NormalizedBlock => ({
+            type: "media",
+            mediaKind: "image",
+            path: attachment.path,
+            title: attachment.title,
+            alt: attachment.title,
+            mimeType: attachment.mimeType,
+            hasAlpha: attachment.hasAlpha,
+          }),
+        ),
+        ...(content ? [{ type: "text" as const, text: content }] : []),
+      ];
+      if (blocks.length === 0) continue;
       const msg: NormalizedMessage = {
         role,
-        blocks: [{ type: "text", text: content }],
+        blocks,
       };
       if (typeof obj.ts === "string") msg.timestamp = obj.ts;
       if (role === "assistant") {
@@ -1932,6 +1949,39 @@ export function parseOllamaJsonl(text: string): NormalizedSession {
   }
   if (startedAt) out.startedAt = startedAt;
   if (endedAt) out.endedAt = endedAt;
+  return out;
+}
+
+function parseOllamaTurnAttachments(
+  value: unknown,
+): {
+  path: string;
+  title?: string;
+  mimeType?: string;
+  hasAlpha?: boolean;
+}[] {
+  if (!Array.isArray(value)) return [];
+  const out: {
+    path: string;
+    title?: string;
+    mimeType?: string;
+    hasAlpha?: boolean;
+  }[] = [];
+  for (const item of value) {
+    if (!item || typeof item !== "object") continue;
+    const record = item as Record<string, unknown>;
+    if (typeof record.path !== "string" || !record.path) continue;
+    out.push({
+      path: record.path,
+      ...(typeof record.title === "string" ? { title: record.title } : {}),
+      ...(typeof record.mimeType === "string"
+        ? { mimeType: record.mimeType }
+        : {}),
+      ...(typeof record.hasAlpha === "boolean"
+        ? { hasAlpha: record.hasAlpha }
+        : {}),
+    });
+  }
   return out;
 }
 
