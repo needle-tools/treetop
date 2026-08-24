@@ -58,6 +58,25 @@ export type CodexAppServerEvent =
 
 export type CodexAppServerListener = (event: CodexAppServerEvent) => void;
 
+export interface CodexAppServerRecordedFrame {
+  seq: number;
+  at: string;
+  direction: "client" | "server";
+  raw: string;
+  message: JsonObject;
+}
+
+export interface CodexAppServerRecording {
+  id: string;
+  startedAt: string;
+  endedAt?: string;
+  frames: CodexAppServerRecordedFrame[];
+}
+
+export type CodexAppServerRpcRecorder = (
+  frame: Omit<CodexAppServerRecordedFrame, "seq" | "at">,
+) => void;
+
 export interface CodexTurnStart {
   threadId: string;
   turnId: string;
@@ -425,6 +444,8 @@ export class CodexAppServerAdapter implements NativeAgentAdapter {
   private readonly history = new Map<string, CodexAppServerEvent[]>();
   private readonly globalHistory: CodexAppServerEvent[] = [];
   private readonly historyLimit = 300;
+  private recording: CodexAppServerRecording | null = null;
+  private recordingSeq = 0;
 
   constructor(opts: CodexAppServerAdapterOptions = {}) {
     this.spawnProc =
@@ -829,6 +850,38 @@ export class CodexAppServerAdapter implements NativeAgentAdapter {
     return this.activeTurns.get(threadId);
   }
 
+  startRecording(): CodexAppServerRecording {
+    this.recording = {
+      id: `codex-app-${new Date().toISOString().replace(/[:.]/g, "-")}`,
+      startedAt: new Date().toISOString(),
+      frames: [],
+    };
+    this.recordingSeq = 0;
+    return this.recordingSnapshot()!;
+  }
+
+  recordingSnapshot(): CodexAppServerRecording | null {
+    if (!this.recording) return null;
+    return {
+      ...this.recording,
+      frames: this.recording.frames.map((frame) => ({
+        ...frame,
+        raw: frame.raw,
+        message: cloneJsonObject(frame.message),
+      })),
+    };
+  }
+
+  stopRecording(): CodexAppServerRecording | null {
+    if (!this.recording) return null;
+    const stopped: CodexAppServerRecording = {
+      ...this.recordingSnapshot()!,
+      endedAt: new Date().toISOString(),
+    };
+    this.recording = null;
+    return stopped;
+  }
+
   private observeTurnLifecycle(event: CodexAppServerEvent): void {
     const threadId = event.threadId;
     if (!threadId) return;
@@ -861,7 +914,9 @@ export class CodexAppServerAdapter implements NativeAgentAdapter {
   private async ensureRpc(cwd: string): Promise<CodexAppServerRpc> {
     if (this.rpc && this.proc) return this.rpc;
     const proc = this.spawnProc(cwd);
-    const rpc = new CodexAppServerRpc(proc);
+    const rpc = new CodexAppServerRpc(proc, (frame) =>
+      this.recordRpcFrame(frame),
+    );
     this.proc = proc;
     this.rpc = rpc;
     rpc.onEvent((event) => this.emit(event));
@@ -945,6 +1000,19 @@ export class CodexAppServerAdapter implements NativeAgentAdapter {
     }
     for (const listener of this.listeners) listener(event);
   }
+
+  private recordRpcFrame(
+    frame: Omit<CodexAppServerRecordedFrame, "seq" | "at">,
+  ): void {
+    if (!this.recording) return;
+    this.recording.frames.push({
+      seq: ++this.recordingSeq,
+      at: new Date().toISOString(),
+      direction: frame.direction,
+      raw: frame.raw,
+      message: cloneJsonObject(frame.message),
+    });
+  }
 }
 
 export function resolveCodexBinary(): string {
@@ -1004,6 +1072,10 @@ function cleanObject(obj: JsonObject): JsonObject {
     if (value !== undefined && value !== null) out[key] = value;
   }
   return out;
+}
+
+function cloneJsonObject(obj: JsonObject): JsonObject {
+  return JSON.parse(JSON.stringify(obj)) as JsonObject;
 }
 
 function codexReasoningEffortId(effort: unknown): string | undefined {
@@ -1091,7 +1163,10 @@ export class CodexAppServerRpc {
   }[] = [];
   private closed = false;
 
-  constructor(private readonly proc: CodexAppServerProcess) {
+  constructor(
+    private readonly proc: CodexAppServerProcess,
+    private readonly recorder?: CodexAppServerRpcRecorder,
+  ) {
     void this.pump();
     void proc.exited.then(
       () => this.rejectAll(new Error("codex app-server exited")),
@@ -1150,7 +1225,9 @@ export class CodexAppServerRpc {
   }
 
   private write(message: JsonObject): void {
-    this.proc.stdin.write(`${JSON.stringify(message)}\n`);
+    const raw = JSON.stringify(message);
+    this.recorder?.({ direction: "client", raw, message });
+    this.proc.stdin.write(`${raw}\n`);
   }
 
   private async pump(): Promise<void> {
@@ -1183,6 +1260,7 @@ export class CodexAppServerRpc {
     } catch {
       return;
     }
+    this.recorder?.({ direction: "server", raw: line, message: msg });
     const id = msg.id;
     const method = typeof msg.method === "string" ? msg.method : undefined;
     if ((typeof id === "number" || typeof id === "string") && method) {

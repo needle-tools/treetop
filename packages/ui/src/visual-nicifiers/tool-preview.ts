@@ -424,6 +424,9 @@ export function visualToolIconNameForPreview(
     return "navigate_page";
   if (/^Check processes?\b/.test(preview)) return "process_check";
   if (/^Check containers?\b/.test(preview)) return "process_check";
+  if (/^Check (?:host name|system info|GPU info)\b/.test(preview)) {
+    return "process_check";
+  }
   if (/^Stop process(?:es)?\b/.test(preview)) return "process_end";
   if (/^Check port(?:s)?\b/.test(preview)) return "port_check";
   if (/^Delete (?:file|folder|path)\b/.test(preview)) {
@@ -1839,6 +1842,7 @@ type VisualCommandSummary =
       kind: "git";
       action:
         | "status"
+        | "remote"
         | "diff"
         | "diff-stat"
         | "diff-check"
@@ -1873,6 +1877,7 @@ type VisualCommandSummary =
       check?: boolean;
     }
   | { kind: "process-end"; pids: string[] }
+  | { kind: "system-info"; action: "host" | "kernel" | "gpu" }
   | { kind: "drive-check" }
   | { kind: "port-check"; ports: string[] }
   | { kind: "ssh-tunnel"; local: string; remote: string }
@@ -3460,6 +3465,8 @@ function summarizeShellCommand(
   if (browser) return browser;
   const database = summarizeDatabase(tokens);
   if (database) return database;
+  const systemInfo = summarizeSystemInfo(tokens);
+  if (systemInfo) return systemInfo;
   const scriptFile = directScriptCommand(command);
   if (scriptFile) return scriptFile;
   if (lowerName === "git") return summarizeGit(tokens);
@@ -3542,6 +3549,16 @@ function summarizeWaitFetchLoop(
   return { kind: "wait-url", url, attempts, intervalSeconds };
 }
 
+function summarizeSystemInfo(
+  tokens: string[],
+): Extract<VisualCommandSummary, { kind: "system-info" }> | undefined {
+  const command = shellLauncherName(tokens[0] ?? "").toLowerCase();
+  if (command === "hostname") return { kind: "system-info", action: "host" };
+  if (command === "uname") return { kind: "system-info", action: "kernel" };
+  if (command === "nvidia-smi") return { kind: "system-info", action: "gpu" };
+  return undefined;
+}
+
 function summarizeFileLoop(
   command: string,
 ): Extract<VisualCommandSummary, { kind: "batch-files" }> | undefined {
@@ -3618,6 +3635,9 @@ function summarizeGit(tokens: string[]): VisualCommandSummary | undefined {
   if (!subcommand) return undefined;
   if (subcommand === "status")
     return { kind: "git", action: "status", targets: [] };
+  if (subcommand === "remote") {
+    return { kind: "git", action: "remote", targets: [] };
+  }
   if (subcommand === "diff") {
     const targets = gitPathArgs(tokens.slice(subcommandIndex + 1));
     const staged = tokens.includes("--cached") || tokens.includes("--staged");
@@ -5494,6 +5514,15 @@ function commandSummaryParts(
     const label = summary.pids.length === 1 ? "Stop process" : "Stop processes";
     return [{ kind: "text", text: `${label} ${summary.pids.join(", ")}` }];
   }
+  if (summary.kind === "system-info") {
+    if (summary.action === "host") {
+      return [{ kind: "text", text: "Check host name" }];
+    }
+    if (summary.action === "kernel") {
+      return [{ kind: "text", text: "Check system info" }];
+    }
+    return [{ kind: "text", text: "Check GPU info" }];
+  }
   if (summary.kind === "drive-check") {
     return [{ kind: "text", text: "Check Windows drives" }];
   }
@@ -5730,6 +5759,9 @@ function gitSummaryParts(
 ): VisualToolPreviewPart[] {
   if (summary.action === "status") {
     return [{ kind: "text", text: "Check git status" }];
+  }
+  if (summary.action === "remote") {
+    return [{ kind: "text", text: "Check git remotes" }];
   }
   if (summary.action === "diff-check") {
     return [
@@ -6070,7 +6102,7 @@ function readableUrl(url: string): string {
 }
 
 function readableSearchPattern(pattern: string): string {
-  return pattern.replace(/\\([(){}[\]])/g, "$1");
+  return pattern.replace(/\\([(){}[\]|])/g, "$1");
 }
 
 function readableFindPattern(pattern: string): string {

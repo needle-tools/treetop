@@ -1034,6 +1034,86 @@ describe("CodexAppServerAdapter", () => {
 });
 
 describe("CodexAppServerRpc", () => {
+  test("records exact app-server json-rpc traffic in order", async () => {
+    const fake = fakeCodexProcess();
+    const frames: unknown[] = [];
+    const rpc = new CodexAppServerRpc(fake.proc, (frame) => {
+      frames.push(frame);
+    });
+
+    const init = rpc.request("initialize", { clientInfo: { name: "test" } });
+    await waitFor(() => fake.writes[0], "initialize write");
+    fake.enqueue({
+      id: 9,
+      method: "item/approval/request",
+      params: { threadId: "thr_app", turnId: "turn_1" },
+    });
+    await waitFor(
+      () =>
+        frames.some(
+          (frame) =>
+            typeof frame === "object" &&
+            frame !== null &&
+            (frame as { direction?: unknown }).direction === "server",
+        )
+          ? true
+          : undefined,
+      "recorded server request",
+    );
+    rpc.respond(9, { result: { decision: "approved" } });
+    fake.enqueue({ id: 0, result: { ok: true } });
+    await init;
+
+    expect(frames).toMatchObject([
+      {
+        direction: "client",
+        raw: JSON.stringify({
+          id: 0,
+          method: "initialize",
+          params: { clientInfo: { name: "test" } },
+        }),
+        message: {
+          id: 0,
+          method: "initialize",
+          params: { clientInfo: { name: "test" } },
+        },
+      },
+      {
+        direction: "server",
+        raw: JSON.stringify({
+          id: 9,
+          method: "item/approval/request",
+          params: { threadId: "thr_app", turnId: "turn_1" },
+        }),
+        message: {
+          id: 9,
+          method: "item/approval/request",
+          params: { threadId: "thr_app", turnId: "turn_1" },
+        },
+      },
+      {
+        direction: "client",
+        raw: JSON.stringify({
+          id: 9,
+          result: { decision: "approved" },
+        }),
+        message: {
+          id: 9,
+          result: { decision: "approved" },
+        },
+      },
+      {
+        direction: "server",
+        raw: JSON.stringify({ id: 0, result: { ok: true } }),
+        message: {
+          id: 0,
+          result: { ok: true },
+        },
+      },
+    ]);
+    rpc.close();
+  });
+
   test("does not confuse server-initiated requests with client responses", async () => {
     const fake = fakeCodexProcess();
     const rpc = new CodexAppServerRpc(fake.proc);

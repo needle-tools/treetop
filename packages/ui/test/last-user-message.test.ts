@@ -960,6 +960,74 @@ describe("buildVisualTranscriptItems", () => {
     ).toEqual(["Task started", "user"]);
   });
 
+  it("keeps a live steering continuation from inheriting an earlier abort headline", () => {
+    const items = buildVisualTranscriptItems(
+      [
+        msg("user", "continue", "2026-06-19T10:00:00.000Z"),
+        {
+          role: "system",
+          timestamp: "2026-06-19T10:00:01.000Z",
+          blocks: [{ type: "marker", text: "[Task started]" }],
+        },
+        msg(
+          "assistant",
+          "I’m checking this now.",
+          "2026-06-19T10:00:02.000Z",
+        ),
+        {
+          role: "system",
+          timestamp: "2026-06-19T10:00:03.000Z",
+          blocks: [
+            {
+              type: "marker",
+              text: "[Turn aborted] The user interrupted the previous turn.",
+            },
+          ],
+        },
+        {
+          ...msg("user", "keep going with that", "2026-06-19T10:00:04.000Z"),
+          intent: "steer",
+        },
+        {
+          role: "assistant",
+          timestamp: "2026-06-19T10:00:05.000Z",
+          blocks: [{ type: "thinking", text: "Continuing the same turn" }],
+        },
+      ],
+      { active: true },
+    );
+
+    expect(items.map((item) => item.kind)).toEqual(["message", "work"]);
+    if (items[1]?.kind !== "work") throw new Error("expected work item");
+    expect(items[1].terminalMarkerKind).toBeUndefined();
+    expect(items[1].open).toBe(true);
+    expect(visualWorkSummary(items[1].entries)).toMatchObject({
+      steerings: 1,
+    });
+    expect(
+      items[1].entries.map((entry) => [
+        entry.message.role,
+        entry.message.intent,
+        entry.blocks[0]?.text ?? entry.blocks[0]?.type,
+      ]),
+    ).toEqual([
+      ["system", undefined, "[Task started]"],
+      ["assistant", undefined, "I’m checking this now."],
+      [
+        "system",
+        undefined,
+        "[Turn aborted] The user interrupted the previous turn.",
+      ],
+      ["user", "steer", "keep going with that"],
+      ["assistant", undefined, "Continuing the same turn"],
+    ]);
+    expect(
+      buildVisibleVisualWorkDisplayEntries(items[1]).map((entry) =>
+        entry.kind === "marker" ? entry.markerLabel : entry.entry.message.role,
+      ),
+    ).toEqual(["Task started", "assistant", "user", "assistant"]);
+  });
+
   it("ends active work at a task-complete marker", () => {
     const items = buildVisualTranscriptItems(
       [
@@ -2731,6 +2799,24 @@ describe("visual tool payload display helpers", () => {
       visualToolPreviewText({
         type: "tool_use",
         toolName: "exec_command",
+        toolInput: { cmd: "git remote -v" },
+      }),
+    ).toBe("Check git remotes");
+
+    expect(
+      visualToolPreviewText({
+        type: "tool_use",
+        toolName: "exec_command",
+        toolInput: {
+          cmd: 'git status --short && git remote -v && rg -n "\\|" head',
+        },
+      }),
+    ).toBe('Check git status · Check git remotes · Search head for "|"');
+
+    expect(
+      visualToolPreviewText({
+        type: "tool_use",
+        toolName: "exec_command",
         toolInput: {
           cmd: "git check-ignore -v full_assets/Kitchen_set full_assets/Kitchen_set_draco/Kitchen_set_draco.usda || true",
         },
@@ -4405,6 +4491,21 @@ describe("visual tool payload display helpers", () => {
     expect(visualToolRemoteHostLabel(processSearchBlock)).toBe("felix-win");
   });
 
+  it("summarizes host and GPU diagnostics over ssh", () => {
+    const block = {
+      type: "tool_use",
+      toolName: "exec_command",
+      toolInput: {
+        cmd: "ssh felix-win 'hostname && uname -a && nvidia-smi --query-gpu=name,memory.total,driver_version --format=csv,noheader'",
+      },
+    };
+    expect(visualToolPreviewText(block)).toBe(
+      "Check host name · Check system info · Check GPU info",
+    );
+    expect(visualToolRemoteHostLabel(block)).toBe("felix-win");
+    expect(visualToolIconNameForPreview(block)).toBe("process_check");
+  });
+
   it("normalizes ssh launch wrappers before previewing remote searches", () => {
     const block = {
       type: "tool_use",
@@ -5165,6 +5266,44 @@ describe("visual tool payload display helpers", () => {
 });
 
 describe("buildVisualWorkDisplayEntries", () => {
+  it("drops assistant role label fragments before thinking rows", () => {
+    const roleLabel = {
+      message: {
+        role: "assistant",
+        agent: "codex",
+        blocks: [{ type: "text", text: "Codex" }],
+      },
+      blocks: [{ type: "text", text: "Codex" }],
+      messageIndex: 1,
+    };
+    const thinking = {
+      message: {
+        role: "assistant",
+        agent: "codex",
+        blocks: [{ type: "thinking", text: "checking the session" }],
+      },
+      blocks: [{ type: "thinking", text: "checking the session" }],
+      messageIndex: 2,
+    };
+    const realNote = {
+      message: {
+        role: "assistant",
+        agent: "codex",
+        blocks: [{ type: "text", text: "Codex is checking the session." }],
+      },
+      blocks: [{ type: "text", text: "Codex is checking the session." }],
+      messageIndex: 3,
+    };
+
+    const entries = buildVisualWorkDisplayEntries([
+      roleLabel,
+      thinking,
+      realNote,
+    ]);
+
+    expect(entries.map((entry) => entry.entry.messageIndex)).toEqual([2, 3]);
+  });
+
   it("collapses an adjacent tool result into its tool use", () => {
     const toolUse = {
       message: {
@@ -6092,6 +6231,101 @@ describe("visualWorkOverview", () => {
     ]);
   });
 
+  it("summarizes inline script languages used during a work round", () => {
+    const entries = buildVisualWorkDisplayEntries([
+      {
+        message: {
+          role: "assistant",
+          timestamp: "2026-08-16T10:02:00.000Z",
+          blocks: [
+            {
+              type: "tool_use",
+              toolName: "exec_command",
+              toolUseId: "python-script",
+              toolInput: {
+                cmd: "python3 - <<'PY'\nprint('ok')\nPY",
+              },
+            },
+          ],
+        },
+        blocks: [
+          {
+            type: "tool_use",
+            toolName: "exec_command",
+            toolUseId: "python-script",
+            toolInput: {
+              cmd: "python3 - <<'PY'\nprint('ok')\nPY",
+            },
+          },
+        ],
+        messageIndex: 1,
+      },
+      {
+        message: {
+          role: "tool",
+          timestamp: "2026-08-16T10:02:00.200Z",
+          blocks: [
+            {
+              type: "tool_result",
+              toolUseId: "python-script",
+              text: "Chunk ID: python-script Wall time: 0.2000 seconds Process exited with code 0 Original token count: 1 Output: ok",
+            },
+          ],
+        },
+        blocks: [
+          {
+            type: "tool_result",
+            toolUseId: "python-script",
+            text: "Chunk ID: python-script Wall time: 0.2000 seconds Process exited with code 0 Original token count: 1 Output: ok",
+          },
+        ],
+        messageIndex: 2,
+      },
+      {
+        message: {
+          role: "assistant",
+          timestamp: "2026-08-16T10:02:01.000Z",
+          blocks: [
+            {
+              type: "tool_use",
+              toolName: "exec_command",
+              toolUseId: "js-script",
+              toolInput: {
+                cmd: "node -e \"console.log('ok')\"",
+              },
+            },
+          ],
+        },
+        blocks: [
+          {
+            type: "tool_use",
+            toolName: "exec_command",
+            toolUseId: "js-script",
+            toolInput: {
+              cmd: "node -e \"console.log('ok')\"",
+            },
+          },
+        ],
+        messageIndex: 3,
+      },
+    ]);
+
+    const overview = visualWorkOverview(
+      {
+        kind: "work",
+        entries: [],
+        startedAt: "2026-08-16T10:02:00.000Z",
+        endedAt: "2026-08-16T10:02:02.000Z",
+      },
+      entries,
+    );
+
+    expect(overview.languages).toEqual([
+      { label: "JavaScript", count: 1 },
+      { label: "Python", count: 1 },
+    ]);
+  });
+
   it("can summarize a grouped action span without borrowing the whole turn time", () => {
     const entries = buildVisualWorkDisplayEntries([
       {
@@ -6374,16 +6608,22 @@ describe("visualWorkOverview", () => {
     ]);
   });
 
-  it("keeps only the recent live actions unless full detail is requested", () => {
+  it("keeps every live work entry so agent notes stay visible between action summaries", () => {
     const entries = Array.from({ length: 8 }, (_, index) => ({
       kind: "entry" as const,
       entry: {
         message: {
           role: "assistant",
           timestamp: `2026-08-16T10:00:0${index}.000Z`,
-          blocks: [{ type: "thinking", text: `step ${index}` }],
+          blocks:
+            index === 3 || index === 6
+              ? [{ type: "text", text: `agent note ${index}` }]
+              : [{ type: "thinking", text: `step ${index}` }],
         },
-        blocks: [{ type: "thinking", text: `step ${index}` }],
+        blocks:
+          index === 3 || index === 6
+            ? [{ type: "text", text: `agent note ${index}` }]
+            : [{ type: "thinking", text: `step ${index}` }],
         messageIndex: index,
       },
     }));
@@ -6392,17 +6632,93 @@ describe("visualWorkOverview", () => {
       visualWorkDetailEntries(
         { kind: "work", entries: [], open: true },
         entries,
-        { full: false, recentLimit: 5 },
+        { full: false },
       ).map((entry) => entry.entry.messageIndex),
-    ).toEqual([3, 4, 5, 6, 7]);
+    ).toEqual([0, 1, 2, 3, 4, 5, 6, 7]);
 
     expect(
       visualWorkDetailEntries(
         { kind: "work", entries: [], open: true },
         entries,
-        { full: true, recentLimit: 5 },
+        { full: true },
       ).map((entry) => entry.entry.messageIndex),
     ).toEqual([0, 1, 2, 3, 4, 5, 6, 7]);
+  });
+
+  it("groups every action span around agent notes for collapsed in-between summaries", () => {
+    const entries = buildVisualWorkDisplayEntries([
+      {
+        message: {
+          role: "assistant",
+          timestamp: "2026-08-16T10:00:00.000Z",
+          blocks: [{ type: "thinking", text: "planning" }],
+        },
+        blocks: [{ type: "thinking", text: "planning" }],
+        messageIndex: 1,
+      },
+      {
+        message: {
+          role: "assistant",
+          timestamp: "2026-08-16T10:00:01.000Z",
+          blocks: [
+            {
+              type: "tool_use",
+              toolName: "exec_command",
+              toolUseId: "search",
+              toolInput: { cmd: "rg -n summary packages/ui/src" },
+            },
+          ],
+        },
+        blocks: [
+          {
+            type: "tool_use",
+            toolName: "exec_command",
+            toolUseId: "search",
+            toolInput: { cmd: "rg -n summary packages/ui/src" },
+          },
+        ],
+        messageIndex: 2,
+      },
+      {
+        message: {
+          role: "assistant",
+          timestamp: "2026-08-16T10:00:02.000Z",
+          blocks: [{ type: "text", text: "I found the target." }],
+        },
+        blocks: [{ type: "text", text: "I found the target." }],
+        messageIndex: 3,
+      },
+      {
+        message: {
+          role: "assistant",
+          timestamp: "2026-08-16T10:00:03.000Z",
+          blocks: [{ type: "thinking", text: "patching" }],
+        },
+        blocks: [{ type: "thinking", text: "patching" }],
+        messageIndex: 4,
+      },
+      {
+        message: {
+          role: "assistant",
+          timestamp: "2026-08-16T10:00:04.000Z",
+          blocks: [{ type: "text", text: "Patch is in." }],
+        },
+        blocks: [{ type: "text", text: "Patch is in." }],
+        messageIndex: 5,
+      },
+    ]);
+
+    expect(
+      visualWorkDetailGroups(entries).map((group) => [
+        group.kind,
+        group.entries.map((entry) => entry.entry.messageIndex),
+      ]),
+    ).toEqual([
+      ["actions", [1, 2]],
+      ["response", [3]],
+      ["actions", [4]],
+      ["response", [5]],
+    ]);
   });
 
   it("counts thinking entries in the work overview summary", () => {
