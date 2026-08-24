@@ -9,6 +9,9 @@
   } from "./last-user-message";
   import {
     buildSparseArtifactRows,
+    sparseArtifactRowActionSummary,
+    sparseArtifactRowDiffChanges,
+    sparseArtifactRowLifecycle,
     sparseArtifactSignature,
     type SparseArtifactTreeRow,
   } from "./sparse-artifact-tree";
@@ -35,39 +38,6 @@
     return cachedRows;
   }
 
-  function actionLabel(action: VisualWorkArtifact["action"]): string {
-    if (action === "changed") return "write";
-    if (action === "produced") return "created";
-    return "read";
-  }
-
-  function artifactChanges(
-    artifact: VisualWorkArtifact,
-  ): VisualWorkArtifactChange[] {
-    return artifact.changes && artifact.changes.length > 0
-      ? artifact.changes
-      : [
-          {
-            action: artifact.action,
-            label: artifact.label,
-            path: artifact.path,
-            title: artifact.title,
-            additions: artifact.additions,
-            deletions: artifact.deletions,
-            diff: artifact.diff,
-            diffKind: artifact.diffKind,
-          },
-        ];
-  }
-
-  function rowChanges(row: TreeNode): VisualWorkArtifactChange[] {
-    return row.artifacts.flatMap(artifactChanges);
-  }
-
-  function rowDiffChanges(row: TreeNode): VisualWorkArtifactChange[] {
-    return rowChanges(row).filter((change) => change.diff !== undefined);
-  }
-
   function changeLabel(
     change: VisualWorkArtifactChange,
     index: number,
@@ -76,61 +46,19 @@
     if (change.additions !== undefined || change.deletions !== undefined) {
       parts.push(`+${change.additions ?? 0} −${change.deletions ?? 0}`);
     } else {
-      parts.push(actionLabel(change.action));
+      parts.push(
+        change.fileAction === "added"
+          ? "created"
+          : change.fileAction === "deleted"
+            ? "deleted"
+            : change.action === "changed"
+              ? "write"
+              : change.action === "produced"
+                ? "created"
+                : "read",
+      );
     }
     return parts.join(" · ");
-  }
-
-  function artifactRange(
-    artifact: VisualWorkArtifact | VisualWorkArtifactChange,
-  ): string | undefined {
-    const value = `${artifact.label} ${artifact.path ?? ""}`;
-    const match = value.match(/:(\d+(?:-\d+)?)\b/);
-    return match?.[1];
-  }
-
-  function uniqueStrings(values: Array<string | undefined>): string[] {
-    return [...new Set(values.filter((value): value is string => !!value))];
-  }
-
-  function rowActionSummary(row: TreeNode):
-    | { kind: "changed"; additions?: number; deletions?: number }
-    | { kind: "range"; label: string }
-    | { kind: "action"; labels: string[] } {
-    const changes = rowChanges(row);
-    const changed = changes.filter((change) => change.action === "changed");
-    if (changed.length > 0) {
-      const additions = changed.reduce(
-        (sum, change) => sum + (change.additions ?? 0),
-        0,
-      );
-      const deletions = changed.reduce(
-        (sum, change) => sum + (change.deletions ?? 0),
-        0,
-      );
-      return {
-        kind: "changed",
-        additions: changed.some((change) => change.additions !== undefined)
-          ? additions
-          : undefined,
-        deletions: changed.some((change) => change.deletions !== undefined)
-          ? deletions
-          : undefined,
-      };
-    }
-    const ranges = uniqueStrings(changes.map(artifactRange));
-    if (ranges.length > 0) {
-      return {
-        kind: "range",
-        label: ranges.length === 1 ? ranges[0]! : `${ranges.length} ranges`,
-      };
-    }
-    return {
-      kind: "action",
-      labels: uniqueStrings(
-        changes.map((change) => actionLabel(change.action)),
-      ),
-    };
   }
 
   $: rows = stableRows(artifacts);
@@ -149,16 +77,19 @@
         <span class="sparse-artifact-icon" aria-hidden="true">
           <FileSystemIcon kind={row.kind === "folder" ? "folder" : "file"} />
         </span>
-        {#if row.kind === "file" && row.artifacts[0]}
+        {#if row.artifacts[0]}
           {@const artifact = row.artifacts[0]}
-          {@const diffChanges = rowDiffChanges(row)}
+          {@const lifecycle = sparseArtifactRowLifecycle(row)}
+          {@const diffChanges = sparseArtifactRowDiffChanges(row)}
           {@const gitDiffKind = row.artifacts.find((item) => item.diffKind)?.diffKind}
-          {#if diffChanges.length > 0 || (diffFallback === "git" && gitDiffKind && worktreePath)}
+          {#if row.kind === "file" && (diffChanges.length > 0 || (diffFallback === "git" && gitDiffKind && worktreePath))}
             <Tooltip variant="wide" escapeClip>
               <button
                 slot="trigger"
                 type="button"
                 class="sparse-artifact-name"
+                class:created={lifecycle === "added"}
+                class:deleted={lifecycle === "deleted"}
                 data-supergit-session-cwd={worktreePath}
                 data-supergit-daemon-id={daemonId}
                 data-supergit-file-href={row.hrefPath}
@@ -197,6 +128,8 @@
             <button
               type="button"
               class="sparse-artifact-name"
+              class:created={lifecycle === "added"}
+              class:deleted={lifecycle === "deleted"}
               data-supergit-session-cwd={worktreePath}
               data-supergit-daemon-id={daemonId}
               data-supergit-file-href={row.hrefPath}
@@ -205,7 +138,7 @@
               {row.label}
             </button>
           {/if}
-          {@const actionSummary = rowActionSummary(row)}
+          {@const actionSummary = sparseArtifactRowActionSummary(row)}
           <span class="sparse-artifact-actions">
             {#if actionSummary.kind === "changed"}
               {#if actionSummary.additions !== undefined}
@@ -219,7 +152,19 @@
                 </span>
               {/if}
               {#if actionSummary.additions === undefined && actionSummary.deletions === undefined}
-                <span class="sparse-artifact-action changed">write</span>
+                <span
+                  class="sparse-artifact-action"
+                  class:changed={actionSummary.fallbackLabel === "+" ||
+                    actionSummary.fallbackLabel === "write"}
+                  class:removed={actionSummary.fallbackLabel === "-"}
+                >
+                  {actionSummary.fallbackLabel}
+                </span>
+              {/if}
+              {#if actionSummary.rangeLabel}
+                <span class="sparse-artifact-action">
+                  {actionSummary.rangeLabel}
+                </span>
               {/if}
             {:else if actionSummary.kind === "range"}
               <span class="sparse-artifact-action">{actionSummary.label}</span>
@@ -276,6 +221,12 @@
     overflow: hidden;
     text-overflow: ellipsis;
   }
+  .sparse-artifact-name.created {
+    color: var(--success, #58d68d);
+  }
+  .sparse-artifact-name.deleted {
+    color: #ff8a8a;
+  }
   button.sparse-artifact-name {
     cursor: pointer;
     padding: 0;
@@ -284,6 +235,12 @@
     color: var(--text-1);
     text-decoration: underline;
     text-decoration-thickness: 1px;
+  }
+  button.sparse-artifact-name.created:hover {
+    color: var(--success, #58d68d);
+  }
+  button.sparse-artifact-name.deleted:hover {
+    color: #ff8a8a;
   }
   .sparse-artifact-actions {
     display: inline-flex;

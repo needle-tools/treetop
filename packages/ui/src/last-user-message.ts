@@ -1004,6 +1004,21 @@ function isTerminalVisualMarkerKind(
   return kind === "complete" || kind === "aborted" || kind === "failed";
 }
 
+function isAssistantRoleLabelOnlyEntry<
+  B extends MessageBlock,
+  M extends Message<B>,
+>(entry: VisualWorkEntry<B, M>): boolean {
+  if (entry.message.role !== "assistant") return false;
+  if (entry.blocks.length === 0) return false;
+  if (entry.blocks.some((block) => block.type !== "text")) return false;
+  const text = entry.blocks
+    .map((block) => block.text?.trim() ?? "")
+    .filter(Boolean)
+    .join("\n")
+    .trim();
+  return /^(codex|claude|ollama)$/i.test(text);
+}
+
 export function buildVisualWorkDisplayEntries<
   B extends MessageBlock,
   M extends Message<B>,
@@ -1077,6 +1092,9 @@ export function buildVisualWorkDisplayEntries<
   let snapshotUidLabels: ReadonlyMap<string, string> | undefined;
   for (let index = 0; index < entries.length; index += 1) {
     const entry = entries[index]!;
+    if (isAssistantRoleLabelOnlyEntry(entry)) {
+      continue;
+    }
     const markerBlock = visualMarkerBlock(entry);
     if (markerBlock) {
       out.push({
@@ -1131,10 +1149,11 @@ export function buildVisibleVisualWorkDisplayEntries<
   item: Extract<VisualTranscriptItem<B, M>, { kind: "work" }>,
 ): VisualWorkDisplayEntry<B, M>[] {
   const entries = buildVisualWorkDisplayEntries(item.entries);
-  if (!item.terminalMarkerKind || !item.terminalMarkerLabel) return entries;
 
   return entries.filter((entry) => {
     if (entry.kind !== "marker") return true;
+    if (terminalMarkerContinuesLater(item.entries, entry.entry)) return false;
+    if (!item.terminalMarkerKind || !item.terminalMarkerLabel) return true;
     return !(
       entry.markerKind === item.terminalMarkerKind &&
       entry.markerLabel === item.terminalMarkerLabel
@@ -1292,9 +1311,12 @@ function terminalWorkMarker<B extends MessageBlock, M extends Message<B>>(
   "terminalMarkerKind" | "terminalMarkerLabel"
 > {
   for (let index = entries.length - 1; index >= 0; index -= 1) {
-    const markerBlock = visualMarkerBlock(entries[index]);
+    const entry = entries[index];
+    if (!entry) continue;
+    const markerBlock = visualMarkerBlock(entry);
     const kind = visualMarkerKind(markerBlock?.text);
     if (kind === "aborted" || kind === "failed") {
+      if (terminalMarkerContinuesLater(entries, entry)) continue;
       return {
         terminalMarkerKind: kind,
         terminalMarkerLabel: visualMarkerLabel(markerBlock?.text),
@@ -1334,6 +1356,53 @@ function hasSteeringEligibleWork<B extends MessageBlock, M extends Message<B>>(
   );
 }
 
+function entryTerminalMarkerKind<
+  B extends MessageBlock,
+  M extends Message<B>,
+>(entry: VisualWorkEntry<B, M>): VisualMarkerKind | undefined {
+  const kind = visualMarkerKind(visualMarkerBlock(entry)?.text);
+  return kind === "aborted" || kind === "failed" || kind === "complete"
+    ? kind
+    : undefined;
+}
+
+function terminalMarkerContinuesLater<
+  B extends MessageBlock,
+  M extends Message<B>,
+>(
+  entries: readonly VisualWorkEntry<B, M>[],
+  markerEntry: VisualWorkEntry<B, M>,
+): boolean {
+  const markerIndex = entries.indexOf(markerEntry);
+  if (markerIndex < 0 || !entryTerminalMarkerKind(markerEntry)) return false;
+  return entries
+    .slice(markerIndex + 1)
+    .some((entry) => userMessageIntent(entry.message) === "steer");
+}
+
+function terminalMarkerForMergedWork<
+  B extends MessageBlock,
+  M extends Message<B>,
+>(
+  entries: readonly VisualWorkEntry<B, M>[],
+): Pick<
+  Extract<VisualTranscriptItem<B, M>, { kind: "work" }>,
+  "terminalMarkerKind" | "terminalMarkerLabel"
+> {
+  for (let index = entries.length - 1; index >= 0; index -= 1) {
+    const entry = entries[index];
+    if (!entry) continue;
+    const kind = entryTerminalMarkerKind(entry);
+    if (!kind) continue;
+    if (terminalMarkerContinuesLater(entries, entry)) continue;
+    return {
+      terminalMarkerKind: kind,
+      terminalMarkerLabel: visualMarkerLabel(visualMarkerBlock(entry)?.text),
+    };
+  }
+  return {};
+}
+
 function isBoundaryMarkerOnlyWork<B extends MessageBlock, M extends Message<B>>(
   entries: readonly VisualWorkEntry<B, M>[],
 ): boolean {
@@ -1365,16 +1434,15 @@ function coalesceAdjacentVisualWorkItems<
   for (const item of items) {
     const previous = out[out.length - 1];
     if (item.kind === "work" && previous?.kind === "work") {
+      const entries = [...previous.entries, ...item.entries];
+      const terminalMarker = terminalMarkerForMergedWork(entries);
       out[out.length - 1] = {
         kind: "work",
-        entries: [...previous.entries, ...item.entries],
+        entries,
         startedAt: previous.startedAt ?? item.startedAt,
         endedAt: item.endedAt ?? previous.endedAt,
         open: item.open,
-        terminalMarkerKind:
-          item.terminalMarkerKind ?? previous.terminalMarkerKind,
-        terminalMarkerLabel:
-          item.terminalMarkerLabel ?? previous.terminalMarkerLabel,
+        ...terminalMarker,
       };
       continue;
     }
@@ -1943,6 +2011,7 @@ export function buildVisualTranscriptItems<
       const markerKind = visualMarkerKind(markerBlock?.text);
       if (isTerminalVisualMarkerKind(markerKind)) {
         entries.push(entry);
+        if (terminalMarkerContinuesLater(rawEntries, entry)) continue;
         pushWorkAndResponse(
           entries,
           segmentStartedAt,
@@ -2176,9 +2245,11 @@ export function buildVisualTranscriptItems<
       messageIndex += 1;
     }
     const turnStillOpen: boolean =
-      (turnWasAlreadyOpen || hasTurnMarker(turnEntries, "started")) &&
-      !hasTurnMarker(turnEntries, "complete") &&
-      !hasTurnMarker(turnEntries, "aborted");
+      ((turnWasAlreadyOpen || hasTurnMarker(turnEntries, "started")) &&
+        !hasTurnMarker(turnEntries, "complete") &&
+        !hasTurnMarker(turnEntries, "aborted")) ||
+      (nextDisplayUserIntent(messageIndex) === "steer" &&
+        hasTurnMarker(turnEntries, "started"));
     const acceptsSteering: boolean =
       turnStillOpen &&
       (turnWasAlreadyOpen || hasSteeringEligibleWork(turnEntries));
