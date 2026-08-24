@@ -39,6 +39,7 @@ export {
   visualToolPreviewParts,
   visualToolPreviewText,
   visualToolRemoteHostLabel,
+  visualWorkAutoOpenActionGroupId,
   visualWorkDetailEntries,
   visualWorkDetailGroups,
   visualWorkOverview,

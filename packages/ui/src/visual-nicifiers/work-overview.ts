@@ -268,6 +268,8 @@ function inferToolCategory(toolBlock: MessageBlock | undefined): string {
 
 function categoryLabel(category: string): string {
   switch (category) {
+    case "thinking":
+      return "thinking";
     case "edit":
       return "edit";
     case "read":
@@ -295,6 +297,8 @@ function categoryLabel(category: string): string {
 
 function categoryIconName(category: string): string {
   switch (category) {
+    case "thinking":
+      return "thinking";
     case "edit":
       return "apply_patch";
     case "read":
@@ -324,6 +328,12 @@ function actionCategoryCounts(
   entries: readonly VisualWorkDisplayEntryLike[],
 ): VisualWorkCategoryCount[] {
   const counts = new Map<string, number>();
+  const thinkingCount = entries.filter(
+    (entry) => !!firstBlockOfType(entry.entry, "thinking"),
+  ).length;
+  if (thinkingCount > 0) {
+    counts.set("thinking", thinkingCount);
+  }
   for (const entry of toolDisplayEntries(entries)) {
     const toolBlock = toolUseBlock(entry);
     const category = inferToolCategory(toolBlock);
@@ -1004,4 +1014,18 @@ export function visualWorkDetailGroups<T extends VisualWorkDisplayEntryLike>(
   }
   flushActions();
   return groups;
+}
+
+export function visualWorkAutoOpenActionGroupId<
+  T extends VisualWorkDisplayEntryLike,
+>(
+  groups: readonly VisualWorkDetailGroup<T>[],
+  autoOpen: boolean,
+): string | undefined {
+  if (!autoOpen) return undefined;
+  for (let index = groups.length - 1; index >= 0; index -= 1) {
+    const group = groups[index];
+    if (group?.kind === "actions") return group.id;
+  }
+  return undefined;
 }

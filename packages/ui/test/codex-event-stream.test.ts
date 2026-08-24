@@ -224,6 +224,17 @@ describe("codex event stream hub", () => {
     ).toBe(false);
     expect(
       shouldLoadCodexAppThreadHistory({
+        visualAppSurface: true,
+        threadId: "thread-1",
+        cwd: "/repo",
+        hasSession: true,
+        loadedHistoryKey: "",
+        loadingHistoryKey: "",
+        failedHistoryKeys: new Set([key]),
+      }),
+    ).toBe(false);
+    expect(
+      shouldLoadCodexAppThreadHistory({
         visualAppSurface: false,
         threadId: "thread-1",
         cwd: "/repo",
@@ -1138,6 +1149,102 @@ describe("codex event stream hub", () => {
     expect(history.map((message) => message.tokenUsage?.output)).toEqual([
       20,
       15,
+    ]);
+  });
+
+  test("normalizes live app-server token usage from turn updates", () => {
+    const context = {};
+    const first = codexLiveMessagesFromEvent(
+      {
+        kind: "notification",
+        method: "turn/updated",
+        params: {
+          threadId: "thread-usage",
+          turnId: "turn-usage",
+          info: {
+            total_token_usage: {
+              input_tokens: 100,
+              output_tokens: 20,
+              total_tokens: 120,
+            },
+          },
+        },
+        threadId: "thread-usage",
+        turnId: "turn-usage",
+        receivedAt: "2026-06-22T10:00:00.000Z",
+      },
+      context,
+    );
+    const second = codexLiveMessagesFromEvent(
+      {
+        kind: "notification",
+        method: "turn/updated",
+        params: {
+          threadId: "thread-usage",
+          turnId: "turn-usage",
+          info: {
+            total_token_usage: {
+              input_tokens: 145,
+              output_tokens: 35,
+              total_tokens: 180,
+            },
+          },
+        },
+        threadId: "thread-usage",
+        turnId: "turn-usage",
+        receivedAt: "2026-06-22T10:00:01.000Z",
+      },
+      context,
+    );
+
+    expect(first[0]?.tokenUsage).toMatchObject({
+      input: 100,
+      output: 20,
+      total: 120,
+    });
+    expect(second[0]?.tokenUsage).toMatchObject({
+      input: 45,
+      output: 15,
+      total: 60,
+    });
+  });
+
+  test("normalizes root app-server usage fields in live events", () => {
+    const live = codexLiveMessagesFromEvent({
+      kind: "notification",
+      method: "turn/completed",
+      params: {
+        threadId: "thread-usage",
+        turnId: "turn-usage",
+        last_token_usage: {
+          input_tokens: 70,
+          cached_input_tokens: 64,
+          output_tokens: 12,
+          reasoning_output_tokens: 3,
+          total_tokens: 82,
+        },
+      },
+      threadId: "thread-usage",
+      turnId: "turn-usage",
+      receivedAt: "2026-06-22T10:00:02.000Z",
+    });
+
+    expect(live).toEqual([
+      {
+        id: "codex-usage-turn-usage-2026-06-22T10:00:02.000Z",
+        role: "assistant",
+        timestamp: "2026-06-22T10:00:02.000Z",
+        tokensUsed: 15,
+        tokenUsage: {
+          input: 70,
+          cachedInput: 64,
+          cacheWriteInput: 0,
+          output: 12,
+          reasoningOutput: 3,
+          total: 82,
+        },
+        blocks: [],
+      },
     ]);
   });
 

@@ -540,7 +540,7 @@
   let visualHistorySourceKey = "";
   let codexAppHistoryLoadedKey = "";
   let codexAppHistoryLoadingKey = "";
-  let codexAppHistoryFailedKey = "";
+  let codexAppHistoryFailedKeys = new Set<string>();
   let codexAppHistoryNextCursor: string | null = null;
   let visualHistoryScrollAnchor: {
     el: HTMLElement;
@@ -2141,7 +2141,7 @@
       resetVisualExpansionState();
       codexAppHistoryLoadedKey = "";
       codexAppHistoryLoadingKey = "";
-      codexAppHistoryFailedKey = "";
+      codexAppHistoryFailedKeys = new Set<string>();
       codexLiveDetectedModel = "";
     }
   }
@@ -2254,7 +2254,11 @@
         ) as NormalizedMessage[],
       };
       codexAppHistoryLoadedKey = targetHistoryKey;
-      codexAppHistoryFailedKey = "";
+      if (codexAppHistoryFailedKeys.has(targetHistoryKey)) {
+        const nextFailed = new Set(codexAppHistoryFailedKeys);
+        nextFailed.delete(targetHistoryKey);
+        codexAppHistoryFailedKeys = nextFailed;
+      }
       codexAppHistoryNextCursor =
         typeof body.nextCursor === "string" && body.nextCursor
           ? body.nextCursor
@@ -2262,7 +2266,9 @@
       preserveVisualHistoryScrollAnchor();
     } catch (e) {
       if (effectiveSessionId === targetThreadId) {
-        codexAppHistoryFailedKey = targetHistoryKey;
+        codexAppHistoryFailedKeys = new Set(codexAppHistoryFailedKeys).add(
+          targetHistoryKey,
+        );
       }
       sendError = e instanceof Error ? e.message : String(e);
       preserveVisualHistoryScrollAnchor();
@@ -2478,7 +2484,7 @@
       hasSession: !!session,
       loadedHistoryKey: codexAppHistoryLoadedKey,
       loadingHistoryKey: codexAppHistoryLoadingKey,
-      failedHistoryKey: codexAppHistoryFailedKey,
+      failedHistoryKeys: codexAppHistoryFailedKeys,
     })
   ) {
     const key = codexAppHistoryKey(effectiveSessionId, effectiveSessionCwd);
