@@ -4323,6 +4323,18 @@ describe("visual tool payload display helpers", () => {
     );
     expect(visualToolIconNameForPreview(postgres)).toBe("database");
 
+    const loopedPostgres = {
+      type: "tool_use",
+      toolName: "exec_command",
+      toolInput: {
+        cmd: "ssh -o BatchMode=yes root@labs.anhaltintelligence.com 'for i in 1 2 3 4 5 6; do docker exec coolify-db psql -U coolify -d coolify -Atc \"select status,created_at,updated_at from application_deployment_queues order by created_at desc limit 5\"; done'",
+      },
+    };
+    expect(visualToolPreviewText(loopedPostgres)).toBe(
+      "Query PostgreSQL coolify select status,created_at,updated_at from application_deployment_queues order by created_at desc limit 5 · 6 runs",
+    );
+    expect(visualToolIconNameForPreview(loopedPostgres)).toBe("database");
+
     const sqlite = {
       type: "tool_use",
       toolName: "exec_command",

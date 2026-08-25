@@ -2439,6 +2439,29 @@ function visualCommandPreview(
       summaries: [fileLoopSummary],
     };
   }
+  const repeatLoop = splitForLoopCommand(unwrapped);
+  if (repeatLoop) {
+    const loopPreview = visualCommandPreview(repeatLoop.command, context);
+    if (loopPreview.parts.length > 0 || loopPreview.summaries.length > 0) {
+      const parts = repeatLoop.iterations
+        ? [
+            ...loopPreview.parts,
+            {
+              kind: "text" as const,
+              text: ` · ${repeatLoop.iterations} runs`,
+            },
+          ]
+        : loopPreview.parts;
+      return {
+        text: parts.map((part) => part.text).join(""),
+        parts,
+        launcher: normalized.launcher ?? loopPreview.launcher,
+        remoteHost: normalized.remoteHost ?? loopPreview.remoteHost,
+        env: [...env, ...loopPreview.env],
+        summaries: loopPreview.summaries,
+      };
+    }
+  }
   const parts = splitShellCommandChain(unwrapped);
   if (parts.length === 0) {
     return {
@@ -3579,6 +3602,61 @@ function summarizeFileLoop(
   if (!tool || tool === "echo" || tool === "printf") return undefined;
   if (!bodyReferencesLoopVariable(bodyTokens, variable)) return undefined;
   return { kind: "batch-files", tool, targets };
+}
+
+function splitForLoopCommand(
+  command: string,
+): { command: string; iterations?: number } | undefined {
+  const match = command.match(
+    /^\s*for\s+[A-Za-z_][A-Za-z0-9_]*\s+in\s+([\s\S]+?)\s*;\s*do\s+([\s\S]+?)\s*;\s*done\s*$/i,
+  );
+  if (!match) return undefined;
+  const body = match[2]!.trim();
+  if (!body || body === command.trim()) return undefined;
+  return {
+    command: body,
+    iterations: shellLoopIterationCount(match[1]!),
+  };
+}
+
+function shellLoopIterationCount(listExpression: string): number | undefined {
+  const expression = listExpression.trim();
+  const brace = expression.match(/^\{(-?\d+)\.\.(-?\d+)(?:\.\.(-?\d+))?\}$/);
+  if (brace) {
+    return inclusiveIntegerRangeCount(brace[1]!, brace[2]!, brace[3]);
+  }
+  const seq = expression.match(
+    /^(?:\$\(seq\s+|seq\s+)(-?\d+)(?:\s+(-?\d+))?(?:\s+(-?\d+))?\)?$/i,
+  );
+  if (seq) {
+    const end = seq[2] ?? seq[1];
+    const start = seq[2] ? seq[1] : "1";
+    const step = seq[3];
+    return inclusiveIntegerRangeCount(start!, end!, step);
+  }
+  const tokens = shellTokens(expression).filter((token) => token !== "--");
+  if (tokens.length === 0) return undefined;
+  return tokens.some((token) => /[;&|]/.test(token)) ? undefined : tokens.length;
+}
+
+function inclusiveIntegerRangeCount(
+  startText: string,
+  endText: string,
+  stepText?: string,
+): number | undefined {
+  const start = Number(startText);
+  const end = Number(endText);
+  const rawStep = stepText ? Number(stepText) : end >= start ? 1 : -1;
+  if (
+    !Number.isInteger(start) ||
+    !Number.isInteger(end) ||
+    !Number.isInteger(rawStep) ||
+    rawStep === 0
+  ) {
+    return undefined;
+  }
+  if ((end - start) * rawStep < 0) return 0;
+  return Math.floor(Math.abs((end - start) / rawStep)) + 1;
 }
 
 function bodyReferencesLoopVariable(
