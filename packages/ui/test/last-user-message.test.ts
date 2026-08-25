@@ -3266,6 +3266,162 @@ describe("visual tool payload display helpers", () => {
     expect(visualToolCallPayloadText(block)).toContain("screen -ls");
   });
 
+  it("summarizes workflow CLI commands", () => {
+    expect(
+      visualToolPreviewText({
+        type: "tool_use",
+        toolName: "exec_command",
+        toolInput: {
+          cmd: "gh pr view 42 --json title,url,statusCheckRollup",
+        },
+      }),
+    ).toBe("Inspect GitHub PR 42");
+
+    expect(
+      visualToolPreviewText({
+        type: "tool_use",
+        toolName: "exec_command",
+        toolInput: {
+          cmd: "gcloud run services list --platform managed --region europe-west1",
+        },
+      }),
+    ).toBe("List Google Cloud Run services europe-west1");
+
+    expect(
+      visualToolPreviewText({
+        type: "tool_use",
+        toolName: "exec_command",
+        toolInput: {
+          cmd: "tailscale status --json",
+        },
+      }),
+    ).toBe("Check Tailscale status");
+
+    expect(
+      visualToolPreviewText({
+        type: "tool_use",
+        toolName: "exec_command",
+        toolInput: {
+          cmd: "tmux list-sessions",
+        },
+      }),
+    ).toBe("List tmux sessions");
+  });
+
+  it("summarizes system probe commands", () => {
+    expect(
+      visualToolPreviewText({
+        type: "tool_use",
+        toolName: "exec_command",
+        toolInput: {
+          cmd: "df -h /Users/herbst/git",
+        },
+      }),
+    ).toBe("Check disk space git");
+
+    expect(
+      visualToolPreviewText({
+        type: "tool_use",
+        toolName: "exec_command",
+        toolInput: {
+          cmd: "stat -f '%z %Sm' package.json",
+        },
+      }),
+    ).toBe("Check file metadata package.json");
+
+    expect(
+      visualToolPreviewText({
+        type: "tool_use",
+        toolName: "exec_command",
+        toolInput: {
+          cmd: "file -b /tmp/render.png",
+        },
+      }),
+    ).toBe("Identify file render.png");
+
+    expect(
+      visualToolPreviewText({
+        type: "tool_use",
+        toolName: "exec_command",
+        toolInput: {
+          cmd: "readlink -f node_modules/.bin/vite",
+        },
+      }),
+    ).toBe("Resolve link vite");
+
+    expect(
+      visualToolPreviewText({
+        type: "tool_use",
+        toolName: "exec_command",
+        toolInput: {
+          cmd: "command -v agent-browser",
+        },
+      }),
+    ).toBe("Find command agent-browser");
+
+    expect(
+      visualToolPreviewText({
+        type: "tool_use",
+        toolName: "exec_command",
+        toolInput: {
+          cmd: "shasum -a 256 dist/app.js",
+        },
+      }),
+    ).toBe("Checksum app.js");
+  });
+
+  it("summarizes direct script file commands with language and arguments", () => {
+    const block = {
+      type: "tool_use",
+      toolName: "exec_command",
+      toolInput: {
+        cmd: "node .codex/skills/session-understanding/scripts/scan-agent-sessions.mjs --days 1 --json",
+      },
+    };
+
+    expect(visualToolPreviewText(block)).toBe(
+      "Run JavaScript script scan-agent-sessions.mjs --days 1 --json",
+    );
+    expect(visualToolPreviewParts(block)).toContainEqual({
+      kind: "path",
+      text: "scan-agent-sessions.mjs",
+      path: ".codex/skills/session-understanding/scripts/scan-agent-sessions.mjs",
+      range: "",
+    });
+
+    expect(
+      visualToolPreviewText({
+        type: "tool_use",
+        toolName: "exec_command",
+        toolInput: {
+          cmd: "bash scripts/setup_optional_models.sh --dry-run",
+        },
+      }),
+    ).toBe("Run Shell script setup_optional_models.sh --dry-run");
+
+    expect(
+      visualToolPreviewText({
+        type: "tool_use",
+        toolName: "exec_command",
+        toolInput: {
+          cmd: "python3 scripts/analyze_conversions.py --input assets.json",
+        },
+      }),
+    ).toBe(
+      "Run Python script analyze_conversions.py --input assets.json",
+    );
+
+    expect(
+      visualToolPreviewText({
+        type: "tool_use",
+        toolName: "exec_command",
+        toolInput: {
+          cmd: "swift scripts/render.swift --preview",
+        },
+      }),
+    ).toBe("Run Swift script render.swift --preview");
+  });
+
   it("summarizes wc counts", () => {
     expect(
       visualToolPreviewText({
@@ -5083,9 +5239,10 @@ describe("visual tool payload display helpers", () => {
     );
     expect(visualToolInlineScript(directScriptBlock)).toBeUndefined();
     expect(visualToolPreviewText(directScriptBlock)).toBe(
-      "scan-agent-sessions.mjs --days 1 --limit 30",
+      "Run JavaScript script scan-agent-sessions.mjs --days 1 --limit 30",
     );
     expect(visualToolPreviewParts(directScriptBlock)).toEqual([
+      { kind: "text", text: "Run JavaScript script " },
       {
         kind: "path",
         text: "scan-agent-sessions.mjs",
