@@ -7,6 +7,10 @@
     type SearchKind,
     type SearchResult,
   } from "./workspace-search";
+  import {
+    shouldAdoptPointerSearchSelection,
+    type SearchPointerPosition,
+  } from "./search-interaction";
 
   export let items: SearchItem[] = [];
   export let query = "";
@@ -41,6 +45,8 @@
   let activeItemId = "";
   let previousResultsKey = "";
   let initialKindsKey = initialKinds?.join("|") ?? "";
+  let pointerSelectionActive = false;
+  let lastPointerPosition: SearchPointerPosition | null = null;
 
   $: {
     const nextInitialKindsKey = initialKinds?.join("|") ?? "";
@@ -120,9 +126,23 @@
 
   function moveActive(delta: number): void {
     if (results.length === 0) return;
+    pointerSelectionActive = false;
     activeIndex = Math.max(0, Math.min(results.length - 1, activeIndex + delta));
     activeItemId = results[activeIndex]?.item.id ?? "";
     scrollActiveResultIntoView();
+  }
+
+  function onResultPointerMove(
+    index: number,
+    result: SearchResult,
+    event: PointerEvent,
+  ): void {
+    const next = { x: event.clientX, y: event.clientY };
+    if (!shouldAdoptPointerSearchSelection(lastPointerPosition, next)) return;
+    lastPointerPosition = next;
+    pointerSelectionActive = true;
+    activeIndex = index;
+    activeItemId = result.item.id;
   }
 
   function scrollActiveResultIntoView(): void {
@@ -161,7 +181,11 @@
   }
 </script>
 
-<div class="fuzzy-panel fuzzy-panel-{mode}" on:keydown={onKeydown}>
+<div
+  class="fuzzy-panel fuzzy-panel-{mode}"
+  class:pointer-selecting={pointerSelectionActive}
+  on:keydown={onKeydown}
+>
   <div class="fuzzy-input-row">
     <svg class="fuzzy-search-icon" viewBox="0 0 16 16" aria-hidden="true">
       <path
@@ -224,10 +248,7 @@
             class:active={i === activeIndex}
             aria-selected={i === activeIndex}
             role="option"
-            on:mouseenter={() => {
-              activeIndex = i;
-              activeItemId = result.item.id;
-            }}
+            on:pointermove={(event) => onResultPointerMove(i, result, event)}
             on:click={() => pick(result)}
           >
             <span
@@ -383,7 +404,7 @@
     cursor: pointer;
   }
 
-  .fuzzy-result:hover,
+  .fuzzy-panel.pointer-selecting .fuzzy-result:hover,
   .fuzzy-result.active,
   .fuzzy-result:focus-visible {
     outline: none;
