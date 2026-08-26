@@ -29,6 +29,27 @@ export const OLLAMA_HOST =
   process.env.OLLAMA_HOST?.replace(/\/+$/, "") || "http://127.0.0.1:11434";
 
 /**
+ * `keep_alive` for supergit's own ONE-SHOT generations: the session summary,
+ * the AI title, and the repo-themes blurb.
+ *
+ * Ollama keeps a model resident for 5 minutes after the last request. That is
+ * the right default for an interactive chat, and the wrong one for a
+ * one-second title generation — which otherwise pins a multi-GB model in RAM
+ * long after the work is done. Browse a few sessions and you are holding a
+ * large model resident for nothing.
+ *
+ * The interactive chat paths deliberately do NOT set this: they want the model
+ * warm between messages, and unloading there would reload the model on every
+ * turn. Only fire-and-forget generations opt in.
+ *
+ * `0` unloads as soon as the response completes. Set
+ * SUPERGIT_OLLAMA_ONESHOT_KEEP_ALIVE (e.g. "30s") to trade the RAM back for
+ * latency when running several one-shot generations in a row.
+ */
+export const ONESHOT_KEEP_ALIVE: string | number =
+  process.env.SUPERGIT_OLLAMA_ONESHOT_KEEP_ALIVE ?? 0;
+
+/**
  * Format an Ollama HTTP error into a user-facing message.
  *
  * Ollama's error strings are technically accurate but often

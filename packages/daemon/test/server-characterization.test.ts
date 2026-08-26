@@ -461,3 +461,67 @@ describe("terminal WebSocket backpressure", () => {
     expect(SERVER_TS).toContain("drainableTerminalSockets");
   });
 });
+
+// ---------------------------------------------------------------------------
+// Ollama keep_alive — one-shot generations must not pin the model
+// ---------------------------------------------------------------------------
+
+describe("Ollama keep_alive split (one-shot vs interactive)", () => {
+  /** Every `fetch(<host>/api/chat, {...})` call, sliced from the fetch to the
+   *  `signal:` line that closes its options object. */
+  function chatCallSites(): string[] {
+    const lines = SERVER_TS.split("\n");
+    const out: string[] = [];
+    for (let i = 0; i < lines.length; i++) {
+      if (!(lines[i]!.includes("/api/chat") && lines[i]!.includes("fetch(")))
+        continue;
+      const end = lines.findIndex((l, j) => j > i && l.includes("signal:"));
+      out.push(lines.slice(i, end === -1 ? i + 30 : end + 1).join("\n"));
+    }
+    return out;
+  }
+
+  // Distinguishing text inside each request body. If a call site is added or
+  // reworded this test fails loudly rather than silently losing coverage.
+  const ONE_SHOT = [
+    "Now summarise the conversation above.", // session summary
+    "You name developer chat sessions", // AI title
+    "Now summarise this.", // repo themes
+  ];
+  const INTERACTIVE = [
+    "messagesForUpstream", // chat resume
+    'messages: [{ role: "user", content: prompt }]', // composer chat
+  ];
+
+  test("there are exactly 5 /api/chat call sites", () => {
+    expect(chatCallSites()).toHaveLength(5);
+  });
+
+  test("every one-shot generation sets keep_alive", () => {
+    const sites = chatCallSites();
+    for (const marker of ONE_SHOT) {
+      const site = sites.find((s) => s.includes(marker));
+      expect(site, `no /api/chat call site contains ${marker}`).toBeTruthy();
+      // A one-second title generation must not leave a multi-GB model
+      // resident for Ollama's default 5 minutes.
+      expect(site).toContain("keep_alive: ONESHOT_KEEP_ALIVE");
+    }
+  });
+
+  test("interactive chat does NOT set keep_alive (model stays warm)", () => {
+    const sites = chatCallSites();
+    for (const marker of INTERACTIVE) {
+      const site = sites.find((s) => s.includes(marker));
+      expect(site, `no /api/chat call site contains ${marker}`).toBeTruthy();
+      // Unloading between turns would reload the model on every message.
+      expect(site).not.toContain("keep_alive");
+    }
+  });
+
+  test("keep_alive is only ever the shared ONESHOT_KEEP_ALIVE constant", () => {
+    // Guards against someone hardcoding `keep_alive: -1` (pins forever).
+    const hits = SERVER_TS.match(/keep_alive:\s*[^,\n]+/g) ?? [];
+    expect(hits).toHaveLength(3);
+    for (const h of hits) expect(h).toBe("keep_alive: ONESHOT_KEEP_ALIVE");
+  });
+});

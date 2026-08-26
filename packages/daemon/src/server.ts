@@ -135,7 +135,12 @@ import {
   withTimeout,
   type ProcUsage,
 } from "./procs";
-import { listOllamaModels, OLLAMA_HOST, formatOllamaError } from "./ollama";
+import {
+  listOllamaModels,
+  OLLAMA_HOST,
+  ONESHOT_KEEP_ALIVE,
+  formatOllamaError,
+} from "./ollama";
 import { fetchClaudeOAuthUsage } from "./claude-oauth-usage";
 import { fetchCodexOAuthUsage } from "./codex-oauth-usage";
 import { SummariesStore, RepoSummariesStore } from "./summaries";
@@ -5772,6 +5777,8 @@ const server = Bun.serve<TermWsData, never>({
                     ),
                   },
                   think: false,
+                  // One-shot: don't leave the model resident afterwards.
+                  keep_alive: ONESHOT_KEEP_ALIVE,
                 }),
                 signal: abort.signal,
               });
@@ -5880,6 +5887,8 @@ const server = Bun.serve<TermWsData, never>({
                       },
                     ],
                     options: { num_ctx: 4096 },
+                    // One-shot: don't leave the model resident afterwards.
+                    keep_alive: ONESHOT_KEEP_ALIVE,
                   }),
                   signal: abort.signal,
                 });
@@ -8057,6 +8066,8 @@ const server = Bun.serve<TermWsData, never>({
                       num_ctx: Math.max(8192, estimatedTokens * 2 + 2048),
                     },
                     think: false,
+                    // One-shot: don't leave the model resident afterwards.
+                    keep_alive: ONESHOT_KEEP_ALIVE,
                   }),
                   signal: abort.signal,
                 });
