@@ -107,9 +107,15 @@ export function shouldMountTerminalView(args: {
   hasCwd: boolean;
   nearViewport: boolean;
   spawnReady: boolean;
+  /** Restored dormant (see `selectDormantTuiSources`). Scrolling such a
+   *  column into view must NOT wake it: mounting TerminalView is what spawns
+   *  `agent resume`, so a dormant session would come alive just by being
+   *  looked at. It renders its transcript read-only until the user resumes. */
+  dormant?: boolean;
 }): boolean {
   return (
     args.mode === "terminal" &&
+    !args.dormant &&
     args.hasSessionId &&
     args.hasCwd &&
     args.nearViewport &&
@@ -342,6 +348,95 @@ export function reconcileLiveAgentTerminals(
 // converges without double-spawning.
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// selectDormantTuiSources
+//
+// Which restorable TUI sessions should come back *dormant* — listed in the
+// session list and rendered read-only from their transcript, with NO PTY and
+// no new state — instead of being re-spawned live.
+//
+// Why: on restart the UI restores every persisted `mode:"terminal"` column and
+// eagerly re-spawns `claude --resume` for each (see
+// `selectSessionsForBackgroundSpawn`). On a long-lived workspace that is a
+// thundering herd of real agent processes for sessions the user hasn't touched
+// in weeks — one observed launch restored 30 of them, and 24 were still
+// resident and untouched 17 days later, each holding its own RSS.
+//
+// Policy, in order:
+//   1. The `alwaysLiveCount` most-recently-active restorable TUIs are ALWAYS
+//      live, no matter how long since the last interaction. Recency decides,
+//      not age — the sessions you actually work in stay warm indefinitely.
+//   2. Everything else goes dormant once idle for `idleMs`. A Friday-to-Monday
+//      gap must NOT put a session to sleep, hence a 3-day default.
+//   3. Unknown-age sessions are never put to sleep: we can't judge them, and
+//      guessing wrong costs the user a live session. (Same "un-judgeable"
+//      convention as the daemon's `prunePersistedTerminals`.)
+//
+// Ranked over the FULL restorable set — every `mode:"terminal"` session with a
+// `resumeSessionId`, whether or not it currently has a PTY. That set is stable
+// across the spawn drain, so the top-N exemption can't drift. Ranking over
+// only the not-yet-spawned candidates would re-qualify the next N on every
+// tick and eventually wake everything — the bug this whole gate exists to fix.
+// ---------------------------------------------------------------------------
+
+export interface TuiRestorePolicy {
+  /** Now, epoch ms. */
+  now: number;
+  /** Idle longer than this -> dormant. `<= 0` disables dormancy entirely. */
+  idleMs: number;
+  /** The N most-recently-active sessions stay live regardless of idle age. */
+  alwaysLiveCount: number;
+}
+
+/** Epoch-ms of each source's last activity — the agent session file's mtime,
+ *  i.e. `AgentSession.lastActive`. A missing entry means "unknown age". */
+export type LastActiveBySource = ReadonlyMap<string, number>;
+
+export function selectDormantTuiSources(
+  byWt: Record<string, OpenSession[]>,
+  lastActiveBySource: LastActiveBySource,
+  policy: TuiRestorePolicy,
+): Set<string> {
+  const dormant = new Set<string>();
+  if (policy.idleMs <= 0) return dormant;
+
+  // The full restorable universe — independent of current PTY state.
+  const restorable: string[] = [];
+  const seen = new Set<string>();
+  for (const sessions of Object.values(byWt)) {
+    for (const s of sessions) {
+      if (s.agent !== "claude" && s.agent !== "codex") continue;
+      if (s.mode !== "terminal") continue;
+      if (!s.resumeSessionId) continue;
+      if (seen.has(s.source)) continue; // one column can be filed under 2 wts
+      seen.add(s.source);
+      restorable.push(s.source);
+    }
+  }
+
+  const at = (source: string): number | null =>
+    lastActiveBySource.get(source) ?? null;
+
+  // Newest first; unknown-age ranks below every known-age session so genuinely
+  // recent sessions win the always-live slots.
+  const ranked = [...restorable].sort((a, b) => {
+    const ta = at(a);
+    const tb = at(b);
+    if (ta !== null && tb !== null) return tb - ta;
+    if (ta !== null) return -1;
+    if (tb !== null) return 1;
+    return 0;
+  });
+
+  for (let i = Math.max(0, policy.alwaysLiveCount); i < ranked.length; i++) {
+    const source = ranked[i]!;
+    const t = at(source);
+    if (t === null) continue; // un-judgeable -> leave it live
+    if (policy.now - t > policy.idleMs) dormant.add(source);
+  }
+  return dormant;
+}
+
 export interface BackgroundSpawnCandidate {
   wtPath: string;
   source: string;
@@ -360,6 +455,9 @@ export function selectSessionsForBackgroundSpawn(
     liveTerminalIds: ReadonlySet<string>;
     inFlight: ReadonlySet<string>;
     newTermIds: Record<string, string>;
+    /** Sources classified dormant by `selectDormantTuiSources` — restored
+     *  read-only, never background-spawned. Omit to disable the gate. */
+    dormantSources?: ReadonlySet<string>;
   },
 ): BackgroundSpawnCandidate[] {
   const out: BackgroundSpawnCandidate[] = [];
@@ -373,6 +471,8 @@ export function selectSessionsForBackgroundSpawn(
         continue;
       if (options.newTermIds[s.source]) continue;
       if (options.inFlight.has(s.source)) continue;
+      // Dormant: stays listed and read-only until the user resumes it.
+      if (options.dormantSources?.has(s.source)) continue;
       out.push({
         wtPath,
         source: s.source,

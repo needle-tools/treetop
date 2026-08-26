@@ -45,23 +45,39 @@ export function terminalCreatedAt(termId: string): number | null {
  * still-open terminal is stranded in the file forever. Over many rebuilds this
  * piles up into dozens/hundreds of dead "disconnected — Resume" cards.
  *
- * Two independent caps, applied on startup:
+ * Two independent caps:
  *   - drop anything older than `maxAgeMs` (by termId-derived spawn time)
  *   - keep only the `maxEntries` most-recent of what remains
  * Unknown-age entries are never age-dropped (we can't judge them) but still
  * count against `maxEntries`, sorted last so real recent terminals win a slot.
  *
+ * `protect` holds termIds whose PTY is still ALIVE; they are never dropped and
+ * never consume a `maxEntries` slot. This matters because pruning also runs
+ * periodically, not just at startup: at startup every PTY died with the daemon,
+ * so age alone is a safe proxy for staleness — but on a long-running daemon a
+ * `npm run dev` terminal can legitimately be alive for a week, and dropping its
+ * record would forget a running terminal and make it unrestorable. The caps
+ * exist to bound *dead* entries; a live terminal is never stale.
+ *
  * Pure; preserves the surviving entries' original file order.
  */
 export function prunePersistedTerminals(
   entries: readonly PersistedTerminal[],
-  opts: { now: number; maxAgeMs: number; maxEntries: number },
+  opts: {
+    now: number;
+    maxAgeMs: number;
+    maxEntries: number;
+    protect?: ReadonlySet<string>;
+  },
 ): PersistedTerminal[] {
-  const withMeta = entries.map((e, i) => ({
-    e,
-    i,
-    t: terminalCreatedAt(e.termId),
-  }));
+  const protectedIds = opts.protect ?? new Set<string>();
+  const withMeta = entries
+    .filter((e) => !protectedIds.has(e.termId))
+    .map((e, i) => ({
+      e,
+      i,
+      t: terminalCreatedAt(e.termId),
+    }));
   const fresh = withMeta.filter(
     ({ t }) => t === null || opts.now - t <= opts.maxAgeMs,
   );
@@ -74,7 +90,9 @@ export function prunePersistedTerminals(
     })
     .slice(0, Math.max(0, opts.maxEntries));
   const keepIds = new Set(keep.map(({ e }) => e.termId));
-  return entries.filter((e) => keepIds.has(e.termId));
+  return entries.filter(
+    (e) => keepIds.has(e.termId) || protectedIds.has(e.termId),
+  );
 }
 
 export class TerminalPersist {
@@ -136,6 +154,8 @@ export class TerminalPersist {
     now: number;
     maxAgeMs: number;
     maxEntries: number;
+    /** termIds whose PTY is still alive — never pruned. */
+    protect?: ReadonlySet<string>;
   }): Promise<number> {
     let removed = 0;
     await this.withLock(async () => {

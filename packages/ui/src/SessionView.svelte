@@ -281,6 +281,13 @@
    *  rendered, but their TerminalView must not spawn `agent resume` before
    *  the parent has had a chance to provide a live attachTermId. */
   export let spawnReady = true;
+  /** Restored dormant: this session was idle past the restore threshold and
+   *  was NOT among the most-recently-active ones kept warm, so it comes back
+   *  listed and read-only with no PTY (see `selectDormantTuiSources`).
+   *  Mounting TerminalView is what spawns `agent resume`, so a dormant column
+   *  must not mount even when scrolled into view — otherwise merely looking at
+   *  it wakes a real agent process. Cleared when the user resumes it. */
+  export let dormant = false;
   /** Resting-state line cap for the read-mode summary snippet pill.
    *  The pill hover-expands to 50vh same as the TUI pin; this prop
    *  controls the at-rest cap. Default 6 so a ~300-char one-paragraph
@@ -943,6 +950,7 @@
           hasCwd: !!effectiveSessionCwd,
           nearViewport: columnNearViewport,
           spawnReady,
+          dormant,
         }),
       })
       ? attachTermId
@@ -5316,7 +5324,7 @@
     </span>
   {/snippet}
 
-  {#if shouldMountTerminalView( { mode, hasSessionId: !!effectiveSessionId, hasCwd: !!effectiveSessionCwd, nearViewport: columnNearViewport, spawnReady }, )}
+  {#if shouldMountTerminalView( { mode, hasSessionId: !!effectiveSessionId, hasCwd: !!effectiveSessionCwd, nearViewport: columnNearViewport, spawnReady, dormant }, )}
     <TerminalView
       cmd={agent === "codex"
         ? [

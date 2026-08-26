@@ -9,6 +9,7 @@
     openSessionHasDockActivity,
     sidebarDockRows,
     reconcileLiveAgentTerminals,
+    selectDormantTuiSources,
     selectSessionsForBackgroundSpawn,
     type BackgroundSpawnCandidate,
   } from "./session-source-routing";
@@ -2983,6 +2984,43 @@
   // themselves (their `onSpawn` sets attachTermId + marks the id live), so
   // the initial grace below lets those exclude themselves before we start —
   // avoiding a duplicate `claude --resume` for the same session.
+  // --- Idle-TUI restore policy -------------------------------------------
+  // Restoring every persisted terminal-mode column as a LIVE `claude --resume`
+  // is a thundering herd on a long-lived workspace: one observed launch woke 30
+  // agent processes, and 24 of them were still resident and untouched 17 days
+  // later. Sessions the user hasn't returned to come back dormant instead —
+  // listed and read-only, no PTY, no new state — until explicitly resumed.
+  //
+  // 3 days, not 2: a session left on Friday afternoon must still be warm on
+  // Monday morning. And the most-recently-active TUIs are exempt at ANY age
+  // (see `selectDormantTuiSources`) — recency is what keeps a session live.
+  const TUI_IDLE_SLEEP_MS = 3 * 24 * 60 * 60 * 1000;
+  const TUI_ALWAYS_LIVE = 8;
+  /** Sources restored dormant. Computed once per load, right before the
+   *  background spawner starts, and only ever shrinks (waking is explicit). */
+  let dormantTuiSources: Set<string> = new Set();
+
+  /** `AgentSession.source` -> last-active epoch ms (the session file's mtime),
+   *  the signal the dormancy policy ranks on. */
+  function lastActiveBySource(): Map<string, number> {
+    const m = new Map<string, number>();
+    for (const r of repos)
+      for (const wt of r.worktrees ?? [])
+        for (const a of wt.agents ?? []) {
+          const t = Date.parse(a.lastActive ?? "");
+          if (Number.isFinite(t)) m.set(a.source, t);
+        }
+    return m;
+  }
+
+  /** Bring a dormant session back to life — the user asked for it. */
+  function wakeDormantTui(source: string): void {
+    if (!dormantTuiSources.has(source)) return;
+    const next = new Set(dormantTuiSources);
+    next.delete(source);
+    dormantTuiSources = next;
+  }
+
   const BG_SPAWN_INTERVAL_MS = 400; // ~2.5 spawns/sec
   const BG_SPAWN_START_GRACE_MS = 1_500; // let onscreen columns mount first
   const BG_SPAWN_IDLE_STOP_TICKS = 6; // stop after this many empty ticks
@@ -2996,6 +3034,22 @@
   function ensureBackgroundTuiSpawn(): void {
     if (bgSpawnStarted) return;
     bgSpawnStarted = true;
+    // Classify BEFORE the drain starts: the policy ranks over the full
+    // restorable set, and computing it once keeps the always-live slots from
+    // drifting as candidates spawn and drop out of the candidate list.
+    dormantTuiSources = selectDormantTuiSources(
+      openSessionsByWt,
+      lastActiveBySource(),
+      {
+        now: Date.now(),
+        idleMs: TUI_IDLE_SLEEP_MS,
+        alwaysLiveCount: TUI_ALWAYS_LIVE,
+      },
+    );
+    if (dormantTuiSources.size > 0)
+      console.log(
+        `supergit: ${dormantTuiSources.size} idle TUI session(s) restored dormant (read-only until resumed)`,
+      );
     setTimeout(() => {
       if (bgSpawnTimer) return;
       bgSpawnTimer = setInterval(
@@ -3015,6 +3069,7 @@
       liveTerminalIds,
       inFlight: bgSpawnInFlight,
       newTermIds,
+      dormantSources: dormantTuiSources,
     });
     if (candidates.length === 0) {
       // Drain finished (and nothing landing) → stop the timer. A later
@@ -11440,6 +11495,7 @@
                                     })}
                                   attachTermId={s.attachTermId}
                                   spawnReady={initialTerminalSnapshotReady}
+                                  dormant={dormantTuiSources.has(s.source)}
                                   manualTitleOverride={agentMeta?.manualTitle ??
                                     newSessionTitles[titleSource] ??
                                     newSessionTitles[s.source]}
@@ -11520,6 +11576,9 @@
                                     )}
                                   onModeChange={(m) => {
                                     if (m === "terminal") {
+                                      // Explicit resume — the one way a
+                                      // dormant session comes back to life.
+                                      wakeDormantTui(s.source);
                                       rememberSessionSurface(
                                         {
                                           ...s,

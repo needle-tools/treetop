@@ -857,6 +857,9 @@ void terminalPersist
       );
   })
   .catch(() => {});
+// NB: startup is not the only pass — see the periodic prune near the terminal
+// reapers below. A daemon that stays up for weeks accrues entries that age past
+// maxAgeMs long after this ran, and a startup-only prune never revisits them.
 
 const orphanCleaner = new OrphanCleaner({
   getTerminals: () =>
@@ -10451,6 +10454,47 @@ function sweepUnattachedSpawns(): void {
 }
 const spawnReapTimer = setInterval(sweepUnattachedSpawns, SPAWN_REAP_SWEEP_MS);
 spawnReapTimer.unref?.();
+
+// Re-run the persisted-terminal prune on a timer, not just at startup.
+//
+// The caps (PERSISTED_TERMINALS_MAX_AGE_MS / _MAX) were only ever applied in
+// the startup pass, which is fine for a daemon that restarts often — but this
+// one is routinely up for weeks. Entries created *after* boot age past the
+// 48h threshold with nothing left to re-check them, so the file grows unbounded
+// and every stale record comes back as a "Resume" card on the next launch.
+// Observed on an 18-day-uptime daemon: four shell entries at 119-121h, all well
+// past the threshold, all still in the file.
+//
+// `protect` keeps live PTYs out of it — a dev server can legitimately be alive
+// for days, and its record must survive (see prunePersistedTerminals).
+const PERSISTED_TERMINALS_PRUNE_INTERVAL_MS = Number(
+  process.env.SUPERGIT_PERSISTED_TERMINALS_PRUNE_INTERVAL_MS ?? 30 * 60 * 1000,
+);
+if (PERSISTED_TERMINALS_PRUNE_INTERVAL_MS > 0) {
+  const pruneTimer = setInterval(() => {
+    const alive = new Set(
+      terminalBackend
+        .list()
+        .filter((r) => terminalBackend.get(r.id)?.isAlive())
+        .map((r) => r.id),
+    );
+    void terminalPersist
+      .prune({
+        now: Date.now(),
+        maxAgeMs: PERSISTED_TERMINALS_MAX_AGE_MS,
+        maxEntries: PERSISTED_TERMINALS_MAX,
+        protect: alive,
+      })
+      .then((removed) => {
+        if (removed > 0)
+          console.log(
+            `supergit daemon: pruned ${removed} stale persisted terminal(s) (periodic; ${alive.size} live protected)`,
+          );
+      })
+      .catch(() => {});
+  }, PERSISTED_TERMINALS_PRUNE_INTERVAL_MS);
+  pruneTimer.unref?.();
+}
 
 async function sampleSshSessions(): Promise<void> {
   if (sseSubscribers.size === 0) return;

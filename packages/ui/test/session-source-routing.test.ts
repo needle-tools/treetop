@@ -24,6 +24,7 @@ import {
   openSessionHasLiveTerminal,
   sidebarDockRows,
   reconcileLiveAgentTerminals,
+  selectDormantTuiSources,
   selectSessionsForBackgroundSpawn,
   shouldHoldOffscreenAttachedTerminal,
   shouldMountNewSessionTerminal,
@@ -1359,5 +1360,167 @@ describe("shouldHoldOffscreenAttachedTerminal", () => {
         terminalMounted: false,
       }),
     ).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// selectDormantTuiSources — restore policy for idle agent TUIs
+// ---------------------------------------------------------------------------
+
+describe("selectDormantTuiSources", () => {
+  const DAY = 24 * 60 * 60 * 1000;
+  const NOW = 1_800_000_000_000;
+  const wt = "/repo/needle-cloud";
+  const policy = { now: NOW, idleMs: 3 * DAY, alwaysLiveCount: 8 };
+
+  const tui = (
+    source: string,
+    extra: Partial<OpenSession> = {},
+  ): OpenSession => ({
+    agent: "claude",
+    source,
+    mode: "terminal",
+    resumeSessionId: source,
+    ...extra,
+  });
+
+  /** N restorable TUIs, `sid-0` newest, each one day older than the last. */
+  const ladder = (n: number) => {
+    const sessions: OpenSession[] = [];
+    const ages = new Map<string, number>();
+    for (let i = 0; i < n; i++) {
+      sessions.push(tui(`sid-${i}`));
+      ages.set(`sid-${i}`, NOW - i * DAY);
+    }
+    return { byWt: { [wt]: sessions }, ages };
+  };
+
+  test("a session idle past the threshold goes dormant", () => {
+    const byWt = { [wt]: [tui("stale")] };
+    const ages = new Map([["stale", NOW - 17 * DAY]]);
+    expect([
+      ...selectDormantTuiSources(byWt, ages, { ...policy, alwaysLiveCount: 0 }),
+    ]).toEqual(["stale"]);
+  });
+
+  test("Friday afternoon → Monday morning stays live (the 2.5d gap)", () => {
+    const byWt = { [wt]: [tui("weekend")] };
+    const ages = new Map([["weekend", NOW - Math.round(2.5 * DAY)]]);
+    expect(
+      selectDormantTuiSources(byWt, ages, { ...policy, alwaysLiveCount: 0 })
+        .size,
+    ).toBe(0);
+  });
+
+  test("the N most recent stay live no matter how long since last interaction", () => {
+    // Every session is far past the idle threshold — only recency saves them.
+    const sessions: OpenSession[] = [];
+    const ages = new Map<string, number>();
+    for (let i = 0; i < 12; i++) {
+      sessions.push(tui(`sid-${i}`));
+      ages.set(`sid-${i}`, NOW - (100 + i) * DAY); // 100..111 days idle
+    }
+    const dormant = selectDormantTuiSources({ [wt]: sessions }, ages, policy);
+    // Top 8 by recency exempt; the remaining 4 sleep.
+    expect(dormant.size).toBe(4);
+    for (let i = 0; i < 8; i++) expect(dormant.has(`sid-${i}`)).toBe(false);
+    for (let i = 8; i < 12; i++) expect(dormant.has(`sid-${i}`)).toBe(true);
+  });
+
+  test("unknown-age sessions are never put to sleep", () => {
+    const byWt = { [wt]: [tui("mystery")] };
+    expect(
+      selectDormantTuiSources(byWt, new Map(), {
+        ...policy,
+        alwaysLiveCount: 0,
+      }).size,
+    ).toBe(0);
+  });
+
+  test("unknown-age ranks below known-age for the always-live slots", () => {
+    const byWt = { [wt]: [tui("unknown"), tui("recent"), tui("old")] };
+    const ages = new Map([
+      ["recent", NOW - 1 * DAY],
+      ["old", NOW - 40 * DAY],
+    ]);
+    // One slot: "recent" takes it. "old" sleeps; "unknown" is un-judgeable.
+    const dormant = selectDormantTuiSources(byWt, ages, {
+      ...policy,
+      alwaysLiveCount: 1,
+    });
+    expect([...dormant]).toEqual(["old"]);
+  });
+
+  test("idleMs <= 0 disables dormancy entirely", () => {
+    const { byWt, ages } = ladder(50);
+    expect(
+      selectDormantTuiSources(byWt, ages, { ...policy, idleMs: 0 }).size,
+    ).toBe(0);
+  });
+
+  test("ranks over the full restorable set, so live PTYs still consume slots", () => {
+    // Regression: ranking over only not-yet-spawned candidates would let the
+    // exemption drift as the drain progresses and eventually wake everything.
+    // sid-0..sid-3 are already live and are the 4 most recent — with
+    // alwaysLiveCount=4 they take every slot, so sid-4+ must sleep.
+    const sessions: OpenSession[] = [];
+    const ages = new Map<string, number>();
+    for (let i = 0; i < 8; i++) {
+      sessions.push(
+        tui(`sid-${i}`, i < 4 ? { attachTermId: `t_live_${i}` } : {}),
+      );
+      ages.set(`sid-${i}`, NOW - (10 + i) * DAY);
+    }
+    const dormant = selectDormantTuiSources({ [wt]: sessions }, ages, {
+      ...policy,
+      alwaysLiveCount: 4,
+    });
+    expect([...dormant].sort()).toEqual(["sid-4", "sid-5", "sid-6", "sid-7"]);
+  });
+
+  test("ignores shells, read-mode columns, and sessions with no resume id", () => {
+    const byWt = {
+      [wt]: [
+        { agent: "shell" as const, source: "sh" },
+        { agent: "claude" as const, source: "read-mode" },
+        {
+          agent: "claude" as const,
+          source: "no-resume",
+          mode: "terminal" as const,
+        },
+      ],
+    };
+    const ages = new Map([
+      ["sh", NOW - 90 * DAY],
+      ["read-mode", NOW - 90 * DAY],
+      ["no-resume", NOW - 90 * DAY],
+    ]);
+    expect(
+      selectDormantTuiSources(byWt, ages, { ...policy, alwaysLiveCount: 0 })
+        .size,
+    ).toBe(0);
+  });
+
+  test("the background spawner skips dormant sources", () => {
+    const byWt = { [wt]: [tui("live-one"), tui("sleepy")] };
+    const picked = selectSessionsForBackgroundSpawn(byWt, {
+      liveTerminalIds: new Set(),
+      inFlight: new Set(),
+      newTermIds: {},
+      dormantSources: new Set(["sleepy"]),
+    });
+    expect(picked.map((c) => c.source)).toEqual(["live-one"]);
+  });
+
+  test("scrolling a dormant column into view does not mount its terminal", () => {
+    const args = {
+      mode: "terminal" as const,
+      hasSessionId: true,
+      hasCwd: true,
+      nearViewport: true,
+      spawnReady: true,
+    };
+    expect(shouldMountTerminalView(args)).toBe(true);
+    expect(shouldMountTerminalView({ ...args, dormant: true })).toBe(false);
   });
 });

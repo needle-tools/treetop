@@ -271,7 +271,10 @@ describe("prunePersistedTerminals", () => {
       maxAgeMs: 48 * HOUR,
       maxEntries: 100,
     });
-    expect(kept.map((e) => e.termId)).toEqual([idAt(NOW - 1 * HOUR, 1), idAt(NOW - 2 * HOUR, 3)]);
+    expect(kept.map((e) => e.termId)).toEqual([
+      idAt(NOW - 1 * HOUR, 1),
+      idAt(NOW - 2 * HOUR, 3),
+    ]);
   });
 
   test("keeps only the most-recent maxEntries and preserves file order", () => {
@@ -286,7 +289,10 @@ describe("prunePersistedTerminals", () => {
       maxEntries: 2,
     });
     // Newest two are #2 (1h) and #3 (2h); output keeps original order (2 then 3).
-    expect(kept.map((e) => e.termId)).toEqual([idAt(NOW - 1 * HOUR, 2), idAt(NOW - 2 * HOUR, 3)]);
+    expect(kept.map((e) => e.termId)).toEqual([
+      idAt(NOW - 1 * HOUR, 2),
+      idAt(NOW - 2 * HOUR, 3),
+    ]);
   });
 
   test("a no-op when everything is fresh and under the cap", () => {
@@ -338,7 +344,9 @@ describe("TerminalPersist.prune", () => {
     expect(removed).toBe(3);
     const list = await tp.list();
     expect(list.length).toBe(3);
-    expect(list.every((e) => e.termId !== idAt(NOW - 500 * HOUR, 99))).toBe(true);
+    expect(list.every((e) => e.termId !== idAt(NOW - 500 * HOUR, 99))).toBe(
+      true,
+    );
   });
 
   test("returns 0 and leaves the file untouched when nothing to prune", async () => {
@@ -352,5 +360,83 @@ describe("TerminalPersist.prune", () => {
     });
     expect(removed).toBe(0);
     expect((await tp.list()).length).toBe(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// prunePersistedTerminals — `protect` (live PTYs)
+// ---------------------------------------------------------------------------
+
+describe("prunePersistedTerminals with protect (live PTYs)", () => {
+  const DAY = 24 * 60 * 60 * 1000;
+  const NOW = 1_800_000_000_000;
+  /** A termId whose embedded spawn time is `ms`. */
+  const idAt = (ms: number, tag: string) => `t_${ms.toString(36)}_${tag}`;
+  const entry = (termId: string) => ({
+    termId,
+    cmd: ["sh", "-c", "npm run dev"],
+    cwd: "/repo",
+    wtPath: "/repo",
+  });
+
+  test("a live PTY survives the age cap", () => {
+    // 5 days old — well past a 48h maxAgeMs — but still running.
+    const live = idAt(NOW - 5 * DAY, "devserver");
+    const kept = prunePersistedTerminals([entry(live)], {
+      now: NOW,
+      maxAgeMs: 2 * DAY,
+      maxEntries: 10,
+      protect: new Set([live]),
+    });
+    expect(kept.map((e) => e.termId)).toEqual([live]);
+  });
+
+  test("the same entry IS dropped once its PTY is gone", () => {
+    const dead = idAt(NOW - 5 * DAY, "devserver");
+    expect(
+      prunePersistedTerminals([entry(dead)], {
+        now: NOW,
+        maxAgeMs: 2 * DAY,
+        maxEntries: 10,
+      }),
+    ).toEqual([]);
+  });
+
+  test("live entries do not consume maxEntries slots", () => {
+    const live = [idAt(NOW - 9 * DAY, "l1"), idAt(NOW - 8 * DAY, "l2")];
+    const fresh = [idAt(NOW - 1000, "f1"), idAt(NOW - 2000, "f2")];
+    const kept = prunePersistedTerminals([...live, ...fresh].map(entry), {
+      now: NOW,
+      maxAgeMs: 2 * DAY,
+      maxEntries: 2,
+      protect: new Set(live),
+    });
+    // Both live entries survive AND both fresh ones still get their 2 slots.
+    expect(new Set(kept.map((e) => e.termId))).toEqual(
+      new Set([...live, ...fresh]),
+    );
+  });
+
+  test("omitting protect preserves the original startup behaviour", () => {
+    const old = idAt(NOW - 5 * DAY, "old");
+    const fresh = idAt(NOW - 1000, "fresh");
+    const kept = prunePersistedTerminals([entry(old), entry(fresh)], {
+      now: NOW,
+      maxAgeMs: 2 * DAY,
+      maxEntries: 10,
+    });
+    expect(kept.map((e) => e.termId)).toEqual([fresh]);
+  });
+
+  test("file order is preserved across a protected prune", () => {
+    const a = idAt(NOW - 9 * DAY, "a"); // live
+    const b = idAt(NOW - 1000, "b"); // fresh
+    const c = idAt(NOW - 9 * DAY, "c"); // stale, dropped
+    const d = idAt(NOW - 2000, "d"); // fresh
+    const kept = prunePersistedTerminals(
+      [entry(a), entry(b), entry(c), entry(d)],
+      { now: NOW, maxAgeMs: 2 * DAY, maxEntries: 10, protect: new Set([a]) },
+    );
+    expect(kept.map((e) => e.termId)).toEqual([a, b, d]);
   });
 });
