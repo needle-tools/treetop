@@ -7320,6 +7320,36 @@ describe("visualFileEditSummaryForBlock", () => {
     });
   });
 
+  it("counts write-style file change content as added lines", () => {
+    expect(
+      visualFileEditSummaryForBlock({
+        type: "tool_use",
+        toolName: "file change",
+        toolInput: [
+          {
+            path: "parse-roadmap.js",
+            action: "write",
+            content: [
+              "const IMAGE_EXTENSIONS = new Set(['png']);",
+              "const VIDEO_EXTENSIONS = new Set(['mp4']);",
+              "",
+            ].join("\n"),
+          },
+        ],
+      }),
+    ).toEqual({
+      title: "Added parse-roadmap.js",
+      files: [
+        {
+          path: "parse-roadmap.js",
+          action: "added",
+          additions: 2,
+          deletions: 0,
+        },
+      ],
+    });
+  });
+
   it("summarizes keyed Codex patch_apply_end changes with line counts", () => {
     expect(
       visualFileEditSummaryForBlock({
