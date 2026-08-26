@@ -6,6 +6,7 @@ import {
   classifyRealtimeVoiceError,
   codexAppServerCommand,
   realtimeVoiceStartParams,
+  resolveCodexBinary,
   type CodexAppServerProcess,
 } from "../src/codex-app-server";
 import {
@@ -85,6 +86,32 @@ function parseWrite(writes: string[], index: number): Record<string, unknown> {
 }
 
 describe("CodexAppServerAdapter", () => {
+  test("prefers the standalone Codex CLI over the ChatGPT app bundle", () => {
+    const bundled = "/Applications/ChatGPT.app/Contents/Resources/codex";
+    expect(
+      resolveCodexBinary({
+        env: {},
+        findOnPath: () => "/Users/test/.bun/bin/codex",
+        bundledPath: bundled,
+        exists: (path) => path === bundled,
+      }),
+    ).toBe("/Users/test/.bun/bin/codex");
+  });
+
+  test("finds the Bun-installed CLI when the GUI daemon PATH only sees Homebrew", () => {
+    const bundled = "/Applications/ChatGPT.app/Contents/Resources/codex";
+    const bunCli = "/Users/test/.bun/bin/codex";
+    expect(
+      resolveCodexBinary({
+        env: {},
+        homeDir: "/Users/test",
+        findOnPath: () => "/opt/homebrew/bin/codex",
+        bundledPath: bundled,
+        exists: (path) => path === bunCli || path === bundled,
+      }),
+    ).toBe(bunCli);
+  });
+
   test("enables realtime conversations in the app-server process", () => {
     expect(codexAppServerCommand("/opt/codex")).toEqual([
       "/opt/codex",
@@ -125,6 +152,7 @@ describe("CodexAppServerAdapter", () => {
       threadId: "thr_voice",
       outputModality: "audio",
       includeStartupContext: true,
+      model: "gpt-live-1-codex",
       prompt: "Current Treetop context.",
       version: "v3",
       voice: "sol",
@@ -240,6 +268,7 @@ describe("CodexAppServerAdapter", () => {
         threadId: "thr_voice",
         outputModality: "audio",
         includeStartupContext: true,
+        model: "gpt-live-1-codex",
         prompt: "Current Treetop context: project alpha.",
         version: "v3",
         voice: "sol",

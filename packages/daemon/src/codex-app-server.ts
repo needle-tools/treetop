@@ -6,6 +6,8 @@ import type {
   NativeAgentTurnRequest,
 } from "./native-agent-adapters";
 import { existsSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
 
 export interface CodexAppServerProcess {
   pid: number;
@@ -147,6 +149,7 @@ export interface CodexRealtimeVoiceStart {
 }
 
 export const DEFAULT_REALTIME_VOICE = "sol";
+const DEFAULT_REALTIME_MODEL = "gpt-live-1-codex";
 
 const VOICE_INSTRUCTIONS =
   "You are Treetop's global voice assistant. Reply briefly, usually in one short sentence. " +
@@ -423,6 +426,7 @@ export function realtimeVoiceStartParams(req: {
     threadId: req.threadId,
     outputModality: "audio",
     includeStartupContext: true,
+    model: DEFAULT_REALTIME_MODEL,
     prompt: cleanString(req.prompt),
     version: "v3",
     voice: cleanString(req.voice) ?? DEFAULT_REALTIME_VOICE,
@@ -1025,12 +1029,27 @@ export class CodexAppServerAdapter implements NativeAgentAdapter {
   }
 }
 
-export function resolveCodexBinary(): string {
-  const envPath = cleanString(process.env.CODEX_CLI_PATH);
-  if (envPath && existsSync(envPath)) return envPath;
-  const chatGptBundledCodex =
+export function resolveCodexBinary(
+  options: {
+    env?: Record<string, string | undefined>;
+    homeDir?: string;
+    findOnPath?: (name: string) => string | null;
+    bundledPath?: string;
+    exists?: (path: string) => boolean;
+  } = {},
+): string {
+  const env = options.env ?? process.env;
+  const exists = options.exists ?? existsSync;
+  const bundledPath =
+    options.bundledPath ??
     "/Applications/ChatGPT.app/Contents/Resources/codex";
-  if (existsSync(chatGptBundledCodex)) return chatGptBundledCodex;
+  const envPath = cleanString(env.CODEX_CLI_PATH);
+  if (envPath && exists(envPath)) return envPath;
+  const bunCli = join(options.homeDir ?? homedir(), ".bun", "bin", "codex");
+  if (exists(bunCli)) return bunCli;
+  const standaloneCli = (options.findOnPath ?? Bun.which)("codex");
+  if (standaloneCli && standaloneCli !== bundledPath) return standaloneCli;
+  if (exists(bundledPath)) return bundledPath;
   return "codex";
 }
 
