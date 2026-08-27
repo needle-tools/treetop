@@ -48,6 +48,7 @@
     stickScrollerToBottom,
   } from "./scroll-util";
   import { singleFlight } from "./single-flight";
+  import { shouldStartSingleFlightPoll } from "./session-poll";
   import { record, time, timeAsync } from "./timings";
   import {
     changeKindRequiresDaemonsReload,
@@ -3156,17 +3157,32 @@
   // an fs_change, which the existing SSE handler folds into the dashboard.
   const ACTIVE_WT_POLL_MS = 5_000;
   let activeWtPollTimer: ReturnType<typeof setInterval> | null = null;
+  let activeWtPollInFlight = false;
   function startActiveWorktreePoll(): void {
     if (activeWtPollTimer) return;
     activeWtPollTimer = setInterval(() => {
       const wt = activeWorktreePath;
-      if (!wt || isUiIdle()) return;
+      if (
+        !shouldStartSingleFlightPoll({
+          hasTarget: !!wt,
+          idle: isUiIdle(),
+          inFlight: activeWtPollInFlight,
+        })
+      ) {
+        return;
+      }
+      if (!wt) return;
+      activeWtPollInFlight = true;
       void fetch(
         apiUrl(
           `/api/worktree-details?path=${encodeURIComponent(wt)}`,
           daemonIdForWorktreePath(repos, wt),
         ),
-      ).catch(() => {});
+      )
+        .catch(() => {})
+        .finally(() => {
+          activeWtPollInFlight = false;
+        });
     }, ACTIVE_WT_POLL_MS);
   }
   function stopActiveWorktreePoll(): void {

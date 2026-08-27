@@ -35,6 +35,7 @@
     shouldFollowVisualTail,
     shouldPauseVisualTailAfterUserScroll,
     shouldRememberVisualScrollMemory,
+    canRequestOlderTranscriptMessages,
     VISUAL_TAIL_FOLLOW_NEAR_PX,
     visualScrollMemoryFromMetrics,
     visualScrollTopFromMemory,
@@ -120,6 +121,9 @@
     codexToolInputQuality,
     mergeCodexAppHistoryMessages,
     shouldLoadCodexAppThreadHistory,
+    shouldRunCodexAppLiveSurface,
+    shouldSubscribeCodexAppLiveState,
+    shouldUseCodexAppHistorySource,
     subscribeCodexEvents,
     type CodexAppEvent,
     type CodexEventStreamState,
@@ -2044,7 +2048,7 @@
 
   function canRequestOlderVisualHistory(): boolean {
     if (!session || !messagesEl) return false;
-    if (codexVisualAppSurface) {
+    if (codexAppHistorySourceActive) {
       const threadId = effectiveSessionId;
       return canRequestOlderCodexAppThreadHistory({
         threadId,
@@ -2053,12 +2057,12 @@
       });
     }
     if (sessionMessageSource.kind !== "transcript") return false;
-    if (codexVisualAppSurface && codexActiveTurnId !== null) return false;
-    const total = maxVisualHistoryMessages();
-    if (visualHistoryMinMessages >= total) return false;
-    if (totalMessageCount && session.messages.length >= totalMessageCount)
-      return false;
-    return true;
+    return canRequestOlderTranscriptMessages({
+      minMessages: visualHistoryMinMessages,
+      maxMessages: maxVisualHistoryMessages(),
+      loadedMessages: session.messages.length,
+      totalMessageCount,
+    });
   }
 
   function maybeRequestOlderVisualHistory(): void {
@@ -2066,7 +2070,7 @@
     if (!el || visualHistoryRequestInFlight) return;
     if (el.scrollTop > 180) return;
     if (!canRequestOlderVisualHistory()) return;
-    if (codexVisualAppSurface) {
+    if (codexAppHistorySourceActive) {
       visualHistoryRequestInFlight = true;
       visualHistoryScrollAnchor = {
         el,
@@ -2127,7 +2131,7 @@
   }
 
   function currentVisualHistorySourceKey(): string {
-    const sourceKey = codexVisualAppSurface
+    const sourceKey = codexAppHistorySourceActive
       ? `codex-app:${effectiveSessionId ?? ""}:${effectiveSessionCwd ?? ""}`
       : sessionMessageSourceHistoryKey(sessionMessageSource);
     return `${daemonId ?? "local"}:${sourceKey}`;
@@ -2420,12 +2424,25 @@
   $: liveCodexApp = agent === "codex" && isLiveCodexAppSource(source);
   $: codexVisualAppSurface =
     liveCodexApp && visualAppEnabled && transcriptSurface === "read";
+  $: codexAppLiveSurfaceActive = shouldRunCodexAppLiveSurface({
+    visualAppSurface: codexVisualAppSurface,
+    mode,
+    nearViewport: columnNearViewport,
+  });
+  $: codexAppLiveStateActive = shouldSubscribeCodexAppLiveState({
+    visualAppSurface: codexVisualAppSurface,
+    mode,
+  });
+  $: codexAppHistorySourceActive = shouldUseCodexAppHistorySource({
+    liveSurfaceActive: codexAppLiveSurfaceActive,
+    transcriptSource,
+  });
   $: sessionFileSource = liveCodexApp ? (transcriptSource ?? "") : source;
   $: sessionMessageSource = resolveSessionMessageSource({
     agent,
     source,
     transcriptSource,
-    liveAppSurface: codexVisualAppSurface,
+    liveAppSurface: codexAppHistorySourceActive,
   });
   $: titleStorageSource = sessionFileSource || source;
   $: shouldPollTranscript = sessionMessageSource.kind === "transcript";
@@ -2481,7 +2498,7 @@
 
   $: if (
     shouldLoadCodexAppThreadHistory({
-      visualAppSurface: codexVisualAppSurface,
+      visualAppSurface: codexAppHistorySourceActive,
       threadId: effectiveSessionId,
       cwd: effectiveSessionCwd,
       hasSession: !!session,
@@ -2499,7 +2516,7 @@
 
   $: {
     const key =
-      liveCodexApp && effectiveSessionId && effectiveSessionCwd
+      codexAppHistorySourceActive && effectiveSessionId && effectiveSessionCwd
         ? `${effectiveSessionId}\0${effectiveSessionCwd}`
         : "";
     if (key && key !== codexGoalLoadKey) {
@@ -3011,17 +3028,14 @@
     blockFields: Partial<NormalizedBlock> = {},
   ): void {
     if (!delta || !session) return;
-    codexPendingDeltaPatches = [
-      ...codexPendingDeltaPatches,
-      {
-        id,
-        role,
-        type,
-        delta,
-        blockFields,
-        timestamp: new Date().toISOString(),
-      },
-    ];
+    codexPendingDeltaPatches.push({
+      id,
+      role,
+      type,
+      delta,
+      blockFields,
+      timestamp: new Date().toISOString(),
+    });
     scheduleCodexDeltaFlush();
   }
 
@@ -4874,8 +4888,8 @@
     const threadId = codexEventThreadIdForSession({
       agent,
       mode,
-      sessionId: session?.sessionId,
-      liveCodexApp: codexVisualAppSurface,
+      sessionId: effectiveSessionId,
+      liveCodexApp: codexAppLiveStateActive,
     });
     if (threadId) openCodexEventStream(threadId);
     else closeCodexEventStream();
@@ -4926,14 +4940,15 @@
   // onSession for transcript/review panes and this column's active-sends slice
   // via onInflight.
   //
-  // A live Codex app-server pane is deliberately single-source: messages come
-  // from app-server thread/history APIs plus SSE events, never from the JSONL
-  // transcript poller. Mixing the two makes work ranges jump between competing
-  // clocks when steer/compaction boundaries differ.
+  // Restored Codex app panes use the JSONL transcript for durable history and
+  // app-server SSE for live deltas. The app-server history API is only for the
+  // narrow pre-transcript window after a new app-server thread is created.
+  // Calling thread/read for restored active-writer threads can block the
+  // browser's localhost connection pool during startup.
   // `source` is keyed in App.svelte's {#each}, but `transcriptSource` may arrive
   // after mount for app-server rows. `sessionMessageSource` makes the ownership
-  // explicit: live app-server surfaces use app-server history/SSE, transcript
-  // surfaces use the JSONL/session poller. There is no mixed message source.
+  // explicit: app-server history owns only pre-transcript panes; transcript
+  // surfaces use the JSONL/session poller.
 
   let unregisterPoll: (() => void) | null = null;
   let mounted = false;
@@ -4964,9 +4979,9 @@
       shouldPollSession: () =>
         sessionElementNearViewport() &&
         ollamaStreamingIdx === null &&
-        !codexVisualAppSurface,
+        !codexAppHistorySourceActive,
       onSession: (bodyText, etag) => {
-        if (ollamaStreamingIdx !== null || codexVisualAppSurface) return;
+        if (ollamaStreamingIdx !== null || codexAppHistorySourceActive) return;
         if (bodyText === lastResponseBody) return;
         lastEtag = etag;
         lastResponseBody = bodyText;
@@ -4977,7 +4992,7 @@
         }
       },
       onSessionPatch: (patch, etag) => {
-        if (ollamaStreamingIdx !== null || codexVisualAppSurface) return;
+        if (ollamaStreamingIdx !== null || codexAppHistorySourceActive) return;
         lastEtag = etag;
         applySessionPatch(patch);
       },

@@ -1006,15 +1006,21 @@ export function visualWorkDetailEntries<T extends VisualWorkDisplayEntryLike>(
   entries: readonly T[],
   options: VisualWorkDetailOptions,
 ): T[] {
-  if (options.full) return [...entries];
+  const renderable = entries.filter(isRenderableDetailEntry);
+  if (options.full) return renderable;
   if (item.open !== true) return [];
-  return [...entries];
+  return renderable;
 }
 
 function visualWorkDisplayEntryGroupKey(
   entry: VisualWorkDisplayEntryLike,
 ): string {
   return String(entry.entry.messageIndex);
+}
+
+function isRenderableDetailEntry(entry: VisualWorkDisplayEntryLike): boolean {
+  if (entry.kind === "marker") return true;
+  return entry.entry.blocks.length > 0;
 }
 
 export function visualWorkDetailGroups<T extends VisualWorkDisplayEntryLike>(

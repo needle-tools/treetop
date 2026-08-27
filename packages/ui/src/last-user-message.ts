@@ -1994,12 +1994,9 @@ export function buildVisualTranscriptItems<
     return userMessageIntent(nextDisplayUserMessage(startIndex));
   }
 
-  function canImplicitlySteer(message: M | undefined): boolean {
+  function hasExplicitSteerIntent(message: M | undefined): boolean {
     if (!message || message.role !== "user") return false;
-    return (
-      userMessageIntent(message) === "steer" ||
-      !isOptimisticUserMessage(message)
-    );
+    return userMessageIntent(message) === "steer";
   }
 
   function pushTurnWorkAndResponse(
@@ -2167,7 +2164,7 @@ export function buildVisualTranscriptItems<
       }
       if (
         previousTurnAcceptsSteering &&
-        canImplicitlySteer(nextDisplayUserMessage(messageIndex + 1))
+        hasExplicitSteerIntent(nextDisplayUserMessage(messageIndex + 1))
       ) {
         pendingTurnPrefixEntries.push(entry);
         messageIndex += 1;
@@ -2183,7 +2180,7 @@ export function buildVisualTranscriptItems<
     const explicitSteer = userMessageIntent(message) === "steer";
     const turnWasAlreadyOpen: boolean =
       explicitSteer ||
-      (previousTurnAcceptsSteering && canImplicitlySteer(message));
+      (previousTurnAcceptsSteering && hasExplicitSteerIntent(message));
     const messageForDisplay = withUserMessageIntent(
       message,
       explicitSteer || turnWasAlreadyOpen ? "steer" : undefined,
@@ -2264,7 +2261,7 @@ export function buildVisualTranscriptItems<
     if (
       acceptsSteering &&
       messages[messageIndex]?.role === "user" &&
-      canImplicitlySteer(messages[messageIndex])
+      hasExplicitSteerIntent(messages[messageIndex])
     ) {
       pendingTurnPrefixEntries = turnEntries;
       pendingTurnStartedAt = turnStartedAt;
