@@ -75,7 +75,7 @@ describe("codex event stream hub", () => {
     __setCodexEventSourceCtorForTests(FakeEventSource);
   });
 
-  test("shares one EventSource for multiple subscribers on the same daemon and thread", () => {
+  test("shares one EventSource for multiple subscribers on the same daemon", () => {
     const a: CodexAppEvent[] = [];
     const b: CodexAppEvent[] = [];
 
@@ -87,9 +87,7 @@ describe("codex event stream hub", () => {
     });
 
     expect(FakeEventSource.instances.length).toBe(1);
-    expect(FakeEventSource.instances[0]?.url).toBe(
-      "/api/codex-app/events?threadId=t1",
-    );
+    expect(FakeEventSource.instances[0]?.url).toBe("/api/codex-app/events");
 
     FakeEventSource.instances[0]?.emit("codex", event("t1", 1));
     expect(a.map((e) => e.seq)).toEqual([1]);
@@ -101,15 +99,14 @@ describe("codex event stream hub", () => {
     expect(FakeEventSource.instances[0]?.closed).toBe(true);
   });
 
-  test("keeps one shared stream per daemon and thread", () => {
+  test("keeps one shared stream per daemon, not per thread", () => {
     subscribeCodexEvents(undefined, "t1", { onEvent: () => {} });
     subscribeCodexEvents(undefined, "t2", { onEvent: () => {} });
     subscribeCodexEvents("remote-1", "t1", { onEvent: () => {} });
 
     expect(FakeEventSource.instances.map((es) => es.url)).toEqual([
-      "/api/codex-app/events?threadId=t1",
-      "/api/codex-app/events?threadId=t2",
-      "/api/daemons/remote-1/codex-app/events?threadId=t1",
+      "/api/codex-app/events",
+      "/api/daemons/remote-1/codex-app/events",
     ]);
   });
 
@@ -120,9 +117,9 @@ describe("codex event stream hub", () => {
     subscribeCodexEvents(undefined, "t1", { onEvent: (e) => a.push(e) });
     subscribeCodexEvents(undefined, "t2", { onEvent: (e) => b.push(e) });
 
-    expect(FakeEventSource.instances.length).toBe(2);
+    expect(FakeEventSource.instances.length).toBe(1);
     FakeEventSource.instances[0]?.emit("codex", event("t1", 1));
-    FakeEventSource.instances[1]?.emit("codex", event("t2", 2));
+    FakeEventSource.instances[0]?.emit("codex", event("t2", 2));
     FakeEventSource.instances[0]?.emit("codex", {
       kind: "notification",
       method: "mcpServer/startupStatus/updated",

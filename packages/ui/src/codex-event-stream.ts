@@ -231,20 +231,12 @@ const hubs = new Map<string, Hub>();
 const HISTORY_LIMIT = 1_000;
 let eventSourceCtorForTests: EventSourceConstructor | null = null;
 
-function hubKey(
-  daemonId: string | undefined,
-  threadId: string | undefined,
-): string {
-  return `${daemonId ?? ""}\0${threadId ?? ""}`;
+function daemonKey(daemonId: string | undefined): string {
+  return daemonId ?? "";
 }
 
-function eventSourceUrl(
-  daemonId: string | undefined,
-  threadId: string | undefined,
-): string {
-  if (!threadId) return apiUrl("/api/codex-app/events", daemonId);
-  const qs = new URLSearchParams({ threadId });
-  return apiUrl(`/api/codex-app/events?${qs.toString()}`, daemonId);
+function eventSourceUrl(daemonId: string | undefined): string {
+  return apiUrl("/api/codex-app/events", daemonId);
 }
 
 function eventSourceCtor(): EventSourceConstructor {
@@ -1950,11 +1942,8 @@ function cleanCodexToolInput(
   return Object.keys(out).length ? out : undefined;
 }
 
-function createHub(
-  daemonId: string | undefined,
-  threadId: string | undefined,
-): Hub {
-  const es = new (eventSourceCtor())(eventSourceUrl(daemonId, threadId));
+function createHub(daemonId: string | undefined): Hub {
+  const es = new (eventSourceCtor())(eventSourceUrl(daemonId));
   const hub: Hub = {
     es,
     state: "connecting",
@@ -1975,10 +1964,10 @@ export function subscribeCodexEvents(
   threadId: string | undefined,
   subscriber: Subscriber,
 ): () => void {
-  const key = hubKey(daemonId, threadId);
+  const key = daemonKey(daemonId);
   let hub = hubs.get(key);
   if (!hub) {
-    hub = createHub(daemonId, threadId);
+    hub = createHub(daemonId);
     hubs.set(key, hub);
   }
   const hubSubscriber: HubSubscriber = { ...subscriber, threadId };
