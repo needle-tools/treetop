@@ -1,4 +1,6 @@
 import { describe, expect, test } from "bun:test";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   CodexAppServerAdapter,
@@ -554,6 +556,57 @@ describe("CodexAppServerAdapter", () => {
     const saved = adapter.stopRecording();
     expect(saved?.frames).toHaveLength(3);
     expect(adapter.recordingSnapshot()?.frames).toEqual([]);
+  });
+
+  test("persists app-server json-rpc replay frames beyond the bounded buffer", async () => {
+    const recordingDir = mkdtempSync(join(tmpdir(), "supergit-codex-rpc-"));
+    try {
+      const fake = fakeCodexProcess();
+      const adapter = new CodexAppServerAdapter({
+        spawn: () => fake.proc,
+        recordingDir,
+        recordingFrameLimit: 2,
+      });
+
+      const models = adapter.listModels("/repo");
+      await waitFor(() => fake.writes[0], "initialize request");
+      fake.enqueue({ id: 0, result: {} });
+      await waitFor(() => fake.writes[2], "model list request");
+      fake.enqueue({
+        id: 1,
+        result: {
+          data: [{ id: "codex", model: "gpt-5.6-sol" }],
+          nextCursor: null,
+        },
+      });
+      await models;
+
+      const recording = adapter.recordingSnapshot();
+      expect(recording?.frames).toHaveLength(2);
+      expect(recording?.path?.endsWith(".jsonl")).toBe(true);
+
+      const replayRows = readFileSync(recording!.path!, "utf8")
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line) as Record<string, unknown>);
+      expect(replayRows).toHaveLength(5);
+      expect(replayRows.map((row) => row.direction)).toEqual([
+        "client",
+        "server",
+        "client",
+        "client",
+        "server",
+      ]);
+      expect(replayRows.some((row) => row.seq === 1)).toBe(true);
+      expect(replayRows.some((row) => row.seq === 5)).toBe(true);
+      expect(replayRows[3]?.message).toEqual({
+        id: 1,
+        method: "model/list",
+        params: { limit: 100 },
+      });
+    } finally {
+      rmSync(recordingDir, { recursive: true, force: true });
+    }
   });
 
   test("emits live app-server events and answers approval requests", async () => {
