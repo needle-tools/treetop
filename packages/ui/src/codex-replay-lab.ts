@@ -255,10 +255,16 @@ function codexTranscriptStepFromRow(
   if (payloadType === "message") {
     const rawRole = objectString(payload, "role");
     const role = transcriptRole(rawRole);
-    if (!role) return undefined;
     let blocks = transcriptContentBlocks(payload.content);
+    if (!role) {
+      return transcriptContextStep(seq, timestamp, rawRole, blocks);
+    }
     if (role === "user") {
+      const originalBlocks = blocks;
       blocks = transcriptVisibleUserBlocks(blocks);
+      if (!blocks.length) {
+        return transcriptContextStep(seq, timestamp, "user", originalBlocks);
+      }
     }
     if (!blocks.length) return undefined;
     return transcriptMessageStep(
@@ -348,6 +354,40 @@ function codexTranscriptStepFromRow(
   }
 
   return undefined;
+}
+
+function transcriptContextStep(
+  seq: number,
+  timestamp: string | undefined,
+  role: string | undefined,
+  blocks: CodexAppHistoryBlock[],
+): ReplayStep | undefined {
+  const text = blocks
+    .map((block) => (block.type === "text" ? block.text?.trim() : undefined))
+    .filter((part): part is string => !!part)
+    .join("\n\n")
+    .trim();
+  if (!text) return undefined;
+  const label = transcriptContextLabel(role);
+  return transcriptMessageStep(seq, timestamp, label, {
+    id: `codex-transcript-context-${seq}`,
+    role: "system",
+    timestamp,
+    blocks: [
+      {
+        type: "system_reminder",
+        tagName: label,
+        text,
+      },
+    ],
+  });
+}
+
+function transcriptContextLabel(role: string | undefined): string {
+  if (role === "developer") return "Developer context";
+  if (role === "system") return "System context";
+  if (role === "user") return "Injected user context";
+  return role ? `${capitalize(role)} context` : "Injected context";
 }
 
 function transcriptToolInvocation(

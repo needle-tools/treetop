@@ -230,7 +230,7 @@ describe("Codex replay lab parser", () => {
     );
   });
 
-  test("filters Codex transcript bootstrap rows and event-message duplicates", () => {
+  test("collapses Codex transcript bootstrap rows and filters event-message duplicates", () => {
     const replay = parseCodexReplayText(
       [
         JSON.stringify({
@@ -303,10 +303,32 @@ describe("Codex replay lab parser", () => {
 
     const messages = codexReplayMessagesUntil(replay, replay.steps.length);
     expect(messages.map((message) => message.role)).toEqual([
+      "system",
+      "system",
       "user",
       "assistant",
     ]);
-    expect(messages.flatMap((message) => message.blocks)).toEqual([
+    expect(messages[0]).toMatchObject({
+      role: "system",
+      blocks: [
+        {
+          type: "system_reminder",
+          tagName: "Developer context",
+          text: "giant developer prompt",
+        },
+      ],
+    });
+    expect(messages[1]).toMatchObject({
+      role: "system",
+      blocks: [
+        {
+          type: "system_reminder",
+          tagName: "Injected user context",
+          text: "# AGENTS.md instructions for /repo\n\n<environment_context>hidden</environment_context>",
+        },
+      ],
+    });
+    expect(messages.slice(2).flatMap((message) => message.blocks)).toEqual([
       { type: "text", text: "Render this actual turn." },
       { type: "text", text: "Actual assistant row." },
     ]);
