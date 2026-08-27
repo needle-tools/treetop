@@ -61,6 +61,7 @@ import {
 } from "./git";
 import { createLimiter } from "./concurrency";
 import { createStaleWhileRevalidateCache } from "./async-cache";
+import { uiStaticRequestPath } from "./ui-static";
 import { $, type ServerWebSocket } from "bun";
 import {
   detectAgents,
@@ -10156,7 +10157,7 @@ const server = Bun.serve<TermWsData, never>({
       // hosting, so this block is a no-op.
       if (UI_DIR && req.method === "GET") {
         // Resolve safely — normalize and reject anything escaping UI_DIR.
-        const reqPath = url.pathname === "/" ? "/index.html" : url.pathname;
+        const reqPath = uiStaticRequestPath(url.pathname);
         const candidate = resolve(UI_DIR, "." + normalize(reqPath));
         if (candidate === UI_DIR || candidate.startsWith(UI_DIR + sep)) {
           const file = Bun.file(candidate);
