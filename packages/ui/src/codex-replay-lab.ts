@@ -8,6 +8,7 @@ import {
 import {
   buildVisualTranscriptItems,
   updateVisualTranscriptItems,
+  visualTranscriptMessageWindow,
   type VisualTranscriptItem,
 } from "./last-user-message";
 
@@ -170,12 +171,17 @@ export function codexReplayItemsUntil(
   stepCount: number,
 ): VisualTranscriptItem<CodexAppHistoryBlock, CodexAppHistoryMessage>[] {
   const active = replay.mode === "rpc" && stepCount < replay.steps.length;
-  return buildVisualTranscriptItems(
+  const window = visualTranscriptMessageWindow(
     codexReplayMessagesUntil(replay, stepCount),
     {
-      active,
+      minMessages: DEFAULT_REPLAY_VISIBLE_MESSAGE_LIMIT,
+      minUserTurns: 2,
     },
   );
+  return buildVisualTranscriptItems(window.messages, {
+    active,
+    messageIndexOffset: window.messageIndexOffset,
+  });
 }
 
 export function createCodexReplayPlayback(
@@ -220,7 +226,7 @@ export function setCodexReplayPlaybackStep(
 
   const messages = state.messages.slice();
   const context = state.context;
-  const previousVisibleMessages = visibleReplayMessages(
+  const previousWindow = replayMessageWindow(
     state.messages,
     state.visibleMessageLimit,
   );
@@ -230,36 +236,27 @@ export function setCodexReplayPlaybackStep(
     const step = state.replay.steps[index];
     if (step) appendReplayStepMessages(messages, step, context);
   }
-  const visibleMessages = visibleReplayMessages(
-    messages,
-    state.visibleMessageLimit,
-  );
-  const active = state.replay.mode === "rpc" && target < state.replay.steps.length;
-  const previousWindowStart = Math.max(
-    0,
-    state.messages.length - state.visibleMessageLimit,
-  );
-  const nextWindowStart = Math.max(
-    0,
-    messages.length - state.visibleMessageLimit,
-  );
+  const nextWindow = replayMessageWindow(messages, state.visibleMessageLimit);
+  const active =
+    state.replay.mode === "rpc" && target < state.replay.steps.length;
   const appendHint =
-    previousWindowStart === nextWindowStart
-      ? previousVisibleMessages.length
+    previousWindow.messageIndexOffset === nextWindow.messageIndexOffset
+      ? previousWindow.messages.length
       : undefined;
   return {
     ...state,
     stepIndex: target,
     messages,
     items: updateVisualTranscriptItems({
-      previousMessages: previousVisibleMessages,
+      previousMessages: previousWindow.messages,
       previousItems: state.items,
       previousActive,
-      messages: visibleMessages,
+      messages: nextWindow.messages,
       active,
       changeStartHint: appendHint,
+      messageIndexOffset: nextWindow.messageIndexOffset,
     }),
-    renderedMessageCount: visibleMessages.length,
+    renderedMessageCount: nextWindow.messages.length,
     totalMessageCount: messages.length,
     context,
   };
@@ -291,13 +288,12 @@ function isVisibleReplayMessage(message: CodexReplayMessage): boolean {
   );
 }
 
-function visibleReplayMessages(
-  messages: CodexReplayMessage[],
-  limit: number,
-): CodexReplayMessage[] {
+function replayMessageWindow(messages: CodexReplayMessage[], limit: number) {
   const cappedLimit = Math.max(1, Math.trunc(limit) || 1);
-  if (messages.length <= cappedLimit) return messages;
-  return messages.slice(messages.length - cappedLimit);
+  return visualTranscriptMessageWindow(messages, {
+    minMessages: cappedLimit,
+    minUserTurns: 2,
+  });
 }
 
 function codexTranscriptFromRecords(

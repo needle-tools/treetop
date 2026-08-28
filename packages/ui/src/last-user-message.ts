@@ -1363,10 +1363,9 @@ function hasSteeringEligibleWork<B extends MessageBlock, M extends Message<B>>(
   );
 }
 
-function entryTerminalMarkerKind<
-  B extends MessageBlock,
-  M extends Message<B>,
->(entry: VisualWorkEntry<B, M>): VisualMarkerKind | undefined {
+function entryTerminalMarkerKind<B extends MessageBlock, M extends Message<B>>(
+  entry: VisualWorkEntry<B, M>,
+): VisualMarkerKind | undefined {
   const kind = visualMarkerKind(visualMarkerBlock(entry)?.text);
   return kind === "aborted" || kind === "failed" || kind === "complete"
     ? kind
@@ -2281,6 +2280,62 @@ export function buildVisualTranscriptItems<
   return coalesceAdjacentVisualWorkItems(out);
 }
 
+export interface VisualTranscriptMessageWindow<
+  M extends Message<MessageBlock>,
+> {
+  messages: M[];
+  messageIndexOffset: number;
+  hiddenMessageCount: number;
+  totalMessageCount: number;
+}
+
+export function visualTranscriptMessageWindow<
+  B extends MessageBlock,
+  M extends Message<B>,
+>(
+  messages: readonly M[],
+  opts: { minMessages: number; minUserTurns?: number },
+): VisualTranscriptMessageWindow<M> {
+  const totalMessageCount = messages.length;
+  const minMessages = Math.max(1, Math.trunc(opts.minMessages) || 1);
+  if (totalMessageCount <= minMessages) {
+    return {
+      messages: [...messages],
+      messageIndexOffset: 0,
+      hiddenMessageCount: 0,
+      totalMessageCount,
+    };
+  }
+
+  let start = Math.max(0, totalMessageCount - minMessages);
+  for (let index = start; index >= 0; index -= 1) {
+    if (messages[index]?.role === "user") {
+      start = index;
+      break;
+    }
+  }
+
+  const minUserTurns = Math.max(0, Math.trunc(opts.minUserTurns ?? 2) || 0);
+  if (minUserTurns > 0) {
+    let seenUserTurns = 0;
+    for (let index = totalMessageCount - 1; index >= 0; index -= 1) {
+      if (messages[index]?.role !== "user") continue;
+      seenUserTurns += 1;
+      if (seenUserTurns >= minUserTurns) {
+        start = Math.min(start, index);
+        break;
+      }
+    }
+  }
+
+  return {
+    messages: messages.slice(start),
+    messageIndexOffset: start,
+    hiddenMessageCount: start,
+    totalMessageCount,
+  };
+}
+
 function commonMessagePrefixLength<
   B extends MessageBlock,
   M extends Message<B>,
@@ -2341,16 +2396,25 @@ export function updateVisualTranscriptItems<
   messages: readonly M[];
   active?: boolean;
   changeStartHint?: number;
+  messageIndexOffset?: number;
 }): VisualTranscriptItem<B, M>[] {
+  const messageIndexOffset = Math.max(
+    0,
+    Math.trunc(opts.messageIndexOffset ?? 0),
+  );
   if (opts.previousItems.length === 0) {
     return buildVisualTranscriptItems(opts.messages, {
       active: opts.active,
+      messageIndexOffset,
     });
   }
   if (opts.previousActive !== opts.active) {
     return reuseStableVisualTranscriptItems(
       opts.previousItems,
-      buildVisualTranscriptItems(opts.messages, { active: opts.active }),
+      buildVisualTranscriptItems(opts.messages, {
+        active: opts.active,
+        messageIndexOffset,
+      }),
     );
   }
 
@@ -2367,7 +2431,10 @@ export function updateVisualTranscriptItems<
   if (!appendOrTailUpdate) {
     return reuseStableVisualTranscriptItems(
       opts.previousItems,
-      buildVisualTranscriptItems(opts.messages, { active: opts.active }),
+      buildVisualTranscriptItems(opts.messages, {
+        active: opts.active,
+        messageIndexOffset,
+      }),
     );
   }
 
@@ -2384,14 +2451,15 @@ export function updateVisualTranscriptItems<
           opts.messages,
           Math.max(0, commonPrefix - 1),
         );
+  const absoluteRebuildStart = rebuildStart + messageIndexOffset;
   const prefixItems = opts.previousItems.filter((item) =>
-    itemIsBeforeMessageIndex(item, rebuildStart),
+    itemIsBeforeMessageIndex(item, absoluteRebuildStart),
   );
   const tailItems = buildVisualTranscriptItems<B, M>(
     opts.messages.slice(rebuildStart),
     {
       active: opts.active,
-      messageIndexOffset: rebuildStart,
+      messageIndexOffset: absoluteRebuildStart,
     },
   );
 

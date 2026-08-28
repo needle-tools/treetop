@@ -17,7 +17,6 @@
       visualScrollMemoryByKey.delete(oldest);
     }
   }
-
 </script>
 
 <script lang="ts">
@@ -88,6 +87,7 @@
     latestVisualPlan,
     mergeVisualSessionMessages,
     updateVisualTranscriptItems,
+    visualTranscriptMessageWindow,
     visualPlanFromPayload,
     withOptimisticUserMessageIntent,
     type VisualGoal,
@@ -1191,6 +1191,10 @@
     session?.messages ?? [],
     codexOptimisticUserMessages,
   );
+  $: visualRenderWindow = visualTranscriptMessageWindow(visualSessionMessages, {
+    minMessages: visualHistoryMinMessages,
+    minUserTurns: 2,
+  });
   $: lastUserMessage = lastUserMessageBurst(visualSessionMessages);
   $: lastUserMessageWithContext = buildLastUserMessageWithContext(
     visualSessionMessages,
@@ -1213,15 +1217,20 @@
   let visualTranscriptChangeStartHint: number | undefined;
   $: if (renderReadBody) {
     const changeStartHint = visualTranscriptChangeStartHint;
+    const relativeChangeStartHint =
+      typeof changeStartHint === "number"
+        ? Math.max(0, changeStartHint - visualRenderWindow.messageIndexOffset)
+        : undefined;
     visualTranscriptItems = updateVisualTranscriptItems({
       previousMessages: previousVisualSessionMessages,
       previousItems: visualTranscriptItems,
       previousActive: previousVisualTranscriptActive,
-      messages: visualSessionMessages,
+      messages: visualRenderWindow.messages,
       active: visualTranscriptActive,
-      changeStartHint,
+      changeStartHint: relativeChangeStartHint,
+      messageIndexOffset: visualRenderWindow.messageIndexOffset,
     });
-    previousVisualSessionMessages = visualSessionMessages;
+    previousVisualSessionMessages = visualRenderWindow.messages;
     previousVisualTranscriptActive = visualTranscriptActive;
     visualTranscriptChangeStartHint = undefined;
   } else {
@@ -1746,7 +1755,9 @@
   function onLiveWorkBodyScroll(workKey: string, body: HTMLElement): void {
     setLiveWorkBodyPaused(
       workKey,
-      shouldPauseVisualTailAfterUserScroll({ metrics: visualScrollMetrics(body) }),
+      shouldPauseVisualTailAfterUserScroll({
+        metrics: visualScrollMetrics(body),
+      }),
     );
   }
 
@@ -1797,9 +1808,9 @@
     };
   }
 
-  function visualScrollAnchor(el: HTMLElement):
-    | { key: string; offsetTop: number }
-    | undefined {
+  function visualScrollAnchor(
+    el: HTMLElement,
+  ): { key: string; offsetTop: number } | undefined {
     const scrollerRect = el.getBoundingClientRect();
     const anchors = Array.from(
       el.querySelectorAll<HTMLElement>("[data-visual-scroll-anchor]"),
@@ -1853,11 +1864,7 @@
     void tick().then(() => {
       requestAnimationFrame(() => {
         if (messagesEl !== el) return;
-        if (
-          !memory.followTail &&
-          targetKey &&
-          targetOffset !== undefined
-        ) {
+        if (!memory.followTail && targetKey && targetOffset !== undefined) {
           const target = el.querySelector<HTMLElement>(
             `[data-visual-scroll-anchor="${CSS.escape(targetKey)}"]`,
           );
@@ -1929,7 +1936,9 @@
     visualPausedLiveWorkBodyKeys = new Set();
   }
 
-  function syncVisualTailFollowActive(el: HTMLElement | null = messagesEl): void {
+  function syncVisualTailFollowActive(
+    el: HTMLElement | null = messagesEl,
+  ): void {
     visualTailFollowActive =
       !!el &&
       isVisualTailFollowActive({
@@ -1952,7 +1961,9 @@
     const el = messagesEl;
     if (!el) return;
     setVisualTailFollowPaused(
-      shouldPauseVisualTailAfterUserScroll({ metrics: visualScrollMetrics(el) }),
+      shouldPauseVisualTailAfterUserScroll({
+        metrics: visualScrollMetrics(el),
+      }),
     );
   }
 
@@ -2094,6 +2105,27 @@
     if (!el || visualHistoryRequestInFlight) return;
     if (el.scrollTop > 180) return;
     if (!canRequestOlderVisualHistory()) return;
+    const loadedMessageCount = session?.messages.length ?? 0;
+    const loadedHistoryMax = Math.min(
+      maxVisualHistoryMessages(),
+      loadedMessageCount,
+    );
+    if (visualHistoryMinMessages < loadedHistoryMax) {
+      visualHistoryMinMessages = Math.min(
+        loadedHistoryMax,
+        visualHistoryMinMessages + VISUAL_HISTORY_MESSAGES_STEP,
+      );
+      visualHistoryScrollAnchor = {
+        el,
+        scrollHeight: el.scrollHeight,
+        scrollTop: el.scrollTop,
+      };
+      setVisualTailFollowPaused(true);
+      void tick().then(() => {
+        preserveVisualHistoryScrollAnchor();
+      });
+      return;
+    }
     if (codexAppHistorySourceActive) {
       visualHistoryRequestInFlight = true;
       visualHistoryScrollAnchor = {
@@ -2732,11 +2764,7 @@
   async function sendOllamaMessage(): Promise<void> {
     const text = inputText.trim();
     const attachments = [...composerAttachments];
-    if (
-      (!text && attachments.length === 0) ||
-      sending ||
-      !session?.sessionId
-    ) {
+    if ((!text && attachments.length === 0) || sending || !session?.sessionId) {
       return;
     }
     sending = true;
@@ -3158,7 +3186,10 @@
     if (liveMessages.length > 0 && !event.method.endsWith("/outputDelta")) {
       flushCodexDeltaPatches();
       upsertCodexLiveMessages(liveMessages);
-      if (event.method === "item/started" || event.method === "item/completed") {
+      if (
+        event.method === "item/started" ||
+        event.method === "item/completed"
+      ) {
         return;
       }
       if (event.method === "thread/tokenUsage/updated") {
@@ -3478,9 +3509,7 @@
       ...(toolMeta.subagentStatus
         ? { subagentStatus: toolMeta.subagentStatus }
         : {}),
-      ...(toolMeta.subagentType
-        ? { subagentType: toolMeta.subagentType }
-        : {}),
+      ...(toolMeta.subagentType ? { subagentType: toolMeta.subagentType } : {}),
       ...(toolMeta.subagentModel
         ? { subagentModel: toolMeta.subagentModel }
         : {}),
@@ -5589,10 +5618,7 @@
     <p class="error">{error}</p>
   {:else if loading && !session}
     <LoadingOverlay text="loading session…" />
-  {:else if codexVisualAppSurface &&
-    codexAppHistoryLoadingKey &&
-    session &&
-    session.messages.length === 0}
+  {:else if codexVisualAppSurface && codexAppHistoryLoadingKey && session && session.messages.length === 0}
     <LoadingOverlay text="loading conversation…" />
   {:else if session && session.messages.length === 0 && !showChatComposer}
     <p class="muted small">
@@ -6084,9 +6110,7 @@
                 class:expanded={codexGoalExpanded}
                 on:click={toggleCodexGoalPane}
                 title={codexGoalExpanded ? "Collapse goal" : "Show goal"}
-                aria-label={codexGoalExpanded
-                  ? "Collapse goal"
-                  : "Show goal"}
+                aria-label={codexGoalExpanded ? "Collapse goal" : "Show goal"}
               >
                 {codexGoalBadgeLabel(codexLatestGoal)}
               </button>
@@ -6098,9 +6122,7 @@
                 class:expanded={codexPlanExpanded}
                 on:click={toggleCodexPlanPane}
                 title={codexPlanExpanded ? "Collapse todo" : "Show todo"}
-                aria-label={codexPlanExpanded
-                  ? "Collapse todo"
-                  : "Show todo"}
+                aria-label={codexPlanExpanded ? "Collapse todo" : "Show todo"}
               >
                 {codexPlanBadgeLabel(codexLatestPlan)}
               </button>
@@ -6221,7 +6243,11 @@
                 aria-label="Send"
               >
                 {#if sending}
-                  <LoadingSpinner size="0.9rem" thickness="2px" label="Sending" />
+                  <LoadingSpinner
+                    size="0.9rem"
+                    thickness="2px"
+                    label="Sending"
+                  />
                 {:else}
                   {@render composerActionIcon("send")}
                 {/if}
@@ -6678,7 +6704,8 @@
     height: 1.35rem;
     padding: 0 0.48rem;
     border-radius: 999px;
-    border: 1px solid color-mix(in srgb, var(--status-clean) 48%, var(--surface-3));
+    border: 1px solid
+      color-mix(in srgb, var(--status-clean) 48%, var(--surface-3));
     color: var(--text-1);
     background: color-mix(in srgb, var(--status-clean) 18%, transparent);
     font-size: 0.68rem;

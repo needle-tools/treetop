@@ -154,7 +154,9 @@ describe("Codex replay lab parser", () => {
     expect(playback.totalMessageCount).toBe(8);
     expect(playback.renderedMessageCount).toBe(5);
     expect(
-      playback.messages.slice(-1)[0]?.blocks.find((block) => block.type === "text"),
+      playback.messages
+        .slice(-1)[0]
+        ?.blocks.find((block) => block.type === "text"),
     ).toMatchObject({ text: "message 7" });
 
     playback = setCodexReplayPlaybackStep(playback, 9);
