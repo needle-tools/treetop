@@ -1210,20 +1210,25 @@
   >[] = [];
   let previousVisualSessionMessages: NormalizedMessage[] = [];
   let previousVisualTranscriptActive: boolean | undefined;
+  let visualTranscriptChangeStartHint: number | undefined;
   $: if (renderReadBody) {
+    const changeStartHint = visualTranscriptChangeStartHint;
     visualTranscriptItems = updateVisualTranscriptItems({
       previousMessages: previousVisualSessionMessages,
       previousItems: visualTranscriptItems,
       previousActive: previousVisualTranscriptActive,
       messages: visualSessionMessages,
       active: visualTranscriptActive,
+      changeStartHint,
     });
     previousVisualSessionMessages = visualSessionMessages;
     previousVisualTranscriptActive = visualTranscriptActive;
+    visualTranscriptChangeStartHint = undefined;
   } else {
     visualTranscriptItems = [];
     previousVisualSessionMessages = [];
     previousVisualTranscriptActive = undefined;
+    visualTranscriptChangeStartHint = undefined;
   }
   $: codexLatestPlan = renderReadBody
     ? latestVisualPlan(visualSessionMessages)
@@ -2277,13 +2282,17 @@
         body.thread,
         codexLiveNormalizeContext,
       ) as NormalizedMessage[];
-      session = {
-        ...session,
-        messages: mergeCodexAppHistoryMessages(
-          historyMessages,
-          session.messages,
-        ) as NormalizedMessage[],
-      };
+      const mergedMessages = mergeCodexAppHistoryMessages(
+        historyMessages,
+        session.messages,
+      ) as NormalizedMessage[];
+      if (!sameMessageReferences(session.messages, mergedMessages)) {
+        noteVisualTranscriptChangedFrom(0);
+        session = {
+          ...session,
+          messages: mergedMessages,
+        };
+      }
       codexAppHistoryLoadedKey = targetHistoryKey;
       if (codexAppHistoryFailedKeys.has(targetHistoryKey)) {
         const nextFailed = new Set(codexAppHistoryFailedKeys);
@@ -3046,10 +3055,41 @@
     if (!session || codexPendingDeltaPatches.length === 0) return;
     const patches = codexPendingDeltaPatches;
     codexPendingDeltaPatches = [];
+    let firstChangedIndex = session.messages.length;
+    for (const patch of patches) {
+      const existingIndex = session.messages.findIndex(
+        (message) => message.id === patch.id,
+      );
+      firstChangedIndex = Math.min(
+        firstChangedIndex,
+        existingIndex >= 0 ? existingIndex : session.messages.length,
+      );
+    }
+    noteVisualTranscriptChangedFrom(firstChangedIndex);
     session = {
       ...session,
       messages: applyVisualTranscriptDeltaPatches(session.messages, patches),
     };
+  }
+
+  function noteVisualTranscriptChangedFrom(index: number): void {
+    if (!Number.isFinite(index)) return;
+    const cleanIndex = Math.max(0, Math.trunc(index));
+    visualTranscriptChangeStartHint =
+      visualTranscriptChangeStartHint === undefined
+        ? cleanIndex
+        : Math.min(visualTranscriptChangeStartHint, cleanIndex);
+  }
+
+  function sameMessageReferences(
+    a: readonly NormalizedMessage[],
+    b: readonly NormalizedMessage[],
+  ): boolean {
+    if (a.length !== b.length) return false;
+    for (let index = 0; index < a.length; index += 1) {
+      if (a[index] !== b[index]) return false;
+    }
+    return true;
   }
 
   function queueCodexBlockDelta(
@@ -3289,6 +3329,7 @@
     const messages = [...session.messages];
     const existingIndex = messages.findIndex((m) => m.id === id);
     if (existingIndex < 0) {
+      noteVisualTranscriptChangedFrom(messages.length);
       messages.push({
         id,
         role: "assistant",
@@ -3296,6 +3337,7 @@
         blocks: [block],
       });
     } else {
+      noteVisualTranscriptChangedFrom(existingIndex);
       messages[existingIndex] = {
         ...messages[existingIndex]!,
         blocks: [block],
@@ -3307,6 +3349,8 @@
   function upsertCodexLiveMessages(incoming: NormalizedMessage[]): void {
     if (!session || incoming.length === 0) return;
     const messages = [...session.messages];
+    let firstChangedIndex = messages.length;
+    let changed = false;
     for (const message of incoming) {
       const existingIndex =
         message.id !== undefined
@@ -3320,10 +3364,15 @@
       }
       if (existingIndex >= 0) {
         messages[existingIndex] = message;
+        firstChangedIndex = Math.min(firstChangedIndex, existingIndex);
       } else {
+        firstChangedIndex = Math.min(firstChangedIndex, messages.length);
         messages.push(message);
       }
+      changed = true;
     }
+    if (!changed) return;
+    noteVisualTranscriptChangedFrom(firstChangedIndex);
     session = { ...session, messages };
   }
 
@@ -3447,11 +3496,13 @@
     };
     const blocks = [block, ...extraBlocks];
     if (existingIndex >= 0) {
+      noteVisualTranscriptChangedFrom(existingIndex);
       messages[existingIndex] = {
         ...messages[existingIndex]!,
         blocks,
       };
     } else {
+      noteVisualTranscriptChangedFrom(messages.length);
       messages.push({
         id,
         role: "assistant",
@@ -3540,8 +3591,10 @@
       blocks: [block],
     } satisfies NormalizedMessage;
     if (existingIndex >= 0) {
+      noteVisualTranscriptChangedFrom(existingIndex);
       messages[existingIndex] = next;
     } else {
+      noteVisualTranscriptChangedFrom(messages.length);
       messages.push(next);
     }
     session = { ...session, goal: codexGoalStateFromBlock(block), messages };
@@ -3558,6 +3611,7 @@
       })
       .filter((message) => message.blocks.length > 0);
     if (!changed && !session.goal) return;
+    noteVisualTranscriptChangedFrom(0);
     session = { ...session, goal: undefined, messages };
     codexGoalEditing = false;
     codexGoalDraft = "";

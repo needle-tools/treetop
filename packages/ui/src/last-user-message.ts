@@ -2291,6 +2291,27 @@ function commonMessagePrefixLength<
   return index;
 }
 
+function hintedCommonMessagePrefixLength<
+  B extends MessageBlock,
+  M extends Message<B>,
+>(
+  a: readonly M[],
+  b: readonly M[],
+  changeStartHint: number | undefined,
+): number | undefined {
+  if (changeStartHint === undefined || !Number.isFinite(changeStartHint)) {
+    return undefined;
+  }
+  const index = Math.max(
+    0,
+    Math.min(Math.trunc(changeStartHint), a.length, b.length),
+  );
+  if (index === 0) return 0;
+  if (a[0] !== b[0]) return undefined;
+  if (a[index - 1] !== b[index - 1]) return undefined;
+  return index;
+}
+
 function lastUserMessageIndexAtOrBefore<
   B extends MessageBlock,
   M extends Message<B>,
@@ -2319,6 +2340,7 @@ export function updateVisualTranscriptItems<
   previousActive?: boolean;
   messages: readonly M[];
   active?: boolean;
+  changeStartHint?: number;
 }): VisualTranscriptItem<B, M>[] {
   if (opts.previousItems.length === 0) {
     return buildVisualTranscriptItems(opts.messages, {
@@ -2332,10 +2354,12 @@ export function updateVisualTranscriptItems<
     );
   }
 
-  const commonPrefix = commonMessagePrefixLength(
-    opts.previousMessages,
-    opts.messages,
-  );
+  const commonPrefix =
+    hintedCommonMessagePrefixLength(
+      opts.previousMessages,
+      opts.messages,
+      opts.changeStartHint,
+    ) ?? commonMessagePrefixLength(opts.previousMessages, opts.messages);
   const appendOrTailUpdate =
     commonPrefix > 0 &&
     commonPrefix <= opts.messages.length &&

@@ -7,6 +7,7 @@ import {
 } from "./codex-event-stream";
 import {
   buildVisualTranscriptItems,
+  updateVisualTranscriptItems,
   type VisualTranscriptItem,
 } from "./last-user-message";
 
@@ -42,6 +43,19 @@ export interface ParsedCodexReplay {
   warnings: string[];
 }
 
+export type CodexReplayMessage = CodexAppHistoryMessage & { intent?: "steer" };
+
+export interface CodexReplayPlaybackState {
+  replay: ParsedCodexReplay;
+  stepIndex: number;
+  messages: CodexReplayMessage[];
+  items: VisualTranscriptItem<CodexAppHistoryBlock, CodexAppHistoryMessage>[];
+  renderedMessageCount: number;
+  totalMessageCount: number;
+  visibleMessageLimit: number;
+  context: CodexLiveNormalizeContext;
+}
+
 export interface CodexReplayParseProgress {
   label: string;
   parsed: number;
@@ -52,6 +66,8 @@ export interface CodexReplayParseOptions {
   chunkSize?: number;
   onProgress?: (progress: CodexReplayParseProgress) => void;
 }
+
+export const DEFAULT_REPLAY_VISIBLE_MESSAGE_LIMIT = 260;
 
 export function parseCodexReplayText(text: string): ParsedCodexReplay {
   const warnings: string[] = [];
@@ -140,22 +156,13 @@ function nextParseFrame(): Promise<void> {
 export function codexReplayMessagesUntil(
   replay: ParsedCodexReplay,
   stepCount: number,
-): (CodexAppHistoryMessage & { intent?: "steer" })[] {
-  const messages: (CodexAppHistoryMessage & { intent?: "steer" })[] = [];
+): CodexReplayMessage[] {
+  const messages: CodexReplayMessage[] = [];
   const context: CodexLiveNormalizeContext = {};
   for (const step of replay.steps.slice(0, Math.max(0, stepCount))) {
-    if (step.kind === "message") {
-      messages.push(step.message);
-      continue;
-    }
-    messages.push(...codexLiveMessagesFromEvent(step.event, context));
+    appendReplayStepMessages(messages, step, context);
   }
-  return messages.filter(
-    (message) =>
-      message.blocks.length > 0 ||
-      !!message.tokenUsage ||
-      (typeof message.tokensUsed === "number" && message.tokensUsed > 0),
-  );
+  return messages;
 }
 
 export function codexReplayItemsUntil(
@@ -169,6 +176,128 @@ export function codexReplayItemsUntil(
       active,
     },
   );
+}
+
+export function createCodexReplayPlayback(
+  replay: ParsedCodexReplay,
+  options: { stepIndex?: number; visibleMessageLimit?: number } = {},
+): CodexReplayPlaybackState {
+  const visibleMessageLimit =
+    options.visibleMessageLimit ?? DEFAULT_REPLAY_VISIBLE_MESSAGE_LIMIT;
+  return setCodexReplayPlaybackStep(
+    {
+      replay,
+      stepIndex: 0,
+      messages: [],
+      items: [],
+      renderedMessageCount: 0,
+      totalMessageCount: 0,
+      visibleMessageLimit,
+      context: {},
+    },
+    options.stepIndex ?? 0,
+  );
+}
+
+export function setCodexReplayPlaybackStep(
+  state: CodexReplayPlaybackState,
+  stepIndex: number,
+): CodexReplayPlaybackState {
+  const target = clampReplayStep(state.replay, stepIndex);
+  if (target < state.stepIndex) {
+    const fresh: CodexReplayPlaybackState = {
+      replay: state.replay,
+      stepIndex: 0,
+      messages: [],
+      items: [],
+      renderedMessageCount: 0,
+      totalMessageCount: 0,
+      visibleMessageLimit: state.visibleMessageLimit,
+      context: {},
+    };
+    return setCodexReplayPlaybackStep(fresh, target);
+  }
+
+  const messages = state.messages.slice();
+  const context = state.context;
+  const previousVisibleMessages = visibleReplayMessages(
+    state.messages,
+    state.visibleMessageLimit,
+  );
+  const previousActive =
+    state.replay.mode === "rpc" && state.stepIndex < state.replay.steps.length;
+  for (let index = state.stepIndex; index < target; index += 1) {
+    const step = state.replay.steps[index];
+    if (step) appendReplayStepMessages(messages, step, context);
+  }
+  const visibleMessages = visibleReplayMessages(
+    messages,
+    state.visibleMessageLimit,
+  );
+  const active = state.replay.mode === "rpc" && target < state.replay.steps.length;
+  const previousWindowStart = Math.max(
+    0,
+    state.messages.length - state.visibleMessageLimit,
+  );
+  const nextWindowStart = Math.max(
+    0,
+    messages.length - state.visibleMessageLimit,
+  );
+  const appendHint =
+    previousWindowStart === nextWindowStart
+      ? previousVisibleMessages.length
+      : undefined;
+  return {
+    ...state,
+    stepIndex: target,
+    messages,
+    items: updateVisualTranscriptItems({
+      previousMessages: previousVisibleMessages,
+      previousItems: state.items,
+      previousActive,
+      messages: visibleMessages,
+      active,
+      changeStartHint: appendHint,
+    }),
+    renderedMessageCount: visibleMessages.length,
+    totalMessageCount: messages.length,
+    context,
+  };
+}
+
+function clampReplayStep(replay: ParsedCodexReplay, stepIndex: number): number {
+  return Math.max(0, Math.min(replay.steps.length, Math.trunc(stepIndex) || 0));
+}
+
+function appendReplayStepMessages(
+  messages: CodexReplayMessage[],
+  step: ReplayStep,
+  context: CodexLiveNormalizeContext,
+): void {
+  const nextMessages =
+    step.kind === "message"
+      ? [step.message]
+      : codexLiveMessagesFromEvent(step.event, context);
+  for (const message of nextMessages) {
+    if (isVisibleReplayMessage(message)) messages.push(message);
+  }
+}
+
+function isVisibleReplayMessage(message: CodexReplayMessage): boolean {
+  return (
+    message.blocks.length > 0 ||
+    !!message.tokenUsage ||
+    (typeof message.tokensUsed === "number" && message.tokensUsed > 0)
+  );
+}
+
+function visibleReplayMessages(
+  messages: CodexReplayMessage[],
+  limit: number,
+): CodexReplayMessage[] {
+  const cappedLimit = Math.max(1, Math.trunc(limit) || 1);
+  if (messages.length <= cappedLimit) return messages;
+  return messages.slice(messages.length - cappedLimit);
 }
 
 function codexTranscriptFromRecords(
