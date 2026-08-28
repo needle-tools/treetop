@@ -235,7 +235,7 @@ describe("codex event stream hub", () => {
     ).toBe(false);
   });
 
-  test("uses app-server history only until a transcript source exists", () => {
+  test("uses app-server history for live surfaces even when a transcript source exists", () => {
     expect(
       shouldUseCodexAppHistorySource({
         liveSurfaceActive: true,
@@ -247,7 +247,7 @@ describe("codex event stream hub", () => {
         liveSurfaceActive: true,
         transcriptSource: "/Users/me/.codex/sessions/thread-1.jsonl",
       }),
-    ).toBe(false);
+    ).toBe(true);
     expect(
       shouldUseCodexAppHistorySource({
         liveSurfaceActive: false,

@@ -402,6 +402,9 @@
   }
   let session: NormalizedSession | null = null;
   let liveCodexApp = false;
+  let codexAppHistorySourceActive = false;
+  let codexAppHistoryFetchActive = false;
+  let codexAppSessionKey = "";
   let sessionFileSource = "";
   let sessionMessageSource: SessionMessageSource = {
     kind: "unavailable",
@@ -2038,6 +2041,22 @@
     visualExpandedThinkingWorkKeys = new Set();
   }
 
+  function resetToCodexAppSession(): void {
+    if (!codexAppHistorySourceActive || !effectiveSessionId) return;
+    const key = codexAppHistoryKey(effectiveSessionId, effectiveSessionCwd);
+    if (key && key === codexAppSessionKey) return;
+    const previous = session;
+    session = {
+      agent,
+      cwd: effectiveSessionCwd || wtPath,
+      sessionId: effectiveSessionId,
+      startedAt: previous?.startedAt ?? new Date().toISOString(),
+      manualTitle: previous?.manualTitle,
+      messages: [],
+    };
+    codexAppSessionKey = key;
+  }
+
   function maxVisualHistoryMessages(): number {
     const total =
       typeof totalMessageCount === "number" && totalMessageCount > 0
@@ -2138,6 +2157,9 @@
   }
 
   $: {
+    void effectiveSessionId;
+    void effectiveSessionCwd;
+    void sessionMessageSource;
     const key = currentVisualHistorySourceKey();
     if (key !== visualHistorySourceKey) {
       saveVisualScrollMemory();
@@ -2150,6 +2172,8 @@
       codexAppHistoryLoadingKey = "";
       codexAppHistoryFailedKeys = new Set<string>();
       codexLiveDetectedModel = "";
+      if (!codexAppHistorySourceActive) codexAppSessionKey = "";
+      resetToCodexAppSession();
     }
   }
 
@@ -2434,9 +2458,11 @@
     mode,
   });
   $: codexAppHistorySourceActive = shouldUseCodexAppHistorySource({
-    liveSurfaceActive: codexAppLiveSurfaceActive,
+    liveSurfaceActive: codexVisualAppSurface,
     transcriptSource,
   });
+  $: codexAppHistoryFetchActive =
+    codexAppHistorySourceActive && codexAppLiveSurfaceActive;
   $: sessionFileSource = liveCodexApp ? (transcriptSource ?? "") : source;
   $: sessionMessageSource = resolveSessionMessageSource({
     agent,
@@ -2485,7 +2511,10 @@
   $: if (
     liveCodexApp &&
     resumeSessionId &&
-    (!session || session.sessionId !== resumeSessionId)
+    (!session ||
+      session.sessionId !== resumeSessionId ||
+      (codexAppHistorySourceActive &&
+        codexAppSessionKey !== codexAppHistoryKey(resumeSessionId, wtPath)))
   ) {
     session = {
       agent,
@@ -2494,11 +2523,14 @@
       startedAt: new Date().toISOString(),
       messages: [],
     };
+    codexAppSessionKey = codexAppHistorySourceActive
+      ? codexAppHistoryKey(resumeSessionId, wtPath)
+      : "";
   }
 
   $: if (
     shouldLoadCodexAppThreadHistory({
-      visualAppSurface: codexAppHistorySourceActive,
+      visualAppSurface: codexAppHistoryFetchActive,
       threadId: effectiveSessionId,
       cwd: effectiveSessionCwd,
       hasSession: !!session,
@@ -4940,15 +4972,11 @@
   // onSession for transcript/review panes and this column's active-sends slice
   // via onInflight.
   //
-  // Restored Codex app panes use the JSONL transcript for durable history and
-  // app-server SSE for live deltas. The app-server history API is only for the
-  // narrow pre-transcript window after a new app-server thread is created.
-  // Calling thread/read for restored active-writer threads can block the
-  // browser's localhost connection pool during startup.
-  // `source` is keyed in App.svelte's {#each}, but `transcriptSource` may arrive
-  // after mount for app-server rows. `sessionMessageSource` makes the ownership
-  // explicit: app-server history owns only pre-transcript panes; transcript
-  // surfaces use the JSONL/session poller.
+  // Message ownership is intentionally exclusive. Live Codex app panes use
+  // app-server history plus SSE events end to end; transcript/review panes use
+  // the JSONL session poller end to end. `transcriptSource` may arrive after a
+  // live app-server pane mounts, but it must not move that pane onto the
+  // transcript poller.
 
   let unregisterPoll: (() => void) | null = null;
   let mounted = false;
