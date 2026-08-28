@@ -3251,6 +3251,54 @@ describe("visual tool payload display helpers", () => {
     );
   });
 
+  it("summarizes web.run calls wrapped in custom exec scripts", () => {
+    const block = {
+      type: "tool_use",
+      toolName: "exec",
+      toolInput:
+        'const res = await tools.web__run({search_query:[{"q":"site:spec.c2pa.org specifications 2.4 C2PA Specification"},{"q":"site:mediabunny.dev guide metadata tags Input getMetadataTags Output setMetadataTags"}],"response_length":"medium"}); text(JSON.stringify(res).slice(0,20000));',
+    };
+
+    expect(visualToolPreviewText(block)).toBe(
+      "Search web for site:spec.c2pa.org specifications 2.4 C2PA Specification, site:mediabunny.dev guide metadata tags Input getMetadataTags Output setMetadataTags",
+    );
+    expect(visualToolIconNameForPreview(block)).toBe("fetch");
+    expect(visualToolCallPayloadText(block)).toContain("tools.web__run");
+  });
+
+  it("summarizes web.run find calls with unquoted object keys", () => {
+    const block = {
+      type: "tool_use",
+      toolName: "exec",
+      toolInput:
+        'const r = await tools.web__run({find:[{ref_id:"turn3search0",pattern:"ChapterAtom"},{ref_id:"turn3search0",pattern:"ChapterTimeStart"},{ref_id:"turn3search0",pattern:"Attachments"}],response_length:"long"});text(r);',
+    };
+
+    expect(visualToolPreviewText(block)).toBe(
+      "Find web text ChapterAtom, ChapterTimeStart, Attachments",
+    );
+    expect(visualToolIconNameForPreview(block)).toBe("fetch");
+  });
+
+  it("summarizes direct structured web.run tool calls", () => {
+    const block = {
+      type: "tool_use",
+      toolName: "web.run",
+      toolInput: {
+        open: [
+          { ref_id: "turn0search0" },
+          { ref_id: "https://github.com/contentauth/c2pa-js" },
+        ],
+        response_length: "long",
+      },
+    };
+
+    expect(visualToolPreviewText(block)).toBe(
+      "Open web pages turn0search0, https://github.com/contentauth/c2pa-js",
+    );
+    expect(visualToolIconNameForPreview(block)).toBe("fetch");
+  });
+
   it("summarizes tail log reads as log previews", () => {
     const block = {
       type: "tool_use",
