@@ -3833,7 +3833,7 @@
     width: fit-content;
     max-width: 100%;
     flex-wrap: wrap;
-    overflow: hidden;
+    overflow: visible;
     padding: 0.25rem 0.5rem;
     border: 1px solid color-mix(in srgb, var(--surface-3) 65%, transparent);
     border-radius: 999px;
@@ -4018,16 +4018,17 @@
   .work-summary-pills {
     display: inline-flex;
     align-items: center;
+    flex-wrap: wrap;
     gap: 0.18rem;
     flex: 1 1 10rem;
     min-width: 0;
     max-width: 100%;
-    overflow: hidden;
+    overflow: visible;
   }
   .work-summary-pill-shell {
     display: inline-flex;
     align-items: center;
-    flex: 0 1 auto;
+    flex: 0 0 auto;
     min-width: 0;
     max-width: 100%;
     will-change: transform;
@@ -4169,7 +4170,8 @@
     align-items: center;
     justify-content: flex-end;
     gap: 0.45rem;
-    flex: 0 1 auto;
+    flex: 0 0 auto;
+    margin-left: auto;
     min-width: 0;
     max-width: 100%;
     overflow: hidden;
