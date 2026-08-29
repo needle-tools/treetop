@@ -1,17 +1,9 @@
-import {
-  readdir,
-  readFile,
-  stat,
-} from "node:fs/promises";
+import { open as fsOpen, readdir, readFile, stat } from "node:fs/promises";
 import { homedir } from "node:os";
-import {
-  basename,
-  dirname,
-  join,
-  relative,
-  resolve,
-  sep,
-} from "node:path";
+import { createReadStream } from "node:fs";
+import { createInterface } from "node:readline";
+import { basename, dirname, join, relative, resolve, sep } from "node:path";
+import { readCodexSessionOverview } from "./agents";
 
 export interface CodexReplayTranscriptRef {
   threadId: string;
@@ -19,6 +11,8 @@ export interface CodexReplayTranscriptRef {
   name: string;
   mtimeMs: number;
   size: number;
+  title?: string;
+  messageCount?: number;
 }
 
 export interface CodexReplayRecordingRef {
@@ -39,6 +33,7 @@ export interface CodexReplayRecordingPayload {
 export interface CodexReplayRecordingOptions {
   recordingDir: string;
   sessionsRoot?: string;
+  sessionTitles?: Record<string, string>;
 }
 
 export interface CodexReplayRecordingReadOptions extends CodexReplayRecordingOptions {
@@ -56,11 +51,53 @@ interface RecordingDraft {
   directTranscriptPaths: string[];
 }
 
+interface SessionRecordingDraft {
+  path: string;
+  name: string;
+  mtimeMs: number;
+  size: number;
+  threadIds: string[];
+  threadFrameCounts: Map<string, number>;
+  directTranscriptPaths: string[];
+}
+
+interface SessionDraftCacheEntry {
+  signature: string;
+  drafts: Promise<SessionRecordingDraft[]>;
+}
+
+const sessionDraftCache = new Map<string, SessionDraftCacheEntry>();
+
+export interface CodexReplaySessionRef {
+  threadId: string;
+  title: string;
+  mtimeMs: number;
+  rpcRecordingCount: number;
+  rpcFrameCount: number;
+  hasTranscript: boolean;
+  recordings: Array<
+    Pick<CodexReplayRecordingRef, "path" | "name" | "mtimeMs" | "size">
+  >;
+  transcript?: CodexReplayTranscriptRef;
+}
+
+export interface CodexReplaySessionPayload {
+  session: CodexReplaySessionRef;
+  recordingText: string;
+  transcriptText?: string;
+  transcriptTruncated?: boolean;
+}
+
+export interface CodexReplaySessionReadOptions extends CodexReplayRecordingOptions {
+  threadId: string;
+}
+
 export async function listCodexReplayRecordings(
   options: CodexReplayRecordingOptions,
 ): Promise<CodexReplayRecordingRef[]> {
   const recordingDir = resolve(options.recordingDir);
-  const sessionsRoot = options.sessionsRoot ?? join(homedir(), ".codex", "sessions");
+  const sessionsRoot =
+    options.sessionsRoot ?? join(homedir(), ".codex", "sessions");
   const files = await listRecordingFiles(recordingDir);
   const drafts = (
     await Promise.all(files.map((path) => recordingDraftFromPath(path)))
@@ -69,6 +106,84 @@ export async function listCodexReplayRecordings(
   return drafts
     .map((draft) => recordingRefFromDraft(draft, transcriptIndex))
     .sort((a, b) => b.mtimeMs - a.mtimeMs);
+}
+
+export async function listCodexReplaySessions(
+  options: CodexReplayRecordingOptions,
+): Promise<CodexReplaySessionRef[]> {
+  const recordingDir = resolve(options.recordingDir);
+  const sessionsRoot =
+    options.sessionsRoot ?? join(homedir(), ".codex", "sessions");
+  const drafts = await indexedSessionRecordings(recordingDir);
+  const transcriptIndex = await buildTranscriptIndex(
+    sessionsRoot,
+    drafts,
+    options.sessionTitles,
+  );
+  const threadIds = [...new Set(drafts.flatMap(recordingThreadIds))];
+  return threadIds
+    .map((threadId) => {
+      const matching = drafts.filter((draft) =>
+        recordingThreadIds(draft).includes(threadId),
+      );
+      const transcript = transcriptIndex.get(threadId);
+      return {
+        threadId,
+        title: transcript?.title ?? `Session ${threadId.slice(0, 8)}`,
+        mtimeMs: Math.max(
+          transcript?.mtimeMs ?? 0,
+          ...matching.map((draft) => draft.mtimeMs),
+        ),
+        rpcRecordingCount: matching.length,
+        rpcFrameCount: matching.reduce(
+          (count, draft) =>
+            count + (draft.threadFrameCounts.get(threadId) ?? 0),
+          0,
+        ),
+        hasTranscript: !!transcript,
+        recordings: matching
+          .map(({ path, name, mtimeMs, size }) => ({
+            path,
+            name,
+            mtimeMs,
+            size,
+          }))
+          .sort(
+            (a, b) => a.mtimeMs - b.mtimeMs || a.name.localeCompare(b.name),
+          ),
+        ...(transcript ? { transcript } : {}),
+      } satisfies CodexReplaySessionRef;
+    })
+    .filter((session) => session.rpcFrameCount > 0)
+    .sort((a, b) => b.mtimeMs - a.mtimeMs);
+}
+
+export async function readCodexReplaySession(
+  options: CodexReplaySessionReadOptions,
+): Promise<CodexReplaySessionPayload> {
+  if (!isThreadLikeId(options.threadId)) throw new Error("invalid thread id");
+  const sessions = await listCodexReplaySessions(options);
+  const session = sessions.find((entry) => entry.threadId === options.threadId);
+  if (!session) throw new Error("recorded session not found");
+  const recordingParts: string[] = [];
+  for (const recording of session.recordings) {
+    recordingParts.push(
+      await readRecordingForThread(recording.path, options.threadId),
+    );
+  }
+  const transcript = session.transcript
+    ? await readReplayTranscript(session.transcript.path)
+    : undefined;
+  return {
+    session,
+    recordingText: recordingParts.filter(Boolean).join("\n"),
+    ...(transcript
+      ? {
+          transcriptText: transcript.text,
+          transcriptTruncated: transcript.truncated,
+        }
+      : {}),
+  };
 }
 
 export async function readCodexReplayRecording(
@@ -80,7 +195,8 @@ export async function readCodexReplayRecording(
   const text = await readFile(path, "utf8");
   const stats = await stat(path);
   const threadIds = extractCodexReplayThreadIds(text);
-  const sessionsRoot = options.sessionsRoot ?? join(homedir(), ".codex", "sessions");
+  const sessionsRoot =
+    options.sessionsRoot ?? join(homedir(), ".codex", "sessions");
   const draft: RecordingDraft = {
     path,
     name: basename(path),
@@ -91,18 +207,28 @@ export async function readCodexReplayRecording(
     directTranscriptPaths: transcriptPathsFromReplay(text),
   };
   const transcriptIndex = await buildTranscriptIndex(sessionsRoot, [draft]);
-  const transcriptPaths = recordingRefFromDraft(draft, transcriptIndex).transcriptPaths;
+  const transcriptPaths = recordingRefFromDraft(
+    draft,
+    transcriptIndex,
+  ).transcriptPaths;
   const selectedTranscriptPath = options.transcriptPath
     ? resolve(options.transcriptPath)
     : undefined;
   const selectedTranscript = selectedTranscriptPath
-    ? transcriptPaths.find((ref) => resolve(ref.path) === selectedTranscriptPath)
+    ? transcriptPaths.find(
+        (ref) => resolve(ref.path) === selectedTranscriptPath,
+      )
     : undefined;
   if (selectedTranscriptPath && !selectedTranscript) {
     throw new Error("transcript path does not belong to recording");
   }
   const transcripts = selectedTranscript
-    ? [{ ...selectedTranscript, text: await readFile(selectedTranscript.path, "utf8") }]
+    ? [
+        {
+          ...selectedTranscript,
+          text: await readFile(selectedTranscript.path, "utf8"),
+        },
+      ]
     : [];
   return {
     recording: {
@@ -136,9 +262,14 @@ export function extractCodexReplayThreadIds(text: string): string[] {
   return [...ids];
 }
 
-async function recordingDraftFromPath(path: string): Promise<RecordingDraft | null> {
+async function recordingDraftFromPath(
+  path: string,
+): Promise<RecordingDraft | null> {
   try {
-    const [stats, text] = await Promise.all([stat(path), readFile(path, "utf8")]);
+    const [stats, text] = await Promise.all([
+      stat(path),
+      readFile(path, "utf8"),
+    ]);
     const threadIds = extractCodexReplayThreadIds(text);
     return {
       path,
@@ -152,6 +283,222 @@ async function recordingDraftFromPath(path: string): Promise<RecordingDraft | nu
   } catch {
     return null;
   }
+}
+
+async function scanSessionRecording(
+  path: string,
+): Promise<SessionRecordingDraft | null> {
+  try {
+    const stats = await stat(path);
+    const threadFrameCounts = new Map<string, number>();
+    const threadIds = new Set<string>();
+    const directTranscriptPaths = new Set<string>();
+    const countRecord = (record: unknown) => {
+      const ids = new Set<string>();
+      collectThreadIds(record, (value) => {
+        if (isThreadLikeId(value)) ids.add(value);
+      });
+      for (const id of ids) {
+        threadIds.add(id);
+        if (replayStepCount(record) > 0) {
+          threadFrameCounts.set(id, (threadFrameCounts.get(id) ?? 0) + 1);
+        }
+      }
+      collectTranscriptPaths(record, (value) =>
+        directTranscriptPaths.add(value),
+      );
+    };
+
+    if (/\.json$/i.test(path)) {
+      for (const record of recordingRecords(await readFile(path, "utf8"))) {
+        countRecord(record);
+      }
+    } else {
+      const lines = createInterface({
+        input: createReadStream(path),
+        crlfDelay: Infinity,
+      });
+      for await (const line of lines) {
+        const ids = threadIdsFromJsonLine(line);
+        for (const id of ids) {
+          threadIds.add(id);
+        }
+        if (ids.length && replayStepCountFromJsonLine(line) > 0) {
+          for (const id of ids) {
+            threadFrameCounts.set(id, (threadFrameCounts.get(id) ?? 0) + 1);
+          }
+        }
+        if (line.includes("/.codex/sessions/")) {
+          try {
+            collectTranscriptPaths(JSON.parse(line), (value) =>
+              directTranscriptPaths.add(value),
+            );
+          } catch {}
+        }
+      }
+    }
+
+    return {
+      path,
+      name: basename(path),
+      mtimeMs: stats.mtimeMs,
+      size: stats.size,
+      threadIds: [...threadIds],
+      threadFrameCounts,
+      directTranscriptPaths: [...directTranscriptPaths],
+    };
+  } catch {
+    return null;
+  }
+}
+
+async function indexedSessionRecordings(
+  recordingDir: string,
+): Promise<SessionRecordingDraft[]> {
+  const files = await listRecordingFiles(recordingDir);
+  const fileStats = await Promise.all(
+    files.map(async (path) => ({ path, stats: await stat(path) })),
+  );
+  const signature = fileStats
+    .map(({ path, stats }) => `${path}\0${stats.size}\0${stats.mtimeMs}`)
+    .join("\n");
+  const cached = sessionDraftCache.get(recordingDir);
+  if (cached?.signature === signature) return cached.drafts;
+
+  const drafts = (async () => {
+    const result: SessionRecordingDraft[] = [];
+    for (const { path } of fileStats) {
+      const draft = await scanSessionRecording(path);
+      if (draft) result.push(draft);
+    }
+    return result;
+  })();
+  sessionDraftCache.set(recordingDir, { signature, drafts });
+  try {
+    return await drafts;
+  } catch (error) {
+    if (sessionDraftCache.get(recordingDir)?.drafts === drafts) {
+      sessionDraftCache.delete(recordingDir);
+    }
+    throw error;
+  }
+}
+
+async function readRecordingForThread(
+  path: string,
+  threadId: string,
+): Promise<string> {
+  if (/\.json$/i.test(path)) {
+    return recordingRecordsForThread(await readFile(path, "utf8"), threadId)
+      .map((record) => JSON.stringify(record))
+      .join("\n");
+  }
+  const matching: string[] = [];
+  const lines = createInterface({
+    input: createReadStream(path),
+    crlfDelay: Infinity,
+  });
+  for await (const line of lines) {
+    if (threadIdsFromJsonLine(line).includes(threadId)) matching.push(line);
+  }
+  return matching.join("\n");
+}
+
+const REPLAY_TRANSCRIPT_TAIL_BYTES = 16 * 1024 * 1024;
+
+async function readReplayTranscript(
+  path: string,
+): Promise<{ text: string; truncated: boolean }> {
+  const stats = await stat(path);
+  const start = Math.max(0, stats.size - REPLAY_TRANSCRIPT_TAIL_BYTES);
+  const handle = await fsOpen(path, "r");
+  let text: string;
+  try {
+    const buffer = Buffer.allocUnsafe(stats.size - start);
+    const { bytesRead } = await handle.read(buffer, 0, buffer.length, start);
+    text = buffer.subarray(0, bytesRead).toString("utf8");
+  } finally {
+    await handle.close();
+  }
+  if (start > 0) {
+    const firstNewline = text.indexOf("\n");
+    text = firstNewline >= 0 ? text.slice(firstNewline + 1) : "";
+  }
+  const projected: string[] = [];
+  for (const line of text.split(/\r?\n/)) {
+    if (!line) continue;
+    try {
+      const row = JSON.parse(line) as Record<string, unknown>;
+      const payload =
+        row.payload && typeof row.payload === "object"
+          ? (row.payload as Record<string, unknown>)
+          : undefined;
+      if (row.type === "compacted" || payload?.type === "compact_context") {
+        projected.push(
+          JSON.stringify({
+            ...(typeof row.timestamp === "string"
+              ? { timestamp: row.timestamp }
+              : {}),
+            type: "compacted",
+            payload: {},
+          }),
+        );
+      } else if (
+        row.type === "session_meta" ||
+        row.type === "event_msg" ||
+        row.type === "response_item"
+      ) {
+        projected.push(line);
+      } else {
+        projected.push(JSON.stringify({ type: row.type, payload: {} }));
+      }
+    } catch {
+      projected.push(line);
+    }
+  }
+  return { text: projected.join("\n"), truncated: start > 0 };
+}
+
+function threadIdsFromJsonLine(line: string): string[] {
+  const ids = new Set<string>();
+  const keyedId =
+    /"(?:threadId|thread_id|sessionId)"\s*:\s*"([0-9a-f-]{36})"/gi;
+  for (const match of line.matchAll(keyedId)) {
+    if (isThreadLikeId(match[1])) ids.add(match[1]);
+  }
+  const threadObject =
+    /"thread"\s*:\s*\{[^\n]{0,2000}?"id"\s*:\s*"([0-9a-f-]{36})"/gi;
+  for (const match of line.matchAll(threadObject)) {
+    if (isThreadLikeId(match[1])) ids.add(match[1]);
+  }
+  return [...ids];
+}
+
+function replayStepCountFromJsonLine(line: string): number {
+  try {
+    return replayStepCount(JSON.parse(line));
+  } catch {
+    return 0;
+  }
+}
+
+function replayStepCount(value: unknown): number {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return 0;
+  const frame = value as Record<string, unknown>;
+  const message =
+    frame.message && typeof frame.message === "object"
+      ? (frame.message as Record<string, unknown>)
+      : undefined;
+  if (!message || typeof message.method !== "string") return 0;
+  if (frame.direction !== "client") return 1;
+  if (message.method !== "turn/start" && message.method !== "turn/steer") {
+    return 0;
+  }
+  const params =
+    message.params && typeof message.params === "object"
+      ? (message.params as Record<string, unknown>)
+      : undefined;
+  return params?.input ? 1 : 0;
 }
 
 function recordingRefFromDraft(
@@ -184,28 +531,39 @@ async function listRecordingFiles(recordingDir: string): Promise<string[]> {
 
 async function buildTranscriptIndex(
   sessionsRoot: string,
-  drafts: RecordingDraft[],
+  drafts: Array<Pick<RecordingDraft, "threadIds" | "directTranscriptPaths">>,
+  sessionTitles?: Record<string, string>,
 ): Promise<Map<string, CodexReplayTranscriptRef>> {
   const ids = [...new Set(drafts.flatMap(recordingThreadIds))];
   const byThread = new Map<string, CodexReplayTranscriptRef>();
-  for (const path of [...new Set(drafts.flatMap((draft) => draft.directTranscriptPaths))]) {
-    const ref = await transcriptRef(path, ids);
+  for (const path of [
+    ...new Set(drafts.flatMap((draft) => draft.directTranscriptPaths)),
+  ]) {
+    const ref = await transcriptRef(path, ids, sessionTitles);
     if (ref) byThread.set(ref.threadId, ref);
   }
   const missing = ids.filter((id) => !byThread.has(id));
   if (missing.length) {
-    for (const ref of await scanTranscriptFiles(sessionsRoot, missing)) {
+    for (const ref of await scanTranscriptFiles(
+      sessionsRoot,
+      missing,
+      sessionTitles,
+    )) {
       byThread.set(ref.threadId, ref);
     }
   }
   return byThread;
 }
 
-function recordingThreadIds(draft: RecordingDraft): string[] {
+function recordingThreadIds(
+  draft: Pick<RecordingDraft, "threadIds" | "directTranscriptPaths">,
+): string[] {
   return [
     ...new Set([
       ...draft.threadIds,
-      ...draft.directTranscriptPaths.flatMap((path) => threadIdsFromTranscriptPath(path)),
+      ...draft.directTranscriptPaths.flatMap((path) =>
+        threadIdsFromTranscriptPath(path),
+      ),
     ]),
   ];
 }
@@ -224,19 +582,24 @@ function transcriptPathsFromReplay(text: string): string[] {
 async function transcriptRef(
   path: string,
   knownThreadIds: string[],
+  sessionTitles?: Record<string, string>,
 ): Promise<CodexReplayTranscriptRef | null> {
   try {
     const stats = await stat(path);
     if (!stats.isFile()) return null;
     const threadId =
-      knownThreadIds.find((id) => basename(path).includes(id)) ?? knownThreadIds[0];
+      knownThreadIds.find((id) => basename(path).includes(id)) ??
+      knownThreadIds[0];
     if (!threadId) return null;
+    const overview = await readCodexSessionOverview(path, stats.size);
     return {
       threadId,
       path,
       name: relative(dirname(dirname(dirname(path))), path),
       mtimeMs: stats.mtimeMs,
       size: stats.size,
+      title: sessionTitles?.[path] ?? overview.firstUserMessage,
+      messageCount: overview.messageCount,
     };
   } catch {
     return null;
@@ -246,6 +609,7 @@ async function transcriptRef(
 async function scanTranscriptFiles(
   sessionsRoot: string,
   threadIds: string[],
+  sessionTitles?: Record<string, string>,
 ): Promise<CodexReplayTranscriptRef[]> {
   const wanted = new Set(threadIds);
   const refs: CodexReplayTranscriptRef[] = [];
@@ -267,18 +631,46 @@ async function scanTranscriptFiles(
         const threadId = threadIds.find((id) => entry.name.includes(id));
         if (!threadId || !wanted.has(threadId)) return;
         const stats = await stat(path);
-        refs.push({
-          threadId,
-          path,
-          name: relative(sessionsRoot, path),
-          mtimeMs: stats.mtimeMs,
-          size: stats.size,
-        });
+        const ref = await transcriptRef(path, [threadId], sessionTitles);
+        if (ref) refs.push({ ...ref, name: relative(sessionsRoot, path) });
       }),
     );
   }
   await visit(sessionsRoot);
   return refs;
+}
+
+function recordingRecords(text: string): unknown[] {
+  const trimmed = text.trim();
+  if (!trimmed) return [];
+  try {
+    const root = JSON.parse(trimmed);
+    if (Array.isArray(root)) return root;
+    if (root && typeof root === "object") {
+      const record = root as Record<string, unknown>;
+      for (const key of ["frames", "events", "records"]) {
+        if (Array.isArray(record[key])) return record[key] as unknown[];
+      }
+      return [root];
+    }
+  } catch {}
+  const records: unknown[] = [];
+  for (const line of trimmed.split(/\r?\n/)) {
+    try {
+      records.push(JSON.parse(line));
+    } catch {}
+  }
+  return records;
+}
+
+function recordingRecordsForThread(text: string, threadId: string): unknown[] {
+  return recordingRecords(text).filter((record) => {
+    const ids = new Set<string>();
+    collectThreadIds(record, (value) => {
+      if (isThreadLikeId(value)) ids.add(value);
+    });
+    return ids.has(threadId);
+  });
 }
 
 function collectThreadIds(value: unknown, add: (value: unknown) => void): void {
@@ -321,14 +713,21 @@ function isThreadLikeId(value: unknown): value is string {
   );
 }
 
-function collectTranscriptPaths(value: unknown, add: (path: string) => void): void {
+function collectTranscriptPaths(
+  value: unknown,
+  add: (path: string) => void,
+): void {
   if (!value || typeof value !== "object") return;
   if (Array.isArray(value)) {
     for (const item of value) collectTranscriptPaths(item, add);
     return;
   }
   for (const [key, child] of Object.entries(value)) {
-    if (key === "path" && typeof child === "string" && child.includes("/.codex/sessions/")) {
+    if (
+      key === "path" &&
+      typeof child === "string" &&
+      child.includes("/.codex/sessions/")
+    ) {
       add(child);
     }
     collectTranscriptPaths(child, add);

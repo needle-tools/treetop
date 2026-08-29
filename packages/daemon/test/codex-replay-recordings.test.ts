@@ -1,11 +1,13 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { appendFile, mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   extractCodexReplayThreadIds,
   listCodexReplayRecordings,
+  listCodexReplaySessions,
   readCodexReplayRecording,
+  readCodexReplaySession,
 } from "../src/codex-replay-recordings";
 
 async function withTempDir<T>(fn: (dir: string) => Promise<T>): Promise<T> {
@@ -56,7 +58,10 @@ describe("Codex replay recording discovery", () => {
         "27",
         `rollout-2026-08-27T12-38-52-${threadId}.jsonl`,
       );
-      await writeFile(transcriptPath, JSON.stringify({ type: "session_meta", payload: { id: threadId } }));
+      await writeFile(
+        transcriptPath,
+        JSON.stringify({ type: "session_meta", payload: { id: threadId } }),
+      );
       const recordingPath = join(recordingDir, "codex-app-test.jsonl");
       await writeFile(
         recordingPath,
@@ -93,7 +98,7 @@ describe("Codex replay recording discovery", () => {
         "17",
         `rollout-2026-06-17T21-30-17-${threadId}.jsonl`,
       );
-      await writeFile(transcriptPath, "{\"type\":\"session_meta\"}\n");
+      await writeFile(transcriptPath, '{"type":"session_meta"}\n');
       const recordingPath = join(recordingDir, "codex-app-test.jsonl");
       const recordingText = `${JSON.stringify({
         seq: 1,
@@ -115,7 +120,7 @@ describe("Codex replay recording discovery", () => {
       expect(payload.text).toBe(recordingText);
       expect(payload.transcripts).toHaveLength(1);
       expect(payload.transcripts[0]?.threadId).toBe(threadId);
-      expect(payload.transcripts[0]?.text).toBe("{\"type\":\"session_meta\"}\n");
+      expect(payload.transcripts[0]?.text).toBe('{"type":"session_meta"}\n');
     });
   });
 
@@ -133,13 +138,15 @@ describe("Codex replay recording discovery", () => {
         "17",
         `rollout-2026-06-17T21-30-17-${threadId}.jsonl`,
       );
-      await writeFile(transcriptPath, "{\"type\":\"session_meta\"}\n");
+      await writeFile(transcriptPath, '{"type":"session_meta"}\n');
       const recordingPath = join(recordingDir, "codex-app-test.jsonl");
       await writeFile(
         recordingPath,
         `${JSON.stringify({
           seq: 1,
-          message: { result: { thread: { id: threadId, path: transcriptPath } } },
+          message: {
+            result: { thread: { id: threadId, path: transcriptPath } },
+          },
         })}\n`,
       );
 
@@ -151,6 +158,176 @@ describe("Codex replay recording discovery", () => {
 
       expect(payload.recording.transcriptPaths).toHaveLength(1);
       expect(payload.transcripts).toEqual([]);
+    });
+  });
+
+  test("groups recording fragments by session with human titles and coverage counts", async () => {
+    await withTempDir(async (dir) => {
+      const recordingDir = join(dir, "recordings");
+      const sessionsRoot = join(dir, "sessions");
+      await mkdir(recordingDir, { recursive: true });
+      await mkdir(join(sessionsRoot, "2026", "08", "29"), { recursive: true });
+      const threadA = "019ed710-1a0a-7200-98ec-53f8aa8fab6b";
+      const threadB = "019f5e34-6ff7-7011-9d75-c7d4eb493c92";
+      const transcriptA = join(
+        sessionsRoot,
+        "2026",
+        "08",
+        "29",
+        `rollout-a-${threadA}.jsonl`,
+      );
+      await writeFile(
+        transcriptA,
+        [
+          JSON.stringify({
+            type: "session_meta",
+            payload: { id: threadA, cwd: "/repo-a" },
+          }),
+          JSON.stringify({
+            type: "response_item",
+            payload: {
+              type: "message",
+              role: "user",
+              content: [
+                { type: "input_text", text: "Investigate the renderer freeze" },
+              ],
+            },
+          }),
+        ].join("\n"),
+      );
+      await writeFile(
+        join(recordingDir, "one.jsonl"),
+        [
+          JSON.stringify({
+            seq: 1,
+            message: { method: "turn/start", params: { threadId: threadA } },
+          }),
+          JSON.stringify({
+            seq: 2,
+            message: { method: "turn/start", params: { threadId: threadB } },
+          }),
+        ].join("\n"),
+      );
+      await writeFile(
+        join(recordingDir, "two.jsonl"),
+        JSON.stringify({
+          seq: 3,
+          message: {
+            method: "item/completed",
+            params: { threadId: threadA, item: { id: "done-a" } },
+          },
+        }),
+      );
+
+      const sessions = await listCodexReplaySessions({
+        recordingDir,
+        sessionsRoot,
+      });
+
+      expect(sessions).toHaveLength(2);
+      expect(
+        sessions.find((session) => session.threadId === threadA),
+      ).toMatchObject({
+        title: "Investigate the renderer freeze",
+        rpcRecordingCount: 2,
+        rpcFrameCount: 2,
+        hasTranscript: true,
+      });
+      expect(
+        sessions.find((session) => session.threadId === threadB),
+      ).toMatchObject({
+        rpcRecordingCount: 1,
+        rpcFrameCount: 1,
+        hasTranscript: false,
+      });
+    });
+  });
+
+  test("reads exactly one selected session across all recording fragments", async () => {
+    await withTempDir(async (dir) => {
+      const recordingDir = join(dir, "recordings");
+      const sessionsRoot = join(dir, "sessions");
+      await mkdir(recordingDir, { recursive: true });
+      await mkdir(sessionsRoot, { recursive: true });
+      const threadA = "019ed710-1a0a-7200-98ec-53f8aa8fab6b";
+      const threadB = "019f5e34-6ff7-7011-9d75-c7d4eb493c92";
+      await writeFile(
+        join(sessionsRoot, `rollout-${threadA}.jsonl`),
+        [
+          JSON.stringify({ type: "session_meta", payload: { id: threadA } }),
+          JSON.stringify({
+            type: "compacted",
+            payload: { replacement_history: ["large ignored replay data"] },
+          }),
+        ].join("\n"),
+      );
+      await writeFile(
+        join(recordingDir, "one.jsonl"),
+        [
+          JSON.stringify({
+            seq: 1,
+            message: {
+              method: "item/completed",
+              params: { threadId: threadA },
+            },
+          }),
+          JSON.stringify({
+            seq: 2,
+            message: {
+              method: "item/completed",
+              params: { threadId: threadB },
+            },
+          }),
+        ].join("\n"),
+      );
+      await writeFile(
+        join(recordingDir, "two.jsonl"),
+        JSON.stringify({
+          seq: 3,
+          message: { method: "turn/completed", params: { threadId: threadA } },
+        }),
+      );
+
+      const payload = await readCodexReplaySession({
+        recordingDir,
+        sessionsRoot,
+        threadId: threadA,
+      });
+
+      expect(payload.session.threadId).toBe(threadA);
+      expect(
+        payload.recordingText
+          .split("\n")
+          .map(JSON.parse)
+          .map((row) => row.seq),
+      ).toEqual([1, 3]);
+      expect(payload.recordingText).not.toContain(threadB);
+      expect(payload.transcriptText).toContain('"type":"compacted"');
+      expect(payload.transcriptText).not.toContain("large ignored replay data");
+    });
+  });
+
+  test("refreshes the session index when a live recording grows", async () => {
+    await withTempDir(async (dir) => {
+      const recordingDir = join(dir, "recordings");
+      const sessionsRoot = join(dir, "sessions");
+      await mkdir(recordingDir, { recursive: true });
+      await mkdir(sessionsRoot, { recursive: true });
+      const threadId = "019ed710-1a0a-7200-98ec-53f8aa8fab6b";
+      const recording = join(recordingDir, "live.jsonl");
+      const frame = (seq: number) =>
+        `${JSON.stringify({ seq, message: { method: "item/completed", params: { threadId } } })}\n`;
+      await writeFile(recording, frame(1));
+
+      expect(
+        (await listCodexReplaySessions({ recordingDir, sessionsRoot }))[0]
+          ?.rpcFrameCount,
+      ).toBe(1);
+      await appendFile(recording, frame(2));
+      expect(
+        (await listCodexReplaySessions({ recordingDir, sessionsRoot }))[0]
+          ?.rpcFrameCount,
+      ).toBe(2);
     });
   });
 });

@@ -3,10 +3,12 @@
   import VisualTranscript from "./VisualTranscript.svelte";
   import {
     createCodexReplayPlayback,
-    filterCodexReplayTextForThread,
+    filterCodexReplaySessions,
     parseCodexReplayTextAsync,
     setCodexReplayPlaybackStep,
+    summarizeCodexReplaySessions,
     type CodexReplayPlaybackState,
+    type CodexReplaySessionFilter,
     type ParsedCodexReplay,
   } from "./codex-replay-lab";
 
@@ -34,10 +36,12 @@
   let transcriptReplay: ParsedCodexReplay | null = null;
   let transcriptPlayback: CodexReplayPlaybackState | null = null;
   let transcriptFileName = "";
-  let recordings: RecordingIndexEntry[] = [];
+  let transcriptTruncated = false;
+  let sessions: ReplaySessionIndexEntry[] = [];
   let recordingsLoading = false;
   let recordingsError = "";
-  let selectedRecordingKey = "";
+  let selectedThreadId = "";
+  let sessionFilter: CodexReplaySessionFilter = "both";
 
   $: stepCount = replay?.steps.length ?? 0;
   $: clampedStepIndex = playback?.stepIndex ?? 0;
@@ -51,6 +55,37 @@
     loadingTotal && loadingTotal > 0
       ? Math.min(100, Math.round((loadingParsed / loadingTotal) * 100))
       : undefined;
+  $: sessionCounts = summarizeCodexReplaySessions(sessions);
+  $: visibleSessions = filterCodexReplaySessions(sessions, sessionFilter);
+
+  function installReplay(parsed: ParsedCodexReplay, name: string): void {
+    replay = parsed;
+    playback = createCodexReplayPlayback(parsed);
+    fileName = name;
+    stepIndex = playback.stepIndex;
+    scrubStepIndex = playback.stepIndex;
+    openWorkFoldoutKeys = new Set();
+    openWorkEntryKeys = new Set();
+    expandedThinkingWorkKeys = new Set();
+  }
+
+  async function parseReplay(
+    text: string,
+    requestId: number,
+    reportProgress: boolean,
+  ): Promise<ParsedCodexReplay | null> {
+    const parsed = await parseCodexReplayTextAsync(text, {
+      onProgress: reportProgress
+        ? (progress) => {
+            if (requestId !== loadRequestId) return;
+            loadingLabel = progress.label;
+            loadingParsed = progress.parsed;
+            loadingTotal = progress.total;
+          }
+        : undefined,
+    });
+    return requestId === loadRequestId ? parsed : null;
+  }
 
   async function loadReplayText(
     text: string,
@@ -64,30 +99,18 @@
     fileName = name;
     parseError = "";
     replay = null;
+    playback = null;
+    transcriptReplay = null;
+    transcriptPlayback = null;
+    transcriptFileName = "";
+    transcriptTruncated = false;
     playing = false;
     try {
-      const parsed = await parseCodexReplayTextAsync(text, {
-        onProgress: (progress) => {
-          if (requestId !== loadRequestId) return;
-          loadingLabel = progress.label;
-          loadingParsed = progress.parsed;
-          loadingTotal = progress.total;
-        },
-      });
-      if (requestId !== loadRequestId) return;
-      replay = parsed;
-      playback = createCodexReplayPlayback(replay);
-      transcriptReplay = null;
-      transcriptPlayback = null;
-      transcriptFileName = "";
-      selectedRecordingKey = "";
-      fileName = name;
-      stepIndex = playback.stepIndex;
-      scrubStepIndex = playback.stepIndex;
+      const parsed = await parseReplay(text, requestId, true);
+      if (!parsed) return;
+      installReplay(parsed, name);
+      selectedThreadId = "";
       parseError = "";
-      openWorkFoldoutKeys = new Set();
-      openWorkEntryKeys = new Set();
-      expandedThinkingWorkKeys = new Set();
     } catch (err) {
       if (requestId !== loadRequestId) return;
       parseError = err instanceof Error ? err.message : String(err);
@@ -99,37 +122,20 @@
     }
   }
 
-  async function loadReplayComparison(
-    recordingText: string,
-    recordingName: string,
-    transcriptText: string | undefined,
-    transcriptName: string | undefined,
-  ): Promise<void> {
-    await loadReplayText(recordingText, recordingName);
-    if (!replay || !transcriptText) return;
-    const parsedTranscript = await parseCodexReplayTextAsync(transcriptText);
-    transcriptReplay = parsedTranscript;
-    transcriptPlayback = createCodexReplayPlayback(parsedTranscript, {
-      stepIndex: parsedTranscript.steps.length,
-    });
-    transcriptFileName = transcriptName ?? "Matching transcript";
-    transcriptOpenWorkFoldoutKeys = new Set();
-    transcriptOpenWorkEntryKeys = new Set();
-    transcriptExpandedThinkingWorkKeys = new Set();
-  }
-
   async function fetchRecordings(): Promise<void> {
     recordingsLoading = true;
     recordingsError = "";
     try {
       const res = await fetch("/api/codex-app/recordings");
-      const body = (await res.json().catch(() => null)) as
-        | { ok?: boolean; recordings?: RecordingIndexEntry[]; error?: string }
-        | null;
+      const body = (await res.json().catch(() => null)) as {
+        ok?: boolean;
+        sessions?: ReplaySessionIndexEntry[];
+        error?: string;
+      } | null;
       if (!res.ok || !body?.ok) {
         throw new Error(body?.error ?? `HTTP ${res.status}`);
       }
-      recordings = body.recordings ?? [];
+      sessions = body.sessions ?? [];
     } catch (err) {
       recordingsError = err instanceof Error ? err.message : String(err);
     } finally {
@@ -137,45 +143,53 @@
     }
   }
 
-  async function loadRecording(
-    entry: RecordingIndexEntry,
-    transcript?: TranscriptRef,
-  ): Promise<void> {
+  async function loadSession(entry: ReplaySessionIndexEntry): Promise<void> {
     const requestId = ++loadRequestId;
     loading = true;
-    loadingLabel = "Loading recording";
+    loadingLabel = "Loading session";
     loadingParsed = 0;
     loadingTotal = undefined;
-    selectedRecordingKey = recordingSelectionKey(entry, transcript);
+    selectedThreadId = entry.threadId;
+    fileName = entry.title;
     parseError = "";
+    replay = null;
+    playback = null;
+    transcriptReplay = null;
+    transcriptPlayback = null;
+    transcriptFileName = "";
+    transcriptTruncated = false;
+    playing = false;
     try {
-      const params = new URLSearchParams({ path: entry.path });
-      if (transcript?.path) params.set("transcriptPath", transcript.path);
-      const res = await fetch(
-        `/api/codex-app/recordings/read?${params.toString()}`,
-      );
-      const body = (await res.json().catch(() => null)) as
-        | RecordingReadResponse
-        | null;
+      const params = new URLSearchParams({ threadId: entry.threadId });
+      const res = await fetch(`/api/codex-app/recordings/read?${params}`);
+      const body = (await res
+        .json()
+        .catch(() => null)) as ReplaySessionReadResponse | null;
       if (!res.ok || !body?.ok) {
         throw new Error(body?.error ?? `HTTP ${res.status}`);
       }
       if (requestId !== loadRequestId) return;
-      const matchedTranscript =
-        transcript?.threadId
-          ? body.transcripts.find((item) => item.threadId === transcript.threadId)
-          : body.transcripts[0];
-      const recordingText =
-        matchedTranscript?.threadId
-          ? filterCodexReplayTextForThread(body.text, matchedTranscript.threadId)
-          : body.text;
-      await loadReplayComparison(
-        recordingText,
-        body.recording.name,
-        matchedTranscript?.text,
-        matchedTranscript?.name,
-      );
-      selectedRecordingKey = recordingSelectionKey(entry, transcript);
+      const parsed = await parseReplay(body.recordingText, requestId, true);
+      if (!parsed) return;
+      installReplay(parsed, `${body.session.title} · RPC`);
+      if (body.transcriptText) {
+        const parsedTranscript = await parseReplay(
+          body.transcriptText,
+          requestId,
+          false,
+        );
+        if (!parsedTranscript) return;
+        transcriptReplay = parsedTranscript;
+        transcriptPlayback = createCodexReplayPlayback(parsedTranscript, {
+          stepIndex: parsedTranscript.steps.length,
+        });
+        transcriptFileName = `${body.session.title} · Transcript`;
+        transcriptTruncated = body.transcriptTruncated === true;
+        transcriptOpenWorkFoldoutKeys = new Set();
+        transcriptOpenWorkEntryKeys = new Set();
+        transcriptExpandedThinkingWorkKeys = new Set();
+      }
+      selectedThreadId = entry.threadId;
     } catch (err) {
       if (requestId !== loadRequestId) return;
       parseError = err instanceof Error ? err.message : String(err);
@@ -205,7 +219,8 @@
     transcriptReplay = null;
     transcriptPlayback = null;
     transcriptFileName = "";
-    selectedRecordingKey = "";
+    transcriptTruncated = false;
+    selectedThreadId = "";
     loading = false;
     loadingLabel = "";
     loadingParsed = 0;
@@ -270,37 +285,23 @@
     void fetchRecordings();
   });
 
-  interface TranscriptRef {
+  interface ReplaySessionIndexEntry {
     threadId: string;
-    path: string;
-    name: string;
+    title: string;
     mtimeMs: number;
-    size: number;
-    text?: string;
+    rpcRecordingCount: number;
+    rpcFrameCount: number;
+    hasTranscript: boolean;
+    transcript?: { messageCount?: number };
   }
 
-  interface RecordingIndexEntry {
-    path: string;
-    name: string;
-    mtimeMs: number;
-    size: number;
-    threadIds: string[];
-    transcriptPaths: TranscriptRef[];
-  }
-
-  interface RecordingReadResponse {
+  interface ReplaySessionReadResponse {
     ok: boolean;
-    recording: RecordingIndexEntry;
-    text: string;
-    transcripts: Array<TranscriptRef & { text: string }>;
+    session: ReplaySessionIndexEntry;
+    recordingText: string;
+    transcriptText?: string;
+    transcriptTruncated?: boolean;
     error?: string;
-  }
-
-  function recordingSelectionKey(
-    entry: RecordingIndexEntry,
-    transcript?: TranscriptRef,
-  ): string {
-    return transcript ? `${entry.path}::${transcript.threadId}` : entry.path;
   }
 </script>
 
@@ -340,42 +341,87 @@
   </header>
 
   <div class="replay-workspace">
-    <aside class="replay-browser" aria-label="Recorded Codex app-server sessions">
+    <aside
+      class="replay-browser"
+      aria-label="Recorded Codex app-server sessions"
+    >
       <div class="replay-browser-title">
-        <strong>Recordings</strong>
-        <button type="button" on:click={fetchRecordings} disabled={recordingsLoading}>
+        <strong>Sessions <span>{sessionCounts.total}</span></strong>
+        <button
+          type="button"
+          on:click={fetchRecordings}
+          disabled={recordingsLoading}
+        >
           Refresh
         </button>
       </div>
+      <div class="replay-browser-counts" aria-label="Replay coverage">
+        <span>RPC {sessionCounts.rpc}</span>
+        <span>Transcript {sessionCounts.transcript}</span>
+        <span>Both {sessionCounts.both}</span>
+      </div>
+      <div
+        class="replay-browser-filters"
+        role="tablist"
+        aria-label="Filter sessions"
+      >
+        <button
+          type="button"
+          role="tab"
+          aria-selected={sessionFilter === "all"}
+          class:selected={sessionFilter === "all"}
+          on:click={() => (sessionFilter = "all")}
+          >All {sessionCounts.total}</button
+        >
+        <button
+          type="button"
+          role="tab"
+          aria-selected={sessionFilter === "both"}
+          class:selected={sessionFilter === "both"}
+          on:click={() => (sessionFilter = "both")}
+          >Both {sessionCounts.both}</button
+        >
+        <button
+          type="button"
+          role="tab"
+          aria-selected={sessionFilter === "rpc-only"}
+          class:selected={sessionFilter === "rpc-only"}
+          on:click={() => (sessionFilter = "rpc-only")}
+          >RPC only {sessionCounts.rpcOnly}</button
+        >
+      </div>
       {#if recordingsLoading}
-        <span class="replay-browser-muted">Loading recordings...</span>
+        <span class="replay-browser-muted">Loading sessions...</span>
       {:else if recordingsError}
         <span class="replay-browser-error">{recordingsError}</span>
-      {:else if !recordings.length}
-        <span class="replay-browser-muted">No recordings found.</span>
+      {:else if !sessions.length}
+        <span class="replay-browser-muted">No replay sessions found.</span>
+      {:else if !visibleSessions.length}
+        <span class="replay-browser-muted">No sessions match this filter.</span>
       {:else}
         <div class="replay-recording-list">
-          {#each recordings as entry (entry.path)}
-            <button type="button" on:click={() => loadRecording(entry)}>
-              <span class="replay-recording-name">{entry.name}</span>
-              <span>{entry.threadIds[0] ?? "no thread id"}</span>
-              <span>
-                {entry.transcriptPaths.length
-                  ? `${entry.transcriptPaths.length} transcript${entry.transcriptPaths.length === 1 ? "" : "s"}`
-                  : "no transcript"}
+          {#each visibleSessions as entry (entry.threadId)}
+            <button
+              type="button"
+              class:selected={selectedThreadId === entry.threadId}
+              title={entry.threadId}
+              on:click={() => loadSession(entry)}
+            >
+              <span class="replay-recording-name">{entry.title}</span>
+              <span class="replay-session-id">{entry.threadId}</span>
+              <span class="replay-session-coverage">
+                <span>RPC {entry.rpcFrameCount}</span>
+                {#if entry.hasTranscript}
+                  <span
+                    >Transcript{entry.transcript?.messageCount
+                      ? ` ${entry.transcript.messageCount}`
+                      : ""}</span
+                  >
+                {:else}
+                  <span>RPC only</span>
+                {/if}
               </span>
             </button>
-            {#each entry.transcriptPaths as transcript (transcript.path)}
-              <button
-                type="button"
-                class="replay-transcript-option"
-                class:selected={selectedRecordingKey === recordingSelectionKey(entry, transcript)}
-                on:click={() => loadRecording(entry, transcript)}
-              >
-                <span class="replay-recording-name">{transcript.name}</span>
-                <span>{transcript.threadId}</span>
-              </button>
-            {/each}
           {/each}
         </div>
       {/if}
@@ -383,7 +429,11 @@
 
     <main class="replay-main">
       {#if loading}
-        <div class="replay-drop replay-loading" role="status" aria-live="polite">
+        <div
+          class="replay-drop replay-loading"
+          role="status"
+          aria-live="polite"
+        >
           <strong>{loadingLabel || "Loading replay"}</strong>
           {#if fileName}<span>{fileName}</span>{/if}
           {#if loadingPercent !== undefined}
@@ -402,7 +452,9 @@
           on:drop={onDrop}
         >
           <strong>Drop replay JSON or JSONL here</strong>
-          <span>RPC frames, normalized events, and Codex session JSONL work.</span>
+          <span
+            >RPC frames, normalized events, and Codex session JSONL work.</span
+          >
           {#if parseError}<small>{parseError}</small>{/if}
         </div>
       {:else}
@@ -413,9 +465,15 @@
                 <strong>{fileName}</strong>
                 <span>{clampedStepIndex} / {stepCount} steps</span>
                 {#if totalMessageCount > renderedMessageCount}
-                  <span>showing latest {renderedMessageCount} / {totalMessageCount} messages</span>
+                  <span
+                    >showing latest {renderedMessageCount} / {totalMessageCount} messages</span
+                  >
                 {/if}
-                <span>{replay.mode === "transcript" ? "Transcript" : "RPC replay"}</span>
+                <span
+                  >{replay.mode === "transcript"
+                    ? "Transcript"
+                    : "RPC replay"}</span
+                >
                 {#if currentStep}<span>{currentStep.label}</span>{/if}
                 {#if replay.warnings.length}
                   <span>{replay.warnings.length} skipped rows</span>
@@ -443,6 +501,8 @@
                   <strong>{transcriptFileName}</strong>
                   <span>{transcriptReplay.steps.length} steps</span>
                   <span>Transcript</span>
+                  {#if transcriptTruncated}<span>latest recorded window</span
+                    >{/if}
                   {#if transcriptReplay.warnings.length}
                     <span>{transcriptReplay.warnings.length} skipped rows</span>
                   {/if}
@@ -465,56 +525,56 @@
             {/if}
           </div>
           <div class="replay-timeline">
-        <div class="replay-step-buttons" aria-label="Replay steps">
-          <button
-            class="replay-step"
-            on:click={() => setReplayStep(0)}
-            disabled={clampedStepIndex <= 0}
-          >
-            Start
-          </button>
-          <button
-            class="replay-step"
-            on:click={() => setReplayStep(clampedStepIndex - 1)}
-            disabled={clampedStepIndex <= 0}
-          >
-            -1
-          </button>
-          <button
-            class="replay-step replay-step-primary"
-            on:click={() => setReplayStep(clampedStepIndex + 1)}
-            disabled={clampedStepIndex >= stepCount}
-          >
-            +1 step
-          </button>
-          <button
-            class="replay-step"
-            on:click={() => setReplayStep(stepCount)}
-            disabled={clampedStepIndex >= stepCount}
-          >
-            End
-          </button>
+            <div class="replay-step-buttons" aria-label="Replay steps">
+              <button
+                class="replay-step"
+                on:click={() => setReplayStep(0)}
+                disabled={clampedStepIndex <= 0}
+              >
+                Start
+              </button>
+              <button
+                class="replay-step"
+                on:click={() => setReplayStep(clampedStepIndex - 1)}
+                disabled={clampedStepIndex <= 0}
+              >
+                -1
+              </button>
+              <button
+                class="replay-step replay-step-primary"
+                on:click={() => setReplayStep(clampedStepIndex + 1)}
+                disabled={clampedStepIndex >= stepCount}
+              >
+                +1 step
+              </button>
+              <button
+                class="replay-step"
+                on:click={() => setReplayStep(stepCount)}
+                disabled={clampedStepIndex >= stepCount}
+              >
+                End
+              </button>
+            </div>
+            <button
+              class="replay-play"
+              on:click={togglePlay}
+              aria-label={playing ? "Pause replay" : "Play replay"}
+            >
+              {playing ? "Pause" : "Play"}
+            </button>
+            <input
+              type="range"
+              min="0"
+              max={stepCount}
+              step="1"
+              value={scrubStepIndex}
+              on:input={onScrubInput}
+              on:change={commitScrub}
+              aria-label="Replay time"
+            />
+            <span>{scrubStepIndex}/{stepCount}</span>
+          </div>
         </div>
-        <button
-          class="replay-play"
-          on:click={togglePlay}
-          aria-label={playing ? "Pause replay" : "Play replay"}
-        >
-          {playing ? "Pause" : "Play"}
-        </button>
-        <input
-          type="range"
-          min="0"
-          max={stepCount}
-          step="1"
-          value={scrubStepIndex}
-          on:input={onScrubInput}
-          on:change={commitScrub}
-          aria-label="Replay time"
-        />
-        <span>{scrubStepIndex}/{stepCount}</span>
-      </div>
-    </div>
       {/if}
     </main>
   </div>
@@ -623,7 +683,7 @@
 
   .replay-browser {
     display: grid;
-    grid-template-rows: auto 1fr;
+    grid-template-rows: auto auto auto 1fr;
     border: 1px solid var(--border, #303030);
     border-radius: 12px;
     background: var(--panel-bg, #181818);
@@ -647,6 +707,46 @@
     background: var(--button-bg, #252525);
     font: inherit;
     font-size: 12px;
+  }
+
+  .replay-browser-title strong span,
+  .replay-browser-counts {
+    color: var(--muted, #999);
+    font-size: 12px;
+    font-weight: 400;
+  }
+
+  .replay-browser-counts {
+    display: flex;
+    gap: 10px;
+    padding: 8px 12px 0;
+  }
+
+  .replay-browser-filters {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 4px;
+    padding: 8px;
+    border-bottom: 1px solid var(--border, #303030);
+  }
+
+  .replay-browser-filters button {
+    min-width: 0;
+    min-height: 28px;
+    padding: 0 6px;
+    border: 1px solid transparent;
+    border-radius: 6px;
+    color: var(--muted, #aaa);
+    background: transparent;
+    font: inherit;
+    font-size: 11px;
+    cursor: pointer;
+  }
+
+  .replay-browser-filters button.selected {
+    border-color: var(--border, #3a3a3a);
+    color: var(--text, #f0f0f0);
+    background: var(--button-bg, #252525);
   }
 
   .replay-recording-list {
@@ -676,13 +776,6 @@
     border-color: color-mix(in srgb, var(--accent, #9ad45f), transparent 55%);
   }
 
-  .replay-recording-list button.replay-transcript-option {
-    margin-left: 14px;
-    width: calc(100% - 14px);
-    padding-left: 12px;
-    border-left-color: var(--border, #303030);
-  }
-
   .replay-recording-list button span:not(.replay-recording-name),
   .replay-browser-muted,
   .replay-browser-error {
@@ -691,10 +784,22 @@
   }
 
   .replay-recording-name {
+    display: -webkit-box;
+    overflow: hidden;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+    font-weight: 700;
+  }
+
+  .replay-session-id {
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-    font-weight: 700;
+  }
+
+  .replay-session-coverage {
+    display: flex;
+    gap: 8px;
   }
 
   .replay-browser-muted,

@@ -70,6 +70,39 @@ export interface CodexReplayParseOptions {
 
 export const DEFAULT_REPLAY_VISIBLE_MESSAGE_LIMIT = 260;
 
+export type CodexReplaySessionFilter = "all" | "both" | "rpc-only";
+
+export function summarizeCodexReplaySessions(
+  sessions: readonly { hasTranscript: boolean }[],
+): {
+  total: number;
+  rpc: number;
+  transcript: number;
+  both: number;
+  rpcOnly: number;
+} {
+  const transcript = sessions.filter((session) => session.hasTranscript).length;
+  return {
+    total: sessions.length,
+    rpc: sessions.length,
+    transcript,
+    both: transcript,
+    rpcOnly: sessions.length - transcript,
+  };
+}
+
+export function filterCodexReplaySessions<T extends { hasTranscript: boolean }>(
+  sessions: readonly T[],
+  filter: CodexReplaySessionFilter,
+): T[] {
+  if (filter === "both")
+    return sessions.filter((session) => session.hasTranscript);
+  if (filter === "rpc-only") {
+    return sessions.filter((session) => !session.hasTranscript);
+  }
+  return [...sessions];
+}
+
 export function parseCodexReplayText(text: string): ParsedCodexReplay {
   const warnings: string[] = [];
   const root = parseReplayRoot(text, warnings);
@@ -1003,7 +1036,9 @@ function replayRecords(root: unknown): unknown[] {
   return [root];
 }
 
-function replayRecordArrayKey(record: Record<string, unknown>): string | undefined {
+function replayRecordArrayKey(
+  record: Record<string, unknown>,
+): string | undefined {
   return ["frames", "events", "records", "entries", "log"].find((key) =>
     Array.isArray(record[key]),
   );
@@ -1032,7 +1067,8 @@ function collectReplayThreadIds(
     }
   }
   const thread = objectRecord(record.thread);
-  const threadId = objectString(thread, "id") ?? objectString(thread, "sessionId");
+  const threadId =
+    objectString(thread, "id") ?? objectString(thread, "sessionId");
   if (threadId) add(threadId);
   for (const child of Object.values(record)) {
     if (Array.isArray(child)) {

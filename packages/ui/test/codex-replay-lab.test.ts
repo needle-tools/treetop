@@ -4,12 +4,38 @@ import {
   codexReplayMessagesUntil,
   createCodexReplayPlayback,
   filterCodexReplayTextForThread,
+  filterCodexReplaySessions,
+  summarizeCodexReplaySessions,
   parseCodexReplayTextAsync,
   parseCodexReplayText,
   setCodexReplayPlaybackStep,
 } from "../src/codex-replay-lab";
 
 describe("Codex replay lab parser", () => {
+  test("summarizes and filters session coverage", () => {
+    const sessions = [
+      { threadId: "both", hasTranscript: true },
+      { threadId: "rpc-only", hasTranscript: false },
+      { threadId: "also-both", hasTranscript: true },
+    ];
+
+    expect(summarizeCodexReplaySessions(sessions)).toEqual({
+      total: 3,
+      rpc: 3,
+      transcript: 2,
+      both: 2,
+      rpcOnly: 1,
+    });
+    expect(
+      filterCodexReplaySessions(sessions, "both").map((item) => item.threadId),
+    ).toEqual(["both", "also-both"]);
+    expect(
+      filterCodexReplaySessions(sessions, "rpc-only").map(
+        (item) => item.threadId,
+      ),
+    ).toEqual(["rpc-only"]);
+  });
+
   test("replays captured app-server JSON-RPC frames through the live visual shape", () => {
     const replay = parseCodexReplayText(
       JSON.stringify({
@@ -219,7 +245,9 @@ describe("Codex replay lab parser", () => {
       ],
     });
 
-    const filtered = JSON.parse(filterCodexReplayTextForThread(text, "thread-b"));
+    const filtered = JSON.parse(
+      filterCodexReplayTextForThread(text, "thread-b"),
+    );
 
     expect(filtered.events).toHaveLength(1);
     expect(filtered.events[0].message.params.threadId).toBe("thread-b");

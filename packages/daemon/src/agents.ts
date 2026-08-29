@@ -720,7 +720,7 @@ const CODEX_TAIL_BYTES = 64 * 1024;
 const CODEX_SCAN_CONCURRENCY = 8;
 const codexScanLimit = createLimiter(CODEX_SCAN_CONCURRENCY);
 
-interface CodexSessionOverview {
+export interface CodexSessionOverview {
   meta: { cwd?: string; id?: string };
   usage: CodexTokenUsage;
   firstUserMessage?: string;
@@ -895,7 +895,7 @@ function ingestCodexOverviewLine(
   }
 }
 
-async function readCodexSessionOverview(
+export async function readCodexSessionOverview(
   path: string,
   fileSize: number,
 ): Promise<CodexSessionOverview> {
