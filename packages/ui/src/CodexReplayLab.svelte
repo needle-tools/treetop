@@ -1,8 +1,9 @@
 <script lang="ts">
-  import { onDestroy } from "svelte";
+  import { onDestroy, onMount } from "svelte";
   import VisualTranscript from "./VisualTranscript.svelte";
   import {
     createCodexReplayPlayback,
+    filterCodexReplayTextForThread,
     parseCodexReplayTextAsync,
     setCodexReplayPlaybackStep,
     type CodexReplayPlaybackState,
@@ -23,13 +24,25 @@
   let loadingTotal: number | undefined;
   let loadRequestId = 0;
   let messagesEl: HTMLElement | null = null;
+  let transcriptMessagesEl: HTMLElement | null = null;
   let openWorkFoldoutKeys = new Set<string>();
   let openWorkEntryKeys = new Set<string>();
   let expandedThinkingWorkKeys = new Set<string>();
+  let transcriptOpenWorkFoldoutKeys = new Set<string>();
+  let transcriptOpenWorkEntryKeys = new Set<string>();
+  let transcriptExpandedThinkingWorkKeys = new Set<string>();
+  let transcriptReplay: ParsedCodexReplay | null = null;
+  let transcriptPlayback: CodexReplayPlaybackState | null = null;
+  let transcriptFileName = "";
+  let recordings: RecordingIndexEntry[] = [];
+  let recordingsLoading = false;
+  let recordingsError = "";
+  let selectedRecordingKey = "";
 
   $: stepCount = replay?.steps.length ?? 0;
   $: clampedStepIndex = playback?.stepIndex ?? 0;
   $: items = playback?.items ?? [];
+  $: transcriptItems = transcriptPlayback?.items ?? [];
   $: active = !!replay && replay.mode === "rpc" && clampedStepIndex < stepCount;
   $: currentStep = replay?.steps[clampedStepIndex - 1];
   $: renderedMessageCount = playback?.renderedMessageCount ?? 0;
@@ -64,6 +77,10 @@
       if (requestId !== loadRequestId) return;
       replay = parsed;
       playback = createCodexReplayPlayback(replay);
+      transcriptReplay = null;
+      transcriptPlayback = null;
+      transcriptFileName = "";
+      selectedRecordingKey = "";
       fileName = name;
       stepIndex = playback.stepIndex;
       scrubStepIndex = playback.stepIndex;
@@ -71,6 +88,94 @@
       openWorkFoldoutKeys = new Set();
       openWorkEntryKeys = new Set();
       expandedThinkingWorkKeys = new Set();
+    } catch (err) {
+      if (requestId !== loadRequestId) return;
+      parseError = err instanceof Error ? err.message : String(err);
+    } finally {
+      if (requestId === loadRequestId) {
+        loading = false;
+        loadingLabel = "";
+      }
+    }
+  }
+
+  async function loadReplayComparison(
+    recordingText: string,
+    recordingName: string,
+    transcriptText: string | undefined,
+    transcriptName: string | undefined,
+  ): Promise<void> {
+    await loadReplayText(recordingText, recordingName);
+    if (!replay || !transcriptText) return;
+    const parsedTranscript = await parseCodexReplayTextAsync(transcriptText);
+    transcriptReplay = parsedTranscript;
+    transcriptPlayback = createCodexReplayPlayback(parsedTranscript, {
+      stepIndex: parsedTranscript.steps.length,
+    });
+    transcriptFileName = transcriptName ?? "Matching transcript";
+    transcriptOpenWorkFoldoutKeys = new Set();
+    transcriptOpenWorkEntryKeys = new Set();
+    transcriptExpandedThinkingWorkKeys = new Set();
+  }
+
+  async function fetchRecordings(): Promise<void> {
+    recordingsLoading = true;
+    recordingsError = "";
+    try {
+      const res = await fetch("/api/codex-app/recordings");
+      const body = (await res.json().catch(() => null)) as
+        | { ok?: boolean; recordings?: RecordingIndexEntry[]; error?: string }
+        | null;
+      if (!res.ok || !body?.ok) {
+        throw new Error(body?.error ?? `HTTP ${res.status}`);
+      }
+      recordings = body.recordings ?? [];
+    } catch (err) {
+      recordingsError = err instanceof Error ? err.message : String(err);
+    } finally {
+      recordingsLoading = false;
+    }
+  }
+
+  async function loadRecording(
+    entry: RecordingIndexEntry,
+    transcript?: TranscriptRef,
+  ): Promise<void> {
+    const requestId = ++loadRequestId;
+    loading = true;
+    loadingLabel = "Loading recording";
+    loadingParsed = 0;
+    loadingTotal = undefined;
+    selectedRecordingKey = recordingSelectionKey(entry, transcript);
+    parseError = "";
+    try {
+      const params = new URLSearchParams({ path: entry.path });
+      if (transcript?.path) params.set("transcriptPath", transcript.path);
+      const res = await fetch(
+        `/api/codex-app/recordings/read?${params.toString()}`,
+      );
+      const body = (await res.json().catch(() => null)) as
+        | RecordingReadResponse
+        | null;
+      if (!res.ok || !body?.ok) {
+        throw new Error(body?.error ?? `HTTP ${res.status}`);
+      }
+      if (requestId !== loadRequestId) return;
+      const matchedTranscript =
+        transcript?.threadId
+          ? body.transcripts.find((item) => item.threadId === transcript.threadId)
+          : body.transcripts[0];
+      const recordingText =
+        matchedTranscript?.threadId
+          ? filterCodexReplayTextForThread(body.text, matchedTranscript.threadId)
+          : body.text;
+      await loadReplayComparison(
+        recordingText,
+        body.recording.name,
+        matchedTranscript?.text,
+        matchedTranscript?.name,
+      );
+      selectedRecordingKey = recordingSelectionKey(entry, transcript);
     } catch (err) {
       if (requestId !== loadRequestId) return;
       parseError = err instanceof Error ? err.message : String(err);
@@ -97,6 +202,10 @@
     scrubStepIndex = 0;
     playing = false;
     parseError = "";
+    transcriptReplay = null;
+    transcriptPlayback = null;
+    transcriptFileName = "";
+    selectedRecordingKey = "";
     loading = false;
     loadingLabel = "";
     loadingParsed = 0;
@@ -104,6 +213,9 @@
     openWorkFoldoutKeys = new Set();
     openWorkEntryKeys = new Set();
     expandedThinkingWorkKeys = new Set();
+    transcriptOpenWorkFoldoutKeys = new Set();
+    transcriptOpenWorkEntryKeys = new Set();
+    transcriptExpandedThinkingWorkKeys = new Set();
   }
 
   function onDrop(e: DragEvent): void {
@@ -153,6 +265,43 @@
   onDestroy(() => {
     if (playTimer) clearInterval(playTimer);
   });
+
+  onMount(() => {
+    void fetchRecordings();
+  });
+
+  interface TranscriptRef {
+    threadId: string;
+    path: string;
+    name: string;
+    mtimeMs: number;
+    size: number;
+    text?: string;
+  }
+
+  interface RecordingIndexEntry {
+    path: string;
+    name: string;
+    mtimeMs: number;
+    size: number;
+    threadIds: string[];
+    transcriptPaths: TranscriptRef[];
+  }
+
+  interface RecordingReadResponse {
+    ok: boolean;
+    recording: RecordingIndexEntry;
+    text: string;
+    transcripts: Array<TranscriptRef & { text: string }>;
+    error?: string;
+  }
+
+  function recordingSelectionKey(
+    entry: RecordingIndexEntry,
+    transcript?: TranscriptRef,
+  ): string {
+    return transcript ? `${entry.path}::${transcript.threadId}` : entry.path;
+  }
 </script>
 
 <svelte:window on:dragover|preventDefault on:drop={onDrop} />
@@ -190,59 +339,132 @@
     </div>
   </header>
 
-  {#if loading}
-    <div class="replay-drop replay-loading" role="status" aria-live="polite">
-      <strong>{loadingLabel || "Loading replay"}</strong>
-      {#if fileName}<span>{fileName}</span>{/if}
-      {#if loadingPercent !== undefined}
-        <progress max="100" value={loadingPercent}></progress>
-        <span>{loadingPercent}%</span>
+  <div class="replay-workspace">
+    <aside class="replay-browser" aria-label="Recorded Codex app-server sessions">
+      <div class="replay-browser-title">
+        <strong>Recordings</strong>
+        <button type="button" on:click={fetchRecordings} disabled={recordingsLoading}>
+          Refresh
+        </button>
+      </div>
+      {#if recordingsLoading}
+        <span class="replay-browser-muted">Loading recordings...</span>
+      {:else if recordingsError}
+        <span class="replay-browser-error">{recordingsError}</span>
+      {:else if !recordings.length}
+        <span class="replay-browser-muted">No recordings found.</span>
       {:else}
-        <progress></progress>
+        <div class="replay-recording-list">
+          {#each recordings as entry (entry.path)}
+            <button type="button" on:click={() => loadRecording(entry)}>
+              <span class="replay-recording-name">{entry.name}</span>
+              <span>{entry.threadIds[0] ?? "no thread id"}</span>
+              <span>
+                {entry.transcriptPaths.length
+                  ? `${entry.transcriptPaths.length} transcript${entry.transcriptPaths.length === 1 ? "" : "s"}`
+                  : "no transcript"}
+              </span>
+            </button>
+            {#each entry.transcriptPaths as transcript (transcript.path)}
+              <button
+                type="button"
+                class="replay-transcript-option"
+                class:selected={selectedRecordingKey === recordingSelectionKey(entry, transcript)}
+                on:click={() => loadRecording(entry, transcript)}
+              >
+                <span class="replay-recording-name">{transcript.name}</span>
+                <span>{transcript.threadId}</span>
+              </button>
+            {/each}
+          {/each}
+        </div>
       {/if}
-    </div>
-  {:else if !replay}
-    <div
-      class="replay-drop"
-      role="region"
-      aria-label="Drop Codex replay or transcript"
-      on:dragover|preventDefault
-      on:drop={onDrop}
-    >
-      <strong>Drop replay JSON or JSONL here</strong>
-      <span>RPC frames, normalized events, and Codex session JSONL work.</span>
-      {#if parseError}<small>{parseError}</small>{/if}
-    </div>
-  {:else}
-    <div class="replay-stage">
-      <div class="replay-stage-meta">
-        <strong>{fileName}</strong>
-        <span>{clampedStepIndex} / {stepCount} steps</span>
-        {#if totalMessageCount > renderedMessageCount}
-          <span>showing latest {renderedMessageCount} / {totalMessageCount} messages</span>
-        {/if}
-        <span>{replay.mode === "transcript" ? "Transcript" : "RPC replay"}</span
+    </aside>
+
+    <main class="replay-main">
+      {#if loading}
+        <div class="replay-drop replay-loading" role="status" aria-live="polite">
+          <strong>{loadingLabel || "Loading replay"}</strong>
+          {#if fileName}<span>{fileName}</span>{/if}
+          {#if loadingPercent !== undefined}
+            <progress max="100" value={loadingPercent}></progress>
+            <span>{loadingPercent}%</span>
+          {:else}
+            <progress></progress>
+          {/if}
+        </div>
+      {:else if !replay}
+        <div
+          class="replay-drop"
+          role="region"
+          aria-label="Drop Codex replay or transcript"
+          on:dragover|preventDefault
+          on:drop={onDrop}
         >
-        {#if currentStep}<span>{currentStep.label}</span>{/if}
-        {#if replay.warnings.length}
-          <span>{replay.warnings.length} skipped rows</span>
-        {/if}
-      </div>
-      <div class="replay-transcript" bind:this={messagesEl}>
-        <VisualTranscript
-          agent="codex"
-          daemonId={undefined}
-          {items}
-          transcriptSurface="read"
-          {active}
-          {messagesEl}
-          sessionCwd=""
-          {openWorkFoldoutKeys}
-          {openWorkEntryKeys}
-          {expandedThinkingWorkKeys}
-        />
-      </div>
-      <div class="replay-timeline">
+          <strong>Drop replay JSON or JSONL here</strong>
+          <span>RPC frames, normalized events, and Codex session JSONL work.</span>
+          {#if parseError}<small>{parseError}</small>{/if}
+        </div>
+      {:else}
+        <div class="replay-stage" class:has-comparison={!!transcriptReplay}>
+          <div class="replay-compare">
+            <section class="replay-pane">
+              <div class="replay-stage-meta">
+                <strong>{fileName}</strong>
+                <span>{clampedStepIndex} / {stepCount} steps</span>
+                {#if totalMessageCount > renderedMessageCount}
+                  <span>showing latest {renderedMessageCount} / {totalMessageCount} messages</span>
+                {/if}
+                <span>{replay.mode === "transcript" ? "Transcript" : "RPC replay"}</span>
+                {#if currentStep}<span>{currentStep.label}</span>{/if}
+                {#if replay.warnings.length}
+                  <span>{replay.warnings.length} skipped rows</span>
+                {/if}
+              </div>
+              <div class="replay-transcript" bind:this={messagesEl}>
+                <VisualTranscript
+                  agent="codex"
+                  daemonId={undefined}
+                  {items}
+                  transcriptSurface="read"
+                  {active}
+                  {messagesEl}
+                  sessionCwd=""
+                  {openWorkFoldoutKeys}
+                  {openWorkEntryKeys}
+                  {expandedThinkingWorkKeys}
+                />
+              </div>
+            </section>
+
+            {#if transcriptReplay}
+              <section class="replay-pane">
+                <div class="replay-stage-meta">
+                  <strong>{transcriptFileName}</strong>
+                  <span>{transcriptReplay.steps.length} steps</span>
+                  <span>Transcript</span>
+                  {#if transcriptReplay.warnings.length}
+                    <span>{transcriptReplay.warnings.length} skipped rows</span>
+                  {/if}
+                </div>
+                <div class="replay-transcript" bind:this={transcriptMessagesEl}>
+                  <VisualTranscript
+                    agent="codex"
+                    daemonId={undefined}
+                    items={transcriptItems}
+                    transcriptSurface="read"
+                    active={false}
+                    messagesEl={transcriptMessagesEl}
+                    sessionCwd=""
+                    openWorkFoldoutKeys={transcriptOpenWorkFoldoutKeys}
+                    openWorkEntryKeys={transcriptOpenWorkEntryKeys}
+                    expandedThinkingWorkKeys={transcriptExpandedThinkingWorkKeys}
+                  />
+                </div>
+              </section>
+            {/if}
+          </div>
+          <div class="replay-timeline">
         <div class="replay-step-buttons" aria-label="Replay steps">
           <button
             class="replay-step"
@@ -293,7 +515,9 @@
         <span>{scrubStepIndex}/{stepCount}</span>
       </div>
     </div>
-  {/if}
+      {/if}
+    </main>
+  </div>
 </section>
 
 <style>
@@ -383,6 +607,105 @@
     color: var(--danger, #ff8f8f);
   }
 
+  .replay-workspace {
+    min-height: 0;
+    display: grid;
+    grid-template-columns: 300px minmax(0, 1fr);
+    gap: 14px;
+    overflow: hidden;
+  }
+
+  .replay-browser,
+  .replay-main {
+    min-height: 0;
+    overflow: hidden;
+  }
+
+  .replay-browser {
+    display: grid;
+    grid-template-rows: auto 1fr;
+    border: 1px solid var(--border, #303030);
+    border-radius: 12px;
+    background: var(--panel-bg, #181818);
+  }
+
+  .replay-browser-title {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    padding: 10px 12px;
+    border-bottom: 1px solid var(--border, #303030);
+  }
+
+  .replay-browser-title button {
+    min-height: 28px;
+    padding: 0 10px;
+    border: 1px solid var(--border, #3a3a3a);
+    border-radius: 999px;
+    color: inherit;
+    background: var(--button-bg, #252525);
+    font: inherit;
+    font-size: 12px;
+  }
+
+  .replay-recording-list {
+    min-height: 0;
+    overflow: auto;
+    padding: 8px;
+  }
+
+  .replay-recording-list button {
+    width: 100%;
+    display: grid;
+    gap: 3px;
+    margin: 0 0 4px;
+    padding: 9px 10px;
+    border: 1px solid transparent;
+    border-radius: 8px;
+    color: inherit;
+    background: transparent;
+    text-align: left;
+    font: inherit;
+    cursor: pointer;
+  }
+
+  .replay-recording-list button:hover,
+  .replay-recording-list button.selected {
+    background: color-mix(in srgb, var(--accent, #9ad45f), transparent 88%);
+    border-color: color-mix(in srgb, var(--accent, #9ad45f), transparent 55%);
+  }
+
+  .replay-recording-list button.replay-transcript-option {
+    margin-left: 14px;
+    width: calc(100% - 14px);
+    padding-left: 12px;
+    border-left-color: var(--border, #303030);
+  }
+
+  .replay-recording-list button span:not(.replay-recording-name),
+  .replay-browser-muted,
+  .replay-browser-error {
+    color: var(--muted, #999);
+    font-size: 12px;
+  }
+
+  .replay-recording-name {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-weight: 700;
+  }
+
+  .replay-browser-muted,
+  .replay-browser-error {
+    padding: 12px;
+  }
+
+  .replay-browser-error {
+    color: var(--danger, #ff8f8f);
+  }
+
   .replay-loading progress {
     width: min(460px, 62vw);
     accent-color: var(--accent, #9ad45f);
@@ -392,11 +715,34 @@
     min-height: 0;
     height: 100%;
     display: grid;
-    grid-template-rows: auto 1fr auto;
+    grid-template-rows: 1fr auto;
     border: 1px solid var(--border, #303030);
     border-radius: 12px;
     overflow: hidden;
     background: var(--panel-bg, #181818);
+  }
+
+  .replay-compare {
+    min-height: 0;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    overflow: hidden;
+  }
+
+  .has-comparison .replay-compare {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  }
+
+  .replay-pane {
+    min-width: 0;
+    min-height: 0;
+    display: grid;
+    grid-template-rows: auto 1fr;
+    overflow: hidden;
+  }
+
+  .replay-pane + .replay-pane {
+    border-left: 1px solid var(--border, #303030);
   }
 
   .replay-stage-meta {
