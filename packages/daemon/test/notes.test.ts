@@ -230,6 +230,79 @@ describe("NotesStore", () => {
     expect(all[0]?.body).toBe("persist me");
   });
 
+  test("create, update, and remove keep versioned note backups", async () => {
+    const path = await tempDir();
+    const store = await NotesStore.open(path);
+    const note = await store.create({ id: "important", body: "first" });
+    await store.update(note.id, { body: "second" });
+    await store.remove(note.id);
+
+    const backupDir = join(
+      path,
+      ".supergit",
+      "backups",
+      "notes",
+      note.id,
+      "latest",
+    );
+    const versions = await Promise.all(
+      (await readdir(backupDir)).map((name) =>
+        readFile(join(backupDir, name), "utf-8").then(parseNoteFile),
+      ),
+    );
+    expect(versions.map((version) => version.body)).toContain("first");
+    expect(versions.map((version) => version.body)).toContain("second");
+  });
+
+  test("the first edit backs up a note that predates note versioning", async () => {
+    const path = await tempDir();
+    await mkdir(join(path, "notes"), { recursive: true });
+    await writeFile(
+      join(path, "notes", "important.md"),
+      serializeNoteFile({
+        id: "important",
+        anchors: [],
+        tags: [],
+        createdAt: "2026-08-01T10:00:00.000Z",
+        updatedAt: "2026-08-01T10:00:00.000Z",
+        body: "irreplaceable original",
+      }),
+    );
+    const store = await NotesStore.open(path);
+
+    await store.update("important", { body: "edited" });
+
+    const latestDir = join(
+      path,
+      ".supergit",
+      "backups",
+      "notes",
+      "important",
+      "latest",
+    );
+    const versions = await Promise.all(
+      (await readdir(latestDir)).map((name) =>
+        readFile(join(latestDir, name), "utf-8").then(parseNoteFile),
+      ),
+    );
+    expect(versions.map((version) => version.body)).toContain(
+      "irreplaceable original",
+    );
+    expect(versions.map((version) => version.body)).toContain("edited");
+  });
+
+  test("get and list recover a corrupt note from its newest valid backup", async () => {
+    const path = await tempDir();
+    const store = await NotesStore.open(path);
+    const note = await store.create({ id: "important", body: "preserved" });
+    await writeFile(join(path, "notes", `${note.id}.md`), "truncated");
+
+    expect((await store.get(note.id))?.body).toBe("preserved");
+    expect((await store.list()).map((item) => item.body)).toContain(
+      "preserved",
+    );
+  });
+
   test("create lazily creates the notes/ directory if missing", async () => {
     const path = await tempDir();
     // open does not require the dir to exist; create makes it

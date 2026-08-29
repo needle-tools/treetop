@@ -188,11 +188,15 @@
     dockSessionHiddenAsForeign,
     openSessionRenderKey,
     rememberedSessionSurface,
+    codexSessionDefaults,
+    migrateCodexSessionSettings,
+    migrateOpenSessionSurfaces,
     reconcileOpenSessionsWithSurfacePreferences,
     sessionMatchesKnownKeys,
     sessionSurfacePreference,
     sessionSurfaceKeys,
     setSessionMode,
+    setSessionSurface,
     setSessionAttachTermId,
     showVisibleWorktree,
     stampDiscoveredSessionIdWithDetail,
@@ -2787,6 +2791,9 @@
       codexModel?: string;
       codexEffort?: string;
       codexServiceTier?: string;
+      codexSandbox?: string;
+      codexApproval?: string;
+      codexSummary?: string;
     },
   ) {
     const list = openSessionsByWt[wtPath];
@@ -2813,6 +2820,15 @@
         : {}),
       ...(patch.codexServiceTier !== undefined
         ? { codexServiceTier: patch.codexServiceTier }
+        : {}),
+      ...(patch.codexSandbox !== undefined
+        ? { codexSandbox: patch.codexSandbox }
+        : {}),
+      ...(patch.codexApproval !== undefined
+        ? { codexApproval: patch.codexApproval }
+        : {}),
+      ...(patch.codexSummary !== undefined
+        ? { codexSummary: patch.codexSummary }
         : {}),
     };
     openSessionsByWt = { ...openSessionsByWt, [wtPath]: next };
@@ -3758,6 +3774,7 @@
     getDaemonKV(),
     "supergit:openSessions",
   );
+  const CODEX_TURN_SETTINGS_KEY = "supergit:codexApp:turnSettings";
   const sessionSurfaceStore = new SessionSurfaceStore(
     getDaemonKV(),
     "supergit:sessionSurfaces",
@@ -3774,6 +3791,8 @@
     for (const key of keys) next[key] = surface;
     sessionSurfaces = next;
     sessionSurfaceStore.save(next);
+    const embedded = setSessionSurface(openSessionsByWt, s.source, surface);
+    if (embedded !== openSessionsByWt) openSessionsByWt = embedded;
   }
 
   function transcriptSurfaceForSession(s: OpenSession): SessionSurface {
@@ -3947,29 +3966,34 @@
   }
 
   function restoreOpenSessions() {
-    openSessionsByWt = reconcileOpenSessionsWithSurfacePreferences(
+    const withCodexSettings = migrateCodexSessionSettings(
       openSessionsPersistence.load(),
+      codexSessionDefaults(getDaemonKV().getItem(CODEX_TURN_SETTINGS_KEY)),
+    );
+    const migrated = migrateOpenSessionSurfaces(
+      withCodexSettings,
       sessionSurfaces,
     );
-    let seeded = false;
-    const nextSurfaces = { ...sessionSurfaces };
-    for (const sessions of Object.values(openSessionsByWt)) {
-      for (const s of sessions) {
-        if (s.mode !== "terminal") continue;
-        for (const key of sessionSurfaceKeys(s)) {
-          if (nextSurfaces[key]) continue;
-          nextSurfaces[key] = "terminal";
-          seeded = true;
-        }
-      }
-    }
-    if (seeded) {
-      sessionSurfaces = nextSurfaces;
-      sessionSurfaceStore.save(nextSurfaces);
-    }
+    if (migrated.surfaces !== sessionSurfaces)
+      sessionSurfaceStore.save(migrated.surfaces);
+    sessionSurfaces = migrated.surfaces;
+    openSessionsByWt = reconcileOpenSessionsWithSurfacePreferences(
+      migrated.byWt,
+      migrated.surfaces,
+    );
     sessionsHydrated = true;
   }
-  $: if (sessionsHydrated) openSessionsPersistence.save(openSessionsByWt);
+  $: if (sessionsHydrated) {
+    const withCodexSettings = migrateCodexSessionSettings(
+      openSessionsByWt,
+      codexSessionDefaults(getDaemonKV().getItem(CODEX_TURN_SETTINGS_KEY)),
+    );
+    if (withCodexSettings !== openSessionsByWt) {
+      openSessionsByWt = withCodexSettings;
+    } else {
+      openSessionsPersistence.save(openSessionsByWt);
+    }
+  }
 
   function restoreVisibleWorktrees() {
     visibleWorktreesByRepo = visibleWorktreesPersistence.load();
@@ -12280,7 +12304,7 @@
                                   ] ?? 0}
                                   resumeSessionId={s.resumeSessionId ??
                                     agentMeta?.sessionId}
-                                  transcriptSource={s.transcriptSource}
+                                  transcriptSource={effectiveSessionForView.transcriptSource}
                                   visualAppEnabled={isExplicitVisualSurface({
                                     ...s,
                                     resumeSessionId:
@@ -12303,6 +12327,9 @@
                                   codexModelOverride={s.codexModel}
                                   codexEffortOverride={s.codexEffort}
                                   codexServiceTierOverride={s.codexServiceTier}
+                                  codexSandboxOverride={s.codexSandbox}
+                                  codexApprovalOverride={s.codexApproval}
+                                  codexSummaryOverride={s.codexSummary}
                                   onSetClaudeModel={(m) =>
                                     setAgentSessionFlag(wt.path, s.source, {
                                       claudeModel: m,
@@ -12322,6 +12349,18 @@
                                   onSetCodexServiceTier={(tier) =>
                                     setAgentSessionFlag(wt.path, s.source, {
                                       codexServiceTier: tier,
+                                    })}
+                                  onSetCodexSandbox={(sandbox) =>
+                                    setAgentSessionFlag(wt.path, s.source, {
+                                      codexSandbox: sandbox,
+                                    })}
+                                  onSetCodexApproval={(approval) =>
+                                    setAgentSessionFlag(wt.path, s.source, {
+                                      codexApproval: approval,
+                                    })}
+                                  onSetCodexSummary={(summary) =>
+                                    setAgentSessionFlag(wt.path, s.source, {
+                                      codexSummary: summary,
                                     })}
                                   attachTermId={s.attachTermId}
                                   spawnReady={initialTerminalSnapshotReady}

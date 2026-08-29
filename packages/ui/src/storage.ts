@@ -268,6 +268,11 @@ export interface PersistedSession {
    *  tier / speed choice. Visual sessions pass it to `turn/start`;
    *  terminal sessions pass it via `-c service_tier=...`. */
   codexServiceTier?: string;
+  /** Per-session Codex execution policy. These must travel with the session;
+   *  a global fallback cannot represent differently-trusted worktrees. */
+  codexSandbox?: string;
+  codexApproval?: string;
+  codexSummary?: string;
   /** Optional. Stamped onto `__new__:claude:` / `__new__:codex:` entries
    *  the first time the daemon's activity-tail surfaces a real agent-side
    *  session id for that (cwd, agent). On a subsequent mount (notably
@@ -290,6 +295,10 @@ export interface PersistedSession {
    *  land on the same session file). Once `resumeSessionId` is stamped,
    *  this becomes ignored — the resume path takes over. */
   preassignedSessionId?: string;
+  /** The user's Visual/Terminal display choice while this session is open.
+   *  It is embedded here so an open-session backup is self-contained. The
+   *  SessionSurfaceStore alias map remains useful after a session is closed. */
+  surface?: SessionSurface;
   /** Optional. When `"terminal"`, the mounted SessionView should own a
    *  live `claude --resume` / `codex resume` PTY. This is deliberately
    *  separate from the visual-vs-terminal transcript preference stored in
@@ -308,6 +317,86 @@ export interface PersistedSession {
    *  source canonicalization in the current page. Deliberately not restored
    *  by `sanitizeSession`; reloads should key by the persisted source. */
   renderKey?: string;
+}
+
+/** Parse the app-wide Codex defaults into the names persisted on a session.
+ * Access and summary defaults are explicit so a new session never remains
+ * coupled to a later global-settings change. */
+export function codexSessionDefaults(
+  raw: string | null,
+): Pick<
+  PersistedSession,
+  | "codexModel"
+  | "codexEffort"
+  | "codexServiceTier"
+  | "codexSandbox"
+  | "codexApproval"
+  | "codexSummary"
+> {
+  let parsed: Record<string, unknown> = {};
+  if (raw) {
+    try {
+      const value = JSON.parse(raw);
+      if (typeof value === "object" && value !== null && !Array.isArray(value)) {
+        parsed = value as Record<string, unknown>;
+      }
+    } catch {}
+  }
+  const stringValue = (key: string): string | undefined => {
+    const value = parsed[key];
+    return typeof value === "string" && value.length > 0 ? value : undefined;
+  };
+  return {
+    codexModel: stringValue("model"),
+    codexEffort: stringValue("effort"),
+    codexServiceTier: stringValue("serviceTier"),
+    codexSandbox: stringValue("sandbox") ?? "workspaceWrite",
+    codexApproval: stringValue("approval") ?? "on-request",
+    codexSummary: stringValue("summary") ?? "auto",
+  };
+}
+
+/** Freeze the effective defaults into legacy Codex records exactly once.
+ * Transcript-recovered or user-selected fields always win. */
+export function migrateCodexSessionSettings(
+  byWt: Record<string, PersistedSession[]>,
+  defaults: ReturnType<typeof codexSessionDefaults>,
+): Record<string, PersistedSession[]> {
+  let nextByWt = byWt;
+  for (const [wtPath, sessions] of Object.entries(byWt)) {
+    let nextSessions = sessions;
+    for (let i = 0; i < sessions.length; i++) {
+      const session = sessions[i]!;
+      if (session.agent !== "codex") continue;
+      const next = {
+        ...session,
+        codexModel: session.codexModel ?? defaults.codexModel,
+        codexEffort: session.codexEffort ?? defaults.codexEffort,
+        codexServiceTier:
+          session.codexServiceTier ?? defaults.codexServiceTier,
+        codexSandbox: session.codexSandbox ?? defaults.codexSandbox,
+        codexApproval: session.codexApproval ?? defaults.codexApproval,
+        codexSummary: session.codexSummary ?? defaults.codexSummary,
+      };
+      if (
+        next.codexModel === session.codexModel &&
+        next.codexEffort === session.codexEffort &&
+        next.codexServiceTier === session.codexServiceTier &&
+        next.codexSandbox === session.codexSandbox &&
+        next.codexApproval === session.codexApproval &&
+        next.codexSummary === session.codexSummary
+      ) {
+        continue;
+      }
+      if (nextSessions === sessions) nextSessions = sessions.slice();
+      nextSessions[i] = next;
+    }
+    if (nextSessions !== sessions) {
+      if (nextByWt === byWt) nextByWt = { ...byWt };
+      nextByWt[wtPath] = nextSessions;
+    }
+  }
+  return nextByWt;
 }
 
 export function sessionSurfaceKeys(session: {
@@ -349,9 +438,13 @@ export function rememberedSessionSurface(
     transcriptSource?: string;
     resumeSessionId?: string;
     sessionId?: string;
+    surface?: SessionSurface;
   },
   surfaces: Record<string, SessionSurface>,
 ): SessionSurface | undefined {
+  if (session.surface === "read" || session.surface === "terminal") {
+    return session.surface;
+  }
   for (const key of sessionSurfaceKeys(session)) {
     const remembered = surfaces[key];
     if (remembered) return remembered;
@@ -374,11 +467,13 @@ export function sessionSurfacePreference(
     resumeSessionId?: string;
     sessionId?: string;
     mode?: "terminal";
+    surface?: SessionSurface;
   },
   surfaces: Record<string, SessionSurface>,
 ): SessionSurface {
   return (
-    rememberedSessionSurface(session, surfaces) ?? defaultSessionSurface(session)
+    rememberedSessionSurface(session, surfaces) ??
+    defaultSessionSurface(session)
   );
 }
 
@@ -390,6 +485,7 @@ export function applySessionSurfacePreference<
     resumeSessionId?: string;
     sessionId?: string;
     transcriptSource?: string;
+    surface?: SessionSurface;
   },
 >(session: T, surfaces: Record<string, SessionSurface>): T {
   const resumeSessionId =
@@ -443,6 +539,52 @@ export function reconcileOpenSessionsWithSurfacePreferences(
   return changed ? nextByWt : byWt;
 }
 
+/** Upgrade legacy open-session records into self-contained surface state.
+ * Before `surface` was embedded, `mode: "terminal"` was the only durable
+ * discriminator: its absence meant the session was open visually. An
+ * existing alias preference wins, then every alias is synchronized so source
+ * canonicalization cannot change the choice later. */
+export function migrateOpenSessionSurfaces(
+  byWt: Record<string, PersistedSession[]>,
+  surfaces: Record<string, SessionSurface>,
+): {
+  byWt: Record<string, PersistedSession[]>;
+  surfaces: Record<string, SessionSurface>;
+} {
+  let nextByWt = byWt;
+  let nextSurfaces = surfaces;
+  for (const [wtPath, sessions] of Object.entries(byWt)) {
+    let nextSessions = sessions;
+    for (let i = 0; i < sessions.length; i++) {
+      const session = sessions[i]!;
+      if (
+        session.agent !== "claude" &&
+        session.agent !== "codex" &&
+        session.agent !== "copilot"
+      ) {
+        continue;
+      }
+      const surface =
+        rememberedSessionSurface(session, surfaces) ??
+        (session.mode === "terminal" ? "terminal" : "read");
+      if (session.surface !== surface) {
+        if (nextSessions === sessions) nextSessions = sessions.slice();
+        nextSessions[i] = { ...session, surface };
+      }
+      for (const key of sessionSurfaceKeys(session)) {
+        if (nextSurfaces[key] === surface) continue;
+        if (nextSurfaces === surfaces) nextSurfaces = { ...surfaces };
+        nextSurfaces[key] = surface;
+      }
+    }
+    if (nextSessions !== sessions) {
+      if (nextByWt === byWt) nextByWt = { ...byWt };
+      nextByWt[wtPath] = nextSessions;
+    }
+  }
+  return { byWt: nextByWt, surfaces: nextSurfaces };
+}
+
 const VALID_AGENTS: ReadonlySet<PersistedAgent> = new Set([
   "claude",
   "codex",
@@ -470,10 +612,7 @@ function sanitizeSession(item: unknown): PersistedSession | null {
   if (typeof o.resumeSessionId === "string" && o.resumeSessionId.length > 0) {
     out.resumeSessionId = o.resumeSessionId;
   }
-  if (
-    typeof o.transcriptSource === "string" &&
-    o.transcriptSource.length > 0
-  ) {
+  if (typeof o.transcriptSource === "string" && o.transcriptSource.length > 0) {
     out.transcriptSource = o.transcriptSource;
   }
   if (
@@ -481,6 +620,9 @@ function sanitizeSession(item: unknown): PersistedSession | null {
     o.preassignedSessionId.length > 0
   ) {
     out.preassignedSessionId = o.preassignedSessionId;
+  }
+  if (o.surface === "read" || o.surface === "terminal") {
+    out.surface = o.surface;
   }
   if (o.mode === "terminal") {
     out.mode = "terminal";
@@ -506,11 +648,17 @@ function sanitizeSession(item: unknown): PersistedSession | null {
   if (typeof o.codexEffort === "string" && o.codexEffort.length > 0) {
     out.codexEffort = o.codexEffort;
   }
-  if (
-    typeof o.codexServiceTier === "string" &&
-    o.codexServiceTier.length > 0
-  ) {
+  if (typeof o.codexServiceTier === "string" && o.codexServiceTier.length > 0) {
     out.codexServiceTier = o.codexServiceTier;
+  }
+  if (typeof o.codexSandbox === "string" && o.codexSandbox.length > 0) {
+    out.codexSandbox = o.codexSandbox;
+  }
+  if (typeof o.codexApproval === "string" && o.codexApproval.length > 0) {
+    out.codexApproval = o.codexApproval;
+  }
+  if (typeof o.codexSummary === "string" && o.codexSummary.length > 0) {
+    out.codexSummary = o.codexSummary;
   }
   return out;
 }
@@ -813,6 +961,9 @@ export function cmdForOpenSession(
     codexModel?: string;
     codexEffort?: string;
     codexServiceTier?: string;
+    codexSandbox?: string;
+    codexApproval?: string;
+    codexSummary?: string;
     shellCmd?: string[];
   },
   defaultShell: string,
@@ -872,6 +1023,24 @@ export function cmdForOpenSession(
         `service_tier=${JSON.stringify(s.codexServiceTier)}`,
       );
     }
+    const sandbox =
+      s.codexSandbox === "readOnly"
+        ? "read-only"
+        : s.codexSandbox === "workspaceWrite"
+          ? "workspace-write"
+          : s.codexSandbox === "dangerFullAccess"
+            ? "danger-full-access"
+            : undefined;
+    if (sandbox) codexFlags.push("--sandbox", sandbox);
+    if (s.codexApproval === "on-request" || s.codexApproval === "never") {
+      codexFlags.push("--ask-for-approval", s.codexApproval);
+    }
+    if (s.codexSummary) {
+      codexFlags.push(
+        "-c",
+        `model_reasoning_summary=${JSON.stringify(s.codexSummary)}`,
+      );
+    }
     if (sid) return ["codex", "resume", ...codexFlags, sid];
     if (s.contextFilePath) {
       return [
@@ -924,6 +1093,29 @@ export function setSessionMode(
   const next = list.slice();
   next[idx] = updated;
   return { ...byWt, [wtPath]: next };
+}
+
+/** Embed a display-surface choice in every open copy of a source. */
+export function setSessionSurface(
+  byWt: Record<string, PersistedSession[]>,
+  source: string,
+  surface: SessionSurface,
+): Record<string, PersistedSession[]> {
+  let nextByWt = byWt;
+  for (const [wtPath, sessions] of Object.entries(byWt)) {
+    let nextSessions = sessions;
+    for (let i = 0; i < sessions.length; i++) {
+      const session = sessions[i]!;
+      if (session.source !== source || session.surface === surface) continue;
+      if (nextSessions === sessions) nextSessions = sessions.slice();
+      nextSessions[i] = { ...session, surface };
+    }
+    if (nextSessions !== sessions) {
+      if (nextByWt === byWt) nextByWt = { ...byWt };
+      nextByWt[wtPath] = nextSessions;
+    }
+  }
+  return nextByWt;
 }
 
 /** Point a session's `attachTermId` at a freshly-spawned PTY so a remount
@@ -1056,7 +1248,8 @@ export function resolveTitleSource(
     session.resumeSessionId
   ) {
     const match = agents.find(
-      (a) => a.agent === session.agent && a.sessionId === session.resumeSessionId,
+      (a) =>
+        a.agent === session.agent && a.sessionId === session.resumeSessionId,
     );
     if (match) return match.source;
   }
