@@ -3,7 +3,7 @@ import type {
   VisualMediaBlock,
   VisualTokenUsage as TokenUsage,
   VisualToolBlock as MessageBlock,
-} from "./core";
+} from "./core/index.js";
 import {
   cleanVisualToolResultText,
   visualFileEditSummaryForBlock,
@@ -13,7 +13,7 @@ import {
   visualToolPreviewParts,
   visualToolPreviewText,
   visualToolRemoteHostLabel,
-} from "./tool-preview";
+} from "./tool-preview.js";
 
 interface VisualWorkEntryLike {
   message: {

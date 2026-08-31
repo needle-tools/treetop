@@ -1,5 +1,5 @@
-import type { VisualCommandSummary } from "../types";
-import { lowerCommandName, optionValue } from "./common";
+import type { VisualCommandSummary } from "../types.js";
+import { lowerCommandName, optionValue } from "./common.js";
 
 export function summarizeWorkflowCli(
   tokens: readonly string[],

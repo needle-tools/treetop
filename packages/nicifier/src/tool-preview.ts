@@ -3,16 +3,22 @@ import type {
   VisualFileEditSummary,
   VisualMediaBlock,
   VisualToolBlock as MessageBlock,
-} from "./core";
+} from "./core/index.js";
 import {
   summarizeDirectScriptCommand,
   summarizeSystemProbe,
   summarizeWorkflowCli,
   systemProbeLabel,
-} from "./core";
-import type { VisualCommandSummary, VisualToolEnvAssignment } from "./core";
+} from "./core/index.js";
+import type {
+  VisualCommandSummary,
+  VisualToolEnvAssignment,
+} from "./core/index.js";
 
-export type { VisualCommandSummary, VisualToolEnvAssignment } from "./core";
+export type {
+  VisualCommandSummary,
+  VisualToolEnvAssignment,
+} from "./core/index.js";
 
 export interface VisualToolResultText {
   title: string;

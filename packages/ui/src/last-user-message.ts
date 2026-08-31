@@ -7,7 +7,7 @@ import {
   type VisualObservedProcessOutput,
   type VisualToolPreviewContext,
   type VisualToolPreviewPart,
-} from "./visual-nicifiers";
+} from "@supergit/nicifier";
 
 export {
   cleanVisualToolResultText,
@@ -58,7 +58,7 @@ export {
   type VisualWorkArtifactChange,
   type VisualWorkOverview,
   type VisualWorkTimeOverview,
-} from "./visual-nicifiers";
+} from "@supergit/nicifier";
 
 export interface MessageBlock {
   type: string;
