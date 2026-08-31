@@ -2659,11 +2659,14 @@
                             )}
                           >
                             {@render renderWorkEntryBlocks(entry.blocks)}
-                            {#if displayEntry.pairedResult}
+                            {#each displayEntry.pairedResults ??
+                              (displayEntry.pairedResult
+                                ? [displayEntry.pairedResult]
+                                : []) as pairedResult}
                               {@render renderWorkEntryBlocks(
-                                displayEntry.pairedResult.blocks,
+                                pairedResult.blocks,
                               )}
-                            {/if}
+                            {/each}
                           </div>
                         {:else if displayEntry.kind === "marker" && displayEntry.markerBlock}
                           {@const markerBlock = displayEntry.markerBlock}
@@ -3129,11 +3132,14 @@
                                       {@render renderWorkEntryBlocks(
                                         entry.blocks,
                                       )}
-                                      {#if displayEntry.pairedResult}
+                                      {#each displayEntry.pairedResults ??
+                                        (displayEntry.pairedResult
+                                          ? [displayEntry.pairedResult]
+                                          : []) as pairedResult}
                                         {@render renderWorkEntryBlocks(
-                                          displayEntry.pairedResult.blocks,
+                                          pairedResult.blocks,
                                         )}
-                                      {/if}
+                                      {/each}
                                     </details>
                                   {:else}
                                     {#if displayEntry.pairedToolUse}
@@ -3144,11 +3150,14 @@
                                     {@render renderWorkEntryBlocks(
                                       entry.blocks,
                                     )}
-                                    {#if displayEntry.pairedResult}
+                                    {#each displayEntry.pairedResults ??
+                                      (displayEntry.pairedResult
+                                        ? [displayEntry.pairedResult]
+                                        : []) as pairedResult}
                                       {@render renderWorkEntryBlocks(
-                                        displayEntry.pairedResult.blocks,
+                                        pairedResult.blocks,
                                       )}
-                                    {/if}
+                                    {/each}
                                   {/if}
                                 </div>
                               {/if}

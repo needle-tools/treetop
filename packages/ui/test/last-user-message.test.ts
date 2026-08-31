@@ -6097,6 +6097,101 @@ describe("buildVisualWorkDisplayEntries", () => {
     expect(entries[2]?.pairedToolUse).toBe(firstToolUse);
   });
 
+  it("keeps every lifecycle result on its exact tool use id", () => {
+    const toolUse = (id: string, messageIndex: number) => ({
+      message: {
+        role: "assistant",
+        blocks: [{ type: "tool_use", text: "exec_command", toolUseId: id }],
+      },
+      blocks: [{ type: "tool_use", text: "exec_command", toolUseId: id }],
+      messageIndex,
+    });
+    const toolResult = (text: string, messageIndex: number) => ({
+      message: {
+        role: "tool",
+        blocks: [{ type: "tool_result", text, toolUseId: "a" }],
+      },
+      blocks: [{ type: "tool_result", text, toolUseId: "a" }],
+      messageIndex,
+    });
+    const firstToolUse = toolUse("a", 1);
+    const parallelToolUse = toolUse("b", 2);
+    const progressResult = toolResult("still running", 3);
+    const finalResult = toolResult("completed", 4);
+
+    const entries = buildVisualWorkDisplayEntries([
+      firstToolUse,
+      parallelToolUse,
+      progressResult,
+      finalResult,
+    ]);
+
+    const displayedResults = entries.filter(
+      (entry) => entry.entry === progressResult || entry.entry === finalResult,
+    );
+    expect(displayedResults).toHaveLength(2);
+    expect(displayedResults.map((entry) => entry.pairedToolUse)).toEqual([
+      firstToolUse,
+      firstToolUse,
+    ]);
+    const displayedFirstToolUse = entries.find(
+      (entry) => entry.entry === firstToolUse,
+    );
+    expect(displayedFirstToolUse?.pairedResults).toEqual([
+      progressResult,
+      finalResult,
+    ]);
+    expect(displayedFirstToolUse?.pairedResult).toBe(finalResult);
+    const displayedParallelToolUse = entries.find(
+      (entry) => entry.entry === parallelToolUse,
+    );
+    expect(displayedParallelToolUse?.pairedResults).toEqual([]);
+    expect(displayedParallelToolUse?.pairedResult).toBeUndefined();
+  });
+
+  it("does not guess across parallel calls for a delayed ID-less result", () => {
+    const firstToolUse = {
+      message: { role: "assistant", blocks: [{ type: "tool_use" }] },
+      blocks: [{ type: "tool_use" }],
+      messageIndex: 1,
+    };
+    const parallelToolUse = {
+      message: { role: "assistant", blocks: [{ type: "tool_use" }] },
+      blocks: [{ type: "tool_use" }],
+      messageIndex: 2,
+    };
+    const interveningNote = {
+      message: { role: "assistant", blocks: [{ type: "text", text: "work" }] },
+      blocks: [{ type: "text", text: "work" }],
+      messageIndex: 3,
+    };
+    const result = {
+      message: {
+        role: "tool",
+        blocks: [{ type: "tool_result", text: "done" }],
+      },
+      blocks: [{ type: "tool_result", text: "done" }],
+      messageIndex: 4,
+    };
+
+    const entries = buildVisualWorkDisplayEntries([
+      firstToolUse,
+      parallelToolUse,
+      interveningNote,
+      result,
+    ]);
+
+    expect(
+      entries.find((entry) => entry.entry === result)?.pairedToolUse,
+    ).toBeUndefined();
+    expect(
+      entries.find((entry) => entry.entry === firstToolUse)?.pairedResult,
+    ).toBeUndefined();
+    expect(
+      entries.find((entry) => entry.entry === parallelToolUse)?.pairedResult,
+    ).toBeUndefined();
+  });
+
   it("uses running process log reads to show live test counters", () => {
     const testToolUse = {
       message: {

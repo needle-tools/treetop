@@ -203,6 +203,7 @@ export interface VisualWorkDisplayEntry<
 > {
   kind: "entry" | "marker";
   entry: VisualWorkEntry<B, M>;
+  pairedResults?: VisualWorkEntry<B, M>[];
   pairedResult?: VisualWorkEntry<B, M>;
   pairedToolUse?: VisualWorkEntry<B, M>;
   markerBlock?: B;
@@ -1032,9 +1033,8 @@ export function buildVisualWorkDisplayEntries<
   M extends Message<B>,
 >(entries: readonly VisualWorkEntry<B, M>[]): VisualWorkDisplayEntry<B, M>[] {
   const toolUseByResult = new Map<number, VisualWorkEntry<B, M>>();
-  const resultByToolUse = new Map<number, VisualWorkEntry<B, M>>();
+  const resultsByToolUse = new Map<number, VisualWorkEntry<B, M>[]>();
   const toolUseById = new Map<string, number>();
-  const toolUseIndexes: number[] = [];
   const pairedToolUses = new Set<number>();
   const collapsedResultIndexes = new Set<number>();
   const collapsedSubagentNotificationIndexes = new Set<number>();
@@ -1042,7 +1042,6 @@ export function buildVisualWorkDisplayEntries<
   for (let index = 0; index < entries.length; index += 1) {
     const entry = entries[index]!;
     if (hasBlockType(entry, "tool_use")) {
-      toolUseIndexes.push(index);
       for (const id of blockToolUseIds(entry)) {
         if (!toolUseById.has(id)) toolUseById.set(id, index);
       }
@@ -1051,24 +1050,34 @@ export function buildVisualWorkDisplayEntries<
 
     let pairedToolUseIndex: number | undefined;
     let pairedByToolUseId = false;
-    for (const id of blockToolUseIds(entry)) {
+    const resultToolUseIds = blockToolUseIds(entry);
+    for (const id of resultToolUseIds) {
       const candidate = toolUseById.get(id);
-      if (candidate !== undefined && !pairedToolUses.has(candidate)) {
+      if (candidate !== undefined) {
         pairedToolUseIndex = candidate;
         pairedByToolUseId = true;
         break;
       }
     }
-    pairedToolUseIndex ??= toolUseIndexes.find(
-      (candidate) => !pairedToolUses.has(candidate),
-    );
+    if (resultToolUseIds.length === 0) {
+      const adjacentCandidate = index - 1;
+      if (
+        hasBlockType(entries[adjacentCandidate], "tool_use") &&
+        !pairedToolUses.has(adjacentCandidate)
+      ) {
+        pairedToolUseIndex = adjacentCandidate;
+      }
+    }
     if (pairedToolUseIndex === undefined) continue;
 
     toolUseByResult.set(index, entries[pairedToolUseIndex]!);
-    resultByToolUse.set(
-      pairedToolUseIndex,
-      withToolResultName(entry, firstToolUseName(entries[pairedToolUseIndex])),
+    const namedResult = withToolResultName(
+      entry,
+      firstToolUseName(entries[pairedToolUseIndex]),
     );
+    const pairedResults = resultsByToolUse.get(pairedToolUseIndex) ?? [];
+    pairedResults.push(namedResult);
+    resultsByToolUse.set(pairedToolUseIndex, pairedResults);
     pairedToolUses.add(pairedToolUseIndex);
     if (
       shouldCollapseToolResultPair(
@@ -1116,7 +1125,7 @@ export function buildVisualWorkDisplayEntries<
     }
     if (
       hasBlockType(entry, "tool_use") &&
-      isObservedProcessOutputPair(entry, resultByToolUse.get(index))
+      isObservedProcessOutputPair(entry, resultsByToolUse.get(index)?.at(-1))
     ) {
       continue;
     }
@@ -1127,12 +1136,16 @@ export function buildVisualWorkDisplayEntries<
       continue;
     }
     const pairedToolUse = toolUseByResult.get(index);
+    const pairedResults = hasBlockType(entry, "tool_use")
+      ? (resultsByToolUse.get(index) ?? [])
+      : undefined;
     const displayEntry: VisualWorkDisplayEntry<B, M> = {
       kind: "entry",
       entry: pairedToolUse
         ? withToolResultName(entry, firstToolUseName(pairedToolUse))
         : entry,
-      pairedResult: resultByToolUse.get(index),
+      pairedResults,
+      pairedResult: pairedResults?.at(-1),
       pairedToolUse,
       previewContext: snapshotUidLabels ? { snapshotUidLabels } : undefined,
     };
@@ -1855,13 +1868,16 @@ export function getVisualWorkDisplayEntryKey<
   const resultKey = displayEntry.pairedResult
     ? getVisualWorkEntryKey(displayEntry.pairedResult)
     : "";
+  const resultKeys = displayEntry.pairedResults
+    ?.map(getVisualWorkEntryKey)
+    .join(",");
   const toolUseKey = displayEntry.pairedToolUse
     ? getVisualWorkEntryKey(displayEntry.pairedToolUse)
     : "";
   return [
     displayEntry.kind,
     getVisualWorkEntryKey(displayEntry.entry),
-    resultKey,
+    resultKeys ?? resultKey,
     toolUseKey,
   ].join(":");
 }
