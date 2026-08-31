@@ -165,18 +165,23 @@ export async function readCodexReplaySession(
   const sessions = await listCodexReplaySessions(options);
   const session = sessions.find((entry) => entry.threadId === options.threadId);
   if (!session) throw new Error("recorded session not found");
-  const recordingParts: string[] = [];
-  for (const recording of session.recordings) {
-    recordingParts.push(
-      await readRecordingForThread(recording.path, options.threadId),
+  let recordingText = "";
+  for (const recording of session.recordings.toReversed()) {
+    const candidate = await readRecordingForThread(
+      recording.path,
+      options.threadId,
     );
+    if (!recordingContainsThreadPage(candidate, options.threadId)) continue;
+    recordingText = candidate;
+    break;
   }
+  if (!recordingText) throw new Error("recorded session has no thread page");
   const transcript = session.transcript
     ? await readReplayTranscript(session.transcript.path)
     : undefined;
   return {
     session,
-    recordingText: recordingParts.filter(Boolean).join("\n"),
+    recordingText,
     ...(transcript
       ? {
           transcriptText: transcript.text,
@@ -402,6 +407,30 @@ async function readRecordingForThread(
     if (threadIdsFromJsonLine(line).includes(threadId)) matching.push(line);
   }
   return matching.join("\n");
+}
+
+function recordingContainsThreadPage(text: string, threadId: string): boolean {
+  for (const line of text.split(/\r?\n/)) {
+    if (!line) continue;
+    try {
+      const frame = JSON.parse(line) as Record<string, unknown>;
+      const message =
+        frame.message && typeof frame.message === "object"
+          ? (frame.message as Record<string, unknown>)
+          : typeof frame.raw === "string"
+            ? (JSON.parse(frame.raw) as Record<string, unknown>)
+            : undefined;
+      const result = message?.result as Record<string, unknown> | undefined;
+      const thread = result?.thread as Record<string, unknown> | undefined;
+      const page = result?.initialTurnsPage as
+        | Record<string, unknown>
+        | undefined;
+      if (thread?.id === threadId && Array.isArray(page?.data)) return true;
+    } catch {
+      // Malformed rows are ignored by the recording index as well.
+    }
+  }
+  return false;
 }
 
 const REPLAY_TRANSCRIPT_TAIL_BYTES = 16 * 1024 * 1024;

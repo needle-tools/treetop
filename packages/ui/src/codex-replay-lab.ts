@@ -3,6 +3,9 @@ import {
   type CodexAppEvent,
   type CodexAppHistoryBlock,
   type CodexAppHistoryMessage,
+  type CodexAppSessionTransport,
+  type CodexAppThreadPage,
+  type CodexAppEventSubscriber,
   type CodexLiveNormalizeContext,
 } from "./codex-event-stream";
 import {
@@ -68,6 +71,18 @@ export interface CodexReplayParseOptions {
   onProgress?: (progress: CodexReplayParseProgress) => void;
 }
 
+export interface CodexReplaySessionFixture {
+  threadId: string;
+  cwd: string;
+  page: CodexAppThreadPage;
+  events: CodexAppEvent[];
+}
+
+export interface CodexReplaySessionTransport extends CodexAppSessionTransport {
+  readonly stepCount: number;
+  setStep(stepIndex: number): void;
+}
+
 export const DEFAULT_REPLAY_VISIBLE_MESSAGE_LIMIT = 260;
 
 export type CodexReplaySessionFilter = "all" | "both" | "rpc-only";
@@ -101,6 +116,97 @@ export function filterCodexReplaySessions<T extends { hasTranscript: boolean }>(
     return sessions.filter((session) => !session.hasTranscript);
   }
   return [...sessions];
+}
+
+export function parseCodexReplaySessionFixture(
+  text: string,
+  threadId: string,
+): CodexReplaySessionFixture {
+  const warnings: string[] = [];
+  const records = replayRecords(parseReplayRoot(text, warnings));
+  let page: CodexAppThreadPage | undefined;
+  let cwd = "";
+  let snapshotRecordIndex = -1;
+
+  for (const [index, record] of records.entries()) {
+    const frame = replayFrameFromRecord(record);
+    if (!frame || frame.direction === "client") continue;
+    const message = frame.message ?? parseRawMessage(frame.raw);
+    const result = objectRecord(message?.result);
+    const thread = objectRecord(result?.thread);
+    if (!thread || objectString(thread, "id") !== threadId) continue;
+    const initialTurnsPage = objectRecord(result?.initialTurnsPage);
+    if (!Array.isArray(initialTurnsPage?.data)) continue;
+    page = {
+      thread: { ...thread, turns: initialTurnsPage.data },
+      ...(result && "model" in result ? { model: result.model } : {}),
+      ...(typeof initialTurnsPage?.nextCursor === "string"
+        ? { nextCursor: initialTurnsPage.nextCursor }
+        : {}),
+    };
+    cwd = objectString(thread, "cwd") ?? "";
+    snapshotRecordIndex = index;
+    break;
+  }
+
+  if (!page) {
+    throw new Error(`Recording has no thread snapshot for ${threadId}`);
+  }
+
+  const events: CodexAppEvent[] = [];
+  for (const [index, record] of records.entries()) {
+    if (index <= snapshotRecordIndex) continue;
+    const fallbackSeq = index + 1;
+    for (const step of replayStepsFromRecord(record, fallbackSeq, [])) {
+      if (step.kind !== "event") continue;
+      if (step.event.threadId && step.event.threadId !== threadId) continue;
+      events.push(step.event);
+    }
+  }
+
+  return { threadId, cwd, page, events };
+}
+
+export function createCodexReplaySessionTransport(
+  fixture: CodexReplaySessionFixture,
+  initialStep = 0,
+): CodexReplaySessionTransport {
+  const subscribers = new Set<CodexAppEventSubscriber>();
+  let stepIndex = Math.min(
+    fixture.events.length,
+    Math.max(0, Math.floor(initialStep)),
+  );
+
+  return {
+    stepCount: fixture.events.length,
+    async readThread() {
+      return fixture.page;
+    },
+    subscribe(threadId, subscriber) {
+      if (threadId !== fixture.threadId) {
+        throw new Error(`Replay transport cannot subscribe to ${threadId}`);
+      }
+      subscribers.add(subscriber);
+      subscriber.onState?.("live");
+      for (const event of fixture.events.slice(0, stepIndex)) {
+        subscriber.onEvent?.(event);
+      }
+      return () => subscribers.delete(subscriber);
+    },
+    setStep(nextStepIndex) {
+      const next = Math.min(
+        fixture.events.length,
+        Math.max(0, Math.floor(nextStepIndex)),
+      );
+      if (next < stepIndex) {
+        throw new Error("Replay transport must be remounted to rewind");
+      }
+      for (const event of fixture.events.slice(stepIndex, next)) {
+        for (const subscriber of subscribers) subscriber.onEvent?.(event);
+      }
+      stepIndex = next;
+    },
+  };
 }
 
 export function parseCodexReplayText(text: string): ParsedCodexReplay {
@@ -1034,6 +1140,12 @@ function replayRecords(root: unknown): unknown[] {
     if (Array.isArray(value)) return value;
   }
   return [root];
+}
+
+function replayFrameFromRecord(record: unknown): ReplayFrame | undefined {
+  if (isReplayFrame(record)) return record;
+  const unwrapped = unwrapRecord(record);
+  return isReplayFrame(unwrapped) ? unwrapped : undefined;
 }
 
 function replayRecordArrayKey(

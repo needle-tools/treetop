@@ -243,7 +243,7 @@ describe("Codex replay recording discovery", () => {
     });
   });
 
-  test("reads exactly one selected session across all recording fragments", async () => {
+  test("reads the newest complete capture for a selected session", async () => {
     await withTempDir(async (dir) => {
       const recordingDir = join(dir, "recordings");
       const sessionsRoot = join(dir, "sessions");
@@ -282,10 +282,27 @@ describe("Codex replay recording discovery", () => {
       );
       await writeFile(
         join(recordingDir, "two.jsonl"),
-        JSON.stringify({
-          seq: 3,
-          message: { method: "turn/completed", params: { threadId: threadA } },
-        }),
+        [
+          JSON.stringify({
+            seq: 3,
+            direction: "server",
+            message: {
+              id: 4,
+              result: {
+                thread: { id: threadA, cwd: "/repo", turns: [] },
+                initialTurnsPage: { data: [] },
+              },
+            },
+          }),
+          JSON.stringify({
+            seq: 4,
+            direction: "server",
+            message: {
+              method: "turn/completed",
+              params: { threadId: threadA },
+            },
+          }),
+        ].join("\n"),
       );
 
       const payload = await readCodexReplaySession({
@@ -300,7 +317,8 @@ describe("Codex replay recording discovery", () => {
           .split("\n")
           .map(JSON.parse)
           .map((row) => row.seq),
-      ).toEqual([1, 3]);
+      ).toEqual([3, 4]);
+      expect(payload.recordingText).not.toContain('"seq":1');
       expect(payload.recordingText).not.toContain(threadB);
       expect(payload.transcriptText).toContain('"type":"compacted"');
       expect(payload.transcriptText).not.toContain("large ignored replay data");
