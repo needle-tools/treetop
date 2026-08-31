@@ -184,6 +184,7 @@ export interface NormalizedSession {
 interface CodexParseContext {
   sourcePath?: string;
   previousTotalTokenUsage?: NormalizedTokenUsage;
+  pendingWebSearchIds?: string[];
 }
 
 function emptySession(agent: AgentKind): NormalizedSession {
@@ -784,6 +785,38 @@ export function parseClaudeJsonl(text: string): NormalizedSession {
   return out;
 }
 
+/** Stateful, bounded-memory access to the production JSONL parsers for
+ * corpus audits and other streaming consumers. Parsed messages are drained
+ * after every line while per-session Codex tool/token context stays alive. */
+export function createStreamingSessionParser(
+  agent: "claude" | "codex",
+  options: { sourcePath?: string } = {},
+): {
+  ingest(line: string): NormalizedMessage[];
+  metadata(): Pick<
+    NormalizedSession,
+    "cwd" | "sessionId" | "startedAt" | "endedAt"
+  >;
+} {
+  const out = emptySession(agent);
+  const context: CodexParseContext = { sourcePath: options.sourcePath };
+  return {
+    ingest(line) {
+      if (agent === "claude") parseClaudeJsonlLine(line, out);
+      else parseCodexJsonlLine(line, out, context);
+      return out.messages.splice(0, out.messages.length);
+    },
+    metadata() {
+      return {
+        cwd: out.cwd,
+        sessionId: out.sessionId,
+        startedAt: out.startedAt,
+        endedAt: out.endedAt,
+      };
+    },
+  };
+}
+
 function codexTimestamp(obj: Record<string, unknown>): string | undefined {
   return typeof obj.timestamp === "string" ? obj.timestamp : undefined;
 }
@@ -859,7 +892,9 @@ function codexTokenUsageFromObject(
   const total =
     finiteCodexNumber(usage.total_tokens ?? usage.totalTokens) ??
     input + output;
-  if (total <= 0 && output + reasoning <= 0) return undefined;
+  if (input + cachedInput + cacheWriteInput + output + reasoning <= 0) {
+    return undefined;
+  }
   return {
     input,
     cachedInput,
@@ -1302,8 +1337,18 @@ function codexEventMarker(payload: Record<string, unknown>): string | null {
   switch (payload.type) {
     case "task_started":
       return "[Task started]";
-    case "task_complete":
+    case "task_complete": {
+      const error = payload.error;
+      if (error && typeof error === "object") {
+        const message = (error as Record<string, unknown>).message;
+        const label =
+          typeof message === "string" && message.trim()
+            ? clipText(message.trim())
+            : "Unretryable error";
+        return `[Turn failed: ${label}]`;
+      }
       return "[Task complete]";
+    }
     case "context_compacted":
       return "[Context compacted]";
     case "turn_aborted": {
@@ -1568,7 +1613,12 @@ function parseCodexJsonlLine(
       return;
     }
     if (p.type === "web_search_call") {
-      rememberCodexToolName(out, p.call_id, "web_search");
+      const explicitId =
+        typeof p.call_id === "string" ? p.call_id : undefined;
+      const pendingIds = context?.pendingWebSearchIds;
+      const toolUseId = explicitId ?? pendingIds?.shift();
+      if (explicitId && pendingIds?.[0] === explicitId) pendingIds.shift();
+      rememberCodexToolName(out, toolUseId, "web_search");
       pushSessionMessage(
         out,
         "assistant",
@@ -1580,7 +1630,7 @@ function parseCodexJsonlLine(
               status: p.status,
               action: p.action,
             }),
-            toolUseId: typeof p.call_id === "string" ? p.call_id : undefined,
+            toolUseId,
           },
         ],
         ts,
@@ -1743,6 +1793,27 @@ function parseCodexJsonlLine(
       return;
     }
     if (p.type === "web_search_end") {
+      const toolUseId =
+        typeof p.call_id === "string" ? p.call_id : undefined;
+      const nestedExecution = toolUseId?.startsWith("exec-") === true;
+      if (toolUseId && nestedExecution) {
+        rememberCodexToolName(out, toolUseId, "web_search");
+        pushSessionMessage(
+          out,
+          "assistant",
+          [
+            {
+              type: "tool_use",
+              toolName: "web_search",
+              toolInput: clipToolInput({ action: p.action, query: p.query }),
+              toolUseId,
+            },
+          ],
+          ts,
+        );
+      } else if (toolUseId && context) {
+        (context.pendingWebSearchIds ??= []).push(toolUseId);
+      }
       pushSessionMessage(
         out,
         "tool",
@@ -1751,7 +1822,7 @@ function parseCodexJsonlLine(
             type: "tool_result",
             text: clipText(codexWebSearchText(p)),
             toolName: codexToolNameForResult(out, p.call_id) ?? "web_search",
-            toolUseId: typeof p.call_id === "string" ? p.call_id : undefined,
+            toolUseId,
           },
         ],
         ts,

@@ -138,12 +138,28 @@ interface EventSourceLike {
 
 type EventSourceConstructor = new (url: string) => EventSourceLike;
 
-interface Subscriber {
+export interface CodexAppEventSubscriber {
   onEvent?: (event: CodexAppEvent) => void;
   onState?: (state: CodexEventStreamState) => void;
 }
 
-interface HubSubscriber extends Subscriber {
+export interface CodexAppThreadPage {
+  thread: unknown;
+  model?: unknown;
+  nextCursor?: unknown;
+}
+
+export interface CodexAppSessionTransport {
+  readThread(request?: {
+    threadId: string;
+    cwd: string;
+    limit: number;
+    cursor: string | null;
+  }): Promise<CodexAppThreadPage>;
+  subscribe(threadId: string, subscriber: CodexAppEventSubscriber): () => void;
+}
+
+interface HubSubscriber extends CodexAppEventSubscriber {
   threadId: string | undefined;
 }
 
@@ -403,6 +419,13 @@ export function codexLiveToolResultFromEvent(
 export function codexLiveMarkerFromEvent(
   event: CodexAppEvent,
 ): CodexLiveMarker | null {
+  const item = codexObjectField(event.params, "item");
+  if (event.method === "item/completed" && item?.type === "contextCompaction") {
+    return {
+      id: `codex-marker-${stringField(item, "id") ?? event.seq ?? "context"}`,
+      text: "[Context compacted]",
+    };
+  }
   if (
     event.method === "context_compacted" ||
     event.params.type === "context_compacted"
@@ -412,12 +435,26 @@ export function codexLiveMarkerFromEvent(
       text: "[Context compacted]",
     };
   }
+  if (event.method === "warning") {
+    const message = stringField(event.params, "message");
+    if (!message) return null;
+    return {
+      id: `codex-marker-${event.turnId ?? event.params.turnId ?? event.seq ?? "warning"}-warning-${event.seq ?? event.receivedAt}`,
+      text: `[Warning: ${message}]`,
+    };
+  }
   if (event.method !== "error") return null;
-  if (event.params.willRetry !== false) return null;
   const error = event.params.error;
   if (!error || typeof error !== "object") return null;
   const record = error as Record<string, unknown>;
   const message = stringField(record, "message");
+  if (event.params.willRetry !== false) {
+    if (!message) return null;
+    return {
+      id: `codex-marker-${event.turnId ?? event.params.turnId ?? event.seq ?? "retry"}-retry-${event.seq ?? event.receivedAt}`,
+      text: `[Retrying: ${message}]`,
+    };
+  }
   const codexErrorInfo = stringField(record, "codexErrorInfo");
   const label =
     codexErrorInfo === "contextWindowExceeded"
@@ -427,6 +464,22 @@ export function codexLiveMarkerFromEvent(
     id: `codex-marker-${event.turnId ?? event.params.turnId ?? event.seq ?? "error"}`,
     text: `[Turn failed: ${label}]`,
   };
+}
+
+export function codexLiveMessagesEndTurn(
+  messages: readonly {
+    blocks: readonly { type: string; text?: string }[];
+  }[],
+): boolean {
+  return messages.some((message) =>
+    message.blocks.some(
+      (block) =>
+        block.type === "marker" &&
+        /^\[(?:Turn failed|Turn aborted|Task complete)\b/i.test(
+          block.text ?? "",
+        ),
+    ),
+  );
 }
 
 export function codexLiveMessagesFromEvent(
@@ -500,7 +553,7 @@ export function codexLiveMessagesFromEvent(
   const liveMarker = codexLiveMarkerFromEvent(event);
   if (liveMarker) {
     messages.push(
-      codexMarkerMessage(liveMarker.id, event.receivedAt, liveMarker.text),
+      codexMarkerMessage(liveMarker.id, timestamp, liveMarker.text),
     );
   }
   return messages;
@@ -831,7 +884,9 @@ function codexTokenUsageFromObject(
     ) ?? 0;
   const total =
     finiteNumber(usage.total_tokens ?? usage.totalTokens) ?? input + output;
-  if (total <= 0 && output + reasoning <= 0) return undefined;
+  if (input + cachedInput + cacheWriteInput + output + reasoning <= 0) {
+    return undefined;
+  }
   return {
     input,
     cachedInput,
@@ -1962,7 +2017,7 @@ function createHub(daemonId: string | undefined): Hub {
 export function subscribeCodexEvents(
   daemonId: string | undefined,
   threadId: string | undefined,
-  subscriber: Subscriber,
+  subscriber: CodexAppEventSubscriber,
 ): () => void {
   const key = daemonKey(daemonId);
   let hub = hubs.get(key);

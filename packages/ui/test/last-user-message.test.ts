@@ -1029,6 +1029,7 @@ describe("buildVisualTranscriptItems", () => {
     expect(visualWorkSummary(items[1].entries)).toEqual({
       steps: 0,
       compactions: 0,
+      warnings: 0,
       steerings: 1,
       subagents: 0,
     });
@@ -1464,6 +1465,7 @@ describe("buildVisualTranscriptItems", () => {
     expect(visualWorkSummary(items[1].entries)).toEqual({
       steps: 2,
       compactions: 1,
+      warnings: 0,
       steerings: 0,
       subagents: 0,
     });
@@ -6641,7 +6643,7 @@ describe("buildVisualWorkDisplayEntries", () => {
     expect(entries[0]?.entry).toBe(marker);
   });
 
-  it("classifies compaction and abort markers as distinct badges", () => {
+  it("classifies compaction, warning, retry, and abort markers as distinct badges", () => {
     const entries = buildVisualWorkDisplayEntries([
       {
         message: {
@@ -6654,10 +6656,26 @@ describe("buildVisualWorkDisplayEntries", () => {
       {
         message: {
           role: "system",
+          blocks: [{ type: "marker", text: "[Warning: HTTPS fallback]" }],
+        },
+        blocks: [{ type: "marker", text: "[Warning: HTTPS fallback]" }],
+        messageIndex: 5,
+      },
+      {
+        message: {
+          role: "system",
+          blocks: [{ type: "marker", text: "[Retrying: Reconnecting... 2/5]" }],
+        },
+        blocks: [{ type: "marker", text: "[Retrying: Reconnecting... 2/5]" }],
+        messageIndex: 6,
+      },
+      {
+        message: {
+          role: "system",
           blocks: [{ type: "marker", text: "[Turn aborted: interrupted]" }],
         },
         blocks: [{ type: "marker", text: "[Turn aborted: interrupted]" }],
-        messageIndex: 5,
+        messageIndex: 7,
       },
     ]);
 
@@ -6666,6 +6684,16 @@ describe("buildVisualWorkDisplayEntries", () => {
         kind: "marker",
         markerKind: "compacted",
         markerLabel: "Context compacted",
+      },
+      {
+        kind: "marker",
+        markerKind: "warning",
+        markerLabel: "Warning: HTTPS fallback",
+      },
+      {
+        kind: "marker",
+        markerKind: "warning",
+        markerLabel: "Retrying: Reconnecting... 2/5",
       },
       {
         kind: "marker",

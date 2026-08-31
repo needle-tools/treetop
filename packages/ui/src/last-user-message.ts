@@ -193,6 +193,7 @@ export type VisualMarkerKind =
   | "complete"
   | "started"
   | "compacted"
+  | "warning"
   | "failed"
   | "aborted"
   | "other";
@@ -215,6 +216,7 @@ export interface VisualWorkDisplayEntry<
 export interface VisualWorkSummary {
   steps: number;
   compactions: number;
+  warnings: number;
   steerings: number;
   subagents: number;
 }
@@ -983,6 +985,7 @@ export function visualMarkerLabel(text: string | undefined): string {
   if (/(?:codex\s+)?task started/i.test(cleaned)) return "Task started";
   if (/(?:codex\s+)?context compacted/i.test(cleaned))
     return "Context compacted";
+  if (/^(?:warning|retrying):/i.test(cleaned)) return cleaned;
   if (/(?:codex\s+)?turn aborted/i.test(cleaned)) return "Turn aborted";
   return cleaned || "Marker";
 }
@@ -996,6 +999,7 @@ export function visualMarkerKind(text: string | undefined): VisualMarkerKind {
   if (/(?:codex\s+)?task complete/i.test(cleaned)) return "complete";
   if (/(?:codex\s+)?task started/i.test(cleaned)) return "started";
   if (/(?:codex\s+)?context compacted/i.test(cleaned)) return "compacted";
+  if (/\[(?:warning|retrying):/i.test(cleaned)) return "warning";
   if (/(?:codex\s+)?turn aborted/i.test(cleaned)) return "aborted";
   return "other";
 }
@@ -1255,6 +1259,7 @@ export function visualWorkSummary<B extends MessageBlock, M extends Message<B>>(
   entries: readonly VisualWorkEntry<B, M>[],
 ): VisualWorkSummary {
   let compactions = 0;
+  let warnings = 0;
   let steerings = 0;
   const subagentIdByToolUseId = new Map<string, string>();
   for (const entry of entries) {
@@ -1286,6 +1291,9 @@ export function visualWorkSummary<B extends MessageBlock, M extends Message<B>>(
     if (markerKind === "compacted") {
       compactions += 1;
     }
+    if (markerKind === "warning") {
+      warnings += 1;
+    }
     for (const block of entry.blocks) {
       const meta = visualSubagentMetaFromBlock(block);
       if (!meta) continue;
@@ -1301,10 +1309,12 @@ export function visualWorkSummary<B extends MessageBlock, M extends Message<B>>(
     steps:
       entries.length -
       compactions -
+      warnings -
       steerings -
       boundaryMarkers -
       subagents.size,
     compactions,
+    warnings,
     steerings,
     subagents: subagents.size,
   };

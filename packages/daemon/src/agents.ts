@@ -785,6 +785,28 @@ function extractCodexUserText(line: string): string | undefined {
   return undefined;
 }
 
+function codexLastContextTokens(value: unknown): number | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const usage = value as Record<string, unknown>;
+  const input = usage.input_tokens;
+  if (typeof input !== "number" || !Number.isFinite(input)) return undefined;
+  if (input > 0) return input;
+
+  const total = usage.total_tokens;
+  const cached = usage.cached_input_tokens;
+  const output = usage.output_tokens;
+  const reasoning = usage.reasoning_output_tokens;
+  const isCompactedContextSnapshot =
+    input === 0 &&
+    (cached === undefined || cached === 0) &&
+    (output === undefined || output === 0) &&
+    (reasoning === undefined || reasoning === 0) &&
+    typeof total === "number" &&
+    Number.isFinite(total) &&
+    total > 0;
+  return isCompactedContextSnapshot ? total : input;
+}
+
 function ingestCodexOverviewLine(
   line: string,
   state: {
@@ -839,11 +861,11 @@ function ingestCodexOverviewLine(
       const info = p.info;
       if (info && typeof info === "object") {
         const infoObj = info as Record<string, unknown>;
-        const last = infoObj.last_token_usage as
-          | { input_tokens?: unknown }
-          | undefined;
-        if (last && typeof last.input_tokens === "number") {
-          state.usage.lastInputTokens = last.input_tokens;
+        const lastInputTokens = codexLastContextTokens(
+          infoObj.last_token_usage,
+        );
+        if (lastInputTokens !== undefined) {
+          state.usage.lastInputTokens = lastInputTokens;
         }
         if (typeof infoObj.model_context_window === "number") {
           state.usage.modelContextWindow = infoObj.model_context_window;
@@ -1039,11 +1061,11 @@ async function ensureCodexScanCached(
           const info = p.info;
           if (info && typeof info === "object") {
             const infoObj = info as Record<string, unknown>;
-            const last = infoObj.last_token_usage as
-              | { input_tokens?: unknown }
-              | undefined;
-            if (last && typeof last.input_tokens === "number") {
-              lastInputTokens = last.input_tokens;
+            const currentContextTokens = codexLastContextTokens(
+              infoObj.last_token_usage,
+            );
+            if (currentContextTokens !== undefined) {
+              lastInputTokens = currentContextTokens;
             }
             if (typeof infoObj.model_context_window === "number") {
               modelContextWindow = infoObj.model_context_window;

@@ -117,6 +117,7 @@
     codexAppHistoryKey,
     codexEventThreadIdForSession,
     codexLiveMessagesFromEvent,
+    codexLiveMessagesEndTurn,
     codexLiveToolUseFromEvent,
     codexToolInputQuality,
     mergeCodexAppHistoryMessages,
@@ -126,6 +127,8 @@
     shouldUseCodexAppHistorySource,
     subscribeCodexEvents,
     type CodexAppEvent,
+    type CodexAppSessionTransport,
+    type CodexAppThreadPage,
     type CodexEventStreamState,
     type CodexLiveNormalizeContext,
   } from "./codex-event-stream";
@@ -229,6 +232,10 @@
    *  experimental visual app-server surface for this session. Default
    *  read/transcript views must not grow the Codex composer. */
   export let visualAppEnabled: boolean = false;
+  /** Recorded app-server boundary for Replay Lab. Production leaves this
+   *  undefined and continues through the shared HTTP/SSE transport. */
+  export let codexAppTransport: CodexAppSessionTransport | undefined =
+    undefined;
   /** Open a subagent transcript discovered inside this transcript/live
    *  stream. The parent owns column placement; this view never owns the
    *  child process lifecycle. */
@@ -2299,16 +2306,26 @@
     });
     if (cursor) qs.set("cursor", cursor);
     try {
-      const res = await fetch(
-        apiUrl(`/api/codex-app/thread?${qs.toString()}`, daemonId),
-      );
-      const body = (await res.json().catch(() => null)) as {
-        thread?: unknown;
-        model?: unknown;
-        nextCursor?: unknown;
-        error?: string;
-      } | null;
-      if (!res.ok) throw new Error(body?.error ?? `HTTP ${res.status}`);
+      let body: CodexAppThreadPage | null;
+      if (codexAppTransport) {
+        body = await codexAppTransport.readThread({
+          threadId,
+          cwd,
+          limit: CODEX_APP_HISTORY_TURNS_PAGE_SIZE,
+          cursor,
+        });
+      } else {
+        const res = await fetch(
+          apiUrl(`/api/codex-app/thread?${qs.toString()}`, daemonId),
+        );
+        const responseBody = (await res.json().catch(() => null)) as
+          | (CodexAppThreadPage & { error?: string })
+          | null;
+        if (!res.ok) {
+          throw new Error(responseBody?.error ?? `HTTP ${res.status}`);
+        }
+        body = responseBody;
+      }
       if (!body?.thread || effectiveSessionId !== targetThreadId || !session)
         return;
       if (typeof body.model === "string") {
@@ -2600,7 +2617,7 @@
       codexAppHistorySourceActive && effectiveSessionId && effectiveSessionCwd
         ? `${effectiveSessionId}\0${effectiveSessionCwd}`
         : "";
-    if (key && key !== codexGoalLoadKey) {
+    if (!codexAppTransport && key && key !== codexGoalLoadKey) {
       codexGoalLoadKey = key;
       void loadCodexGoal();
     } else if (!key) {
@@ -2608,12 +2625,12 @@
     }
   }
 
-  $: if (liveCodexApp) {
+  $: if (liveCodexApp && !codexAppTransport) {
     const key = codexQueueStorageKey();
     if (key) restoreCodexQueue(key);
   }
 
-  $: if (liveCodexApp && codexQueueHydratedKey) {
+  $: if (liveCodexApp && !codexAppTransport && codexQueueHydratedKey) {
     codexQueuedMessages;
     persistCodexQueue();
   }
@@ -3046,7 +3063,7 @@
     codexLiveNormalizeContext = { toolNames: new Map(), toolInputs: new Map() };
     codexEventsThreadId = threadId;
     codexEventStreamState = "connecting";
-    unsubscribeCodexEvents = subscribeCodexEvents(daemonId, threadId, {
+    const subscriber = {
       onState: (state) => {
         codexEventStreamState = state;
       },
@@ -3055,7 +3072,10 @@
         codexEventStreamState = "live";
         applyCodexEvent(event);
       },
-    });
+    } satisfies Parameters<typeof subscribeCodexEvents>[2];
+    unsubscribeCodexEvents = codexAppTransport
+      ? codexAppTransport.subscribe(threadId, subscriber)
+      : subscribeCodexEvents(daemonId, threadId, subscriber);
   }
 
   function closeCodexEventStream(): void {
@@ -3185,12 +3205,24 @@
     if (hasLiveMarker) {
       flushCodexDeltaPatches();
       upsertCodexLiveMessages(liveMessages);
-      codexActiveTurnId = null;
-      sending = false;
-      awaitingInput = false;
-      if (pendingTimer) {
-        clearTimeout(pendingTimer);
-        pendingTimer = null;
+      if (codexLiveMessagesEndTurn(liveMessages)) {
+        codexActiveTurnId = null;
+        sending = false;
+        awaitingInput = false;
+        if (pendingTimer) {
+          clearTimeout(pendingTimer);
+          pendingTimer = null;
+        }
+      } else if (event.method === "error" || event.method === "warning") {
+        const error = event.params.error;
+        sendError =
+          typeof event.params.message === "string"
+            ? event.params.message
+            : error &&
+                typeof error === "object" &&
+                typeof (error as Record<string, unknown>).message === "string"
+              ? String((error as Record<string, unknown>).message)
+              : JSON.stringify(event.params);
       }
       return;
     }
@@ -4838,7 +4870,8 @@
   $: showChatComposer =
     mode === "read" &&
     renderReadBody &&
-    (agent === "ollama" || (agent === "codex" && codexVisualAppSurface));
+    (agent === "ollama" ||
+      (agent === "codex" && codexVisualAppSurface && !codexAppTransport));
   $: stoppedTranscriptSurface =
     mode === "read" && !showChatComposer && !visualTranscriptActive;
   let lastFocusComposerSeq = 0;
