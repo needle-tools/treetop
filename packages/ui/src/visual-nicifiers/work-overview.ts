@@ -1,9 +1,9 @@
 import type {
-  MessageBlock,
-  TokenUsage,
   VisualFileEdit,
   VisualMediaBlock,
-} from "../last-user-message";
+  VisualTokenUsage as TokenUsage,
+  VisualToolBlock as MessageBlock,
+} from "./core";
 import {
   cleanVisualToolResultText,
   visualFileEditSummaryForBlock,

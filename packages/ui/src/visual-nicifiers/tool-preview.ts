@@ -1,9 +1,9 @@
 import type {
-  MessageBlock,
   VisualFileEdit,
   VisualFileEditSummary,
   VisualMediaBlock,
-} from "../last-user-message";
+  VisualToolBlock as MessageBlock,
+} from "./core";
 import {
   summarizeDirectScriptCommand,
   summarizeSystemProbe,
@@ -482,6 +482,21 @@ export type VisualToolPreviewPart =
 
 export interface VisualToolPreviewContext {
   snapshotUidLabels?: ReadonlyMap<string, string>;
+}
+
+export interface NicifiedCommand {
+  command: string;
+  text: string;
+  parts: VisualToolPreviewPart[];
+  launcher?: string;
+  remoteHost?: string;
+  env: VisualToolEnvAssignment[];
+  summaries: VisualCommandSummary[];
+  inlineScript?: VisualToolInlineScript;
+  kinds: string[];
+  fullyNicified: boolean;
+  unnicifiedParts: string[];
+  families: string[];
 }
 
 export function visualSnapshotUidLabelsFromToolResult(
@@ -1593,32 +1608,9 @@ export function visualToolPreviewParts(
   );
   if (structuredPreview) return structuredPreview;
   const command = commandTextFromToolInput(input, block.toolName);
-  const commandParts = command
-    ? splitShellCommandChain(normalizeLaunchedCommand(command).command)
-    : [];
-  const commandHasHeredoc = command
-    ? /(?:^|\s)(?:python3?|node|bun|deno|swift|ruby|perl)\b[\s\S]*?<<-?\s*['"]?[A-Za-z_][A-Za-z0-9_]*['"]?/.test(
-        command,
-      )
-    : false;
-  const inlineScript = command
-    ? commandHasHeredoc || commandParts.length <= 1
-      ? inlineScriptFromCommandPreservingHeredoc(command)
-      : undefined
-    : undefined;
-  if (inlineScript && command && agentBrowserEvalScriptFromCommand(command)) {
-    const commandPreview = visualCommandPreview(command, context);
-    if (commandPreview && commandPreview.parts.length > 0) {
-      return commandPreview.parts;
-    }
-  }
-  if (inlineScript)
-    return textPreviewParts(visualToolInlineScriptPreviewText(block));
-  const commandPreview = command
-    ? visualCommandPreview(command, context)
-    : undefined;
-  if (commandPreview && commandPreview.parts.length > 0) {
-    return commandPreview.parts;
+  const nicifiedCommand = command ? nicifyCommand(command, context) : undefined;
+  if (nicifiedCommand && nicifiedCommand.parts.length > 0) {
+    return nicifiedCommand.parts;
   }
   const text =
     command &&
@@ -2547,6 +2539,7 @@ function visualCommandPreview(
   remoteHost?: string;
   env: VisualToolEnvAssignment[];
   summaries: VisualCommandSummary[];
+  rawFallbacks?: string[];
 } {
   const normalized = normalizeLaunchedCommand(command);
   const unwrapped = normalized.command;
@@ -2579,6 +2572,7 @@ function visualCommandPreview(
         remoteHost: normalized.remoteHost ?? delayedPreview.remoteHost,
         env: [...env, ...delayedPreview.env],
         summaries,
+        rawFallbacks: delayedPreview.rawFallbacks,
       };
     }
   }
@@ -2626,6 +2620,7 @@ function visualCommandPreview(
         remoteHost: normalized.remoteHost ?? loopPreview.remoteHost,
         env: [...env, ...loopPreview.env],
         summaries: loopPreview.summaries,
+        rawFallbacks: loopPreview.rawFallbacks,
       };
     }
   }
@@ -2657,11 +2652,15 @@ function visualCommandPreview(
   const remoteContextCwd = normalized.remoteHost
     ? shellContextCwd(parts)
     : undefined;
-  const meaningfulParts = parts.filter(
+  const nonContextParts = parts.filter((part) => !isShellContextCommand(part));
+  const hasNonSetupPart = nonContextParts.some(
     (part) =>
-      !isShellContextCommand(part) &&
-      !(parts.length > 1 && isShellSetupWaitCommand(part)) &&
-      !(parts.length > 1 && isShellSetupProbeCommand(part)),
+      !isShellSetupWaitCommand(part) && !isShellSetupProbeCommand(part),
+  );
+  const meaningfulParts = nonContextParts.filter(
+    (part) =>
+      !hasNonSetupPart ||
+      (!isShellSetupWaitCommand(part) && !isShellSetupProbeCommand(part)),
   );
   if (meaningfulParts.length === 0) {
     return {
@@ -2724,6 +2723,9 @@ function visualCommandPreview(
       remoteHost: normalized.remoteHost,
       env,
       summaries: rawSummaries,
+      rawFallbacks: summaryPairs
+        .filter((pair) => !pair.summary)
+        .map((pair) => pair.part),
     };
   }
   if (rawSummaries.length !== meaningfulParts.length) {
@@ -2831,6 +2833,122 @@ function visualCommandPreview(
   };
 }
 
+/** Nicify a shell command without requiring a Supergit transcript block. */
+export function nicifyCommand(
+  command: string,
+  context?: VisualToolPreviewContext,
+): NicifiedCommand {
+  const preview = visualCommandPreview(command, context);
+  const normalizedCommand = normalizeLaunchedCommand(command).command;
+  const inlineScript = inlineScriptFromCommandPreservingHeredoc(command);
+  const commandHasHeredoc =
+    /(?:^|\s)(?:\S*[\\/])?(?:python3?|node|bun|deno|swift|ruby|perl)\b[\s\S]*?<<-?\s*['"]?[A-Za-z_][A-Za-z0-9_]*['"]?/.test(
+      command,
+    );
+  const displayedInlineScript =
+    inlineScript &&
+    !agentBrowserEvalScriptFromCommand(command) &&
+    (commandHasHeredoc || splitShellCommandChain(normalizedCommand).length <= 1)
+      ? inlineScript
+      : undefined;
+  const text = displayedInlineScript
+    ? inlineScriptPreviewText(displayedInlineScript)
+    : preview.text;
+  return {
+    command,
+    text,
+    parts: displayedInlineScript ? textPreviewParts(text) : preview.parts,
+    launcher: preview.launcher,
+    remoteHost: preview.remoteHost,
+    env: preview.env,
+    summaries: preview.summaries,
+    inlineScript: displayedInlineScript,
+    kinds: displayedInlineScript
+      ? ["inline-script"]
+      : preview.summaries.map((summary) => summary.kind),
+    fullyNicified: displayedInlineScript
+      ? true
+      : preview.summaries.length > 0 &&
+        (preview.rawFallbacks?.length ?? 0) === 0,
+    unnicifiedParts: displayedInlineScript
+      ? []
+      : (preview.rawFallbacks ??
+        (preview.summaries.length === 0 ? [normalizedCommand] : [])),
+    families: commandNicifierFamilies(command, preview.summaries),
+  };
+}
+
+/** Exact production command-nicifier result, exposed for corpus coverage
+ * audits without making callers duplicate tool-input extraction. */
+export function visualToolCommandNicifierCoverage(
+  block: MessageBlock | undefined,
+): NicifiedCommand | undefined {
+  if (!block || block.type !== "tool_use") return undefined;
+  const command = commandTextFromToolInput(block.toolInput, block.toolName);
+  if (!command) return undefined;
+  return nicifyCommand(command);
+}
+
+function commandNicifierFamilies(
+  command: string,
+  summaries: readonly VisualCommandSummary[],
+): string[] {
+  const families = new Set<string>();
+  for (const summary of summaries) {
+    if (summary.kind === "package") families.add(summary.manager);
+    else if (summary.kind === "runtime") {
+      families.add(summary.runtime === "Node" ? "node" : "python");
+    } else if (
+      summary.kind === "git" ||
+      summary.kind === "docker" ||
+      summary.kind === "cargo"
+    ) {
+      families.add(summary.kind);
+    } else if (summary.kind === "ssh-tunnel") {
+      families.add("ssh");
+    }
+  }
+  collectCommandLauncherFamilies(command, families, 0);
+  return [...families];
+}
+
+function collectCommandLauncherFamilies(
+  command: string,
+  families: Set<string>,
+  depth: number,
+): void {
+  if (depth > 8) return;
+  const tokens = shellTokens(command);
+  const head = shellLauncherName(tokens[0] ?? "");
+  if (head === "npm" || head === "npx" || head === "node") families.add(head);
+  else if (/^python(?:3(?:\.\d+)?)?$/.test(head)) families.add("python");
+  else if (
+    head === "ssh" ||
+    head === "git" ||
+    head === "docker" ||
+    head === "docker-compose" ||
+    head === "cargo"
+  ) {
+    families.add(head === "docker-compose" ? "docker" : head);
+  }
+  if (inlineScriptFromCommand(command)) return;
+  const unwrapped =
+    unwrappedShellPayload(tokens, head) ??
+    unwrappedSudoPayload(tokens) ??
+    unwrappedSshPayload(tokens) ??
+    unwrappedDockerPayload(tokens);
+  if (unwrapped) {
+    collectCommandLauncherFamilies(unwrapped.command, families, depth + 1);
+    return;
+  }
+  const parts = splitShellCommandChain(command);
+  if (parts.length > 1) {
+    for (const part of parts) {
+      collectCommandLauncherFamilies(part, families, depth + 1);
+    }
+  }
+}
+
 function normalizeCommandSummaries(
   summaries: VisualCommandSummary[],
 ): VisualCommandSummary[] {
@@ -2868,7 +2986,8 @@ function normalizeLaunchedCommand(command: string): {
   let launcher: string | undefined;
   let remoteHost: string | undefined;
   const env: VisualToolEnvAssignment[] = [];
-  for (let i = 0; i < 3; i += 1) {
+  for (let i = 0; i < 8; i += 1) {
+    current = stripOuterShellGroup(current);
     const setup = stripInlineEnvAssignments(current);
     if (setup.env.length > 0) {
       env.push(...setup.env);
@@ -2882,7 +3001,10 @@ function normalizeLaunchedCommand(command: string): {
     const unwrapped:
       | { command: string; launcher?: string; remoteHost?: string }
       | undefined =
-      next ?? unwrappedSshPayload(tokens) ?? unwrappedDockerPayload(tokens);
+      next ??
+      unwrappedSudoPayload(tokens) ??
+      unwrappedSshPayload(tokens) ??
+      unwrappedDockerPayload(tokens);
     if (!unwrapped) return { command: current, launcher, remoteHost, env };
     if (unwrapped.launcher) launcher = unwrapped.launcher;
     if (unwrapped.remoteHost) remoteHost = unwrapped.remoteHost;
@@ -2894,6 +3016,66 @@ function normalizeLaunchedCommand(command: string): {
     current = setup.command.trim();
   }
   return { command: current, launcher, remoteHost, env };
+}
+
+function stripOuterShellGroup(command: string): string {
+  const trimmed = command.trim();
+  if (!trimmed.startsWith("(") || !trimmed.endsWith(")")) return trimmed;
+  let depth = 0;
+  let quote: "'" | '"' | null = null;
+  let escaped = false;
+  for (let index = 0; index < trimmed.length; index += 1) {
+    const char = trimmed[index]!;
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (char === "\\") {
+      escaped = true;
+      continue;
+    }
+    if (quote) {
+      if (char === quote) quote = null;
+      continue;
+    }
+    if (char === "'" || char === '"') {
+      quote = char;
+      continue;
+    }
+    if (char === "(") depth += 1;
+    else if (char === ")") depth -= 1;
+    if (depth === 0 && index < trimmed.length - 1) return trimmed;
+  }
+  return depth === 0 ? trimmed.slice(1, -1).trim() : trimmed;
+}
+
+function unwrappedSudoPayload(
+  tokens: string[],
+): { command: string } | undefined {
+  if (shellLauncherName(tokens[0] ?? "") !== "sudo") return undefined;
+  const valueOptions = new Set([
+    "-C",
+    "-D",
+    "-g",
+    "-h",
+    "-p",
+    "-R",
+    "-T",
+    "-u",
+  ]);
+  let index = 1;
+  for (; index < tokens.length; index += 1) {
+    const token = tokens[index]!;
+    if (token === "--") {
+      index += 1;
+      break;
+    }
+    if (!token.startsWith("-")) break;
+    const option = token.slice(0, 2);
+    if (!token.includes("=") && valueOptions.has(option)) index += 1;
+  }
+  const command = tokens.slice(index).join(" ").trim();
+  return command ? { command } : undefined;
 }
 
 function stripInlineEnvAssignments(command: string): {
@@ -2958,14 +3140,16 @@ function unwrappedShellPayload(
     const flagIndex = tokens.findIndex(
       (token, index) => index > 0 && /^-[a-zA-Z]*c[a-zA-Z]*$/.test(token),
     );
-    const command = flagIndex >= 0 ? tokens[flagIndex + 1] : undefined;
+    const command =
+      flagIndex >= 0 ? tokens.slice(flagIndex + 1).join(" ") : undefined;
     return command ? { command, launcher: shell } : undefined;
   }
   if (shell === "cmd") {
     const flagIndex = tokens.findIndex(
       (token, index) => index > 0 && /^\/c$/i.test(token),
     );
-    const command = flagIndex >= 0 ? tokens[flagIndex + 1] : undefined;
+    const command =
+      flagIndex >= 0 ? tokens.slice(flagIndex + 1).join(" ") : undefined;
     return command ? { command, launcher: shell } : undefined;
   }
   if (shell === "powershell" || shell === "pwsh") {
@@ -3029,6 +3213,7 @@ function unwrappedSshPayload(
     return undefined;
   }
   const remoteCommand = tokens.slice(commandStart).join(" ").trim();
+  if (/^-(?:N|T|n)$/.test(remoteCommand)) return undefined;
   if (!remoteCommand) return undefined;
   return {
     command: remoteCommand,
@@ -3046,19 +3231,19 @@ function summarizeSshTunnel(
   const command = shellLauncherName(tokens[0] ?? "");
   if (command !== "ssh") return undefined;
 
-  let forwardSpec: string | undefined;
+  const forwardSpecs: string[] = [];
   let host: string | undefined;
 
   for (let i = 1; i < tokens.length; i += 1) {
     const token = tokens[i]!;
     if (token === "--") continue;
     if (token === "-L") {
-      forwardSpec = tokens[i + 1];
+      if (tokens[i + 1]) forwardSpecs.push(tokens[i + 1]!);
       i += 1;
       continue;
     }
     if (token.startsWith("-L") && token.length > 2) {
-      forwardSpec = token.slice(2);
+      forwardSpecs.push(token.slice(2));
       continue;
     }
     if (token.startsWith("-")) {
@@ -3075,8 +3260,8 @@ function summarizeSshTunnel(
     break;
   }
 
-  if (!forwardSpec || !host) return undefined;
-  const forward = parseSshLocalForward(forwardSpec);
+  if (forwardSpecs.length === 0 || !host) return undefined;
+  const forward = parseSshLocalForward(forwardSpecs.at(-1)!);
   if (!forward) return undefined;
 
   const sshHost = readableSshHost(host);
@@ -3093,6 +3278,9 @@ function summarizeSshTunnel(
     kind: "ssh-tunnel",
     local: `${localHost}:${forward.localPort}`,
     remote,
+    ...(forwardSpecs.length > 1
+      ? { count: forwardSpecs.length, host: sshHost }
+      : {}),
   };
 }
 
@@ -3331,10 +3519,18 @@ function readableDockerTarget(target: string): string {
 
 function splitShellCommandChain(command: string): string[] {
   const parts: string[] = [];
+  const heredocRanges = shellHeredocRanges(command);
+  let rangeIndex = 0;
   let start = 0;
   let quote: "'" | '"' | null = null;
   let escaped = false;
   for (let i = 0; i < command.length; i += 1) {
+    const range = heredocRanges[rangeIndex];
+    if (range && i === range.start) {
+      i = range.end - 1;
+      rangeIndex += 1;
+      continue;
+    }
     const ch = command[i]!;
     if (escaped) {
       escaped = false;
@@ -3364,6 +3560,27 @@ function splitShellCommandChain(command: string): string[] {
   return parts;
 }
 
+function shellHeredocRanges(
+  command: string,
+): Array<{ start: number; end: number }> {
+  const ranges: Array<{ start: number; end: number }> = [];
+  const opener = /<<-?\s*(['"]?)([A-Za-z_][A-Za-z0-9_]*)\1/g;
+  for (const match of command.matchAll(opener)) {
+    if (match.index === undefined) continue;
+    const bodyStart = command.indexOf("\n", match.index + match[0].length);
+    if (bodyStart < 0) continue;
+    const terminator = new RegExp(
+      `^\\t?${escapeRegExp(match[2]!)}[ \\t]*$`,
+      "gm",
+    );
+    terminator.lastIndex = bodyStart + 1;
+    const endMatch = terminator.exec(command);
+    if (!endMatch || endMatch.index === undefined) continue;
+    ranges.push({ start: bodyStart, end: endMatch.index + endMatch[0].length });
+  }
+  return ranges;
+}
+
 function isShellContextCommand(command: string): boolean {
   const tokens = shellTokens(command);
   const name = tokens[0]?.split("/").pop();
@@ -3382,6 +3599,8 @@ function isShellContextCommand(command: string): boolean {
   if (name === "echo" || name === "printf") return isLabelPrintCommand(command);
   return (
     lowerName === "add-type" ||
+    lowerName === "source" ||
+    name === "." ||
     name === "cd" ||
     name === "pwd" ||
     name === "true" ||
@@ -3397,8 +3616,18 @@ function isLabelPrintCommand(command: string): boolean {
   const tokens = shellTokens(command);
   const name = shellLauncherName(tokens[0] ?? "");
   if (name !== "echo" && name !== "printf") return false;
-  const args = tokens.slice(1).filter((token) => !token.startsWith("-"));
+  const args = tokens.slice(1).filter((token) => !/^(?:-n|-e|-E)$/.test(token));
   if (args.length === 0) return false;
+  if (
+    args.every(
+      (arg) =>
+        !/[A-Za-z0-9]/.test(
+          arg.replace(/\\[nrt]/g, "").replace(/%[a-z]/gi, ""),
+        ),
+    )
+  ) {
+    return true;
+  }
   if (name === "printf" && args.length > 1 && /%/.test(args[0]!)) {
     return args.slice(1).every((arg) => !looksLikePathToken(arg));
   }
@@ -3626,9 +3855,30 @@ function cleanPowerShellBoundaryToken(token: string): string {
   return token.replace(/^[(&]+/, "").replace(/[);]+$/, "");
 }
 
+function summarizeHeredocWrite(
+  command: string,
+): Extract<VisualCommandSummary, { kind: "filesystem" }> | undefined {
+  const tokens = shellTokens(command);
+  const head = shellLauncherName(tokens[0] ?? "");
+  if (head !== "cat" && head !== "tee") return undefined;
+  if (!/<<-?\s*['"]?[A-Za-z_][A-Za-z0-9_]*['"]?/.test(command)) {
+    return undefined;
+  }
+  const target = command.match(/\s>>?\s*(['"]?)([^\s'"]+)\1/)?.[2];
+  if (!target) return undefined;
+  return {
+    kind: "filesystem",
+    action: "create",
+    targetKind: "file",
+    targets: [target],
+  };
+}
+
 function summarizeShellCommand(
   command: string,
 ): VisualCommandSummary | undefined {
+  const heredocWrite = summarizeHeredocWrite(command);
+  if (heredocWrite) return heredocWrite;
   const portCheck = summarizePortCheck(command);
   if (portCheck) return portCheck;
   const processCheck = summarizeProcessCheck(command);
@@ -3664,9 +3914,18 @@ function summarizeShellCommand(
   if (systemProbe) return systemProbe;
   const systemInfo = summarizeSystemInfo(tokens);
   if (systemInfo) return systemInfo;
+  if (lowerName === "node" || /^python(?:3(?:\.\d+)?)?$/.test(lowerName)) {
+    const runtime = summarizeRuntimeCommand(tokens);
+    if (runtime) return runtime;
+  }
   const scriptFile = directScriptCommand(command);
   if (scriptFile) return scriptFile;
   if (lowerName === "git") return summarizeGit(tokens);
+  if (lowerName === "npm" || lowerName === "npx")
+    return summarizePackageCommand(tokens);
+  if (lowerName === "docker" || lowerName === "docker-compose")
+    return summarizeDockerCommand(tokens);
+  if (lowerName === "cargo") return summarizeCargoCommand(tokens);
   if (name === "kill") return summarizeKill(tokens);
   if (
     lowerName === "rm" ||
@@ -3960,7 +4219,175 @@ function summarizeGit(tokens: string[]): VisualCommandSummary | undefined {
   if (subcommand === "commit") {
     return { kind: "git", action: "commit", targets: [] };
   }
+  if (
+    subcommand === "restore" ||
+    subcommand === "checkout" ||
+    subcommand === "switch" ||
+    subcommand === "stash" ||
+    subcommand === "worktree" ||
+    subcommand === "fetch" ||
+    subcommand === "pull" ||
+    subcommand === "push" ||
+    subcommand === "merge" ||
+    subcommand === "rebase" ||
+    subcommand === "tag" ||
+    subcommand === "config" ||
+    subcommand === "submodule" ||
+    subcommand === "lfs" ||
+    subcommand === "symbolic-ref" ||
+    subcommand === "cherry-pick" ||
+    subcommand === "ls-tree" ||
+    subcommand === "for-each-ref" ||
+    subcommand === "ls-remote"
+  ) {
+    return {
+      kind: "git",
+      action: subcommand,
+      targets: gitPathArgs(tokens.slice(subcommandIndex + 1)),
+    };
+  }
+  if (subcommand === "grep") {
+    const args = gitPathArgs(tokens.slice(subcommandIndex + 1));
+    const [pattern, ...targets] = args;
+    return {
+      kind: "git",
+      action: "grep",
+      targets,
+      pattern,
+    };
+  }
   return undefined;
+}
+
+function positionalArgs(tokens: string[], start: number): string[] {
+  return tokens
+    .slice(start)
+    .filter((token) => !token.startsWith("-") && !token.includes("="));
+}
+
+function summarizePackageCommand(
+  tokens: string[],
+): Extract<VisualCommandSummary, { kind: "package" }> | undefined {
+  const manager = shellLauncherName(tokens[0] ?? "");
+  if (manager !== "npm" && manager !== "npx") return undefined;
+  if (tokens[1] === "-v" || tokens[1] === "--version") {
+    return { kind: "package", manager, action: "version", targets: [] };
+  }
+  if (manager === "npm" && (tokens[1] === "view" || tokens[1] === "info")) {
+    const target = positionalArgs(tokens, 2)[0];
+    return {
+      kind: "package",
+      manager,
+      action: "inspect",
+      targets: target ? [target] : [],
+    };
+  }
+  if (
+    manager === "npm" &&
+    (tokens[1] === "install" || tokens[1] === "i" || tokens[1] === "ci")
+  ) {
+    return {
+      kind: "package",
+      manager,
+      action: "install",
+      targets: positionalArgs(tokens, 2),
+    };
+  }
+  const commandIndex = manager === "npx" ? skipNpxOptions(tokens, 1) : 1;
+  const command = tokens[commandIndex];
+  if (!command) return undefined;
+  return {
+    kind: "package",
+    manager,
+    action: "run",
+    targets: [command, ...positionalArgs(tokens, commandIndex + 1)],
+  };
+}
+
+function summarizeRuntimeCommand(
+  tokens: string[],
+): Extract<VisualCommandSummary, { kind: "runtime" }> | undefined {
+  const command = shellLauncherName(tokens[0] ?? "");
+  const runtime = command === "node" ? "Node" : "Python";
+  if (tokens[1] === "-v" || tokens[1] === "--version") {
+    return { kind: "runtime", runtime, action: "version", targets: [] };
+  }
+  if (tokens.includes("--help") || tokens.includes("-h")) {
+    return { kind: "runtime", runtime, action: "help", targets: [] };
+  }
+  const moduleIndex = tokens.indexOf("-m");
+  if (runtime === "Python" && moduleIndex >= 0 && tokens[moduleIndex + 1]) {
+    return {
+      kind: "runtime",
+      runtime,
+      action: "module",
+      targets: [tokens[moduleIndex + 1]!],
+    };
+  }
+  const evalIndex = tokens.findIndex(
+    (token) => token === "-p" || token === "-e" || token === "--eval" || token === "-c",
+  );
+  if (
+    (runtime === "Node" && evalIndex >= 0 && tokens[evalIndex] !== "-c") ||
+    (runtime === "Python" && evalIndex >= 0 && tokens[evalIndex] === "-c")
+  ) {
+    return { kind: "runtime", runtime, action: "eval", targets: [] };
+  }
+  if (runtime === "Node" && tokens[1] === "--check") {
+    return {
+      kind: "runtime",
+      runtime,
+      action: "check",
+      targets: positionalArgs(tokens, 2),
+    };
+  }
+  return undefined;
+}
+
+function summarizeDockerCommand(
+  tokens: string[],
+): Extract<VisualCommandSummary, { kind: "docker" }> | undefined {
+  const command = shellLauncherName(tokens[0] ?? "");
+  const compose = command === "docker-compose" || tokens[1] === "compose";
+  let index = command === "docker-compose" ? 1 : compose ? 2 : 1;
+  let composeFile: string | undefined;
+  while (index < tokens.length && tokens[index]!.startsWith("-")) {
+    const option = tokens[index]!;
+    if (option === "-f" || option === "--file") {
+      composeFile = tokens[index + 1];
+      index += 2;
+    } else if (
+      option === "--env-file" ||
+      option === "--project-name" ||
+      option === "--project-directory" ||
+      option === "--profile" ||
+      option === "--parallel"
+    ) {
+      index += 2;
+    } else {
+      index += 1;
+    }
+  }
+  const action = tokens[index];
+  if (!action) return undefined;
+  return {
+    kind: "docker",
+    action: compose ? `compose:${action}` : action,
+    targets: positionalArgs(tokens, index + 1),
+    composeFile,
+  };
+}
+
+function summarizeCargoCommand(
+  tokens: string[],
+): Extract<VisualCommandSummary, { kind: "cargo" }> | undefined {
+  const action = tokens[1];
+  if (!action) return undefined;
+  return {
+    kind: "cargo",
+    action,
+    targets: positionalArgs(tokens, 2),
+  };
 }
 
 function gitSubcommandIndex(tokens: string[]): number {
@@ -4040,6 +4467,13 @@ function summarizeTestCommand(
       targets: testPathArgs(tokens.slice(2)),
     };
   }
+  if (command === "node" && tokens.includes("--test")) {
+    return {
+      kind: "test",
+      runner: "Node",
+      targets: testPathArgs(tokens.slice(tokens.indexOf("--test") + 1)),
+    };
+  }
   if (
     (command === "npm" || command === "pnpm" || command === "yarn") &&
     tokens[1] === "test"
@@ -4081,6 +4515,14 @@ function summarizeTestCommand(
       targets: testPathArgs(tokens.slice(npxOffset + 2)),
     };
   }
+  if (npxCommand === "tsx" && tokens[npxOffset + 1] === "--test") {
+    return {
+      kind: "test",
+      runner: "TypeScript",
+      targets: testPathArgs(tokens.slice(npxOffset + 2)),
+      check: false,
+    };
+  }
   if (npxCommand === "tsc" || command === "tsc") {
     return { kind: "test", runner: "TypeScript", targets: [], check: true };
   }
@@ -4098,7 +4540,7 @@ function summarizeTestCommand(
       targets: testPathArgs(tokens.slice(pytestIndex + 1)),
     };
   }
-  if (command === "python" || command === "python3") {
+  if (/^python(?:3(?:\.\d+)?)?$/.test(command)) {
     const moduleIndex = tokens.findIndex((token) => token === "-m");
     if (moduleIndex >= 0 && tokens[moduleIndex + 1] === "pytest") {
       return {
@@ -5800,6 +6242,14 @@ function commandSummaryParts(
     return [{ kind: "text", text: `${label} ${summary.ports.join(", ")}` }];
   }
   if (summary.kind === "ssh-tunnel") {
+    if (summary.count && summary.count > 1) {
+      return [
+        {
+          kind: "text",
+          text: `Open ${summary.count} tunnels to ${summary.host ?? "SSH host"}`,
+        },
+      ];
+    }
     return [
       {
         kind: "text",
@@ -5818,6 +6268,109 @@ function commandSummaryParts(
       { kind: "text", text: summary.action === "upload" ? "to " : "from " },
       { kind: "text", text: `${summary.host}:` },
       ...interspersePathParts([summary.remotePath]),
+    ];
+  }
+  if (summary.kind === "package") {
+    if (summary.action === "version") {
+      return [{ kind: "text", text: `Check ${summary.manager} version` }];
+    }
+    if (summary.action === "inspect") {
+      return [
+        {
+          kind: "text",
+          text: `Inspect npm package${summary.targets[0] ? ` ${summary.targets[0]}` : ""}`,
+        },
+      ];
+    }
+    if (summary.action === "install") {
+      return [
+        {
+          kind: "text",
+          text: summary.targets.length
+            ? `Install npm package${summary.targets.length === 1 ? "" : "s"} ${summary.targets.join(", ")}`
+            : "Install npm dependencies",
+        },
+      ];
+    }
+    if (
+      summary.manager === "npx" &&
+      summary.targets[0] === "playwright" &&
+      summary.targets[1] === "install"
+    ) {
+      return [
+        {
+          kind: "text",
+          text: `Install Playwright browser${summary.targets[2] ? ` ${summary.targets[2]}` : ""}`,
+        },
+      ];
+    }
+    if (summary.manager === "npm" && summary.targets[0] === "run") {
+      return [
+        {
+          kind: "text",
+          text: `npm run${summary.targets.length > 1 ? ` ${summary.targets.slice(1).join(" ")}` : ""}`,
+        },
+      ];
+    }
+    return [
+      {
+        kind: "text",
+        text: `Run ${summary.manager}${summary.targets.length ? ` ${summary.targets.join(" ")}` : ""}`,
+      },
+    ];
+  }
+  if (summary.kind === "runtime") {
+    if (summary.action === "version") {
+      return [{ kind: "text", text: `Check ${summary.runtime} version` }];
+    }
+    if (summary.action === "eval") {
+      return [{ kind: "text", text: `Evaluate ${summary.runtime} expression` }];
+    }
+    if (summary.action === "check") {
+      return [
+        { kind: "text", text: `Check ${summary.runtime} syntax` },
+        ...prefixedPathList(summary.targets),
+      ];
+    }
+    if (summary.action === "help") {
+      return [{ kind: "text", text: `Show ${summary.runtime} help` }];
+    }
+    return [
+      {
+        kind: "text",
+        text: `Run Python module ${summary.targets[0] ?? ""}`.trim(),
+      },
+    ];
+  }
+  if (summary.kind === "docker") {
+    const composeAction = summary.action.startsWith("compose:")
+      ? summary.action.slice("compose:".length)
+      : undefined;
+    const action = composeAction === "config" ? "Validate" : "Run";
+    const subject = composeAction
+      ? `Docker Compose ${composeAction}`
+      : `Docker ${summary.action}`;
+    return [
+      {
+        kind: "text",
+        text: `${action} ${subject}${summary.composeFile ? ` ${summary.composeFile}` : ""}${summary.targets.length ? ` ${summary.targets.join(" ")}` : ""}`,
+      },
+    ];
+  }
+  if (summary.kind === "cargo") {
+    if (summary.action === "install") {
+      return [
+        {
+          kind: "text",
+          text: `Install Cargo package${summary.targets[0] ? ` ${summary.targets[0]}` : ""}`,
+        },
+      ];
+    }
+    return [
+      {
+        kind: "text",
+        text: `Run Cargo ${summary.action}${summary.targets.length ? ` ${summary.targets.join(" ")}` : ""}`,
+      },
     ];
   }
   if (summary.kind === "screen-sessions") {
@@ -6132,6 +6685,44 @@ function gitSummaryParts(
   if (summary.action === "commit") {
     return [{ kind: "text", text: "Commit changes" }];
   }
+  if (summary.action === "grep") {
+    return [
+      { kind: "text", text: "Search git files" },
+      {
+        kind: "text",
+        text: ` for "${readableSearchPattern(summary.pattern ?? "")}"`,
+      },
+      ...prefixedPathList(summary.targets, " in "),
+    ];
+  }
+  const lessCommonLabels: Partial<Record<typeof summary.action, string>> = {
+    restore: "Restore",
+    checkout: "Check out",
+    switch: "Switch branch",
+    stash: "Manage stash",
+    worktree: "Manage worktrees",
+    fetch: "Fetch git refs",
+    pull: "Pull changes",
+    push: "Push changes",
+    merge: "Merge",
+    rebase: "Rebase",
+    tag: "Manage tags",
+    config: "Inspect git config",
+    submodule: "Inspect git submodules",
+    lfs: "Manage Git LFS",
+    "symbolic-ref": "Inspect git symbolic ref",
+    "cherry-pick": "Cherry-pick commit",
+    "ls-tree": "Inspect git tree",
+    "for-each-ref": "Inspect git refs",
+    "ls-remote": "Inspect remote git refs",
+  };
+  const label = lessCommonLabels[summary.action];
+  if (label) {
+    return [
+      { kind: "text", text: label },
+      ...prefixedPathList(summary.targets),
+    ];
+  }
   return [];
 }
 
@@ -6139,7 +6730,7 @@ function testSummaryParts(
   summary: Extract<VisualCommandSummary, { kind: "test" }>,
 ): VisualToolPreviewPart[] {
   const checkLabel =
-    summary.runner === "TypeScript"
+    summary.runner === "TypeScript" && summary.check !== false
       ? "Run TypeScript check"
       : summary.runner === "Svelte"
         ? "Run Svelte check"
@@ -6436,7 +7027,7 @@ function inlineScriptFromCommand(
   command: string,
 ): VisualToolInlineScript | undefined {
   const heredoc = command.match(
-    /(?:^|\s)(python3?|node|bun|deno|swift|ruby|perl)\b[\s\S]*?<<-?\s*['"]?([A-Za-z_][A-Za-z0-9_]*)['"]?(?:[ \t]*\r?\n|[ \t]+)([\s\S]*?)\r?\n\2\b/,
+    /(?:^|\s)(?:\S*[\\/])?(python3?|node|bun|deno|swift|ruby|perl)\b[\s\S]*?<<-?\s*['"]?([A-Za-z_][A-Za-z0-9_]*)['"]?(?:[ \t]*\r?\n|[ \t]+)([\s\S]*?)\r?\n\2\b/,
   );
   if (heredoc) {
     return inlineScriptDisplay(heredoc[1]!, heredoc[3]!);
@@ -6454,7 +7045,12 @@ function inlineScriptFromCommand(
     tokens[runtimeIndex]!.split("/").pop() ?? tokens[runtimeIndex]!;
   for (let i = runtimeIndex + 1; i < tokens.length; i += 1) {
     const token = tokens[i]!;
-    if (token === "-c" || token === "-e" || token === "--eval") {
+    if (
+      token === "-c" ||
+      token === "-e" ||
+      token === "--eval" ||
+      (runtime === "node" && token === "-p")
+    ) {
       const code = tokens[i + 1];
       return code ? inlineScriptDisplay(runtime, code) : undefined;
     }

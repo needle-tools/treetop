@@ -23,6 +23,7 @@ export {
   visualToolCallPayloadText,
   visualToolCanStillRun,
   visualToolCommandResultBadges,
+  visualToolCommandNicifierCoverage,
   visualToolConfigAssignments,
   visualToolConfigSummaryLabel,
   visualToolConfigTooltipText,
