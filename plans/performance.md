@@ -393,6 +393,12 @@ housekeeping that surfaced alongside.
 after a **native** rebuild (`electrobun build`), not an SPA-only
 `vite build`.
 
+**Build smoke regression (2026-09-01):** the native smoke daemon starts from
+a temporary copy of the default workspace. That copy accidentally included
+`.debugging/` (1.8 GB locally), so the daemon remained in its pre-log copy on a
+nearly full disk and the smoke probe timed out after 10 seconds. Temporary
+workspaces now exclude `.debugging/`, like logs and other runtime-only state.
+
 ### Held daemon RSS — the token-scan dead cache (the real ~2.9 GB)
 
 Separate from the cold-start spike above: after the restart fixes landed,

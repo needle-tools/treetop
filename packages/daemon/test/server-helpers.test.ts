@@ -1186,6 +1186,11 @@ describe("temporary workspace copy policy", () => {
     expect(shouldCopyTempWorkspaceRelativePath(".remote-cache/host/file")).toBe(
       false,
     );
+    expect(
+      shouldCopyTempWorkspaceRelativePath(
+        ".debugging/codex-app-recordings/thread.jsonl",
+      ),
+    ).toBe(false);
     expect(shouldCopyTempWorkspaceRelativePath("repos.json.tmp")).toBe(false);
   });
 });

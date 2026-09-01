@@ -201,6 +201,7 @@ export function shouldReuseWorktreeDetailsCache(args: {
 }
 
 const TEMP_WORKSPACE_EXCLUDED_NAMES = new Set([
+  ".debugging",
   ".remote-cache",
   "active-terminals.json",
   "daemon.log",
