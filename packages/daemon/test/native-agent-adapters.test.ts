@@ -1,5 +1,13 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import {
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -604,6 +612,83 @@ describe("CodexAppServerAdapter", () => {
         method: "model/list",
         params: { limit: 100 },
       });
+    } finally {
+      rmSync(recordingDir, { recursive: true, force: true });
+    }
+  });
+
+  test("rolls and evicts disk recordings under the configured byte cap", async () => {
+    const recordingDir = mkdtempSync(join(tmpdir(), "supergit-codex-rpc-"));
+    try {
+      const fake = fakeCodexProcess();
+      const adapter = new CodexAppServerAdapter({
+        spawn: () => fake.proc,
+        recordingDir,
+        recordingMaxBytes: 1_600,
+        recordingSegmentMaxBytes: 450,
+      });
+
+      for (let attempt = 0; attempt < 6; attempt++) {
+        const models = adapter.listModels("/repo");
+        if (attempt === 0) {
+          await waitFor(() => fake.writes[0], "initialize request");
+          fake.enqueue({ id: 0, result: {} });
+        }
+        const requestIndex = attempt + 2;
+        await waitFor(
+          () => fake.writes[requestIndex],
+          `model list request ${attempt}`,
+        );
+        fake.enqueue({
+          id: attempt + 1,
+          result: {
+            data: [
+              {
+                id: `codex-${attempt}`,
+                model: "gpt-5.6-sol",
+                description: "x".repeat(80),
+              },
+            ],
+            nextCursor: null,
+          },
+        });
+        await models;
+      }
+
+      const files = readdirSync(recordingDir)
+        .filter((name) => name.endsWith(".jsonl"))
+        .map((name) => join(recordingDir, name));
+      const totalBytes = files.reduce(
+        (total, path) => total + statSync(path).size,
+        0,
+      );
+      expect(files.length).toBeGreaterThan(1);
+      expect(totalBytes).toBeLessThanOrEqual(1_600);
+      expect(
+        files.some((path) =>
+          readFileSync(path, "utf8").includes("codex-5"),
+        ),
+      ).toBe(true);
+      expect(JSON.stringify(adapter.recordingSnapshot()?.frames)).toContain(
+        "codex-5",
+      );
+
+      const activePath = adapter.recordingSnapshot()!.path!;
+      writeFileSync(
+        join(recordingDir, "saved-recording.json"),
+        "x".repeat(1_400),
+      );
+      adapter.enforceRecordingRetention();
+      const retainedFiles = readdirSync(recordingDir).map((name) =>
+        join(recordingDir, name),
+      );
+      expect(
+        retainedFiles.reduce(
+          (total, path) => total + statSync(path).size,
+          0,
+        ),
+      ).toBeLessThanOrEqual(1_600);
+      expect(existsSync(activePath)).toBe(true);
     } finally {
       rmSync(recordingDir, { recursive: true, force: true });
     }

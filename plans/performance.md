@@ -398,6 +398,9 @@ a temporary copy of the default workspace. That copy accidentally included
 `.debugging/` (1.8 GB locally), so the daemon remained in its pre-log copy on a
 nearly full disk and the smoke probe timed out after 10 seconds. Temporary
 workspaces now exclude `.debugging/`, like logs and other runtime-only state.
+Codex RPC recordings inside that directory are also segmented at 256 MiB and
+evict the oldest recording files before their aggregate size exceeds 2 GiB;
+the in-memory replay buffer remains independently bounded by frame count.
 
 ### Held daemon RSS — the token-scan dead cache (the real ~2.9 GB)
 

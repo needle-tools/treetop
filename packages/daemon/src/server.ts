@@ -4532,6 +4532,7 @@ const server = Bun.serve<TermWsData, never>({
         await fsMkdir(recordingDir, { recursive: true });
         const file = join(recordingDir, `${recording.id}.json`);
         await fsWriteFile(file, JSON.stringify(recording, null, 2));
+        codexAgent.enforceRecordingRetention();
         return json({ ok: true, recording, path: file });
       }
 
