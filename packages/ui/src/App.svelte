@@ -6400,14 +6400,14 @@
         payload.details &&
         typeof payload.details === "object"
       ) {
-        const next = patchWorktreeDetails(
+        const patch = patchWorktreeDetails(
           repos,
           payload.path,
           payload.details,
           daemonId,
         );
-        if (next === repos) void load("remote-sse:fs_change-fallback");
-        else repos = next;
+        if (!patch.matched) void load("remote-sse:fs_change-fallback");
+        else if (patch.changed) repos = patch.repos;
       } else {
         void load("remote-sse:fs_change-fallback");
       }
@@ -6638,13 +6638,13 @@
         if (payload.kind !== "fs_change" || typeof payload.path !== "string")
           return;
         if (payload.details && typeof payload.details === "object") {
-          const next = patchWorktreeDetails(
+          const patch = patchWorktreeDetails(
             repos,
             payload.path,
             payload.details,
           );
-          if (next === repos) fsChangeNeedsFullReload = true;
-          else repos = next;
+          if (!patch.matched) fsChangeNeedsFullReload = true;
+          else if (patch.changed) repos = patch.repos;
         } else {
           // A recompute failure intentionally invalidates the daemon cache and
           // broadcasts without details. Only that rare boundary case needs the

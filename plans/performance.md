@@ -846,6 +846,26 @@ and remote paths cannot contaminate each other, and remote SSE uses the same
 row-level update. Behavior tests cover identity preservation, fallback, and
 daemon scoping.
 
+The first rebuilt production run exposed a second-order problem hidden by the
+original reload storm. A single top-level `repos` assignment is itself very
+expensive with 73 persisted session columns: native samples again stayed
+entirely inside the EventSource-triggered Svelte microtask, and one watcher
+event blocked WebKit for 136 seconds. Periodic visible fetches write git
+bookkeeping such as `FETCH_HEAD` even when the displayed worktree details are
+unchanged, so sending those no-op rows still caused the large assignment every
+30 seconds. The daemon now compares the prior and recomputed details and does
+not broadcast semantic no-ops. The UI independently compares incoming detail
+fields and returns an explicit `{ matched, changed }` result: an unknown row
+keeps the correctness fallback, while a known duplicate does nothing and can
+never be mistaken for a cache miss.
+
+That rebuilt run also showed 45 exact `/api/session/stats` reads during the
+first ten seconds. Unlike transcript polling and cached-summary reads, the
+stats effect was not visibility-gated. Exact line-count reads now wait until
+their existing `SessionView` is near the viewport; the component, geometry,
+and visibility subscription remain mounted, and previously loaded values are
+kept while offscreen.
+
 ### Deferred levers (do only if Lever 1 isn't enough)
 
 2. **Poll only visible columns** — register/unregister the poll via an

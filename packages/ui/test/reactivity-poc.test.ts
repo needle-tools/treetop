@@ -1,6 +1,9 @@
 import { test, expect, describe } from "bun:test";
-import { flush } from "svelte/internal/client";
+import * as $ from "svelte/internal/client";
 import { createCounter, trackEffect } from "./reactivity-poc.svelte.ts";
+import { patchWorktreeDetails } from "../src/ndjson-client";
+
+const { flush } = $;
 
 describe("svelte 5 runes — DOM-free reactivity", () => {
   test("$state: reads initial value", () => {
@@ -57,5 +60,49 @@ describe("svelte 5 runes — DOM-free reactivity", () => {
     expect(values).toEqual([0, 1, 3]);
 
     cleanup();
+  });
+
+  test("duplicate worktree details do not wake whole-dashboard repo work", () => {
+    const initial = [
+      {
+        id: "repo",
+        worktrees: [
+          { path: "/repo", fileStatus: { unstaged: 0 }, branchStatus: null },
+        ],
+      },
+    ];
+    const repos = $.state(initial);
+    let wholeDashboardRuns = 0;
+    const wholeDashboard = $.derived(() => {
+      wholeDashboardRuns++;
+      return $.get(repos).length;
+    });
+    const destroy = $.effect_root(() => {
+      $.effect(() => void $.get(wholeDashboard));
+    });
+
+    try {
+      $.flush();
+      expect(wholeDashboardRuns).toBe(1);
+
+      const duplicate = patchWorktreeDetails($.get(repos), "/repo", {
+        fileStatus: { unstaged: 0 },
+        branchStatus: null,
+      });
+      if (duplicate.changed) $.set(repos, duplicate.repos);
+      $.flush();
+      expect(wholeDashboardRuns).toBe(1);
+
+      const realChange = patchWorktreeDetails($.get(repos), "/repo", {
+        fileStatus: { unstaged: 1 },
+        branchStatus: null,
+      });
+      if (realChange.changed) $.set(repos, realChange.repos);
+      $.flush();
+      expect(wholeDashboardRuns).toBe(2);
+      expect($.get(repos)[0]!.worktrees[0]!.fileStatus.unstaged).toBe(1);
+    } finally {
+      destroy();
+    }
   });
 });

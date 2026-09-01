@@ -31,7 +31,10 @@
     shouldLoadCodexModelCatalog,
     type CodexModelInfo,
   } from "./claude-session-menu";
-  import { elementNearViewport } from "./col-visibility";
+  import {
+    elementNearViewport,
+    visibleSessionRequestKey,
+  } from "./col-visibility";
   import { getDaemonKV } from "./daemon-kv";
   import { openSummarize, activeSummarize } from "./summarize-dialog";
   import {
@@ -2264,13 +2267,17 @@
       sessionMessageSource.kind === "transcript"
         ? sessionMessageSource.source
         : sessionFileSource;
-    const key = statsSource ? `${daemonId ?? ""}\0${statsSource}` : "";
+    const key = visibleSessionRequestKey(
+      statsSource,
+      daemonId,
+      columnNearViewport,
+    );
     if (key && key !== sessionStatsKey) {
       sessionStatsKey = key;
       sessionLineCount = undefined;
       measuredFileSizeBytes = undefined;
       void loadSessionFileStats(statsSource, key);
-    } else if (!key) {
+    } else if (!statsSource) {
       sessionStatsKey = "";
       sessionLineCount = undefined;
       measuredFileSizeBytes = undefined;

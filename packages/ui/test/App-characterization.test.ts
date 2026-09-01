@@ -900,11 +900,13 @@ describe("patchWorktreeDetails", () => {
     const secondRepo = { id: "r2", worktrees: [{ path: "/other" }] };
     const repos = [firstRepo, secondRepo];
 
-    const next = patchWorktreeDetails(repos, "/repo/a", {
+    const patch = patchWorktreeDetails(repos, "/repo/a", {
       fileStatus: { unstaged: 3 },
       branchStatus: { ahead: 1 },
     });
+    const next = patch.repos;
 
+    expect(patch).toMatchObject({ matched: true, changed: true });
     expect(next).not.toBe(repos);
     expect(next[0]).not.toBe(firstRepo);
     expect(next[1]).toBe(secondRepo);
@@ -919,7 +921,31 @@ describe("patchWorktreeDetails", () => {
 
   test("returns the original array when the worktree is unknown", () => {
     const repos = [{ id: "r1", worktrees: [{ path: "/repo/a" }] }];
-    expect(patchWorktreeDetails(repos, "/missing", {})).toBe(repos);
+    expect(patchWorktreeDetails(repos, "/missing", {})).toEqual({
+      repos,
+      matched: false,
+      changed: false,
+    });
+  });
+
+  test("returns the original array for a duplicate no-op detail payload", () => {
+    const repos = [
+      {
+        id: "r1",
+        worktrees: [
+          {
+            path: "/repo/a",
+            fileStatus: { unstaged: 0, untracked: 0 },
+            branchStatus: null,
+          },
+        ],
+      },
+    ];
+    const patch = patchWorktreeDetails(repos, "/repo/a", {
+      fileStatus: { unstaged: 0, untracked: 0 },
+      branchStatus: null,
+    });
+    expect(patch).toEqual({ repos, matched: true, changed: false });
   });
 
   test("scopes identical paths to the daemon that emitted the change", () => {
@@ -931,12 +957,13 @@ describe("patchWorktreeDetails", () => {
     };
     const repos = [local, remote];
 
-    const next = patchWorktreeDetails(
+    const patch = patchWorktreeDetails(
       repos,
       "/repo/a",
       { head: "3" },
       "office-mac",
     );
+    const next = patch.repos;
 
     expect(next[0]).toBe(local);
     expect(next[1]).not.toBe(remote);
