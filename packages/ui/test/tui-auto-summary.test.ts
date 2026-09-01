@@ -1,5 +1,6 @@
 import { test, expect, describe } from "bun:test";
 import {
+  shouldCancelBackgroundSummary,
   shouldAutoSummarizeTui,
   MIN_TURNS_TO_SEED,
   type TuiAutoSummaryInput,
@@ -76,6 +77,29 @@ describe("shouldAutoSummarizeTui", () => {
         ...base,
         refreshing: true,
         summaryDrifted: true,
+      }),
+    ).toBe(false);
+  });
+});
+
+describe("shouldCancelBackgroundSummary", () => {
+  test("cancels only an active background stream when disabled", () => {
+    expect(
+      shouldCancelBackgroundSummary({
+        enabled: false,
+        backgroundRequestActive: true,
+      }),
+    ).toBe(true);
+    expect(
+      shouldCancelBackgroundSummary({
+        enabled: true,
+        backgroundRequestActive: true,
+      }),
+    ).toBe(false);
+    expect(
+      shouldCancelBackgroundSummary({
+        enabled: false,
+        backgroundRequestActive: false,
       }),
     ).toBe(false);
   });

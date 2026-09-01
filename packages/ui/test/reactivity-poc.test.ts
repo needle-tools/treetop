@@ -3,6 +3,7 @@ import * as $ from "svelte/internal/client";
 import { createCounter, trackEffect } from "./reactivity-poc.svelte.ts";
 import { patchWorktreeDetails } from "../src/ndjson-client";
 import { nextCachedSessionSummaryRequest } from "../src/summary-queue";
+import { shouldCancelBackgroundSummary } from "../src/tui-auto-summary";
 
 const { flush } = $;
 
@@ -136,6 +137,33 @@ describe("svelte 5 runes — DOM-free reactivity", () => {
       $.set(source, "source-b");
       $.flush();
       expect(requested).toEqual(["source-a"]);
+    } finally {
+      destroy();
+    }
+  });
+
+  test("turning background summaries off aborts an active background stream", () => {
+    const enabled = $.state(true);
+    const controller = new AbortController();
+    const destroy = $.effect_root(() => {
+      $.effect(() => {
+        if (
+          shouldCancelBackgroundSummary({
+            enabled: $.get(enabled),
+            backgroundRequestActive: !controller.signal.aborted,
+          })
+        ) {
+          controller.abort();
+        }
+      });
+    });
+
+    try {
+      $.flush();
+      expect(controller.signal.aborted).toBe(false);
+      $.set(enabled, false);
+      $.flush();
+      expect(controller.signal.aborted).toBe(true);
     } finally {
       destroy();
     }

@@ -866,6 +866,17 @@ their existing `SessionView` is near the viewport; the component, geometry,
 and visibility subscription remain mounted, and previously loaded values are
 kept while offscreen.
 
+The 2026-09-01 startup audit found one remaining avoidable request fanout. Seven
+`GET /api/sessions/summarize` calls were cached-summary reads (generation is a
+`POST`), but even cache reads are unexpected startup work. Background session
+summaries are now an opt-in Sessions setting, default off; the same reactive
+gate prevents cache reads and tears down the five-minute terminal generation
+timer immediately when disabled. It also aborts an automatic generation stream
+already in flight, which propagates cancellation to the daemon's Ollama fetch;
+manual summary actions remain available. Startup `/api/image` traffic is the
+expected browser loading of sticky-note attachment thumbnails; those images
+retain native `loading="lazy"` and `decoding="async"` behavior.
+
 ### Deferred levers (do only if Lever 1 isn't enough)
 
 2. **Poll only visible columns** — register/unregister the poll via an

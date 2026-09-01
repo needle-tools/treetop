@@ -51,3 +51,10 @@ export function shouldAutoSummarizeTui(i: TuiAutoSummaryInput): boolean {
     i.sampledCount > i.lastAttemptCount
   );
 }
+
+export function shouldCancelBackgroundSummary(i: {
+  enabled: boolean;
+  backgroundRequestActive: boolean;
+}): boolean {
+  return !i.enabled && i.backgroundRequestActive;
+}
