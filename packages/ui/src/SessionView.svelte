@@ -1,24 +1,3 @@
-<script context="module" lang="ts">
-  import type { VisualScrollMemory as ModuleVisualScrollMemory } from "./visual-tail-follow";
-
-  const visualScrollMemoryByKey = new Map<string, ModuleVisualScrollMemory>();
-  const VISUAL_SCROLL_MEMORY_LIMIT = 200;
-
-  function rememberVisualScrollMemory(
-    key: string,
-    memory: ModuleVisualScrollMemory,
-  ): void {
-    if (!key) return;
-    if (visualScrollMemoryByKey.has(key)) visualScrollMemoryByKey.delete(key);
-    visualScrollMemoryByKey.set(key, memory);
-    while (visualScrollMemoryByKey.size > VISUAL_SCROLL_MEMORY_LIMIT) {
-      const oldest = visualScrollMemoryByKey.keys().next().value;
-      if (!oldest) break;
-      visualScrollMemoryByKey.delete(oldest);
-    }
-  }
-</script>
-
 <script lang="ts">
   import { apiUrl, withRequestDeadline } from "./api";
   import { play } from "./sound";
@@ -26,20 +5,11 @@
   import { flip } from "svelte/animate";
   import TerminalView from "./TerminalView.svelte";
   import VisualTranscript from "./VisualTranscript.svelte";
+  import { canRequestOlderTranscriptMessages } from "./visual-tail-follow";
   import {
-    isVisualTailFollowActive,
-    isNearVisualScrollEnd,
-    replacementVisualScrollTop,
-    selectVisualScrollAnchor,
-    shouldFollowLiveWorkBody,
-    shouldFollowVisualTail,
-    shouldPauseVisualTailAfterUserScroll,
-    shouldRememberVisualScrollMemory,
-    canRequestOlderTranscriptMessages,
-    VISUAL_TAIL_FOLLOW_NEAR_PX,
-    visualScrollMemoryFromMetrics,
-    visualScrollTopFromMemory,
-  } from "./visual-tail-follow";
+    createSessionScrollController,
+    type PausedSessionReaderAnchor,
+  } from "./session-scroll-controller";
   import LoadingOverlay from "./LoadingOverlay.svelte";
   import LoadingSpinner from "./LoadingSpinner.svelte";
   import { type SessionMenuItem } from "./SessionMenu.svelte";
@@ -504,54 +474,17 @@
     setPinRevealed(false);
   }
 
-  /** Settle-debounce for the chat scroll container. The user's
-   *  complaint: when scrolling the page, drifting the cursor over
-   *  the chat by accident hands the wheel to the chat and the page
-   *  stops scrolling. Fix: only let `.messages` capture the wheel
-   *  after the cursor has been parked inside for ≥ 300ms. Until
-   *  then, wheel events are forwarded to the window so the page
-   *  keeps scrolling. Combined with `overscroll-behavior: contain`
-   *  on `.messages` this means: the chat is a true "scroll island"
-   *  — needs intent to enter, and once entered won't bleed scroll
-   *  back into the page. */
-  const MSG_SETTLE_MS = 300;
-  let msgCursorSettled = false;
-  let msgSettleTimer: ReturnType<typeof setTimeout> | null = null;
   function onMessagesEnter(): void {
-    msgCursorSettled = false;
-    if (msgSettleTimer) clearTimeout(msgSettleTimer);
-    msgSettleTimer = setTimeout(() => {
-      msgCursorSettled = true;
-      msgSettleTimer = null;
-    }, MSG_SETTLE_MS);
+    sessionScroll.onMouseEnter();
   }
   function onMessagesLeave(): void {
-    msgCursorSettled = false;
-    if (msgSettleTimer) {
-      clearTimeout(msgSettleTimer);
-      msgSettleTimer = null;
-    }
+    sessionScroll.onMouseLeave();
   }
   function onMessagesWheel(ev: WheelEvent): void {
-    if (msgCursorSettled) {
-      if (ev.deltaY < 0) setVisualTailFollowPaused(true);
-      else if (ev.deltaY > 0) updateVisualTailFollowIntent();
-      if (ev.deltaY < 0) maybeRequestOlderVisualHistory();
-      return;
-    }
-    // Horizontal-dominant wheels (trackpad swipes across the sessions
-    // strip) must pass through so the parent strip can pan — don't
-    // intercept those.
-    if (Math.abs(ev.deltaX) > Math.abs(ev.deltaY)) return;
-    // Cursor hasn't been parked long enough — treat this wheel tick
-    // as still part of a page-scroll session and forward it.
-    ev.preventDefault();
-    window.scrollBy({ top: ev.deltaY, behavior: "auto" });
+    sessionScroll.onWheel(ev);
   }
   function onMessagesScroll(): void {
-    updateVisualTailFollowIntent();
-    saveVisualScrollMemory();
-    maybeRequestOlderVisualHistory();
+    sessionScroll.onScroll();
   }
   let lastLoadedAt = 0;
   let pollCount = 0;
@@ -1714,47 +1647,26 @@
   // = scroll to bottom. Subsequent renders = only auto-scroll if the user
   // was already near the bottom (so polling can't snatch them away when
   // they've scrolled up to read history).
-  let hasRenderedOnce = false;
-  let visualTailKey = "";
-  let visualTailFollowPaused = false;
   let visualTailFollowActive = false;
-  let visualTailFollowPauseSeq = 0;
-  let visualTailMessagesEl: HTMLElement | null = null;
-  let visualTailLayoutObserver: ResizeObserver | null = null;
-  let visualReaderAnchorRestoreSeq = 0;
-  let visualScrollMemoryKey = "";
-  let visualPausedLiveWorkBodyKeys = new Set<string>();
   let visualOpenWorkFoldoutKeys = new Set<string>();
   let visualOpenWorkEntryKeys = new Set<string>();
   let visualExpandedThinkingWorkKeys = new Set<string>();
-
-  function isNearScrollEnd(el: HTMLElement): boolean {
-    return isNearVisualScrollEnd(el, VISUAL_TAIL_FOLLOW_NEAR_PX);
-  }
-
-  function hasUsableScrollLayout(el: HTMLElement): boolean {
-    if (!el.isConnected) return false;
-    const rect = el.getBoundingClientRect();
-    return rect.width > 0 && rect.height > 0;
-  }
-
-  interface LiveWorkBody {
-    body: HTMLElement;
-    key: string;
-  }
-
-  function liveWorkBodies(): LiveWorkBody[] {
-    return messagesEl
-      ? Array.from(
-          messagesEl.querySelectorAll<HTMLElement>(
-            ".work-foldout-live > .work-foldout-body",
-          ),
-        ).map((body, index) => ({
-          body,
-          key: body.dataset.workKey ?? `live:${index}`,
-        }))
-      : [];
-  }
+  const sessionScroll = createSessionScrollController({
+    scheduler: {
+      afterRender(task) {
+        void tick().then(task);
+      },
+      nextFrame(task) {
+        requestAnimationFrame(task);
+      },
+    },
+    requestOlder: maybeRequestOlderVisualHistory,
+    historyAnchorActive: () => visualHistoryScrollAnchor !== null,
+    transcriptActive: () => visualTranscriptActive,
+    onActiveChange(active) {
+      visualTailFollowActive = active;
+    },
+  });
 
   function visualBlockTailKey(block: NormalizedBlock): string {
     const planKey =
@@ -1786,12 +1698,6 @@
       .join("|");
   }
 
-  function scrollToEnd(el: HTMLElement): void {
-    // Let the browser clamp to the real end; reading scrollHeight here forces
-    // layout across large transcript columns during startup.
-    el.scrollTop = 1_000_000_000;
-  }
-
   function openSessionFind(): void {
     sessionFindScope?.openFind();
   }
@@ -1800,376 +1706,36 @@
     return messagesEl ?? sessionEl;
   }
 
-  function liveWorkBodiesAreFollowing(): boolean {
-    for (const { body, key } of liveWorkBodies()) {
-      if (body.scrollHeight <= body.clientHeight + 1) continue;
-      if (visualPausedLiveWorkBodyKeys.has(key)) return false;
-      if (!isNearVisualScrollEnd(visualScrollMetrics(body))) return false;
-    }
-    return true;
-  }
-
-  function setLiveWorkBodyPaused(key: string, paused: boolean): void {
-    const hasKey = visualPausedLiveWorkBodyKeys.has(key);
-    if (paused === hasKey) {
-      syncVisualTailFollowActive();
-      return;
-    }
-    const next = new Set(visualPausedLiveWorkBodyKeys);
-    if (paused) next.add(key);
-    else next.delete(key);
-    visualPausedLiveWorkBodyKeys = next;
-    syncVisualTailFollowActive();
-  }
-
-  function onLiveWorkBodyScroll(workKey: string, body: HTMLElement): void {
-    setLiveWorkBodyPaused(
-      workKey,
-      shouldPauseVisualTailAfterUserScroll({
-        metrics: visualScrollMetrics(body),
-      }),
-    );
-  }
-
-  function scrollLiveWorkBodiesToEnd(opts: { force?: boolean } = {}): void {
-    for (const { body } of liveWorkBodies()) {
-      const key = body.dataset.workKey ?? "";
-      const bodyPaused =
-        opts.force !== true && key
-          ? visualPausedLiveWorkBodyKeys.has(key)
-          : false;
-      if (
-        !shouldFollowLiveWorkBody({
-          parentShouldStick: true,
-          bodyPaused,
-        })
-      ) {
-        continue;
-      }
-      scrollToEnd(body);
-    }
-  }
-
-  function applyVisualTailFollow(
-    el: HTMLElement,
-    opts: { force?: boolean } = {},
-  ): void {
-    scrollToEnd(el);
-    scrollLiveWorkBodiesToEnd(opts);
-    syncVisualTailFollowActive(el);
-  }
-
-  function settleVisualTailFollow(
-    el: HTMLElement,
-    parentShouldStick: boolean,
-  ): void {
-    if (!shouldFollowLiveWorkBody({ parentShouldStick })) return;
-    requestAnimationFrame(() => {
-      if (messagesEl !== el) return;
-      applyVisualTailFollow(el);
-    });
-  }
-
-  function visualScrollMetrics(el: HTMLElement) {
-    return {
-      scrollHeight: el.scrollHeight,
-      scrollTop: el.scrollTop,
-      clientHeight: el.clientHeight,
-    };
-  }
-
-  function visualScrollAnchor(
-    el: HTMLElement,
-  ): { key: string; offsetTop: number } | undefined {
-    const scrollerRect = el.getBoundingClientRect();
-    const anchors = Array.from(
-      el.querySelectorAll<HTMLElement>("[data-visual-scroll-anchor]"),
-    );
-    return selectVisualScrollAnchor({
-      viewportTop: scrollerRect.top,
-      viewportBottom: scrollerRect.bottom,
-      candidates: anchors.flatMap((anchor) => {
-        const key = anchor.dataset.visualScrollAnchor;
-        if (!key) return [];
-        const rect = anchor.getBoundingClientRect();
-        let depth = 0;
-        let parent = anchor.parentElement?.closest<HTMLElement>(
-          "[data-visual-scroll-anchor]",
-        );
-        while (parent && el.contains(parent)) {
-          depth += 1;
-          parent = parent.parentElement?.closest<HTMLElement>(
-            "[data-visual-scroll-anchor]",
-          );
-        }
-        return [{ key, top: rect.top, bottom: rect.bottom, depth }];
-      }),
-    });
-  }
-
-  interface PausedVisualReaderAnchor {
-    el: HTMLElement;
-    key: string;
-    offsetTop: number;
-    pauseSeq: number;
-  }
-
   function capturePausedVisualReaderAnchor():
-    | PausedVisualReaderAnchor
+    | PausedSessionReaderAnchor
     | undefined {
-    const el = messagesEl;
-    if (
-      !el ||
-      !visualTailFollowPaused ||
-      visualHistoryScrollAnchor !== null
-    ) {
-      return undefined;
-    }
-    const anchor = visualScrollAnchor(el);
-    return anchor
-      ? { el, ...anchor, pauseSeq: visualTailFollowPauseSeq }
-      : undefined;
+    return sessionScroll.capturePausedReaderAnchor();
   }
 
   function restorePausedVisualReaderAnchor(
-    anchor: PausedVisualReaderAnchor,
+    anchor: PausedSessionReaderAnchor,
   ): void {
-    const restoreSeq = ++visualReaderAnchorRestoreSeq;
-    void tick().then(() => {
-      requestAnimationFrame(() => {
-        if (
-          restoreSeq !== visualReaderAnchorRestoreSeq ||
-          messagesEl !== anchor.el ||
-          !visualTailFollowPaused ||
-          visualTailFollowPauseSeq !== anchor.pauseSeq
-        ) {
-          return;
-        }
-        const target = anchor.el.querySelector<HTMLElement>(
-          `[data-visual-scroll-anchor="${CSS.escape(anchor.key)}"]`,
-        );
-        if (!target) return;
-        const scrollerTop = anchor.el.getBoundingClientRect().top;
-        const nextOffsetTop = target.getBoundingClientRect().top - scrollerTop;
-        const delta = nextOffsetTop - anchor.offsetTop;
-        if (Math.abs(delta) >= 0.5) anchor.el.scrollTop += delta;
-      });
-    });
+    sessionScroll.restorePausedReaderAnchor(anchor);
   }
 
   function saveVisualScrollMemory(el: HTMLElement | null = messagesEl): void {
-    if (!el || !visualScrollMemoryKey) return;
-    const metrics = visualScrollMetrics(el);
-    if (
-      !shouldRememberVisualScrollMemory({
-        layoutUsable: hasUsableScrollLayout(el),
-        metrics,
-        previous: visualScrollMemoryByKey.get(visualScrollMemoryKey),
-      })
-    ) {
-      return;
-    }
-    const anchor = visualScrollAnchor(el);
-    rememberVisualScrollMemory(
-      visualScrollMemoryKey,
-      visualScrollMemoryFromMetrics({
-        metrics,
-        paused: visualTailFollowPaused,
-        nearPx: VISUAL_TAIL_FOLLOW_NEAR_PX,
-        anchorKey: anchor?.key,
-        anchorOffsetTop: anchor?.offsetTop,
-      }),
-    );
-  }
-
-  function restoreVisualScrollMemory(el: HTMLElement): boolean {
-    const memory = visualScrollMemoryByKey.get(visualScrollMemoryKey);
-    if (!memory) return false;
-    hasRenderedOnce = true;
-    setVisualTailFollowPaused(!memory.followTail);
-    const targetKey = memory.anchorKey;
-    const targetOffset = memory.anchorOffsetTop;
-    void tick().then(() => {
-      requestAnimationFrame(() => {
-        if (messagesEl !== el) return;
-        if (!memory.followTail && targetKey && targetOffset !== undefined) {
-          const target = el.querySelector<HTMLElement>(
-            `[data-visual-scroll-anchor="${CSS.escape(targetKey)}"]`,
-          );
-          if (target) {
-            const scrollerRect = el.getBoundingClientRect();
-            const targetRect = target.getBoundingClientRect();
-            el.scrollTop += targetRect.top - scrollerRect.top - targetOffset;
-            syncVisualTailFollowActive(el);
-            return;
-          }
-        }
-        el.scrollTop = visualScrollTopFromMemory({
-          memory,
-          next: visualScrollMetrics(el),
-        });
-        if (memory.followTail) scrollLiveWorkBodiesToEnd();
-        syncVisualTailFollowActive(el);
-        settleVisualTailFollow(el, memory.followTail);
-      });
-    });
-    return true;
-  }
-
-  function preserveVisualTailScrollerReplacement(
-    previous: HTMLElement,
-    next: HTMLElement,
-  ): void {
-    const previousMetrics = visualScrollMetrics(previous);
-    const wasTailFollowing =
-      !visualTailFollowPaused && isNearVisualScrollEnd(previousMetrics);
-    if (!wasTailFollowing) setVisualTailFollowPaused(true);
-    const pauseSeq = visualTailFollowPauseSeq;
-    void tick().then(() => {
-      requestAnimationFrame(() => {
-        if (messagesEl !== next) return;
-        next.scrollTop = replacementVisualScrollTop({
-          previous: previousMetrics,
-          next: visualScrollMetrics(next),
-          followTail: wasTailFollowing && canApplyVisualTailFollow(pauseSeq),
-        });
-        const parentShouldStick =
-          wasTailFollowing && canApplyVisualTailFollow(pauseSeq);
-        if (parentShouldStick) scrollLiveWorkBodiesToEnd();
-        syncVisualTailFollowActive(next);
-        settleVisualTailFollow(next, parentShouldStick);
-      });
-    });
-  }
-
-  function visualTranscriptHasActiveSelection(): boolean {
-    if (!messagesEl) return false;
-    const selection = window.getSelection?.();
-    if (!selection || selection.isCollapsed || selection.rangeCount === 0)
-      return false;
-    const anchor = selection.anchorNode;
-    const focus = selection.focusNode;
-    return (
-      (!!anchor && messagesEl.contains(anchor)) ||
-      (!!focus && messagesEl.contains(focus))
-    );
+    sessionScroll.saveMemory(el);
   }
 
   function resetVisualTailFollow(): void {
-    hasRenderedOnce = false;
-    visualTailKey = "";
-    visualTailFollowPaused = false;
-    visualTailFollowActive = false;
-    visualTailFollowPauseSeq += 1;
-    visualPausedLiveWorkBodyKeys = new Set();
-  }
-
-  function syncVisualTailFollowActive(
-    el: HTMLElement | null = messagesEl,
-  ): void {
-    visualTailFollowActive =
-      !!el &&
-      isVisualTailFollowActive({
-        metrics: visualScrollMetrics(el),
-        paused: visualTailFollowPaused,
-        nearPx: VISUAL_TAIL_FOLLOW_NEAR_PX,
-      }) &&
-      liveWorkBodiesAreFollowing();
+    sessionScroll.reset();
   }
 
   function setVisualTailFollowPaused(paused: boolean): void {
-    if (visualTailFollowPaused !== paused) {
-      visualTailFollowPaused = paused;
-      visualTailFollowPauseSeq += 1;
-    }
-    syncVisualTailFollowActive();
-  }
-
-  function updateVisualTailFollowIntent(): void {
-    const el = messagesEl;
-    if (!el) return;
-    setVisualTailFollowPaused(
-      shouldPauseVisualTailAfterUserScroll({
-        metrics: visualScrollMetrics(el),
-      }),
-    );
-  }
-
-  function canApplyVisualTailFollow(seq: number): boolean {
-    return visualTailFollowPauseSeq === seq && !visualTailFollowPaused;
-  }
-
-  function waitForVisualTailLayout(opts: { force?: boolean }): void {
-    const el = messagesEl;
-    if (!el) return;
-    visualTailLayoutObserver?.disconnect();
-    visualTailLayoutObserver = null;
-    if (typeof ResizeObserver === "undefined") {
-      requestAnimationFrame(() => scheduleVisualTailFollow(opts));
-      return;
-    }
-    visualTailLayoutObserver = new ResizeObserver(() => {
-      const current = messagesEl;
-      if (!current || !hasUsableScrollLayout(current)) return;
-      visualTailLayoutObserver?.disconnect();
-      visualTailLayoutObserver = null;
-      scheduleVisualTailFollow(opts);
-    });
-    visualTailLayoutObserver.observe(el);
+    sessionScroll.setPaused(paused);
   }
 
   function scheduleVisualTailFollow(opts: { force?: boolean } = {}): void {
-    const el = messagesEl;
-    if (!el) return;
-    const force = opts.force === true;
-    const firstRender = !hasRenderedOnce;
-    if (firstRender && !hasUsableScrollLayout(el)) {
-      waitForVisualTailLayout(opts);
-      return;
-    }
-    const pauseSeq = visualTailFollowPauseSeq;
-    const selecting = visualTranscriptHasActiveSelection();
-    const shouldStickMessages = shouldFollowVisualTail({
-      force,
-      firstRender,
-      paused: visualTailFollowPaused,
-      nearEnd: isNearScrollEnd(el),
-      restoredMemory: visualScrollMemoryByKey.get(visualScrollMemoryKey),
-      selecting,
-    });
-    syncVisualTailFollowActive(el);
-    hasRenderedOnce = true;
-
-    void tick().then(() => {
-      requestAnimationFrame(() => {
-        const current = messagesEl;
-        if (!current) return;
-        const mayFollow = firstRender || canApplyVisualTailFollow(pauseSeq);
-        if (!mayFollow) visualTailFollowActive = false;
-        if (shouldStickMessages && mayFollow) {
-          applyVisualTailFollow(current, { force });
-        }
-
-        const currentLiveBodyCount = liveWorkBodies().length;
-        if (!visualTranscriptActive && currentLiveBodyCount === 0) return;
-
-        requestAnimationFrame(() => {
-          const settled = messagesEl;
-          const mayFollowSettled =
-            firstRender || canApplyVisualTailFollow(pauseSeq);
-          if (!mayFollowSettled) visualTailFollowActive = false;
-          if (settled && shouldStickMessages && mayFollowSettled) {
-            applyVisualTailFollow(settled, { force });
-          }
-        });
-      });
-    });
+    sessionScroll.scheduleTailFollow(opts);
   }
 
   function forceVisualTailFollow(): void {
-    visualPausedLiveWorkBodyKeys = new Set();
-    setVisualTailFollowPaused(false);
-    scheduleVisualTailFollow({ force: true });
+    sessionScroll.forceTailFollow();
   }
 
   function resetVisualHistoryWindow(): void {
@@ -2329,7 +1895,7 @@
     if (key !== visualHistorySourceKey) {
       saveVisualScrollMemory();
       visualHistorySourceKey = key;
-      visualScrollMemoryKey = key;
+      sessionScroll.setMemoryKey(key);
       resetVisualHistoryWindow();
       resetVisualTailFollow();
       resetVisualExpansionState();
@@ -5246,24 +4812,10 @@
   //   - Subsequent renders: only follow the tail if the user was already
   //     pinned near the bottom. This includes the nested live "Worked for…"
   //     scroller; live deltas inside that foldout need to tail like a TUI.
-  $: if (messagesEl) {
-    const nextTailKey = visualMessagesTailKey(visualSessionMessages);
-    if (messagesEl !== visualTailMessagesEl) {
-      const previousMessagesEl = visualTailMessagesEl;
-      if (previousMessagesEl && hasRenderedOnce) {
-        saveVisualScrollMemory(previousMessagesEl);
-      }
-      visualTailMessagesEl = messagesEl;
-      const restored = restoreVisualScrollMemory(messagesEl);
-      if (restored) {
-        visualTailKey = nextTailKey;
-      } else if (previousMessagesEl && hasRenderedOnce) {
-        preserveVisualTailScrollerReplacement(previousMessagesEl, messagesEl);
-      }
-    }
-    if (nextTailKey !== visualTailKey) {
-      visualTailKey = nextTailKey;
-      scheduleVisualTailFollow();
+  $: {
+    sessionScroll.setElement(messagesEl);
+    if (messagesEl) {
+      sessionScroll.updateTail(visualMessagesTailKey(visualSessionMessages));
     }
   }
 
@@ -5352,8 +4904,7 @@
   });
 
   onDestroy(() => {
-    visualTailLayoutObserver?.disconnect();
-    visualTailLayoutObserver = null;
+    sessionScroll.dispose();
     window.removeEventListener(STAGE_PROMPT_EVENT, onStagePrompt);
     if (typeof document !== "undefined") {
       document.removeEventListener("visibilitychange", refreshTerminalHold);
@@ -5372,7 +4923,6 @@
     if (disposeGraceTimer) clearTimeout(disposeGraceTimer);
     if (tuiSummaryTimer) clearInterval(tuiSummaryTimer);
     cancelPinHide();
-    if (msgSettleTimer) clearTimeout(msgSettleTimer);
   });
 </script>
 
@@ -5864,7 +5414,6 @@
       {onMessagesLeave}
       {onMessagesWheel}
       {onMessagesScroll}
-      {onLiveWorkBodyScroll}
       active={visualTranscriptActive}
       showLiveThinkingLine={codexVisualAppSurface && codexRunning}
       messageMotionSources={composerMessageMotionSources}

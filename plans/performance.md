@@ -161,6 +161,15 @@ load-bearing:
    `nextCachedSessionSummaryRequest`, `planWorktreeRecompute`,
    `selectSessionsForBackgroundSpawn`).
 
+**Session transcript scrolling (2026-09-01):** `SessionView` had two competing
+vertical scroll authorities: the transcript and the live `Worked for…` body,
+plus their tail/pause state spread across the component. Live app-server
+updates could therefore preserve one scroll position while moving the other.
+The durable shape is one `.messages` scroller owned by
+`session-scroll-controller.ts`; work bodies keep their DOM and geometry but no
+longer own overflow. Paused updates anchor the deepest visible stable transcript
+row across the Svelte update.
+
 ## Mechanics — what each Chrome phase actually costs
 
 Useful background for anyone touching the always-on chrome:
