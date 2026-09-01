@@ -777,6 +777,14 @@ incrementally scans appended bytes on later requests. This keeps unusually
 large sessions visible in the header and dock without making every historical
 session pay the line-count cost during `/api/repos` enrichment.
 
+Live app-server updates also need a reader-position guard independent of tail
+follow. The transcript already uses keyed Svelte rows and reuses unchanged item
+references, but the active work subtree legitimately changes as tool and text
+deltas arrive. A paused reader is now anchored to the deepest visible stable
+row before that DOM update and restored to the same viewport offset afterward.
+Anchor selection deliberately ignores a giant enclosing work row when a nested
+step is visible; choosing the container made earlier scroll memory ineffective.
+
 This investigation also found the data volume at 100% capacity (about 3 GiB
 free) and repeated `ENOSPC` writes in daemon diagnostics. That is an independent
 startup/reliability risk and requires freeing disk space; session code must not

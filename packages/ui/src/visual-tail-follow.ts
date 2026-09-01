@@ -13,6 +13,36 @@ export interface VisualScrollMemory extends VisualScrollMetrics {
   anchorOffsetTop?: number;
 }
 
+export interface VisualScrollAnchorCandidate {
+  key: string;
+  top: number;
+  bottom: number;
+  depth?: number;
+}
+
+export function selectVisualScrollAnchor(opts: {
+  viewportTop: number;
+  viewportBottom: number;
+  candidates: readonly VisualScrollAnchorCandidate[];
+}): { key: string; offsetTop: number } | undefined {
+  const visible = opts.candidates.filter(
+    (candidate) =>
+      candidate.bottom >= opts.viewportTop &&
+      candidate.top <= opts.viewportBottom,
+  );
+  visible.sort((a, b) => {
+    const depthDelta = (b.depth ?? 0) - (a.depth ?? 0);
+    if (depthDelta !== 0) return depthDelta;
+    return (
+      Math.abs(a.top - opts.viewportTop) - Math.abs(b.top - opts.viewportTop)
+    );
+  });
+  const selected = visible[0];
+  return selected
+    ? { key: selected.key, offsetTop: selected.top - opts.viewportTop }
+    : undefined;
+}
+
 export function isNearVisualScrollEnd(
   metrics: VisualScrollMetrics,
   nearPx = VISUAL_TAIL_FOLLOW_NEAR_PX,

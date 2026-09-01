@@ -4,6 +4,7 @@ import {
   shouldPauseVisualTailAfterUserScroll,
   isVisualTailFollowActive,
   replacementVisualScrollTop,
+  selectVisualScrollAnchor,
   shouldFollowLiveWorkBody,
   shouldFollowVisualTail,
   shouldRememberVisualScrollMemory,
@@ -13,6 +14,21 @@ import {
 } from "../src/visual-tail-follow";
 
 describe("visual transcript tail following", () => {
+  it("anchors a paused reader to the nested row nearest the viewport, not its rebuilt work container", () => {
+    expect(
+      selectVisualScrollAnchor({
+        viewportTop: 100,
+        viewportBottom: 700,
+        candidates: [
+          { key: "work:turn", top: -1_200, bottom: 1_800, depth: 0 },
+          { key: "entry:old", top: -240, bottom: 80, depth: 1 },
+          { key: "entry:reading", top: 116, bottom: 360, depth: 1 },
+          { key: "entry:later", top: 390, bottom: 640, depth: 1 },
+        ],
+      }),
+    ).toEqual({ key: "entry:reading", offsetTop: 16 });
+  });
+
   it("follows passive updates only when the scroller is already near the end", () => {
     expect(
       shouldFollowVisualTail({

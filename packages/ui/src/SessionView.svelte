@@ -30,6 +30,7 @@
     isVisualTailFollowActive,
     isNearVisualScrollEnd,
     replacementVisualScrollTop,
+    selectVisualScrollAnchor,
     shouldFollowLiveWorkBody,
     shouldFollowVisualTail,
     shouldPauseVisualTailAfterUserScroll,
@@ -1234,6 +1235,7 @@
   let previousVisualTranscriptActive: boolean | undefined;
   let visualTranscriptChangeStartHint: number | undefined;
   $: if (renderReadBody) {
+    const pausedReaderAnchor = capturePausedVisualReaderAnchor();
     const changeStartHint = visualTranscriptChangeStartHint;
     const relativeChangeStartHint =
       typeof changeStartHint === "number"
@@ -1251,6 +1253,9 @@
     previousVisualSessionMessages = visualRenderWindow.messages;
     previousVisualTranscriptActive = visualTranscriptActive;
     visualTranscriptChangeStartHint = undefined;
+    if (pausedReaderAnchor) {
+      restorePausedVisualReaderAnchor(pausedReaderAnchor);
+    }
   } else {
     visualTranscriptItems = [];
     previousVisualSessionMessages = [];
@@ -1716,6 +1721,7 @@
   let visualTailFollowPauseSeq = 0;
   let visualTailMessagesEl: HTMLElement | null = null;
   let visualTailLayoutObserver: ResizeObserver | null = null;
+  let visualReaderAnchorRestoreSeq = 0;
   let visualScrollMemoryKey = "";
   let visualPausedLiveWorkBodyKeys = new Set<string>();
   let visualOpenWorkFoldoutKeys = new Set<string>();
@@ -1879,18 +1885,76 @@
     const anchors = Array.from(
       el.querySelectorAll<HTMLElement>("[data-visual-scroll-anchor]"),
     );
-    for (const anchor of anchors) {
-      const key = anchor.dataset.visualScrollAnchor;
-      if (!key) continue;
-      const rect = anchor.getBoundingClientRect();
-      if (rect.bottom < scrollerRect.top + 1) continue;
-      if (rect.top > scrollerRect.bottom) break;
-      return {
-        key,
-        offsetTop: rect.top - scrollerRect.top,
-      };
+    return selectVisualScrollAnchor({
+      viewportTop: scrollerRect.top,
+      viewportBottom: scrollerRect.bottom,
+      candidates: anchors.flatMap((anchor) => {
+        const key = anchor.dataset.visualScrollAnchor;
+        if (!key) return [];
+        const rect = anchor.getBoundingClientRect();
+        let depth = 0;
+        let parent = anchor.parentElement?.closest<HTMLElement>(
+          "[data-visual-scroll-anchor]",
+        );
+        while (parent && el.contains(parent)) {
+          depth += 1;
+          parent = parent.parentElement?.closest<HTMLElement>(
+            "[data-visual-scroll-anchor]",
+          );
+        }
+        return [{ key, top: rect.top, bottom: rect.bottom, depth }];
+      }),
+    });
+  }
+
+  interface PausedVisualReaderAnchor {
+    el: HTMLElement;
+    key: string;
+    offsetTop: number;
+    pauseSeq: number;
+  }
+
+  function capturePausedVisualReaderAnchor():
+    | PausedVisualReaderAnchor
+    | undefined {
+    const el = messagesEl;
+    if (
+      !el ||
+      !visualTailFollowPaused ||
+      visualHistoryScrollAnchor !== null
+    ) {
+      return undefined;
     }
-    return undefined;
+    const anchor = visualScrollAnchor(el);
+    return anchor
+      ? { el, ...anchor, pauseSeq: visualTailFollowPauseSeq }
+      : undefined;
+  }
+
+  function restorePausedVisualReaderAnchor(
+    anchor: PausedVisualReaderAnchor,
+  ): void {
+    const restoreSeq = ++visualReaderAnchorRestoreSeq;
+    void tick().then(() => {
+      requestAnimationFrame(() => {
+        if (
+          restoreSeq !== visualReaderAnchorRestoreSeq ||
+          messagesEl !== anchor.el ||
+          !visualTailFollowPaused ||
+          visualTailFollowPauseSeq !== anchor.pauseSeq
+        ) {
+          return;
+        }
+        const target = anchor.el.querySelector<HTMLElement>(
+          `[data-visual-scroll-anchor="${CSS.escape(anchor.key)}"]`,
+        );
+        if (!target) return;
+        const scrollerTop = anchor.el.getBoundingClientRect().top;
+        const nextOffsetTop = target.getBoundingClientRect().top - scrollerTop;
+        const delta = nextOffsetTop - anchor.offsetTop;
+        if (Math.abs(delta) >= 0.5) anchor.el.scrollTop += delta;
+      });
+    });
   }
 
   function saveVisualScrollMemory(el: HTMLElement | null = messagesEl): void {
