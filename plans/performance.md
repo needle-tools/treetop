@@ -826,6 +826,26 @@ drops without an exit frame still reconnect, preserving the hold socket's
 server-lifecycle contract. A behavior test covers exit-frame release followed
 by close and timer delivery.
 
+The terminal loop was not the whole renderer load. A second native sample,
+captured after those reconnects stopped, was rooted in
+`EventSource::parseEventStream` followed by Svelte microtasks, string creation,
+and GC. Browser diagnostics showed 434 `fs-change-batch` `/api/repos` loads
+with a roughly one-second p95. Although the daemon already recomputed and
+patched just the changed worktree in its cached response, its SSE event sent
+only the path, so the UI re-streamed all 37 repos and replaced broad dashboard
+state for every successful watcher batch. During a sustained stream this
+produced separate 80.3- and 76.8-second renderer event-loop stalls.
+
+Successful `fs_change` events now carry the computed `WorktreeDetails`. The UI
+immutably replaces only that worktree and its owning repo, preserving every
+unrelated object identity; the existing batcher still advances per-worktree
+invalidation keys and stale-summary subscriptions. Missing details (the
+daemon's intentional recompute-failure boundary) or an unknown path retain the
+full reload fallback. Patches are also scoped by daemon id so identical local
+and remote paths cannot contaminate each other, and remote SSE uses the same
+row-level update. Behavior tests cover identity preservation, fallback, and
+daemon scoping.
+
 ### Deferred levers (do only if Lever 1 isn't enough)
 
 2. **Poll only visible columns** — register/unregister the poll via an

@@ -42,6 +42,34 @@ export interface ParseNDJSONOpts {
   daemonId?: string;
 }
 
+/** Apply a daemon-provided git-state refresh to one worktree without
+ * replacing every repo/worktree object in the dashboard. Identity is kept for
+ * every unrelated row so an fs-change cannot invalidate all mounted session
+ * columns. Returns the original array when the path is unknown. */
+export function patchWorktreeDetails<
+  Worktree extends { path: string },
+  Repo extends { daemonId?: string; worktrees?: Worktree[] },
+>(
+  repos: Repo[],
+  path: string,
+  details: Record<string, unknown>,
+  daemonId?: string,
+): Repo[] {
+  let changed = false;
+  const next = repos.map((repo) => {
+    if (repo.daemonId !== daemonId || !repo.worktrees) return repo;
+    let repoChanged = false;
+    const worktrees = repo.worktrees.map((worktree) => {
+      if (worktree.path !== path) return worktree;
+      changed = true;
+      repoChanged = true;
+      return { ...worktree, ...details, path: worktree.path };
+    });
+    return repoChanged ? { ...repo, worktrees } : repo;
+  });
+  return changed ? next : repos;
+}
+
 /**
  * Parse a batch of complete NDJSON lines from the /api/repos stream.
  *

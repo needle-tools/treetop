@@ -1770,7 +1770,7 @@ async function recomputeWorktreeDetails(
       details as unknown as Record<string, unknown>,
     );
   }
-  broadcast("change", { kind: "fs_change", path: wtPath });
+  broadcast("change", { kind: "fs_change", path: wtPath, details });
   return details;
 }
 

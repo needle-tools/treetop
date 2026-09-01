@@ -780,7 +780,11 @@ describe("formatRelativeTime", () => {
 // fetchReposNDJSON stream-parsing logic  (App.svelte lines 3214–3274)
 // ---------------------------------------------------------------------------
 
-import { parseNDJSONLines, type NdjsonRepo } from "../src/ndjson-client";
+import {
+  parseNDJSONLines,
+  patchWorktreeDetails,
+  type NdjsonRepo,
+} from "../src/ndjson-client";
 
 // Local aliases so the test assertions below read the same as before.
 type RepoSkeleton = NdjsonRepo;
@@ -880,6 +884,63 @@ describe("fetchReposNDJSON stream-parsing logic", () => {
       { onRepo: (r) => repos.push(r) },
     );
     expect(repos.map((r) => r.id)).toEqual(["r1"]);
+  });
+});
+
+describe("patchWorktreeDetails", () => {
+  test("patches only the matching worktree and preserves unrelated identities", () => {
+    const untouched = { path: "/repo/b", fileStatus: { unstaged: 0 } };
+    const firstRepo = {
+      id: "r1",
+      worktrees: [
+        { path: "/repo/a", fileStatus: { unstaged: 0 }, branch: "main" },
+        untouched,
+      ],
+    };
+    const secondRepo = { id: "r2", worktrees: [{ path: "/other" }] };
+    const repos = [firstRepo, secondRepo];
+
+    const next = patchWorktreeDetails(repos, "/repo/a", {
+      fileStatus: { unstaged: 3 },
+      branchStatus: { ahead: 1 },
+    });
+
+    expect(next).not.toBe(repos);
+    expect(next[0]).not.toBe(firstRepo);
+    expect(next[1]).toBe(secondRepo);
+    expect(next[0]!.worktrees[1]).toBe(untouched);
+    expect(next[0]!.worktrees[0]).toEqual({
+      path: "/repo/a",
+      fileStatus: { unstaged: 3 },
+      branch: "main",
+      branchStatus: { ahead: 1 },
+    });
+  });
+
+  test("returns the original array when the worktree is unknown", () => {
+    const repos = [{ id: "r1", worktrees: [{ path: "/repo/a" }] }];
+    expect(patchWorktreeDetails(repos, "/missing", {})).toBe(repos);
+  });
+
+  test("scopes identical paths to the daemon that emitted the change", () => {
+    const local = { id: "local", worktrees: [{ path: "/repo/a", head: "1" }] };
+    const remote = {
+      id: "remote",
+      daemonId: "office-mac",
+      worktrees: [{ path: "/repo/a", head: "2" }],
+    };
+    const repos = [local, remote];
+
+    const next = patchWorktreeDetails(
+      repos,
+      "/repo/a",
+      { head: "3" },
+      "office-mac",
+    );
+
+    expect(next[0]).toBe(local);
+    expect(next[1]).not.toBe(remote);
+    expect(next[1]!.worktrees[0]!.head).toBe("3");
   });
 });
 
