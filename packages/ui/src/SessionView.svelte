@@ -877,7 +877,20 @@
       working = w;
       onWorkingChange(w);
     },
+    onExit: () => handleTerminalExit(),
   });
+
+  function handleTerminalExit(): void {
+    // PTY finished by itself (user typed `exit`, agent crashed, ...).
+    // Same effect as Dispose: flip to read, scroll to the newest messages on
+    // the next render. This is shared by the painted TerminalView and the
+    // offscreen hold socket so an offscreen exit cannot reconnect forever.
+    terminalId = null;
+    resetVisualTailFollow();
+    mode = "read";
+    onModeChange(mode);
+    void load();
+  }
 
   function holdConnect(termId: string): HoldSocket {
     const proto = location.protocol === "https:" ? "wss:" : "ws:";
@@ -5371,16 +5384,7 @@
         working = w;
         onWorkingChange(w);
       }}
-      onExit={() => {
-        // PTY finished by itself (user typed `exit`, agent crashed, ...).
-        // Same effect as Dispose: flip to read, scroll to the newest
-        // messages on the next render.
-        terminalId = null;
-        resetVisualTailFollow();
-        mode = "read";
-        onModeChange(mode);
-        void load();
-      }}
+      onExit={handleTerminalExit}
     />
   {:else if mode === "terminal"}
     <div class="session-body-deferred" aria-hidden="true"></div>

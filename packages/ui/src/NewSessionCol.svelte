@@ -325,6 +325,7 @@
     heartbeatMs: 25_000,
     onAwaiting: (awaiting) => dispatch("awaitingChange", { awaiting }),
     onWorking: (working) => dispatch("workingChange", { working }),
+    onExit: () => dispatch("exit"),
   });
 
   function holdConnect(termId: string): HoldSocket {

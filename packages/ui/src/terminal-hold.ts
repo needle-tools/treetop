@@ -74,6 +74,10 @@ export interface TerminalHoldDeps {
    *  see node-pty-backend.ts). Fired only when the frame carries `working`,
    *  so an awaiting-only edge frame doesn't spuriously clear the spinner. */
   onWorking?: (working: boolean) => void;
+  /** Surfaced when the daemon reports that the held PTY has exited. An exited
+   *  terminal is final: release the intended id so the close that follows
+   *  cannot start an attach/replay reconnect loop. */
+  onExit?: (info: { code: number; signal?: string }) => void;
   /** Should the daemon keep draining the PTY (i.e. keep the agent running)?
    *  Re-read on every send. Defaults to always-true: a held agent keeps
    *  working while off-screen. The host wires this to `!document.hidden` so a
@@ -196,7 +200,23 @@ export function createTerminalHold(deps: TerminalHoldDeps): TerminalHold {
           type?: unknown;
           awaitingInput?: unknown;
           working?: unknown;
+          code?: unknown;
+          signal?: unknown;
         };
+        if (parsed?.type === "exit") {
+          intendedId = undefined;
+          clearReconnect();
+          clearHeartbeat();
+          deps.onAwaiting?.(false);
+          deps.onWorking?.(false);
+          deps.onExit?.({
+            code: typeof parsed.code === "number" ? parsed.code : 0,
+            ...(typeof parsed.signal === "string"
+              ? { signal: parsed.signal }
+              : {}),
+          });
+          return;
+        }
         if (parsed?.type !== "state") return;
         if (typeof parsed.awaitingInput === "boolean") {
           deps.onAwaiting?.(parsed.awaitingInput);

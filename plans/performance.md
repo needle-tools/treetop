@@ -801,6 +801,31 @@ free) and repeated `ENOSPC` writes in daemon diagnostics. That is an independent
 startup/reliability risk and requires freeing disk space; session code must not
 silently reinterpret it as malformed transcript data.
 
+### Offscreen exited-terminal reconnect storm (2026-09-01)
+
+A later production capture showed WebKit at 106–151% CPU, 3.1 GB RSS, and a
+4.7 GB peak while the Bun daemon stayed near 1% CPU. Browser diagnostics
+recorded an 80.3-second event-loop stall; ordinary fetches completed together
+after the renderer resumed, so their 35–82 second browser timings were
+collateral rather than daemon route latency. A native stack sample was almost
+entirely a timer-triggered JavaScript microtask doing string parsing and
+allocation.
+
+The workspace log exposed the repeating unit: Baker's shell PTY had exited,
+but its offscreen terminal-hold socket reopened every 1–2 seconds. Each attach
+replayed about 14 KB, received the same `exit` frame, closed, and scheduled
+another reconnect. The hold manager only interpreted `state` frames; it
+treated the clean close after an `exit` frame as an unexpected transport drop.
+Because every successful attach reset reconnect backoff, this loop stayed at
+the minimum delay forever.
+
+Terminal holds now treat an `exit` frame as terminal state: clear the intended
+PTY id, cancel heartbeat/reconnect timers, surface cleared working/awaiting and
+exit state to the owning component, and never reconnect that id. Transport
+drops without an exit frame still reconnect, preserving the hold socket's
+server-lifecycle contract. A behavior test covers exit-frame release followed
+by close and timer delivery.
+
 ### Deferred levers (do only if Lever 1 isn't enough)
 
 2. **Poll only visible columns** — register/unregister the poll via an
