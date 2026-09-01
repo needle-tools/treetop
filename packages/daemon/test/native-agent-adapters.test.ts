@@ -1158,6 +1158,24 @@ describe("CodexAppServerAdapter", () => {
 });
 
 describe("CodexAppServerRpc", () => {
+  test("times out unanswered requests without poisoning later responses", async () => {
+    const fake = fakeCodexProcess();
+    const rpc = new CodexAppServerRpc(fake.proc, undefined, 5);
+
+    const stuck = rpc.request("turn/start", { threadId: "thr_stuck" });
+    await waitFor(() => fake.writes[0], "stuck request write");
+    await expect(stuck).rejects.toThrow(
+      "codex app-server turn/start timed out after 5ms",
+    );
+
+    fake.enqueue({ id: 0, result: { turn: { id: "too_late" } } });
+    const next = rpc.request("thread/read", { threadId: "thr_ok" });
+    await waitFor(() => fake.writes[1], "next request write");
+    fake.enqueue({ id: 1, result: { thread: { id: "thr_ok" } } });
+    await expect(next).resolves.toEqual({ thread: { id: "thr_ok" } });
+    rpc.close();
+  });
+
   test("records exact app-server json-rpc traffic in order", async () => {
     const fake = fakeCodexProcess();
     const frames: unknown[] = [];

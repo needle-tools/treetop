@@ -34,10 +34,12 @@ export interface CodexAppServerAdapterOptions {
 type JsonObject = Record<string, unknown>;
 
 const DEFAULT_RECORDING_FRAME_LIMIT = 10_000;
+const DEFAULT_RPC_REQUEST_TIMEOUT_MS = 30_000;
 
 interface PendingRequest {
   resolve(value: JsonObject): void;
   reject(err: Error): void;
+  timer: ReturnType<typeof setTimeout>;
 }
 
 export type CodexAppServerEvent =
@@ -1212,6 +1214,7 @@ export class CodexAppServerRpc {
   constructor(
     private readonly proc: CodexAppServerProcess,
     private readonly recorder?: CodexAppServerRpcRecorder,
+    private readonly requestTimeoutMs = DEFAULT_RPC_REQUEST_TIMEOUT_MS,
   ) {
     void this.pump();
     void proc.exited.then(
@@ -1232,7 +1235,15 @@ export class CodexAppServerRpc {
       return Promise.reject(new Error("codex app-server closed"));
     const id = this.nextId++;
     const promise = new Promise<JsonObject>((resolve, reject) => {
-      this.pending.set(id, { resolve, reject });
+      const timer = setTimeout(() => {
+        if (!this.pending.delete(id)) return;
+        reject(
+          new Error(
+            `codex app-server ${method} timed out after ${this.requestTimeoutMs}ms`,
+          ),
+        );
+      }, this.requestTimeoutMs);
+      this.pending.set(id, { resolve, reject, timer });
     });
     this.write({ id, method, params });
     return promise;
@@ -1329,6 +1340,7 @@ export class CodexAppServerRpc {
       const pending = this.pending.get(id);
       if (!pending) return;
       this.pending.delete(id);
+      clearTimeout(pending.timer);
       const error = msg.error;
       if (error && typeof error === "object") {
         const message =
@@ -1378,7 +1390,10 @@ export class CodexAppServerRpc {
   }
 
   private rejectAll(err: Error): void {
-    for (const pending of this.pending.values()) pending.reject(err);
+    for (const pending of this.pending.values()) {
+      clearTimeout(pending.timer);
+      pending.reject(err);
+    }
     this.pending.clear();
     for (const waiter of this.turnWaiters.splice(0)) waiter.reject(err);
   }

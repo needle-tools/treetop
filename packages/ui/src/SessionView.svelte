@@ -20,7 +20,7 @@
 </script>
 
 <script lang="ts">
-  import { apiUrl } from "./api";
+  import { apiUrl, withRequestDeadline } from "./api";
   import { play } from "./sound";
   import { onMount, onDestroy, tick } from "svelte";
   import { flip } from "svelte/animate";
@@ -2475,6 +2475,9 @@
   let codexDeltaFlushTimer: ReturnType<typeof setTimeout> | null = null;
   const CODEX_SETTINGS_KEY = "supergit:codexApp:turnSettings";
   const CODEX_QUEUE_KEY_PREFIX = "supergit:codexApp:queue:";
+  // The daemon gives app-server RPCs 30 s; leave enough transport margin for
+  // its structured timeout response before the browser frees the connection.
+  const CODEX_TURN_REQUEST_TIMEOUT_MS = 35_000;
   const codexSavedSettings = readCodexSettings();
   $: codexDetectedModel =
     agent === "codex" ? codexLiveDetectedModel || model || "" : "";
@@ -4396,7 +4399,9 @@
       sourceRect?: ComposerMotionRect | null;
     } = { steer: false },
   ): Promise<boolean> {
-    if (!session?.sessionId || !session.cwd) return false;
+    const threadId = session?.sessionId;
+    const cwd = session?.cwd;
+    if (!threadId || !cwd) return false;
     if (!opts.steer && sending) return false;
     sending = true;
     sendError = "";
@@ -4408,25 +4413,40 @@
       opts.steer ? "steer" : undefined,
     );
     try {
-      const res = await fetch(apiUrl("/api/codex-app/turns", daemonId), {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          threadId: session.sessionId,
-          cwd: session.cwd,
-          text: payload.text,
-          input: codexAppInputFromComposer(payload.text, payload.attachments),
-          steer: opts.steer,
-          expectedTurnId: opts.steer ? codexActiveTurnId : undefined,
-          model: codexModel || undefined,
-          effort: codexEffort || undefined,
-          serviceTier: codexServiceTier || undefined,
-          summary: codexSummary || undefined,
-          sandboxPolicy: codexSandbox,
-          approvalPolicy: codexApproval,
-        }),
-      });
-      const body = await res.json().catch(() => null);
+      const { res, body } = await withRequestDeadline(
+        CODEX_TURN_REQUEST_TIMEOUT_MS,
+        async (signal) => {
+          const response = await fetch(
+            apiUrl("/api/codex-app/turns", daemonId),
+            {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                threadId,
+                cwd,
+                text: payload.text,
+                input: codexAppInputFromComposer(
+                  payload.text,
+                  payload.attachments,
+                ),
+                steer: opts.steer,
+                expectedTurnId: opts.steer ? codexActiveTurnId : undefined,
+                model: codexModel || undefined,
+                effort: codexEffort || undefined,
+                serviceTier: codexServiceTier || undefined,
+                summary: codexSummary || undefined,
+                sandboxPolicy: codexSandbox,
+                approvalPolicy: codexApproval,
+              }),
+              signal,
+            },
+          );
+          return {
+            res: response,
+            body: await response.json().catch(() => null),
+          };
+        },
+      );
       if (!res.ok) throw new Error(body?.error ?? `HTTP ${res.status}`);
       if (typeof body?.turnId === "string") codexActiveTurnId = body.turnId;
       return true;

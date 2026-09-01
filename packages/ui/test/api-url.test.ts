@@ -1,5 +1,5 @@
 import { test, expect, describe } from "bun:test";
-import { apiUrl, apiWsUrl } from "../src/api";
+import { apiUrl, apiWsUrl, withRequestDeadline } from "../src/api";
 import {
   isLocalFileMarkdownHref,
   resolveLocalFileMarkdownHref,
@@ -45,6 +45,37 @@ describe("apiUrl", () => {
     expect(apiUrl("/api/open?path=/api/foo", "hz")).toBe(
       "/api/daemons/hz/open?path=/api/foo",
     );
+  });
+});
+
+describe("withRequestDeadline", () => {
+  test("aborts an operation that never settles", async () => {
+    const started = Date.now();
+    const operation = withRequestDeadline(
+      5,
+      (signal) =>
+        new Promise<void>((_resolve, reject) => {
+          signal.addEventListener("abort", () => reject(signal.reason), {
+            once: true,
+          });
+        }),
+    );
+
+    await expect(operation).rejects.toThrow("request timed out after 5ms");
+    expect(Date.now() - started).toBeLessThan(500);
+  });
+
+  test("clears the deadline after a successful operation", async () => {
+    let signal: AbortSignal | undefined;
+    await expect(
+      withRequestDeadline(5, async (requestSignal) => {
+        signal = requestSignal;
+        return "done";
+      }),
+    ).resolves.toBe("done");
+
+    await Bun.sleep(10);
+    expect(signal?.aborted).toBe(false);
   });
 });
 
