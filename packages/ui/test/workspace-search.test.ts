@@ -276,6 +276,21 @@ describe("workspace fuzzy search", () => {
   test("builds searchable project action records with common aliases", () => {
     const items = buildProjectActionSearchItems();
 
+    expect(items).toEqual([
+      expect.objectContaining({
+        id: "action:add-folder",
+        kind: "action",
+        title: "Add folder",
+        data: { action: "add-folder" },
+      }),
+      expect.objectContaining({
+        id: "action:open-from-sessions",
+        kind: "action",
+        title: "Open from sessions",
+        data: { action: "open-from-sessions" },
+      }),
+    ]);
+
     expect(
       searchItems(items, "new project", { now: NOW }).map((r) => r.item.id),
     ).toEqual(["action:add-folder"]);
