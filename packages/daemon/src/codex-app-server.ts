@@ -1022,7 +1022,9 @@ export class CodexAppServerAdapter implements NativeAgentAdapter {
     threadId: string,
     cwd: string,
   ): Promise<string> {
-    return (await this.resumeThread(rpc, threadId, cwd)).threadId;
+    return (
+      await this.resumeThread(rpc, threadId, cwd, { excludeTurns: true })
+    ).threadId;
   }
 
   private async resumeThread(

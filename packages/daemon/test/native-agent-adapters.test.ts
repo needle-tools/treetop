@@ -340,7 +340,11 @@ describe("CodexAppServerAdapter", () => {
     expect(parseWrite(fake.writes, 2)).toEqual({
       id: 1,
       method: "thread/resume",
-      params: { threadId: "thr_existing", cwd: "/repo" },
+      params: {
+        threadId: "thr_existing",
+        cwd: "/repo",
+        excludeTurns: true,
+      },
     });
     fake.enqueue({ id: 1, result: { thread: { id: "thr_existing" } } });
 

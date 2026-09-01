@@ -760,6 +760,15 @@ restored queue draining becomes visibly blocked/retryable instead of holding a
 connection indefinitely. Regression tests cover recovery on the next poll and
 a late app-server response not poisoning the next RPC.
 
+The first timeout this exposed was a distinct payload-amplification bug. A
+9.56 GB Codex transcript with repeated ~64 MB compaction records could still be
+viewed through the bounded history path, but continuing it called
+`thread/resume` without `excludeTurns`. App-server then tried to return the
+entire thread before Supergit could call `turn/start`, remained busy after the
+client deadline, and made the deadline look like the cause. Turn resumes now
+request thread state without returning historical turns; paged transcript and
+app-server history reads remain responsible for rendering history.
+
 This investigation also found the data volume at 100% capacity (about 3 GiB
 free) and repeated `ENOSPC` writes in daemon diagnostics. That is an independent
 startup/reliability risk and requires freeing disk space; session code must not
