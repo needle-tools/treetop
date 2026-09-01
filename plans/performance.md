@@ -888,6 +888,22 @@ manual summary actions remain available. Startup `/api/image` traffic is the
 expected browser loading of sticky-note attachment thumbnails; those images
 retain native `loading="lazy"` and `decoding="async"` behavior.
 
+A later live freeze was a separate app-server delta batching leak. WebContent
+held about 119% CPU and 2.7 GB RSS while the daemon stayed near 5%; a five-second
+native sample spent 3,588/3,728 main-thread samples under `EventSource` followed
+by a Svelte microtask checkpoint. The app-server recording showed the trigger
+directly: one thread delivered roughly 70 `item/agentMessage/delta` records in
+one second. Text patches were already queued to one animation-frame update, but
+every record first assigned the reactive `codexLiveLastActivityIso`, forcing a
+component update after each SSE event and defeating the batch. Delta activity
+now commits with the frame-batched message patch. Known nonvisual notifications
+(`turn/diff/updated`, account rate limits, reasoning part boundaries, and file
+patch-updated notices) no longer enter SessionView reactivity or the hub replay
+buffer. Browser stall diagnostics now include per-method synchronous
+`codex-event.sync.*` spans plus post-Svelte `codex-event.settle.*` spans, so a
+remaining event/render bottleneck is attributable from `errors.jsonl` without
+another native-symbol guess.
+
 ### Deferred levers (do only if Lever 1 isn't enough)
 
 2. **Poll only visible columns** — register/unregister the poll via an

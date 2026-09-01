@@ -14,6 +14,7 @@ import {
   codexAppHistoryKey,
   codexToolInputQuality,
   codexEventThreadIdForSession,
+  codexEventVisualDelivery,
   mergeCodexAppHistoryMessages,
   shouldLoadCodexAppThreadHistory,
   shouldRunCodexAppLiveSurface,
@@ -183,6 +184,61 @@ describe("codex event stream hub", () => {
         liveCodexApp: true,
       }),
     ).toBeUndefined();
+  });
+
+  test("classifies live app-server events by visual delivery cost", () => {
+    expect(
+      codexEventVisualDelivery({
+        kind: "notification",
+        method: "item/agentMessage/delta",
+      }),
+    ).toBe("batched-delta");
+    expect(
+      codexEventVisualDelivery({
+        kind: "notification",
+        method: "item/commandExecution/outputDelta",
+      }),
+    ).toBe("batched-delta");
+    for (const method of [
+      "account/rateLimits/updated",
+      "turn/diff/updated",
+      "item/reasoning/summaryPartAdded",
+      "item/fileChange/patchUpdated",
+    ]) {
+      expect(codexEventVisualDelivery({ kind: "notification", method })).toBe(
+        "ignore",
+      );
+    }
+    expect(
+      codexEventVisualDelivery({
+        kind: "notification",
+        method: "item/completed",
+      }),
+    ).toBe("immediate");
+    expect(
+      codexEventVisualDelivery({
+        kind: "request",
+        method: "item/commandExecution/requestApproval",
+      }),
+    ).toBe("immediate");
+  });
+
+  test("does not retain or dispatch known nonvisual app-server noise", () => {
+    const received: string[] = [];
+    const off = subscribeCodexEvents(undefined, "t1", {
+      onEvent: (entry) => received.push(entry.method),
+    });
+    FakeEventSource.instances[0]?.emit("codex", {
+      ...event("t1", 1),
+      method: "turn/diff/updated",
+      params: { threadId: "t1", diff: "large cumulative diff" },
+    });
+    const offReplay = subscribeCodexEvents(undefined, "t1", {
+      onEvent: (entry) => received.push(`replay:${entry.method}`),
+    });
+    expect(received).toEqual([]);
+    offReplay();
+    off();
   });
 
   test("runs app-server live work only while the visual body is rendered", () => {

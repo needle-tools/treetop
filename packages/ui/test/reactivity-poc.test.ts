@@ -4,7 +4,10 @@ import { createCounter, trackEffect } from "./reactivity-poc.svelte.ts";
 import { patchWorktreeDetails } from "../src/ndjson-client";
 import { nextCachedSessionSummaryRequest } from "../src/summary-queue";
 import { shouldCancelBackgroundSummary } from "../src/tui-auto-summary";
-import { shouldUseCodexAppHistorySource } from "../src/codex-event-stream";
+import {
+  codexEventVisualDelivery,
+  shouldUseCodexAppHistorySource,
+} from "../src/codex-event-stream";
 import { resolveSessionMessageSource } from "../src/storage";
 
 const { flush } = $;
@@ -206,6 +209,52 @@ describe("svelte 5 runes — DOM-free reactivity", () => {
         source: "/Users/me/.codex/sessions/thread-1.jsonl",
       });
       expect(owners.at(-1)).toBe("transcript");
+    } finally {
+      destroy();
+    }
+  });
+
+  test("a burst of Codex deltas commits activity to Svelte only once per visual batch", () => {
+    const liveActivityIso = $.state("");
+    let pendingActivityIso = "";
+    let reactiveRuns = 0;
+    const observed: string[] = [];
+    const destroy = $.effect_root(() => {
+      $.effect(() => {
+        reactiveRuns += 1;
+        observed.push($.get(liveActivityIso));
+      });
+    });
+
+    try {
+      $.flush();
+      expect(reactiveRuns).toBe(1);
+
+      for (let index = 0; index < 70; index += 1) {
+        const delivery = codexEventVisualDelivery({
+          kind: "notification",
+          method: "item/agentMessage/delta",
+        });
+        expect(delivery).toBe("batched-delta");
+        pendingActivityIso = `2026-09-01T10:41:10.${String(index).padStart(3, "0")}Z`;
+      }
+      $.flush();
+      expect(reactiveRuns).toBe(1);
+
+      $.set(liveActivityIso, pendingActivityIso);
+      pendingActivityIso = "";
+      $.flush();
+      expect(reactiveRuns).toBe(2);
+      expect(observed.at(-1)).toBe("2026-09-01T10:41:10.069Z");
+
+      const immediate = codexEventVisualDelivery({
+        kind: "notification",
+        method: "item/completed",
+      });
+      expect(immediate).toBe("immediate");
+      $.set(liveActivityIso, "2026-09-01T10:41:11.000Z");
+      $.flush();
+      expect(reactiveRuns).toBe(3);
     } finally {
       destroy();
     }

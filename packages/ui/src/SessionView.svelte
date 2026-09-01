@@ -93,6 +93,7 @@
     codexAppHistoryMessagesFromTurnPage,
     codexAppHistoryKey,
     codexEventThreadIdForSession,
+    codexEventVisualDelivery,
     codexLiveMessagesFromEvent,
     codexLiveMessagesEndTurn,
     codexLiveToolUseFromEvent,
@@ -111,6 +112,7 @@
     type CodexEventStreamState,
     type CodexLiveNormalizeContext,
   } from "./codex-event-stream";
+  import { record, time } from "./timings";
   import { splitParent } from "./file-browser-utils";
   import { imageBlobHasAlpha, shrinkImageBlob } from "./image-shrink";
   import {
@@ -2192,6 +2194,9 @@
    *  bubble. Cleared on `done` or abort. */
   let ollamaStreamingIdx: number | null = null;
   let unsubscribeCodexEvents: (() => void) | null = null;
+  let codexEventSettleTimer: ReturnType<typeof setTimeout> | null = null;
+  let codexEventSettleStartedAt: number | null = null;
+  const codexEventSettleMethods = new Set<string>();
   let codexEventsThreadId: string | null = null;
   let codexEventStreamState: CodexEventStreamState | "closed" = "closed";
   let codexActiveTurnId: string | null = null;
@@ -2228,6 +2233,7 @@
   let codexModelResolutionKey = "";
   let codexPendingDeltaPatches: VisualTranscriptDeltaPatch<NormalizedBlock>[] =
     [];
+  let codexPendingLastActivityIso = "";
   let codexLiveNormalizeContext: CodexLiveNormalizeContext = {
     toolNames: new Map(),
     toolInputs: new Map(),
@@ -2863,12 +2869,51 @@
         )
           return;
         codexEventStreamState = "live";
-        applyCodexEvent(event);
+        const startedAt = performance.now();
+        time("codex-event.sync", () =>
+          time(codexEventTimingName(event.method), () =>
+            applyCodexEvent(event),
+          ),
+        );
+        scheduleCodexEventSettleTiming(event.method, startedAt);
       },
     } satisfies Parameters<typeof subscribeCodexEvents>[2];
     unsubscribeCodexEvents = codexAppTransport
       ? codexAppTransport.subscribe(threadId, subscriber)
       : subscribeCodexEvents(daemonId, threadId, subscriber);
+  }
+
+  function codexEventTimingName(method: string): string {
+    return `codex-event.sync.${method.replace(/[^a-zA-Z0-9]+/g, "-")}`;
+  }
+
+  function scheduleCodexEventSettleTiming(
+    method: string,
+    startedAt: number,
+  ): void {
+    codexEventSettleStartedAt = Math.min(
+      codexEventSettleStartedAt ?? startedAt,
+      startedAt,
+    );
+    codexEventSettleMethods.add(method);
+    if (codexEventSettleTimer !== null) return;
+    codexEventSettleTimer = setTimeout(() => {
+      codexEventSettleTimer = null;
+      const batchStartedAt = codexEventSettleStartedAt;
+      codexEventSettleStartedAt = null;
+      const methods = [...codexEventSettleMethods];
+      codexEventSettleMethods.clear();
+      if (batchStartedAt === null) return;
+      const elapsed = performance.now() - batchStartedAt;
+      record("codex-event.settle", elapsed);
+      if (elapsed < 16) return;
+      for (const eventMethod of methods) {
+        record(
+          `codex-event.settle.${eventMethod.replace(/[^a-zA-Z0-9]+/g, "-")}`,
+          elapsed,
+        );
+      }
+    }, 0);
   }
 
   function closeCodexEventStream(): void {
@@ -2890,6 +2935,7 @@
       codexDeltaFlushTimer = null;
     }
     codexPendingDeltaPatches = [];
+    codexPendingLastActivityIso = "";
   }
 
   function scheduleCodexDeltaFlush(): void {
@@ -2927,11 +2973,16 @@
       })
     ) {
       codexPendingDeltaPatches = [];
+      codexPendingLastActivityIso = "";
       return;
     }
     if (!session) return;
     const patches = codexPendingDeltaPatches;
     codexPendingDeltaPatches = [];
+    if (codexPendingLastActivityIso) {
+      codexLiveLastActivityIso = codexPendingLastActivityIso;
+      codexPendingLastActivityIso = "";
+    }
     let firstChangedIndex = session.messages.length;
     for (const patch of patches) {
       const existingIndex = session.messages.findIndex(
@@ -2989,7 +3040,8 @@
   }
 
   function applyCodexEvent(event: CodexAppEvent): void {
-    codexLiveLastActivityIso = event.receivedAt || new Date().toISOString();
+    const delivery = codexEventVisualDelivery(event);
+    if (delivery === "ignore") return;
     const key = codexEventKey(event);
     if (codexSeenEvents.has(key)) return;
     codexSeenEvents.add(key);
@@ -2997,7 +3049,13 @@
       const first = codexSeenEvents.values().next().value;
       if (first) codexSeenEvents.delete(first);
     }
-
+    const activityIso = event.receivedAt || new Date().toISOString();
+    if (delivery === "batched-delta") {
+      codexPendingLastActivityIso = activityIso;
+    } else {
+      flushCodexDeltaPatches();
+      codexLiveLastActivityIso = activityIso;
+    }
     if (event.kind === "request") {
       flushCodexDeltaPatches();
       upsertCodexLiveMessages(
@@ -5012,6 +5070,10 @@
     sessionAncestorVisibilityObs?.disconnect();
     sessionAncestorVisibilityObs = null;
     if (pendingTimer) clearTimeout(pendingTimer);
+    if (codexEventSettleTimer !== null) {
+      clearTimeout(codexEventSettleTimer);
+      codexEventSettleTimer = null;
+    }
     closeCodexEventStream();
     if (disposeGraceTimer) clearTimeout(disposeGraceTimer);
     if (tuiSummaryTimer) clearInterval(tuiSummaryTimer);

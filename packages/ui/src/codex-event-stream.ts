@@ -159,6 +159,32 @@ export interface CodexAppSessionTransport {
   subscribe(threadId: string, subscriber: CodexAppEventSubscriber): () => void;
 }
 
+export type CodexEventVisualDelivery = "ignore" | "batched-delta" | "immediate";
+
+export function codexEventVisualDelivery(
+  event: Pick<CodexAppEvent, "kind" | "method">,
+): CodexEventVisualDelivery {
+  if (event.kind === "request") return "immediate";
+  switch (event.method) {
+    case "account/rateLimits/updated":
+    case "turn/diff/updated":
+    case "item/reasoning/summaryPartAdded":
+    case "item/fileChange/patchUpdated":
+      return "ignore";
+    case "item/agentMessage/delta":
+    case "item/plan/delta":
+    case "item/reasoning/summaryTextDelta":
+    case "item/reasoning/textDelta":
+    case "command/exec/outputDelta":
+    case "process/outputDelta":
+    case "item/commandExecution/outputDelta":
+    case "item/fileChange/outputDelta":
+      return "batched-delta";
+    default:
+      return "immediate";
+  }
+}
+
 interface HubSubscriber extends CodexAppEventSubscriber {
   threadId: string | undefined;
 }
@@ -311,6 +337,7 @@ function subscriberWantsEvent(
 }
 
 function pushEvent(hub: Hub, event: CodexAppEvent): void {
+  if (codexEventVisualDelivery(event) === "ignore") return;
   hub.history.push(event);
   if (hub.history.length > HISTORY_LIMIT) {
     hub.history.splice(0, hub.history.length - HISTORY_LIMIT);
