@@ -129,6 +129,10 @@
   import RepairSessionDialog from "./RepairSessionDialog.svelte";
   import SettingsDialog from "./SettingsDialog.svelte";
   import { registerSettings, settingValue } from "./settings-registry";
+  import {
+    BACKGROUND_SESSION_SUMMARIES_KEY,
+    SESSION_SUMMARY_SETTINGS,
+  } from "./summary-queue";
   import { openInvite } from "./receive-invite-dialog";
   import MessagesInbox from "./MessagesInbox.svelte";
   import { refreshMessages } from "./messages-store";
@@ -559,6 +563,7 @@
       },
     ],
   });
+  registerSettings(SESSION_SUMMARY_SETTINGS);
   registerSettings({
     id: "terminal",
     title: "Terminal",
@@ -649,6 +654,9 @@
   });
   const showGreeting = settingValue("appearance.showGreeting");
   const showTerminalIoDebug = settingValue("terminal.showIoDebug");
+  const backgroundSessionSummaries = settingValue(
+    BACKGROUND_SESSION_SUMMARIES_KEY,
+  );
 
   // Vines overlay (decorative; self-contained in ./vines). The "Show
   // vines" setting is the single source of truth — mount/unmount react to
@@ -12347,6 +12355,8 @@
                               )}
                               {#key agentColGen[s.source] ?? 0}
                                 <SessionView
+                                  backgroundSummariesEnabled={$backgroundSessionSummaries ===
+                                    true}
                                   agent={s.agent as
                                     | "claude"
                                     | "codex"

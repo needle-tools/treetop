@@ -22,6 +22,10 @@ import {
   setSettingsKV,
   _resetSettingsForTests,
 } from "../src/settings-registry";
+import {
+  BACKGROUND_SESSION_SUMMARIES_KEY,
+  SESSION_SUMMARY_SETTINGS,
+} from "../src/summary-queue";
 
 const SETTINGS_DIALOG = await Bun.file(
   new URL("../src/SettingsDialog.svelte", import.meta.url),
@@ -67,6 +71,11 @@ const appearance = {
 };
 
 describe("registerSettings", () => {
+  test("background session summaries are an opt-in Sessions setting", () => {
+    registerSettings(SESSION_SUMMARY_SETTINGS);
+    expect(getSetting(BACKGROUND_SESSION_SUMMARIES_KEY)).toBe(false);
+  });
+
   test("registered sections appear in the settingsSections store", () => {
     registerSettings(appearance);
     const sections = get(settingsSections);

@@ -135,6 +135,8 @@
 
   export let agent: "claude" | "codex" | "copilot" | "ollama" = "claude";
   export let source: string;
+  /** Opt-in background cache reads and periodic TUI summary generation. */
+  export let backgroundSummariesEnabled = false;
   export let focusComposerSeq = 0;
   /** Provider session/thread id for live native app sessions whose
    *  supergit source is synthetic rather than an on-disk transcript path. */
@@ -935,6 +937,7 @@
   // should not compete with first paint for every restored off-screen column.
   $: {
     const nextSummaryRequest = nextCachedSessionSummaryRequest({
+      enabled: backgroundSummariesEnabled,
       target: sessionFileSource,
       sessionLoaded: !!session,
       nearViewport: columnNearViewport,
@@ -993,7 +996,7 @@
    *  content. See tui-auto-summary.ts. */
   let lastAutoSummaryAttemptCount = -1;
   $: {
-    if (mode === "terminal") {
+    if (mode === "terminal" && backgroundSummariesEnabled) {
       if (!tuiSummaryTimer) {
         tuiSummaryTimer = setInterval(() => {
           // Fire when a never-summarised TUI has enough conversation to
@@ -1003,6 +1006,7 @@
           // don't pile up Ollama calls.
           if (
             shouldAutoSummarizeTui({
+              enabled: backgroundSummariesEnabled,
               refreshing: summaryRefreshing,
               hasSummary: !!summarySnippet,
               sampledCount: currentSampledCount,

@@ -19,6 +19,8 @@
  */
 
 export interface TuiAutoSummaryInput {
+  /** Background generation is enabled in Settings. */
+  enabled: boolean;
   /** A summary stream is already running for this session. */
   refreshing: boolean;
   /** A cached summary body already exists for this session. */
@@ -37,6 +39,7 @@ export interface TuiAutoSummaryInput {
 export const MIN_TURNS_TO_SEED = 2;
 
 export function shouldAutoSummarizeTui(i: TuiAutoSummaryInput): boolean {
+  if (!i.enabled) return false;
   if (i.refreshing) return false;
   // Refresh an existing, drifted summary.
   if (i.summaryDrifted) return true;

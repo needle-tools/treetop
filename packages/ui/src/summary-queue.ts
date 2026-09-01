@@ -1,3 +1,5 @@
+import type { SettingsSection } from "./settings-registry";
+
 /**
  * Global FIFO queue for repo-summary generations. The UI mounts a
  * `RepoRecentSummary` per repo on the dashboard; if each one fired
@@ -17,6 +19,25 @@
  */
 
 export type SummaryJob = (signal: AbortSignal) => Promise<void>;
+
+export const BACKGROUND_SESSION_SUMMARIES_KEY =
+  "sessions.backgroundSummaries";
+
+export const SESSION_SUMMARY_SETTINGS: SettingsSection = {
+  id: "sessions",
+  title: "Sessions",
+  order: 15,
+  settings: [
+    {
+      key: BACKGROUND_SESSION_SUMMARIES_KEY,
+      label: "Background summaries",
+      description:
+        "Load cached summaries for session columns and periodically update summaries for active terminal sessions.",
+      type: "boolean",
+      default: false,
+    },
+  ],
+};
 
 interface QueueEntry {
   job: SummaryJob;
@@ -131,11 +152,13 @@ export function loadCachedSessionSummary(
 }
 
 export function nextCachedSessionSummaryRequest(opts: {
+  enabled: boolean;
   target: string | undefined | null;
   sessionLoaded: boolean;
   nearViewport: boolean;
   lastRequested: string | undefined;
 }): string | null {
+  if (!opts.enabled) return null;
   const target = opts.target ?? "";
   if (!target) return opts.lastRequested !== "" ? "" : null;
   if (!opts.sessionLoaded || !opts.nearViewport) return null;

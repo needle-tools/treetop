@@ -2,6 +2,7 @@ import { test, expect, describe } from "bun:test";
 import * as $ from "svelte/internal/client";
 import { createCounter, trackEffect } from "./reactivity-poc.svelte.ts";
 import { patchWorktreeDetails } from "../src/ndjson-client";
+import { nextCachedSessionSummaryRequest } from "../src/summary-queue";
 
 const { flush } = $;
 
@@ -101,6 +102,40 @@ describe("svelte 5 runes — DOM-free reactivity", () => {
       $.flush();
       expect(wholeDashboardRuns).toBe(2);
       expect($.get(repos)[0]!.worktrees[0]!.fileStatus.unstaged).toBe(1);
+    } finally {
+      destroy();
+    }
+  });
+
+  test("turning background summaries off stops reactive session lookups", () => {
+    const enabled = $.state(true);
+    const source = $.state("source-a");
+    const requested: string[] = [];
+    let lastRequested: string | undefined;
+    const destroy = $.effect_root(() => {
+      $.effect(() => {
+        const next = nextCachedSessionSummaryRequest({
+          enabled: $.get(enabled),
+          target: $.get(source),
+          sessionLoaded: true,
+          nearViewport: true,
+          lastRequested,
+        });
+        if (next !== null) {
+          lastRequested = next;
+          requested.push(next);
+        }
+      });
+    });
+
+    try {
+      $.flush();
+      expect(requested).toEqual(["source-a"]);
+
+      $.set(enabled, false);
+      $.set(source, "source-b");
+      $.flush();
+      expect(requested).toEqual(["source-a"]);
     } finally {
       destroy();
     }

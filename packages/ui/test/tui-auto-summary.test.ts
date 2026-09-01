@@ -6,6 +6,7 @@ import {
 } from "../src/tui-auto-summary";
 
 const base: TuiAutoSummaryInput = {
+  enabled: true,
   refreshing: false,
   hasSummary: false,
   sampledCount: 5,
@@ -14,6 +15,18 @@ const base: TuiAutoSummaryInput = {
 };
 
 describe("shouldAutoSummarizeTui", () => {
+  test("never fires when background summaries are disabled", () => {
+    expect(shouldAutoSummarizeTui({ ...base, enabled: false })).toBe(false);
+    expect(
+      shouldAutoSummarizeTui({
+        ...base,
+        enabled: false,
+        hasSummary: true,
+        summaryDrifted: true,
+      }),
+    ).toBe(false);
+  });
+
   test("seeds the first summary for a never-summarised TUI with enough turns", () => {
     // The regression we are fixing: previously this returned false because
     // the gate required an existing summary.
