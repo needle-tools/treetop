@@ -732,6 +732,30 @@ request per daemon per tick** → O(1) in column count.
 Coalescing active-sends behind the global revision-ETag also removes the
 unconditional `inflight` reassignment (folds in much of Lever 3 for free).
 
+### Stuck-request recovery (2026-09-01)
+
+Production diagnostics showed that the shared-poll design still had one
+single-flight failure mode: a request without a response kept `runningTick`
+settled to neither success nor failure, so every later 2 s tick only joined
+that promise. Two restored `POST /api/codex-app/turns` requests had likewise
+remained active for more than six hours, consuming browser connections while
+session panes appeared never to load. The affected Baker JSONL itself parsed
+normally (463 messages, about 1 MB response, 16–17 ms via both direct and
+batch endpoints), which separated request starvation from parser cost.
+
+All shared session-poll requests now bound both fetch and body decoding to 15
+seconds; a timeout retains cached state and releases the single-flight guard
+so the next tick retries. Codex app-server RPCs now reject unanswered requests
+after 30 seconds, and the UI turn submission has a 35-second outer deadline so
+restored queue draining becomes visibly blocked/retryable instead of holding a
+connection indefinitely. Regression tests cover recovery on the next poll and
+a late app-server response not poisoning the next RPC.
+
+This investigation also found the data volume at 100% capacity (about 3 GiB
+free) and repeated `ENOSPC` writes in daemon diagnostics. That is an independent
+startup/reliability risk and requires freeing disk space; session code must not
+silently reinterpret it as malformed transcript data.
+
 ### Deferred levers (do only if Lever 1 isn't enough)
 
 2. **Poll only visible columns** — register/unregister the poll via an

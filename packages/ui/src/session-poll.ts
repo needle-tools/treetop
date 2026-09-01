@@ -19,7 +19,7 @@
  * the real fetch + idle gate + a 2 s interval (see the bottom of this file).
  */
 
-import { apiUrl } from "./api";
+import { apiUrl, withRequestDeadline } from "./api";
 import { isUiIdle, onResume } from "./ui-idle";
 
 export interface InflightRec {
@@ -160,8 +160,13 @@ interface CachedSessionBody {
 }
 
 export interface SessionPollerDeps {
-  fetchImpl: typeof fetch;
+  fetchImpl: (
+    input: string | URL | Request,
+    init?: RequestInit,
+  ) => Promise<Response>;
   isIdle: () => boolean;
+  /** Maximum time for each batch or active-sends request, including JSON. */
+  requestTimeoutMs?: number;
 }
 
 export interface SessionPoller {
@@ -173,6 +178,7 @@ export interface SessionPoller {
 }
 
 const MAX_SESSION_CACHE_CHARS = 32 * 1024 * 1024;
+const DEFAULT_REQUEST_TIMEOUT_MS = 15_000;
 
 function sessionCacheKey(daemonId: string | undefined, source: string): string {
   return `${daemonId ?? ""}\0${source}`;
@@ -273,23 +279,34 @@ export function createSessionPoller(deps: SessionPollerDeps): SessionPoller {
     );
     if (sessionGroup.length > 0) {
       try {
-        const res = await deps.fetchImpl(
-          apiUrl("/api/sessions/batch", daemonId),
-          {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              sources: sessionGroup.map((g) => ({
-                source: g.reg.source,
-                etag: g.etag,
-                messageCursor: messageCursor(g),
-                minMessages: minMessages(g),
-              })),
-            }),
+        const response = await withRequestDeadline(
+          deps.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS,
+          async (signal) => {
+            const res = await deps.fetchImpl(
+              apiUrl("/api/sessions/batch", daemonId),
+              {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                  sources: sessionGroup.map((g) => ({
+                    source: g.reg.source,
+                    etag: g.etag,
+                    messageCursor: messageCursor(g),
+                    minMessages: minMessages(g),
+                  })),
+                }),
+                signal,
+              },
+            );
+            return {
+              results: res.ok
+                ? ((await res.json()) as { results: BatchResult[] }).results
+                : undefined,
+            };
           },
         );
-        if (res.ok) {
-          const { results } = (await res.json()) as { results: BatchResult[] };
+        if (response.results) {
+          const { results } = response;
           const bySource = new Map(sessionGroup.map((g) => [g.reg.source, g]));
           for (const result of results) {
             const g = bySource.get(result.source);
@@ -353,13 +370,27 @@ export function createSessionPoller(deps: SessionPollerDeps): SessionPoller {
       const headers: Record<string, string> = {};
       const prev = activeSendsEtag.get(daemonId);
       if (prev) headers["If-None-Match"] = prev;
-      const res = await deps.fetchImpl(apiUrl("/api/active-sends", daemonId), {
-        headers,
-      });
-      if (res.status !== 304 && res.ok) {
+      const response = await withRequestDeadline(
+        deps.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS,
+        async (signal) => {
+          const res = await deps.fetchImpl(
+            apiUrl("/api/active-sends", daemonId),
+            { headers, signal },
+          );
+          return {
+            res,
+            body:
+              res.status !== 304 && res.ok
+                ? ((await res.json()) as InflightRec[])
+                : undefined,
+          };
+        },
+      );
+      const { res } = response;
+      if (response.body) {
         const etag = res.headers.get("ETag");
         if (etag) activeSendsEtag.set(daemonId, etag);
-        list = (await res.json()) as InflightRec[];
+        list = response.body;
         activeSendsList.set(daemonId, list);
       }
     } catch {
