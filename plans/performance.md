@@ -168,7 +168,9 @@ updates could therefore preserve one scroll position while moving the other.
 The durable shape is one `.messages` scroller owned by
 `session-scroll-controller.ts`; work bodies keep their DOM and geometry but no
 longer own overflow. Paused updates anchor the deepest visible stable transcript
-row across the Svelte update.
+row across the Svelte update. In zen, an unpaused live work round anchors its
+summary near the viewport top while reserving the preceding user turn's visible
+tail above it; completed responses return to ordinary bottom-tail following.
 
 ## Mechanics — what each Chrome phase actually costs
 

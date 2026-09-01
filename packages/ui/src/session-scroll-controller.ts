@@ -7,8 +7,10 @@ import {
   shouldPauseVisualTailAfterUserScroll,
   shouldRememberVisualScrollMemory,
   VISUAL_TAIL_FOLLOW_NEAR_PX,
+  VISUAL_TAIL_FOLLOW_RESUME_PX,
   visualScrollMemoryFromMetrics,
   visualScrollTopFromMemory,
+  zenLiveWorkScrollDelta,
   type VisualScrollMemory,
 } from "./visual-tail-follow";
 
@@ -167,8 +169,11 @@ export class SessionScrollController {
 
   updateIntent(): void {
     if (!this.el) return;
+    const zenLiveDelta = this.zenLiveWorkDelta(this.el);
     this.setPaused(
-      shouldPauseVisualTailAfterUserScroll({ metrics: metrics(this.el) }),
+      zenLiveDelta !== undefined
+        ? Math.abs(zenLiveDelta) > VISUAL_TAIL_FOLLOW_RESUME_PX
+        : shouldPauseVisualTailAfterUserScroll({ metrics: metrics(this.el) }),
     );
   }
 
@@ -280,14 +285,19 @@ export class SessionScrollController {
       return;
     }
     const pauseSeq = this.pauseSeq;
-    const shouldStick = shouldFollowVisualTail({
-      force,
-      firstRender,
-      paused: this.paused,
-      nearEnd: isNearVisualScrollEnd(el, VISUAL_TAIL_FOLLOW_NEAR_PX),
-      restoredMemory: scrollMemoryByKey.get(this.memoryKey),
-      selecting: this.hasActiveSelection(),
-    });
+    const selecting = this.hasActiveSelection();
+    const shouldStick =
+      (!this.paused &&
+        !selecting &&
+        this.zenLiveWorkDelta(el) !== undefined) ||
+      shouldFollowVisualTail({
+        force,
+        firstRender,
+        paused: this.paused,
+        nearEnd: isNearVisualScrollEnd(el, VISUAL_TAIL_FOLLOW_NEAR_PX),
+        restoredMemory: scrollMemoryByKey.get(this.memoryKey),
+        selecting,
+      });
     this.syncActive(el);
     this.renderedOnce = true;
 
@@ -323,11 +333,13 @@ export class SessionScrollController {
   private syncActive(el: HTMLElement | null = this.el): void {
     this.setActive(
       !!el &&
-        isVisualTailFollowActive({
-          metrics: metrics(el),
-          paused: this.paused,
-          nearPx: VISUAL_TAIL_FOLLOW_NEAR_PX,
-        }),
+        !this.paused &&
+        (this.zenLiveWorkDelta(el) !== undefined ||
+          isVisualTailFollowActive({
+            metrics: metrics(el),
+            paused: false,
+            nearPx: VISUAL_TAIL_FOLLOW_NEAR_PX,
+          })),
     );
   }
 
@@ -340,8 +352,37 @@ export class SessionScrollController {
   }
 
   private applyTailFollow(el: HTMLElement): void {
-    scrollToEnd(el);
+    const zenLiveDelta = this.zenLiveWorkDelta(el);
+    if (zenLiveDelta !== undefined) el.scrollTop += zenLiveDelta;
+    else scrollToEnd(el);
     this.syncActive(el);
+  }
+
+  private zenLiveWorkDelta(el: HTMLElement): number | undefined {
+    if (!el.closest(".row.row-zen")) return undefined;
+    const liveWork = el
+      .querySelector<HTMLElement>(".work-foldout-live")
+      ?.closest<HTMLElement>(".work-row");
+    if (!liveWork) return undefined;
+    const userMessages = Array.from(
+      el.querySelectorAll<HTMLElement>(".msg.user-message"),
+    );
+    const precedingUser = userMessages.findLast(
+      (user) =>
+        (user.compareDocumentPosition(liveWork) &
+          Node.DOCUMENT_POSITION_FOLLOWING) !==
+        0,
+    );
+    if (!precedingUser) return undefined;
+    const viewport = el.getBoundingClientRect();
+    const user = precedingUser.getBoundingClientRect();
+    const work = liveWork.getBoundingClientRect();
+    return zenLiveWorkScrollDelta({
+      viewportTop: viewport.top,
+      viewportHeight: viewport.height,
+      userHeight: user.height,
+      workTop: work.top,
+    });
   }
 
   private waitForLayout(options: { force?: boolean }): void {

@@ -11,9 +11,29 @@ import {
   canRequestOlderTranscriptMessages,
   visualScrollMemoryFromMetrics,
   visualScrollTopFromMemory,
+  zenLiveWorkScrollDelta,
 } from "../src/visual-tail-follow";
 
 describe("visual transcript tail following", () => {
+  it("positions live zen work near the top while keeping the end of the user turn visible", () => {
+    expect(
+      zenLiveWorkScrollDelta({
+        viewportTop: 100,
+        viewportHeight: 500,
+        userHeight: 80,
+        workTop: 430,
+      }),
+    ).toBe(250);
+
+    expect(
+      zenLiveWorkScrollDelta({
+        viewportTop: 100,
+        viewportHeight: 500,
+        userHeight: 400,
+        workTop: 430,
+      }),
+    ).toBe(155);
+  });
   it("anchors a paused reader to the nested row nearest the viewport, not its rebuilt work container", () => {
     expect(
       selectVisualScrollAnchor({

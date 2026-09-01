@@ -1,6 +1,21 @@
 export const VISUAL_TAIL_FOLLOW_NEAR_PX = 64;
 export const VISUAL_TAIL_FOLLOW_RESUME_PX = 4;
 
+/** Keep live zen work high enough to remain a status surface while reserving
+ *  room above it for the end of the user turn that started the work. */
+export function zenLiveWorkScrollDelta(input: {
+  viewportTop: number;
+  viewportHeight: number;
+  userHeight: number;
+  workTop: number;
+}): number {
+  const userContextHeight = Math.min(
+    Math.max(input.userHeight, 64),
+    input.viewportHeight * 0.35,
+  );
+  return input.workTop - (input.viewportTop + userContextHeight);
+}
+
 export interface VisualScrollMetrics {
   scrollHeight: number;
   scrollTop: number;
