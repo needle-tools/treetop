@@ -29,7 +29,7 @@
   import Tooltip from "./Tooltip.svelte";
   import SleepIndicationAnimation from "./SleepIndicationAnimation.svelte";
   import { ICONS } from "./icons";
-  import { contextChip } from "./context-tokens";
+  import { contextChip, formatByteSize } from "./context-tokens";
   import type { AgentSettingGroup } from "./claude-session-menu";
 
   export let agent:
@@ -93,6 +93,8 @@
   // Metadata (all optional — empty values just don't render their chip)
   export let loadedMessageCount: number | undefined = undefined;
   export let totalMessageCount: number | undefined = undefined;
+  export let lineCount: number | undefined = undefined;
+  export let fileSizeBytes: number | undefined = undefined;
   export let contextTokens: number | undefined = undefined;
   export let contextTokensExact: boolean | undefined = undefined;
   /** Authoritative cap shipped by the agent's JSONL (Codex 0.130+).
@@ -633,6 +635,18 @@
       <span class="muted small msg-count placeholder"
         >{messageCountFallback}</span
       >
+    {/if}
+    {#if lineCount !== undefined || fileSizeBytes !== undefined}
+      <span
+        class="muted small file-stats"
+        title="Exact on-disk JSONL line count and transcript file size"
+      >
+        {#if lineCount !== undefined}
+          {lineCount.toLocaleString()} {lineCount === 1 ? "line" : "lines"}
+        {/if}
+        {#if lineCount !== undefined && fileSizeBytes !== undefined} · {/if}
+        {#if fileSizeBytes !== undefined}{formatByteSize(fileSizeBytes)}{/if}
+      </span>
     {/if}
   </div>
   <div class="hdr-col col-actions">

@@ -1216,6 +1216,25 @@ describe("CodexAppServerAdapter", () => {
     await clear;
   });
 
+  test("archives a Codex thread through the app-server protocol", async () => {
+    const fake = fakeCodexProcess();
+    const adapter = new CodexAppServerAdapter({ spawn: () => fake.proc });
+
+    const archived = adapter.archiveThread("thr_existing", "/repo");
+    await waitFor(() => fake.writes[0], "initialize request");
+    fake.enqueue({ id: 0, result: {} });
+
+    await waitFor(() => fake.writes[2], "thread archive request");
+    expect(parseWrite(fake.writes, 2)).toEqual({
+      id: 1,
+      method: "thread/archive",
+      params: { threadId: "thr_existing" },
+    });
+    fake.enqueue({ id: 1, result: {} });
+
+    await expect(archived).resolves.toBeUndefined();
+  });
+
   test("emits a running-state event as soon as a Codex turn starts", async () => {
     const fake = fakeCodexProcess();
     const adapter = new CodexAppServerAdapter({ spawn: () => fake.proc });

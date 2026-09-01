@@ -79,6 +79,7 @@ import { startActivityTail, onActivity } from "./activity";
 import {
   getSessionResponseJson,
   getSessionsBatchResults,
+  getSessionFileStats,
   sessionCacheStats,
   parseSessionFile,
   readSessionInlineMedia,
@@ -4252,6 +4253,30 @@ const server = Bun.serve<TermWsData, never>({
         });
       }
 
+      if (url.pathname === "/api/session/stats" && req.method === "GET") {
+        const source = url.searchParams.get("source");
+        if (!source) {
+          return json(
+            { error: "?source=<session-file> required" },
+            { status: 400 },
+          );
+        }
+        if (!resolveSessionAgent(source)) {
+          return json(
+            { error: "source is outside any known agent root" },
+            { status: 403 },
+          );
+        }
+        try {
+          return json(await getSessionFileStats(source));
+        } catch (e) {
+          return json(
+            { error: e instanceof Error ? e.message : String(e) },
+            { status: 404 },
+          );
+        }
+      }
+
       if (url.pathname === "/api/session/resolve" && req.method === "GET") {
         const agent = url.searchParams.get("agent");
         const sessionId = url.searchParams.get("id")?.trim();
@@ -4717,6 +4742,37 @@ const server = Bun.serve<TermWsData, never>({
             nextCursor: result.nextCursor ?? null,
             backwardsCursor: result.backwardsCursor ?? null,
           });
+        } catch (e) {
+          return json(
+            { error: e instanceof Error ? e.message : String(e) },
+            { status: 500 },
+          );
+        }
+      }
+
+      if (
+        url.pathname === "/api/codex-app/thread/archive" &&
+        req.method === "POST"
+      ) {
+        const body = (await req.json().catch(() => null)) as {
+          threadId?: unknown;
+          cwd?: unknown;
+        } | null;
+        const threadId =
+          typeof body?.threadId === "string" ? body.threadId.trim() : "";
+        const cwd = typeof body?.cwd === "string" ? body.cwd.trim() : "";
+        if (!threadId || !cwd) {
+          return json(
+            { error: "threadId and cwd required" },
+            { status: 400 },
+          );
+        }
+        try {
+          await codexAgent.archiveThread(threadId, cwd);
+          agentsCache.clear();
+          reposCache = null;
+          broadcast("change", { kind: "session_archived", threadId, cwd });
+          return json({ ok: true });
         } catch (e) {
           return json(
             { error: e instanceof Error ? e.message : String(e) },

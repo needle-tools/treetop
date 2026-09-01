@@ -769,6 +769,14 @@ client deadline, and made the deadline look like the cause. Turn resumes now
 request thread state without returning historical turns; paged transcript and
 app-server history reads remain responsible for rendering history.
 
+Session size is now surfaced without adding another cold-start transcript
+scan. Agent discovery carries the file size from its existing `stat`; the exact
+JSONL line count is requested only for an opened session, streamed through a
+bounded 1 MiB buffer at global concurrency 1, coalesced per snapshot, and
+incrementally scans appended bytes on later requests. This keeps unusually
+large sessions visible in the header and dock without making every historical
+session pay the line-count cost during `/api/repos` enrichment.
+
 This investigation also found the data volume at 100% capacity (about 3 GiB
 free) and repeated `ENOSPC` writes in daemon diagnostics. That is an independent
 startup/reliability risk and requires freeing disk space; session code must not

@@ -781,6 +781,13 @@ export class CodexAppServerAdapter implements NativeAgentAdapter {
     await rpc.request("thread/goal/clear", { threadId });
   }
 
+  async archiveThread(threadId: string, cwd: string): Promise<void> {
+    const rpc = await this.ensureRpc(cwd);
+    await rpc.request("thread/archive", { threadId });
+    this.loadedThreads.delete(threadId);
+    this.activeTurns.delete(threadId);
+  }
+
   async readThread(req: {
     threadId: string;
     cwd: string;

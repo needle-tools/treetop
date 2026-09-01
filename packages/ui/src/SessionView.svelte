@@ -272,6 +272,8 @@
    *  exceeds the loaded slice. undefined → fall back to just the
    *  loaded count. */
   export let totalMessageCount: number | undefined = undefined;
+  /** Current transcript byte size from the daemon's cheap agent-file stat. */
+  export let fileSizeBytes: number | undefined = undefined;
   /** Estimated context size, sourced from /api/repos' agent metadata.
    *  For Claude this is exact (last assistant turn's `usage.input +
    *  cache_read + cache_creation`); for Codex it's a chars/4 estimate.
@@ -552,6 +554,9 @@
   }
   let lastLoadedAt = 0;
   let pollCount = 0;
+  let sessionLineCount: number | undefined = undefined;
+  let measuredFileSizeBytes: number | undefined = undefined;
+  let sessionStatsKey = "";
   const DEFAULT_VISUAL_HISTORY_MESSAGES = 100;
   const VISUAL_HISTORY_MESSAGES_STEP = 100;
   const MAX_VISUAL_HISTORY_MESSAGES = 2_000;
@@ -569,6 +574,7 @@
   } | null = null;
   let inputText = "";
   let sending = false;
+  let archiving = false;
   let sendError = "";
   let composerMotionSourceEl: HTMLElement | null = null;
   let composerQueueTargetEl: HTMLElement | null = null;
@@ -1386,6 +1392,34 @@
     }
   }
 
+  async function archiveCodexThread(): Promise<void> {
+    const threadId = effectiveSessionId;
+    const cwd = effectiveSessionCwd;
+    if (agent !== "codex" || !threadId || !cwd || archiving) return;
+    archiving = true;
+    sendError = "";
+    try {
+      const res = await fetch(apiUrl("/api/codex-app/thread/archive", daemonId), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ threadId, cwd }),
+      });
+      const body = (await res.json().catch(() => null)) as {
+        error?: unknown;
+      } | null;
+      if (!res.ok) {
+        throw new Error(
+          typeof body?.error === "string" ? body.error : `HTTP ${res.status}`,
+        );
+      }
+      onClose();
+    } catch (e) {
+      sendError = e instanceof Error ? e.message : String(e);
+    } finally {
+      archiving = false;
+    }
+  }
+
   /** Burger-menu items for the per-session header. SessionMenu owns the
    *  popover, click-outside handling, and "Copied to clipboard" flash
    *  for `kind: "copy"` items. */
@@ -1510,6 +1544,24 @@
         onSelect: () => void openRepair(sessionFileSource),
       },
     ];
+    if (agent === "codex") {
+      base.push({
+        kind: "action",
+        label: archiving ? "Archiving…" : "Archive session",
+        iconSvg: [
+          "M21 8v13H3V8",
+          "M1 3h22v5H1z",
+          "M10 12h4",
+        ],
+        disabled: !sid || archiving || codexRunning,
+        title: codexRunning
+          ? "Stop the running turn before archiving this Codex session"
+          : sid
+            ? "Archive this thread through Codex app-server"
+            : "No Codex thread id yet",
+        onSelect: () => void archiveCodexThread(),
+      });
+    }
     if (onContinueWith && session && session.messages.length > 0) {
       const others: Array<{
         agent: "claude" | "codex" | "ollama";
@@ -2384,6 +2436,29 @@
     }
   }
 
+  async function loadSessionFileStats(source: string, key: string) {
+    try {
+      const qs = new URLSearchParams({ source });
+      const res = await fetch(
+        apiUrl(`/api/session/stats?${qs.toString()}`, daemonId),
+      );
+      const body = (await res.json().catch(() => null)) as {
+        fileSizeBytes?: unknown;
+        lineCount?: unknown;
+      } | null;
+      if (!res.ok || sessionStatsKey !== key) return;
+      measuredFileSizeBytes =
+        typeof body?.fileSizeBytes === "number"
+          ? body.fileSizeBytes
+          : undefined;
+      sessionLineCount =
+        typeof body?.lineCount === "number" ? body.lineCount : undefined;
+    } catch {
+      // The cheap stat supplied by /api/repos remains useful even when the
+      // optional exact row count cannot be read.
+    }
+  }
+
   async function refreshInflight() {
     if (!session?.sessionId) return;
     try {
@@ -2541,6 +2616,23 @@
   });
   $: titleStorageSource = sessionFileSource || source;
   $: shouldPollTranscript = sessionMessageSource.kind === "transcript";
+  $: {
+    const statsSource =
+      sessionMessageSource.kind === "transcript"
+        ? sessionMessageSource.source
+        : sessionFileSource;
+    const key = statsSource ? `${daemonId ?? ""}\0${statsSource}` : "";
+    if (key && key !== sessionStatsKey) {
+      sessionStatsKey = key;
+      sessionLineCount = undefined;
+      measuredFileSizeBytes = undefined;
+      void loadSessionFileStats(statsSource, key);
+    } else if (!key) {
+      sessionStatsKey = "";
+      sessionLineCount = undefined;
+      measuredFileSizeBytes = undefined;
+    }
+  }
   $: effectiveSessionId = resumeSessionId ?? session?.sessionId;
   $: effectiveSessionCwd = session?.cwd || wtPath;
   $: codexRunning = liveCodexApp && (sending || !!codexActiveTurnId);
@@ -5315,6 +5407,8 @@
         : codexVisualAppSurface && codexRunning}
       loadedMessageCount={session?.messages.length}
       {totalMessageCount}
+      lineCount={sessionLineCount}
+      fileSizeBytes={measuredFileSizeBytes ?? fileSizeBytes}
       {contextTokens}
       {contextTokensExact}
       {contextWindow}
