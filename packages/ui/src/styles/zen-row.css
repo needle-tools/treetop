@@ -101,7 +101,24 @@ main.zen-row > .menubar-stack:has(.agents-popover) {
   overflow-y: hidden;
 }
 .row.row-zen .session-col {
+  /* Zen is a focused reader: give each session the row viewport instead of
+     retaining the normal dashboard's ~80ch multi-column width. The strip
+     remains horizontal, so adjacent sessions are still one swipe away. */
+  flex: 0 0 calc(100% - var(--row-strip-pad));
+  min-width: calc(100% - var(--row-strip-pad));
+  max-width: none;
   height: 100%;
+}
+.row.row-zen .session header {
+  padding-block: 0.25rem;
+}
+.row.row-zen .session .col-meta {
+  /* A viewport-wide header has room for the activity/count metadata on one
+     line. Keeping the dashboard's narrow-column stack here needlessly pushed
+     the transcript (and the live Working-for row) downward. */
+  flex-direction: row;
+  align-items: center;
+  gap: 0.55rem;
 }
 .row.row-zen .expanded {
   flex: 1 1 0;
@@ -148,6 +165,11 @@ main.zen-row > .menubar-stack:has(.agents-popover) {
   max-height: none;
   min-height: 0;
   flex: 1 1 0;
+}
+.row.row-zen .messages {
+  /* The normal reading inset is useful among compact dashboard columns, but
+     looks like dead space in a viewport-sized focused session. */
+  padding-top: 0.65rem;
 }
 
 /* Row-head Zen toggle. Sits next to the row's × remove; the icon
