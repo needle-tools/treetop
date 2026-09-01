@@ -9,6 +9,7 @@ import {
   nextSearchKindsSelection,
   parseAgeQuery,
   searchItems,
+  workspaceSearchDaemonIds,
   type SearchItem,
 } from "../src/workspace-search";
 
@@ -385,6 +386,17 @@ describe("workspace fuzzy search", () => {
       id: "n1",
       anchors: ["worktree:/Users/herbst/git/supergit"],
     });
+  });
+
+  test("loads workspace search data once from local and each represented remote daemon", () => {
+    expect(
+      workspaceSearchDaemonIds([
+        { daemonId: "remote-a" },
+        {},
+        { daemonId: "remote-a" },
+        { daemonId: "remote-b" },
+      ]),
+    ).toEqual([undefined, "remote-a", "remote-b"]);
   });
 
   test("parseAgeQuery strips recognized age words and leaves the text query", () => {
