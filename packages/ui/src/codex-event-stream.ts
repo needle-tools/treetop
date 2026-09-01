@@ -224,7 +224,34 @@ export function shouldUseCodexAppHistorySource(opts: {
   liveSurfaceActive: boolean;
   transcriptSource: string | undefined;
 }): boolean {
-  return opts.liveSurfaceActive && !opts.transcriptSource;
+  return opts.liveSurfaceActive;
+}
+
+export function shouldApplyCodexAppHistoryResponse(opts: {
+  sourceActive: boolean;
+  requestedThreadId: string;
+  requestedCwd: string;
+  currentThreadId: string | undefined;
+  currentCwd: string | undefined;
+}): boolean {
+  return (
+    opts.sourceActive &&
+    codexAppHistoryKey(opts.requestedThreadId, opts.requestedCwd) ===
+      codexAppHistoryKey(opts.currentThreadId, opts.currentCwd)
+  );
+}
+
+export function shouldApplyCodexAppMutation(opts: {
+  sourceActive: boolean;
+  subscribedThreadId: string;
+  eventThreadId: string | undefined;
+  currentThreadId: string | undefined;
+}): boolean {
+  return (
+    opts.sourceActive &&
+    opts.currentThreadId === opts.subscribedThreadId &&
+    (!opts.eventThreadId || opts.eventThreadId === opts.subscribedThreadId)
+  );
 }
 
 export function canRequestOlderCodexAppThreadHistory(opts: {

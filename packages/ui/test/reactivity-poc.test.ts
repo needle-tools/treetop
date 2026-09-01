@@ -4,6 +4,8 @@ import { createCounter, trackEffect } from "./reactivity-poc.svelte.ts";
 import { patchWorktreeDetails } from "../src/ndjson-client";
 import { nextCachedSessionSummaryRequest } from "../src/summary-queue";
 import { shouldCancelBackgroundSummary } from "../src/tui-auto-summary";
+import { shouldUseCodexAppHistorySource } from "../src/codex-event-stream";
+import { resolveSessionMessageSource } from "../src/storage";
 
 const { flush } = $;
 
@@ -164,6 +166,46 @@ describe("svelte 5 runes — DOM-free reactivity", () => {
       $.set(enabled, false);
       $.flush();
       expect(controller.signal.aborted).toBe(true);
+    } finally {
+      destroy();
+    }
+  });
+
+  test("a late transcript path never changes a live Codex pane's message owner", () => {
+    const liveSurface = $.state(true);
+    const transcriptSource = $.state<string | undefined>(undefined);
+    const owners: string[] = [];
+    const owner = $.derived(() =>
+      resolveSessionMessageSource({
+        agent: "codex",
+        source: "__codex_app__:thread-1",
+        transcriptSource: $.get(transcriptSource),
+        liveAppSurface: shouldUseCodexAppHistorySource({
+          liveSurfaceActive: $.get(liveSurface),
+          transcriptSource: $.get(transcriptSource),
+        }),
+      }),
+    );
+    const destroy = $.effect_root(() => {
+      $.effect(() => owners.push($.get(owner).kind));
+    });
+
+    try {
+      $.flush();
+      expect($.get(owner).kind).toBe("app-server");
+
+      $.set(transcriptSource, "/Users/me/.codex/sessions/thread-1.jsonl");
+      $.flush();
+      expect($.get(owner).kind).toBe("app-server");
+      expect(owners).not.toContain("transcript");
+
+      $.set(liveSurface, false);
+      $.flush();
+      expect($.get(owner)).toEqual({
+        kind: "transcript",
+        source: "/Users/me/.codex/sessions/thread-1.jsonl",
+      });
+      expect(owners.at(-1)).toBe("transcript");
     } finally {
       destroy();
     }

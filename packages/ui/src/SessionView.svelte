@@ -98,6 +98,8 @@
     codexLiveToolUseFromEvent,
     codexToolInputQuality,
     mergeCodexAppHistoryMessages,
+    shouldApplyCodexAppHistoryResponse,
+    shouldApplyCodexAppMutation,
     shouldLoadCodexAppThreadHistory,
     shouldRunCodexAppLiveSurface,
     shouldSubscribeCodexAppLiveState,
@@ -2023,7 +2025,16 @@
     const cwd = effectiveSessionCwd;
     if (!threadId || !cwd || !session) return;
     const targetThreadId = threadId;
+    const targetCwd = cwd;
     const targetHistoryKey = codexAppHistoryKey(threadId, cwd);
+    const targetStillOwned = () =>
+      shouldApplyCodexAppHistoryResponse({
+        sourceActive: codexAppHistorySourceActive,
+        requestedThreadId: targetThreadId,
+        requestedCwd: targetCwd,
+        currentThreadId: effectiveSessionId,
+        currentCwd: effectiveSessionCwd,
+      });
     const cursor =
       codexAppHistoryLoadedKey === targetHistoryKey
         ? codexAppHistoryNextCursor
@@ -2055,8 +2066,7 @@
         }
         body = responseBody;
       }
-      if (!body?.thread || effectiveSessionId !== targetThreadId || !session)
-        return;
+      if (!body?.thread || !session || !targetStillOwned()) return;
       if (typeof body.model === "string") {
         codexLiveDetectedModel = body.model;
       }
@@ -2088,11 +2098,10 @@
           : null;
       preserveVisualHistoryScrollAnchor();
     } catch (e) {
-      if (effectiveSessionId === targetThreadId) {
-        codexAppHistoryFailedKeys = new Set(codexAppHistoryFailedKeys).add(
-          targetHistoryKey,
-        );
-      }
+      if (!targetStillOwned()) return;
+      codexAppHistoryFailedKeys = new Set(codexAppHistoryFailedKeys).add(
+        targetHistoryKey,
+      );
       sendError = e instanceof Error ? e.message : String(e);
       preserveVisualHistoryScrollAnchor();
     }
@@ -2844,7 +2853,15 @@
         codexEventStreamState = state;
       },
       onEvent: (event) => {
-        if (event.threadId && event.threadId !== threadId) return;
+        if (
+          !shouldApplyCodexAppMutation({
+            sourceActive: codexAppLiveStateActive,
+            subscribedThreadId: threadId,
+            eventThreadId: event.threadId,
+            currentThreadId: effectiveSessionId,
+          })
+        )
+          return;
         codexEventStreamState = "live";
         applyCodexEvent(event);
       },
@@ -2855,12 +2872,24 @@
   }
 
   function closeCodexEventStream(): void {
-    flushCodexDeltaPatches();
+    discardCodexDeltaPatches();
     unsubscribeCodexEvents?.();
     unsubscribeCodexEvents = null;
     codexEventsThreadId = null;
     codexEventStreamState = "closed";
     codexLiveNormalizeContext = { toolNames: new Map(), toolInputs: new Map() };
+  }
+
+  function discardCodexDeltaPatches(): void {
+    if (codexDeltaFlushFrame !== null) {
+      cancelAnimationFrame(codexDeltaFlushFrame);
+      codexDeltaFlushFrame = null;
+    }
+    if (codexDeltaFlushTimer !== null) {
+      clearTimeout(codexDeltaFlushTimer);
+      codexDeltaFlushTimer = null;
+    }
+    codexPendingDeltaPatches = [];
   }
 
   function scheduleCodexDeltaFlush(): void {
@@ -2887,7 +2916,20 @@
       clearTimeout(codexDeltaFlushTimer);
       codexDeltaFlushTimer = null;
     }
-    if (!session || codexPendingDeltaPatches.length === 0) return;
+    if (codexPendingDeltaPatches.length === 0) return;
+    if (
+      !codexEventsThreadId ||
+      !shouldApplyCodexAppMutation({
+        sourceActive: codexAppLiveStateActive,
+        subscribedThreadId: codexEventsThreadId,
+        eventThreadId: undefined,
+        currentThreadId: effectiveSessionId,
+      })
+    ) {
+      codexPendingDeltaPatches = [];
+      return;
+    }
+    if (!session) return;
     const patches = codexPendingDeltaPatches;
     codexPendingDeltaPatches = [];
     let firstChangedIndex = session.messages.length;

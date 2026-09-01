@@ -19,6 +19,8 @@ import {
   shouldRunCodexAppLiveSurface,
   shouldSubscribeCodexAppLiveState,
   shouldUseCodexAppHistorySource,
+  shouldApplyCodexAppHistoryResponse,
+  shouldApplyCodexAppMutation,
   subscribeCodexEvents,
   type CodexAppEvent,
   type CodexEventStreamState,
@@ -236,7 +238,7 @@ describe("codex event stream hub", () => {
     ).toBe(false);
   });
 
-  test("uses app-server history only until a transcript source exists", () => {
+  test("keeps live visual panes app-server owned when a transcript source exists", () => {
     expect(
       shouldUseCodexAppHistorySource({
         liveSurfaceActive: true,
@@ -248,13 +250,67 @@ describe("codex event stream hub", () => {
         liveSurfaceActive: true,
         transcriptSource: "/Users/me/.codex/sessions/thread-1.jsonl",
       }),
-    ).toBe(false);
+    ).toBe(true);
     expect(
       shouldUseCodexAppHistorySource({
         liveSurfaceActive: false,
         transcriptSource: undefined,
       }),
     ).toBe(false);
+  });
+
+  test("drops an app-server history response after the pane becomes transcript owned", () => {
+    const current = {
+      sourceActive: true,
+      requestedThreadId: "thread-1",
+      requestedCwd: "/repo",
+      currentThreadId: "thread-1",
+      currentCwd: "/repo",
+    };
+    expect(shouldApplyCodexAppHistoryResponse(current)).toBe(true);
+    expect(
+      shouldApplyCodexAppHistoryResponse({
+        ...current,
+        sourceActive: false,
+      }),
+    ).toBe(false);
+    expect(
+      shouldApplyCodexAppHistoryResponse({
+        ...current,
+        currentThreadId: "thread-2",
+      }),
+    ).toBe(false);
+    expect(
+      shouldApplyCodexAppHistoryResponse({
+        ...current,
+        currentCwd: "/other",
+      }),
+    ).toBe(false);
+  });
+
+  test("drops queued app-server events after live ownership ends", () => {
+    const current = {
+      sourceActive: true,
+      subscribedThreadId: "thread-1",
+      eventThreadId: "thread-1" as string | undefined,
+      currentThreadId: "thread-1" as string | undefined,
+    };
+    expect(shouldApplyCodexAppMutation(current)).toBe(true);
+    expect(
+      shouldApplyCodexAppMutation({ ...current, sourceActive: false }),
+    ).toBe(false);
+    expect(
+      shouldApplyCodexAppMutation({
+        ...current,
+        currentThreadId: "thread-2",
+      }),
+    ).toBe(false);
+    expect(
+      shouldApplyCodexAppMutation({ ...current, eventThreadId: "thread-2" }),
+    ).toBe(false);
+    expect(
+      shouldApplyCodexAppMutation({ ...current, eventThreadId: undefined }),
+    ).toBe(true);
   });
 
   test("loads app-server history once the visual pane has thread, cwd, and synthetic session", () => {

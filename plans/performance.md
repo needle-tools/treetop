@@ -788,6 +788,17 @@ incrementally scans appended bytes on later requests. This keeps unusually
 large sessions visible in the header and dock without making every historical
 session pay the line-count cost during `/api/repos` enrichment.
 
+The attempted startup optimization that routed a live Codex App pane to its
+JSONL as soon as `transcriptSource` appeared was invalid. Message ownership is
+mode-exclusive: a live `__codex_app__:*` visual pane uses app-server history
+and events even when its transcript path is known; Stop/review rewrites the
+pane to the transcript source, which is then owned only by the JSONL poller.
+The transcript path remains usable as file metadata while live, but must never
+select or mutate rendered messages. Delayed app-server history, SSE callbacks,
+and frame-batched deltas all revalidate this ownership before applying. Future
+startup work must reduce or schedule app-server cost without creating a hybrid
+live/transcript renderer.
+
 Live app-server updates also need a reader-position guard independent of tail
 follow. The transcript already uses keyed Svelte rows and reuses unchanged item
 references, but the active work subtree legitimately changes as tool and text
