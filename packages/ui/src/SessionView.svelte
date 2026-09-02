@@ -92,8 +92,10 @@
     codexEventItemId,
     codexAppHistoryMessagesFromTurnPage,
     codexAppHistoryKey,
+    CODEX_LIVE_OUTPUT_LIMIT,
     codexEventThreadIdForSession,
     codexEventVisualDelivery,
+    codexOutputDeltaNeedsToolUse,
     codexLiveMessagesFromEvent,
     codexLiveMessagesEndTurn,
     codexLiveToolUseFromEvent,
@@ -3028,6 +3030,14 @@
     blockFields: Partial<NormalizedBlock> = {},
   ): void {
     if (!delta || !session) return;
+    const previous = codexPendingDeltaPatches.at(-1);
+    if (previous?.id === id && previous.type === type && previous.role === role) {
+      previous.delta += delta;
+      previous.blockFields = { ...previous.blockFields, ...blockFields };
+      previous.timestamp = new Date().toISOString();
+      scheduleCodexDeltaFlush();
+      return;
+    }
     codexPendingDeltaPatches.push({
       id,
       role,
@@ -3035,6 +3045,9 @@
       delta,
       blockFields,
       timestamp: new Date().toISOString(),
+      ...(type === "tool_result"
+        ? { maxTextChars: CODEX_LIVE_OUTPUT_LIMIT }
+        : {}),
     });
     scheduleCodexDeltaFlush();
   }
@@ -3191,7 +3204,10 @@
         event,
         codexLiveNormalizeContext,
       );
-      if (liveToolUse) {
+      if (
+        liveToolUse &&
+        codexOutputDeltaNeedsToolUse(session?.messages ?? [], liveToolUse)
+      ) {
         upsertCodexToolUse(
           liveToolUse.id,
           liveToolUse.toolName,

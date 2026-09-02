@@ -904,6 +904,22 @@ buffer. Browser stall diagnostics now include per-method synchronous
 remaining event/render bottleneck is attributable from `errors.jsonl` without
 another native-symbol guess.
 
+The follow-up freeze on 2026-09-02 exposed the command-output variant that the
+first batching fix had not closed. WebContent reached 104% CPU and a 9.5 GB
+physical footprint while the daemon remained idle. Over twenty minutes the
+recording contained 4,623 `item/commandExecution/outputDelta` notifications;
+three commands alone streamed about 1.0 MB, 416 KB, and 376 KB. The new settle
+spans attributed a visible 29.5-second update to command output, while a native
+sample again spent 3,760/3,762 main-thread samples in the EventSource listener's
+Svelte microtask checkpoint, dominated by regex and string-rope work. The leak
+had two parts: every output delta redundantly upserted the already-rendered tool
+call before entering the patch batch, and the visual model retained unbounded
+growing command output for recursive summary/nicifier passes. Existing tool-use
+rows are now reused without a reactive write, adjacent deltas coalesce before
+the frame flush, and live visual command output preserves a bounded head and
+tail (128 KiB) while the full output remains in Codex's session data. The same
+bound applies when the completed item snapshot replaces its streaming row.
+
 ### Deferred levers (do only if Lever 1 isn't enough)
 
 2. **Poll only visible columns** — register/unregister the poll via an

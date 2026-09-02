@@ -15,6 +15,8 @@ import {
   codexToolInputQuality,
   codexEventThreadIdForSession,
   codexEventVisualDelivery,
+  CODEX_LIVE_OUTPUT_LIMIT,
+  codexOutputDeltaNeedsToolUse,
   mergeCodexAppHistoryMessages,
   shouldLoadCodexAppThreadHistory,
   shouldRunCodexAppLiveSurface,
@@ -239,6 +241,29 @@ describe("codex event stream hub", () => {
     expect(received).toEqual([]);
     offReplay();
     off();
+  });
+
+  test("does not rebuild an existing tool-use message for every output delta", () => {
+    const toolUse = { id: "codex-tool-exec-1" };
+    expect(codexOutputDeltaNeedsToolUse([], toolUse)).toBe(true);
+    expect(
+      codexOutputDeltaNeedsToolUse(
+        [
+          {
+            id: toolUse.id,
+            role: "assistant",
+            blocks: [
+              {
+                type: "tool_use",
+                toolName: "exec_command",
+                toolUseId: "exec-1",
+              },
+            ],
+          },
+        ],
+        toolUse,
+      ),
+    ).toBe(false);
   });
 
   test("runs app-server live work only while the visual body is rendered", () => {
@@ -638,6 +663,30 @@ describe("codex event stream hub", () => {
       toolUseId: "call-1",
       text: "Exit code: 0\nWall time: 0.1540 seconds\nOutput:\ndiff --git a/packages/ui/src/SessionView.svelte",
     });
+  });
+
+  test("bounds oversized completed command output kept in the live visual model", () => {
+    const completed: CodexAppEvent = {
+      kind: "notification",
+      method: "item/completed",
+      params: {
+        item: {
+          type: "commandExecution",
+          id: "call-large",
+          command: "bun test",
+          status: "completed",
+          aggregatedOutput: `head:${"x".repeat(CODEX_LIVE_OUTPUT_LIMIT)}:tail`,
+          exitCode: 0,
+        },
+      },
+      receivedAt: "2026-09-02T09:00:00.000Z",
+    };
+
+    const result = codexLiveToolResultFromEvent(completed);
+    expect(result?.text).toHaveLength(CODEX_LIVE_OUTPUT_LIMIT);
+    expect(result?.text).toStartWith("Exit code: 0");
+    expect(result?.text).toContain("output truncated for display");
+    expect(result?.text).toEndWith(":tail");
   });
 
   test("normalizes unretryable context-window errors into failed turn markers", () => {

@@ -161,6 +161,44 @@ export interface CodexAppSessionTransport {
 
 export type CodexEventVisualDelivery = "ignore" | "batched-delta" | "immediate";
 
+export const CODEX_LIVE_OUTPUT_LIMIT = 128 * 1024;
+
+const CODEX_OUTPUT_TRUNCATION_MARKER =
+  "\n[… output truncated for display; full output remains in the session …]\n";
+
+export function boundedCodexLiveOutput(
+  text: string,
+  maxChars = CODEX_LIVE_OUTPUT_LIMIT,
+): string {
+  if (text.length <= maxChars) return text;
+  if (maxChars <= 0) return "";
+  if (maxChars <= CODEX_OUTPUT_TRUNCATION_MARKER.length) {
+    return text.slice(-maxChars);
+  }
+  const available = maxChars - CODEX_OUTPUT_TRUNCATION_MARKER.length;
+  const headChars = Math.floor(available / 4);
+  const tailChars = available - headChars;
+  return (
+    text.slice(0, headChars) +
+    CODEX_OUTPUT_TRUNCATION_MARKER +
+    text.slice(-tailChars)
+  );
+}
+
+export function codexOutputDeltaNeedsToolUse(
+  messages: readonly {
+    id?: string;
+    blocks: readonly { type: string }[];
+  }[],
+  toolUse: Pick<CodexLiveToolUse, "id">,
+): boolean {
+  return !messages.some(
+    (message) =>
+      message.id === toolUse.id &&
+      message.blocks.some((block) => block.type === "tool_use"),
+  );
+}
+
 export function codexEventVisualDelivery(
   event: Pick<CodexAppEvent, "kind" | "method">,
 ): CodexEventVisualDelivery {
@@ -1182,10 +1220,12 @@ function codexCommandExecutionResultText(
     return undefined;
   }
   if (!completed && exitCode === undefined && durationMs === undefined) {
-    return output;
+    return output === undefined ? undefined : boundedCodexLiveOutput(output);
   }
   const seconds = durationMs !== undefined ? Math.max(0, durationMs / 1000) : 0;
-  return `Exit code: ${exitCode ?? 0}\nWall time: ${seconds.toFixed(4)} seconds\nOutput:\n${output ?? ""}`;
+  return boundedCodexLiveOutput(
+    `Exit code: ${exitCode ?? 0}\nWall time: ${seconds.toFixed(4)} seconds\nOutput:\n${output ?? ""}`,
+  );
 }
 
 function codexGenericToolMessages(
