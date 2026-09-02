@@ -166,11 +166,13 @@ vertical scroll authorities: the transcript and the live `Worked for…` body,
 plus their tail/pause state spread across the component. Live app-server
 updates could therefore preserve one scroll position while moving the other.
 The durable shape is one `.messages` scroller owned by
-`session-scroll-controller.ts`; work bodies keep their DOM and geometry but no
-longer own overflow. Paused updates anchor the deepest visible stable transcript
-row across the Svelte update. In zen, an unpaused live work round anchors its
-summary near the viewport top while reserving the preceding user turn's visible
-tail above it; completed responses return to ordinary bottom-tail following.
+`session-scroll-controller.ts`; a live work body may have bounded overflow so
+its summary and the preceding user turn remain visible, but its tail/pause state
+belongs to that same controller rather than a second component-level authority.
+Paused updates anchor the deepest visible stable transcript row across the
+Svelte update. In zen, an unpaused live work round anchors its summary near the
+viewport top while reserving the preceding user turn's visible tail above it;
+completed responses return to ordinary bottom-tail following.
 
 ## Mechanics — what each Chrome phase actually costs
 

@@ -500,6 +500,9 @@
   function onMessagesScroll(): void {
     sessionScroll.onScroll();
   }
+  function onLiveWorkBodyScroll(workKey: string, body: HTMLElement): void {
+    sessionScroll.onLiveWorkBodyScroll(workKey, body);
+  }
   let lastLoadedAt = 0;
   let pollCount = 0;
   let sessionLineCount: number | undefined = undefined;
@@ -5578,6 +5581,7 @@
       {onMessagesLeave}
       {onMessagesWheel}
       {onMessagesScroll}
+      {onLiveWorkBodyScroll}
       active={visualTranscriptActive}
       showLiveThinkingLine={codexVisualAppSurface && codexRunning}
       messageMotionSources={composerMessageMotionSources}

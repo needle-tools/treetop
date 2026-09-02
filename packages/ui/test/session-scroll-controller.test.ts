@@ -64,6 +64,49 @@ function fakeScroller(anchorTop: () => number): HTMLElement {
   } as unknown as HTMLElement;
 }
 
+function fakeLiveWorkScroller(opts: { zen?: boolean } = {}): {
+  scroller: HTMLElement;
+  workBody: HTMLElement;
+} {
+  const workBody = {
+    dataset: { workKey: "work:live" },
+    scrollHeight: 1_800,
+    scrollTop: 0,
+    clientHeight: 256,
+  } as unknown as HTMLElement;
+  const user = {
+    getBoundingClientRect: () => rect(260, 120),
+    compareDocumentPosition: () => 4,
+  } as unknown as HTMLElement;
+  const workRow = {
+    getBoundingClientRect: () => rect(410, 300),
+  } as unknown as HTMLElement;
+  const liveWork = {
+    closest: (selector: string) => (selector === ".work-row" ? workRow : null),
+  } as unknown as HTMLElement;
+  const scroller = {
+    isConnected: true,
+    scrollHeight: 2_000,
+    scrollTop: 1_490,
+    clientHeight: 500,
+    getBoundingClientRect: () => rect(100, 500),
+    closest: (selector: string) =>
+      opts.zen && selector === ".row.row-zen" ? {} : null,
+    querySelectorAll: (selector: string) => {
+      if (selector === ".work-foldout-live > .work-foldout-body") {
+        return [workBody];
+      }
+      if (selector === ".msg.user-message") return [user];
+      if (selector === "[data-visual-scroll-anchor]") return [];
+      return [];
+    },
+    querySelector: (selector: string) =>
+      selector === ".work-foldout-live" ? liveWork : null,
+    contains: () => true,
+  } as unknown as HTMLElement;
+  return { scroller, workBody };
+}
+
 describe("session scroll controller", () => {
   test("restores the same visible row after a paused live update", () => {
     const scheduler = new ManualScheduler();
@@ -83,7 +126,7 @@ describe("session scroll controller", () => {
     expect(scroller.scrollTop).toBe(464);
   });
 
-  test("uses the transcript as its sole scrolling authority", () => {
+  test("uses transcript rows, not work containers, as paused reader anchors", () => {
     const scheduler = new ManualScheduler();
     const selectors: string[] = [];
     const scroller = fakeScroller(() => 220);
@@ -102,5 +145,43 @@ describe("session scroll controller", () => {
     expect(
       selectors.some((selector) => selector.includes("work-foldout")),
     ).toBe(false);
+  });
+
+  for (const { label, zen } of [
+    { label: "regular", zen: false },
+    { label: "zen", zen: true },
+  ]) {
+    test(`keeps the bounded live work body at its tail in ${label} mode`, () => {
+      const scheduler = new ManualScheduler();
+      const { scroller, workBody } = fakeLiveWorkScroller({ zen });
+      const controller = createSessionScrollController({ scheduler });
+
+      controller.setElement(scroller);
+      controller.updateTail("live-output:1");
+      scheduler.flush();
+
+      expect(workBody.scrollTop).toBe(1_000_000_000);
+      expect(scroller.scrollTop).toBeGreaterThan(1_490);
+    });
+  }
+
+  test("does not steal a reader's live-work position until tail follow is forced", () => {
+    const scheduler = new ManualScheduler();
+    const { scroller, workBody } = fakeLiveWorkScroller();
+    const controller = createSessionScrollController({ scheduler });
+
+    controller.setElement(scroller);
+    controller.updateTail("live-output:1");
+    scheduler.flush();
+    workBody.scrollTop = 400;
+    controller.onLiveWorkBodyScroll("work:live", workBody);
+
+    controller.updateTail("live-output:2");
+    scheduler.flush();
+    expect(workBody.scrollTop).toBe(400);
+
+    controller.forceTailFollow();
+    scheduler.flush();
+    expect(workBody.scrollTop).toBe(1_000_000_000);
   });
 });
