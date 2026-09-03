@@ -3,7 +3,7 @@ import { homedir } from "node:os";
 import { createReadStream } from "node:fs";
 import { createInterface } from "node:readline";
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
-import { readCodexSessionOverview } from "./agents";
+import { readCodexSessionOverview, type AgentSession } from "./agents";
 
 export interface CodexReplayTranscriptRef {
   threadId: string;
@@ -13,6 +13,7 @@ export interface CodexReplayTranscriptRef {
   size: number;
   title?: string;
   messageCount?: number;
+  cwd?: string;
 }
 
 export interface CodexReplayRecordingRef {
@@ -34,6 +35,7 @@ export interface CodexReplayRecordingOptions {
   recordingDir: string;
   sessionsRoot?: string;
   sessionTitles?: Record<string, string>;
+  codexSessions?: AgentSession[];
 }
 
 export interface CodexReplayRecordingReadOptions extends CodexReplayRecordingOptions {
@@ -120,7 +122,20 @@ export async function listCodexReplaySessions(
     drafts,
     options.sessionTitles,
   );
-  const threadIds = [...new Set(drafts.flatMap(recordingThreadIds))];
+  for (const session of options.codexSessions ?? []) {
+    const ref = transcriptRefFromAgent(session, sessionsRoot);
+    if (!ref) continue;
+    const current = transcriptIndex.get(ref.threadId);
+    if (!current || ref.mtimeMs >= current.mtimeMs) {
+      transcriptIndex.set(ref.threadId, ref);
+    }
+  }
+  const threadIds = [
+    ...new Set([
+      ...drafts.flatMap(recordingThreadIds),
+      ...transcriptIndex.keys(),
+    ]),
+  ];
   return threadIds
     .map((threadId) => {
       const matching = drafts.filter((draft) =>
@@ -154,8 +169,29 @@ export async function listCodexReplaySessions(
         ...(transcript ? { transcript } : {}),
       } satisfies CodexReplaySessionRef;
     })
-    .filter((session) => session.rpcFrameCount > 0)
+    .filter((session) => session.rpcFrameCount > 0 || session.hasTranscript)
     .sort((a, b) => b.mtimeMs - a.mtimeMs);
+}
+
+function transcriptRefFromAgent(
+  session: AgentSession,
+  sessionsRoot: string,
+): CodexReplayTranscriptRef | null {
+  if (session.agent !== "codex" || !session.sessionId) return null;
+  return {
+    threadId: session.sessionId,
+    path: session.source,
+    name: relative(sessionsRoot, session.source),
+    mtimeMs: Date.parse(session.lastActive) || 0,
+    size: session.fileSizeBytes ?? 0,
+    title:
+      session.manualTitle ??
+      session.aiTitle ??
+      session.title ??
+      session.firstUserMessage,
+    messageCount: session.messageCount,
+    cwd: session.cwd,
+  };
 }
 
 export async function readCodexReplaySession(

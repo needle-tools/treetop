@@ -85,35 +85,53 @@ export interface CodexReplaySessionTransport extends CodexAppSessionTransport {
 
 export const DEFAULT_REPLAY_VISIBLE_MESSAGE_LIMIT = 260;
 
-export type CodexReplaySessionFilter = "all" | "both" | "rpc-only";
+export type CodexReplaySessionFilter =
+  | "all"
+  | "both"
+  | "rpc-only"
+  | "transcript-only";
 
 export function summarizeCodexReplaySessions(
-  sessions: readonly { hasTranscript: boolean }[],
+  sessions: readonly { hasTranscript: boolean; rpcFrameCount: number }[],
 ): {
   total: number;
   rpc: number;
   transcript: number;
   both: number;
   rpcOnly: number;
+  transcriptOnly: number;
 } {
+  const rpc = sessions.filter((session) => session.rpcFrameCount > 0).length;
   const transcript = sessions.filter((session) => session.hasTranscript).length;
+  const both = sessions.filter(
+    (session) => session.hasTranscript && session.rpcFrameCount > 0,
+  ).length;
   return {
     total: sessions.length,
-    rpc: sessions.length,
+    rpc,
     transcript,
-    both: transcript,
-    rpcOnly: sessions.length - transcript,
+    both,
+    rpcOnly: rpc - both,
+    transcriptOnly: transcript - both,
   };
 }
 
-export function filterCodexReplaySessions<T extends { hasTranscript: boolean }>(
-  sessions: readonly T[],
-  filter: CodexReplaySessionFilter,
-): T[] {
+export function filterCodexReplaySessions<
+  T extends { hasTranscript: boolean; rpcFrameCount: number },
+>(sessions: readonly T[], filter: CodexReplaySessionFilter): T[] {
   if (filter === "both")
-    return sessions.filter((session) => session.hasTranscript);
+    return sessions.filter(
+      (session) => session.hasTranscript && session.rpcFrameCount > 0,
+    );
   if (filter === "rpc-only") {
-    return sessions.filter((session) => !session.hasTranscript);
+    return sessions.filter(
+      (session) => !session.hasTranscript && session.rpcFrameCount > 0,
+    );
+  }
+  if (filter === "transcript-only") {
+    return sessions.filter(
+      (session) => session.hasTranscript && session.rpcFrameCount === 0,
+    );
   }
   return [...sessions];
 }

@@ -28,11 +28,24 @@
   let recordingsLoading = false;
   let recordingsError = "";
   let selectedThreadId = "";
-  let sessionFilter: CodexReplaySessionFilter = "both";
+  let sessionFilter: CodexReplaySessionFilter = "all";
+  let sessionQuery = "";
+  let transcriptSession: ReplaySessionIndexEntry | null = null;
 
   $: stepCount = transport?.stepCount ?? 0;
   $: sessionCounts = summarizeCodexReplaySessions(sessions);
-  $: visibleSessions = filterCodexReplaySessions(sessions, sessionFilter);
+  $: visibleSessions = filterCodexReplaySessions(
+    sessions,
+    sessionFilter,
+  ).filter((entry) => {
+    const query = sessionQuery.trim().toLowerCase();
+    return (
+      !query ||
+      entry.title.toLowerCase().includes(query) ||
+      entry.threadId.toLowerCase().includes(query) ||
+      entry.transcript?.path.toLowerCase().includes(query)
+    );
+  });
 
   function installFixture(
     nextFixture: CodexReplaySessionFixture,
@@ -77,7 +90,14 @@
     parseError = "";
     fixture = null;
     transport = null;
+    transcriptSession = null;
     playing = false;
+    if (entry.rpcFrameCount === 0 && entry.transcript) {
+      transcriptSession = entry;
+      loading = false;
+      loadingLabel = "";
+      return;
+    }
     try {
       const params = new URLSearchParams({ threadId: entry.threadId });
       const res = await fetch(`/api/codex-app/recordings/read?${params}`);
@@ -108,6 +128,7 @@
     loadRequestId += 1;
     fixture = null;
     transport = null;
+    transcriptSession = null;
     fileName = "";
     stepIndex = 0;
     scrubStepIndex = 0;
@@ -175,7 +196,7 @@
     rpcRecordingCount: number;
     rpcFrameCount: number;
     hasTranscript: boolean;
-    transcript?: { messageCount?: number };
+    transcript?: { path: string; messageCount?: number; cwd?: string };
   }
 
   interface ReplaySessionReadResponse {
@@ -199,7 +220,11 @@
       <button
         type="button"
         class="replay-clear"
-        disabled={!fixture && !parseError && !loading && !fileName}
+        disabled={!fixture &&
+          !transcriptSession &&
+          !parseError &&
+          !loading &&
+          !fileName}
         on:click={clearReplay}
       >
         Clear
@@ -227,6 +252,13 @@
         <span>Transcript {sessionCounts.transcript}</span>
         <span>Both {sessionCounts.both}</span>
       </div>
+      <input
+        class="replay-browser-search"
+        type="search"
+        placeholder="Search sessions"
+        aria-label="Search sessions"
+        bind:value={sessionQuery}
+      />
       <div
         class="replay-browser-filters"
         role="tablist"
@@ -255,6 +287,14 @@
           class:selected={sessionFilter === "rpc-only"}
           on:click={() => (sessionFilter = "rpc-only")}
           >RPC only {sessionCounts.rpcOnly}</button
+        >
+        <button
+          type="button"
+          role="tab"
+          aria-selected={sessionFilter === "transcript-only"}
+          class:selected={sessionFilter === "transcript-only"}
+          on:click={() => (sessionFilter = "transcript-only")}
+          >Transcript only {sessionCounts.transcriptOnly}</button
         >
       </div>
       {#if recordingsLoading}
@@ -296,15 +336,37 @@
 
     <main class="replay-main">
       {#if loading}
-        <div class="replay-drop replay-loading" role="status" aria-live="polite">
+        <div
+          class="replay-drop replay-loading"
+          role="status"
+          aria-live="polite"
+        >
           <strong>{loadingLabel || "Loading replay"}</strong>
           {#if fileName}<span>{fileName}</span>{/if}
           <progress></progress>
         </div>
+      {:else if transcriptSession?.transcript}
+        <div class="replay-stage replay-transcript-stage">
+          <div class="replay-production-session">
+            {#key transcriptSession.threadId}
+              <SessionView
+                agent="codex"
+                source={transcriptSession.transcript.path}
+                resumeSessionId={transcriptSession.threadId}
+                wtPath={transcriptSession.transcript.cwd ?? ""}
+                manualTitleOverride={transcriptSession.title}
+                visualAppEnabled={false}
+                spawnReady={false}
+              />
+            {/key}
+          </div>
+        </div>
       {:else if !fixture || !transport}
         <div class="replay-drop" role="region" aria-label="Replay status">
           <strong>Select a recorded session</strong>
-          <span>The selected recording will load through Treetop's SessionView.</span>
+          <span
+            >The selected recording will load through Treetop's SessionView.</span
+          >
           {#if parseError}<small>{parseError}</small>{/if}
         </div>
       {:else}
@@ -474,7 +536,7 @@
 
   .replay-browser {
     display: grid;
-    grid-template-rows: auto auto auto 1fr;
+    grid-template-rows: auto auto auto auto 1fr;
     border: 1px solid var(--border, #303030);
     border-radius: 12px;
     background: var(--panel-bg, #181818);
@@ -515,10 +577,21 @@
 
   .replay-browser-filters {
     display: grid;
-    grid-template-columns: repeat(3, minmax(0, 1fr));
+    grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: 4px;
     padding: 8px;
     border-bottom: 1px solid var(--border, #303030);
+  }
+
+  .replay-browser-search {
+    min-width: 0;
+    margin: 8px 8px 0;
+    padding: 7px 9px;
+    border: 1px solid var(--border, #3a3a3a);
+    border-radius: 6px;
+    color: inherit;
+    background: var(--button-bg, #252525);
+    font: inherit;
   }
 
   .replay-browser-filters button {
@@ -616,6 +689,10 @@
     border-radius: 12px;
     overflow: hidden;
     background: var(--panel-bg, #181818);
+  }
+
+  .replay-transcript-stage {
+    grid-template-rows: 1fr;
   }
 
   .replay-production-session {

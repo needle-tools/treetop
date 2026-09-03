@@ -138,17 +138,19 @@ describe("Codex replay lab parser", () => {
 
   test("summarizes and filters session coverage", () => {
     const sessions = [
-      { threadId: "both", hasTranscript: true },
-      { threadId: "rpc-only", hasTranscript: false },
-      { threadId: "also-both", hasTranscript: true },
+      { threadId: "both", hasTranscript: true, rpcFrameCount: 2 },
+      { threadId: "rpc-only", hasTranscript: false, rpcFrameCount: 1 },
+      { threadId: "also-both", hasTranscript: true, rpcFrameCount: 3 },
+      { threadId: "transcript-only", hasTranscript: true, rpcFrameCount: 0 },
     ];
 
     expect(summarizeCodexReplaySessions(sessions)).toEqual({
-      total: 3,
+      total: 4,
       rpc: 3,
-      transcript: 2,
+      transcript: 3,
       both: 2,
       rpcOnly: 1,
+      transcriptOnly: 1,
     });
     expect(
       filterCodexReplaySessions(sessions, "both").map((item) => item.threadId),
@@ -158,6 +160,11 @@ describe("Codex replay lab parser", () => {
         (item) => item.threadId,
       ),
     ).toEqual(["rpc-only"]);
+    expect(
+      filterCodexReplaySessions(sessions, "transcript-only").map(
+        (item) => item.threadId,
+      ),
+    ).toEqual(["transcript-only"]);
   });
 
   test("replays captured app-server JSON-RPC frames through the live visual shape", () => {

@@ -4577,9 +4577,16 @@ const server = Bun.serve<TermWsData, never>({
           "codex-app-recordings",
         );
         try {
+          const [agents, sessionTitles] = await Promise.all([
+            sharedDetectAgents(),
+            workspace.listSessionTitles(),
+          ]);
           const sessions = await listCodexReplaySessions({
             recordingDir,
-            sessionTitles: await workspace.listSessionTitles(),
+            sessionTitles,
+            codexSessions: agents.map((session) =>
+              withSessionTitles(session, sessionTitles),
+            ),
           });
           return json({ ok: true, sessions });
         } catch (e) {
@@ -4604,12 +4611,19 @@ const server = Bun.serve<TermWsData, never>({
           "codex-app-recordings",
         );
         try {
+          const [agents, sessionTitles] = await Promise.all([
+            sharedDetectAgents(),
+            workspace.listSessionTitles(),
+          ]);
           return json({
             ok: true,
             ...(await readCodexReplaySession({
               recordingDir,
               threadId,
-              sessionTitles: await workspace.listSessionTitles(),
+              sessionTitles,
+              codexSessions: agents.map((session) =>
+                withSessionTitles(session, sessionTitles),
+              ),
             })),
           });
         } catch (e) {

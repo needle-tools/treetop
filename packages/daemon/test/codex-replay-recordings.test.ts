@@ -243,6 +243,49 @@ describe("Codex replay recording discovery", () => {
     });
   });
 
+  test("includes canonical Codex transcripts without RPC recordings", async () => {
+    await withTempDir(async (dir) => {
+      const recordingDir = join(dir, "recordings");
+      const sessionsRoot = join(dir, "sessions");
+      await mkdir(recordingDir, { recursive: true });
+      await mkdir(sessionsRoot, { recursive: true });
+      const threadId = "01a0671a-5a8f-76e3-83de-13fde305f59a";
+      const source = join(sessionsRoot, `rollout-${threadId}.jsonl`);
+      await writeFile(source, '{"type":"session_meta"}\n');
+
+      const sessions = await listCodexReplaySessions({
+        recordingDir,
+        sessionsRoot,
+        codexSessions: [
+          {
+            agent: "codex",
+            cwd: "/repo",
+            lastActive: "2026-09-03T11:54:03.428Z",
+            sessionId: threadId,
+            source,
+            fileSizeBytes: 24,
+            messageCount: 8,
+            title: "Narrate open webpage live",
+          },
+        ],
+      });
+
+      expect(sessions).toEqual([
+        expect.objectContaining({
+          threadId,
+          title: "Narrate open webpage live",
+          rpcRecordingCount: 0,
+          rpcFrameCount: 0,
+          hasTranscript: true,
+          transcript: expect.objectContaining({
+            path: source,
+            messageCount: 8,
+          }),
+        }),
+      ]);
+    });
+  });
+
   test("reads the newest complete capture for a selected session", async () => {
     await withTempDir(async (dir) => {
       const recordingDir = join(dir, "recordings");
