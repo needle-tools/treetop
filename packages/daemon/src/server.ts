@@ -179,6 +179,7 @@ import {
   shouldReuseWorktreeDetailsCache,
   shouldCopyTempWorkspaceRelativePath,
   debugAnalyzeInstance,
+  serverTimingHeaders,
   rewriteTempWorkspaceAttachmentRefs,
   invalidateReposCacheRuntime,
   worktreeDetailsChanged,
@@ -2786,6 +2787,7 @@ const server = Bun.serve<TermWsData, never>({
     );
   },
   async fetch(req, srv) {
+    const requestStartedAt = performance.now();
     const url = new URL(req.url);
     const CORS = corsHeaders(req);
     // Per-route request counter for the rolling rate log below. Bucket
@@ -2793,15 +2795,18 @@ const server = Bun.serve<TermWsData, never>({
     // rare enough that the noise isn't worth the extra cardinality).
     requestCounts.set(url.pathname, (requestCounts.get(url.pathname) ?? 0) + 1);
 
-    const json = (body: unknown, init: ResponseInit = {}): Response =>
-      new Response(JSON.stringify(body), {
+    const json = (body: unknown, init: ResponseInit = {}): Response => {
+      const encoded = JSON.stringify(body);
+      return new Response(encoded, {
         ...init,
         headers: {
           "Content-Type": "application/json",
           ...CORS,
           ...(init.headers ?? {}),
+          ...serverTimingHeaders(performance.now() - requestStartedAt),
         },
       });
+    };
 
     try {
       if (req.method === "OPTIONS") {

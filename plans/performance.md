@@ -922,6 +922,34 @@ the frame flush, and live visual command output preserves a bounded head and
 tail (128 KiB) while the full output remains in Codex's session data. The same
 bound applies when the completed item snapshot replaces its streaming row.
 
+### Renderer attribution diagnostics (2026-09-04)
+
+The previous browser diagnostics had a blind spot between smooth rendering and
+a single catastrophic event-loop stall: sustained 20–50 ms frames could make
+the app feel continuously slow without ever crossing the two-second stall
+threshold. The UI now samples `requestAnimationFrame` in bounded ten-second
+windows and reports only after two consecutive pressured windows. A report
+includes FPS, p50/p95/max frame time, slow-frame counts, visible/offscreen
+session and worktree topology, animation counts, recent UI timing spans, and a
+single confirmation-window mutation summary. The mutation observer is armed
+only after the first bad window, disconnected after confirmation or when the
+document is hidden, and reports aggregate counts rather than mutation payloads.
+This keeps the measurement cost out of the normal rendering path.
+
+Where supported, Long Animation Frame entries add blocking, render-start,
+style/layout-start, and script-count attribution. WebKit versions without that
+API retain the portable rAF signal. Session batch polling separately times JSON
+decode and reactive callback dispatch, so a slow cycle can be assigned to
+network/daemon work, payload decoding, or downstream Svelte updates.
+
+Every JSON API response now carries both standard `Server-Timing` and
+`X-Supergit-Server-Ms`. Fetch diagnostics preserve daemon duration and the
+remaining browser-observed duration (`outsideServerMs`) for slow requests and
+for requests adjacent to a long task. Interpret a large `serverMs` as route or
+serialization work; a small `serverMs` with a large outside remainder as
+transport/browser scheduling or renderer starvation. This replaces the former
+guess that a large wall-clock `fetch()` duration necessarily meant a slow API.
+
 ### Deferred levers (do only if Lever 1 isn't enough)
 
 2. **Poll only visible columns** — register/unregister the poll via an

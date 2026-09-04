@@ -414,8 +414,115 @@ const LONG_TASK_MS = 250;
 const EVENT_LOOP_STALL_INTERVAL_MS = 1_000;
 const EVENT_LOOP_STALL_THRESHOLD_MS = 2_000;
 const EVENT_LOOP_STALL_COOLDOWN_MS = 10_000;
+const RENDER_PRESSURE_COOLDOWN_MS = 60_000;
+const RENDER_PRESSURE_WINDOW_MS = 10_000;
 const RECENT_API_FETCH_MAX = 40;
 const RECENT_API_FETCH_WINDOW_MS = 2_000;
+
+export interface RendererFrameWindowSummary {
+  frames: number;
+  elapsedMs: number;
+  fps: number;
+  p50FrameMs: number;
+  p95FrameMs: number;
+  maxFrameMs: number;
+  framesOver33Ms: number;
+  framesOver50Ms: number;
+  framesOver100Ms: number;
+}
+
+function rounded(n: number, places = 1): number {
+  const scale = 10 ** places;
+  return Math.round(n * scale) / scale;
+}
+
+function nearestPercentile(
+  values: readonly number[],
+  percentile: number,
+): number {
+  if (values.length === 0) return 0;
+  const sorted = [...values].sort((a, b) => a - b);
+  const index = Math.round(
+    Math.max(0, Math.min(1, percentile)) * (sorted.length - 1),
+  );
+  return rounded(sorted[index] ?? 0);
+}
+
+/** Aggregate a bounded rAF sample window. Kept pure so threshold changes are
+ * pinned by behaviour tests rather than tuned against source strings. */
+export function summarizeRendererFrameWindow(
+  rawIntervals: readonly number[],
+): RendererFrameWindowSummary {
+  const intervals = rawIntervals.filter(
+    (value) => Number.isFinite(value) && value >= 0,
+  );
+  const elapsedMs = intervals.reduce((sum, value) => sum + value, 0);
+  return {
+    frames: intervals.length,
+    elapsedMs: rounded(elapsedMs),
+    fps: elapsedMs > 0 ? rounded((intervals.length * 1_000) / elapsedMs) : 0,
+    p50FrameMs: nearestPercentile(intervals, 0.5),
+    p95FrameMs: nearestPercentile(intervals, 0.95),
+    maxFrameMs: rounded(Math.max(0, ...intervals)),
+    framesOver33Ms: intervals.filter((value) => value > 33).length,
+    framesOver50Ms: intervals.filter((value) => value > 50).length,
+    framesOver100Ms: intervals.filter((value) => value > 100).length,
+  };
+}
+
+export function rendererFrameWindowIsPressured(
+  summary: RendererFrameWindowSummary,
+): boolean {
+  if (summary.frames < 10 || summary.elapsedMs < 250) return false;
+  return (
+    summary.fps < 45 || summary.p95FrameMs > 33 || summary.framesOver50Ms >= 3
+  );
+}
+
+/** Turn consecutive bad rAF windows into one cooldown-gated diagnostic. */
+export function rendererFramePressureDiagnostic(opts: {
+  intervals: readonly number[];
+  consecutiveBadWindows: number;
+  observedAtMs: number;
+  lastRecordedAtMs: number;
+  topology?: Record<string, unknown>;
+  mutations?: object;
+  cooldownMs?: number;
+}): { message: string; extra: Record<string, unknown> } | null {
+  const summary = summarizeRendererFrameWindow(opts.intervals);
+  if (!rendererFrameWindowIsPressured(summary)) return null;
+  if (opts.consecutiveBadWindows < 2) return null;
+  if (
+    opts.observedAtMs - opts.lastRecordedAtMs <
+    (opts.cooldownMs ?? RENDER_PRESSURE_COOLDOWN_MS)
+  ) {
+    return null;
+  }
+  return {
+    message: `browser-render-pressure fps=${summary.fps} p95FrameMs=${summary.p95FrameMs}`,
+    extra: {
+      ...summary,
+      consecutiveBadWindows: opts.consecutiveBadWindows,
+      ...(opts.topology ?? {}),
+      ...(opts.mutations ? { mutations: opts.mutations } : {}),
+    },
+  };
+}
+
+/** Decompose a browser-observed fetch duration using the daemon's own timing
+ * header. The remainder includes loopback transport and browser scheduling. */
+export function fetchTimingBreakdown(
+  fetchMs: number,
+  serverHeader: string | null | undefined,
+): { serverMs?: number; outsideServerMs?: number } {
+  if (serverHeader == null || serverHeader.trim() === "") return {};
+  const serverMs = Number(serverHeader);
+  if (!Number.isFinite(serverMs) || serverMs < 0) return {};
+  return {
+    serverMs,
+    outsideServerMs: Math.max(0, rounded(fetchMs - serverMs, 3)),
+  };
+}
 
 interface ParsedApiRoute {
   route: string;
@@ -432,6 +539,8 @@ interface CompletedApiFetch {
   startedAtMs: number;
   completedAtMs: number;
   fetchMs: number;
+  serverMs?: number;
+  outsideServerMs?: number;
   status?: number;
   ok?: boolean;
 }
@@ -518,6 +627,7 @@ function fetchExtra(opts: {
   cache?: RequestCache;
   keepalive?: boolean;
   hasBody?: boolean;
+  serverTimingHeader?: string | null;
 }): Record<string, unknown> {
   return {
     traceId: opts.traceId,
@@ -537,6 +647,7 @@ function fetchExtra(opts: {
     keepalive: opts.keepalive,
     hasBody: opts.hasBody,
     visibilityState: globalThis.document?.visibilityState,
+    ...fetchTimingBreakdown(opts.fetchMs, opts.serverTimingHeader),
   };
 }
 
@@ -553,6 +664,7 @@ function maybeRecordSlowApiFetch(opts: {
   inFlightAtStart: number;
   inFlightAtEnd: number;
   init?: RequestInit;
+  serverTimingHeader?: string | null;
 }): void {
   if (!opts.parsed) return;
   if (shouldSkipSelfDiagnostic(opts.parsed.route, opts.method)) return;
@@ -581,6 +693,7 @@ function maybeRecordSlowApiFetch(opts: {
       cache: opts.init?.cache,
       keepalive: opts.init?.keepalive,
       hasBody: opts.init?.body != null,
+      serverTimingHeader: opts.serverTimingHeader,
     }),
   });
 }
@@ -592,11 +705,13 @@ function rememberCompletedApiFetch(opts: {
   startedAtMs: number;
   completedAtMs: number;
   fetchMs: number;
+  serverTimingHeader?: string | null;
   status?: number;
   ok?: boolean;
 }): void {
   if (!opts.parsed) return;
   if (shouldSkipSelfDiagnostic(opts.parsed.route, opts.method)) return;
+  const timing = fetchTimingBreakdown(opts.fetchMs, opts.serverTimingHeader);
   recentApiFetches.push({
     traceId: opts.traceId,
     method: opts.method,
@@ -606,6 +721,7 @@ function rememberCompletedApiFetch(opts: {
     startedAtMs: opts.startedAtMs,
     completedAtMs: opts.completedAtMs,
     fetchMs: opts.fetchMs,
+    ...timing,
     status: opts.status,
     ok: opts.ok,
   });
@@ -653,7 +769,7 @@ export function installFetchTracking(): void {
   installed = true;
   const orig = globalThis.fetch.bind(globalThis);
   originalFetch = orig;
-  globalThis.fetch = async function trackedFetch(input, init) {
+  globalThis.fetch = (async function trackedFetch(input, init) {
     const method = methodFromFetchInput(input, init);
     const route = routeFromFetchInput(input);
     const parsed = parseApiRoute(route);
@@ -674,6 +790,7 @@ export function installFetchTracking(): void {
       const res = await orig(input as RequestInfo, init);
       const completedAtMs = performance.now();
       const fetchMs = completedAtMs - startedAtMs;
+      const serverTimingHeader = res.headers.get("X-Supergit-Server-Ms");
       const inFlightAtEnd = apiFetchesInFlight;
       rememberCompletedApiFetch({
         traceId,
@@ -682,6 +799,7 @@ export function installFetchTracking(): void {
         startedAtMs,
         completedAtMs,
         fetchMs,
+        serverTimingHeader,
         status: res.status,
         ok: res.ok,
       });
@@ -698,6 +816,7 @@ export function installFetchTracking(): void {
         inFlightAtStart,
         inFlightAtEnd,
         init,
+        serverTimingHeader,
       });
       if (
         !res.ok &&
@@ -728,6 +847,7 @@ export function installFetchTracking(): void {
                 cache: init?.cache,
                 keepalive: init?.keepalive,
                 hasBody: init?.body != null,
+                serverTimingHeader,
               })
             : undefined,
         });
@@ -782,23 +902,193 @@ export function installFetchTracking(): void {
       apiFetchesInFlight = Math.max(0, apiFetchesInFlight - 1);
       activeApiFetches.delete(traceId);
     }
-  };
+  }) as typeof globalThis.fetch;
 }
 
 let browserResponsivenessInstalled = false;
 let longTaskObserver: PerformanceObserver | null = null;
+let longAnimationFrameObserver: PerformanceObserver | null = null;
 let eventLoopStallTimer: ReturnType<typeof setInterval> | null = null;
 let lastEventLoopStallRecordedAtMs = -Infinity;
+let renderPressureFrame: number | null = null;
+let rendererMutationObserver: MutationObserver | null = null;
+let lastRenderPressureRecordedAtMs = -Infinity;
+let lastLongAnimationFrameRecordedAtMs = -Infinity;
+let consecutiveBadFrameWindows = 0;
+let frameWindowStartedAtMs = 0;
+let previousFrameAtMs = 0;
+let frameIntervals: number[] = [];
+let rendererMutations = emptyRendererMutationCounts();
+
+interface RendererMutationCounts {
+  records: number;
+  childList: number;
+  characterData: number;
+  addedNodes: number;
+  removedNodes: number;
+}
+
+function emptyRendererMutationCounts(): RendererMutationCounts {
+  return {
+    records: 0,
+    childList: 0,
+    characterData: 0,
+    addedNodes: 0,
+    removedNodes: 0,
+  };
+}
+
+function rendererTopologySnapshot(): Record<string, unknown> {
+  const doc = globalThis.document;
+  if (!doc) return {};
+  const count = (selector: string) => doc.querySelectorAll(selector).length;
+  let totalAnimations: number | undefined;
+  let runningAnimations: number | undefined;
+  try {
+    const animations = doc.getAnimations();
+    totalAnimations = animations.length;
+    runningAnimations = animations.filter(
+      (animation) => animation.playState === "running",
+    ).length;
+  } catch {
+    // getAnimations is feature-dependent in embedded WebKit builds.
+  }
+  return {
+    totalElements: doc.getElementsByTagName("*").length,
+    sessionColumns: count(".session-col"),
+    offscreenSessionColumns: count(".session-col.col-offscreen"),
+    workingSessionColumns: count(".session-col-working"),
+    worktreeRows: count(".row"),
+    offscreenWorktreeRows: count(".row.row-offscreen"),
+    messageScrollers: count(".messages"),
+    deferredSessionBodies: count(".session-body-deferred"),
+    totalAnimations,
+    runningAnimations,
+    viewportWidth: globalThis.innerWidth,
+    viewportHeight: globalThis.innerHeight,
+    devicePixelRatio: globalThis.devicePixelRatio,
+    visibilityState: doc.visibilityState,
+    activityTimings: Object.entries(uiTimingSnapshot())
+      .filter(([name]) =>
+        /^(codex-event|session-poll|visual-transcript|errors\.)/.test(name),
+      )
+      .sort((a, b) => b[1].count - a[1].count)
+      .slice(0, 24)
+      .map(([name, timing]) => ({ name, ...timing })),
+    uiTimings: uiTimingDiagnostics(),
+    recentUiTimings: recentSlowSamples(12),
+  };
+}
+
+function resetRendererFrameWindow(atMs: number): void {
+  frameWindowStartedAtMs = atMs;
+  previousFrameAtMs = atMs;
+  frameIntervals = [];
+  rendererMutations = emptyRendererMutationCounts();
+}
+
+function stopRendererMutationTracking(): void {
+  rendererMutationObserver?.disconnect();
+  rendererMutationObserver = null;
+}
+
+function startRendererMutationTracking(): void {
+  if (rendererMutationObserver) return;
+  const Observer = globalThis.MutationObserver;
+  if (!Observer || !globalThis.document?.documentElement) return;
+  rendererMutationObserver = new Observer((records) => {
+    rendererMutations.records += records.length;
+    for (const mutation of records) {
+      if (mutation.type === "childList") {
+        rendererMutations.childList += 1;
+        rendererMutations.addedNodes += mutation.addedNodes.length;
+        rendererMutations.removedNodes += mutation.removedNodes.length;
+      } else if (mutation.type === "characterData") {
+        rendererMutations.characterData += 1;
+      }
+    }
+  });
+  rendererMutationObserver.observe(globalThis.document.documentElement, {
+    subtree: true,
+    childList: true,
+    characterData: true,
+  });
+}
+
+function rendererPressureFrameTick(atMs: number): void {
+  if (globalThis.document?.hidden) {
+    consecutiveBadFrameWindows = 0;
+    stopRendererMutationTracking();
+    resetRendererFrameWindow(atMs);
+  } else {
+    if (previousFrameAtMs > 0) frameIntervals.push(atMs - previousFrameAtMs);
+    previousFrameAtMs = atMs;
+    if (frameWindowStartedAtMs === 0) frameWindowStartedAtMs = atMs;
+    if (atMs - frameWindowStartedAtMs >= RENDER_PRESSURE_WINDOW_MS) {
+      const summary = summarizeRendererFrameWindow(frameIntervals);
+      const pressured = rendererFrameWindowIsPressured(summary);
+      consecutiveBadFrameWindows = pressured
+        ? consecutiveBadFrameWindows + 1
+        : 0;
+      if (consecutiveBadFrameWindows === 1) startRendererMutationTracking();
+      if (!pressured) stopRendererMutationTracking();
+      const canReport =
+        consecutiveBadFrameWindows >= 2 &&
+        atMs - lastRenderPressureRecordedAtMs >= RENDER_PRESSURE_COOLDOWN_MS;
+      const diagnostic = rendererFramePressureDiagnostic({
+        intervals: frameIntervals,
+        consecutiveBadWindows: consecutiveBadFrameWindows,
+        observedAtMs: atMs,
+        lastRecordedAtMs: lastRenderPressureRecordedAtMs,
+        topology: canReport ? rendererTopologySnapshot() : undefined,
+        mutations: rendererMutations,
+      });
+      if (diagnostic) {
+        lastRenderPressureRecordedAtMs = atMs;
+        recordBrowserDiagnostic(diagnostic.message, diagnostic.extra);
+      }
+      if (consecutiveBadFrameWindows >= 2) {
+        // One confirmation window is enough. Re-arm from a cheap rAF-only
+        // sample instead of observing every mutation throughout the cooldown.
+        consecutiveBadFrameWindows = 0;
+        stopRendererMutationTracking();
+      }
+      resetRendererFrameWindow(atMs);
+    }
+  }
+  renderPressureFrame = globalThis.requestAnimationFrame?.(
+    rendererPressureFrameTick,
+  );
+}
+
+function startRendererPressureTracking(): void {
+  if (typeof globalThis.requestAnimationFrame !== "function") return;
+  resetRendererFrameWindow(performance.now());
+  renderPressureFrame = globalThis.requestAnimationFrame(
+    rendererPressureFrameTick,
+  );
+}
 
 export function __resetBrowserResponsivenessTrackingForTests(): void {
   browserResponsivenessInstalled = false;
   longTaskObserver?.disconnect();
   longTaskObserver = null;
+  longAnimationFrameObserver?.disconnect();
+  longAnimationFrameObserver = null;
   if (eventLoopStallTimer) {
     clearInterval(eventLoopStallTimer);
     eventLoopStallTimer = null;
   }
   lastEventLoopStallRecordedAtMs = -Infinity;
+  if (renderPressureFrame !== null) {
+    globalThis.cancelAnimationFrame?.(renderPressureFrame);
+    renderPressureFrame = null;
+  }
+  stopRendererMutationTracking();
+  lastRenderPressureRecordedAtMs = -Infinity;
+  lastLongAnimationFrameRecordedAtMs = -Infinity;
+  consecutiveBadFrameWindows = 0;
+  resetRendererFrameWindow(0);
 }
 
 export function eventLoopStallDiagnostic(opts: {
@@ -863,6 +1153,8 @@ function recentApiFetchDiagnostics(nowMs: number): Record<string, unknown>[] {
       status: fetch.status,
       ok: fetch.ok,
       fetchMs: roundMs(fetch.fetchMs),
+      serverMs: fetch.serverMs,
+      outsideServerMs: fetch.outsideServerMs,
       ageMs: roundMs(nowMs - fetch.completedAtMs),
     }));
 }
@@ -916,21 +1208,62 @@ export function installBrowserResponsivenessTracking(): void {
     lastEventLoopStallRecordedAtMs = observedAtMs;
     recordBrowserDiagnostic(diagnostic.message, diagnostic.extra);
   }, EVENT_LOOP_STALL_INTERVAL_MS);
+  startRendererPressureTracking();
   const Observer = globalThis.PerformanceObserver;
-  if (!Observer?.supportedEntryTypes?.includes("longtask")) return;
-  try {
-    longTaskObserver = new Observer((list) => {
-      for (const entry of list.getEntries()) {
-        if (entry.duration < LONG_TASK_MS) continue;
-        recordBrowserDiagnostic(
-          `browser-longtask durationMs=${roundMs(entry.duration)}`,
-          longTaskExtra(entry),
-        );
-      }
-    });
-    longTaskObserver.observe({ entryTypes: ["longtask"] });
-  } catch {
-    // PerformanceObserver longtask support varies by browser shell.
+  if (Observer?.supportedEntryTypes?.includes("longtask")) {
+    try {
+      longTaskObserver = new Observer((list) => {
+        for (const entry of list.getEntries()) {
+          if (entry.duration < LONG_TASK_MS) continue;
+          recordBrowserDiagnostic(
+            `browser-longtask durationMs=${roundMs(entry.duration)}`,
+            longTaskExtra(entry),
+          );
+        }
+      });
+      longTaskObserver.observe({ entryTypes: ["longtask"] });
+    } catch {
+      // PerformanceObserver longtask support varies by browser shell.
+    }
+  }
+  if (Observer?.supportedEntryTypes?.includes("long-animation-frame")) {
+    try {
+      longAnimationFrameObserver = new Observer((list) => {
+        for (const entry of list.getEntries()) {
+          if (entry.duration < LONG_TASK_MS) continue;
+          const observedAtMs = entry.startTime + entry.duration;
+          if (
+            observedAtMs - lastLongAnimationFrameRecordedAtMs <
+            RENDER_PRESSURE_COOLDOWN_MS
+          ) {
+            continue;
+          }
+          lastLongAnimationFrameRecordedAtMs = observedAtMs;
+          const frame = entry as PerformanceEntry & {
+            blockingDuration?: number;
+            renderStart?: number;
+            styleAndLayoutStart?: number;
+            scripts?: unknown[];
+          };
+          recordBrowserDiagnostic(
+            `browser-long-animation-frame durationMs=${roundMs(entry.duration)}`,
+            {
+              durationMs: roundMs(entry.duration),
+              blockingDurationMs: roundMs(frame.blockingDuration ?? 0),
+              renderStartMs: roundMs(frame.renderStart ?? 0),
+              styleAndLayoutStartMs: roundMs(frame.styleAndLayoutStart ?? 0),
+              scriptCount: frame.scripts?.length ?? 0,
+              ...rendererTopologySnapshot(),
+            },
+          );
+        }
+      });
+      longAnimationFrameObserver.observe({
+        type: "long-animation-frame",
+      });
+    } catch {
+      // Long Animation Frames are newer than longtask and optional in WebKit.
+    }
   }
 }
 
