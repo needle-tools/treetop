@@ -524,6 +524,17 @@ export function fetchTimingBreakdown(
   };
 }
 
+export function performanceObserverCapabilities(
+  entryTypes: readonly string[] =
+    globalThis.PerformanceObserver?.supportedEntryTypes ?? [],
+): Record<string, unknown> {
+  return {
+    performanceObserverEntryTypes: [...entryTypes],
+    longAnimationFrameSupported: entryTypes.includes("long-animation-frame"),
+    longTaskSupported: entryTypes.includes("longtask"),
+  };
+}
+
 interface ParsedApiRoute {
   route: string;
   apiPath: string;
@@ -968,6 +979,8 @@ function rendererTopologySnapshot(): Record<string, unknown> {
     viewportHeight: globalThis.innerHeight,
     devicePixelRatio: globalThis.devicePixelRatio,
     visibilityState: doc.visibilityState,
+    userAgent: globalThis.navigator?.userAgent,
+    ...performanceObserverCapabilities(),
     activityTimings: Object.entries(uiTimingSnapshot())
       .filter(([name]) =>
         /^(codex-event|session-poll|visual-transcript|errors\.)/.test(name),
@@ -1262,7 +1275,8 @@ export function installBrowserResponsivenessTracking(): void {
         type: "long-animation-frame",
       });
     } catch {
-      // Long Animation Frames are newer than longtask and optional in WebKit.
+      // LoAF ships in Chromium 123+, but not in current system WebKit.
+      // The rAF pressure sampler above is the portable Treetop signal.
     }
   }
 }

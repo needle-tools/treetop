@@ -936,11 +936,15 @@ only after the first bad window, disconnected after confirmation or when the
 document is hidden, and reports aggregate counts rather than mutation payloads.
 This keeps the measurement cost out of the normal rendering path.
 
-Where supported, Long Animation Frame entries add blocking, render-start,
-style/layout-start, and script-count attribution. WebKit versions without that
-API retain the portable rAF signal. Session batch polling separately times JSON
-decode and reactive callback dispatch, so a slow cycle can be assigned to
-network/daemon work, payload decoding, or downstream Svelte updates.
+Chromium 123+ Long Animation Frame entries add blocking, render-start,
+style/layout-start, and script-count attribution. A direct probe of macOS's
+system WKWebView on 2026-09-04 showed neither `long-animation-frame` nor
+`longtask` in `PerformanceObserver.supportedEntryTypes`, so Treetop's primary
+signal is the portable rAF sampler. Pressure reports record the actual supported
+entry types and user agent so this assumption stays inspectable as WebKit
+changes. Session batch polling separately times JSON decode and reactive
+callback dispatch, so a slow cycle can be assigned to network/daemon work,
+payload decoding, or downstream Svelte updates.
 
 Every JSON API response now carries both standard `Server-Timing` and
 `X-Supergit-Server-Ms`. Fetch diagnostics preserve daemon duration and the

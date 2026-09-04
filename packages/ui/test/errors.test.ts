@@ -10,6 +10,7 @@ import {
   installBrowserResponsivenessTracking,
   eventLoopStallDiagnostic,
   fetchTimingBreakdown,
+  performanceObserverCapabilities,
   rendererFramePressureDiagnostic,
   summarizeRendererFrameWindow,
   getErrors,
@@ -846,6 +847,18 @@ describe("fetch timing diagnostics", () => {
     expect(fetchTimingBreakdown(20, "25")).toEqual({
       serverMs: 25,
       outsideServerMs: 0,
+    });
+  });
+});
+
+describe("performance observer capabilities", () => {
+  test("makes optional Chromium attribution explicit in renderer diagnostics", () => {
+    expect(
+      performanceObserverCapabilities(["mark", "long-animation-frame"]),
+    ).toEqual({
+      performanceObserverEntryTypes: ["mark", "long-animation-frame"],
+      longAnimationFrameSupported: true,
+      longTaskSupported: false,
     });
   });
 });
