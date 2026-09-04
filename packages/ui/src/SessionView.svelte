@@ -109,6 +109,7 @@
     shouldUseCodexAppHistorySource,
     subscribeCodexEvents,
     type CodexAppEvent,
+    type CodexAppHistoryMessage,
     type CodexAppSessionTransport,
     type CodexAppThreadPage,
     type CodexEventStreamState,
@@ -221,6 +222,10 @@
    *  undefined and continues through the shared HTTP/SSE transport. */
   export let codexAppTransport: CodexAppSessionTransport | undefined =
     undefined;
+  /** Read-only observation hook used by Replay Lab diagnostics. */
+  export let onMessagesChange: (
+    messages: readonly CodexAppHistoryMessage[],
+  ) => void = () => {};
   /** Open a subagent transcript discovered inside this transcript/live
    *  stream. The parent owns column placement; this view never owns the
    *  child process lifecycle. */
@@ -363,6 +368,8 @@
     blocks: NormalizedBlock[];
     timestamp?: string;
     id?: string;
+    tokensUsed?: number;
+    tokenUsage?: CodexAppHistoryMessage["tokenUsage"];
     intent?: "steer";
     /** Optional per-turn assistant label override. Set by the
      *  daemon's Ollama parser to the model that produced the turn
@@ -400,6 +407,11 @@
     options: CodexUserInputOption[] | null;
   }
   let session: NormalizedSession | null = null;
+  let reportedMessages: NormalizedMessage[] | null = null;
+  $: if (session?.messages && session.messages !== reportedMessages) {
+    reportedMessages = session.messages;
+    onMessagesChange(session.messages);
+  }
   let liveCodexApp = false;
   let codexAppHistorySourceActive = false;
   let codexAppHistoryFetchActive = false;

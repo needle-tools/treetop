@@ -2,14 +2,19 @@
   import { onDestroy, onMount } from "svelte";
   import SessionView from "./SessionView.svelte";
   import { codexAppSource } from "./storage";
+  import { installIdleTracker } from "./ui-idle";
   import {
+    analyzeCodexReplayTurns,
     createCodexReplaySessionTransport,
     filterCodexReplaySessions,
+    formatReplayDuration,
+    formatReplayTokenCount,
     parseCodexReplaySessionFixture,
     summarizeCodexReplaySessions,
     type CodexReplaySessionFilter,
     type CodexReplaySessionFixture,
     type CodexReplaySessionTransport,
+    type CodexReplayMessage,
   } from "./codex-replay-lab";
 
   let fixture: CodexReplaySessionFixture | null = null;
@@ -31,8 +36,11 @@
   let sessionFilter: CodexReplaySessionFilter = "all";
   let sessionQuery = "";
   let transcriptSession: ReplaySessionIndexEntry | null = null;
+  let analysisCollapsed = false;
+  let analysisMessages: readonly CodexReplayMessage[] = [];
 
   $: stepCount = transport?.stepCount ?? 0;
+  $: turnAnalysis = analyzeCodexReplayTurns(analysisMessages);
   $: sessionCounts = summarizeCodexReplaySessions(sessions);
   $: visibleSessions = filterCodexReplaySessions(
     sessions,
@@ -91,6 +99,7 @@
     fixture = null;
     transport = null;
     transcriptSession = null;
+    analysisMessages = [];
     playing = false;
     if (entry.rpcFrameCount === 0 && entry.transcript) {
       transcriptSession = entry;
@@ -129,6 +138,7 @@
     fixture = null;
     transport = null;
     transcriptSession = null;
+    analysisMessages = [];
     fileName = "";
     stepIndex = 0;
     scrubStepIndex = 0;
@@ -142,6 +152,12 @@
   function togglePlay(): void {
     playing = !playing;
     if (playing && stepIndex >= stepCount) setReplayStep(0);
+  }
+
+  function receiveSessionMessages(
+    messages: readonly CodexReplayMessage[],
+  ): void {
+    analysisMessages = messages;
   }
 
   function setReplayStep(nextStepIndex: number): void {
@@ -186,7 +202,9 @@
   });
 
   onMount(() => {
+    const uninstallIdleTracker = installIdleTracker();
     void fetchRecordings();
+    return uninstallIdleTracker;
   });
 
   interface ReplaySessionIndexEntry {
@@ -334,108 +352,190 @@
       {/if}
     </aside>
 
-    <main class="replay-main">
-      {#if loading}
-        <div
-          class="replay-drop replay-loading"
-          role="status"
-          aria-live="polite"
-        >
-          <strong>{loadingLabel || "Loading replay"}</strong>
-          {#if fileName}<span>{fileName}</span>{/if}
-          <progress></progress>
-        </div>
-      {:else if transcriptSession?.transcript}
-        <div class="replay-stage replay-transcript-stage">
-          <div class="replay-production-session">
-            {#key transcriptSession.threadId}
-              <SessionView
-                agent="codex"
-                source={transcriptSession.transcript.path}
-                resumeSessionId={transcriptSession.threadId}
-                wtPath={transcriptSession.transcript.cwd ?? ""}
-                manualTitleOverride={transcriptSession.title}
-                visualAppEnabled={false}
-                spawnReady={false}
-              />
-            {/key}
-          </div>
-        </div>
-      {:else if !fixture || !transport}
-        <div class="replay-drop" role="region" aria-label="Replay status">
-          <strong>Select a recorded session</strong>
-          <span
-            >The selected recording will load through Treetop's SessionView.</span
+    <main
+      class="replay-main"
+      class:analysis-collapsed={analysisCollapsed}
+      class:no-analysis={!fileName}
+    >
+      <div class="replay-session-area">
+        {#if loading}
+          <div
+            class="replay-drop replay-loading"
+            role="status"
+            aria-live="polite"
           >
-          {#if parseError}<small>{parseError}</small>{/if}
-        </div>
-      {:else}
-        <div class="replay-stage">
-          <div class="replay-production-session">
-            {#key replayGeneration}
-              <SessionView
-                agent="codex"
-                source={codexAppSource(fixture.threadId)}
-                resumeSessionId={fixture.threadId}
-                wtPath={fixture.cwd}
-                manualTitleOverride={fileName}
-                visualAppEnabled={true}
-                codexAppTransport={transport}
-                spawnReady={false}
-              />
-            {/key}
+            <strong>{loadingLabel || "Loading replay"}</strong>
+            {#if fileName}<span>{fileName}</span>{/if}
+            <progress></progress>
           </div>
-          <div class="replay-timeline">
-            <div class="replay-step-buttons" aria-label="Replay steps">
-              <button
-                class="replay-step"
-                on:click={() => setReplayStep(0)}
-                disabled={stepIndex <= 0}
-              >
-                Start
-              </button>
-              <button
-                class="replay-step"
-                on:click={() => setReplayStep(stepIndex - 1)}
-                disabled={stepIndex <= 0}
-              >
-                -1
-              </button>
-              <button
-                class="replay-step replay-step-primary"
-                on:click={() => setReplayStep(stepIndex + 1)}
-                disabled={stepIndex >= stepCount}
-              >
-                +1 step
-              </button>
-              <button
-                class="replay-step"
-                on:click={() => setReplayStep(stepCount)}
-                disabled={stepIndex >= stepCount}
-              >
-                End
-              </button>
+        {:else if transcriptSession?.transcript}
+          <div class="replay-stage replay-transcript-stage">
+            <div class="replay-production-session">
+              {#key transcriptSession.threadId}
+                <SessionView
+                  agent="codex"
+                  source={transcriptSession.transcript.path}
+                  resumeSessionId={transcriptSession.threadId}
+                  wtPath={transcriptSession.transcript.cwd ?? ""}
+                  manualTitleOverride={transcriptSession.title}
+                  visualAppEnabled={false}
+                  spawnReady={false}
+                  onMessagesChange={receiveSessionMessages}
+                />
+              {/key}
             </div>
-            <button
-              class="replay-play"
-              on:click={togglePlay}
-              aria-label={playing ? "Pause replay" : "Play replay"}
-            >
-              {playing ? "Pause" : "Play"}
-            </button>
-            <input
-              type="range"
-              min="0"
-              max={stepCount}
-              step="1"
-              value={scrubStepIndex}
-              on:input={onScrubInput}
-              on:change={commitScrub}
-              aria-label="Replay time"
-            />
-            <span>{scrubStepIndex}/{stepCount}</span>
           </div>
-        </div>
+        {:else if !fixture || !transport}
+          <div class="replay-drop" role="region" aria-label="Replay status">
+            <strong>Select a recorded session</strong>
+            <span
+              >The selected recording will load through Treetop's SessionView.</span
+            >
+            {#if parseError}<small>{parseError}</small>{/if}
+          </div>
+        {:else}
+          <div class="replay-stage">
+            <div class="replay-production-session">
+              {#key replayGeneration}
+                <SessionView
+                  agent="codex"
+                  source={codexAppSource(fixture.threadId)}
+                  resumeSessionId={fixture.threadId}
+                  wtPath={fixture.cwd}
+                  manualTitleOverride={fileName}
+                  visualAppEnabled={true}
+                  codexAppTransport={transport}
+                  spawnReady={false}
+                  onMessagesChange={receiveSessionMessages}
+                />
+              {/key}
+            </div>
+            <div class="replay-timeline">
+              <div class="replay-step-buttons" aria-label="Replay steps">
+                <button
+                  class="replay-step"
+                  on:click={() => setReplayStep(0)}
+                  disabled={stepIndex <= 0}
+                >
+                  Start
+                </button>
+                <button
+                  class="replay-step"
+                  on:click={() => setReplayStep(stepIndex - 1)}
+                  disabled={stepIndex <= 0}
+                >
+                  -1
+                </button>
+                <button
+                  class="replay-step replay-step-primary"
+                  on:click={() => setReplayStep(stepIndex + 1)}
+                  disabled={stepIndex >= stepCount}
+                >
+                  +1 step
+                </button>
+                <button
+                  class="replay-step"
+                  on:click={() => setReplayStep(stepCount)}
+                  disabled={stepIndex >= stepCount}
+                >
+                  End
+                </button>
+              </div>
+              <button
+                class="replay-play"
+                on:click={togglePlay}
+                aria-label={playing ? "Pause replay" : "Play replay"}
+              >
+                {playing ? "Pause" : "Play"}
+              </button>
+              <input
+                type="range"
+                min="0"
+                max={stepCount}
+                step="1"
+                value={scrubStepIndex}
+                on:input={onScrubInput}
+                on:change={commitScrub}
+                aria-label="Replay time"
+              />
+              <span>{scrubStepIndex}/{stepCount}</span>
+            </div>
+          </div>
+        {/if}
+      </div>
+      {#if fileName}
+        <aside class="replay-analysis" aria-label="Turn analysis">
+          <button
+            type="button"
+            class="replay-analysis-toggle"
+            title={analysisCollapsed
+              ? "Expand turn analysis"
+              : "Collapse turn analysis"}
+            aria-label={analysisCollapsed
+              ? "Expand turn analysis"
+              : "Collapse turn analysis"}
+            on:click={() => (analysisCollapsed = !analysisCollapsed)}
+            >{analysisCollapsed ? "‹" : "›"}</button
+          >
+          {#if !analysisCollapsed}
+            <div class="replay-analysis-content">
+              <header class="replay-analysis-header">
+                <strong>Turns</strong>
+                <span>{turnAnalysis.issueTurnCount} issues</span>
+              </header>
+              {#if !turnAnalysis.turns.length}
+                <span class="replay-analysis-empty">No turn data</span>
+              {:else}
+                <div class="replay-turn-map">
+                  {#each turnAnalysis.turns as turn}
+                    <article
+                      class="replay-turn"
+                      class:has-issues={turn.issues.length > 0}
+                      title={turn.issues.length
+                        ? turn.issues
+                            .map((issue) => `${issue.label}: ${issue.detail}`)
+                            .join("\n")
+                        : turn.label}
+                    >
+                      <div class="replay-turn-heading">
+                        <span>{turn.index + 1}</span>
+                        <strong>{turn.label}</strong>
+                      </div>
+                      <div class="replay-turn-heat" aria-hidden="true">
+                        <span
+                          style={`--turn-heat:${Math.max(4, Math.round(turn.heat * 100))}%`}
+                        ></span>
+                      </div>
+                      <div class="replay-turn-metrics">
+                        {#if turn.durationMs !== undefined}
+                          <span>{formatReplayDuration(turn.durationMs)}</span>
+                        {/if}
+                        {#if turn.toolCallCount > 0}
+                          <span>{turn.toolCallCount} tools</span>
+                        {/if}
+                        {#if turn.outputTokens > 0}
+                          <span
+                            >{formatReplayTokenCount(turn.outputTokens)} out</span
+                          >
+                        {/if}
+                        {#if turn.tokensPerSecond !== undefined}
+                          <span>{turn.tokensPerSecond.toFixed(1)} tok/s</span>
+                        {/if}
+                      </div>
+                      {#if turn.issues.length}
+                        <div class="replay-turn-issues">
+                          {#each turn.issues as issue}
+                            <span>{issue.label}</span>
+                          {/each}
+                        </div>
+                      {/if}
+                    </article>
+                  {/each}
+                </div>
+              {/if}
+            </div>
+          {/if}
+        </aside>
       {/if}
     </main>
   </div>
@@ -532,6 +632,148 @@
   .replay-main {
     min-height: 0;
     overflow: hidden;
+  }
+
+  .replay-main {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 310px;
+    gap: 10px;
+  }
+
+  .replay-main.analysis-collapsed {
+    grid-template-columns: minmax(0, 1fr) 36px;
+  }
+
+  .replay-main.no-analysis {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .replay-session-area {
+    min-width: 0;
+    min-height: 0;
+  }
+
+  .replay-analysis {
+    position: relative;
+    min-width: 0;
+    min-height: 0;
+    overflow: hidden;
+    border: 1px solid var(--border, #303030);
+    border-radius: 8px;
+    background: var(--panel-bg, #181818);
+  }
+
+  .replay-analysis-toggle {
+    position: absolute;
+    z-index: 1;
+    top: 8px;
+    right: 7px;
+    width: 24px;
+    height: 24px;
+    padding: 0;
+    border: 1px solid var(--border, #3a3a3a);
+    border-radius: 50%;
+    color: inherit;
+    background: var(--button-bg, #252525);
+    font: inherit;
+    font-size: 18px;
+    line-height: 1;
+    cursor: pointer;
+  }
+
+  .replay-analysis-content {
+    height: 100%;
+    display: grid;
+    grid-template-rows: auto 1fr;
+    min-height: 0;
+  }
+
+  .replay-analysis-header {
+    min-height: 42px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 0 40px 0 12px;
+    border-bottom: 1px solid var(--border, #303030);
+  }
+
+  .replay-analysis-header span,
+  .replay-analysis-empty {
+    color: var(--muted, #999);
+    font-size: 12px;
+  }
+
+  .replay-analysis-empty {
+    padding: 12px;
+  }
+
+  .replay-turn-map {
+    min-height: 0;
+    overflow: auto;
+    padding: 8px;
+  }
+
+  .replay-turn {
+    display: grid;
+    gap: 5px;
+    margin-bottom: 5px;
+    padding: 8px;
+    border-left: 2px solid transparent;
+    background: color-mix(in srgb, var(--button-bg, #252525), transparent 35%);
+  }
+
+  .replay-turn.has-issues {
+    border-left-color: #ff765f;
+  }
+
+  .replay-turn-heading {
+    min-width: 0;
+    display: grid;
+    grid-template-columns: 20px minmax(0, 1fr);
+    gap: 5px;
+    align-items: baseline;
+  }
+
+  .replay-turn-heading span,
+  .replay-turn-metrics {
+    color: var(--muted, #999);
+    font-size: 11px;
+  }
+
+  .replay-turn-heading strong {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 12px;
+  }
+
+  .replay-turn-heat {
+    height: 5px;
+    overflow: hidden;
+    background: #292d27;
+  }
+
+  .replay-turn-heat span {
+    display: block;
+    width: var(--turn-heat);
+    height: 100%;
+    background: linear-gradient(90deg, #73b95b, #e6bd4a 62%, #ff675b);
+  }
+
+  .replay-turn-metrics,
+  .replay-turn-issues {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 3px 8px;
+  }
+
+  .replay-turn-issues span {
+    padding: 2px 5px;
+    border: 1px solid color-mix(in srgb, #ff765f, transparent 55%);
+    border-radius: 4px;
+    color: #ffad91;
+    background: color-mix(in srgb, #ff765f, transparent 88%);
+    font-size: 10px;
   }
 
   .replay-browser {
