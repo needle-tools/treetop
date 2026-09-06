@@ -138,7 +138,7 @@ Caching strategy:
   cache read/write buckets and long-context rates, then roll those checkpoints
   up into steps and rounds. The reusable catalog keeps immutable `from` /
   `before` price periods so later price changes do not rewrite old sessions.
-  `@supergit/nicifier` also loads the current models.dev OpenAI/Anthropic
+  `@treetop/nicifier` also loads the current models.dev OpenAI/Anthropic
   catalog once, without blocking rendering; current checkpoints use that
   snapshot while bundled periods remain authoritative before it was observed.
   Anthropic's separate one-hour cache-write rate stays as a narrow bundled

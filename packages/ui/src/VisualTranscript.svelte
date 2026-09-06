@@ -13,7 +13,7 @@
   import Tooltip from "./Tooltip.svelte";
   import ToolIcon from "./ToolIcon.svelte";
   import { formatAbsoluteTimeTitle } from "./display-helpers";
-  import type { ModelsDevPricingSnapshot } from "@supergit/nicifier";
+  import type { ModelsDevPricingSnapshot } from "@treetop/nicifier";
   import {
     buildVisualWorkDisplayEntries,
     buildVisibleVisualWorkDisplayEntries,

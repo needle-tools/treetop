@@ -26,7 +26,7 @@ function replayLabDevRoutePlugin(): Plugin {
 export default defineConfig(() => ({
   resolve: {
     alias: {
-      "@supergit/nicifier": fileURLToPath(
+      "@treetop/nicifier": fileURLToPath(
         new URL("../nicifier/src/index.ts", import.meta.url),
       ),
     },

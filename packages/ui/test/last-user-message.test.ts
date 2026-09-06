@@ -1,5 +1,5 @@
 import { describe, it, expect } from "bun:test";
-import { nicifyCommand } from "@supergit/nicifier";
+import { nicifyCommand } from "@treetop/nicifier";
 import {
   applyVisualTranscriptDeltaPatches,
   buildVisualWorkDisplayEntries,

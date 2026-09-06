@@ -1,5 +1,5 @@
 {
-  "name": "@supergit/nicifier",
+  "name": "@treetop/nicifier",
   "version": "0.0.0",
   "type": "module",
   "sideEffects": false,

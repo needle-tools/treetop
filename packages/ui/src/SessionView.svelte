@@ -3,7 +3,7 @@
   import {
     loadModelsDevPricing,
     type ModelsDevPricingSnapshot,
-  } from "@supergit/nicifier";
+  } from "@treetop/nicifier";
   import { play } from "./sound";
   import { onMount, onDestroy, tick } from "svelte";
   import { flip } from "svelte/animate";
