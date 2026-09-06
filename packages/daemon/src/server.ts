@@ -63,8 +63,8 @@ import { createLimiter } from "./concurrency";
 import { createStaleWhileRevalidateCache } from "./async-cache";
 import { uiStaticRequestPath } from "./ui-static";
 import {
-  listCodexReplayRecordings,
-  readCodexReplayRecording,
+  listCodexReplaySessions,
+  readCodexReplaySession,
 } from "./codex-replay-recordings";
 import { $, type ServerWebSocket } from "bun";
 import {
@@ -4542,8 +4542,11 @@ const server = Bun.serve<TermWsData, never>({
           "codex-app-recordings",
         );
         try {
-          const recordings = await listCodexReplayRecordings({ recordingDir });
-          return json({ ok: true, recordings });
+          const sessions = await listCodexReplaySessions({
+            recordingDir,
+            sessionTitles: await workspace.listSessionTitles(),
+          });
+          return json({ ok: true, sessions });
         } catch (e) {
           return json(
             { error: e instanceof Error ? e.message : String(e) },
@@ -4556,9 +4559,10 @@ const server = Bun.serve<TermWsData, never>({
         url.pathname === "/api/codex-app/recordings/read" &&
         req.method === "GET"
       ) {
-        const path = url.searchParams.get("path") || "";
-        const transcriptPath = url.searchParams.get("transcriptPath") || undefined;
-        if (!path) return json({ error: "path required" }, { status: 400 });
+        const threadId = url.searchParams.get("threadId") || "";
+        if (!threadId) {
+          return json({ error: "threadId required" }, { status: 400 });
+        }
         const recordingDir = join(
           workspace.path,
           ".debugging",
@@ -4567,10 +4571,10 @@ const server = Bun.serve<TermWsData, never>({
         try {
           return json({
             ok: true,
-            ...(await readCodexReplayRecording({
+            ...(await readCodexReplaySession({
               recordingDir,
-              path,
-              transcriptPath,
+              threadId,
+              sessionTitles: await workspace.listSessionTitles(),
             })),
           });
         } catch (e) {

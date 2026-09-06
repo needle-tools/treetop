@@ -2,7 +2,28 @@ import { describe, expect, test } from "bun:test";
 import { mkdtemp, readFile, rm, writeFile, mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { parseDevWorkspaceArgs, seedWorkspaceIfMissing } from "../../../dev";
+import {
+  parseDevWorkspaceArgs,
+  seedWorkspaceIfMissing,
+  waitForDevChildren,
+} from "../../../dev";
+
+function pendingChild() {
+  let resolveExit!: (code: number) => void;
+  const exited = new Promise<number>((resolve) => (resolveExit = resolve));
+  let killed = false;
+  return {
+    child: {
+      exited,
+      kill: () => {
+        killed = true;
+        resolveExit(0);
+      },
+    },
+    exit: resolveExit,
+    wasKilled: () => killed,
+  };
+}
 
 describe("dev workspace arguments", () => {
   test("maps a workspace name to the user's supergit workspace root", () => {
@@ -86,5 +107,18 @@ describe("seedWorkspaceIfMissing", () => {
     } finally {
       await rm(root, { recursive: true, force: true });
     }
+  });
+});
+
+describe("dev child lifecycle", () => {
+  test("stops Vite when the daemon exits instead of leaving a broken proxy alive", async () => {
+    const daemon = pendingChild();
+    const ui = pendingChild();
+    const waiting = waitForDevChildren(daemon.child, ui.child);
+
+    daemon.exit(1);
+
+    await expect(waiting).rejects.toThrow("daemon exited with code 1");
+    expect(ui.wasKilled()).toBe(true);
   });
 });
