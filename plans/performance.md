@@ -161,6 +161,17 @@ load-bearing:
    `nextCachedSessionSummaryRequest`, `planWorktreeRecompute`,
    `selectSessionsForBackgroundSpawn`).
 
+**Session transcript scrolling (2026-09-01):** `SessionView` had two competing
+vertical scroll authorities: the transcript and the live `Worked for…` body,
+plus their tail/pause state spread across the component. Live app-server
+updates could therefore preserve one scroll position while moving the other.
+The durable shape is one `.messages` scroller owned by
+`session-scroll-controller.ts`; work bodies keep their DOM and geometry but no
+longer own overflow. Paused updates anchor the deepest visible stable transcript
+row across the Svelte update. In zen, an unpaused live work round anchors its
+summary near the viewport top while reserving the preceding user turn's visible
+tail above it; completed responses return to ordinary bottom-tail following.
+
 ## Mechanics — what each Chrome phase actually costs
 
 Useful background for anyone touching the always-on chrome:
@@ -776,6 +787,14 @@ bounded 1 MiB buffer at global concurrency 1, coalesced per snapshot, and
 incrementally scans appended bytes on later requests. This keeps unusually
 large sessions visible in the header and dock without making every historical
 session pay the line-count cost during `/api/repos` enrichment.
+
+Live app-server updates also need a reader-position guard independent of tail
+follow. The transcript already uses keyed Svelte rows and reuses unchanged item
+references, but the active work subtree legitimately changes as tool and text
+deltas arrive. A paused reader is now anchored to the deepest visible stable
+row before that DOM update and restored to the same viewport offset afterward.
+Anchor selection deliberately ignores a giant enclosing work row when a nested
+step is visible; choosing the container made earlier scroll memory ineffective.
 
 This investigation also found the data volume at 100% capacity (about 3 GiB
 free) and repeated `ENOSPC` writes in daemon diagnostics. That is an independent
