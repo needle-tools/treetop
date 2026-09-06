@@ -129,6 +129,10 @@
   import RepairSessionDialog from "./RepairSessionDialog.svelte";
   import SettingsDialog from "./SettingsDialog.svelte";
   import { registerSettings, settingValue } from "./settings-registry";
+  import {
+    BACKGROUND_SESSION_SUMMARIES_KEY,
+    SESSION_SUMMARY_SETTINGS,
+  } from "./summary-queue";
   import { openInvite } from "./receive-invite-dialog";
   import MessagesInbox from "./MessagesInbox.svelte";
   import { refreshMessages } from "./messages-store";
@@ -236,7 +240,7 @@
     pushBadgeDanger,
     duplicateRepoNotice,
   } from "./display-helpers";
-  import { parseNDJSONLines } from "./ndjson-client";
+  import { parseNDJSONLines, patchWorktreeDetails } from "./ndjson-client";
   import {
     formatTerminalIoRate,
     isTerminalRecentlyActive,
@@ -559,6 +563,7 @@
       },
     ],
   });
+  registerSettings(SESSION_SUMMARY_SETTINGS);
   registerSettings({
     id: "terminal",
     title: "Terminal",
@@ -649,6 +654,9 @@
   });
   const showGreeting = settingValue("appearance.showGreeting");
   const showTerminalIoDebug = settingValue("terminal.showIoDebug");
+  const backgroundSessionSummaries = settingValue(
+    BACKGROUND_SESSION_SUMMARIES_KEY,
+  );
 
   // Vines overlay (decorative; self-contained in ./vines). The "Show
   // vines" setting is the single source of truth — mount/unmount react to
@@ -4750,6 +4758,7 @@
   // servers writing < 250ms apart) can't starve the trailing debounce and
   // freeze the worktree dirty state — flush at least every 2s during a burst.
   const FS_CHANGE_MAX_BATCH_MS = 2000;
+  let fsChangeNeedsFullReload = false;
   const fsChangeBatcher = createFsChangeBatcher({
     delayMs: FS_CHANGE_BATCH_MS,
     maxDelayMs: FS_CHANGE_MAX_BATCH_MS,
@@ -4769,7 +4778,10 @@
       }
       fsChangeKey = nextFsChangeKey;
       if (nextWtSummaryStale) wtSummaryStale = nextWtSummaryStale;
-      void load("fs-change-batch");
+      if (fsChangeNeedsFullReload) {
+        fsChangeNeedsFullReload = false;
+        void load("fs-change-batch");
+      }
     },
   });
 
@@ -6364,23 +6376,50 @@
   }
 
   /** A REMOTE daemon's `change` event. We deliberately handle ONLY the two
-   *  things that affect how a remote row renders: a repos refresh (so the
-   *  row's worktrees/counters update — load() fans out to all daemons) and
+   *  things that affect how a remote row renders: repo state updates and
    *  a notes-key bump (remote notes are merged in #17). Everything else in
    *  the local handler (sound_play, toasts, fs_change tooltips, messages,
    *  peerDiscovery, commands) is LOCAL-MACHINE UX that must NOT fire from a
    *  remote stream — firing it would double-toast / play sounds for another
    *  box's activity. Keeping this narrow is what makes #15a low-risk. */
-  function handleRemoteStreamChange(rawData: unknown): void {
+  function handleRemoteStreamChange(
+    rawData: unknown,
+    daemonId: string,
+  ): void {
     if (typeof rawData !== "string") return;
-    let payload: { kind?: string } = {};
+    let payload: {
+      kind?: string;
+      path?: string;
+      details?: Record<string, unknown>;
+    } = {};
     try {
       payload = JSON.parse(rawData);
     } catch {
       return;
     }
-    if (changeKindRequiresReposReload(payload.kind))
+    if (
+      changeKindRequiresReposReload(payload.kind) &&
+      payload.kind !== "fs_change"
+    )
       void load(`remote-sse:${payload.kind ?? "unknown"}`);
+    if (payload.kind === "fs_change") {
+      if (
+        typeof payload.path === "string" &&
+        payload.details &&
+        typeof payload.details === "object"
+      ) {
+        const patch = patchWorktreeDetails(
+          repos,
+          payload.path,
+          payload.details,
+          daemonId,
+        );
+        if (!patch.matched) void load("remote-sse:fs_change-fallback");
+        else if (patch.changed) repos = patch.repos;
+      } else {
+        void load("remote-sse:fs_change-fallback");
+      }
+    }
     if (
       payload.kind === "note_create" ||
       payload.kind === "note_update" ||
@@ -6416,7 +6455,7 @@
       if (remoteStreams.has(id)) continue;
       const es = new EventSource(apiUrl("/api/stream", id));
       es.addEventListener("change", (e: MessageEvent) =>
-        handleRemoteStreamChange(e?.data),
+        handleRemoteStreamChange(e?.data, id),
       );
       // No activity/error/sound wiring — those are local-machine concerns.
       remoteStreams.set(id, es);
@@ -6447,7 +6486,11 @@
         // streaming response — easily 500–1000 ms server-side. See
         // `sse-change-kinds.ts` for the kind taxonomy.
         const data = rawEvt?.data;
-        let payload: { kind?: string; path?: string } = {};
+        let payload: {
+          kind?: string;
+          path?: string;
+          details?: Record<string, unknown>;
+        } = {};
         if (typeof data === "string") {
           try {
             payload = JSON.parse(data);
@@ -6481,7 +6524,7 @@
           void load(`daemon:${payload.kind ?? "unknown"}`);
         }
 
-        // Daemon-side FS-change broadcast: `{ kind: "fs_change", path }`.
+        // Daemon-side FS-change broadcast includes the freshly recomputed row.
         // SourceControlPane owns the diff cache per row; we just bump the
         // worktree's fsChangeKey counter so it reacts and refetches.
         if (typeof data !== "string") return;
@@ -6602,6 +6645,20 @@
         }
         if (payload.kind !== "fs_change" || typeof payload.path !== "string")
           return;
+        if (payload.details && typeof payload.details === "object") {
+          const patch = patchWorktreeDetails(
+            repos,
+            payload.path,
+            payload.details,
+          );
+          if (!patch.matched) fsChangeNeedsFullReload = true;
+          else if (patch.changed) repos = patch.repos;
+        } else {
+          // A recompute failure intentionally invalidates the daemon cache and
+          // broadcasts without details. Only that rare boundary case needs the
+          // old full reload; successful watcher updates patch one row above.
+          fsChangeNeedsFullReload = true;
+        }
         fsChangeBatcher.push(payload.path);
       }); // end time("sse-change", ...)
     });
@@ -12298,6 +12355,8 @@
                               )}
                               {#key agentColGen[s.source] ?? 0}
                                 <SessionView
+                                  backgroundSummariesEnabled={$backgroundSessionSummaries ===
+                                    true}
                                   agent={s.agent as
                                     | "claude"
                                     | "codex"

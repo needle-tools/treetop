@@ -237,6 +237,40 @@ describe("createTerminalHold", () => {
     expect(lastVisibility(sockets[1]!).visible).toBe(false);
   });
 
+  test("an exit frame releases the hold and never reconnects the finished PTY", () => {
+    const exits: Array<{ code: number; signal?: string }> = [];
+    const sockets: FakeSocket[] = [];
+    const timers: FakeTimer[] = [];
+    const hold = createTerminalHold({
+      connect: () => {
+        const socket = new FakeSocket();
+        sockets.push(socket);
+        return socket;
+      },
+      onExit: (info) => exits.push(info),
+      schedule: (fn, ms) => {
+        const timer: FakeTimer = { fn, ms, cancelled: false };
+        timers.push(timer);
+        return timer;
+      },
+      unschedule: (handle) => {
+        (handle as FakeTimer).cancelled = true;
+      },
+    });
+
+    hold.sync("term-1");
+    sockets[0]!.open();
+    sockets[0]!.message(
+      JSON.stringify({ type: "exit", code: 143, signal: "SIGTERM" }),
+    );
+    sockets[0]!.serverClose();
+    for (const timer of timers.filter((item) => !item.cancelled)) timer.fn();
+
+    expect(exits).toEqual([{ code: 143, signal: "SIGTERM" }]);
+    expect(hold.heldTermId()).toBeUndefined();
+    expect(sockets).toHaveLength(1);
+  });
+
   test("a deliberate close() does not reconnect", () => {
     const { hold, sockets, fireTimers } = harness();
     hold.sync("term-1");

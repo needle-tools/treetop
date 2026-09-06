@@ -42,6 +42,67 @@ export interface ParseNDJSONOpts {
   daemonId?: string;
 }
 
+function jsonDataEqual(left: unknown, right: unknown): boolean {
+  if (Object.is(left, right)) return true;
+  if (Array.isArray(left) || Array.isArray(right)) {
+    return (
+      Array.isArray(left) &&
+      Array.isArray(right) &&
+      left.length === right.length &&
+      left.every((value, index) => jsonDataEqual(value, right[index]))
+    );
+  }
+  if (!left || !right || typeof left !== "object" || typeof right !== "object")
+    return false;
+  const leftRecord = left as Record<string, unknown>;
+  const rightRecord = right as Record<string, unknown>;
+  const leftKeys = Object.keys(leftRecord);
+  const rightKeys = Object.keys(rightRecord);
+  return (
+    leftKeys.length === rightKeys.length &&
+    leftKeys.every(
+      (key) =>
+        Object.hasOwn(rightRecord, key) &&
+        jsonDataEqual(leftRecord[key], rightRecord[key]),
+    )
+  );
+}
+
+/** Apply a daemon-provided git-state refresh to one worktree without
+ * replacing every repo/worktree object in the dashboard. Identity is kept for
+ * every unrelated row so an fs-change cannot invalidate all mounted session
+ * columns. Returns the original array when the path is unknown. */
+export function patchWorktreeDetails<
+  Worktree extends { path: string },
+  Repo extends { daemonId?: string; worktrees?: Worktree[] },
+>(
+  repos: Repo[],
+  path: string,
+  details: Record<string, unknown>,
+  daemonId?: string,
+): { repos: Repo[]; matched: boolean; changed: boolean } {
+  let matched = false;
+  let changed = false;
+  const next = repos.map((repo) => {
+    if (repo.daemonId !== daemonId || !repo.worktrees) return repo;
+    let repoChanged = false;
+    const worktrees = repo.worktrees.map((worktree) => {
+      if (worktree.path !== path) return worktree;
+      matched = true;
+      const current = worktree as Worktree & Record<string, unknown>;
+      const hasDetailChange = Object.entries(details).some(
+        ([key, value]) => key !== "path" && !jsonDataEqual(current[key], value),
+      );
+      if (!hasDetailChange) return worktree;
+      changed = true;
+      repoChanged = true;
+      return { ...worktree, ...details, path: worktree.path };
+    });
+    return repoChanged ? { ...repo, worktrees } : repo;
+  });
+  return { repos: changed ? next : repos, matched, changed };
+}
+
 /**
  * Parse a batch of complete NDJSON lines from the /api/repos stream.
  *

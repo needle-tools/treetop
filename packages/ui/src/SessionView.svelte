@@ -31,7 +31,10 @@
     shouldLoadCodexModelCatalog,
     type CodexModelInfo,
   } from "./claude-session-menu";
-  import { elementNearViewport } from "./col-visibility";
+  import {
+    elementNearViewport,
+    visibleSessionRequestKey,
+  } from "./col-visibility";
   import { getDaemonKV } from "./daemon-kv";
   import { openSummarize, activeSummarize } from "./summarize-dialog";
   import {
@@ -39,7 +42,10 @@
     loadCachedSessionSummary,
     nextCachedSessionSummaryRequest,
   } from "./summary-queue";
-  import { shouldAutoSummarizeTui } from "./tui-auto-summary";
+  import {
+    shouldAutoSummarizeTui,
+    shouldCancelBackgroundSummary,
+  } from "./tui-auto-summary";
   import { openRepair } from "./repair-session-dialog";
   import { openShare } from "./share-session-dialog";
   import { openCopy } from "./copy-session-dialog";
@@ -132,6 +138,8 @@
 
   export let agent: "claude" | "codex" | "copilot" | "ollama" = "claude";
   export let source: string;
+  /** Opt-in background cache reads and periodic TUI summary generation. */
+  export let backgroundSummariesEnabled = false;
   export let focusComposerSeq = 0;
   /** Provider session/thread id for live native app sessions whose
    *  supergit source is synthetic rather than an on-disk transcript path. */
@@ -565,6 +573,15 @@
    *  (chip-driven, no dialog). Drives the chip label/disabled
    *  state and the snippet's live-update mode. */
   let summaryRefreshing = false;
+  let backgroundSummaryAbort: AbortController | null = null;
+  $: if (
+    shouldCancelBackgroundSummary({
+      enabled: backgroundSummariesEnabled,
+      backgroundRequestActive: backgroundSummaryAbort !== null,
+    })
+  ) {
+    backgroundSummaryAbort?.abort();
+  }
   async function refreshSummary(): Promise<void> {
     if (!sessionFileSource) {
       summarySnippet = "";
@@ -629,8 +646,11 @@
    *  kicks off an in-place summary stream. The dialog never opens
    *  from here — when no model is installed, we surface a small
    *  notice with a click path into the dialog's install flow. */
-  async function summarizeFromChip(): Promise<void> {
+  async function summarizeFromChip(
+    origin: "manual" | "background" = "manual",
+  ): Promise<void> {
     if (summaryRefreshing) return;
+    if (origin === "background" && !backgroundSummariesEnabled) return;
     if (!sessionFileSource) {
       showSummarizeNotice("No session source available.");
       return;
@@ -643,7 +663,7 @@
     const isCloud = (n: string) =>
       /(^|[-:/])[a-z0-9.]*cloud(\b|$|:)/.test(n.toLowerCase());
     if (summaryModel && !isCloud(summaryModel)) {
-      void runSummaryStream(summaryModel);
+      void runSummaryStream(summaryModel, origin);
       return;
     }
     // First-run path: probe installed models.
@@ -699,8 +719,9 @@
       showSummarizeNotice("No suitable Ollama model found.");
       return;
     }
+    if (origin === "background" && !backgroundSummariesEnabled) return;
     localStorage.setItem("supergit:summarize:lastModel", pick);
-    void runSummaryStream(pick);
+    void runSummaryStream(pick, origin);
   }
 
   /** Stream a summary against `targetModel` and persist it. Shared
@@ -708,7 +729,10 @@
    *  the first-run chip flow (model auto-picked). `summarySnippet`
    *  only updates after the daemon writes the final body to disk —
    *  during the stream the chip spins, the old snippet stays. */
-  async function runSummaryStream(targetModel: string): Promise<void> {
+  async function runSummaryStream(
+    targetModel: string,
+    origin: "manual" | "background" = "manual",
+  ): Promise<void> {
     if (summaryRefreshing) return;
     if (!sessionFileSource || !targetModel) {
       showSummarizeNotice("No session source to summarise.");
@@ -716,12 +740,16 @@
     }
     summaryRefreshing = true;
     const targetSource = sessionFileSource;
+    const backgroundAbort =
+      origin === "background" ? new AbortController() : null;
+    if (backgroundAbort) backgroundSummaryAbort = backgroundAbort;
     let collected = "";
     try {
       const res = await fetch(apiUrl("/api/sessions/summarize"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ source: targetSource, model: targetModel }),
+        signal: backgroundAbort?.signal,
       });
       if (!res.ok) {
         const errBody = (await res.json().catch(() => null)) as {
@@ -785,11 +813,15 @@
       invalidateCachedSessionSummary(targetSource);
       await refreshSummary();
     } catch (e) {
+      if (backgroundAbort?.signal.aborted) return;
       const msg = e instanceof Error ? e.message : String(e);
       showSummarizeNotice(`Summarise failed: ${msg}`);
       invalidateCachedSessionSummary(targetSource);
       await refreshSummary();
     } finally {
+      if (backgroundSummaryAbort === backgroundAbort) {
+        backgroundSummaryAbort = null;
+      }
       summaryRefreshing = false;
     }
   }
@@ -877,7 +909,20 @@
       working = w;
       onWorkingChange(w);
     },
+    onExit: () => handleTerminalExit(),
   });
+
+  function handleTerminalExit(): void {
+    // PTY finished by itself (user typed `exit`, agent crashed, ...).
+    // Same effect as Dispose: flip to read, scroll to the newest messages on
+    // the next render. This is shared by the painted TerminalView and the
+    // offscreen hold socket so an offscreen exit cannot reconnect forever.
+    terminalId = null;
+    resetVisualTailFollow();
+    mode = "read";
+    onModeChange(mode);
+    void load();
+  }
 
   function holdConnect(termId: string): HoldSocket {
     const proto = location.protocol === "https:" ? "wss:" : "ws:";
@@ -919,6 +964,7 @@
   // should not compete with first paint for every restored off-screen column.
   $: {
     const nextSummaryRequest = nextCachedSessionSummaryRequest({
+      enabled: backgroundSummariesEnabled,
       target: sessionFileSource,
       sessionLoaded: !!session,
       nearViewport: columnNearViewport,
@@ -977,7 +1023,7 @@
    *  content. See tui-auto-summary.ts. */
   let lastAutoSummaryAttemptCount = -1;
   $: {
-    if (mode === "terminal") {
+    if (mode === "terminal" && backgroundSummariesEnabled) {
       if (!tuiSummaryTimer) {
         tuiSummaryTimer = setInterval(() => {
           // Fire when a never-summarised TUI has enough conversation to
@@ -987,6 +1033,7 @@
           // don't pile up Ollama calls.
           if (
             shouldAutoSummarizeTui({
+              enabled: backgroundSummariesEnabled,
               refreshing: summaryRefreshing,
               hasSummary: !!summarySnippet,
               sampledCount: currentSampledCount,
@@ -995,7 +1042,7 @@
             })
           ) {
             lastAutoSummaryAttemptCount = currentSampledCount;
-            void summarizeFromChip();
+            void summarizeFromChip("background");
           }
         }, TUI_SUMMARY_INTERVAL_MS);
       }
@@ -2251,13 +2298,17 @@
       sessionMessageSource.kind === "transcript"
         ? sessionMessageSource.source
         : sessionFileSource;
-    const key = statsSource ? `${daemonId ?? ""}\0${statsSource}` : "";
+    const key = visibleSessionRequestKey(
+      statsSource,
+      daemonId,
+      columnNearViewport,
+    );
     if (key && key !== sessionStatsKey) {
       sessionStatsKey = key;
       sessionLineCount = undefined;
       measuredFileSizeBytes = undefined;
       void loadSessionFileStats(statsSource, key);
-    } else if (!key) {
+    } else if (!statsSource) {
       sessionStatsKey = "";
       sessionLineCount = undefined;
       measuredFileSizeBytes = undefined;
@@ -4922,6 +4973,8 @@
     closeCodexEventStream();
     if (disposeGraceTimer) clearTimeout(disposeGraceTimer);
     if (tuiSummaryTimer) clearInterval(tuiSummaryTimer);
+    backgroundSummaryAbort?.abort();
+    backgroundSummaryAbort = null;
     cancelPinHide();
   });
 </script>
@@ -5371,16 +5424,7 @@
         working = w;
         onWorkingChange(w);
       }}
-      onExit={() => {
-        // PTY finished by itself (user typed `exit`, agent crashed, ...).
-        // Same effect as Dispose: flip to read, scroll to the newest
-        // messages on the next render.
-        terminalId = null;
-        resetVisualTailFollow();
-        mode = "read";
-        onModeChange(mode);
-        void load();
-      }}
+      onExit={handleTerminalExit}
     />
   {:else if mode === "terminal"}
     <div class="session-body-deferred" aria-hidden="true"></div>
