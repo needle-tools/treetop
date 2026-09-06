@@ -485,6 +485,48 @@ describe("CodexAppServerAdapter", () => {
     ]);
   });
 
+  test("records app-server json-rpc traffic automatically with a bounded buffer", async () => {
+    const fake = fakeCodexProcess();
+    const adapter = new CodexAppServerAdapter({
+      spawn: () => fake.proc,
+      recordingFrameLimit: 3,
+    });
+
+    const models = adapter.listModels("/repo");
+    await waitFor(() => fake.writes[0], "initialize request");
+    fake.enqueue({ id: 0, result: {} });
+    await waitFor(() => fake.writes[2], "model list request");
+    fake.enqueue({
+      id: 1,
+      result: {
+        data: [{ id: "codex", model: "gpt-5.6-sol" }],
+        nextCursor: null,
+      },
+    });
+    await models;
+
+    const recording = adapter.recordingSnapshot();
+    expect(recording?.frames).toHaveLength(3);
+    expect(recording?.frames.map((frame) => frame.direction)).toEqual([
+      "client",
+      "client",
+      "server",
+    ]);
+    expect(recording?.frames[1]?.message).toEqual({
+      id: 1,
+      method: "model/list",
+      params: { limit: 100 },
+    });
+    expect(recording?.frames[2]?.message).toMatchObject({
+      id: 1,
+      result: { data: [{ id: "codex" }] },
+    });
+
+    const saved = adapter.stopRecording();
+    expect(saved?.frames).toHaveLength(3);
+    expect(adapter.recordingSnapshot()?.frames).toEqual([]);
+  });
+
   test("emits live app-server events and answers approval requests", async () => {
     const fake = fakeCodexProcess();
     const adapter = new CodexAppServerAdapter({ spawn: () => fake.proc });
