@@ -51,6 +51,7 @@ import {
   visualWorkDetailEntries,
   visualWorkDetailGroups,
   visualWorkOverview,
+  visualWorkImageBlocks,
   visualWorkSummary,
   visualUserImageAttachments,
   visualFileEditTotals,
@@ -1353,6 +1354,57 @@ describe("buildVisualTranscriptItems", () => {
         toolUseId: "ig-1",
       },
       { type: "text", text: "Generated your Duberman image." },
+    ]);
+  });
+
+  it("collects every viewed image for the collapsed work summary", () => {
+    const items = buildVisualTranscriptItems([
+      msg("user", "compare the renders", "2026-09-01T10:00:00.000Z"),
+      {
+        role: "assistant",
+        timestamp: "2026-09-01T10:00:01.000Z",
+        blocks: [
+          {
+            type: "media",
+            mediaKind: "image",
+            path: "/tmp/baseline.png",
+            title: "baseline.png",
+          },
+        ],
+      },
+      {
+        role: "assistant",
+        timestamp: "2026-09-01T10:00:02.000Z",
+        blocks: [
+          {
+            type: "media",
+            mediaKind: "image",
+            path: "/tmp/candidate.png",
+            title: "candidate.png",
+          },
+          {
+            type: "media",
+            mediaKind: "artifact",
+            path: "/tmp/report.json",
+            title: "report.json",
+          },
+        ],
+      },
+      msg("assistant", "The candidate is cleaner.", "2026-09-01T10:00:03.000Z"),
+    ]);
+
+    const work = items.find((item) => item.kind === "work");
+    if (!work || work.kind !== "work") throw new Error("expected work item");
+
+    expect(visualWorkImageBlocks(work.entries)).toEqual([
+      expect.objectContaining({
+        mediaKind: "image",
+        path: "/tmp/baseline.png",
+      }),
+      expect.objectContaining({
+        mediaKind: "image",
+        path: "/tmp/candidate.png",
+      }),
     ]);
   });
 
@@ -5997,6 +6049,85 @@ describe("buildVisualWorkDisplayEntries", () => {
     expect(entries).toHaveLength(1);
     expect(entries[0]?.entry).toBe(toolUse);
     expect(entries[0]?.pairedResult).toBe(toolResult);
+  });
+
+  it("attaches generated image media to its tool row instead of a filename row", () => {
+    const toolUse = {
+      message: {
+        role: "assistant",
+        blocks: [
+          {
+            type: "tool_use",
+            toolName: "image_generation_call",
+            toolUseId: "image-1",
+          },
+        ],
+      },
+      blocks: [
+        {
+          type: "tool_use",
+          toolName: "image_generation_call",
+          toolUseId: "image-1",
+        },
+      ],
+      messageIndex: 1,
+    };
+    const toolResult = {
+      message: {
+        role: "tool",
+        blocks: [
+          {
+            type: "tool_result",
+            toolName: "image_generation_call",
+            toolUseId: "image-1",
+            text: "exec-generated.png",
+          },
+        ],
+      },
+      blocks: [
+        {
+          type: "tool_result",
+          toolName: "image_generation_call",
+          toolUseId: "image-1",
+          text: "exec-generated.png",
+        },
+      ],
+      messageIndex: 2,
+    };
+    const generatedMedia = {
+      message: {
+        role: "assistant",
+        blocks: [
+          {
+            type: "media",
+            mediaKind: "image",
+            path: "/tmp/exec-generated.png",
+            toolName: "image_generation_call",
+            toolUseId: "image-1",
+          },
+        ],
+      },
+      blocks: [
+        {
+          type: "media",
+          mediaKind: "image",
+          path: "/tmp/exec-generated.png",
+          toolName: "image_generation_call",
+          toolUseId: "image-1",
+        },
+      ],
+      messageIndex: 3,
+    };
+
+    const entries = buildVisualWorkDisplayEntries([
+      toolUse,
+      toolResult,
+      generatedMedia,
+    ]);
+
+    expect(entries).toHaveLength(1);
+    expect(entries[0]?.entry).toBe(toolUse);
+    expect(entries[0]?.pairedMedia).toEqual(generatedMedia.blocks);
   });
 
   it("shows read-log output at the result point without a duplicate poll-start row", () => {
