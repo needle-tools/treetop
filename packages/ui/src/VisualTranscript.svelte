@@ -59,6 +59,7 @@
     visualWorkDetailEntries,
     visualWorkDetailGroups,
     visualWorkOverview,
+    visualWorkImageBlocks,
     visualSubagentLabel,
     visualSubagentMetaFromBlock,
     visualSubagentMetaFromBlocks,
@@ -1201,9 +1202,10 @@
   function workEntryToolMediaBlocks(
     block: NormalizedBlock | undefined,
     resultBlock?: NormalizedBlock | undefined,
+    pairedMedia: readonly NormalizedBlock[] = [],
   ): NormalizedBlock[] {
     if (!block) return [];
-    return visualToolMediaBlocks(block, resultBlock).map(
+    const synthesized = visualToolMediaBlocks(block, resultBlock).map(
       (media): NormalizedBlock => ({
         type: "media",
         mediaKind: media.mediaKind === "image" ? "image" : "artifact",
@@ -1216,6 +1218,21 @@
         toolUseId: media.toolUseId,
       }),
     );
+    const seen = new Set<string>();
+    return [...synthesized, ...pairedMedia]
+      .filter((media) => media.type === "media" && media.mediaKind === "image")
+      .filter((media) => {
+        const key = [
+          media.path ?? "",
+          media.url ?? "",
+          media.title ?? "",
+          media.text ?? "",
+          media.toolUseId ?? "",
+        ].join("\u0000");
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      });
   }
 
   function workEntryToolIconName(
@@ -2320,7 +2337,7 @@
   extraClass: string,
 )}
   {#if imageBlocks.length > 0}
-    <div class={`block media-strip ${extraClass}`.trim()}>
+    <span class={`block media-strip ${extraClass}`.trim()}>
       {#each imageBlocks as imageBlock, imageIndex (`${imageBlock.path ?? imageBlock.url ?? "image"}:${imageIndex}`)}
         {@const src = mediaSourceUrl(imageBlock, { thumbnail: true })}
         {#if src}
@@ -2342,7 +2359,7 @@
           </button>
         {/if}
       {/each}
-    </div>
+    </span>
   {/if}
 {/snippet}
 
@@ -2854,6 +2871,7 @@
                           {@const toolMediaBlocks = workEntryToolMediaBlocks(
                             toolBlock,
                             visibleResultBlock,
+                            displayEntry.pairedMedia,
                           )}
                           {@const entryBlock = entry.blocks[0]}
                           {@const planBlock = workEntryPlanBlock(entry)}
@@ -3273,6 +3291,7 @@
         model: pricingModel,
         modelsDev: modelsDevPricing,
       })}
+      {@const workImageBlocks = visualWorkImageBlocks(item.entries)}
       {@const summarySubagents = workSummarySubagents(visibleWorkEntries)}
       {@const durationParts = workDurationParts(item, liveNowIso)}
       {@const countLines = workCountLines(
@@ -3332,6 +3351,12 @@
             {/if}
             {@render renderWorkOverviewPills(workOverview)}
             {@render renderWorkOverviewRightMeta(workOverview)}
+            {#if workImageBlocks.length > 0}
+              {@render renderInlineMediaStrip(
+                workImageBlocks,
+                "work-summary-media-strip",
+              )}
+            {/if}
           </summary>
           {#if workFoldoutOpen}
             <div
@@ -5217,9 +5242,17 @@
   .media-strip {
     display: flex;
     align-items: flex-end;
-    flex-wrap: wrap;
+    flex-wrap: nowrap;
     gap: 0.45rem;
     max-width: min(100%, 34rem);
+    overflow-x: auto;
+    overflow-y: hidden;
+    scrollbar-width: thin;
+  }
+  .work-summary-media-strip {
+    flex: 1 1 16rem;
+    min-width: 8rem;
+    margin: 0;
   }
   .work-tool-summary-media-strip {
     flex: 0 0 auto;
@@ -5254,6 +5287,14 @@
     max-width: 10rem;
     max-height: 8rem;
     flex: 0 0 auto;
+  }
+  .work-summary-media-strip .media-image-open {
+    width: 5rem;
+    max-height: 4rem;
+    flex: 0 0 5rem;
+  }
+  .work-summary-media-strip .media-photo-frame img {
+    max-height: 4rem;
   }
   .media-block a:hover,
   .media-image-open:hover {
