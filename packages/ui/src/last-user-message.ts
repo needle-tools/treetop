@@ -1004,19 +1004,26 @@ function isTerminalVisualMarkerKind(
   return kind === "complete" || kind === "aborted" || kind === "failed";
 }
 
-function isAssistantRoleLabelOnlyEntry<
-  B extends MessageBlock,
-  M extends Message<B>,
->(entry: VisualWorkEntry<B, M>): boolean {
-  if (entry.message.role !== "assistant") return false;
-  if (entry.blocks.length === 0) return false;
-  if (entry.blocks.some((block) => block.type !== "text")) return false;
-  const text = entry.blocks
+function isAssistantRoleLabelOnlyBlocks<B extends MessageBlock>(
+  message: Message<B> | undefined,
+  blocks: readonly B[],
+): boolean {
+  if (message?.role !== "assistant") return false;
+  if (blocks.length === 0) return false;
+  if (blocks.some((block) => block.type !== "text")) return false;
+  const text = blocks
     .map((block) => block.text?.trim() ?? "")
     .filter(Boolean)
     .join("\n")
     .trim();
   return /^(codex|claude|ollama)$/i.test(text);
+}
+
+function isAssistantRoleLabelOnlyEntry<
+  B extends MessageBlock,
+  M extends Message<B>,
+>(entry: VisualWorkEntry<B, M>): boolean {
+  return isAssistantRoleLabelOnlyBlocks(entry.message, entry.blocks);
 }
 
 export function buildVisualWorkDisplayEntries<
@@ -1922,9 +1929,10 @@ export function buildVisualTranscriptItems<
   const messageIndexOffset = opts.messageIndexOffset ?? 0;
 
   function displayBlocks(message: M | undefined): B[] {
-    return ((message?.blocks ?? []) as B[]).filter(
+    const blocks = ((message?.blocks ?? []) as B[]).filter(
       (block) => block.type !== "goal",
     );
+    return isAssistantRoleLabelOnlyBlocks(message, blocks) ? [] : blocks;
   }
 
   function isTokenOnlyUsageMessage(message: M | undefined): boolean {

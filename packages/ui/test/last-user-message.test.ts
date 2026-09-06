@@ -630,6 +630,59 @@ describe("buildVisualTranscriptItems", () => {
     });
   });
 
+  it("drops app-server assistant role labels before segmenting live work", () => {
+    const items = buildVisualTranscriptItems(
+      [
+        msg("user", "continue", "2026-06-19T10:00:00.000Z"),
+        msg("assistant", "Codex", "2026-06-19T10:00:01.000Z"),
+        {
+          role: "assistant",
+          timestamp: "2026-06-19T10:00:02.000Z",
+          blocks: [{ type: "thinking", text: "implementing stats" }],
+        },
+        msg("assistant", "Codex", "2026-06-19T10:00:03.000Z"),
+        {
+          role: "assistant",
+          timestamp: "2026-06-19T10:00:04.000Z",
+          blocks: [{ type: "thinking", text: "evaluating texture strategy" }],
+        },
+      ],
+      { active: true },
+    );
+
+    expect(items.map((item) => item.kind)).toEqual(["message", "work"]);
+    if (items[1]?.kind !== "work") throw new Error("expected work item");
+    expect(
+      items[1].entries.flatMap((entry) =>
+        entry.blocks.map((block) => block.text ?? block.type),
+      ),
+    ).toEqual(["implementing stats", "evaluating texture strategy"]);
+  });
+
+  it("does not treat app-server assistant role labels as final responses", () => {
+    const items = buildVisualTranscriptItems([
+      msg("user", "continue", "2026-06-19T10:00:00.000Z"),
+      msg("assistant", "Codex", "2026-06-19T10:00:01.000Z"),
+      {
+        role: "assistant",
+        timestamp: "2026-06-19T10:00:02.000Z",
+        blocks: [{ type: "thinking", text: "checking the session" }],
+      },
+      msg("assistant", "Done.", "2026-06-19T10:00:03.000Z"),
+    ]);
+
+    expect(items.map((item) => item.kind)).toEqual([
+      "message",
+      "work",
+      "message",
+    ]);
+    expect(
+      items
+        .filter((item) => item.kind === "message")
+        .flatMap((item) => item.blocks.map((block) => block.text)),
+    ).toEqual(["continue", "Done."]);
+  });
+
   it("folds user messages during an open Codex task into the work round as steering", () => {
     const items = buildVisualTranscriptItems([
       msg("user", "implement this", "2026-06-19T10:00:00.000Z"),
