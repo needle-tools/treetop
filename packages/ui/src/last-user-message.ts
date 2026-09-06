@@ -230,6 +230,26 @@ export interface VisualTranscriptDeltaPatch<
   delta: string;
   blockFields?: Partial<B>;
   timestamp?: string;
+  maxTextChars?: number;
+}
+
+const VISUAL_DELTA_TRUNCATION_MARKER =
+  "\n[… output truncated for display; full output remains in the session …]\n";
+
+function boundedVisualDeltaText(text: string, maxChars: number): string {
+  if (text.length <= maxChars) return text;
+  if (maxChars <= 0) return "";
+  if (maxChars <= VISUAL_DELTA_TRUNCATION_MARKER.length) {
+    return text.slice(-maxChars);
+  }
+  const available = maxChars - VISUAL_DELTA_TRUNCATION_MARKER.length;
+  const headChars = Math.floor(available / 4);
+  const tailChars = available - headChars;
+  return (
+    text.slice(0, headChars) +
+    VISUAL_DELTA_TRUNCATION_MARKER +
+    text.slice(-tailChars)
+  );
 }
 
 export interface VisualFileEdit {
@@ -1663,10 +1683,14 @@ export function applyVisualTranscriptDeltaPatches<
     const blockFields = (patch.blockFields ?? {}) as Partial<B>;
     const existingIndex = indexById.get(patch.id);
     if (existingIndex === undefined) {
+      const text =
+        patch.maxTextChars === undefined
+          ? patch.delta
+          : boundedVisualDeltaText(patch.delta, patch.maxTextChars);
       const block = {
         ...blockFields,
         type: patch.type,
-        text: patch.delta,
+        text,
       } as B;
       const message = {
         id: patch.id,
@@ -1686,6 +1710,7 @@ export function applyVisualTranscriptDeltaPatches<
       current && current.type === patch.type
         ? current
         : ({ ...blockFields, type: patch.type, text: "" } as B);
+    const appendedText = (base.text ?? "") + patch.delta;
     const block = {
       ...base,
       ...(!base.toolName && blockFields.toolName
@@ -1694,7 +1719,10 @@ export function applyVisualTranscriptDeltaPatches<
       ...(!base.toolUseId && blockFields.toolUseId
         ? { toolUseId: blockFields.toolUseId }
         : {}),
-      text: (base.text ?? "") + patch.delta,
+      text:
+        patch.maxTextChars === undefined
+          ? appendedText
+          : boundedVisualDeltaText(appendedText, patch.maxTextChars),
     } as B;
     out[existingIndex] = { ...message, blocks: [block] } as M;
   }

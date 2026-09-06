@@ -19,7 +19,7 @@ import { $ } from "bun";
 import { stat, readdir } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { homedir, cpus } from "node:os";
-import { delimiter, isAbsolute, join } from "node:path";
+import { join, win32 } from "node:path";
 
 /** Absolute path to cmd.exe — see open.ts for why bare "cmd" breaks. */
 const CMD_EXE = process.env.COMSPEC ?? "cmd.exe";
@@ -213,10 +213,10 @@ export function resolveWindowsExecutable(
   } = {},
 ): string {
   if (!file) return file;
-  if (isAbsolute(file) || file.includes("\\") || file.includes("/"))
+  if (win32.isAbsolute(file) || file.includes("\\") || file.includes("/"))
     return file;
   const fileExists = opts.fileExists ?? existsSync;
-  const dirs = (opts.pathVar ?? "").split(delimiter).filter(Boolean);
+  const dirs = (opts.pathVar ?? "").split(";").filter(Boolean);
   const exts = (opts.pathExt ?? ".COM;.EXE;.BAT;.CMD")
     .split(";")
     .map((e) => e.trim())
@@ -225,11 +225,11 @@ export function resolveWindowsExecutable(
   const hasKnownExt = exts.some((e) => lower.endsWith(e.toLowerCase()));
   for (const dir of dirs) {
     if (hasKnownExt) {
-      const candidate = join(dir, file);
+      const candidate = win32.join(dir, file);
       if (fileExists(candidate)) return candidate;
     } else {
       for (const e of exts) {
-        const candidate = join(dir, file + e);
+        const candidate = win32.join(dir, file + e);
         if (fileExists(candidate)) return candidate;
       }
     }

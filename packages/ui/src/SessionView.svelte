@@ -92,12 +92,17 @@
     codexEventItemId,
     codexAppHistoryMessagesFromTurnPage,
     codexAppHistoryKey,
+    CODEX_LIVE_OUTPUT_LIMIT,
     codexEventThreadIdForSession,
+    codexEventVisualDelivery,
+    codexOutputDeltaNeedsToolUse,
     codexLiveMessagesFromEvent,
     codexLiveMessagesEndTurn,
     codexLiveToolUseFromEvent,
     codexToolInputQuality,
     mergeCodexAppHistoryMessages,
+    shouldApplyCodexAppHistoryResponse,
+    shouldApplyCodexAppMutation,
     shouldLoadCodexAppThreadHistory,
     shouldRunCodexAppLiveSurface,
     shouldSubscribeCodexAppLiveState,
@@ -109,6 +114,7 @@
     type CodexEventStreamState,
     type CodexLiveNormalizeContext,
   } from "./codex-event-stream";
+  import { record, time } from "./timings";
   import { splitParent } from "./file-browser-utils";
   import { imageBlobHasAlpha, shrinkImageBlob } from "./image-shrink";
   import {
@@ -500,6 +506,9 @@
   }
   function onMessagesScroll(): void {
     sessionScroll.onScroll();
+  }
+  function onLiveWorkBodyScroll(workKey: string, body: HTMLElement): void {
+    sessionScroll.onLiveWorkBodyScroll(workKey, body);
   }
   let lastLoadedAt = 0;
   let pollCount = 0;
@@ -2031,7 +2040,16 @@
     const cwd = effectiveSessionCwd;
     if (!threadId || !cwd || !session) return;
     const targetThreadId = threadId;
+    const targetCwd = cwd;
     const targetHistoryKey = codexAppHistoryKey(threadId, cwd);
+    const targetStillOwned = () =>
+      shouldApplyCodexAppHistoryResponse({
+        sourceActive: codexAppHistorySourceActive,
+        requestedThreadId: targetThreadId,
+        requestedCwd: targetCwd,
+        currentThreadId: effectiveSessionId,
+        currentCwd: effectiveSessionCwd,
+      });
     const cursor =
       codexAppHistoryLoadedKey === targetHistoryKey
         ? codexAppHistoryNextCursor
@@ -2063,8 +2081,7 @@
         }
         body = responseBody;
       }
-      if (!body?.thread || effectiveSessionId !== targetThreadId || !session)
-        return;
+      if (!body?.thread || !session || !targetStillOwned()) return;
       if (typeof body.model === "string") {
         codexLiveDetectedModel = body.model;
       }
@@ -2096,11 +2113,10 @@
           : null;
       preserveVisualHistoryScrollAnchor();
     } catch (e) {
-      if (effectiveSessionId === targetThreadId) {
-        codexAppHistoryFailedKeys = new Set(codexAppHistoryFailedKeys).add(
-          targetHistoryKey,
-        );
-      }
+      if (!targetStillOwned()) return;
+      codexAppHistoryFailedKeys = new Set(codexAppHistoryFailedKeys).add(
+        targetHistoryKey,
+      );
       sendError = e instanceof Error ? e.message : String(e);
       preserveVisualHistoryScrollAnchor();
     }
@@ -2191,6 +2207,9 @@
    *  bubble. Cleared on `done` or abort. */
   let ollamaStreamingIdx: number | null = null;
   let unsubscribeCodexEvents: (() => void) | null = null;
+  let codexEventSettleTimer: ReturnType<typeof setTimeout> | null = null;
+  let codexEventSettleStartedAt: number | null = null;
+  const codexEventSettleMethods = new Set<string>();
   let codexEventsThreadId: string | null = null;
   let codexEventStreamState: CodexEventStreamState | "closed" = "closed";
   let codexActiveTurnId: string | null = null;
@@ -2227,6 +2246,7 @@
   let codexModelResolutionKey = "";
   let codexPendingDeltaPatches: VisualTranscriptDeltaPatch<NormalizedBlock>[] =
     [];
+  let codexPendingLastActivityIso = "";
   let codexLiveNormalizeContext: CodexLiveNormalizeContext = {
     toolNames: new Map(),
     toolInputs: new Map(),
@@ -2852,9 +2872,23 @@
         codexEventStreamState = state;
       },
       onEvent: (event) => {
-        if (event.threadId && event.threadId !== threadId) return;
+        if (
+          !shouldApplyCodexAppMutation({
+            sourceActive: codexAppLiveStateActive,
+            subscribedThreadId: threadId,
+            eventThreadId: event.threadId,
+            currentThreadId: effectiveSessionId,
+          })
+        )
+          return;
         codexEventStreamState = "live";
-        applyCodexEvent(event);
+        const startedAt = performance.now();
+        time("codex-event.sync", () =>
+          time(codexEventTimingName(event.method), () =>
+            applyCodexEvent(event),
+          ),
+        );
+        scheduleCodexEventSettleTiming(event.method, startedAt);
       },
     } satisfies Parameters<typeof subscribeCodexEvents>[2];
     unsubscribeCodexEvents = codexAppTransport
@@ -2862,13 +2896,59 @@
       : subscribeCodexEvents(daemonId, threadId, subscriber);
   }
 
+  function codexEventTimingName(method: string): string {
+    return `codex-event.sync.${method.replace(/[^a-zA-Z0-9]+/g, "-")}`;
+  }
+
+  function scheduleCodexEventSettleTiming(
+    method: string,
+    startedAt: number,
+  ): void {
+    codexEventSettleStartedAt = Math.min(
+      codexEventSettleStartedAt ?? startedAt,
+      startedAt,
+    );
+    codexEventSettleMethods.add(method);
+    if (codexEventSettleTimer !== null) return;
+    codexEventSettleTimer = setTimeout(() => {
+      codexEventSettleTimer = null;
+      const batchStartedAt = codexEventSettleStartedAt;
+      codexEventSettleStartedAt = null;
+      const methods = [...codexEventSettleMethods];
+      codexEventSettleMethods.clear();
+      if (batchStartedAt === null) return;
+      const elapsed = performance.now() - batchStartedAt;
+      record("codex-event.settle", elapsed);
+      if (elapsed < 16) return;
+      for (const eventMethod of methods) {
+        record(
+          `codex-event.settle.${eventMethod.replace(/[^a-zA-Z0-9]+/g, "-")}`,
+          elapsed,
+        );
+      }
+    }, 0);
+  }
+
   function closeCodexEventStream(): void {
-    flushCodexDeltaPatches();
+    discardCodexDeltaPatches();
     unsubscribeCodexEvents?.();
     unsubscribeCodexEvents = null;
     codexEventsThreadId = null;
     codexEventStreamState = "closed";
     codexLiveNormalizeContext = { toolNames: new Map(), toolInputs: new Map() };
+  }
+
+  function discardCodexDeltaPatches(): void {
+    if (codexDeltaFlushFrame !== null) {
+      cancelAnimationFrame(codexDeltaFlushFrame);
+      codexDeltaFlushFrame = null;
+    }
+    if (codexDeltaFlushTimer !== null) {
+      clearTimeout(codexDeltaFlushTimer);
+      codexDeltaFlushTimer = null;
+    }
+    codexPendingDeltaPatches = [];
+    codexPendingLastActivityIso = "";
   }
 
   function scheduleCodexDeltaFlush(): void {
@@ -2895,9 +2975,27 @@
       clearTimeout(codexDeltaFlushTimer);
       codexDeltaFlushTimer = null;
     }
-    if (!session || codexPendingDeltaPatches.length === 0) return;
+    if (codexPendingDeltaPatches.length === 0) return;
+    if (
+      !codexEventsThreadId ||
+      !shouldApplyCodexAppMutation({
+        sourceActive: codexAppLiveStateActive,
+        subscribedThreadId: codexEventsThreadId,
+        eventThreadId: undefined,
+        currentThreadId: effectiveSessionId,
+      })
+    ) {
+      codexPendingDeltaPatches = [];
+      codexPendingLastActivityIso = "";
+      return;
+    }
+    if (!session) return;
     const patches = codexPendingDeltaPatches;
     codexPendingDeltaPatches = [];
+    if (codexPendingLastActivityIso) {
+      codexLiveLastActivityIso = codexPendingLastActivityIso;
+      codexPendingLastActivityIso = "";
+    }
     let firstChangedIndex = session.messages.length;
     for (const patch of patches) {
       const existingIndex = session.messages.findIndex(
@@ -2943,6 +3041,14 @@
     blockFields: Partial<NormalizedBlock> = {},
   ): void {
     if (!delta || !session) return;
+    const previous = codexPendingDeltaPatches.at(-1);
+    if (previous?.id === id && previous.type === type && previous.role === role) {
+      previous.delta += delta;
+      previous.blockFields = { ...previous.blockFields, ...blockFields };
+      previous.timestamp = new Date().toISOString();
+      scheduleCodexDeltaFlush();
+      return;
+    }
     codexPendingDeltaPatches.push({
       id,
       role,
@@ -2950,12 +3056,16 @@
       delta,
       blockFields,
       timestamp: new Date().toISOString(),
+      ...(type === "tool_result"
+        ? { maxTextChars: CODEX_LIVE_OUTPUT_LIMIT }
+        : {}),
     });
     scheduleCodexDeltaFlush();
   }
 
   function applyCodexEvent(event: CodexAppEvent): void {
-    codexLiveLastActivityIso = event.receivedAt || new Date().toISOString();
+    const delivery = codexEventVisualDelivery(event);
+    if (delivery === "ignore") return;
     const key = codexEventKey(event);
     if (codexSeenEvents.has(key)) return;
     codexSeenEvents.add(key);
@@ -2963,7 +3073,13 @@
       const first = codexSeenEvents.values().next().value;
       if (first) codexSeenEvents.delete(first);
     }
-
+    const activityIso = event.receivedAt || new Date().toISOString();
+    if (delivery === "batched-delta") {
+      codexPendingLastActivityIso = activityIso;
+    } else {
+      flushCodexDeltaPatches();
+      codexLiveLastActivityIso = activityIso;
+    }
     if (event.kind === "request") {
       flushCodexDeltaPatches();
       upsertCodexLiveMessages(
@@ -3099,7 +3215,10 @@
         event,
         codexLiveNormalizeContext,
       );
-      if (liveToolUse) {
+      if (
+        liveToolUse &&
+        codexOutputDeltaNeedsToolUse(session?.messages ?? [], liveToolUse)
+      ) {
         upsertCodexToolUse(
           liveToolUse.id,
           liveToolUse.toolName,
@@ -4978,6 +5097,10 @@
     sessionAncestorVisibilityObs?.disconnect();
     sessionAncestorVisibilityObs = null;
     if (pendingTimer) clearTimeout(pendingTimer);
+    if (codexEventSettleTimer !== null) {
+      clearTimeout(codexEventSettleTimer);
+      codexEventSettleTimer = null;
+    }
     closeCodexEventStream();
     if (disposeGraceTimer) clearTimeout(disposeGraceTimer);
     if (tuiSummaryTimer) clearInterval(tuiSummaryTimer);
@@ -5466,6 +5589,7 @@
       {onMessagesLeave}
       {onMessagesWheel}
       {onMessagesScroll}
+      {onLiveWorkBodyScroll}
       active={visualTranscriptActive}
       showLiveThinkingLine={codexVisualAppSurface && codexRunning}
       messageMotionSources={composerMessageMotionSources}

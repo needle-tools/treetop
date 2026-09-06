@@ -783,7 +783,11 @@ export function resolveSessionMessageSource(session: {
   transcriptSource?: string;
   liveAppSurface?: boolean;
 }): SessionMessageSource {
-  if (session.liveAppSurface) {
+  if (
+    session.liveAppSurface &&
+    session.agent === "codex" &&
+    isLiveCodexAppSource(session.source)
+  ) {
     return { kind: "app-server", source: session.source };
   }
   const source = isLiveCodexAppSource(session.source)

@@ -17,6 +17,7 @@ import {
 const scrollMemoryByKey = new Map<string, VisualScrollMemory>();
 const SCROLL_MEMORY_LIMIT = 200;
 const CURSOR_SETTLE_MS = 300;
+const DOCUMENT_POSITION_FOLLOWING = 4;
 
 function rememberScrollMemory(key: string, memory: VisualScrollMemory): void {
   if (!key) return;
@@ -101,6 +102,7 @@ export class SessionScrollController {
   private layoutObserver: ResizeObserver | null = null;
   private cursorSettled = false;
   private settleTimer: ReturnType<typeof setTimeout> | null = null;
+  private pausedLiveWorkBodyKeys = new Set<string>();
 
   constructor(options: SessionScrollControllerOptions = {}) {
     this.options = options;
@@ -148,6 +150,7 @@ export class SessionScrollController {
     this.renderedOnce = false;
     this.tailKey = "";
     this.paused = false;
+    this.pausedLiveWorkBodyKeys.clear();
     this.pauseSeq += 1;
     this.setActive(false);
   }
@@ -212,6 +215,15 @@ export class SessionScrollController {
     this.updateIntent();
     this.saveMemory();
     this.options.requestOlder?.();
+  }
+
+  onLiveWorkBodyScroll(workKey: string, body: HTMLElement): void {
+    const paused = shouldPauseVisualTailAfterUserScroll({
+      metrics: metrics(body),
+    });
+    if (paused) this.pausedLiveWorkBodyKeys.add(workKey);
+    else this.pausedLiveWorkBodyKeys.delete(workKey);
+    this.syncActive();
   }
 
   capturePausedReaderAnchor(): PausedSessionReaderAnchor | undefined {
@@ -320,6 +332,7 @@ export class SessionScrollController {
   }
 
   forceTailFollow(): void {
+    this.pausedLiveWorkBodyKeys.clear();
     this.setPaused(false);
     this.scheduleTailFollow({ force: true });
   }
@@ -339,7 +352,8 @@ export class SessionScrollController {
             metrics: metrics(el),
             paused: false,
             nearPx: VISUAL_TAIL_FOLLOW_NEAR_PX,
-          })),
+          })) &&
+        this.liveWorkBodiesAreFollowing(el),
     );
   }
 
@@ -355,7 +369,39 @@ export class SessionScrollController {
     const zenLiveDelta = this.zenLiveWorkDelta(el);
     if (zenLiveDelta !== undefined) el.scrollTop += zenLiveDelta;
     else scrollToEnd(el);
+    this.scrollLiveWorkBodiesToEnd(el);
     this.syncActive(el);
+  }
+
+  private liveWorkBodies(el: HTMLElement): Array<{
+    body: HTMLElement;
+    key: string;
+  }> {
+    return Array.from(
+      el.querySelectorAll<HTMLElement>(
+        ".work-foldout-live > .work-foldout-body",
+      ),
+    ).map((body, index) => ({
+      body,
+      key: body.dataset.workKey ?? `live:${index}`,
+    }));
+  }
+
+  private liveWorkBodiesAreFollowing(el: HTMLElement): boolean {
+    return this.liveWorkBodies(el).every(({ body, key }) => {
+      if (body.scrollHeight <= body.clientHeight + 1) return true;
+      return (
+        !this.pausedLiveWorkBodyKeys.has(key) &&
+        isNearVisualScrollEnd(body, VISUAL_TAIL_FOLLOW_NEAR_PX)
+      );
+    });
+  }
+
+  private scrollLiveWorkBodiesToEnd(el: HTMLElement): void {
+    for (const { body, key } of this.liveWorkBodies(el)) {
+      if (this.pausedLiveWorkBodyKeys.has(key)) continue;
+      scrollToEnd(body);
+    }
   }
 
   private zenLiveWorkDelta(el: HTMLElement): number | undefined {
@@ -370,7 +416,7 @@ export class SessionScrollController {
     const precedingUser = userMessages.findLast(
       (user) =>
         (user.compareDocumentPosition(liveWork) &
-          Node.DOCUMENT_POSITION_FOLLOWING) !==
+          DOCUMENT_POSITION_FOLLOWING) !==
         0,
     );
     if (!precedingUser) return undefined;
@@ -428,6 +474,7 @@ export class SessionScrollController {
         }
       }
       el.scrollTop = visualScrollTopFromMemory({ memory, next: metrics(el) });
+      if (memory.followTail) this.scrollLiveWorkBodiesToEnd(el);
       this.syncActive(el);
       if (memory.followTail) this.settleTailFollow(el);
     });

@@ -166,11 +166,13 @@ vertical scroll authorities: the transcript and the live `Worked for…` body,
 plus their tail/pause state spread across the component. Live app-server
 updates could therefore preserve one scroll position while moving the other.
 The durable shape is one `.messages` scroller owned by
-`session-scroll-controller.ts`; work bodies keep their DOM and geometry but no
-longer own overflow. Paused updates anchor the deepest visible stable transcript
-row across the Svelte update. In zen, an unpaused live work round anchors its
-summary near the viewport top while reserving the preceding user turn's visible
-tail above it; completed responses return to ordinary bottom-tail following.
+`session-scroll-controller.ts`; a live work body may have bounded overflow so
+its summary and the preceding user turn remain visible, but its tail/pause state
+belongs to that same controller rather than a second component-level authority.
+Paused updates anchor the deepest visible stable transcript row across the
+Svelte update. In zen, an unpaused live work round anchors its summary near the
+viewport top while reserving the preceding user turn's visible tail above it;
+completed responses return to ordinary bottom-tail following.
 
 ## Mechanics — what each Chrome phase actually costs
 
@@ -788,6 +790,17 @@ incrementally scans appended bytes on later requests. This keeps unusually
 large sessions visible in the header and dock without making every historical
 session pay the line-count cost during `/api/repos` enrichment.
 
+The attempted startup optimization that routed a live Codex App pane to its
+JSONL as soon as `transcriptSource` appeared was invalid. Message ownership is
+mode-exclusive: a live `__codex_app__:*` visual pane uses app-server history
+and events even when its transcript path is known; Stop/review rewrites the
+pane to the transcript source, which is then owned only by the JSONL poller.
+The transcript path remains usable as file metadata while live, but must never
+select or mutate rendered messages. Delayed app-server history, SSE callbacks,
+and frame-batched deltas all revalidate this ownership before applying. Future
+startup work must reduce or schedule app-server cost without creating a hybrid
+live/transcript renderer.
+
 Live app-server updates also need a reader-position guard independent of tail
 follow. The transcript already uses keyed Svelte rows and reuses unchanged item
 references, but the active work subtree legitimately changes as tool and text
@@ -876,6 +889,38 @@ already in flight, which propagates cancellation to the daemon's Ollama fetch;
 manual summary actions remain available. Startup `/api/image` traffic is the
 expected browser loading of sticky-note attachment thumbnails; those images
 retain native `loading="lazy"` and `decoding="async"` behavior.
+
+A later live freeze was a separate app-server delta batching leak. WebContent
+held about 119% CPU and 2.7 GB RSS while the daemon stayed near 5%; a five-second
+native sample spent 3,588/3,728 main-thread samples under `EventSource` followed
+by a Svelte microtask checkpoint. The app-server recording showed the trigger
+directly: one thread delivered roughly 70 `item/agentMessage/delta` records in
+one second. Text patches were already queued to one animation-frame update, but
+every record first assigned the reactive `codexLiveLastActivityIso`, forcing a
+component update after each SSE event and defeating the batch. Delta activity
+now commits with the frame-batched message patch. Known nonvisual notifications
+(`turn/diff/updated`, account rate limits, reasoning part boundaries, and file
+patch-updated notices) no longer enter SessionView reactivity or the hub replay
+buffer. Browser stall diagnostics now include per-method synchronous
+`codex-event.sync.*` spans plus post-Svelte `codex-event.settle.*` spans, so a
+remaining event/render bottleneck is attributable from `errors.jsonl` without
+another native-symbol guess.
+
+The follow-up freeze on 2026-09-02 exposed the command-output variant that the
+first batching fix had not closed. WebContent reached 104% CPU and a 9.5 GB
+physical footprint while the daemon remained idle. Over twenty minutes the
+recording contained 4,623 `item/commandExecution/outputDelta` notifications;
+three commands alone streamed about 1.0 MB, 416 KB, and 376 KB. The new settle
+spans attributed a visible 29.5-second update to command output, while a native
+sample again spent 3,760/3,762 main-thread samples in the EventSource listener's
+Svelte microtask checkpoint, dominated by regex and string-rope work. The leak
+had two parts: every output delta redundantly upserted the already-rendered tool
+call before entering the patch batch, and the visual model retained unbounded
+growing command output for recursive summary/nicifier passes. Existing tool-use
+rows are now reused without a reactive write, adjacent deltas coalesce before
+the frame flush, and live visual command output preserves a bounded head and
+tail (128 KiB) while the full output remains in Codex's session data. The same
+bound applies when the completed item snapshot replaces its streaming row.
 
 ### Deferred levers (do only if Lever 1 isn't enough)
 

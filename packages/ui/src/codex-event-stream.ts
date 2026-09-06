@@ -159,6 +159,70 @@ export interface CodexAppSessionTransport {
   subscribe(threadId: string, subscriber: CodexAppEventSubscriber): () => void;
 }
 
+export type CodexEventVisualDelivery = "ignore" | "batched-delta" | "immediate";
+
+export const CODEX_LIVE_OUTPUT_LIMIT = 128 * 1024;
+
+const CODEX_OUTPUT_TRUNCATION_MARKER =
+  "\n[… output truncated for display; full output remains in the session …]\n";
+
+export function boundedCodexLiveOutput(
+  text: string,
+  maxChars = CODEX_LIVE_OUTPUT_LIMIT,
+): string {
+  if (text.length <= maxChars) return text;
+  if (maxChars <= 0) return "";
+  if (maxChars <= CODEX_OUTPUT_TRUNCATION_MARKER.length) {
+    return text.slice(-maxChars);
+  }
+  const available = maxChars - CODEX_OUTPUT_TRUNCATION_MARKER.length;
+  const headChars = Math.floor(available / 4);
+  const tailChars = available - headChars;
+  return (
+    text.slice(0, headChars) +
+    CODEX_OUTPUT_TRUNCATION_MARKER +
+    text.slice(-tailChars)
+  );
+}
+
+export function codexOutputDeltaNeedsToolUse(
+  messages: readonly {
+    id?: string;
+    blocks: readonly { type: string }[];
+  }[],
+  toolUse: Pick<CodexLiveToolUse, "id">,
+): boolean {
+  return !messages.some(
+    (message) =>
+      message.id === toolUse.id &&
+      message.blocks.some((block) => block.type === "tool_use"),
+  );
+}
+
+export function codexEventVisualDelivery(
+  event: Pick<CodexAppEvent, "kind" | "method">,
+): CodexEventVisualDelivery {
+  if (event.kind === "request") return "immediate";
+  switch (event.method) {
+    case "account/rateLimits/updated":
+    case "turn/diff/updated":
+    case "item/reasoning/summaryPartAdded":
+    case "item/fileChange/patchUpdated":
+      return "ignore";
+    case "item/agentMessage/delta":
+    case "item/plan/delta":
+    case "item/reasoning/summaryTextDelta":
+    case "item/reasoning/textDelta":
+    case "command/exec/outputDelta":
+    case "process/outputDelta":
+    case "item/commandExecution/outputDelta":
+    case "item/fileChange/outputDelta":
+      return "batched-delta";
+    default:
+      return "immediate";
+  }
+}
+
 interface HubSubscriber extends CodexAppEventSubscriber {
   threadId: string | undefined;
 }
@@ -224,7 +288,34 @@ export function shouldUseCodexAppHistorySource(opts: {
   liveSurfaceActive: boolean;
   transcriptSource: string | undefined;
 }): boolean {
-  return opts.liveSurfaceActive && !opts.transcriptSource;
+  return opts.liveSurfaceActive;
+}
+
+export function shouldApplyCodexAppHistoryResponse(opts: {
+  sourceActive: boolean;
+  requestedThreadId: string;
+  requestedCwd: string;
+  currentThreadId: string | undefined;
+  currentCwd: string | undefined;
+}): boolean {
+  return (
+    opts.sourceActive &&
+    codexAppHistoryKey(opts.requestedThreadId, opts.requestedCwd) ===
+      codexAppHistoryKey(opts.currentThreadId, opts.currentCwd)
+  );
+}
+
+export function shouldApplyCodexAppMutation(opts: {
+  sourceActive: boolean;
+  subscribedThreadId: string;
+  eventThreadId: string | undefined;
+  currentThreadId: string | undefined;
+}): boolean {
+  return (
+    opts.sourceActive &&
+    opts.currentThreadId === opts.subscribedThreadId &&
+    (!opts.eventThreadId || opts.eventThreadId === opts.subscribedThreadId)
+  );
 }
 
 export function canRequestOlderCodexAppThreadHistory(opts: {
@@ -284,6 +375,7 @@ function subscriberWantsEvent(
 }
 
 function pushEvent(hub: Hub, event: CodexAppEvent): void {
+  if (codexEventVisualDelivery(event) === "ignore") return;
   hub.history.push(event);
   if (hub.history.length > HISTORY_LIMIT) {
     hub.history.splice(0, hub.history.length - HISTORY_LIMIT);
@@ -1128,10 +1220,12 @@ function codexCommandExecutionResultText(
     return undefined;
   }
   if (!completed && exitCode === undefined && durationMs === undefined) {
-    return output;
+    return output === undefined ? undefined : boundedCodexLiveOutput(output);
   }
   const seconds = durationMs !== undefined ? Math.max(0, durationMs / 1000) : 0;
-  return `Exit code: ${exitCode ?? 0}\nWall time: ${seconds.toFixed(4)} seconds\nOutput:\n${output ?? ""}`;
+  return boundedCodexLiveOutput(
+    `Exit code: ${exitCode ?? 0}\nWall time: ${seconds.toFixed(4)} seconds\nOutput:\n${output ?? ""}`,
+  );
 }
 
 function codexGenericToolMessages(

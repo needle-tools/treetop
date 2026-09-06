@@ -660,6 +660,20 @@ describe("filterToExistingSessions", () => {
     });
   });
 
+  test("a transcript source cannot become app-server owned from a stale live flag", () => {
+    expect(
+      resolveSessionMessageSource({
+        agent: "codex",
+        source: "/Users/me/.codex/sessions/thread-123.jsonl",
+        transcriptSource: "/Users/me/.codex/sessions/thread-123.jsonl",
+        liveAppSurface: true,
+      }),
+    ).toEqual({
+      kind: "transcript",
+      source: "/Users/me/.codex/sessions/thread-123.jsonl",
+    });
+  });
+
   test("stopped Codex App review panes may poll their transcript source", () => {
     expect(
       resolveSessionMessageSource({

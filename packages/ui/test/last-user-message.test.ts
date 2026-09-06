@@ -2514,6 +2514,40 @@ describe("applyVisualTranscriptDeltaPatches", () => {
       ],
     });
   });
+
+  it("keeps repeatedly appended live tool output bounded while preserving its head and tail", () => {
+    const first = applyVisualTranscriptDeltaPatches(
+      [],
+      [
+        {
+          id: "codex-output-call-1",
+          role: "tool",
+          type: "tool_result",
+          delta: `start:${"a".repeat(200)}`,
+          blockFields: { streaming: true },
+          timestamp: "2026-09-02T09:00:00.000Z",
+          maxTextChars: 96,
+        },
+      ],
+    );
+    const next = applyVisualTranscriptDeltaPatches(first, [
+      {
+        id: "codex-output-call-1",
+        role: "tool",
+        type: "tool_result",
+        delta: `${"b".repeat(200)}:end`,
+        blockFields: { streaming: true },
+        timestamp: "2026-09-02T09:00:01.000Z",
+        maxTextChars: 96,
+      },
+    ]);
+    const text = next[0]?.blocks[0]?.text ?? "";
+
+    expect(text).toHaveLength(96);
+    expect(text).toStartWith("start:");
+    expect(text).toContain("output truncated for display");
+    expect(text).toEndWith(":end");
+  });
 });
 
 describe("cleanVisualToolResultText", () => {
