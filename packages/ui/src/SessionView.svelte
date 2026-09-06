@@ -1,5 +1,9 @@
 <script lang="ts">
   import { apiUrl, withRequestDeadline } from "./api";
+  import {
+    loadModelsDevPricing,
+    type ModelsDevPricingSnapshot,
+  } from "@treetop/nicifier";
   import { play } from "./sound";
   import { onMount, onDestroy, tick } from "svelte";
   import { flip } from "svelte/animate";
@@ -370,6 +374,7 @@
     id?: string;
     tokensUsed?: number;
     tokenUsage?: CodexAppHistoryMessage["tokenUsage"];
+    model?: string;
     intent?: "steer";
     /** Optional per-turn assistant label override. Set by the
      *  daemon's Ollama parser to the model that produced the turn
@@ -1234,6 +1239,7 @@
   >[] = [];
   let previousVisualSessionMessages: NormalizedMessage[] = [];
   let previousVisualTranscriptActive: boolean | undefined;
+  let modelsDevPricing: ModelsDevPricingSnapshot | undefined;
   let visualTranscriptChangeStartHint: number | undefined;
   $: if (renderReadBody) {
     const pausedReaderAnchor = capturePausedVisualReaderAnchor();
@@ -2088,6 +2094,7 @@
       if (!body?.thread || !session || !targetStillOwned()) return;
       if (typeof body.model === "string") {
         codexLiveDetectedModel = body.model;
+        codexLiveNormalizeContext.model = body.model;
       }
       flushCodexDeltaPatches();
       const historyMessages = codexAppHistoryMessagesFromTurnPage(
@@ -2868,7 +2875,11 @@
   function openCodexEventStream(threadId: string): void {
     if (unsubscribeCodexEvents && codexEventsThreadId === threadId) return;
     closeCodexEventStream();
-    codexLiveNormalizeContext = { toolNames: new Map(), toolInputs: new Map() };
+    codexLiveNormalizeContext = {
+      toolNames: new Map(),
+      toolInputs: new Map(),
+      model: codexLiveDetectedModel || codexModel || undefined,
+    };
     codexEventsThreadId = threadId;
     codexEventStreamState = "connecting";
     const subscriber = {
@@ -5076,6 +5087,9 @@
 
   onMount(() => {
     mounted = true;
+    void loadModelsDevPricing().then((snapshot) => {
+      if (mounted) modelsDevPricing = snapshot;
+    });
     observeSessionVisibility();
     window.addEventListener(STAGE_PROMPT_EVENT, onStagePrompt);
     // Backgrounding the tab should mute a held PTY; foregrounding resumes it.
@@ -5580,6 +5594,10 @@
   {:else if session}
     <VisualTranscript
       {agent}
+      pricingModel={agent === "codex"
+        ? codexLiveDetectedModel || codexModel || undefined
+        : model}
+      {modelsDevPricing}
       {daemonId}
       items={visualTranscriptItems}
       sessionCwd={effectiveSessionCwd}

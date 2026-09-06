@@ -13,6 +13,7 @@
   import Tooltip from "./Tooltip.svelte";
   import ToolIcon from "./ToolIcon.svelte";
   import { formatAbsoluteTimeTitle } from "./display-helpers";
+  import type { ModelsDevPricingSnapshot } from "@treetop/nicifier";
   import {
     buildVisualWorkDisplayEntries,
     buildVisibleVisualWorkDisplayEntries,
@@ -73,6 +74,7 @@
     type VisualWorkArtifact,
     type VisualWorkDisplayEntry,
     type VisualWorkEntry,
+    type TokenUsage,
   } from "./last-user-message";
   import { markdownCodeBlockHtml } from "./markdown-code";
   import {
@@ -161,6 +163,9 @@
     id?: string;
     intent?: "steer";
     author?: string;
+    tokensUsed?: number;
+    tokenUsage?: TokenUsage;
+    model?: string;
   }
 
   marked.setOptions({ breaks: true, gfm: true });
@@ -186,6 +191,8 @@
   });
 
   export let agent: Agent = "claude";
+  export let pricingModel: string | undefined = undefined;
+  export let modelsDevPricing: ModelsDevPricingSnapshot | undefined = undefined;
   export let daemonId: string | undefined = undefined;
   export let items: VisualTranscriptItem<NormalizedBlock, NormalizedMessage>[] =
     [];
@@ -1621,6 +1628,43 @@
     return `${total} new tokens${perSecond}`;
   }
 
+  function workOverviewCostLabel(overview: VisualWorkOverview): string {
+    const usd = overview.cost.totalUsd;
+    const amount =
+      usd === 0
+        ? "0.00"
+        : usd < 0.01
+          ? usd.toFixed(4)
+          : usd < 100
+            ? usd.toFixed(2)
+            : usd.toLocaleString(undefined, { maximumFractionDigits: 0 });
+    return `$${amount} est.`;
+  }
+
+  function workOverviewCostTitle(overview: VisualWorkOverview): string {
+    const parts = [
+      `${workOverviewCostLabel(overview)} API-equivalent token cost`,
+      `${overview.cost.pricedCheckpoints} priced ${overview.cost.pricedCheckpoints === 1 ? "checkpoint" : "checkpoints"}`,
+    ];
+    if (overview.cost.models.length > 0) {
+      parts.push(overview.cost.models.join(", "));
+    }
+    if (overview.cost.sources.length > 0) {
+      parts.push(`pricing: ${overview.cost.sources.join(", ")}`);
+    }
+    if (overview.cost.longContextCheckpoints > 0) {
+      parts.push(
+        `${overview.cost.longContextCheckpoints} long-context ${overview.cost.longContextCheckpoints === 1 ? "request" : "requests"}`,
+      );
+    }
+    if (overview.cost.unpricedCheckpoints > 0) {
+      parts.push(
+        `${overview.cost.unpricedCheckpoints} ${overview.cost.unpricedCheckpoints === 1 ? "checkpoint" : "checkpoints"} not priced (model unavailable)`,
+      );
+    }
+    return parts.join(" · ");
+  }
+
   function workOverviewDiffTotals(
     overview: VisualWorkOverview,
   ): { additions: number; deletions: number } | undefined {
@@ -2179,7 +2223,8 @@
 
 {#snippet renderWorkOverviewRightMeta(overview: VisualWorkOverview)}
   {@const diffTotals = workOverviewDiffTotals(overview)}
-  {#if diffTotals || overview.tokens.total > 0 || overview.time.elapsedMs > 0}
+  {@const hasCost = overview.cost.pricedCheckpoints > 0}
+  {#if diffTotals || overview.tokens.total > 0 || hasCost || overview.time.elapsedMs > 0}
     <span class="work-summary-right-meta">
       {#if diffTotals}
         <span
@@ -2202,7 +2247,15 @@
           {overview.tokens.total.toLocaleString()} tok
         </span>
       {/if}
-      {#if overview.tokens.total > 0 && overview.time.elapsedMs > 0}
+      {#if overview.tokens.total > 0 && (hasCost || overview.time.elapsedMs > 0)}
+        <span class="work-summary-meta-dot" aria-hidden="true">·</span>
+      {/if}
+      {#if hasCost}
+        <span class="work-tool-meta" title={workOverviewCostTitle(overview)}>
+          {workOverviewCostLabel(overview)}
+        </span>
+      {/if}
+      {#if hasCost && overview.time.elapsedMs > 0}
         <span class="work-summary-meta-dot" aria-hidden="true">·</span>
       {/if}
       {#if overview.time.elapsedMs > 0}
@@ -3207,13 +3260,18 @@
         visibleWorkEntries,
         { full: workDetailOpen },
       )}
-      {@const shownWorkGroups = visualWorkDetailGroups(shownWorkEntries)}
+      {@const shownWorkGroups = visualWorkDetailGroups(
+        shownWorkEntries,
+        visibleWorkEntries,
+      )}
       {@const autoOpenActionGroupId = visualWorkAutoOpenActionGroupId(
         shownWorkGroups,
         item.open === true && !workDetailOpen,
       )}
       {@const workOverview = visualWorkOverview(item, visibleWorkEntries, {
         now: liveNowIso,
+        model: pricingModel,
+        modelsDev: modelsDevPricing,
       })}
       {@const summarySubagents = workSummarySubagents(visibleWorkEntries)}
       {@const durationParts = workDurationParts(item, liveNowIso)}
@@ -3301,6 +3359,11 @@
                 <div class="work-overview-meta">
                   <span>{workOverviewTimeLabel(workOverview)}</span>
                   <span>{workOverviewTokenLabel(workOverview)}</span>
+                  {#if workOverview.cost.pricedCheckpoints > 0}
+                    <span title={workOverviewCostTitle(workOverview)}>
+                      {workOverviewCostLabel(workOverview)} API-equivalent
+                    </span>
+                  {/if}
                   {#if workOverview.tokens.total > 0}
                     <span>
                       fresh input {workOverview.tokens.freshInput.toLocaleString()} · cached {workOverview.tokens.cachedInput.toLocaleString()} · output {workOverview.tokens.output.toLocaleString()}{#if workOverview.tokens.reasoningOutput > 0} · reasoning {workOverview.tokens.reasoningOutput.toLocaleString()}{/if}
@@ -3361,17 +3424,22 @@
                     <div class="work-detail-entries">
                       {#each shownWorkGroups as workGroup (workGroup.id)}
                         {@const groupIsCollapsible = workGroup.kind === "actions"}
+                        {@const groupOverview = visualWorkOverview(
+                          item,
+                          workGroup.overviewEntries,
+                          {
+                            now: liveNowIso,
+                            timeScope: "entries",
+                            model: pricingModel,
+                            modelsDev: modelsDevPricing,
+                          },
+                        )}
                         {#if groupIsCollapsible}
                           {@const groupAutoOpen =
                             workGroup.id === autoOpenActionGroupId}
                           {@const groupOpen = workActionGroupOpen(
                             workGroup.id,
                             groupAutoOpen,
-                          )}
-                          {@const groupOverview = visualWorkOverview(
-                            item,
-                            workGroup.entries,
-                            { now: liveNowIso, timeScope: "entries" },
                           )}
                           <details
                             class="work-action-group"
@@ -3426,6 +3494,13 @@
                               visibleWorkEntries,
                             )}
                           {/each}
+                          {#if groupOverview.cost.pricedCheckpoints > 0}
+                            <div class="work-response-cost-meta">
+                              {@render renderWorkOverviewRightMeta(
+                                groupOverview,
+                              )}
+                            </div>
+                          {/if}
                         {/if}
                       {/each}
                       {#if isLiveTailWork(item, itemIndex)}
@@ -4241,6 +4316,13 @@
     line-height: 1.45;
     min-width: 0;
     max-width: 100%;
+  }
+  .work-response-cost-meta {
+    display: flex;
+    justify-content: flex-end;
+    min-width: 0;
+    padding: 0 0.22rem;
+    font-size: 0.74rem;
   }
   .work-steering-user-message {
     display: flex;

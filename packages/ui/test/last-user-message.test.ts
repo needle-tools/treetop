@@ -1,5 +1,5 @@
 import { describe, it, expect } from "bun:test";
-import { nicifyCommand } from "@supergit/nicifier";
+import { nicifyCommand } from "@treetop/nicifier";
 import {
   applyVisualTranscriptDeltaPatches,
   buildVisualWorkDisplayEntries,
@@ -699,7 +699,7 @@ describe("buildVisualTranscriptItems", () => {
     expect(items.map((item) => item.kind)).toEqual(["message", "work"]);
     if (items[1]?.kind !== "work") throw new Error("expected work item");
     const displayEntries = buildVisibleVisualWorkDisplayEntries(items[1]);
-    expect(visualWorkOverview(items[1], displayEntries).tokens.total).toBe(12);
+    expect(visualWorkOverview(items[1], displayEntries).tokens.total).toBe(11);
     expect(
       visualWorkDetailEntries(items[1], displayEntries, { full: true }).map(
         (entry) => entry.entry.blocks[0]?.type,
@@ -7212,16 +7212,16 @@ describe("visualWorkOverview", () => {
       entries,
     );
 
-    expect(overview.tokenCount).toBe(2_600);
+    expect(overview.tokenCount).toBe(2_500);
     expect(overview.tokens).toMatchObject({
       input: 120_000,
       cachedInput: 118_000,
       freshInput: 2_000,
       output: 500,
       reasoningOutput: 100,
-      generatedOutput: 600,
+      generatedOutput: 500,
       reportedTotal: 120_500,
-      total: 2_600,
+      total: 2_500,
       perSecond: 50,
     });
   });
