@@ -5,8 +5,10 @@ import type {
   NativeAgentStartRequest,
   NativeAgentTurnRequest,
 } from "./native-agent-adapters";
-import { existsSync } from "node:fs";
 import { withTreetopMcp } from "./mcp";
+import { appendFileSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
 
 export interface CodexAppServerProcess {
   pid: number;
@@ -28,6 +30,7 @@ export interface CodexAppServerAdapterOptions {
   mcpUrl?: () => string;
   autoRecord?: boolean;
   recordingFrameLimit?: number;
+  recordingDir?: string;
 }
 
 type JsonObject = Record<string, unknown>;
@@ -74,6 +77,7 @@ export interface CodexAppServerRecording {
   id: string;
   startedAt: string;
   endedAt?: string;
+  path?: string;
   frames: CodexAppServerRecordedFrame[];
 }
 
@@ -149,6 +153,7 @@ export interface CodexRealtimeVoiceStart {
 }
 
 export const DEFAULT_REALTIME_VOICE = "sol";
+const DEFAULT_REALTIME_MODEL = "gpt-live-1-codex";
 
 const VOICE_INSTRUCTIONS =
   "You are Treetop's global voice assistant. Reply briefly, usually in one short sentence. " +
@@ -427,6 +432,7 @@ export function realtimeVoiceStartParams(req: {
     threadId: req.threadId,
     outputModality: "audio",
     includeStartupContext: true,
+    model: DEFAULT_REALTIME_MODEL,
     prompt: cleanString(req.prompt),
     version: "v3",
     voice: cleanString(req.voice) ?? DEFAULT_REALTIME_VOICE,
@@ -450,6 +456,7 @@ export class CodexAppServerAdapter implements NativeAgentAdapter {
   private readonly historyLimit = 300;
   private readonly autoRecord: boolean;
   private readonly recordingFrameLimit: number;
+  private readonly recordingDir: string | undefined;
   private recording: CodexAppServerRecording | null = null;
   private recordingSeq = 0;
 
@@ -464,6 +471,7 @@ export class CodexAppServerAdapter implements NativeAgentAdapter {
     this.autoRecord = opts.autoRecord !== false;
     this.recordingFrameLimit =
       opts.recordingFrameLimit ?? DEFAULT_RECORDING_FRAME_LIMIT;
+    this.recordingDir = opts.recordingDir;
     if (this.autoRecord) this.startRecording();
   }
 
@@ -861,9 +869,18 @@ export class CodexAppServerAdapter implements NativeAgentAdapter {
   }
 
   startRecording(): CodexAppServerRecording {
+    const startedAt = new Date().toISOString();
+    const id = `codex-app-${startedAt.replace(/[:.]/g, "-")}`;
+    const dir = this.recordingDir;
+    const path = dir ? join(dir, `${id}.jsonl`) : undefined;
+    if (path && dir) {
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(path, "");
+    }
     this.recording = {
-      id: `codex-app-${new Date().toISOString().replace(/[:.]/g, "-")}`,
-      startedAt: new Date().toISOString(),
+      id,
+      startedAt,
+      path,
       frames: [],
     };
     this.recordingSeq = 0;
@@ -1019,23 +1036,42 @@ export class CodexAppServerAdapter implements NativeAgentAdapter {
       if (!this.autoRecord) return;
       this.startRecording();
     }
-    this.recording.frames.push({
+    const recorded: CodexAppServerRecordedFrame = {
       seq: ++this.recordingSeq,
       at: new Date().toISOString(),
       direction: frame.direction,
       raw: frame.raw,
       message: cloneJsonObject(frame.message),
-    });
+    };
+    this.recording.frames.push(recorded);
     trim(this.recording.frames, this.recordingFrameLimit);
+    if (this.recording.path) {
+      appendFileSync(this.recording.path, `${JSON.stringify(recorded)}\n`);
+    }
   }
 }
 
-export function resolveCodexBinary(): string {
-  const envPath = cleanString(process.env.CODEX_CLI_PATH);
-  if (envPath && existsSync(envPath)) return envPath;
-  const chatGptBundledCodex =
+export function resolveCodexBinary(
+  options: {
+    env?: Record<string, string | undefined>;
+    homeDir?: string;
+    findOnPath?: (name: string) => string | null;
+    bundledPath?: string;
+    exists?: (path: string) => boolean;
+  } = {},
+): string {
+  const env = options.env ?? process.env;
+  const exists = options.exists ?? existsSync;
+  const bundledPath =
+    options.bundledPath ??
     "/Applications/ChatGPT.app/Contents/Resources/codex";
-  if (existsSync(chatGptBundledCodex)) return chatGptBundledCodex;
+  const envPath = cleanString(env.CODEX_CLI_PATH);
+  if (envPath && exists(envPath)) return envPath;
+  const bunCli = join(options.homeDir ?? homedir(), ".bun", "bin", "codex");
+  if (exists(bunCli)) return bunCli;
+  const standaloneCli = (options.findOnPath ?? Bun.which)("codex");
+  if (standaloneCli && standaloneCli !== bundledPath) return standaloneCli;
+  if (exists(bundledPath)) return bundledPath;
   return "codex";
 }
 

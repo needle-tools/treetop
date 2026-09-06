@@ -659,6 +659,51 @@ describe("buildVisualTranscriptItems", () => {
     ).toEqual(["implementing stats", "evaluating texture strategy"]);
   });
 
+  it("keeps token-only app-server role labels out of visible work details", () => {
+    const items = buildVisualTranscriptItems(
+      [
+        msg("user", "continue", "2026-06-19T10:00:00.000Z"),
+        {
+          role: "assistant",
+          timestamp: "2026-06-19T10:00:01.000Z",
+          tokenUsage: {
+            input: 12,
+            cachedInput: 4,
+            cacheWriteInput: 0,
+            output: 3,
+            reasoningOutput: 1,
+            total: 15,
+          },
+          blocks: [{ type: "text", text: "Codex" }],
+        },
+        {
+          role: "assistant",
+          timestamp: "2026-06-19T10:00:02.000Z",
+          blocks: [
+            {
+              type: "tool_use",
+              toolName: "exec_command",
+              toolInput: {
+                cmd: "sed -n '1,20p' timelineTrackVideoAnchors.js",
+              },
+            },
+          ],
+        },
+      ],
+      { active: true },
+    );
+
+    expect(items.map((item) => item.kind)).toEqual(["message", "work"]);
+    if (items[1]?.kind !== "work") throw new Error("expected work item");
+    const displayEntries = buildVisibleVisualWorkDisplayEntries(items[1]);
+    expect(visualWorkOverview(items[1], displayEntries).tokens.total).toBe(12);
+    expect(
+      visualWorkDetailEntries(items[1], displayEntries, { full: true }).map(
+        (entry) => entry.entry.blocks[0]?.type,
+      ),
+    ).toEqual(["tool_use"]);
+  });
+
   it("does not treat app-server assistant role labels as final responses", () => {
     const items = buildVisualTranscriptItems([
       msg("user", "continue", "2026-06-19T10:00:00.000Z"),
@@ -683,7 +728,7 @@ describe("buildVisualTranscriptItems", () => {
     ).toEqual(["continue", "Done."]);
   });
 
-  it("folds user messages during an open Codex task into the work round as steering", () => {
+  it("keeps ordinary user messages during an open Codex task as user turns", () => {
     const items = buildVisualTranscriptItems([
       msg("user", "implement this", "2026-06-19T10:00:00.000Z"),
       {
@@ -706,38 +751,27 @@ describe("buildVisualTranscriptItems", () => {
 
     expect(items.map((item) => item.kind)).toEqual([
       "message",
-      "work",
+      "message",
+      "message",
+      "message",
+      "message",
       "message",
       "message",
     ]);
-    if (items[1]?.kind !== "work")
-      throw new Error("expected steering work item");
     expect(
-      items[1].entries
-        .filter((entry) => entry.message.role === "user")
-        .map((entry) => [entry.message.blocks[0]?.text, entry.message.intent]),
+      items
+        .filter((item) => item.kind === "message")
+        .filter((item) => item.message.role === "user")
+        .map((item) => [item.blocks[0]?.text, item.message.intent]),
     ).toEqual([
-      ["also keep it small", "steer"],
-      ["and add a test", "steer"],
+      ["implement this", undefined],
+      ["also keep it small", undefined],
+      ["and add a test", undefined],
+      ["new turn", undefined],
     ]);
-    expect(
-      items[1].entries.map((entry) =>
-        entry.blocks.map((block) => block.text ?? block.type).join(" "),
-      ),
-    ).toEqual([
-      "[Task started]",
-      "I’ll start.",
-      "also keep it small",
-      "Noted.",
-      "and add a test",
-      "[Task complete]",
-    ]);
-    expect(visualWorkSummary(items[1].entries)).toMatchObject({
-      steerings: 2,
-    });
   });
 
-  it("does not surface progress responses before later steering as final answers", () => {
+  it("keeps ordinary follow-ups before later work as user turns", () => {
     const items = buildVisualTranscriptItems([
       msg("user", "validate externally", "2026-06-01T10:00:00.000Z"),
       {
@@ -762,26 +796,30 @@ describe("buildVisualTranscriptItems", () => {
 
     expect(items.map((item) => item.kind)).toEqual([
       "message",
+      "message",
+      "message",
       "work",
       "message",
     ]);
-    if (items[1]?.kind !== "work") throw new Error("expected work item");
+    if (items[3]?.kind !== "work") throw new Error("expected work item");
     expect(
-      items[1].entries.map((entry) => [
+      items[3].entries.map((entry) => [
         entry.message.role,
         entry.message.intent,
         entry.blocks[0]?.text ?? entry.blocks[0]?.type,
       ]),
     ).toEqual([
-      ["system", undefined, "[Task started]"],
-      ["assistant", undefined, "One remaining cleanup."],
-      ["user", "steer", "also run tests"],
       ["assistant", undefined, "tool_use"],
       ["system", undefined, "[Task complete]"],
     ]);
-    if (items[2]?.kind !== "message")
+    if (items[4]?.kind !== "message")
       throw new Error("expected final response");
-    expect(items[2].blocks).toEqual([{ type: "text", text: "Done." }]);
+    expect(items[4].blocks).toEqual([{ type: "text", text: "Done." }]);
+    const followUp = items[2];
+    if (followUp?.kind !== "message")
+      throw new Error("expected follow-up user message");
+    expect(followUp.message.role).toBe("user");
+    expect(followUp.message.intent).toBeUndefined();
   });
 
   it("keeps clipped progress before explicit steering inside the same work round", () => {
@@ -844,7 +882,7 @@ describe("buildVisualTranscriptItems", () => {
     ]);
   });
 
-  it("attaches later pre-user task-start markers so clarifications become steering", () => {
+  it("keeps later pre-user task-start markers from making clarifications steering", () => {
     const items = buildVisualTranscriptItems([
       msg("user", "previous request", "2026-07-02T03:54:00.000Z"),
       {
@@ -882,29 +920,20 @@ describe("buildVisualTranscriptItems", () => {
       "message",
       "message",
       "message",
-      "work",
+      "message",
+      "message",
+      "message",
       "message",
     ]);
-    if (items[3]?.kind !== "work") throw new Error("expected audit work item");
-    expect(visualWorkSummary(items[3].entries)).toMatchObject({
-      steerings: 1,
-    });
     expect(
-      items[3].entries.map((entry) => [
-        entry.message.role,
-        entry.message.intent,
-        entry.blocks[0]?.text ?? entry.blocks[0]?.type,
-      ]),
+      items
+        .filter((item) => item.kind === "message")
+        .filter((item) => item.message.role === "user")
+        .map((item) => [item.blocks[0]?.text, item.message.intent]),
     ).toEqual([
-      ["system", undefined, "[Task started]"],
-      ["assistant", undefined, "npm run check is running."],
-      [
-        "user",
-        "steer",
-        "my question was in particular about that active goal.",
-      ],
-      ["assistant", undefined, "Got it. I’ll answer specifically as an audit."],
-      ["system", undefined, "[Task complete]"],
+      ["previous request", undefined],
+      ["OK, time for an audit", undefined],
+      ["my question was in particular about that active goal.", undefined],
     ]);
   });
 
@@ -1925,7 +1954,10 @@ describe("updateVisualTranscriptItems", () => {
     const previousItems = buildVisualTranscriptItems(previousMessages, {
       active: true,
     });
-    const steering = msg("user", "also run tests", "2026-06-20T15:10:00.000Z");
+    const steering = {
+      ...msg("user", "also run tests", "2026-06-20T15:10:00.000Z"),
+      intent: "steer" as const,
+    };
     const toolUse: Message = {
       id: "test-tool-use",
       role: "assistant",
@@ -1980,11 +2012,10 @@ describe("updateVisualTranscriptItems", () => {
       "message",
     ]);
 
-    const steering = msg(
-      "user",
-      "hey dude what the heck",
-      "2026-07-02T10:00:06.000Z",
-    );
+    const steering = {
+      ...msg("user", "hey dude what the heck", "2026-07-02T10:00:06.000Z"),
+      intent: "steer" as const,
+    };
     const thinking: Message = {
       role: "assistant",
       timestamp: "2026-07-02T10:00:07.000Z",
@@ -2076,6 +2107,7 @@ describe("updateVisualTranscriptItems", () => {
       "2026-07-02T10:00:06.500Z",
     );
     canonicalSteer.id = "canonical-steer";
+    canonicalSteer.intent = "steer";
     const nextThinking: Message = {
       ...thinking,
       blocks: [

@@ -7,7 +7,11 @@
  */
 
 import { test, expect, describe } from "bun:test";
-import { applySessionMessagePatch, createSessionPoller } from "../src/session-poll";
+import {
+  applySessionMessagePatch,
+  createSessionPoller,
+  shouldStartSingleFlightPoll,
+} from "../src/session-poll";
 
 function jsonResponse(
   obj: unknown,
@@ -43,6 +47,37 @@ function makeFetch(handler: (url: string, init?: RequestInit) => Response) {
 const noop = () => {};
 
 describe("createSessionPoller", () => {
+  test("starts optional single-flight polls only when visible work is due", () => {
+    expect(
+      shouldStartSingleFlightPoll({
+        hasTarget: true,
+        idle: false,
+        inFlight: false,
+      }),
+    ).toBe(true);
+    expect(
+      shouldStartSingleFlightPoll({
+        hasTarget: false,
+        idle: false,
+        inFlight: false,
+      }),
+    ).toBe(false);
+    expect(
+      shouldStartSingleFlightPoll({
+        hasTarget: true,
+        idle: true,
+        inFlight: false,
+      }),
+    ).toBe(false);
+    expect(
+      shouldStartSingleFlightPoll({
+        hasTarget: true,
+        idle: false,
+        inFlight: true,
+      }),
+    ).toBe(false);
+  });
+
   test("applies session message patches without dropping cached scrollback", () => {
     const body = JSON.stringify({
       agent: "codex",

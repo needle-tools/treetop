@@ -33,6 +33,7 @@ import "./styles/wt-picker.css";
 import "./styles/notes.css";
 import "./styles/file-browser.css";
 import App from "./App.svelte";
+import CodexReplayLab from "./CodexReplayLab.svelte";
 
 // Distinguish the dev tab from the prod tab in the browser. Bookmark
 // suggestions and the tab title both surface this text, so two browser
@@ -105,27 +106,36 @@ document.addEventListener("visibilitychange", syncTabVisibilityClass);
 const target = document.getElementById("app");
 if (!target) throw new Error("#app element missing in index.html");
 
-// Seed localStorage from daemon prefs before mounting so all store
-// constructors see shared state (native app inherits browser layout).
-await initDaemonKV();
+const replayLabRoute =
+  window.location.pathname === "/replay-lab" ||
+  window.location.pathname === "/codex-replay" ||
+  window.location.search.includes("replay-lab");
 
-configure(DEFAULT_MAPPINGS);
-installGestureListener();
-playOnFirstGesture("app-startup");
-startPeerWatcher();
-const destroyMarkdownSelectionContextMenu =
-  installMarkdownSelectionContextMenu();
-window.addEventListener("beforeunload", destroyMarkdownSelectionContextMenu);
-window.addEventListener(CREATE_NOTE_EVENT, (event) => {
-  const detail = event.detail;
-  void spawnNote({
-    anchor: detail.anchor,
-    body: detail.body,
-    originRect: detail.originRect,
+const app = replayLabRoute
+  ? mount(CodexReplayLab, { target })
+  : await (async () => {
+      // Seed localStorage from daemon prefs before mounting so all store
+      // constructors see shared state (native app inherits browser layout).
+      await initDaemonKV();
+
+      configure(DEFAULT_MAPPINGS);
+      installGestureListener();
+      playOnFirstGesture("app-startup");
+      startPeerWatcher();
+      const destroyMarkdownSelectionContextMenu =
+        installMarkdownSelectionContextMenu();
+      window.addEventListener("beforeunload", destroyMarkdownSelectionContextMenu);
+      window.addEventListener(CREATE_NOTE_EVENT, (event) => {
+        const detail = event.detail;
+        void spawnNote({
+          anchor: detail.anchor,
+          body: detail.body,
+          originRect: detail.originRect,
+        });
+      });
+
+      return mount(App, { target });
   });
-});
-
-const app = mount(App, { target });
 
 // The vines overlay (./vines) is mounted by App.svelte, driven by the
 // "Show vines" setting (Appearance). Demo URL params ?vinesgrow /

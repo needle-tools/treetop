@@ -188,6 +188,7 @@ import {
   shouldCopyTempWorkspaceRelativePath,
   debugAnalyzeInstance,
   rewriteTempWorkspaceAttachmentRefs,
+  invalidateReposCacheRuntime,
 } from "./server-helpers";
 import {
   normalizeRemote,
@@ -390,12 +391,6 @@ const PORT = Number(process.env.SUPERGIT_PORT ?? process.env.PORT ?? 7777);
 const BIND = process.env.SUPERGIT_BIND || "0.0.0.0";
 
 const treetopMcpUrl = (): string => `http://127.0.0.1:${server.port}/mcp`;
-const codexAgent = new CodexAppServerAdapter({ mcpUrl: treetopMcpUrl });
-const nativeAgents = createNativeAgentRegistry({
-  claude: new ClaudeCliAdapter({ mcpUrl: treetopMcpUrl }),
-  codex: codexAgent,
-});
-
 function codexApprovalPolicy(value: unknown): unknown | undefined {
   if (
     value === "untrusted" ||
@@ -507,6 +502,14 @@ const shells = await ShellsLog.open(
   READONLY_MODE ? INSTANCE_RUNTIME_PATH : WORKSPACE_PATH,
 );
 const ollamaSessions = await OllamaSessionsLog.open(WORKSPACE_PATH);
+const codexAgent = new CodexAppServerAdapter({
+  mcpUrl: treetopMcpUrl,
+  recordingDir: join(workspace.path, ".debugging", "codex-app-recordings"),
+});
+const nativeAgents = createNativeAgentRegistry({
+  claude: new ClaudeCliAdapter({ mcpUrl: treetopMcpUrl }),
+  codex: codexAgent,
+});
 
 /** External (non-TUI) repo-resident processes for the Processes panel.
  *  This scan is the heaviest part of an /api/processes poll — a
@@ -2198,9 +2201,14 @@ async function reposNDJSONResponse(
  *  out the 500ms window. The inflight promise can keep running — it's
  *  just no longer eligible to satisfy a later request from the cache. */
 function invalidateReposCache(): void {
-  reposCache = null;
-  reposInflight = null;
-  repsCacheGen++;
+  const next = invalidateReposCacheRuntime({
+    cache: reposCache,
+    inflight: reposInflight,
+    generation: repsCacheGen,
+  });
+  reposCache = next.cache;
+  reposInflight = next.inflight;
+  repsCacheGen = next.generation;
 }
 
 // In-memory favicon cache. Keyed by request URL; entries hold the bytes

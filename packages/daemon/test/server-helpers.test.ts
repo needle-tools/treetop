@@ -28,6 +28,7 @@ import {
   shouldCopyTempWorkspaceRelativePath,
   debugAnalyzeInstance,
   rewriteTempWorkspaceAttachmentRefs,
+  invalidateReposCacheRuntime,
 } from "../src/server-helpers";
 
 // ---------------------------------------------------------------------------
@@ -845,6 +846,40 @@ describe("patchWorktreeDetailsInRepos", () => {
       fileStatus: { dirtyLines: 4 },
     });
     expect(ok).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// invalidateReposCacheRuntime
+//
+// Invalidating /api/repos while a build is running must not drop the in-flight
+// handle. Dropping it lets the next request start a second full repo enrich on
+// top of the first one, which is the backpressure shape that makes unrelated
+// diagnostics and attachment POSTs appear to hang.
+// ---------------------------------------------------------------------------
+describe("invalidateReposCacheRuntime", () => {
+  test("clears the reusable cache and advances generation", () => {
+    const next = invalidateReposCacheRuntime({
+      cache: { rows: ["stale"] },
+      inflight: null,
+      generation: 4,
+    });
+
+    expect(next.cache).toBeNull();
+    expect(next.generation).toBe(5);
+  });
+
+  test("preserves the in-flight build so callers keep sharing it", () => {
+    const inflight = { key: "local", promise: Promise.resolve(["fresh"]) };
+    const next = invalidateReposCacheRuntime({
+      cache: { rows: ["stale"] },
+      inflight,
+      generation: 9,
+    });
+
+    expect(next.inflight).toBe(inflight);
+    expect(next.cache).toBeNull();
+    expect(next.generation).toBe(10);
   });
 });
 
