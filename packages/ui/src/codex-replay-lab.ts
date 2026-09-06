@@ -126,6 +126,43 @@ export async function parseCodexReplayTextAsync(
   return parseCodexReplayRoot(records, warnings);
 }
 
+export function filterCodexReplayTextForThread(
+  text: string,
+  threadId: string,
+): string {
+  const trimmed = text.trim();
+  if (!trimmed || !threadId) return text;
+  try {
+    const root = JSON.parse(trimmed);
+    if (root && typeof root === "object" && !Array.isArray(root)) {
+      const record = root as Record<string, unknown>;
+      const key = replayRecordArrayKey(record);
+      const frames = key ? record[key] : undefined;
+      if (key && Array.isArray(frames)) {
+        return JSON.stringify({
+          ...record,
+          [key]: frames.filter((frame) =>
+            codexReplayRecordThreadIds(frame).includes(threadId),
+          ),
+        });
+      }
+    }
+  } catch {
+    // JSONL is the common recording format; fall through to line filtering.
+  }
+  const lines = trimmed.split(/\r?\n/);
+  return lines
+    .filter((line) => {
+      if (!line.trim()) return false;
+      try {
+        return codexReplayRecordThreadIds(JSON.parse(line)).includes(threadId);
+      } catch {
+        return false;
+      }
+    })
+    .join("\n");
+}
+
 function parseCodexReplayRoot(
   root: unknown,
   warnings: string[],
@@ -958,11 +995,52 @@ function replayRecords(root: unknown): unknown[] {
   if (Array.isArray(root)) return root;
   if (!root || typeof root !== "object") return [];
   const record = root as Record<string, unknown>;
-  for (const key of ["frames", "events", "records", "entries", "log"]) {
+  const key = replayRecordArrayKey(record);
+  if (key) {
     const value = record[key];
     if (Array.isArray(value)) return value;
   }
   return [root];
+}
+
+function replayRecordArrayKey(record: Record<string, unknown>): string | undefined {
+  return ["frames", "events", "records", "entries", "log"].find((key) =>
+    Array.isArray(record[key]),
+  );
+}
+
+function codexReplayRecordThreadIds(record: unknown): string[] {
+  const ids = new Set<string>();
+  collectReplayThreadIds(record, (id) => ids.add(id));
+  return [...ids];
+}
+
+function collectReplayThreadIds(
+  value: unknown,
+  add: (id: string) => void,
+): void {
+  const record = objectRecord(value);
+  if (!record) return;
+  for (const key of ["threadId", "thread_id", "sessionId", "conversationId"]) {
+    const id = objectString(record, key);
+    if (id) add(id);
+  }
+  const path = objectString(record, "path");
+  if (path) {
+    for (const match of path.matchAll(/[0-9a-f]{8}-[0-9a-f-]{27,}/gi)) {
+      add(match[0]);
+    }
+  }
+  const thread = objectRecord(record.thread);
+  const threadId = objectString(thread, "id") ?? objectString(thread, "sessionId");
+  if (threadId) add(threadId);
+  for (const child of Object.values(record)) {
+    if (Array.isArray(child)) {
+      for (const item of child) collectReplayThreadIds(item, add);
+      continue;
+    }
+    collectReplayThreadIds(child, add);
+  }
 }
 
 function replayStepsFromRecord(

@@ -62,6 +62,10 @@ import {
 import { createLimiter } from "./concurrency";
 import { createStaleWhileRevalidateCache } from "./async-cache";
 import { uiStaticRequestPath } from "./ui-static";
+import {
+  listCodexReplayRecordings,
+  readCodexReplayRecording,
+} from "./codex-replay-recordings";
 import { $, type ServerWebSocket } from "bun";
 import {
   detectAgents,
@@ -4529,6 +4533,52 @@ const server = Bun.serve<TermWsData, never>({
         const file = join(recordingDir, `${recording.id}.json`);
         await fsWriteFile(file, JSON.stringify(recording, null, 2));
         return json({ ok: true, recording, path: file });
+      }
+
+      if (url.pathname === "/api/codex-app/recordings" && req.method === "GET") {
+        const recordingDir = join(
+          workspace.path,
+          ".debugging",
+          "codex-app-recordings",
+        );
+        try {
+          const recordings = await listCodexReplayRecordings({ recordingDir });
+          return json({ ok: true, recordings });
+        } catch (e) {
+          return json(
+            { error: e instanceof Error ? e.message : String(e) },
+            { status: 500 },
+          );
+        }
+      }
+
+      if (
+        url.pathname === "/api/codex-app/recordings/read" &&
+        req.method === "GET"
+      ) {
+        const path = url.searchParams.get("path") || "";
+        const transcriptPath = url.searchParams.get("transcriptPath") || undefined;
+        if (!path) return json({ error: "path required" }, { status: 400 });
+        const recordingDir = join(
+          workspace.path,
+          ".debugging",
+          "codex-app-recordings",
+        );
+        try {
+          return json({
+            ok: true,
+            ...(await readCodexReplayRecording({
+              recordingDir,
+              path,
+              transcriptPath,
+            })),
+          });
+        } catch (e) {
+          return json(
+            { error: e instanceof Error ? e.message : String(e) },
+            { status: 500 },
+          );
+        }
       }
 
       if (url.pathname === "/api/codex-app/models" && req.method === "GET") {

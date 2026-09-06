@@ -20,6 +20,9 @@ import {
   isForeignToWorktree,
   isSessionForeignToWorktree,
   dockSessionHiddenAsForeign,
+  codexSessionDefaults,
+  migrateCodexSessionSettings,
+  migrateOpenSessionSurfaces,
   openSessionRenderKey,
   reconcileOpenSessionsWithSurfacePreferences,
   resolveTitleSource,
@@ -29,6 +32,7 @@ import {
   sessionSurfaceKeys,
   showVisibleWorktree,
   setSessionMode,
+  setSessionSurface,
   setSessionAttachTermId,
   shouldPollSessionSource,
   stampDiscoveredSessionId,
@@ -405,7 +409,7 @@ describe("OpenSessionsStore", () => {
     });
   });
 
-  test("round-trips codex model, effort, and service tier", () => {
+  test("round-trips every per-session Codex execution setting", () => {
     const m = new MemStore();
     const s = new OpenSessionsStore(m, KEY);
     s.save({
@@ -416,6 +420,9 @@ describe("OpenSessionsStore", () => {
           codexModel: "gpt-5.6-terra",
           codexEffort: "max",
           codexServiceTier: "priority",
+          codexSandbox: "dangerFullAccess",
+          codexApproval: "never",
+          codexSummary: "detailed",
         },
       ],
     });
@@ -427,7 +434,53 @@ describe("OpenSessionsStore", () => {
           codexModel: "gpt-5.6-terra",
           codexEffort: "max",
           codexServiceTier: "priority",
+          codexSandbox: "dangerFullAccess",
+          codexApproval: "never",
+          codexSummary: "detailed",
         },
+      ],
+    });
+  });
+
+  test("snapshots Codex defaults into legacy sessions without overwriting recovered values", () => {
+    const defaults = codexSessionDefaults(
+      JSON.stringify({
+        model: "gpt-5.6-sol",
+        effort: "high",
+        serviceTier: "priority",
+        sandbox: "workspaceWrite",
+        approval: "on-request",
+        summary: "auto",
+      }),
+    );
+    const migrated = migrateCodexSessionSettings(
+      {
+        "/a": [
+          {
+            agent: "codex",
+            source: "one.jsonl",
+            codexSandbox: "dangerFullAccess",
+            codexApproval: "never",
+          },
+          { agent: "claude", source: "two.jsonl" },
+        ],
+      },
+      defaults,
+    );
+
+    expect(migrated).toEqual({
+      "/a": [
+        {
+          agent: "codex",
+          source: "one.jsonl",
+          codexModel: "gpt-5.6-sol",
+          codexEffort: "high",
+          codexServiceTier: "priority",
+          codexSandbox: "dangerFullAccess",
+          codexApproval: "never",
+          codexSummary: "auto",
+        },
+        { agent: "claude", source: "two.jsonl" },
       ],
     });
   });
@@ -838,8 +891,7 @@ describe("dockSessionHiddenAsForeign", () => {
   // before the scan converges.
   const realSession = {
     agent: "claude" as const,
-    source:
-      "/Users/me/.claude/projects/-Users-me-git-supergit/7081c9db.jsonl",
+    source: "/Users/me/.claude/projects/-Users-me-git-supergit/7081c9db.jsonl",
   };
 
   test("a live TUI is never hidden, even with an empty known set", () => {
@@ -1225,7 +1277,7 @@ describe("cmdForOpenSession", () => {
     ).toEqual(["codex", "resume", "--model", "gpt-5.4-mini", "ses_42"]);
   });
 
-  test("resumed codex column threads model, effort, and speed before the resume session id", () => {
+  test("resumed codex column threads every execution setting before the session id", () => {
     expect(
       cmdForOpenSession(
         {
@@ -1234,6 +1286,9 @@ describe("cmdForOpenSession", () => {
           codexModel: "gpt-5.6-luna",
           codexEffort: "max",
           codexServiceTier: "priority",
+          codexSandbox: "dangerFullAccess",
+          codexApproval: "never",
+          codexSummary: "detailed",
         },
         "/bin/zsh",
       ),
@@ -1246,6 +1301,12 @@ describe("cmdForOpenSession", () => {
       'model_reasoning_effort="max"',
       "-c",
       'service_tier="priority"',
+      "--sandbox",
+      "danger-full-access",
+      "--ask-for-approval",
+      "never",
+      "-c",
+      'model_reasoning_summary="detailed"',
       "ses_42",
     ]);
   });
@@ -1886,6 +1947,21 @@ describe("setSessionMode", () => {
   });
 });
 
+describe("setSessionSurface", () => {
+  test("embeds the display choice in every matching open-session record", () => {
+    const before: Record<string, PersistedSession[]> = {
+      "/wt-a": [{ agent: "claude", source: "/same.jsonl" }],
+      "/wt-b": [{ agent: "claude", source: "/same.jsonl" }],
+    };
+    const after = setSessionSurface(before, "/same.jsonl", "read");
+    expect(after).toEqual({
+      "/wt-a": [{ agent: "claude", source: "/same.jsonl", surface: "read" }],
+      "/wt-b": [{ agent: "claude", source: "/same.jsonl", surface: "read" }],
+    });
+    expect(setSessionSurface(after, "/same.jsonl", "read")).toBe(after);
+  });
+});
+
 describe("setSessionAttachTermId", () => {
   const SOURCE = "/Users/me/.claude/projects/-Users-me-wt/abc.jsonl";
 
@@ -1899,7 +1975,12 @@ describe("setSessionAttachTermId", () => {
     };
     const after = setSessionAttachTermId(before, "/wt-a", SOURCE, "t_new_1");
     expect(after["/wt-a"]).toEqual([
-      { agent: "claude", source: SOURCE, mode: "terminal", attachTermId: "t_new_1" },
+      {
+        agent: "claude",
+        source: SOURCE,
+        mode: "terminal",
+        attachTermId: "t_new_1",
+      },
       { agent: "codex", source: "/other.jsonl" },
     ]);
     expect(after["/wt-b"]).toBe(before["/wt-b"]);
@@ -1910,9 +1991,7 @@ describe("setSessionAttachTermId", () => {
     // the fallback respawns we must repoint it at the live PTY so a
     // subsequent remount doesn't 404 against the dead id again.
     const before: Record<string, PersistedSession[]> = {
-      "/wt": [
-        { agent: "claude", source: SOURCE, attachTermId: "t_dead_13" },
-      ],
+      "/wt": [{ agent: "claude", source: SOURCE, attachTermId: "t_dead_13" }],
     };
     const after = setSessionAttachTermId(before, "/wt", SOURCE, "t_live_20");
     expect(after["/wt"]![0]!.attachTermId).toBe("t_live_20");
@@ -2056,6 +2135,89 @@ describe("SessionSurfaceStore", () => {
     });
   });
 
+  test("migrates legacy open-session mode into embedded and aliased surfaces", () => {
+    const migrated = migrateOpenSessionSurfaces(
+      {
+        "/wt": [
+          {
+            agent: "claude",
+            source: "/agents/visual.jsonl",
+            resumeSessionId: "visual-1",
+          },
+          {
+            agent: "codex",
+            source: "/agents/cli.jsonl",
+            resumeSessionId: "cli-1",
+            mode: "terminal",
+          },
+          {
+            agent: "claude",
+            source: "/agents/remembered.jsonl",
+            resumeSessionId: "remembered-1",
+          },
+          { agent: "shell", source: "__restore__:shell-1" },
+        ],
+      },
+      { "session:claude:remembered-1": "terminal" },
+    );
+
+    expect(migrated.byWt["/wt"]).toEqual([
+      {
+        agent: "claude",
+        source: "/agents/visual.jsonl",
+        resumeSessionId: "visual-1",
+        surface: "read",
+      },
+      {
+        agent: "codex",
+        source: "/agents/cli.jsonl",
+        resumeSessionId: "cli-1",
+        mode: "terminal",
+        surface: "terminal",
+      },
+      {
+        agent: "claude",
+        source: "/agents/remembered.jsonl",
+        resumeSessionId: "remembered-1",
+        surface: "terminal",
+      },
+      { agent: "shell", source: "__restore__:shell-1" },
+    ]);
+    expect(migrated.surfaces).toMatchObject({
+      "/agents/visual.jsonl": "read",
+      "session:claude:visual-1": "read",
+      "/agents/cli.jsonl": "terminal",
+      "session:codex:cli-1": "terminal",
+      "/agents/remembered.jsonl": "terminal",
+      "session:claude:remembered-1": "terminal",
+    });
+  });
+
+  test("embedded surface survives OpenSessionsStore persistence", () => {
+    const m = new MemStore();
+    const open = new OpenSessionsStore(m, "supergit:openSessions");
+    open.save({
+      "/wt": [
+        { agent: "claude", source: "/visual.jsonl", surface: "read" },
+        {
+          agent: "codex",
+          source: "/terminal.jsonl",
+          surface: "terminal",
+        },
+      ],
+    });
+    expect(open.load()).toEqual({
+      "/wt": [
+        { agent: "claude", source: "/visual.jsonl", surface: "read" },
+        {
+          agent: "codex",
+          source: "/terminal.jsonl",
+          surface: "terminal",
+        },
+      ],
+    });
+  });
+
   test("ignores malformed keys and surface values", () => {
     const m = new MemStore();
     m.setItem(
@@ -2081,7 +2243,9 @@ describe("SessionSurfaceStore", () => {
 
     const throwing = new SessionSurfaceStore(new ThrowingStore(), KEY);
     expect(throwing.load()).toEqual({});
-    expect(() => throwing.save({ "/agents/x.jsonl": "terminal" })).not.toThrow();
+    expect(() =>
+      throwing.save({ "/agents/x.jsonl": "terminal" }),
+    ).not.toThrow();
   });
 
   test("sessionSurfaceKeys aliases transcript sources and provider session ids", () => {

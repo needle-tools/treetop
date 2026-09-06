@@ -208,7 +208,7 @@ export function shouldUseCodexAppHistorySource(opts: {
   liveSurfaceActive: boolean;
   transcriptSource: string | undefined;
 }): boolean {
-  return opts.liveSurfaceActive;
+  return opts.liveSurfaceActive && !opts.transcriptSource;
 }
 
 export function canRequestOlderCodexAppThreadHistory(opts: {

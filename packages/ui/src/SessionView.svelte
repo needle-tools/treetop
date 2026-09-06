@@ -296,15 +296,17 @@
   export let summaryMaxLines: number = 6;
   export let starred: boolean = false;
   export let onToggleStar: () => void = () => {};
-  /** Agent model/effort overrides for this session (persisted by the
+  /** Agent execution overrides for this session (persisted by the
    *  parent in openSessionsByWt). Drive the agent-pill label, the ✓ in
-   *  the header's Model/Effort menus, and the `--model`/`--effort` flags
-   *  on the resume PTY. */
+   *  the header settings, and the next visual turn / resume PTY. */
   export let claudeModel: string | undefined = undefined;
   export let claudeEffort: string | undefined = undefined;
   export let codexModelOverride: string | undefined = undefined;
   export let codexEffortOverride: string | undefined = undefined;
   export let codexServiceTierOverride: string | undefined = undefined;
+  export let codexSandboxOverride: string | undefined = undefined;
+  export let codexApprovalOverride: string | undefined = undefined;
+  export let codexSummaryOverride: string | undefined = undefined;
   /** Called when the user picks a model/effort from the header menu.
    *  The parent persists the choice and re-keys the column so the resume
    *  PTY respawns with the new flag ("restart via resume"). */
@@ -313,6 +315,9 @@
   export let onSetCodexModel: (model: string) => void = () => {};
   export let onSetCodexEffort: (effort: string) => void = () => {};
   export let onSetCodexServiceTier: (serviceTier: string) => void = () => {};
+  export let onSetCodexSandbox: (sandbox: string) => void = () => {};
+  export let onSetCodexApproval: (approval: string) => void = () => {};
+  export let onSetCodexSummary: (summary: string) => void = () => {};
 
   interface NormalizedBlock {
     type:
@@ -2461,12 +2466,15 @@
     detectedModel: model,
     savedModel: codexSavedSettings.model,
   });
-  let codexSandbox = codexSavedSettings.sandbox ?? "workspaceWrite";
-  let codexApproval = codexSavedSettings.approval ?? "on-request";
+  let codexSandbox =
+    codexSandboxOverride ?? codexSavedSettings.sandbox ?? "workspaceWrite";
+  let codexApproval =
+    codexApprovalOverride ?? codexSavedSettings.approval ?? "on-request";
   let codexEffort = codexEffortOverride ?? codexSavedSettings.effort ?? "";
   let codexServiceTier =
     codexServiceTierOverride ?? codexSavedSettings.serviceTier ?? "";
-  let codexSummary = codexSavedSettings.summary ?? "auto";
+  let codexSummary =
+    codexSummaryOverride ?? codexSavedSettings.summary ?? "auto";
   const codexSeenEvents = new Set<string>();
   const codexUnhandledEventMethods = new Set<string>();
 
@@ -2692,10 +2700,12 @@
   function pickCodexSandbox(value: string): void {
     codexSandbox = value;
     persistCodexSettings();
+    onSetCodexSandbox(value);
   }
   function pickCodexApproval(value: string): void {
     codexApproval = value;
     persistCodexSettings();
+    onSetCodexApproval(value);
   }
   function pickCodexEffort(value: string): void {
     codexEffort = value;
@@ -2710,6 +2720,7 @@
   function pickCodexSummary(value: string): void {
     codexSummary = value;
     persistCodexSettings();
+    onSetCodexSummary(value);
   }
 
   function codexTerminalConfigFlags(): string[] {

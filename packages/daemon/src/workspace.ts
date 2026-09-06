@@ -247,8 +247,7 @@ export interface RemoteDaemonInput {
 const REPOS_FILE = "repos.json";
 const SESSION_TITLES_FILE = "session-titles.json";
 const PREFS_FILE = "prefs.json";
-const OPEN_SESSIONS_PREF_KEY = "supergit:openSessions";
-const OPEN_SESSIONS_BACKUP_DIR = "supergit_openSessions";
+const PREFS_BACKUP_DIR = "full";
 const REMOTE_DAEMONS_FILE = "remote-daemons.json";
 const DEFAULT_REMOTE_DAEMON_PORT = 7777;
 
@@ -261,20 +260,32 @@ async function writeJsonFileAtomic(
   value: unknown,
 ): Promise<void> {
   const tmp = `${path}.tmp-${randomUUID()}`;
-  await writeFile(tmp, JSON.stringify(value, null, 2));
-  await rename(tmp, path);
+  try {
+    await writeFile(tmp, JSON.stringify(value, null, 2));
+    await rename(tmp, path);
+  } finally {
+    try {
+      await unlink(tmp);
+    } catch {}
+  }
 }
 
 async function writeJsonFileIfAbsentAtomic(
   path: string,
   value: unknown,
 ): Promise<void> {
-  const tmp = `${path}.tmp-${randomUUID()}`;
-  await writeFile(tmp, JSON.stringify(value, null, 2));
   try {
-    await link(tmp, path);
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
+    await access(path);
+    return;
+  } catch {}
+  const tmp = `${path}.tmp-${randomUUID()}`;
+  try {
+    await writeFile(tmp, JSON.stringify(value, null, 2));
+    try {
+      await link(tmp, path);
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
+    }
   } finally {
     try {
       await unlink(tmp);
@@ -321,6 +332,13 @@ async function resolveGitToplevel(dir: string): Promise<string> {
 }
 
 export class Workspace {
+  /** PATCH /api/prefs is a read-modify-write operation. The UI can flush
+   * several independent stores in the same 300 ms window, so serialize the
+   * operations or two requests can both read the same old object and the
+   * last rename silently erases the other patch. */
+  private prefsPatchTail: Promise<void> = Promise.resolve();
+  private lastPrefsBackupJson: string | undefined;
+
   private constructor(public readonly path: string) {}
 
   static async open(path: string): Promise<Workspace> {
@@ -832,10 +850,7 @@ export class Workspace {
 
   async listRemoteDaemons(): Promise<RemoteDaemon[]> {
     try {
-      const raw = await readFile(
-        join(this.path, REMOTE_DAEMONS_FILE),
-        "utf-8",
-      );
+      const raw = await readFile(join(this.path, REMOTE_DAEMONS_FILE), "utf-8");
       const parsed = JSON.parse(raw) as RemoteDaemonsFile;
       if (!parsed || !Array.isArray(parsed.remoteDaemons)) return [];
       return parsed.remoteDaemons;
@@ -895,59 +910,105 @@ export class Workspace {
 
   // ── UI preferences (shared across all clients) ───────────────────
 
+  private parsePrefs(raw: string): Record<string, string> | null {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      return null;
+    }
+    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed))
+      return null;
+    const out: Record<string, string> = {};
+    for (const [k, v] of Object.entries(parsed)) {
+      if (typeof v === "string") out[k] = v;
+    }
+    return out;
+  }
+
+  private prefsBackupRoot(): string {
+    return join(this.path, ".supergit", "backups", "prefs", PREFS_BACKUP_DIR);
+  }
+
+  private async readLatestPrefsBackup(): Promise<Record<
+    string,
+    string
+  > | null> {
+    const root = this.prefsBackupRoot();
+    for (const tier of ["latest", "hourly", "daily"]) {
+      let names: string[];
+      try {
+        names = (await readdir(join(root, tier)))
+          .filter((name) => name.endsWith(".json"))
+          .sort((a, b) => b.localeCompare(a));
+      } catch {
+        continue;
+      }
+      for (const name of names) {
+        try {
+          const parsed = this.parsePrefs(
+            await readFile(join(root, tier, name), "utf-8"),
+          );
+          if (parsed !== null) return parsed;
+        } catch {}
+      }
+    }
+    return null;
+  }
+
   async getPrefs(): Promise<Record<string, string>> {
     try {
       const raw = await readFile(join(this.path, PREFS_FILE), "utf-8");
-      const parsed = JSON.parse(raw);
-      if (
-        typeof parsed !== "object" ||
-        parsed === null ||
-        Array.isArray(parsed)
-      )
-        return {};
-      const out: Record<string, string> = {};
-      for (const [k, v] of Object.entries(parsed)) {
-        if (typeof v === "string") out[k] = v;
-      }
-      return out;
-    } catch {
-      return {};
-    }
+      const parsed = this.parsePrefs(raw);
+      if (parsed !== null) return parsed;
+    } catch {}
+    return (await this.readLatestPrefsBackup()) ?? {};
   }
 
   async patchPrefs(
     patch: Record<string, string | null>,
   ): Promise<Record<string, string>> {
+    const run = this.prefsPatchTail.then(
+      () => this.patchPrefsSerialized(patch),
+      () => this.patchPrefsSerialized(patch),
+    );
+    this.prefsPatchTail = run.then(
+      () => undefined,
+      () => undefined,
+    );
+    return run;
+  }
+
+  private async patchPrefsSerialized(
+    patch: Record<string, string | null>,
+  ): Promise<Record<string, string>> {
     const current = await this.getPrefs();
-    if (
-      Object.prototype.hasOwnProperty.call(patch, OPEN_SESSIONS_PREF_KEY) &&
-      typeof current[OPEN_SESSIONS_PREF_KEY] === "string"
-    ) {
-      await this.backupOpenSessionsPref(current[OPEN_SESSIONS_PREF_KEY]);
-    }
+    // On the first write after an upgrade, restart, or external edit there may
+    // be no full snapshot of the current file yet. Preserve that baseline
+    // before applying even a legitimate deletion.
+    if (Object.keys(current).length > 0) await this.backupPrefs(current);
     for (const [k, v] of Object.entries(patch)) {
       if (v === null) delete current[k];
       else current[k] = v;
     }
-    await writeFile(
-      join(this.path, PREFS_FILE),
-      JSON.stringify(current, null, 2),
-    );
+    // Snapshot the complete resulting state before installing it. If the
+    // disk fills during either write, the old atomic prefs file survives;
+    // if it is already corrupt, getPrefs() above supplied the newest valid
+    // snapshot so this patch cannot turn corruption into a valid partial file.
+    await this.backupPrefs(current);
+    await writeJsonFileAtomic(join(this.path, PREFS_FILE), current);
     return current;
   }
 
-  private async backupOpenSessionsPref(raw: string): Promise<void> {
-    const parsed = JSON.parse(raw);
-    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed))
-      throw new Error("supergit:openSessions is not a JSON object");
+  private async backupPrefs(prefs: Record<string, string>): Promise<void> {
+    const serialized = JSON.stringify(prefs);
+    if (this.lastPrefsBackupJson === undefined) {
+      const latest = await this.readLatestPrefsBackup();
+      this.lastPrefsBackupJson = latest === null ? "" : JSON.stringify(latest);
+    }
+    if (this.lastPrefsBackupJson === serialized) return;
 
-    const root = join(
-      this.path,
-      ".supergit",
-      "backups",
-      "prefs",
-      OPEN_SESSIONS_BACKUP_DIR,
-    );
+    const root = this.prefsBackupRoot();
     const latestDir = join(root, "latest");
     const hourlyDir = join(root, "hourly");
     const dailyDir = join(root, "daily");
@@ -959,19 +1020,20 @@ export class Workspace {
     const timestamp = backupTimestamp(now);
     await writeJsonFileAtomic(
       await uniqueJsonPath(latestDir, timestamp),
-      parsed,
+      prefs,
     );
     await writeJsonFileIfAbsentAtomic(
       join(hourlyDir, `${timestamp.slice(0, 13)}.json`),
-      parsed,
+      prefs,
     );
     await writeJsonFileIfAbsentAtomic(
       join(dailyDir, `${timestamp.slice(0, 10)}.json`),
-      parsed,
+      prefs,
     );
 
     await pruneJsonFiles(latestDir, 5);
     await pruneJsonFiles(hourlyDir, 24);
     await pruneJsonFiles(dailyDir, 7);
+    this.lastPrefsBackupJson = serialized;
   }
 }
