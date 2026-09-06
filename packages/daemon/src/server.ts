@@ -186,6 +186,7 @@ import {
   debugAnalyzeInstance,
   rewriteTempWorkspaceAttachmentRefs,
   invalidateReposCacheRuntime,
+  worktreeDetailsChanged,
 } from "./server-helpers";
 import {
   normalizeRemote,
@@ -1753,6 +1754,7 @@ async function recomputeWorktreeDetails(
 ): Promise<WorktreeDetails | null> {
   let details: WorktreeDetails;
   const selectedRemote = selectedRemoteForCachedWorktree(wtPath);
+  const previousDetails = getCachedWorktreeDetails(wtPath, selectedRemote);
   try {
     details = await limit(() =>
       selectedRemote
@@ -1778,7 +1780,14 @@ async function recomputeWorktreeDetails(
       details as unknown as Record<string, unknown>,
     );
   }
-  broadcast("change", { kind: "fs_change", path: wtPath });
+  if (
+    worktreeDetailsChanged(
+      previousDetails ?? undefined,
+      details,
+    )
+  ) {
+    broadcast("change", { kind: "fs_change", path: wtPath, details });
+  }
   return details;
 }
 

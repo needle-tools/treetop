@@ -801,6 +801,82 @@ free) and repeated `ENOSPC` writes in daemon diagnostics. That is an independent
 startup/reliability risk and requires freeing disk space; session code must not
 silently reinterpret it as malformed transcript data.
 
+### Offscreen exited-terminal reconnect storm (2026-09-01)
+
+A later production capture showed WebKit at 106–151% CPU, 3.1 GB RSS, and a
+4.7 GB peak while the Bun daemon stayed near 1% CPU. Browser diagnostics
+recorded an 80.3-second event-loop stall; ordinary fetches completed together
+after the renderer resumed, so their 35–82 second browser timings were
+collateral rather than daemon route latency. A native stack sample was almost
+entirely a timer-triggered JavaScript microtask doing string parsing and
+allocation.
+
+The workspace log exposed the repeating unit: Baker's shell PTY had exited,
+but its offscreen terminal-hold socket reopened every 1–2 seconds. Each attach
+replayed about 14 KB, received the same `exit` frame, closed, and scheduled
+another reconnect. The hold manager only interpreted `state` frames; it
+treated the clean close after an `exit` frame as an unexpected transport drop.
+Because every successful attach reset reconnect backoff, this loop stayed at
+the minimum delay forever.
+
+Terminal holds now treat an `exit` frame as terminal state: clear the intended
+PTY id, cancel heartbeat/reconnect timers, surface cleared working/awaiting and
+exit state to the owning component, and never reconnect that id. Transport
+drops without an exit frame still reconnect, preserving the hold socket's
+server-lifecycle contract. A behavior test covers exit-frame release followed
+by close and timer delivery.
+
+The terminal loop was not the whole renderer load. A second native sample,
+captured after those reconnects stopped, was rooted in
+`EventSource::parseEventStream` followed by Svelte microtasks, string creation,
+and GC. Browser diagnostics showed 434 `fs-change-batch` `/api/repos` loads
+with a roughly one-second p95. Although the daemon already recomputed and
+patched just the changed worktree in its cached response, its SSE event sent
+only the path, so the UI re-streamed all 37 repos and replaced broad dashboard
+state for every successful watcher batch. During a sustained stream this
+produced separate 80.3- and 76.8-second renderer event-loop stalls.
+
+Successful `fs_change` events now carry the computed `WorktreeDetails`. The UI
+immutably replaces only that worktree and its owning repo, preserving every
+unrelated object identity; the existing batcher still advances per-worktree
+invalidation keys and stale-summary subscriptions. Missing details (the
+daemon's intentional recompute-failure boundary) or an unknown path retain the
+full reload fallback. Patches are also scoped by daemon id so identical local
+and remote paths cannot contaminate each other, and remote SSE uses the same
+row-level update. Behavior tests cover identity preservation, fallback, and
+daemon scoping.
+
+The first rebuilt production run exposed a second-order problem hidden by the
+original reload storm. A single top-level `repos` assignment is itself very
+expensive with 73 persisted session columns: native samples again stayed
+entirely inside the EventSource-triggered Svelte microtask, and one watcher
+event blocked WebKit for 136 seconds. Periodic visible fetches write git
+bookkeeping such as `FETCH_HEAD` even when the displayed worktree details are
+unchanged, so sending those no-op rows still caused the large assignment every
+30 seconds. The daemon now compares the prior and recomputed details and does
+not broadcast semantic no-ops. The UI independently compares incoming detail
+fields and returns an explicit `{ matched, changed }` result: an unknown row
+keeps the correctness fallback, while a known duplicate does nothing and can
+never be mistaken for a cache miss.
+
+That rebuilt run also showed 45 exact `/api/session/stats` reads during the
+first ten seconds. Unlike transcript polling and cached-summary reads, the
+stats effect was not visibility-gated. Exact line-count reads now wait until
+their existing `SessionView` is near the viewport; the component, geometry,
+and visibility subscription remain mounted, and previously loaded values are
+kept while offscreen.
+
+The 2026-09-01 startup audit found one remaining avoidable request fanout. Seven
+`GET /api/sessions/summarize` calls were cached-summary reads (generation is a
+`POST`), but even cache reads are unexpected startup work. Background session
+summaries are now an opt-in Sessions setting, default off; the same reactive
+gate prevents cache reads and tears down the five-minute terminal generation
+timer immediately when disabled. It also aborts an automatic generation stream
+already in flight, which propagates cancellation to the daemon's Ollama fetch;
+manual summary actions remain available. Startup `/api/image` traffic is the
+expected browser loading of sticky-note attachment thumbnails; those images
+retain native `loading="lazy"` and `decoding="async"` behavior.
+
 ### Deferred levers (do only if Lever 1 isn't enough)
 
 2. **Poll only visible columns** — register/unregister the poll via an

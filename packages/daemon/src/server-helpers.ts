@@ -12,6 +12,7 @@
 import { Buffer } from "node:buffer";
 import { existsSync } from "node:fs";
 import { basename } from "node:path";
+import { isDeepStrictEqual } from "node:util";
 import type { AttachmentKind, LinkTarget } from "./notes";
 
 const READONLY_POST_ALLOWLIST = new Set([
@@ -516,6 +517,15 @@ export function patchWorktreeDetailsInRepos(
     }
   }
   return false;
+}
+
+/** Watchers also fire for git bookkeeping writes such as FETCH_HEAD. Only a
+ * semantic detail change is useful to renderer subscribers. */
+export function worktreeDetailsChanged(
+  previous: unknown,
+  next: unknown,
+): boolean {
+  return previous === undefined || !isDeepStrictEqual(previous, next);
 }
 
 export function invalidateReposCacheRuntime<TInflight>({

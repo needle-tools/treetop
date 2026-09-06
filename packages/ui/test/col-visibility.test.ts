@@ -20,6 +20,7 @@ import {
   rectNearViewport,
   shouldPauseColumn,
   syncOffscreenClass,
+  visibleSessionRequestKey,
 } from "../src/col-visibility";
 
 describe("shouldPauseColumn", () => {
@@ -62,6 +63,20 @@ describe("rectNearViewport", () => {
         viewport,
       ),
     ).toBe(false);
+  });
+});
+
+describe("visibleSessionRequestKey", () => {
+  test("does not request metadata for an offscreen session", () => {
+    expect(visibleSessionRequestKey("/session.jsonl", "remote", false)).toBe(
+      "",
+    );
+  });
+
+  test("keys a visible request by daemon and source", () => {
+    expect(visibleSessionRequestKey("/session.jsonl", "remote", true)).toBe(
+      "remote\0/session.jsonl",
+    );
   });
 });
 
