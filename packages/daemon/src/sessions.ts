@@ -13,6 +13,7 @@ import { createHash } from "node:crypto";
 import { readFile, stat, open } from "node:fs/promises";
 import { basename, join } from "node:path";
 import type { AgentKind } from "./agents";
+import { createLimiter } from "./concurrency";
 
 export type NormalizedRole = "user" | "assistant" | "system" | "tool";
 
@@ -2129,6 +2130,104 @@ interface SessionCacheEntry {
   jsonNoTitle: string;
 }
 const sessionCache = new Map<string, SessionCacheEntry>();
+
+interface SessionFileStatsCacheEntry {
+  mtimeMs: number;
+  size: number;
+  newlineCount: number;
+  endsWithNewline: boolean;
+}
+
+const sessionFileStatsCache = new Map<string, SessionFileStatsCacheEntry>();
+const sessionFileStatsInflight = new Map<
+  string,
+  Promise<{ fileSizeBytes: number; lineCount: number }>
+>();
+const MAX_SESSION_FILE_STATS_CACHE = 512;
+const sessionFileStatsLimit = createLimiter(1);
+
+async function countNewlinesInRange(
+  path: string,
+  start: number,
+  end: number,
+): Promise<{ newlineCount: number; endsWithNewline: boolean }> {
+  if (end <= start) return { newlineCount: 0, endsWithNewline: false };
+  const fh = await open(path, "r");
+  const buffer = Buffer.allocUnsafe(1024 * 1024);
+  let offset = start;
+  let newlineCount = 0;
+  let lastByte = -1;
+  try {
+    while (offset < end) {
+      const length = Math.min(buffer.length, end - offset);
+      const { bytesRead } = await fh.read(buffer, 0, length, offset);
+      if (bytesRead === 0) break;
+      let newlineAt = -1;
+      while ((newlineAt = buffer.indexOf(10, newlineAt + 1)) < bytesRead) {
+        if (newlineAt < 0) break;
+        newlineCount++;
+      }
+      lastByte = buffer[bytesRead - 1] ?? -1;
+      offset += bytesRead;
+    }
+  } finally {
+    await fh.close();
+  }
+  return { newlineCount, endsWithNewline: lastByte === 10 };
+}
+
+/**
+ * Exact on-disk JSONL metrics for an explicitly viewed session. The first
+ * request streams the file in bounded chunks; later requests only scan bytes
+ * appended since the cached snapshot. Keeping this out of detectAgents avoids
+ * turning dashboard startup into a full read of every historical transcript.
+ */
+export async function getSessionFileStats(
+  path: string,
+): Promise<{ fileSizeBytes: number; lineCount: number }> {
+  const st = await stat(path);
+  const key = `${path}\0${st.mtimeMs}\0${st.size}`;
+  const pending = sessionFileStatsInflight.get(key);
+  if (pending) return pending;
+
+  const task = sessionFileStatsLimit(async () => {
+    const cached = sessionFileStatsCache.get(path);
+    let newlineCount = 0;
+    let endsWithNewline = false;
+    if (cached && cached.mtimeMs === st.mtimeMs && cached.size === st.size) {
+      newlineCount = cached.newlineCount;
+      endsWithNewline = cached.endsWithNewline;
+    } else if (cached && st.size > cached.size) {
+      const appended = await countNewlinesInRange(path, cached.size, st.size);
+      newlineCount = cached.newlineCount + appended.newlineCount;
+      endsWithNewline = appended.endsWithNewline;
+    } else {
+      const full = await countNewlinesInRange(path, 0, st.size);
+      newlineCount = full.newlineCount;
+      endsWithNewline = full.endsWithNewline;
+    }
+    sessionFileStatsCache.delete(path);
+    sessionFileStatsCache.set(path, {
+      mtimeMs: st.mtimeMs,
+      size: st.size,
+      newlineCount,
+      endsWithNewline,
+    });
+    if (sessionFileStatsCache.size > MAX_SESSION_FILE_STATS_CACHE) {
+      const oldest = sessionFileStatsCache.keys().next().value;
+      if (oldest !== undefined) sessionFileStatsCache.delete(oldest);
+    }
+    return {
+      fileSizeBytes: st.size,
+      lineCount:
+        newlineCount + (st.size > 0 && !endsWithNewline ? 1 : 0),
+    };
+  }).finally(() => {
+    sessionFileStatsInflight.delete(key);
+  });
+  sessionFileStatsInflight.set(key, task);
+  return task;
+}
 
 export function clearParseCache(): void {
   sessionCache.clear();

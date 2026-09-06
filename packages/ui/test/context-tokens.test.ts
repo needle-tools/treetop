@@ -1,9 +1,18 @@
 import { describe, expect, test } from "bun:test";
 import {
   contextChip,
+  formatByteSize,
   formatTokens,
   modelContextCap,
 } from "../src/context-tokens";
+
+describe("formatByteSize", () => {
+  test("keeps small session files readable and promotes large files", () => {
+    expect(formatByteSize(0)).toBe("0 B");
+    expect(formatByteSize(12_345)).toBe("12.3 KB");
+    expect(formatByteSize(9_565_874_062)).toBe("9.57 GB");
+  });
+});
 
 describe("formatTokens", () => {
   test("renders sub-1k as integers", () => {

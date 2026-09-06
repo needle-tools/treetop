@@ -298,6 +298,7 @@
     lastUserMessages?: string[];
     userMessageCount?: number;
     messageCount?: number;
+    fileSizeBytes?: number;
     recentMessageCount?: number;
     lastMessageTs?: string;
     contextTokens?: number;
@@ -7038,6 +7039,7 @@
       lastUserMessage?: string;
       lastUserMessages?: string[];
       messageCount?: number;
+      fileSizeBytes?: number;
       recentMessageCount?: number;
       lastActive?: string;
       lastMessageTs?: string;
@@ -7163,6 +7165,7 @@
             lastUserMessage: meta?.lastUserMessage,
             lastUserMessages: meta?.lastUserMessages,
             messageCount: meta?.messageCount,
+            fileSizeBytes: meta?.fileSizeBytes,
             lastActive: meta?.lastActive,
             lastMessageTs: meta?.lastMessageTs,
             recentMessageCount: meta?.recentMessageCount,
@@ -12044,6 +12047,7 @@
                                   awaiting={!!transientAwaiting[s.source]}
                                   working={!!transientWorking[s.source]}
                                   totalMessageCount={newAgentMeta?.messageCount}
+                                  fileSizeBytes={newAgentMeta?.fileSizeBytes}
                                   contextTokens={newAgentMeta?.contextTokens}
                                   contextTokensExact={newAgentMeta?.contextTokensExact}
                                   contextWindow={newAgentMeta?.contextWindow}
@@ -12318,6 +12322,7 @@
                                     wt.path,
                                   )}
                                   totalMessageCount={agentMeta?.messageCount}
+                                  fileSizeBytes={agentMeta?.fileSizeBytes}
                                   contextTokens={agentMeta?.contextTokens}
                                   contextTokensExact={agentMeta?.contextTokensExact}
                                   contextWindow={agentMeta?.contextWindow}

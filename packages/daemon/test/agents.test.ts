@@ -1374,8 +1374,9 @@ describe("scanCodex", () => {
   test("extracts title, firstUserMessage, and lastUserMessages for session previews", async () => {
     clearCodexScanCache();
     const root = await tempDir("supergit-codex-preview-");
+    const file = join(root, "session.jsonl");
     await writeFile(
-      join(root, "session.jsonl"),
+      file,
       [
         JSON.stringify({
           type: "session_meta",
@@ -1466,6 +1467,7 @@ describe("scanCodex", () => {
       "Ship it!",
     ]);
     expect(s.messageCount).toBe(7); // 4 user + 3 assistant (developer excluded)
+    expect(s.fileSizeBytes).toBe((await stat(file)).size);
   });
 
   test("skips system-injected user messages for title (AGENTS.md, XML tags)", async () => {
