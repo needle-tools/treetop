@@ -168,6 +168,57 @@ describe("createSessionPoller", () => {
     expect(got).toEqual(['{"v":1}']);
   });
 
+  test("times out stuck requests so later session polls can recover", async () => {
+    const calls: string[] = [];
+    let batchAttempt = 0;
+    const fetchImpl = (async (
+      input: string | URL | Request,
+      init?: RequestInit,
+    ) => {
+      const url = String(input);
+      calls.push(url);
+      if (url.includes("/api/sessions/batch") && batchAttempt++ === 0) {
+        return await new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener(
+            "abort",
+            () => reject(init.signal?.reason),
+            { once: true },
+          );
+        });
+      }
+      if (url.includes("/api/sessions/batch")) {
+        return jsonResponse({
+          results: [{ source: "A", status: 200, etag: "a1", body: '{"v":1}' }],
+        });
+      }
+      return jsonResponse([], { etag: "rev-0-all" });
+    }) as typeof fetch;
+    const poller = createSessionPoller({
+      fetchImpl,
+      isIdle: () => false,
+      requestTimeoutMs: 5,
+    });
+    const received: string[] = [];
+    poller.register({
+      source: "A",
+      getSessionId: () => undefined,
+      onSession: (body) => received.push(body),
+      onInflight: noop,
+    });
+
+    const firstSettled = await Promise.race([
+      poller.tick().then(() => true),
+      Bun.sleep(100).then(() => false),
+    ]);
+    expect(firstSettled).toBe(true);
+
+    await poller.tick();
+    expect(
+      calls.filter((url) => url.includes("/api/sessions/batch")),
+    ).toHaveLength(2);
+    expect(received).toEqual(['{"v":1}']);
+  });
+
   test("coalesces N same-daemon sources into ONE batch POST + ONE active-sends GET", async () => {
     const { fn, calls } = makeFetch((url) => {
       if (url.includes("/api/sessions/batch"))

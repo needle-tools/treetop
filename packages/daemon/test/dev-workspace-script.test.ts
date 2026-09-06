@@ -1,5 +1,13 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtemp, readFile, rm, writeFile, mkdir } from "node:fs/promises";
+import {
+  mkdir,
+  mkdtemp,
+  readFile,
+  rm,
+  stat,
+  utimes,
+  writeFile,
+} from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import {
@@ -82,6 +90,8 @@ describe("seedWorkspaceIfMissing", () => {
       const target = join(root, "target");
       await mkdir(join(source, "attachments"), { recursive: true });
       await writeFile(join(source, "repos.json"), '{"repos":[]}');
+      const recordedAt = new Date("2026-08-29T15:47:32.000Z");
+      await utimes(join(source, "repos.json"), recordedAt, recordedAt);
       await writeFile(join(source, "daemon.log"), "runtime log");
       await writeFile(
         join(source, "notes.json"),
@@ -96,6 +106,9 @@ describe("seedWorkspaceIfMissing", () => {
 
       expect(await readFile(join(target, "repos.json"), "utf-8")).toBe(
         '{"repos":[]}',
+      );
+      expect((await stat(join(target, "repos.json"))).mtimeMs).toBe(
+        recordedAt.getTime(),
       );
       await expect(
         readFile(join(target, "daemon.log"), "utf-8"),

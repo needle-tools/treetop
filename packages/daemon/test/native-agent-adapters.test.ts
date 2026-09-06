@@ -1,5 +1,13 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import {
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -332,7 +340,11 @@ describe("CodexAppServerAdapter", () => {
     expect(parseWrite(fake.writes, 2)).toEqual({
       id: 1,
       method: "thread/resume",
-      params: { threadId: "thr_existing", cwd: "/repo" },
+      params: {
+        threadId: "thr_existing",
+        cwd: "/repo",
+        excludeTurns: true,
+      },
     });
     fake.enqueue({ id: 1, result: { thread: { id: "thr_existing" } } });
 
@@ -604,6 +616,83 @@ describe("CodexAppServerAdapter", () => {
         method: "model/list",
         params: { limit: 100 },
       });
+    } finally {
+      rmSync(recordingDir, { recursive: true, force: true });
+    }
+  });
+
+  test("rolls and evicts disk recordings under the configured byte cap", async () => {
+    const recordingDir = mkdtempSync(join(tmpdir(), "supergit-codex-rpc-"));
+    try {
+      const fake = fakeCodexProcess();
+      const adapter = new CodexAppServerAdapter({
+        spawn: () => fake.proc,
+        recordingDir,
+        recordingMaxBytes: 1_600,
+        recordingSegmentMaxBytes: 450,
+      });
+
+      for (let attempt = 0; attempt < 6; attempt++) {
+        const models = adapter.listModels("/repo");
+        if (attempt === 0) {
+          await waitFor(() => fake.writes[0], "initialize request");
+          fake.enqueue({ id: 0, result: {} });
+        }
+        const requestIndex = attempt + 2;
+        await waitFor(
+          () => fake.writes[requestIndex],
+          `model list request ${attempt}`,
+        );
+        fake.enqueue({
+          id: attempt + 1,
+          result: {
+            data: [
+              {
+                id: `codex-${attempt}`,
+                model: "gpt-5.6-sol",
+                description: "x".repeat(80),
+              },
+            ],
+            nextCursor: null,
+          },
+        });
+        await models;
+      }
+
+      const files = readdirSync(recordingDir)
+        .filter((name) => name.endsWith(".jsonl"))
+        .map((name) => join(recordingDir, name));
+      const totalBytes = files.reduce(
+        (total, path) => total + statSync(path).size,
+        0,
+      );
+      expect(files.length).toBeGreaterThan(1);
+      expect(totalBytes).toBeLessThanOrEqual(1_600);
+      expect(
+        files.some((path) =>
+          readFileSync(path, "utf8").includes("codex-5"),
+        ),
+      ).toBe(true);
+      expect(JSON.stringify(adapter.recordingSnapshot()?.frames)).toContain(
+        "codex-5",
+      );
+
+      const activePath = adapter.recordingSnapshot()!.path!;
+      writeFileSync(
+        join(recordingDir, "saved-recording.json"),
+        "x".repeat(1_400),
+      );
+      adapter.enforceRecordingRetention();
+      const retainedFiles = readdirSync(recordingDir).map((name) =>
+        join(recordingDir, name),
+      );
+      expect(
+        retainedFiles.reduce(
+          (total, path) => total + statSync(path).size,
+          0,
+        ),
+      ).toBeLessThanOrEqual(1_600);
+      expect(existsSync(activePath)).toBe(true);
     } finally {
       rmSync(recordingDir, { recursive: true, force: true });
     }
@@ -1127,6 +1216,25 @@ describe("CodexAppServerAdapter", () => {
     await clear;
   });
 
+  test("archives a Codex thread through the app-server protocol", async () => {
+    const fake = fakeCodexProcess();
+    const adapter = new CodexAppServerAdapter({ spawn: () => fake.proc });
+
+    const archived = adapter.archiveThread("thr_existing", "/repo");
+    await waitFor(() => fake.writes[0], "initialize request");
+    fake.enqueue({ id: 0, result: {} });
+
+    await waitFor(() => fake.writes[2], "thread archive request");
+    expect(parseWrite(fake.writes, 2)).toEqual({
+      id: 1,
+      method: "thread/archive",
+      params: { threadId: "thr_existing" },
+    });
+    fake.enqueue({ id: 1, result: {} });
+
+    await expect(archived).resolves.toBeUndefined();
+  });
+
   test("emits a running-state event as soon as a Codex turn starts", async () => {
     const fake = fakeCodexProcess();
     const adapter = new CodexAppServerAdapter({ spawn: () => fake.proc });
@@ -1158,6 +1266,24 @@ describe("CodexAppServerAdapter", () => {
 });
 
 describe("CodexAppServerRpc", () => {
+  test("times out unanswered requests without poisoning later responses", async () => {
+    const fake = fakeCodexProcess();
+    const rpc = new CodexAppServerRpc(fake.proc, undefined, 5);
+
+    const stuck = rpc.request("turn/start", { threadId: "thr_stuck" });
+    await waitFor(() => fake.writes[0], "stuck request write");
+    await expect(stuck).rejects.toThrow(
+      "codex app-server turn/start timed out after 5ms",
+    );
+
+    fake.enqueue({ id: 0, result: { turn: { id: "too_late" } } });
+    const next = rpc.request("thread/read", { threadId: "thr_ok" });
+    await waitFor(() => fake.writes[1], "next request write");
+    fake.enqueue({ id: 1, result: { thread: { id: "thr_ok" } } });
+    await expect(next).resolves.toEqual({ thread: { id: "thr_ok" } });
+    rpc.close();
+  });
+
   test("records exact app-server json-rpc traffic in order", async () => {
     const fake = fakeCodexProcess();
     const frames: unknown[] = [];

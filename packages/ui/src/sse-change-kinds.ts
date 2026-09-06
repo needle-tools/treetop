@@ -46,9 +46,10 @@ export const CHANGE_KINDS_REQUIRING_REPOS_RELOAD: ReadonlySet<string> = new Set(
     // Titles surface as `agent.manualTitle` in the enriched response.
     "session_title",
     "session_title_migrate",
-    // Session copy/import creates new JSONLs.
+    // Session inventory mutations change which JSONLs should be listed.
     "session_copied",
     "session_imported",
+    "session_archived",
   ],
 );
 

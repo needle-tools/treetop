@@ -202,6 +202,7 @@ export async function seedWorkspaceIfMissing(opts: {
   await mkdir(dirname(opts.workspacePath), { recursive: true });
   await cp(source, opts.workspacePath, {
     recursive: true,
+    preserveTimestamps: true,
     filter: (src) => shouldCopyTempWorkspaceRelativePath(relative(source, src)),
   });
   await rewriteCopiedWorkspaceRefs(source, opts.workspacePath);

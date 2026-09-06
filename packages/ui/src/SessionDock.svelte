@@ -36,6 +36,7 @@
      *  user/assistant messages as a side preview. Undefined ⇒ no
      *  preview (shells, fresh `__new__:` columns). */
     transcriptSource?: string;
+    fileSizeBytes?: number;
     working: boolean;
     awaiting: boolean;
     /** True once the column has no live PTY transport. The row stays in
@@ -106,6 +107,7 @@
     splitDockEntries,
   } from "./dock-split";
   import { GIT_AHEAD, GIT_BEHIND } from "./icons";
+  import { formatByteSize } from "./context-tokens";
   import {
     fetchPreviewItems,
     type PreviewAction,
@@ -1037,6 +1039,12 @@
                 </span>
               {/if}
             {/if}
+            {#if e.fileSizeBytes !== undefined}
+              <span
+                class="dock-label-size"
+                title="Transcript file size"
+              >{formatByteSize(e.fileSizeBytes)}</span>
+            {/if}
             <span class="dock-label-activity">
               {#if (e.recentMessageCount ?? 0) >= recentThreshold}
                 <span
@@ -1258,6 +1266,12 @@
                   {/if}
                 </span>
               {/if}
+            {/if}
+            {#if e.fileSizeBytes !== undefined}
+              <span
+                class="dock-label-size"
+                title="Transcript file size"
+              >{formatByteSize(e.fileSizeBytes)}</span>
             {/if}
             <span class="dock-label-activity">
               {#if (e.recentMessageCount ?? 0) >= recentThreshold}
@@ -1971,6 +1985,13 @@
     text-align: right;
     vertical-align: baseline;
     flex: 0 0 auto;
+  }
+  .dock-label-size {
+    color: var(--text-muted, #9a9aa0);
+    font-size: 0.58rem;
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+    opacity: 0.72;
   }
   .dock-activity-badge {
     font-size: 0.58rem;

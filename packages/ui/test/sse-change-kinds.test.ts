@@ -35,6 +35,7 @@ describe("change-kind UI gating", () => {
       "session_title_migrate",
       "session_copied",
       "session_imported",
+      "session_archived",
     ]) {
       expect(changeKindRequiresReposReload(kind)).toBe(true);
     }
@@ -111,6 +112,7 @@ describe("change-kind UI gating", () => {
       "session_title_migrate",
       "session_copied",
       "session_imported",
+      "session_archived",
     ]) {
       expect(changeKindRequiresEventsReload(kind)).toBe(false);
     }

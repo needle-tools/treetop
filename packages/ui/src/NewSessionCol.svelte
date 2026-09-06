@@ -100,6 +100,7 @@
    *  while the user is still in the TUI. Undefined ⇒ the header shows
    *  the "starting…" / "no messages yet" placeholder instead. */
   export let totalMessageCount: number | undefined = undefined;
+  export let fileSizeBytes: number | undefined = undefined;
   export let contextTokens: number | undefined = undefined;
   export let contextTokensExact: boolean | undefined = undefined;
   export let contextWindow: number | undefined = undefined;
@@ -460,6 +461,7 @@
     awaitingInput={awaiting}
     {working}
     {totalMessageCount}
+    {fileSizeBytes}
     {contextTokens}
     {contextTokensExact}
     {contextWindow}

@@ -23,6 +23,26 @@ export function apiUrl(path: string, daemonId?: string | null): string {
 }
 
 /**
+ * Bound an entire request operation, including response-body decoding. The
+ * callback owns the signal so callers cannot accidentally clear the timeout
+ * as soon as response headers arrive while a streamed body remains stuck.
+ */
+export async function withRequestDeadline<T>(
+  timeoutMs: number,
+  operation: (signal: AbortSignal) => Promise<T>,
+): Promise<T> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => {
+    controller.abort(new Error(`request timed out after ${timeoutMs}ms`));
+  }, timeoutMs);
+  try {
+    return await operation(controller.signal);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
  * Build an absolute ws:// (or wss://) URL for a daemon path. Mirrors
  * apiUrl()'s local-vs-remote routing but also carries the host + protocol
  * (WebSocket needs an absolute URL). `proto` is `location.protocol`-style

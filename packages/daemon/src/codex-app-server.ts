@@ -5,7 +5,15 @@ import type {
   NativeAgentStartRequest,
   NativeAgentTurnRequest,
 } from "./native-agent-adapters";
-import { appendFileSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
+import {
+  appendFileSync,
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  statSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
@@ -29,15 +37,21 @@ export interface CodexAppServerAdapterOptions {
   autoRecord?: boolean;
   recordingFrameLimit?: number;
   recordingDir?: string;
+  recordingMaxBytes?: number;
+  recordingSegmentMaxBytes?: number;
 }
 
 type JsonObject = Record<string, unknown>;
 
 const DEFAULT_RECORDING_FRAME_LIMIT = 10_000;
+const DEFAULT_RECORDING_MAX_BYTES = 2 * 1024 * 1024 * 1024;
+const DEFAULT_RECORDING_SEGMENT_MAX_BYTES = 256 * 1024 * 1024;
+const DEFAULT_RPC_REQUEST_TIMEOUT_MS = 30_000;
 
 interface PendingRequest {
   resolve(value: JsonObject): void;
   reject(err: Error): void;
+  timer: ReturnType<typeof setTimeout>;
 }
 
 export type CodexAppServerEvent =
@@ -453,8 +467,13 @@ export class CodexAppServerAdapter implements NativeAgentAdapter {
   private readonly autoRecord: boolean;
   private readonly recordingFrameLimit: number;
   private readonly recordingDir: string | undefined;
+  private readonly recordingMaxBytes: number;
+  private readonly recordingSegmentMaxBytes: number;
   private recording: CodexAppServerRecording | null = null;
   private recordingSeq = 0;
+  private recordingFileSeq = 0;
+  private recordingPathBytes = 0;
+  private recordingDiskBytes = 0;
 
   constructor(opts: CodexAppServerAdapterOptions = {}) {
     this.spawnProc = opts.spawn ?? defaultSpawn;
@@ -467,6 +486,20 @@ export class CodexAppServerAdapter implements NativeAgentAdapter {
     this.recordingFrameLimit =
       opts.recordingFrameLimit ?? DEFAULT_RECORDING_FRAME_LIMIT;
     this.recordingDir = opts.recordingDir;
+    this.recordingMaxBytes = Math.max(
+      1,
+      Math.floor(opts.recordingMaxBytes ?? DEFAULT_RECORDING_MAX_BYTES),
+    );
+    this.recordingSegmentMaxBytes = Math.min(
+      this.recordingMaxBytes,
+      Math.max(
+        1,
+        Math.floor(
+          opts.recordingSegmentMaxBytes ??
+            DEFAULT_RECORDING_SEGMENT_MAX_BYTES,
+        ),
+      ),
+    );
     if (this.autoRecord) this.startRecording();
   }
 
@@ -748,6 +781,13 @@ export class CodexAppServerAdapter implements NativeAgentAdapter {
     await rpc.request("thread/goal/clear", { threadId });
   }
 
+  async archiveThread(threadId: string, cwd: string): Promise<void> {
+    const rpc = await this.ensureRpc(cwd);
+    await rpc.request("thread/archive", { threadId });
+    this.loadedThreads.delete(threadId);
+    this.activeTurns.delete(threadId);
+  }
+
   async readThread(req: {
     threadId: string;
     cwd: string;
@@ -865,13 +905,25 @@ export class CodexAppServerAdapter implements NativeAgentAdapter {
 
   startRecording(): CodexAppServerRecording {
     const startedAt = new Date().toISOString();
-    const id = `codex-app-${startedAt.replace(/[:.]/g, "-")}`;
     const dir = this.recordingDir;
-    const path = dir ? join(dir, `${id}.jsonl`) : undefined;
-    if (path && dir) {
+    let id = `codex-app-${startedAt.replace(/[:.]/g, "-")}`;
+    let path: string | undefined;
+    if (dir) {
       mkdirSync(dir, { recursive: true });
+      this.recordingDiskBytes = this.pruneRecordingFiles();
+      while (true) {
+        const suffix = this.recordingFileSeq++;
+        const candidateId = suffix === 0 ? id : `${id}-${suffix}`;
+        const candidatePath = join(dir, `${candidateId}.jsonl`);
+        if (!existsSync(candidatePath)) {
+          id = candidateId;
+          path = candidatePath;
+          break;
+        }
+      }
       writeFileSync(path, "");
     }
+    this.recordingPathBytes = 0;
     this.recording = {
       id,
       startedAt,
@@ -903,6 +955,13 @@ export class CodexAppServerAdapter implements NativeAgentAdapter {
     this.recording = null;
     if (this.autoRecord) this.startRecording();
     return stopped;
+  }
+
+  enforceRecordingRetention(): void {
+    this.recordingDiskBytes = this.pruneRecordingFiles(
+      0,
+      this.recording?.path,
+    );
   }
 
   private observeTurnLifecycle(event: CodexAppServerEvent): void {
@@ -970,7 +1029,9 @@ export class CodexAppServerAdapter implements NativeAgentAdapter {
     threadId: string,
     cwd: string,
   ): Promise<string> {
-    return (await this.resumeThread(rpc, threadId, cwd)).threadId;
+    return (
+      await this.resumeThread(rpc, threadId, cwd, { excludeTurns: true })
+    ).threadId;
   }
 
   private async resumeThread(
@@ -1031,18 +1092,65 @@ export class CodexAppServerAdapter implements NativeAgentAdapter {
       if (!this.autoRecord) return;
       this.startRecording();
     }
-    const recorded: CodexAppServerRecordedFrame = {
+    const makeRecordedFrame = (): CodexAppServerRecordedFrame => ({
       seq: ++this.recordingSeq,
       at: new Date().toISOString(),
       direction: frame.direction,
       raw: frame.raw,
       message: cloneJsonObject(frame.message),
-    };
+    });
+    let recorded = makeRecordedFrame();
+    let line = `${JSON.stringify(recorded)}\n`;
+    let lineBytes = Buffer.byteLength(line);
+    if (
+      this.recording.path &&
+      this.recordingPathBytes > 0 &&
+      this.recordingPathBytes + lineBytes > this.recordingSegmentMaxBytes
+    ) {
+      this.startRecording();
+      recorded = makeRecordedFrame();
+      line = `${JSON.stringify(recorded)}\n`;
+      lineBytes = Buffer.byteLength(line);
+    }
     this.recording.frames.push(recorded);
     trim(this.recording.frames, this.recordingFrameLimit);
     if (this.recording.path) {
-      appendFileSync(this.recording.path, `${JSON.stringify(recorded)}\n`);
+      if (lineBytes > this.recordingMaxBytes) return;
+      if (this.recordingDiskBytes + lineBytes > this.recordingMaxBytes) {
+        this.recordingDiskBytes = this.pruneRecordingFiles(
+          lineBytes,
+          this.recording.path,
+        );
+      }
+      appendFileSync(this.recording.path!, line);
+      this.recordingPathBytes += lineBytes;
+      this.recordingDiskBytes += lineBytes;
     }
+  }
+
+  private pruneRecordingFiles(
+    requiredBytes = 0,
+    preservePath?: string,
+  ): number {
+    const dir = this.recordingDir;
+    if (!dir) return 0;
+    const files = readdirSync(dir, { withFileTypes: true })
+      .filter((entry) => entry.isFile() && /\.(jsonl|json)$/i.test(entry.name))
+      .map((entry) => {
+        const path = join(dir, entry.name);
+        const stats = statSync(path);
+        return { path, size: stats.size, mtimeMs: stats.mtimeMs };
+      });
+    let totalBytes = files.reduce((total, file) => total + file.size, 0);
+    for (const file of files.sort(
+      (a, b) => a.mtimeMs - b.mtimeMs || a.path.localeCompare(b.path),
+    )) {
+      if (totalBytes + requiredBytes <= this.recordingMaxBytes) break;
+      if (file.path === preservePath) continue;
+      unlinkSync(file.path);
+      totalBytes -= file.size;
+    }
+    return totalBytes;
   }
 }
 
@@ -1212,6 +1320,7 @@ export class CodexAppServerRpc {
   constructor(
     private readonly proc: CodexAppServerProcess,
     private readonly recorder?: CodexAppServerRpcRecorder,
+    private readonly requestTimeoutMs = DEFAULT_RPC_REQUEST_TIMEOUT_MS,
   ) {
     void this.pump();
     void proc.exited.then(
@@ -1232,7 +1341,15 @@ export class CodexAppServerRpc {
       return Promise.reject(new Error("codex app-server closed"));
     const id = this.nextId++;
     const promise = new Promise<JsonObject>((resolve, reject) => {
-      this.pending.set(id, { resolve, reject });
+      const timer = setTimeout(() => {
+        if (!this.pending.delete(id)) return;
+        reject(
+          new Error(
+            `codex app-server ${method} timed out after ${this.requestTimeoutMs}ms`,
+          ),
+        );
+      }, this.requestTimeoutMs);
+      this.pending.set(id, { resolve, reject, timer });
     });
     this.write({ id, method, params });
     return promise;
@@ -1329,6 +1446,7 @@ export class CodexAppServerRpc {
       const pending = this.pending.get(id);
       if (!pending) return;
       this.pending.delete(id);
+      clearTimeout(pending.timer);
       const error = msg.error;
       if (error && typeof error === "object") {
         const message =
@@ -1378,7 +1496,10 @@ export class CodexAppServerRpc {
   }
 
   private rejectAll(err: Error): void {
-    for (const pending of this.pending.values()) pending.reject(err);
+    for (const pending of this.pending.values()) {
+      clearTimeout(pending.timer);
+      pending.reject(err);
+    }
     this.pending.clear();
     for (const waiter of this.turnWaiters.splice(0)) waiter.reject(err);
   }

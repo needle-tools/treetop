@@ -34,6 +34,9 @@ export interface AgentSession {
   sessionId?: string;
   /** File path the session was discovered at. Useful for debugging. */
   source: string;
+  /** Current on-disk transcript size. Cheap stat metadata used by the UI to
+   *  make unusually large sessions visible before the user resumes them. */
+  fileSizeBytes?: number;
   /** Short human-readable title: Claude's auto-summary or the first user
    *  prompt, capped to ~80 chars. Undefined when nothing usable was found. */
   title?: string;
@@ -1256,7 +1259,7 @@ const UUID_RE =
  *  path + mtime. Returns null if nothing usable is found. */
 async function bestSubagentFile(
   sessionDir: string,
-): Promise<{ path: string; mtimeMs: number; mtime: Date } | null> {
+): Promise<{ path: string; mtimeMs: number; mtime: Date; size: number } | null> {
   const subDir = join(sessionDir, "subagents");
   let entries: string[];
   try {
@@ -1264,14 +1267,24 @@ async function bestSubagentFile(
   } catch {
     return null;
   }
-  let best: { path: string; mtimeMs: number; mtime: Date } | null = null;
+  let best: {
+    path: string;
+    mtimeMs: number;
+    mtime: Date;
+    size: number;
+  } | null = null;
   for (const e of entries) {
     if (!e.endsWith(".jsonl")) continue;
     const full = join(subDir, e);
     try {
       const st = await stat(full);
       if (!best || st.mtimeMs > best.mtimeMs) {
-        best = { path: full, mtimeMs: st.mtimeMs, mtime: st.mtime };
+        best = {
+          path: full,
+          mtimeMs: st.mtimeMs,
+          mtime: st.mtime,
+          size: st.size,
+        };
       }
     } catch {
       // skip unreadable
@@ -1285,7 +1298,7 @@ async function bestSubagentFile(
 async function claudeSessionFromFile(
   sessionPath: string,
   sessionId: string,
-  fileStat: { mtimeMs: number; mtime: Date },
+  fileStat: { mtimeMs: number; mtime: Date; size: number },
 ): Promise<AgentSession | null> {
   const meta = await readClaudeSessionMeta(sessionPath, fileStat.mtimeMs);
   if (!meta.cwd) return null;
@@ -1296,6 +1309,7 @@ async function claudeSessionFromFile(
     lastActive: fileStat.mtime.toISOString(),
     sessionId,
     source: sessionPath,
+    fileSizeBytes: fileStat.size,
     title: meta.title,
     lastUserMessage: meta.lastUserMessage,
     firstUserMessage: userStats.firstUserMessage,
@@ -1486,6 +1500,7 @@ export async function scanCodex(
                     .pop()!
                     .replace(/\.(jsonl|json)$/, ""),
                 source: sessionPath,
+                fileSizeBytes: stats.size,
                 title: overview.firstUserMessage,
                 firstUserMessage: overview.firstUserMessage,
                 lastUserMessage: lastMsgs[lastMsgs.length - 1],
@@ -1677,6 +1692,7 @@ export async function scanOllama(
         lastActive: st.mtime.toISOString(),
         sessionId: obj.termId,
         source: path,
+        fileSizeBytes: st.size,
         // Use the model tag as the title — every UI surface that
         // displays an Ollama session row keys identification off it.
         title: obj.model,
@@ -1787,6 +1803,7 @@ export async function scanImported(
           lastActive: st.mtime.toISOString(),
           sessionId: sidecar.sid ?? sid,
           source: jsonlPath,
+          fileSizeBytes: st.size,
           title: sidecar.title,
           importedFrom: sidecar.originMachineLabel ?? machine,
           importedAt: sidecar.importedAt,
@@ -1805,6 +1822,7 @@ export async function scanImported(
             lastActive: st.mtime.toISOString(),
             sessionId: sid,
             source: jsonlPath,
+            fileSizeBytes: st.size,
             importedFrom: machine,
           });
         } catch {
