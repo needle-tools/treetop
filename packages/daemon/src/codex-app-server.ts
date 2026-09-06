@@ -26,9 +26,13 @@ export interface CodexAppServerAdapterOptions {
   spawn?: (cwd: string) => CodexAppServerProcess;
   clientInfo?: CodexClientInfo;
   mcpUrl?: () => string;
+  autoRecord?: boolean;
+  recordingFrameLimit?: number;
 }
 
 type JsonObject = Record<string, unknown>;
+
+const DEFAULT_RECORDING_FRAME_LIMIT = 10_000;
 
 interface PendingRequest {
   resolve(value: JsonObject): void;
@@ -444,6 +448,8 @@ export class CodexAppServerAdapter implements NativeAgentAdapter {
   private readonly history = new Map<string, CodexAppServerEvent[]>();
   private readonly globalHistory: CodexAppServerEvent[] = [];
   private readonly historyLimit = 300;
+  private readonly autoRecord: boolean;
+  private readonly recordingFrameLimit: number;
   private recording: CodexAppServerRecording | null = null;
   private recordingSeq = 0;
 
@@ -455,6 +461,10 @@ export class CodexAppServerAdapter implements NativeAgentAdapter {
       title: "supergit",
       version: "0.0.0",
     };
+    this.autoRecord = opts.autoRecord !== false;
+    this.recordingFrameLimit =
+      opts.recordingFrameLimit ?? DEFAULT_RECORDING_FRAME_LIMIT;
+    if (this.autoRecord) this.startRecording();
   }
 
   async startSession(
@@ -879,6 +889,7 @@ export class CodexAppServerAdapter implements NativeAgentAdapter {
       endedAt: new Date().toISOString(),
     };
     this.recording = null;
+    if (this.autoRecord) this.startRecording();
     return stopped;
   }
 
@@ -1004,7 +1015,10 @@ export class CodexAppServerAdapter implements NativeAgentAdapter {
   private recordRpcFrame(
     frame: Omit<CodexAppServerRecordedFrame, "seq" | "at">,
   ): void {
-    if (!this.recording) return;
+    if (!this.recording) {
+      if (!this.autoRecord) return;
+      this.startRecording();
+    }
     this.recording.frames.push({
       seq: ++this.recordingSeq,
       at: new Date().toISOString(),
@@ -1012,6 +1026,7 @@ export class CodexAppServerAdapter implements NativeAgentAdapter {
       raw: frame.raw,
       message: cloneJsonObject(frame.message),
     });
+    trim(this.recording.frames, this.recordingFrameLimit);
   }
 }
 
