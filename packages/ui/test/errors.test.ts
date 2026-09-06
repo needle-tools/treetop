@@ -9,6 +9,11 @@ import {
   installFetchTracking,
   installBrowserResponsivenessTracking,
   eventLoopStallDiagnostic,
+  fetchTimingBreakdown,
+  performanceObserverCapabilities,
+  rendererFramePressureDiagnostic,
+  summarizeAnimationInventory,
+  summarizeRendererFrameWindow,
   getErrors,
   __resetFetchTrackingForTests,
   __resetBrowserResponsivenessTrackingForTests,
@@ -497,7 +502,11 @@ describe("installFetchTracking — expected-client-error filter", () => {
     });
     globalThis.fetch = (async () => {
       now = 1_375;
-      return new Response("", { status: 200, statusText: "OK" });
+      return new Response("", {
+        status: 200,
+        statusText: "OK",
+        headers: { "X-Supergit-Server-Ms": "25.5" },
+      });
     }) as typeof fetch;
     try {
       installFetchTracking();
@@ -517,6 +526,8 @@ describe("installFetchTracking — expected-client-error filter", () => {
         method: "POST",
         status: 200,
         fetchMs: 375,
+        serverMs: 25.5,
+        outsideServerMs: 349.5,
         inFlightAtStart: 1,
         inFlightAtEnd: 1,
       });
@@ -686,7 +697,11 @@ describe("installBrowserResponsivenessTracking", () => {
     ).PerformanceObserver = FakePerformanceObserver;
     globalThis.fetch = (async () => {
       now = 150;
-      return new Response("{}", { status: 200, statusText: "OK" });
+      return new Response("{}", {
+        status: 200,
+        statusText: "OK",
+        headers: { "X-Supergit-Server-Ms": "8.5" },
+      });
     }) as typeof fetch;
 
     try {
@@ -703,6 +718,8 @@ describe("installBrowserResponsivenessTracking", () => {
           apiPath: "/api/sessions/batch",
           status: 200,
           fetchMs: 50,
+          serverMs: 8.5,
+          outsideServerMs: 41.5,
         },
       ]);
     } finally {
@@ -744,6 +761,106 @@ describe("installBrowserResponsivenessTracking", () => {
     ).toBeNull();
   });
 
+  test("summarizes sustained frame pressure without logging every frame", () => {
+    const summary = summarizeRendererFrameWindow([
+      16, 17, 18, 34, 35, 40, 51, 80,
+    ]);
+
+    expect(summary).toEqual({
+      frames: 8,
+      elapsedMs: 291,
+      fps: 27.5,
+      p50FrameMs: 35,
+      p95FrameMs: 80,
+      maxFrameMs: 80,
+      framesOver33Ms: 5,
+      framesOver50Ms: 2,
+      framesOver100Ms: 0,
+    });
+  });
+
+  test("groups live animations by name, target, pseudo-element, and state", () => {
+    const target = {
+      tagName: "SPAN",
+      id: "",
+      classList: ["agent-pill", "working", "svelte-abc123"],
+    };
+    const animations = [
+      {
+        animationName: "pill-sweep",
+        playState: "running",
+        effect: { target, pseudoElement: "::before" },
+      },
+      {
+        animationName: "pill-sweep",
+        playState: "running",
+        effect: { target, pseudoElement: "::before" },
+      },
+      {
+        animationName: "fade",
+        playState: "paused",
+        effect: {
+          target: { tagName: "DIV", id: "hero", classList: ["panel"] },
+          pseudoElement: null,
+        },
+      },
+    ] as unknown as Animation[];
+
+    expect(summarizeAnimationInventory(animations)).toEqual([
+      {
+        name: "pill-sweep",
+        target: "span.agent-pill.working::before",
+        state: "running",
+        count: 2,
+      },
+      {
+        name: "fade",
+        target: "div#hero.panel",
+        state: "paused",
+        count: 1,
+      },
+    ]);
+  });
+
+  test("requires consecutive bad frame windows and respects cooldown", () => {
+    const intervals = Array.from({ length: 100 }, () => 40);
+    expect(
+      rendererFramePressureDiagnostic({
+        intervals,
+        consecutiveBadWindows: 1,
+        observedAtMs: 10_000,
+        lastRecordedAtMs: -Infinity,
+      }),
+    ).toBeNull();
+
+    const diagnostic = rendererFramePressureDiagnostic({
+      intervals,
+      consecutiveBadWindows: 2,
+      observedAtMs: 20_000,
+      lastRecordedAtMs: -Infinity,
+      topology: { sessionColumns: 80, runningAnimations: 7 },
+      mutations: { records: 120, addedNodes: 3, removedNodes: 2 },
+    });
+    expect(diagnostic?.message).toBe(
+      "browser-render-pressure fps=25 p95FrameMs=40",
+    );
+    expect(diagnostic?.extra).toMatchObject({
+      consecutiveBadWindows: 2,
+      sessionColumns: 80,
+      runningAnimations: 7,
+      mutations: { records: 120, addedNodes: 3, removedNodes: 2 },
+    });
+
+    expect(
+      rendererFramePressureDiagnostic({
+        intervals,
+        consecutiveBadWindows: 3,
+        observedAtMs: 25_000,
+        lastRecordedAtMs: 20_000,
+      }),
+    ).toBeNull();
+  });
+
   test("includes recent slow UI timing samples in stall diagnostics", () => {
     recordTiming("load.repo-upsert", 24);
     recordTiming("dockEntries", 41);
@@ -758,5 +875,34 @@ describe("installBrowserResponsivenessTracking", () => {
       { name: "dockEntries", ms: 41 },
       { name: "load.repo-upsert", ms: 24 },
     ]);
+  });
+});
+
+describe("fetch timing diagnostics", () => {
+  test("separates daemon service time from browser and transport delay", () => {
+    expect(fetchTimingBreakdown(1_250, "42.75")).toEqual({
+      serverMs: 42.75,
+      outsideServerMs: 1207.25,
+    });
+  });
+
+  test("ignores malformed timing headers and clamps clock noise", () => {
+    expect(fetchTimingBreakdown(100, "nope")).toEqual({});
+    expect(fetchTimingBreakdown(20, "25")).toEqual({
+      serverMs: 25,
+      outsideServerMs: 0,
+    });
+  });
+});
+
+describe("performance observer capabilities", () => {
+  test("makes optional Chromium attribution explicit in renderer diagnostics", () => {
+    expect(
+      performanceObserverCapabilities(["mark", "long-animation-frame"]),
+    ).toEqual({
+      performanceObserverEntryTypes: ["mark", "long-animation-frame"],
+      longAnimationFrameSupported: true,
+      longTaskSupported: false,
+    });
   });
 });
