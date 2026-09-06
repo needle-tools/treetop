@@ -168,6 +168,31 @@ export interface Message<B extends MessageBlock = MessageBlock> {
   optimisticAfterMessageIndex?: number;
 }
 
+/** Latest real conversation timestamp, excluding empty accounting/replay rows. */
+export function latestSessionMessageActivityIso(
+  messages: readonly Message[],
+  indexedLastMessageIso?: string,
+): string | undefined {
+  let latest = indexedLastMessageIso;
+  let latestMs = latest ? Date.parse(latest) : Number.NEGATIVE_INFINITY;
+  if (!Number.isFinite(latestMs)) {
+    latest = undefined;
+    latestMs = Number.NEGATIVE_INFINITY;
+  }
+  for (const message of messages) {
+    if (message.role !== "user" && message.role !== "assistant") continue;
+    if (message.blocks.length === 0) continue;
+    const timestamp = message.timestamp;
+    if (!timestamp) continue;
+    const timestampMs = Date.parse(timestamp);
+    if (Number.isFinite(timestampMs) && timestampMs > latestMs) {
+      latest = timestamp;
+      latestMs = timestampMs;
+    }
+  }
+  return latest;
+}
+
 export interface VisualWorkEntry<
   B extends MessageBlock = MessageBlock,
   M extends Message<B> = Message<B>,

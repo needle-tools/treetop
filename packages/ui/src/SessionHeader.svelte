@@ -31,6 +31,7 @@
   import { ICONS } from "./icons";
   import { contextChip, formatByteSize } from "./context-tokens";
   import type { AgentSettingGroup } from "./claude-session-menu";
+  import type { SessionTokenCost } from "@treetop/nicifier";
 
   export let agent:
     | "claude"
@@ -102,6 +103,7 @@
   export let contextWindow: number | undefined = undefined;
   export let model: string | undefined = undefined;
   export let lastActivityIso: string | undefined = undefined;
+  export let sessionCost: SessionTokenCost | undefined = undefined;
   /** Text of the user's most recent message in this session, surfaced
    *  in the rich hover-tooltip on the "last activity" chip. Often the
    *  user wants a quick "what did I last ask?" reminder without
@@ -610,6 +612,20 @@
       <span class="muted small last-activity placeholder"
         >{lastActivityFallback}</span
       >
+    {/if}
+    {#if sessionCost && sessionCost.pricedSegments > 0}
+      <span
+        class="muted small session-cost"
+        title={`${sessionCost.unpricedSegments > 0 ? "Partial" : "Estimated"} API-equivalent session token cost · ${sessionCost.models.join(", ")} · pricing: ${sessionCost.sources.join(", ")}${sessionCost.unpricedSegments > 0 ? ` · ${sessionCost.unpricedSegments} usage segment${sessionCost.unpricedSegments === 1 ? "" : "s"} could not be priced` : ""}`}
+      >
+        session {sessionCost.totalUsd === 0
+          ? "$0.00"
+          : sessionCost.totalUsd < 0.01
+            ? `$${sessionCost.totalUsd.toFixed(4)}`
+            : sessionCost.totalUsd < 100
+              ? `$${sessionCost.totalUsd.toFixed(2)}`
+              : `$${sessionCost.totalUsd.toLocaleString(undefined, { maximumFractionDigits: 0 })}`}{sessionCost.unpricedSegments > 0 ? "+" : ""} est.
+      </span>
     {/if}
     {#if loadedMessageCount !== undefined}
       <span
