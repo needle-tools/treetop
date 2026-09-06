@@ -13,26 +13,36 @@
     pick: SearchItem;
     close: void;
   }>();
+
+  let panelEl: HTMLDivElement | null = null;
+
+  function onBackdropPointerDown(event: PointerEvent): void {
+    const target = event.target;
+    if (target instanceof Node && panelEl?.contains(target)) return;
+    dispatch("close");
+  }
 </script>
 
 {#if open}
   <div
     class="omnibar-backdrop"
     role="presentation"
-    on:mousedown|self={() => dispatch("close")}
+    on:pointerdown|capture={onBackdropPointerDown}
   >
-    <FuzzySearchPanel
-      mode="omnibar"
-      showKindFilters
-      {items}
-      bind:query
-      {initialKinds}
-      bind:activeKinds
-      placeholder="Search projects, sessions, messages, notes, READMEs, dates..."
-      emptyLabel="No matches."
-      on:pick={(e) => dispatch("pick", e.detail)}
-      on:close={() => dispatch("close")}
-    />
+    <div bind:this={panelEl} class="omnibar-panel-shell">
+      <FuzzySearchPanel
+        mode="omnibar"
+        showKindFilters
+        {items}
+        bind:query
+        {initialKinds}
+        bind:activeKinds
+        placeholder="Search projects, sessions, messages, notes, READMEs, dates..."
+        emptyLabel="No matches."
+        on:pick={(e) => dispatch("pick", e.detail)}
+        on:close={() => dispatch("close")}
+      />
+    </div>
   </div>
 {/if}
 
@@ -46,5 +56,9 @@
     justify-items: center;
     padding-top: min(18vh, 8rem);
     background: rgba(0, 0, 0, 0.22);
+  }
+
+  .omnibar-panel-shell {
+    display: contents;
   }
 </style>

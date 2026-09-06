@@ -6318,7 +6318,14 @@ function rawDiffFromChange(item: Record<string, unknown>): string | undefined {
 }
 
 function actionFromChangeKind(kind: string): VisualFileEdit["action"] {
-  if (kind.includes("add") || kind === "create") return "added";
+  if (
+    kind.includes("add") ||
+    kind.includes("create") ||
+    kind === "new" ||
+    kind === "write"
+  ) {
+    return "added";
+  }
   if (kind.includes("delete") || kind.includes("remove")) return "deleted";
   return "edited";
 }
