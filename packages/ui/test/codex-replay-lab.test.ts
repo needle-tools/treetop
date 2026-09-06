@@ -3,6 +3,7 @@ import {
   codexReplayItemsUntil,
   codexReplayMessagesUntil,
   createCodexReplayPlayback,
+  filterCodexReplayTextForThread,
   parseCodexReplayTextAsync,
   parseCodexReplayText,
   setCodexReplayPlaybackStep,
@@ -124,6 +125,105 @@ describe("Codex replay lab parser", () => {
       "item/completed",
     ]);
     expect(codexReplayMessagesUntil(replay, 2).length).toBeGreaterThan(0);
+  });
+
+  test("filters multi-thread app-server recordings to the selected thread", () => {
+    const text = [
+      JSON.stringify({
+        seq: 1,
+        direction: "client",
+        message: {
+          method: "turn/start",
+          params: {
+            threadId: "thread-a",
+            input: [{ type: "text", text: "from a" }],
+          },
+        },
+      }),
+      JSON.stringify({
+        seq: 2,
+        direction: "client",
+        message: {
+          method: "turn/start",
+          params: {
+            threadId: "thread-b",
+            input: [{ type: "text", text: "from b" }],
+          },
+        },
+      }),
+      JSON.stringify({
+        seq: 3,
+        direction: "server",
+        message: {
+          method: "item/started",
+          params: {
+            threadId: "thread-b",
+            turnId: "turn-b",
+            item: {
+              type: "function_call",
+              id: "call-b",
+              call_id: "call-b",
+              name: "exec_command",
+              arguments: JSON.stringify({ cmd: "pwd" }),
+            },
+          },
+        },
+      }),
+    ].join("\n");
+
+    const filtered = parseCodexReplayText(
+      filterCodexReplayTextForThread(text, "thread-b"),
+    );
+
+    expect(filtered.steps.map((step) => step.seq)).toEqual([2, 3]);
+    expect(codexReplayMessagesUntil(filtered, filtered.steps.length)).toEqual([
+      {
+        id: "codex-replay-user-2",
+        role: "user",
+        timestamp: undefined,
+        intent: undefined,
+        blocks: [{ type: "text", text: "from b" }],
+      },
+      {
+        id: "codex-tool-call-b",
+        role: "assistant",
+        timestamp: "1970-01-01T00:00:00.000Z",
+        blocks: [
+          {
+            type: "tool_use",
+            toolName: "exec_command",
+            toolUseId: "call-b",
+            toolInput: { cmd: "pwd" },
+          },
+        ],
+      },
+    ]);
+  });
+
+  test("filters object recordings without changing their container key", () => {
+    const text = JSON.stringify({
+      id: "recording",
+      events: [
+        {
+          message: {
+            method: "turn/start",
+            params: { threadId: "thread-a" },
+          },
+        },
+        {
+          message: {
+            method: "turn/start",
+            params: { threadId: "thread-b" },
+          },
+        },
+      ],
+    });
+
+    const filtered = JSON.parse(filterCodexReplayTextForThread(text, "thread-b"));
+
+    expect(filtered.events).toHaveLength(1);
+    expect(filtered.events[0].message.params.threadId).toBe("thread-b");
+    expect(filtered.frames).toBeUndefined();
   });
 
   test("steps replay playback incrementally and keeps rendering bounded", () => {

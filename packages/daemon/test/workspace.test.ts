@@ -776,30 +776,25 @@ describe("Workspace", () => {
     expect(result).toEqual({ a: "1", b: "3", c: "4" });
   });
 
-  test("patchPrefs backs up replaced openSessions as parsed JSON files", async () => {
+  test("patchPrefs backs up complete snapshots including note layout", async () => {
     const dir = await tempDir();
     const ws = await Workspace.open(dir);
     const first = {
-      "/wt": [{ agent: "codex", source: "/sessions/one.jsonl" }],
+      "supergit:openSessions": JSON.stringify({
+        "/wt": [{ agent: "codex", source: "/sessions/one.jsonl" }],
+      }),
+      "supergit:notes-offsets": JSON.stringify({ note1: { x: 12, y: 34 } }),
+      "supergit:notes-zorder": JSON.stringify(["note1"]),
+      "supergit:sessionSurfaces": JSON.stringify({
+        "session:codex:thread-1": "read",
+      }),
     };
-    const second = {
-      "/wt": [{ agent: "codex", source: "/sessions/two.jsonl" }],
-    };
-    const third = {
-      "/wt": [{ agent: "codex", source: "/sessions/three.jsonl" }],
-    };
+    const second = { ...first, "supergit:scrollY": "900" };
 
-    await ws.patchPrefs({ "supergit:openSessions": JSON.stringify(first) });
-    await ws.patchPrefs({ "supergit:openSessions": JSON.stringify(second) });
-    await ws.patchPrefs({ "supergit:openSessions": JSON.stringify(third) });
+    await ws.patchPrefs(first);
+    await ws.patchPrefs({ "supergit:scrollY": "900" });
 
-    const root = join(
-      dir,
-      ".supergit",
-      "backups",
-      "prefs",
-      "supergit_openSessions",
-    );
+    const root = join(dir, ".supergit", "backups", "prefs", "full");
     const latestFiles = await readdir(join(root, "latest"));
     const hourlyFiles = await readdir(join(root, "hourly"));
     const dailyFiles = await readdir(join(root, "daily"));
@@ -830,16 +825,10 @@ describe("Workspace", () => {
     ).toEqual(first);
   });
 
-  test("openSessions backups keep only latest five, hourly 24, and daily 7", async () => {
+  test("complete prefs backups keep only latest five, hourly 24, and daily 7", async () => {
     const dir = await tempDir();
     const ws = await Workspace.open(dir);
-    const root = join(
-      dir,
-      ".supergit",
-      "backups",
-      "prefs",
-      "supergit_openSessions",
-    );
+    const root = join(dir, ".supergit", "backups", "prefs", "full");
     await mkdir(join(root, "hourly"), { recursive: true });
     await mkdir(join(root, "daily"), { recursive: true });
     for (let i = 0; i < 30; i++) {
@@ -859,15 +848,8 @@ describe("Workspace", () => {
       );
     }
 
-    await ws.patchPrefs({
-      "supergit:openSessions": JSON.stringify({ "/wt": [] }),
-    });
     for (let i = 0; i < 8; i++) {
-      await ws.patchPrefs({
-        "supergit:openSessions": JSON.stringify({
-          "/wt": [{ agent: "codex", source: `/sessions/${i}.jsonl` }],
-        }),
-      });
+      await ws.patchPrefs({ [`key-${i}`]: String(i) });
     }
 
     expect(await readdir(join(root, "latest"))).toHaveLength(5);
@@ -887,6 +869,78 @@ describe("Workspace", () => {
     await ws.patchPrefs({ x: "hello", y: '{"nested":true}' });
     const loaded = await ws.getPrefs();
     expect(loaded).toEqual({ x: "hello", y: '{"nested":true}' });
+  });
+
+  test("patchPrefs serializes concurrent read-modify-write patches", async () => {
+    const ws = await Workspace.open(await tempDir());
+    await Promise.all(
+      Array.from({ length: 20 }, (_, i) =>
+        ws.patchPrefs({ [`concurrent-${i}`]: String(i) }),
+      ),
+    );
+    const loaded = await ws.getPrefs();
+    for (let i = 0; i < 20; i++) {
+      expect(loaded[`concurrent-${i}`]).toBe(String(i));
+    }
+  });
+
+  test("getPrefs recovers the newest valid complete snapshot after corruption", async () => {
+    const dir = await tempDir();
+    const ws = await Workspace.open(dir);
+    const expected = {
+      "supergit:notes-offsets": '{"note1":{"x":12}}',
+      "supergit:notes-zorder": '["note1"]',
+    };
+    await ws.patchPrefs(expected);
+    await writeFile(join(dir, "prefs.json"), "truncated");
+
+    expect(await ws.getPrefs()).toEqual(expected);
+  });
+
+  test("patchPrefs merges into a recovered snapshot instead of a corrupt empty file", async () => {
+    const dir = await tempDir();
+    const ws = await Workspace.open(dir);
+    await ws.patchPrefs({ "supergit:notes-offsets": '{"note1":{"x":12}}' });
+    await writeFile(join(dir, "prefs.json"), '{"supergit:notes-offsets"');
+
+    await ws.patchPrefs({ "supergit:scrollY": "400" });
+
+    expect(await ws.getPrefs()).toEqual({
+      "supergit:notes-offsets": '{"note1":{"x":12}}',
+      "supergit:scrollY": "400",
+    });
+  });
+
+  test("the first full backup preserves pre-existing prefs before a destructive patch", async () => {
+    const dir = await tempDir();
+    const original = {
+      "supergit:openSessions": '{"/wt":[]}',
+      "supergit:notes-offsets": '{"important":{"x":123,"y":456}}',
+      "supergit:notes-zorder": '["important"]',
+    };
+    await writeFile(join(dir, "prefs.json"), JSON.stringify(original));
+    const ws = await Workspace.open(dir);
+
+    await ws.patchPrefs({
+      "supergit:notes-offsets": null,
+      "supergit:notes-zorder": null,
+    });
+
+    const latestDir = join(
+      dir,
+      ".supergit",
+      "backups",
+      "prefs",
+      "full",
+      "latest",
+    );
+    const snapshots = await Promise.all(
+      (await readdir(latestDir)).map((name) =>
+        readFile(join(latestDir, name), "utf-8").then(JSON.parse),
+      ),
+    );
+    expect(snapshots).toContainEqual(original);
+    expect(snapshots).toContainEqual({ "supergit:openSessions": '{"/wt":[]}' });
   });
 
   test("getPrefs tolerates corrupt prefs.json", async () => {
