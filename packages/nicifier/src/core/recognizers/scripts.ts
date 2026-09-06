@@ -1,5 +1,5 @@
-import type { VisualCommandSummary } from "../types";
-import { lowerCommandName } from "./common";
+import type { VisualCommandSummary } from "../types.js";
+import { lowerCommandName } from "./common.js";
 
 export function summarizeDirectScriptCommand(
   tokens: readonly string[],
@@ -14,7 +14,8 @@ export function summarizeDirectScriptCommand(
   const runtime = lowerCommandName(tokens[runtimeIndex]);
   for (let index = runtimeIndex + 1; index < tokens.length; index += 1) {
     const token = tokens[index]!;
-    if (token === "-c" || token === "-e" || token === "--eval") return undefined;
+    if (token === "-c" || token === "-e" || token === "--eval")
+      return undefined;
     if (token === "-m") return undefined;
     if (optionTakesValue(runtime, token)) {
       index += 1;

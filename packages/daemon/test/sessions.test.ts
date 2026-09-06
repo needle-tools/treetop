@@ -1,6 +1,12 @@
 import { test, expect, describe, beforeEach } from "bun:test";
 import { createHash } from "node:crypto";
-import { mkdir, mkdtemp, writeFile, appendFile, utimes } from "node:fs/promises";
+import {
+  mkdir,
+  mkdtemp,
+  writeFile,
+  appendFile,
+  utimes,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -511,7 +517,8 @@ describe("parseCodexJsonl", () => {
   });
 
   test("unwraps Codex Desktop apply_patch JavaScript invocations", () => {
-    const patch = "*** Begin Patch\n*** Update File: src/App.svelte\n@@\n-old\n+new\n*** End Patch";
+    const patch =
+      "*** Begin Patch\n*** Update File: src/App.svelte\n@@\n-old\n+new\n*** End Patch";
     const text = JSON.stringify({
       timestamp: "2026-06-01T10:00:00.000Z",
       type: "response_item",
@@ -947,7 +954,13 @@ describe("parseCodexJsonl", () => {
     expect(session.messages[2]?.blocks[0]).toMatchObject({
       type: "media",
       mediaKind: "image",
-      path: join(root, ".codex", "generated_images", sessionId, `${callId}.png`),
+      path: join(
+        root,
+        ".codex",
+        "generated_images",
+        sessionId,
+        `${callId}.png`,
+      ),
       title: `${callId}.png`,
       toolName: "image_generation_call",
       toolUseId: callId,
@@ -1193,6 +1206,38 @@ describe("parseCodexJsonl", () => {
     expect(s.messages[4]?.blocks[0]?.text).toContain("Context compacted");
   });
 
+  test("shows the provider reason when a Codex task fails", () => {
+    const text = JSON.stringify({
+      timestamp: "2026-08-31T07:59:36.748Z",
+      type: "event_msg",
+      payload: {
+        type: "task_complete",
+        turn_id: "turn-overloaded",
+        last_agent_message: null,
+        error: {
+          message:
+            "Selected model is at capacity. Please try a different model.",
+          codex_error_info: "server_overloaded",
+        },
+      },
+    });
+
+    const s = parseCodexJsonl(text);
+
+    expect(s.messages).toEqual([
+      {
+        role: "system",
+        blocks: [
+          {
+            type: "marker",
+            text: "[Turn failed: Selected model is at capacity. Please try a different model.]",
+          },
+        ],
+        timestamp: "2026-08-31T07:59:36.748Z",
+      },
+    ]);
+  });
+
   test("normalizes Codex token_count rows as assistant token usage", () => {
     const text = JSON.stringify({
       timestamp: "2026-05-26T12:00:01.000Z",
@@ -1229,6 +1274,71 @@ describe("parseCodexJsonl", () => {
     ]);
   });
 
+  test("does not count a post-compaction context snapshot as newly spent tokens", () => {
+    const tokenCount = (
+      last: Record<string, number>,
+      total: Record<string, number>,
+      timestamp: string,
+    ) =>
+      JSON.stringify({
+        timestamp,
+        type: "event_msg",
+        payload: {
+          type: "token_count",
+          info: {
+            last_token_usage: last,
+            total_token_usage: total,
+          },
+        },
+      });
+    const cumulative = {
+      input_tokens: 7_212_290,
+      output_tokens: 29_569,
+      reasoning_output_tokens: 11_289,
+      total_tokens: 7_241_859,
+    };
+    const text = [
+      tokenCount(
+        {
+          input_tokens: 234_221,
+          output_tokens: 2_050,
+          reasoning_output_tokens: 1_497,
+          total_tokens: 236_271,
+        },
+        cumulative,
+        "2026-08-29T00:01:33.140Z",
+      ),
+      JSON.stringify({
+        timestamp: "2026-08-29T00:02:10.354Z",
+        type: "compacted",
+      }),
+      tokenCount(
+        {
+          input_tokens: 0,
+          cached_input_tokens: 0,
+          output_tokens: 0,
+          reasoning_output_tokens: 0,
+          total_tokens: 14_484,
+        },
+        cumulative,
+        "2026-08-29T00:02:10.361Z",
+      ),
+    ].join("\n");
+
+    const s = parseCodexJsonl(text);
+
+    expect(s.messages).toHaveLength(2);
+    expect(s.messages[0]?.tokenUsage).toMatchObject({
+      input: 234_221,
+      output: 2_050,
+      reasoningOutput: 1_497,
+      total: 236_271,
+    });
+    expect(s.messages[1]?.blocks).toEqual([
+      { type: "marker", text: "[Context compacted]" },
+    ]);
+  });
+
   test("normalizes cumulative Codex token_count rows as deltas", () => {
     const text = [
       JSON.stringify({
@@ -1262,16 +1372,13 @@ describe("parseCodexJsonl", () => {
     ].join("\n");
     const s = parseCodexJsonl(text);
     expect(s.messages.map((message) => message.tokenUsage?.total)).toEqual([
-      120,
-      60,
+      120, 60,
     ]);
     expect(s.messages.map((message) => message.tokenUsage?.input)).toEqual([
-      100,
-      45,
+      100, 45,
     ]);
     expect(s.messages.map((message) => message.tokenUsage?.output)).toEqual([
-      20,
-      15,
+      20, 15,
     ]);
   });
 
@@ -1313,12 +1420,62 @@ describe("parseCodexJsonl", () => {
     ].join("\n");
     const s = parseCodexJsonl(text);
     expect(s.messages.map((message) => message.tokenUsage?.total)).toEqual([
-      150,
-      350,
+      150, 350,
     ]);
     expect(s.messages.map((message) => message.tokenUsage?.input)).toEqual([
-      120,
-      300,
+      120, 300,
+    ]);
+  });
+
+  test("pairs historical ID-less Codex web search calls with their preceding result", () => {
+    const id = "ws_051bfd9fe1e4a8a00169e537d518f081";
+    const action = { type: "search", query: "Codex web search protocol" };
+    const text = [
+      JSON.stringify({
+        timestamp: "2026-04-18T12:00:01.000Z",
+        type: "event_msg",
+        payload: { type: "web_search_end", call_id: id, action },
+      }),
+      JSON.stringify({
+        timestamp: "2026-04-18T12:00:01.001Z",
+        type: "response_item",
+        payload: { type: "web_search_call", status: "completed", action },
+      }),
+    ].join("\n");
+
+    const s = parseCodexJsonl(text);
+
+    expect(s.messages.map((message) => message.blocks[0]?.type)).toEqual([
+      "tool_result",
+      "tool_use",
+    ]);
+    expect(s.messages.map((message) => message.blocks[0]?.toolUseId)).toEqual([
+      id,
+      id,
+    ]);
+  });
+
+  test("pairs nested Codex web search result events with an explicit invocation", () => {
+    const id = "exec-471ddddc-66b0-4bba-b875-aacf234f0754";
+    const action = {
+      type: "search",
+      queries: ["Codex nested web search protocol"],
+    };
+    const text = JSON.stringify({
+      timestamp: "2026-07-13T19:48:59.220Z",
+      type: "event_msg",
+      payload: { type: "web_search_end", call_id: id, action },
+    });
+
+    const s = parseCodexJsonl(text);
+
+    expect(s.messages.map((message) => message.blocks[0]?.type)).toEqual([
+      "tool_use",
+      "tool_result",
+    ]);
+    expect(s.messages.map((message) => message.blocks[0]?.toolUseId)).toEqual([
+      id,
+      id,
     ]);
   });
 

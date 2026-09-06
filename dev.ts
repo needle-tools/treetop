@@ -208,6 +208,25 @@ export async function seedWorkspaceIfMissing(opts: {
   return "copied";
 }
 
+export interface DevChildProcess {
+  exited: Promise<number>;
+  kill(): void;
+}
+
+export async function waitForDevChildren(
+  daemon: DevChildProcess,
+  ui: DevChildProcess,
+): Promise<never> {
+  const first = await Promise.race([
+    daemon.exited.then((code) => ({ name: "daemon" as const, code })),
+    ui.exited.then((code) => ({ name: "UI" as const, code })),
+  ]);
+  const sibling = first.name === "daemon" ? ui : daemon;
+  sibling.kill();
+  await sibling.exited.catch(() => undefined);
+  throw new Error(`${first.name} exited with code ${first.code}`);
+}
+
 function argsRequestWorkspace(argv: string[]): boolean {
   return argv.some(
     (arg) =>
@@ -322,7 +341,7 @@ export async function runDev(
   process.on("SIGINT", cleanup);
   process.on("SIGTERM", cleanup);
 
-  await Promise.all([daemon.exited, ui.exited]);
+  await waitForDevChildren(daemon, ui);
 }
 
 if (import.meta.main) {

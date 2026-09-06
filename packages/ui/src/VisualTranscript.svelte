@@ -784,6 +784,7 @@
   function workCountLines(
     steps: number,
     compactions: number,
+    warnings: number,
     steerings: number,
     subagents: number,
   ): { primary: string; secondary: string | undefined } {
@@ -791,7 +792,10 @@
     const secondaryParts: string[] = [];
     if (
       steps > 0 ||
-      (steerings === 0 && compactions === 0 && subagents === 0)
+      (steerings === 0 &&
+        compactions === 0 &&
+        warnings === 0 &&
+        subagents === 0)
     ) {
       primary = `${steps} ${steps === 1 ? "step" : "steps"}`;
     }
@@ -808,6 +812,11 @@
     if (compactions > 0) {
       secondaryParts.push(
         `${compactions} ${compactions === 1 ? "compaction" : "compactions"}`,
+      );
+    }
+    if (warnings > 0) {
+      secondaryParts.push(
+        `${warnings} ${warnings === 1 ? "warning" : "warnings"}`,
       );
     }
     if (!primary) {
@@ -1289,6 +1298,7 @@
   function workMarkerIcon(kind: VisualMarkerKind | undefined): string {
     if (kind === "complete") return "✓";
     if (kind === "compacted") return "⇥";
+    if (kind === "warning") return "!";
     if (kind === "failed") return "!";
     if (kind === "aborted") return "!";
     return "•";
@@ -2659,11 +2669,14 @@
                             )}
                           >
                             {@render renderWorkEntryBlocks(entry.blocks)}
-                            {#if displayEntry.pairedResult}
+                            {#each displayEntry.pairedResults ??
+                              (displayEntry.pairedResult
+                                ? [displayEntry.pairedResult]
+                                : []) as pairedResult}
                               {@render renderWorkEntryBlocks(
-                                displayEntry.pairedResult.blocks,
+                                pairedResult.blocks,
                               )}
-                            {/if}
+                            {/each}
                           </div>
                         {:else if displayEntry.kind === "marker" && displayEntry.markerBlock}
                           {@const markerBlock = displayEntry.markerBlock}
@@ -2678,6 +2691,8 @@
                               "started"}
                             class:compacted={displayEntry.markerKind ===
                               "compacted"}
+                            class:warning={displayEntry.markerKind ===
+                              "warning"}
                             class:failed={displayEntry.markerKind === "failed"}
                             class:aborted={displayEntry.markerKind ===
                               "aborted"}
@@ -3129,11 +3144,14 @@
                                       {@render renderWorkEntryBlocks(
                                         entry.blocks,
                                       )}
-                                      {#if displayEntry.pairedResult}
+                                      {#each displayEntry.pairedResults ??
+                                        (displayEntry.pairedResult
+                                          ? [displayEntry.pairedResult]
+                                          : []) as pairedResult}
                                         {@render renderWorkEntryBlocks(
-                                          displayEntry.pairedResult.blocks,
+                                          pairedResult.blocks,
                                         )}
-                                      {/if}
+                                      {/each}
                                     </details>
                                   {:else}
                                     {#if displayEntry.pairedToolUse}
@@ -3144,11 +3162,14 @@
                                     {@render renderWorkEntryBlocks(
                                       entry.blocks,
                                     )}
-                                    {#if displayEntry.pairedResult}
+                                    {#each displayEntry.pairedResults ??
+                                      (displayEntry.pairedResult
+                                        ? [displayEntry.pairedResult]
+                                        : []) as pairedResult}
                                       {@render renderWorkEntryBlocks(
-                                        displayEntry.pairedResult.blocks,
+                                        pairedResult.blocks,
                                       )}
-                                    {/if}
+                                    {/each}
                                   {/if}
                                 </div>
                               {/if}
@@ -3199,6 +3220,7 @@
       {@const countLines = workCountLines(
         workSummary.steps,
         workSummary.compactions,
+        workSummary.warnings,
         workSummary.steerings,
         workSummary.subagents,
       )}
@@ -3427,6 +3449,7 @@
           class:complete={item.markerKind === "complete"}
           class:started={item.markerKind === "started"}
           class:compacted={item.markerKind === "compacted"}
+          class:warning={item.markerKind === "warning"}
           class:failed={item.markerKind === "failed"}
           class:aborted={item.markerKind === "aborted"}
           title={item.markerBlock.text}
@@ -4301,6 +4324,15 @@
     );
     background: color-mix(in srgb, var(--accent, #6aa9ff) 9%, transparent);
     color: color-mix(in srgb, var(--accent, #6aa9ff) 62%, var(--text-1));
+  }
+  .work-marker-pill.warning {
+    border-color: color-mix(
+      in srgb,
+      var(--warning, #e8a735) 38%,
+      var(--surface-3)
+    );
+    background: color-mix(in srgb, var(--warning, #e8a735) 11%, transparent);
+    color: color-mix(in srgb, var(--warning, #e8a735) 76%, var(--text-1));
   }
   .work-marker-pill.aborted {
     border-color: color-mix(

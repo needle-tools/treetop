@@ -1,9 +1,9 @@
 import type {
-  MessageBlock,
-  TokenUsage,
   VisualFileEdit,
   VisualMediaBlock,
-} from "../last-user-message";
+  VisualTokenUsage as TokenUsage,
+  VisualToolBlock as MessageBlock,
+} from "./core/index.js";
 import {
   cleanVisualToolResultText,
   visualFileEditSummaryForBlock,
@@ -13,7 +13,7 @@ import {
   visualToolPreviewParts,
   visualToolPreviewText,
   visualToolRemoteHostLabel,
-} from "./tool-preview";
+} from "./tool-preview.js";
 
 interface VisualWorkEntryLike {
   message: {

@@ -7,6 +7,7 @@ import {
   codexAppHistoryMessagesFromThread,
   codexAppHistoryMessagesFromTurnPage,
   codexLiveMessagesFromEvent,
+  codexLiveMessagesEndTurn,
   codexLiveMarkerFromEvent,
   codexLiveToolResultFromEvent,
   codexLiveToolUseFromEvent,
@@ -427,7 +428,8 @@ describe("codex event stream hub", () => {
         item: {
           type: "function_call_output",
           call_id: "call-exec",
-          output: "Chunk ID: abc123\nWall time: 0.1234 seconds\nOutput:\nimport three",
+          output:
+            "Chunk ID: abc123\nWall time: 0.1234 seconds\nOutput:\nimport three",
         },
         threadId: "thread-1",
         turnId: "turn-1",
@@ -453,7 +455,9 @@ describe("codex event stream hub", () => {
       toolUseId: "call-exec",
       text: "Chunk ID: abc123\nWall time: 0.1234 seconds\nOutput:\nimport three",
     });
-    expect(codexLiveMessagesFromEvent(result, context)[0]?.blocks[0]).toMatchObject({
+    expect(
+      codexLiveMessagesFromEvent(result, context)[0]?.blocks[0],
+    ).toMatchObject({
       type: "tool_result",
       toolName: "exec_command",
       toolUseId: "call-exec",
@@ -577,6 +581,159 @@ describe("codex event stream hub", () => {
         blocks: [{ type: "marker", text: "[Context compacted]" }],
       },
     ]);
+  });
+
+  test("normalizes the recorded item/completed compaction shape exactly once", () => {
+    const started: CodexAppEvent = {
+      kind: "notification",
+      method: "item/started",
+      params: {
+        item: { type: "contextCompaction", id: "compact-1" },
+        threadId: "thread-1",
+        turnId: "turn-1",
+        startedAtMs: 1_787_865_324_462,
+      },
+      threadId: "thread-1",
+      turnId: "turn-1",
+      receivedAt: "2026-08-27T21:15:24.466Z",
+      seq: 544,
+    };
+    const completed: CodexAppEvent = {
+      ...started,
+      method: "item/completed",
+      params: {
+        item: { type: "contextCompaction", id: "compact-1" },
+        threadId: "thread-1",
+        turnId: "turn-1",
+        completedAtMs: 1_787_865_411_869,
+      },
+      receivedAt: "2026-08-27T21:16:51.870Z",
+      seq: 547,
+    };
+
+    expect(codexLiveMessagesFromEvent(started)).toEqual([]);
+    expect(codexLiveMessagesFromEvent(completed)).toEqual([
+      {
+        id: "codex-marker-compact-1",
+        role: "system",
+        timestamp: "2026-08-27T21:16:51.869Z",
+        blocks: [{ type: "marker", text: "[Context compacted]" }],
+      },
+    ]);
+    expect(
+      codexLiveMessagesEndTurn(codexLiveMessagesFromEvent(completed)),
+    ).toBe(false);
+  });
+
+  test("keeps retrying errors and warnings visible without ending the turn", () => {
+    const retrying: CodexAppEvent = {
+      kind: "notification",
+      method: "error",
+      params: {
+        error: {
+          message: "Reconnecting... 2/5",
+          codexErrorInfo: {
+            responseStreamDisconnected: { httpStatusCode: null },
+          },
+        },
+        willRetry: true,
+        threadId: "thread-1",
+        turnId: "turn-1",
+      },
+      threadId: "thread-1",
+      turnId: "turn-1",
+      receivedAt: "2026-08-27T12:05:15.765Z",
+      seq: 20,
+    };
+    const warning: CodexAppEvent = {
+      kind: "notification",
+      method: "warning",
+      params: {
+        threadId: "thread-1",
+        message:
+          "Falling back from WebSockets to HTTPS transport. stream disconnected before completion",
+      },
+      threadId: "thread-1",
+      receivedAt: "2026-08-27T12:05:38.537Z",
+      seq: 24,
+    };
+
+    expect(codexLiveMessagesFromEvent(retrying)[0]?.blocks).toEqual([
+      { type: "marker", text: "[Retrying: Reconnecting... 2/5]" },
+    ]);
+    expect(codexLiveMessagesFromEvent(warning)[0]?.blocks).toEqual([
+      {
+        type: "marker",
+        text: "[Warning: Falling back from WebSockets to HTTPS transport. stream disconnected before completion]",
+      },
+    ]);
+    expect(codexLiveMessagesEndTurn(codexLiveMessagesFromEvent(retrying))).toBe(
+      false,
+    );
+    expect(codexLiveMessagesEndTurn(codexLiveMessagesFromEvent(warning))).toBe(
+      false,
+    );
+  });
+
+  test("does not count a live post-compaction context snapshot as new tokens", () => {
+    const context = {};
+    const tokenEvent = (
+      seq: number,
+      last: Record<string, number>,
+      total: Record<string, number>,
+    ): CodexAppEvent => ({
+      kind: "notification",
+      method: "thread/tokenUsage/updated",
+      params: {
+        threadId: "thread-1",
+        turnId: "turn-1",
+        tokenUsage: { last, total, modelContextWindow: 258_400 },
+      },
+      threadId: "thread-1",
+      turnId: "turn-1",
+      receivedAt: `2026-08-27T21:16:${seq}.000Z`,
+      seq,
+    });
+    const cumulative = {
+      totalTokens: 9_843_531,
+      inputTokens: 9_802_403,
+      cachedInputTokens: 8_000_000,
+      outputTokens: 41_128,
+      reasoningOutputTokens: 18_943,
+    };
+
+    expect(
+      codexLiveMessagesFromEvent(
+        tokenEvent(
+          1,
+          {
+            totalTokens: 230_202,
+            inputTokens: 229_998,
+            cachedInputTokens: 220_000,
+            outputTokens: 204,
+            reasoningOutputTokens: 30,
+          },
+          cumulative,
+        ),
+        context,
+      ),
+    ).toHaveLength(1);
+    expect(
+      codexLiveMessagesFromEvent(
+        tokenEvent(
+          2,
+          {
+            totalTokens: 15_309,
+            inputTokens: 0,
+            cachedInputTokens: 0,
+            outputTokens: 0,
+            reasoningOutputTokens: 0,
+          },
+          cumulative,
+        ),
+        context,
+      ),
+    ).toEqual([]);
   });
 
   test("keeps completed commands with empty output visible", () => {
@@ -1024,10 +1181,7 @@ describe("codex event stream hub", () => {
       blocks: [{ type: "text" as const, text: "still running" }],
     };
 
-    const merged = mergeCodexAppHistoryMessages(older, [
-      ...newer,
-      liveTail,
-    ]);
+    const merged = mergeCodexAppHistoryMessages(older, [...newer, liveTail]);
 
     expect(merged.map((message) => message.id)).toEqual([
       "codex-user-user-older",
@@ -1216,16 +1370,13 @@ describe("codex event stream hub", () => {
     });
 
     expect(history.map((message) => message.tokenUsage?.total)).toEqual([
-      120,
-      60,
+      120, 60,
     ]);
     expect(history.map((message) => message.tokenUsage?.input)).toEqual([
-      100,
-      45,
+      100, 45,
     ]);
     expect(history.map((message) => message.tokenUsage?.output)).toEqual([
-      20,
-      15,
+      20, 15,
     ]);
   });
 
@@ -1423,14 +1574,12 @@ describe("codex event stream hub", () => {
       context,
     );
 
-    expect([
-      first[0]?.tokenUsage?.total,
-      second[0]?.tokenUsage?.total,
-    ]).toEqual([150, 350]);
-    expect([
-      first[0]?.tokenUsage?.input,
-      second[0]?.tokenUsage?.input,
-    ]).toEqual([120, 300]);
+    expect([first[0]?.tokenUsage?.total, second[0]?.tokenUsage?.total]).toEqual(
+      [150, 350],
+    );
+    expect([first[0]?.tokenUsage?.input, second[0]?.tokenUsage?.input]).toEqual(
+      [120, 300],
+    );
   });
 
   test("normalizes app-server history and live view_image snapshots to the same visual contract", () => {
@@ -1464,9 +1613,7 @@ describe("codex event stream hub", () => {
       role: "user" as const,
       blocks: [{ type: "text" as const, text: "show it" }],
     };
-    expect(
-      visualContract(buildVisualTranscriptItems([user, ...live])),
-    ).toEqual(
+    expect(visualContract(buildVisualTranscriptItems([user, ...live]))).toEqual(
       visualContract(buildVisualTranscriptItems([user, ...history])),
     );
   });
@@ -1741,27 +1888,35 @@ describe("codex event stream hub", () => {
       result: "Fresh subagent found five remaining differences.",
     });
     expect(
-      displayEntries.some((entry) => entry.entry.blocks[0]?.type === "subagent"),
+      displayEntries.some(
+        (entry) => entry.entry.blocks[0]?.type === "subagent",
+      ),
     ).toBe(false);
 
     const liveToolNames = new Map<string, string>();
     const live = [
-      ...codexLiveMessagesFromEvent({
-        kind: "notification",
-        method: "item/started",
-        params: { item: spawnCall, threadId: "thread-1", turnId: "turn-1" },
-        threadId: "thread-1",
-        turnId: "turn-1",
-        receivedAt: "2026-06-22T10:00:00.000Z",
-      }, { toolNames: liveToolNames }),
-      ...codexLiveMessagesFromEvent({
-        kind: "notification",
-        method: "item/completed",
-        params: { item: spawnOutput, threadId: "thread-1", turnId: "turn-1" },
-        threadId: "thread-1",
-        turnId: "turn-1",
-        receivedAt: "2026-06-22T10:00:01.000Z",
-      }, { toolNames: liveToolNames }),
+      ...codexLiveMessagesFromEvent(
+        {
+          kind: "notification",
+          method: "item/started",
+          params: { item: spawnCall, threadId: "thread-1", turnId: "turn-1" },
+          threadId: "thread-1",
+          turnId: "turn-1",
+          receivedAt: "2026-06-22T10:00:00.000Z",
+        },
+        { toolNames: liveToolNames },
+      ),
+      ...codexLiveMessagesFromEvent(
+        {
+          kind: "notification",
+          method: "item/completed",
+          params: { item: spawnOutput, threadId: "thread-1", turnId: "turn-1" },
+          threadId: "thread-1",
+          turnId: "turn-1",
+          receivedAt: "2026-06-22T10:00:01.000Z",
+        },
+        { toolNames: liveToolNames },
+      ),
     ];
     expect(live.map((message) => message.blocks[0]?.type)).toEqual([
       "tool_use",
@@ -1776,17 +1931,23 @@ describe("codex event stream hub", () => {
     });
 
     const attachContext = {};
-    const attachedHistory = codexAppHistoryMessagesFromThread({
-      turns: [{ id: "turn-1", items: [spawnCall] }],
-    }, attachContext);
-    const attachedLiveOutput = codexLiveMessagesFromEvent({
-      kind: "notification",
-      method: "item/completed",
-      params: { item: spawnOutput, threadId: "thread-1", turnId: "turn-1" },
-      threadId: "thread-1",
-      turnId: "turn-1",
-      receivedAt: "2026-06-22T10:00:01.000Z",
-    }, attachContext);
+    const attachedHistory = codexAppHistoryMessagesFromThread(
+      {
+        turns: [{ id: "turn-1", items: [spawnCall] }],
+      },
+      attachContext,
+    );
+    const attachedLiveOutput = codexLiveMessagesFromEvent(
+      {
+        kind: "notification",
+        method: "item/completed",
+        params: { item: spawnOutput, threadId: "thread-1", turnId: "turn-1" },
+        threadId: "thread-1",
+        turnId: "turn-1",
+        receivedAt: "2026-06-22T10:00:01.000Z",
+      },
+      attachContext,
+    );
     expect(attachedHistory[0]?.blocks[0]).toMatchObject({
       type: "tool_use",
       toolName: "spawn_agent",
@@ -1915,8 +2076,7 @@ describe("codex event stream hub", () => {
       contentItems: [
         {
           type: "inputText",
-          text:
-            "Chunk ID: 07acea\nWall time: 5.0019 seconds\nProcess running with session ID 55249\nOriginal token count: 2\nOutput:\n500/700\n",
+          text: "Chunk ID: 07acea\nWall time: 5.0019 seconds\nProcess running with session ID 55249\nOriginal token count: 2\nOutput:\n500/700\n",
         },
       ],
       success: true,

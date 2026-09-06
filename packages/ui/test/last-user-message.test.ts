@@ -1,4 +1,5 @@
 import { describe, it, expect } from "bun:test";
+import { nicifyCommand } from "@supergit/nicifier";
 import {
   applyVisualTranscriptDeltaPatches,
   buildVisualWorkDisplayEntries,
@@ -29,6 +30,7 @@ import {
   visualToolLauncherLabel,
   visualToolPreviewParts,
   visualToolPreviewText,
+  visualToolCommandNicifierCoverage,
   visualToolWaitForDurationLabel,
   visualToolEnvAssignments,
   visualToolEnvSummaryLabel,
@@ -1027,6 +1029,7 @@ describe("buildVisualTranscriptItems", () => {
     expect(visualWorkSummary(items[1].entries)).toEqual({
       steps: 0,
       compactions: 0,
+      warnings: 0,
       steerings: 1,
       subagents: 0,
     });
@@ -1462,6 +1465,7 @@ describe("buildVisualTranscriptItems", () => {
     expect(visualWorkSummary(items[1].entries)).toEqual({
       steps: 2,
       compactions: 1,
+      warnings: 0,
       steerings: 0,
       subagents: 0,
     });
@@ -2760,6 +2764,234 @@ describe("visual tool payload display helpers", () => {
     expect(visualToolPreviewText(block)).toBe("Run npm tests");
     expect(visualToolCallPayloadText(block)).toContain(
       '"description": "run focused tests"',
+    );
+  });
+
+  it("summarizes common package, runtime, remote, container, Cargo, and git commands", () => {
+    const preview = (cmd: string) =>
+      visualToolPreviewText({
+        type: "tool_use",
+        toolName: "exec_command",
+        toolInput: { cmd },
+      });
+
+    expect(preview("npm view json-render name version --json")).toBe(
+      "Inspect npm package json-render",
+    );
+    expect(preview("npm install lodash")).toBe("Install npm package lodash");
+    expect(preview("npx playwright install chromium")).toBe(
+      "Install Playwright browser chromium",
+    );
+    expect(preview("node -v && npm -v")).toBe("Check Node version");
+    expect(preview("node -p \"require.resolve('pkg')\"")).toBe(
+      "require.resolve('pkg')",
+    );
+    expect(preview("npx tsx --test packages/example.test.ts")).toBe(
+      "Run TypeScript tests example.test.ts",
+    );
+    expect(
+      preview(
+        "ssh -F config -L 3000:localhost:3000 -L 4000:localhost:4000 host -N",
+      ),
+    ).toBe("Open 2 tunnels to host");
+    expect(preview("git restore packages/ui/src/App.svelte")).toBe(
+      "Restore App.svelte",
+    );
+    expect(preview('git grep -n "needle" src test')).toBe(
+      'Search git files for "needle" in src, test',
+    );
+    expect(preview("docker compose -f compose.yml config")).toBe(
+      "Validate Docker Compose config compose.yml",
+    );
+    expect(preview("cargo install wasm-pack --locked")).toBe(
+      "Install Cargo package wasm-pack",
+    );
+  });
+
+  it("reports recursive nicifier completeness for chains and nested launchers", () => {
+    const coverage = (cmd: string) =>
+      visualToolCommandNicifierCoverage({
+        type: "tool_use",
+        toolName: "exec_command",
+        toolInput: { cmd },
+      });
+
+    expect(coverage("git status --short && frobnicate --all")).toMatchObject({
+      kinds: ["git"],
+      fullyNicified: false,
+      unnicifiedParts: ["frobnicate --all"],
+    });
+    expect(
+      coverage(
+        `ssh host 'docker exec app sh -lc "npm view pkg version && cargo check"'`,
+      ),
+    ).toMatchObject({
+      kinds: ["package", "cargo"],
+      fullyNicified: true,
+      unnicifiedParts: [],
+      families: ["npm", "cargo", "ssh", "docker"],
+    });
+    expect(
+      visualToolPreviewText({
+        type: "tool_use",
+        toolName: "exec_command",
+        toolInput: {
+          cmd: `ssh host 'docker exec app sh -lc "npm view pkg version && cargo check"'`,
+        },
+      }),
+    ).toBe("Inspect npm package pkg · Run Cargo check");
+    expect(
+      coverage(
+        "/opt/homebrew/bin/node - <<'NODE'\nconst value = 1;\nconsole.log(value);\nNODE",
+      ),
+    ).toMatchObject({
+      kinds: ["inline-script"],
+      fullyNicified: true,
+      unnicifiedParts: [],
+      families: ["node"],
+    });
+    expect(
+      visualToolInlineScript({
+        type: "tool_use",
+        toolName: "exec_command",
+        toolInput: {
+          cmd: "/opt/homebrew/bin/node - <<'NODE'\nconst value = 1;\nconsole.log(value);\nNODE",
+        },
+      }),
+    ).toMatchObject({
+      language: "js",
+      code: "const value = 1;\nconsole.log(value);",
+    });
+    expect(
+      coverage(
+        "cat > /tmp/probe.js <<'EOF'\nconst npm = 'body text';\nEOF\nnpx playwright test probe.spec.ts",
+      ),
+    ).toMatchObject({
+      kinds: ["filesystem", "test"],
+      fullyNicified: true,
+      unnicifiedParts: [],
+      families: ["npx"],
+    });
+    expect(
+      coverage("git log --oneline -3 && printf '\\n---\\n' && git status"),
+    ).toMatchObject({
+      kinds: ["git", "git"],
+      fullyNicified: true,
+      unnicifiedParts: [],
+    });
+    expect(
+      coverage("(cd packages/remotion && npx remotion still --help)"),
+    ).toMatchObject({
+      kinds: ["package"],
+      fullyNicified: true,
+      unnicifiedParts: [],
+      families: ["npx"],
+    });
+    expect(
+      coverage(
+        "ssh host 'sudo docker compose -f compose.yml config && git submodule status'",
+      ),
+    ).toMatchObject({
+      kinds: ["docker", "git"],
+      fullyNicified: true,
+      unnicifiedParts: [],
+      families: ["docker", "git", "ssh"],
+    });
+    expect(
+      visualToolPreviewText({
+        type: "tool_use",
+        toolName: "exec_command",
+        toolInput: {
+          cmd: "ssh host 'sudo docker compose -f compose.yml config && git submodule status'",
+        },
+      }),
+    ).toBe(
+      "Validate Docker Compose config compose.yml · Inspect git submodules status",
+    );
+    expect(
+      coverage(
+        `npm view pkg version && node -p "require('./package.json').version" && python3 -c "print('ok')"`,
+      ),
+    ).toMatchObject({
+      kinds: ["package", "runtime", "runtime"],
+      fullyNicified: true,
+      unnicifiedParts: [],
+      families: ["npm", "node", "python"],
+    });
+    expect(coverage("ssh host frobnicate --all")).toMatchObject({
+      kinds: [],
+      fullyNicified: false,
+      unnicifiedParts: ["frobnicate --all"],
+      families: ["ssh"],
+    });
+    expect(
+      coverage(
+        `ssh host 'sudo docker exec app sh -lc "curl -sf http://localhost/health"'`,
+      ),
+    ).toMatchObject({
+      kinds: ["fetch"],
+      fullyNicified: true,
+      unnicifiedParts: [],
+      families: ["ssh", "docker"],
+    });
+    expect(coverage("source ~/.zshrc; npm -v")).toMatchObject({
+      kinds: ["package"],
+      fullyNicified: true,
+      unnicifiedParts: [],
+      families: ["npm"],
+    });
+    expect(
+      coverage("node --check src/index.js && python3.11 -c \"print('ok')\""),
+    ).toMatchObject({
+      kinds: ["runtime", "runtime"],
+      fullyNicified: true,
+      unnicifiedParts: [],
+      families: ["node", "python"],
+    });
+    expect(
+      coverage(
+        "node --test --test-concurrency=4 test/a.test.js && node --input-type=module -e \"console.log('ok')\" && git ls-remote --heads origin",
+      ),
+    ).toMatchObject({
+      kinds: ["test", "runtime", "git"],
+      fullyNicified: true,
+      unnicifiedParts: [],
+      families: ["node", "git"],
+    });
+    expect(
+      visualToolPreviewText({
+        type: "tool_use",
+        toolName: "exec_command",
+        toolInput: {
+          cmd: "node --test --test-concurrency=4 test/a.test.js && node --input-type=module -e \"console.log('ok')\" && git ls-remote --heads origin",
+        },
+      }),
+    ).toBe(
+      "Run Node tests a.test.js · Evaluate Node expression · Inspect remote git refs origin",
+    );
+  });
+
+  it("exposes command nicification without a transcript message wrapper", () => {
+    expect(
+      nicifyCommand(
+        `ssh host 'docker exec app sh -lc "npm view pkg version && cargo check"'`,
+      ),
+    ).toMatchObject({
+      text: "Inspect npm package pkg · Run Cargo check",
+      summaries: [{ kind: "package" }, { kind: "cargo" }],
+      fullyNicified: true,
+      unnicifiedParts: [],
+      families: ["npm", "cargo", "ssh", "docker"],
+    });
+
+    expect(nicifyCommand("git status --short && frobnicate --all")).toMatchObject(
+      {
+        text: "Check git status · frobnicate --all",
+        summaries: [{ kind: "git" }],
+        fullyNicified: false,
+        unnicifiedParts: ["frobnicate --all"],
+        families: ["git"],
+      },
     );
   });
 
@@ -5867,6 +6099,101 @@ describe("buildVisualWorkDisplayEntries", () => {
     expect(entries[2]?.pairedToolUse).toBe(firstToolUse);
   });
 
+  it("keeps every lifecycle result on its exact tool use id", () => {
+    const toolUse = (id: string, messageIndex: number) => ({
+      message: {
+        role: "assistant",
+        blocks: [{ type: "tool_use", text: "exec_command", toolUseId: id }],
+      },
+      blocks: [{ type: "tool_use", text: "exec_command", toolUseId: id }],
+      messageIndex,
+    });
+    const toolResult = (text: string, messageIndex: number) => ({
+      message: {
+        role: "tool",
+        blocks: [{ type: "tool_result", text, toolUseId: "a" }],
+      },
+      blocks: [{ type: "tool_result", text, toolUseId: "a" }],
+      messageIndex,
+    });
+    const firstToolUse = toolUse("a", 1);
+    const parallelToolUse = toolUse("b", 2);
+    const progressResult = toolResult("still running", 3);
+    const finalResult = toolResult("completed", 4);
+
+    const entries = buildVisualWorkDisplayEntries([
+      firstToolUse,
+      parallelToolUse,
+      progressResult,
+      finalResult,
+    ]);
+
+    const displayedResults = entries.filter(
+      (entry) => entry.entry === progressResult || entry.entry === finalResult,
+    );
+    expect(displayedResults).toHaveLength(2);
+    expect(displayedResults.map((entry) => entry.pairedToolUse)).toEqual([
+      firstToolUse,
+      firstToolUse,
+    ]);
+    const displayedFirstToolUse = entries.find(
+      (entry) => entry.entry === firstToolUse,
+    );
+    expect(displayedFirstToolUse?.pairedResults).toEqual([
+      progressResult,
+      finalResult,
+    ]);
+    expect(displayedFirstToolUse?.pairedResult).toBe(finalResult);
+    const displayedParallelToolUse = entries.find(
+      (entry) => entry.entry === parallelToolUse,
+    );
+    expect(displayedParallelToolUse?.pairedResults).toEqual([]);
+    expect(displayedParallelToolUse?.pairedResult).toBeUndefined();
+  });
+
+  it("does not guess across parallel calls for a delayed ID-less result", () => {
+    const firstToolUse = {
+      message: { role: "assistant", blocks: [{ type: "tool_use" }] },
+      blocks: [{ type: "tool_use" }],
+      messageIndex: 1,
+    };
+    const parallelToolUse = {
+      message: { role: "assistant", blocks: [{ type: "tool_use" }] },
+      blocks: [{ type: "tool_use" }],
+      messageIndex: 2,
+    };
+    const interveningNote = {
+      message: { role: "assistant", blocks: [{ type: "text", text: "work" }] },
+      blocks: [{ type: "text", text: "work" }],
+      messageIndex: 3,
+    };
+    const result = {
+      message: {
+        role: "tool",
+        blocks: [{ type: "tool_result", text: "done" }],
+      },
+      blocks: [{ type: "tool_result", text: "done" }],
+      messageIndex: 4,
+    };
+
+    const entries = buildVisualWorkDisplayEntries([
+      firstToolUse,
+      parallelToolUse,
+      interveningNote,
+      result,
+    ]);
+
+    expect(
+      entries.find((entry) => entry.entry === result)?.pairedToolUse,
+    ).toBeUndefined();
+    expect(
+      entries.find((entry) => entry.entry === firstToolUse)?.pairedResult,
+    ).toBeUndefined();
+    expect(
+      entries.find((entry) => entry.entry === parallelToolUse)?.pairedResult,
+    ).toBeUndefined();
+  });
+
   it("uses running process log reads to show live test counters", () => {
     const testToolUse = {
       message: {
@@ -6316,7 +6643,7 @@ describe("buildVisualWorkDisplayEntries", () => {
     expect(entries[0]?.entry).toBe(marker);
   });
 
-  it("classifies compaction and abort markers as distinct badges", () => {
+  it("classifies compaction, warning, retry, and abort markers as distinct badges", () => {
     const entries = buildVisualWorkDisplayEntries([
       {
         message: {
@@ -6329,10 +6656,26 @@ describe("buildVisualWorkDisplayEntries", () => {
       {
         message: {
           role: "system",
+          blocks: [{ type: "marker", text: "[Warning: HTTPS fallback]" }],
+        },
+        blocks: [{ type: "marker", text: "[Warning: HTTPS fallback]" }],
+        messageIndex: 5,
+      },
+      {
+        message: {
+          role: "system",
+          blocks: [{ type: "marker", text: "[Retrying: Reconnecting... 2/5]" }],
+        },
+        blocks: [{ type: "marker", text: "[Retrying: Reconnecting... 2/5]" }],
+        messageIndex: 6,
+      },
+      {
+        message: {
+          role: "system",
           blocks: [{ type: "marker", text: "[Turn aborted: interrupted]" }],
         },
         blocks: [{ type: "marker", text: "[Turn aborted: interrupted]" }],
-        messageIndex: 5,
+        messageIndex: 7,
       },
     ]);
 
@@ -6341,6 +6684,16 @@ describe("buildVisualWorkDisplayEntries", () => {
         kind: "marker",
         markerKind: "compacted",
         markerLabel: "Context compacted",
+      },
+      {
+        kind: "marker",
+        markerKind: "warning",
+        markerLabel: "Warning: HTTPS fallback",
+      },
+      {
+        kind: "marker",
+        markerKind: "warning",
+        markerLabel: "Retrying: Reconnecting... 2/5",
       },
       {
         kind: "marker",
