@@ -593,11 +593,12 @@ describe("filterToExistingSessions", () => {
     });
   });
 
-  test("new Codex App panes use app-server history until a transcript exists", () => {
+  test("live Codex App panes use app-server history even when a transcript exists", () => {
     expect(
       resolveSessionMessageSource({
         agent: "codex",
         source: codexAppSource("thread-123"),
+        transcriptSource: "/Users/me/.codex/sessions/thread-123.jsonl",
         liveAppSurface: true,
       }),
     ).toEqual({

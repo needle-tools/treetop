@@ -1,4 +1,4 @@
-import { defineConfig } from "vite";
+import { defineConfig, type Plugin } from "vite";
 import { svelte } from "@sveltejs/vite-plugin-svelte";
 import { PRODUCT_NAME } from "../../product";
 
@@ -6,6 +6,20 @@ function envFlag(value: string | undefined): boolean {
   if (value === undefined) return false;
   const normalized = value.trim().toLowerCase();
   return normalized === "1" || normalized === "true" || normalized === "yes";
+}
+
+function replayLabDevRoutePlugin(): Plugin {
+  return {
+    name: "replay-lab-dev-route",
+    configureServer(server) {
+      server.middlewares.use((req, _res, next) => {
+        const url = req.url ?? "";
+        const match = /^\/(?:replay-lab|codex-replay)\/?([?#].*)?$/.exec(url);
+        if (match) req.url = `/replay-lab.html${match[1] ?? ""}`;
+        next();
+      });
+    },
+  };
 }
 
 export default defineConfig(() => ({
@@ -19,6 +33,7 @@ export default defineConfig(() => ({
         return html.replace(/%PRODUCT_NAME%/g, PRODUCT_NAME);
       },
     },
+    replayLabDevRoutePlugin(),
   ],
   server: {
     // 7779 sits next to the daemon's 7777 so supergit's two ports cluster
