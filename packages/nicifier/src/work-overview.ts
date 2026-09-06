@@ -14,7 +14,10 @@ import {
   visualToolPreviewText,
   visualToolRemoteHostLabel,
 } from "./tool-preview.js";
-import { estimateModelTokenCost } from "./model-pricing.js";
+import {
+  estimateModelTokenCost,
+  type ModelsDevPricingSnapshot,
+} from "./model-pricing.js";
 
 interface VisualWorkEntryLike {
   message: {
@@ -135,6 +138,7 @@ export interface VisualWorkCostOverview {
   unpricedCheckpoints: number;
   longContextCheckpoints: number;
   models: string[];
+  sources: string[];
 }
 
 export interface VisualWorkDetailOptions {
@@ -145,6 +149,7 @@ export interface VisualWorkOverviewOptions {
   now?: string | number | Date;
   timeScope?: "item" | "entries";
   model?: string;
+  modelsDev?: ModelsDevPricingSnapshot;
 }
 
 export interface VisualWorkDetailGroup<T extends VisualWorkDisplayEntryLike> {
@@ -512,12 +517,14 @@ function tokenOverview(
 function costOverview(
   entries: readonly VisualWorkDisplayEntryLike[],
   defaultModel: string | undefined,
+  modelsDev: ModelsDevPricingSnapshot | undefined,
 ): VisualWorkCostOverview {
   let totalUsd = 0;
   let pricedCheckpoints = 0;
   let unpricedCheckpoints = 0;
   let longContextCheckpoints = 0;
   const models = new Set<string>();
+  const sources = new Set<string>();
   for (const entry of entries) {
     const usage = tokenUsageFromEntry(entry);
     if (!usage) continue;
@@ -525,6 +532,7 @@ function costOverview(
       usage,
       entry.entry.message.model ?? defaultModel,
       entry.entry.message.timestamp,
+      { modelsDev },
     );
     if (!cost) {
       unpricedCheckpoints += 1;
@@ -534,6 +542,7 @@ function costOverview(
     pricedCheckpoints += 1;
     if (cost.longContext) longContextCheckpoints += 1;
     models.add(cost.model);
+    sources.add(cost.source);
   }
   return {
     totalUsd,
@@ -541,6 +550,7 @@ function costOverview(
     unpricedCheckpoints,
     longContextCheckpoints,
     models: [...models],
+    sources: [...sources],
   };
 }
 
@@ -1027,7 +1037,7 @@ export function visualWorkOverview(
     options.timeScope === "entries" ? itemScopedToEntries(item, entries) : item;
   const time = workTimeOverview(scopedItem, entries, safeNowMs);
   const tokens = tokenOverview(entries, time);
-  const cost = costOverview(entries, options.model);
+  const cost = costOverview(entries, options.model, options.modelsDev);
   const categories = actionCategoryCounts(entries);
   const languages = languageCounts(entries);
   const changedFiles = changedFileSummary(entries);

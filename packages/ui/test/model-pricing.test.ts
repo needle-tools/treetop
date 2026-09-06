@@ -1,7 +1,9 @@
 import { describe, expect, test } from "bun:test";
 import {
   estimateModelTokenCost,
+  loadModelsDevPricing,
   modelPricingAt,
+  modelsDevPricingSnapshotFrom,
   visualWorkDetailGroups,
   visualWorkOverview,
 } from "../../nicifier/src/index";
@@ -11,6 +13,121 @@ import {
 } from "../src/codex-event-stream";
 
 describe("model pricing", () => {
+  test("normalizes models.dev prices and context tiers", () => {
+    const snapshot = modelsDevPricingSnapshotFrom(
+      {
+        openai: {
+          id: "openai",
+          models: {
+            "gpt-test": {
+              id: "gpt-test",
+              release_date: "2026-08-01",
+              last_updated: "2026-09-01",
+              cost: {
+                input: 2,
+                output: 12,
+                cache_read: 0.2,
+                cache_write: 2.5,
+                tiers: [
+                  {
+                    input: 4,
+                    output: 18,
+                    cache_read: 0.4,
+                    cache_write: 5,
+                    tier: { type: "context", size: 200_000 },
+                  },
+                ],
+              },
+            },
+          },
+        },
+      },
+      "2026-09-06T10:00:00.000Z",
+    );
+
+    expect(snapshot.models).toHaveLength(1);
+    expect(
+      modelPricingAt("openai/gpt-test", "2026-09-06T10:00:01.000Z", {
+        modelsDev: snapshot,
+      }),
+    ).toMatchObject({
+      model: "gpt-test",
+      rates: {
+        input: 2,
+        cachedInput: 0.2,
+        cacheWriteInput: 2.5,
+        output: 12,
+        thresholdTokens: 200_000,
+        highInput: 4,
+        highCachedInput: 0.4,
+        highCacheWriteInput: 5,
+        highOutput: 18,
+      },
+    });
+  });
+
+  test("keeps bundled history before a models.dev snapshot was observed", () => {
+    const snapshot = modelsDevPricingSnapshotFrom(
+      {
+        openai: {
+          id: "openai",
+          models: {
+            "gpt-5.6-terra": {
+              id: "gpt-5.6-terra",
+              last_updated: "2026-09-05",
+              cost: { input: 9, output: 90, cache_read: 0.9 },
+            },
+          },
+        },
+      },
+      "2026-09-06T10:00:00.000Z",
+    );
+
+    expect(
+      modelPricingAt("gpt-5.6-terra", "2026-07-29T12:00:00.000Z", {
+        modelsDev: snapshot,
+      })?.rates.input,
+    ).toBe(2.5);
+    expect(
+      modelPricingAt("gpt-5.6-terra", "2026-09-06T10:00:01.000Z", {
+        modelsDev: snapshot,
+      })?.rates.input,
+    ).toBe(9);
+  });
+
+  test("coalesces models.dev loading and times out to the bundled catalog", async () => {
+    let calls = 0;
+    const fetcher = async () => {
+      calls += 1;
+      return new Response(
+        JSON.stringify({
+          anthropic: {
+            id: "anthropic",
+            models: {
+              "claude-test": {
+                id: "claude-test",
+                cost: { input: 1, output: 5, cache_read: 0.1 },
+              },
+            },
+          },
+        }),
+      );
+    };
+    const options = {
+      fetcher,
+      cacheKey: "test-coalescing",
+      observedAt: "2026-09-06T10:00:00.000Z",
+    };
+    const [first, second] = await Promise.all([
+      loadModelsDevPricing(options),
+      loadModelsDevPricing(options),
+    ]);
+
+    expect(calls).toBe(1);
+    expect(first).toBe(second);
+    expect(first?.models[0]?.id).toBe("claude-test");
+  });
+
   test("keeps the active app-server model on live and history checkpoints", () => {
     const tokenPayload = {
       type: "token_count",
@@ -141,12 +258,10 @@ describe("model pricing", () => {
 
   test("retains historical price periods and switches at their boundary", () => {
     expect(
-      modelPricingAt("gpt-5.6-terra", "2026-07-29T23:59:59.999Z")
-        ?.rates,
+      modelPricingAt("gpt-5.6-terra", "2026-07-29T23:59:59.999Z")?.rates,
     ).toMatchObject({ input: 2.5, cachedInput: 0.25, output: 15 });
     expect(
-      modelPricingAt("gpt-5.6-terra", "2026-07-30T00:00:00.000Z")
-        ?.rates,
+      modelPricingAt("gpt-5.6-terra", "2026-07-30T00:00:00.000Z")?.rates,
     ).toMatchObject({ input: 2, cachedInput: 0.2, output: 12 });
   });
 
@@ -217,6 +332,57 @@ describe("model pricing", () => {
     });
   });
 
+  test("uses a models.dev snapshot while pricing a rendered work round", () => {
+    const modelsDev = modelsDevPricingSnapshotFrom(
+      {
+        openai: {
+          id: "openai",
+          models: {
+            "gpt-future": {
+              id: "gpt-future",
+              release_date: "2026-09-01",
+              cost: { input: 1, output: 5, cache_read: 0.1 },
+            },
+          },
+        },
+      },
+      "2026-09-06T10:00:00.000Z",
+    );
+    const overview = visualWorkOverview(
+      {},
+      [
+        {
+          kind: "entry",
+          entry: {
+            message: {
+              role: "assistant",
+              model: "gpt-future",
+              timestamp: "2026-09-06T10:00:01.000Z",
+              tokenUsage: {
+                input: 1_000_000,
+                cachedInput: 0,
+                cacheWriteInput: 0,
+                output: 1_000_000,
+                reasoningOutput: 0,
+                total: 2_000_000,
+              },
+            },
+            blocks: [],
+            messageIndex: 1,
+          },
+        },
+      ],
+      { modelsDev },
+    );
+
+    expect(overview.cost).toMatchObject({
+      totalUsd: 6,
+      pricedCheckpoints: 1,
+      models: ["gpt-future"],
+      sources: ["https://models.dev/api.json"],
+    });
+  });
+
   test("attributes hidden token checkpoints to the preceding visible step", () => {
     const action = {
       kind: "entry" as const,
@@ -252,10 +418,7 @@ describe("model pricing", () => {
 
     const [group] = visualWorkDetailGroups([action], [action, checkpoint]);
     expect(group?.entries).toEqual([action]);
-    const overview = visualWorkOverview(
-      {},
-      group?.overviewEntries ?? [],
-    );
+    const overview = visualWorkOverview({}, group?.overviewEntries ?? []);
     expect(overview.cost.pricedCheckpoints).toBe(1);
     expect(overview.cost.totalUsd).toBeCloseTo(0.032, 10);
   });

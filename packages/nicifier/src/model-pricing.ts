@@ -37,6 +37,23 @@ export interface ResolvedModelPricing {
   period: ModelPricePeriod;
 }
 
+export interface ModelsDevPricingSnapshot {
+  observedAt: string;
+  source: "https://models.dev/api.json";
+  models: readonly ModelPriceDefinition[];
+}
+
+export interface ModelPricingOptions {
+  modelsDev?: ModelsDevPricingSnapshot;
+}
+
+export interface LoadModelsDevPricingOptions {
+  fetcher?: typeof fetch;
+  cacheKey?: string;
+  observedAt?: string;
+  timeoutMs?: number;
+}
+
 export interface ModelTokenCost {
   model: string;
   provider: ModelPriceDefinition["provider"];
@@ -51,11 +68,23 @@ export interface ModelTokenCost {
     inputUsd: number;
     cachedInputUsd: number;
     cacheWriteInputUsd: number;
+    cacheWrite5mUsd: number;
+    cacheWrite1hUsd: number;
     outputUsd: number;
   };
   totalUsd: number;
   source: string;
   note?: string;
+}
+
+export interface TokenCostAtRates {
+  longContext: boolean;
+  inputTokens: number;
+  cachedInputTokens: number;
+  cacheWriteInputTokens: number;
+  outputTokens: number;
+  parts: ModelTokenCost["parts"];
+  totalUsd: number;
 }
 
 const GPT_56_TERRA_LUNA_CUTOVER = "2026-07-30T00:00:00.000Z";
@@ -211,33 +240,207 @@ export const MODEL_PRICE_CATALOG: readonly ModelPriceDefinition[] = [
     ["claude-sonnet-4-6", 3, 0.3, 3.75, 6, 15],
     ["claude-sonnet-4-5", 3, 0.3, 3.75, 6, 15],
     ["claude-haiku-4-5", 1, 0.1, 1.25, 2, 5],
-  ].map(([id, input, cachedInput, cacheWriteInput, cacheWriteInput1h, output]) => ({
-    id: id as string,
-    provider: "Anthropic" as const,
-    aliases: [id as string],
-    periods: [
-      {
-        rates: {
-          input: input as number,
-          cachedInput: cachedInput as number,
-          cacheWriteInput: cacheWriteInput as number,
-          cacheWriteInput1h: cacheWriteInput1h as number,
-          output: output as number,
+  ].map(
+    ([id, input, cachedInput, cacheWriteInput, cacheWriteInput1h, output]) => ({
+      id: id as string,
+      provider: "Anthropic" as const,
+      aliases: [id as string],
+      periods: [
+        {
+          rates: {
+            input: input as number,
+            cachedInput: cachedInput as number,
+            cacheWriteInput: cacheWriteInput as number,
+            cacheWriteInput1h: cacheWriteInput1h as number,
+            output: output as number,
+          },
+          source: "https://platform.claude.com/docs/en/about-claude/pricing",
         },
-        source: "https://platform.claude.com/docs/en/about-claude/pricing",
-      },
-    ],
-  })),
+      ],
+    }),
+  ),
 ];
 
 export function normalizePricedModelId(value: string | undefined): string {
   let normalized = (value ?? "").trim().toLowerCase();
   normalized = normalized.replace(/^(?:openai|anthropic)\//, "");
+  const claudeIndex = normalized.indexOf("claude-");
+  if (claudeIndex > 0) normalized = normalized.slice(claudeIndex);
   return normalized
     .replace(/@\d{8}$/, "")
     .replace(/-v\d+:\d+$/, "")
     .replace(/-\d{4}-\d{2}-\d{2}$/, "")
     .replace(/-\d{8}$/, "");
+}
+
+interface ModelsDevCost {
+  input?: unknown;
+  output?: unknown;
+  cache_read?: unknown;
+  cache_write?: unknown;
+  context_over_200k?: ModelsDevCost;
+  tiers?: Array<
+    ModelsDevCost & {
+      tier?: { type?: unknown; size?: unknown };
+    }
+  >;
+}
+
+interface ModelsDevModel {
+  id?: unknown;
+  release_date?: unknown;
+  last_updated?: unknown;
+  cost?: ModelsDevCost;
+}
+
+function finiteRate(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0
+    ? value
+    : undefined;
+}
+
+function modelsDevRates(
+  cost: ModelsDevCost | undefined,
+): ModelTokenRates | undefined {
+  const input = finiteRate(cost?.input);
+  const output = finiteRate(cost?.output);
+  if (input === undefined || output === undefined) return undefined;
+  const cachedInput = finiteRate(cost?.cache_read) ?? input;
+  const cacheWriteInput = finiteRate(cost?.cache_write) ?? input;
+  const contextTier = cost?.tiers
+    ?.filter(
+      (candidate) =>
+        candidate.tier?.type === "context" &&
+        finiteRate(candidate.tier.size) !== undefined,
+    )
+    .sort(
+      (a, b) =>
+        (finiteRate(a.tier?.size) ?? Infinity) -
+        (finiteRate(b.tier?.size) ?? Infinity),
+    )[0];
+  const legacyTier = cost?.context_over_200k;
+  const tier = contextTier ?? legacyTier;
+  const thresholdTokens = contextTier
+    ? finiteRate(contextTier.tier?.size)
+    : legacyTier
+      ? 200_000
+      : undefined;
+  return {
+    input,
+    cachedInput,
+    cacheWriteInput,
+    output,
+    thresholdTokens,
+    highInput: finiteRate(tier?.input),
+    highCachedInput: finiteRate(tier?.cache_read),
+    highCacheWriteInput: finiteRate(tier?.cache_write),
+    highOutput: finiteRate(tier?.output),
+  };
+}
+
+function utcBoundary(value: unknown): string | undefined {
+  if (typeof value !== "string" || !value.trim()) return undefined;
+  const normalized = /^\d{4}-\d{2}-\d{2}$/.test(value)
+    ? `${value}T00:00:00.000Z`
+    : value;
+  return Number.isFinite(Date.parse(normalized))
+    ? new Date(normalized).toISOString()
+    : undefined;
+}
+
+/** Converts the public models.dev provider map into the pricing contract. */
+export function modelsDevPricingSnapshotFrom(
+  value: unknown,
+  observedAt: string | number | Date = new Date(),
+): ModelsDevPricingSnapshot {
+  const root =
+    value && typeof value === "object"
+      ? (value as Record<string, unknown>)
+      : {};
+  const models: ModelPriceDefinition[] = [];
+  for (const [providerKey, providerName] of [
+    ["openai", "OpenAI"],
+    ["anthropic", "Anthropic"],
+  ] as const) {
+    const provider = root[providerKey];
+    if (!provider || typeof provider !== "object") continue;
+    const providerModels = (provider as { models?: unknown }).models;
+    if (!providerModels || typeof providerModels !== "object") continue;
+    for (const [key, rawModel] of Object.entries(
+      providerModels as Record<string, ModelsDevModel>,
+    )) {
+      const id = normalizePricedModelId(
+        typeof rawModel?.id === "string" ? rawModel.id : key,
+      );
+      const rates = modelsDevRates(rawModel?.cost);
+      if (!id || !rates) continue;
+      models.push({
+        id,
+        provider: providerName,
+        aliases: [id],
+        periods: [
+          {
+            from:
+              utcBoundary(rawModel.last_updated) ??
+              utcBoundary(rawModel.release_date),
+            rates,
+            source: "https://models.dev/api.json",
+            note: `models.dev snapshot observed ${timestampIso(observedAt)}`,
+          },
+        ],
+      });
+    }
+  }
+  return {
+    observedAt: timestampIso(observedAt),
+    source: "https://models.dev/api.json",
+    models,
+  };
+}
+
+function timestampIso(value: string | number | Date): string {
+  const parsed = timestampMs(value);
+  if (!Number.isFinite(parsed))
+    throw new TypeError("Invalid pricing timestamp");
+  return new Date(parsed).toISOString();
+}
+
+const modelsDevLoads = new Map<
+  string,
+  Promise<ModelsDevPricingSnapshot | undefined>
+>();
+
+/** Fetches models.dev once per cache key. Failure leaves bundled pricing active. */
+export function loadModelsDevPricing(
+  options: LoadModelsDevPricingOptions = {},
+): Promise<ModelsDevPricingSnapshot | undefined> {
+  const cacheKey = options.cacheKey ?? "default";
+  const existing = modelsDevLoads.get(cacheKey);
+  if (existing) return existing;
+  const promise = (async () => {
+    const controller = new AbortController();
+    const timeout = setTimeout(
+      () => controller.abort(),
+      Math.max(1, options.timeoutMs ?? 3_000),
+    );
+    try {
+      const response = await (options.fetcher ?? fetch)(
+        "https://models.dev/api.json",
+        { signal: controller.signal },
+      );
+      if (!response.ok) return undefined;
+      return modelsDevPricingSnapshotFrom(
+        await response.json(),
+        options.observedAt ?? new Date(),
+      );
+    } catch {
+      return undefined;
+    } finally {
+      clearTimeout(timeout);
+    }
+  })();
+  modelsDevLoads.set(cacheKey, promise);
+  return promise;
 }
 
 function timestampMs(value: string | number | Date | undefined): number {
@@ -250,25 +453,66 @@ function timestampMs(value: string | number | Date | undefined): number {
 export function modelPricingAt(
   model: string | undefined,
   at?: string | number | Date,
+  options: ModelPricingOptions = {},
 ): ResolvedModelPricing | undefined {
   const normalized = normalizePricedModelId(model);
   if (!normalized) return undefined;
-  const definition = MODEL_PRICE_CATALOG.find((candidate) =>
-    candidate.aliases.some((alias) => alias === normalized),
-  );
-  if (!definition) return undefined;
   const atMs = timestampMs(at);
   if (!Number.isFinite(atMs)) return undefined;
+  const findDefinition = (
+    definitions: readonly ModelPriceDefinition[],
+  ): ModelPriceDefinition | undefined =>
+    definitions
+      .filter((candidate) =>
+        candidate.aliases.some(
+          (alias) => normalized === alias || normalized.startsWith(`${alias}-`),
+        ),
+      )
+      .sort(
+        (a, b) =>
+          Math.max(...b.aliases.map((alias) => alias.length)) -
+          Math.max(...a.aliases.map((alias) => alias.length)),
+      )[0];
+  const bundledDefinition = findDefinition(MODEL_PRICE_CATALOG);
+  const modelsDevDefinition = options.modelsDev
+    ? findDefinition(options.modelsDev.models)
+    : undefined;
+  const observedAtMs = options.modelsDev
+    ? Date.parse(options.modelsDev.observedAt)
+    : Infinity;
+  const definition =
+    modelsDevDefinition &&
+    (!bundledDefinition || atMs >= observedAtMs || at === undefined)
+      ? modelsDevDefinition
+      : (bundledDefinition ?? modelsDevDefinition);
+  if (!definition) return undefined;
   const period = definition.periods.find((candidate) => {
     const fromMs = candidate.from ? Date.parse(candidate.from) : -Infinity;
     const beforeMs = candidate.before ? Date.parse(candidate.before) : Infinity;
     return atMs >= fromMs && atMs < beforeMs;
   });
   if (!period) return undefined;
+  const bundledPeriod = bundledDefinition?.periods.find((candidate) => {
+    const fromMs = candidate.from ? Date.parse(candidate.from) : -Infinity;
+    const beforeMs = candidate.before ? Date.parse(candidate.before) : Infinity;
+    return atMs >= fromMs && atMs < beforeMs;
+  });
+  const rates =
+    definition === modelsDevDefinition && bundledPeriod
+      ? {
+          ...period.rates,
+          cacheWriteInput1h:
+            period.rates.cacheWriteInput1h ??
+            bundledPeriod.rates.cacheWriteInput1h,
+          highCacheWriteInput1h:
+            period.rates.highCacheWriteInput1h ??
+            bundledPeriod.rates.highCacheWriteInput1h,
+        }
+      : period.rates;
   return {
     model: definition.id,
     provider: definition.provider,
-    rates: period.rates,
+    rates,
     period,
   };
 }
@@ -277,13 +521,12 @@ function finiteTokens(value: number): number {
   return Number.isFinite(value) ? Math.max(0, value) : 0;
 }
 
-export function estimateModelTokenCost(
+/** Shared cache-aware token math for consumers that already resolved rates. */
+export function estimateTokenCostAtRates(
   usage: VisualTokenUsage,
-  model: string | undefined,
-  at?: string | number | Date,
-): ModelTokenCost | undefined {
-  const pricing = modelPricingAt(model, at);
-  if (!pricing) return undefined;
+  rates: ModelTokenRates,
+  options: { standardOnly?: boolean } = {},
+): TokenCostAtRates {
   const reportedInput = finiteTokens(usage.input);
   const cachedInputTokens = Math.min(
     reportedInput,
@@ -305,15 +548,20 @@ export function estimateModelTokenCost(
   );
   const outputTokens = finiteTokens(usage.output);
   const longContext =
-    pricing.rates.thresholdTokens !== undefined &&
-    reportedInput > pricing.rates.thresholdTokens;
-  const rates = pricing.rates;
-  const inputRate = longContext ? (rates.highInput ?? rates.input) : rates.input;
+    !options.standardOnly &&
+    rates.thresholdTokens !== undefined &&
+    reportedInput > rates.thresholdTokens;
+  const inputRate = longContext
+    ? (rates.highInput ?? rates.input)
+    : rates.input;
   const cachedRate = longContext
     ? (rates.highCachedInput ?? rates.cachedInput)
     : rates.cachedInput;
   const cacheWriteRate = longContext
-    ? (rates.highCacheWriteInput ?? rates.highInput ?? rates.cacheWriteInput ?? rates.input)
+    ? (rates.highCacheWriteInput ??
+      rates.highInput ??
+      rates.cacheWriteInput ??
+      rates.input)
     : (rates.cacheWriteInput ?? rates.input);
   const cacheWrite1hRate = longContext
     ? (rates.highCacheWriteInput1h ?? rates.cacheWriteInput1h ?? cacheWriteRate)
@@ -321,19 +569,19 @@ export function estimateModelTokenCost(
   const outputRate = longContext
     ? (rates.highOutput ?? rates.output)
     : rates.output;
+  const cacheWrite5mUsd =
+    (cacheWriteInput5mTokens / 1_000_000) * cacheWriteRate;
+  const cacheWrite1hUsd =
+    (cacheWriteInput1hTokens / 1_000_000) * cacheWrite1hRate;
   const parts = {
     inputUsd: (inputTokens / 1_000_000) * inputRate,
     cachedInputUsd: (cachedInputTokens / 1_000_000) * cachedRate,
-    cacheWriteInputUsd:
-      (cacheWriteInput5mTokens / 1_000_000) * cacheWriteRate +
-      (cacheWriteInput1hTokens / 1_000_000) * cacheWrite1hRate,
+    cacheWriteInputUsd: cacheWrite5mUsd + cacheWrite1hUsd,
+    cacheWrite5mUsd,
+    cacheWrite1hUsd,
     outputUsd: (outputTokens / 1_000_000) * outputRate,
   };
   return {
-    model: pricing.model,
-    provider: pricing.provider,
-    at: typeof at === "string" ? at : undefined,
-    estimated: true,
     longContext,
     inputTokens,
     cachedInputTokens,
@@ -345,6 +593,24 @@ export function estimateModelTokenCost(
       parts.cachedInputUsd +
       parts.cacheWriteInputUsd +
       parts.outputUsd,
+  };
+}
+
+export function estimateModelTokenCost(
+  usage: VisualTokenUsage,
+  model: string | undefined,
+  at?: string | number | Date,
+  options: ModelPricingOptions = {},
+): ModelTokenCost | undefined {
+  const pricing = modelPricingAt(model, at, options);
+  if (!pricing) return undefined;
+  const estimated = estimateTokenCostAtRates(usage, pricing.rates);
+  return {
+    model: pricing.model,
+    provider: pricing.provider,
+    at: typeof at === "string" ? at : undefined,
+    estimated: true,
+    ...estimated,
     source: pricing.period.source,
     note: pricing.period.note,
   };

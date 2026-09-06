@@ -13,6 +13,7 @@
   import Tooltip from "./Tooltip.svelte";
   import ToolIcon from "./ToolIcon.svelte";
   import { formatAbsoluteTimeTitle } from "./display-helpers";
+  import type { ModelsDevPricingSnapshot } from "@supergit/nicifier";
   import {
     buildVisualWorkDisplayEntries,
     buildVisibleVisualWorkDisplayEntries,
@@ -191,6 +192,7 @@
 
   export let agent: Agent = "claude";
   export let pricingModel: string | undefined = undefined;
+  export let modelsDevPricing: ModelsDevPricingSnapshot | undefined = undefined;
   export let daemonId: string | undefined = undefined;
   export let items: VisualTranscriptItem<NormalizedBlock, NormalizedMessage>[] =
     [];
@@ -1646,6 +1648,9 @@
     ];
     if (overview.cost.models.length > 0) {
       parts.push(overview.cost.models.join(", "));
+    }
+    if (overview.cost.sources.length > 0) {
+      parts.push(`pricing: ${overview.cost.sources.join(", ")}`);
     }
     if (overview.cost.longContextCheckpoints > 0) {
       parts.push(
@@ -3266,6 +3271,7 @@
       {@const workOverview = visualWorkOverview(item, visibleWorkEntries, {
         now: liveNowIso,
         model: pricingModel,
+        modelsDev: modelsDevPricing,
       })}
       {@const summarySubagents = workSummarySubagents(visibleWorkEntries)}
       {@const durationParts = workDurationParts(item, liveNowIso)}
@@ -3425,6 +3431,7 @@
                             now: liveNowIso,
                             timeScope: "entries",
                             model: pricingModel,
+                            modelsDev: modelsDevPricing,
                           },
                         )}
                         {#if groupIsCollapsible}

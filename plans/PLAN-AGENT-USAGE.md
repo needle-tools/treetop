@@ -138,6 +138,11 @@ Caching strategy:
   cache read/write buckets and long-context rates, then roll those checkpoints
   up into steps and rounds. The reusable catalog keeps immutable `from` /
   `before` price periods so later price changes do not rewrite old sessions.
+  `@supergit/nicifier` also loads the current models.dev OpenAI/Anthropic
+  catalog once, without blocking rendering; current checkpoints use that
+  snapshot while bundled periods remain authoritative before it was observed.
+  Anthropic's separate one-hour cache-write rate stays as a narrow bundled
+  override because models.dev currently exposes only one cache-write price.
   A separate $/day menubar rollup remains deferred until this scanner lands.
 - **Privacy / share session.** When a session is shared via
   session-share, do remote turns count toward the host's stats?

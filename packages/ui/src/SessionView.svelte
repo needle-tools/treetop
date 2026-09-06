@@ -1,5 +1,9 @@
 <script lang="ts">
   import { apiUrl, withRequestDeadline } from "./api";
+  import {
+    loadModelsDevPricing,
+    type ModelsDevPricingSnapshot,
+  } from "@supergit/nicifier";
   import { play } from "./sound";
   import { onMount, onDestroy, tick } from "svelte";
   import { flip } from "svelte/animate";
@@ -1235,6 +1239,7 @@
   >[] = [];
   let previousVisualSessionMessages: NormalizedMessage[] = [];
   let previousVisualTranscriptActive: boolean | undefined;
+  let modelsDevPricing: ModelsDevPricingSnapshot | undefined;
   let visualTranscriptChangeStartHint: number | undefined;
   $: if (renderReadBody) {
     const pausedReaderAnchor = capturePausedVisualReaderAnchor();
@@ -5082,6 +5087,9 @@
 
   onMount(() => {
     mounted = true;
+    void loadModelsDevPricing().then((snapshot) => {
+      if (mounted) modelsDevPricing = snapshot;
+    });
     observeSessionVisibility();
     window.addEventListener(STAGE_PROMPT_EVENT, onStagePrompt);
     // Backgrounding the tab should mute a held PTY; foregrounding resumes it.
@@ -5589,6 +5597,7 @@
       pricingModel={agent === "codex"
         ? codexLiveDetectedModel || codexModel || undefined
         : model}
+      {modelsDevPricing}
       {daemonId}
       items={visualTranscriptItems}
       sessionCwd={effectiveSessionCwd}
