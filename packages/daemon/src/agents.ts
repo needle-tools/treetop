@@ -9,7 +9,7 @@
 
 import { readdir, stat, readFile, open } from "node:fs/promises";
 import { homedir } from "node:os";
-import { join, resolve, sep } from "node:path";
+import { dirname, join, resolve, sep } from "node:path";
 import { createLimiter } from "./concurrency";
 
 export type AgentKind = "claude" | "codex" | "copilot" | "ollama";
@@ -1467,6 +1467,9 @@ export async function scanCodex(
     }
     if (!rootExists) continue;
     const tScan = performance.now();
+    const indexedTitles = await readCodexSessionIndexTitles(
+      join(dirname(root), "session_index.jsonl"),
+    );
     const files = await collectCodexSessionFiles(root);
     const tCollect = performance.now() - tScan;
     const sessions: AgentSession[] = [];
@@ -1501,7 +1504,8 @@ export async function scanCodex(
                     .replace(/\.(jsonl|json)$/, ""),
                 source: sessionPath,
                 fileSizeBytes: stats.size,
-                title: overview.firstUserMessage,
+                title:
+                  indexedTitles.get(meta.id ?? "") ?? overview.firstUserMessage,
                 firstUserMessage: overview.firstUserMessage,
                 lastUserMessage: lastMsgs[lastMsgs.length - 1],
                 lastUserMessages: lastMsgs.length > 0 ? lastMsgs : undefined,
@@ -1564,6 +1568,33 @@ export async function scanCodex(
     return sessions;
   }
   return [];
+}
+
+async function readCodexSessionIndexTitles(
+  path: string,
+): Promise<Map<string, string>> {
+  const titles = new Map<string, string>();
+  let text: string;
+  try {
+    text = await readFile(path, "utf8");
+  } catch {
+    return titles;
+  }
+  for (const line of text.split(/\r?\n/)) {
+    if (!line.trim()) continue;
+    try {
+      const entry = JSON.parse(line) as { id?: unknown; thread_name?: unknown };
+      if (
+        typeof entry.id === "string" &&
+        typeof entry.thread_name === "string"
+      ) {
+        titles.set(entry.id, entry.thread_name);
+      }
+    } catch {
+      // Codex appends this index; one interrupted row must not hide the rest.
+    }
+  }
+  return titles;
 }
 
 export async function findCodexSessionSourceById(

@@ -1470,6 +1470,44 @@ describe("scanCodex", () => {
     expect(s.fileSizeBytes).toBe((await stat(file)).size);
   });
 
+  test("uses Codex's session index title without losing the first user message", async () => {
+    clearCodexScanCache();
+    const home = await tempDir("supergit-codex-index-title-");
+    const root = join(home, "sessions");
+    await mkdir(root, { recursive: true });
+    const id = "01a0671a-5a8f-76e3-83de-13fde305f59a";
+    await writeFile(
+      join(root, `rollout-${id}.jsonl`),
+      [
+        JSON.stringify({
+          type: "session_meta",
+          payload: { id, cwd: "/proj" },
+        }),
+        JSON.stringify({
+          type: "response_item",
+          payload: {
+            type: "message",
+            role: "user",
+            content: [{ type: "input_text", text: "Please inspect this page" }],
+          },
+        }),
+      ].join("\n"),
+    );
+    await writeFile(
+      join(home, "session_index.jsonl"),
+      `${JSON.stringify({
+        id,
+        thread_name: "Narrate open webpage live",
+        updated_at: "2026-09-03T11:50:05.644953Z",
+      })}\n`,
+    );
+
+    const sessions = await scanCodex([root]);
+
+    expect(sessions[0]?.title).toBe("Narrate open webpage live");
+    expect(sessions[0]?.firstUserMessage).toBe("Please inspect this page");
+  });
+
   test("skips system-injected user messages for title (AGENTS.md, XML tags)", async () => {
     clearCodexScanCache();
     const root = await tempDir("supergit-codex-sysinjected-");

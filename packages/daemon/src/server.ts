@@ -184,6 +184,7 @@ import {
   shouldReuseWorktreeDetailsCache,
   shouldCopyTempWorkspaceRelativePath,
   debugAnalyzeInstance,
+  serverTimingHeaders,
   rewriteTempWorkspaceAttachmentRefs,
   invalidateReposCacheRuntime,
   worktreeDetailsChanged,
@@ -2794,6 +2795,7 @@ const server = Bun.serve<TermWsData, never>({
     );
   },
   async fetch(req, srv) {
+    const requestStartedAt = performance.now();
     const url = new URL(req.url);
     const CORS = corsHeaders(req);
     // Per-route request counter for the rolling rate log below. Bucket
@@ -2801,15 +2803,18 @@ const server = Bun.serve<TermWsData, never>({
     // rare enough that the noise isn't worth the extra cardinality).
     requestCounts.set(url.pathname, (requestCounts.get(url.pathname) ?? 0) + 1);
 
-    const json = (body: unknown, init: ResponseInit = {}): Response =>
-      new Response(JSON.stringify(body), {
+    const json = (body: unknown, init: ResponseInit = {}): Response => {
+      const encoded = JSON.stringify(body);
+      return new Response(encoded, {
         ...init,
         headers: {
           "Content-Type": "application/json",
           ...CORS,
           ...(init.headers ?? {}),
+          ...serverTimingHeaders(performance.now() - requestStartedAt),
         },
       });
+    };
 
     try {
       if (req.method === "OPTIONS") {
@@ -4585,9 +4590,16 @@ const server = Bun.serve<TermWsData, never>({
           "codex-app-recordings",
         );
         try {
+          const [agents, sessionTitles] = await Promise.all([
+            sharedDetectAgents(),
+            workspace.listSessionTitles(),
+          ]);
           const sessions = await listCodexReplaySessions({
             recordingDir,
-            sessionTitles: await workspace.listSessionTitles(),
+            sessionTitles,
+            codexSessions: agents.map((session) =>
+              withSessionTitles(session, sessionTitles),
+            ),
           });
           return json({ ok: true, sessions });
         } catch (e) {
@@ -4612,12 +4624,19 @@ const server = Bun.serve<TermWsData, never>({
           "codex-app-recordings",
         );
         try {
+          const [agents, sessionTitles] = await Promise.all([
+            sharedDetectAgents(),
+            workspace.listSessionTitles(),
+          ]);
           return json({
             ok: true,
             ...(await readCodexReplaySession({
               recordingDir,
               threadId,
-              sessionTitles: await workspace.listSessionTitles(),
+              sessionTitles,
+              codexSessions: agents.map((session) =>
+                withSessionTitles(session, sessionTitles),
+              ),
             })),
           });
         } catch (e) {

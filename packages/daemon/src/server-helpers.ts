@@ -40,6 +40,15 @@ export interface DebugAnalyzeInstance {
   workspaceLabel?: string | null;
 }
 
+export function serverTimingHeaders(elapsedMs: number): Record<string, string> {
+  const safe = Number.isFinite(elapsedMs) ? Math.max(0, elapsedMs) : 0;
+  const value = String(Math.round(safe * 1_000) / 1_000);
+  return {
+    "Server-Timing": `supergit;dur=${value}`,
+    "X-Supergit-Server-Ms": value,
+  };
+}
+
 export function debugAnalyzeInstance(args: {
   workspace: string;
   port: number;

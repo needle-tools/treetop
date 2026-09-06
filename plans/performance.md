@@ -922,6 +922,38 @@ the frame flush, and live visual command output preserves a bounded head and
 tail (128 KiB) while the full output remains in Codex's session data. The same
 bound applies when the completed item snapshot replaces its streaming row.
 
+### Renderer attribution diagnostics (2026-09-04)
+
+The previous browser diagnostics had a blind spot between smooth rendering and
+a single catastrophic event-loop stall: sustained 20–50 ms frames could make
+the app feel continuously slow without ever crossing the two-second stall
+threshold. The UI now samples `requestAnimationFrame` in bounded ten-second
+windows and reports only after two consecutive pressured windows. A report
+includes FPS, p50/p95/max frame time, slow-frame counts, visible/offscreen
+session and worktree topology, animation counts, recent UI timing spans, and a
+single confirmation-window mutation summary. The mutation observer is armed
+only after the first bad window, disconnected after confirmation or when the
+document is hidden, and reports aggregate counts rather than mutation payloads.
+This keeps the measurement cost out of the normal rendering path.
+
+Chromium 123+ Long Animation Frame entries add blocking, render-start,
+style/layout-start, and script-count attribution. A direct probe of macOS's
+system WKWebView on 2026-09-04 showed neither `long-animation-frame` nor
+`longtask` in `PerformanceObserver.supportedEntryTypes`, so Treetop's primary
+signal is the portable rAF sampler. Pressure reports record the actual supported
+entry types and user agent so this assumption stays inspectable as WebKit
+changes. Session batch polling separately times JSON decode and reactive
+callback dispatch, so a slow cycle can be assigned to network/daemon work,
+payload decoding, or downstream Svelte updates.
+
+Every JSON API response now carries both standard `Server-Timing` and
+`X-Supergit-Server-Ms`. Fetch diagnostics preserve daemon duration and the
+remaining browser-observed duration (`outsideServerMs`) for slow requests and
+for requests adjacent to a long task. Interpret a large `serverMs` as route or
+serialization work; a small `serverMs` with a large outside remainder as
+transport/browser scheduling or renderer starvation. This replaces the former
+guess that a large wall-clock `fetch()` duration necessarily meant a slow API.
+
 ### Deferred levers (do only if Lever 1 isn't enough)
 
 2. **Poll only visible columns** — register/unregister the poll via an
@@ -1054,3 +1086,38 @@ climbs.
       pulses, sleep `zZZ`) — each auto-promotes while running; individually
       small now, collectively the 5%→2% residual. Cap by visibility/row count if
       the JS-side work is ever cleared and this becomes the ceiling.
+
+## Renderer update audit and visual DOM-write probe (2026-09-06)
+
+A fresh native build showed two separate costs. Cold `/api/repos` enrichment
+took 1.79s (1.73s in `asset-explorer`), while the settled WebContent process
+still used roughly 30–48% CPU. The renderer-pressure confirmation window saw
+only 11 DOM mutation records, and session-poll decode/dispatch stayed in the
+low single-digit milliseconds. A native WebKit sample instead remained in
+layout/compositor-tree traversal. This rules out a sustained whole-transcript
+Svelte/DOM rebuild as the cause of that particular steady-state load; it does
+not rule out intermittent mutation bursts.
+
+The F8 renderer panel now has an opt-in **Flash DOM updates** probe for those
+bursts. It observes concrete child/text/selected-attribute writes, flashes the
+nearest visible session/worktree/dock/note/terminal region, shows one-second
+ranked hotspots, and reports FPS plus p95 frame time. It still counts offscreen
+writes but does not animate offscreen boxes, caps flashes per frame, ignores its
+own panel, and tears every observer/timer/rAF down when disabled or closed.
+This is intentionally described as DOM-write visualization rather than paint
+flashing: page JavaScript cannot read WebKit's actual paint invalidation
+rectangles. Browser DevTools paint/layer overlays or native traces remain the
+authority for compositor-only work.
+
+A later busy sample (three concurrently working app-server sessions) made the
+split clearer: synchronous Codex event handling stayed below 1ms p95, while the
+post-Svelte settle span rose to 647ms p95 and WebContent held roughly 30–50%
+CPU over a 13k-element tree. Native `sample` stacks were dominated by
+`updateRendering`, `layoutIfNeeded`, compositing requirements, and transform
+animation extent. Disabling every CSS animation reduced WebContent CPU by about
+18%, but none of the existing named F8 groups reproduced that reduction. The
+renderer-pressure snapshot therefore now includes a grouped animation inventory
+(animation name, concrete target, pseudo-element, state, count); the next busy
+build can identify the previously anonymous 67-animation set directly instead
+of guessing from source selectors. Animations are contributory here, not the
+whole cost, so do not treat the all-off delta as a complete fix.

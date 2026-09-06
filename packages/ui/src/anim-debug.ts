@@ -100,6 +100,26 @@ export function markerLabel(active: Iterable<string>): string {
   return ids.length ? `dbg: disabled [${ids.join(", ")}]` : "dbg: all enabled";
 }
 
+export interface MutationHotspot {
+  label: string;
+  count: number;
+}
+
+/** Rank the concrete DOM regions patched during a render-debug window. */
+export function rankMutationHotspots(
+  counts: ReadonlyMap<string, number>,
+  limit = 6,
+): MutationHotspot[] {
+  return [...counts]
+    .filter(
+      ([label, count]) =>
+        label.length > 0 && Number.isFinite(count) && count > 0,
+    )
+    .map(([label, count]) => ({ label, count }))
+    .sort((a, b) => b.count - a.count || a.label.localeCompare(b.label))
+    .slice(0, Math.max(0, limit));
+}
+
 /**
  * Build the static override stylesheet for every group. Injected once; the
  * panel toggles `html.dbg-<id>` classes to switch a rule on/off. The `all`

@@ -30,6 +30,7 @@ import {
   rewriteTempWorkspaceAttachmentRefs,
   invalidateReposCacheRuntime,
   worktreeDetailsChanged,
+  serverTimingHeaders,
 } from "../src/server-helpers";
 
 // ---------------------------------------------------------------------------
@@ -1044,6 +1045,20 @@ describe("Codex session_index title sync", () => {
     const missing = applyCodexThreadTitleIndex("", source, "", now);
     expect(missing.changed).toBe(false);
     expect(missing.raw).toBe("");
+  });
+});
+
+describe("serverTimingHeaders", () => {
+  test("emits machine-readable and standard daemon duration headers", () => {
+    expect(serverTimingHeaders(12.3456)).toEqual({
+      "Server-Timing": "supergit;dur=12.346",
+      "X-Supergit-Server-Ms": "12.346",
+    });
+  });
+
+  test("clamps invalid or negative durations at the response boundary", () => {
+    expect(serverTimingHeaders(-5)["X-Supergit-Server-Ms"]).toBe("0");
+    expect(serverTimingHeaders(Number.NaN)["X-Supergit-Server-Ms"]).toBe("0");
   });
 });
 

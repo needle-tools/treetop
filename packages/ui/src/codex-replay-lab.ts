@@ -85,35 +85,262 @@ export interface CodexReplaySessionTransport extends CodexAppSessionTransport {
 
 export const DEFAULT_REPLAY_VISIBLE_MESSAGE_LIMIT = 260;
 
-export type CodexReplaySessionFilter = "all" | "both" | "rpc-only";
+const HIGH_TOOL_CALL_COUNT = 12;
+const HIGH_NEW_INPUT_TOKENS = 20_000;
+const HIGH_OUTPUT_TOKENS = 8_000;
+const LOW_THROUGHPUT_TOKENS_PER_SECOND = 5;
+const LOW_THROUGHPUT_MIN_OUTPUT_TOKENS = 20;
+const LOW_THROUGHPUT_MIN_DURATION_MS = 10_000;
+const LONG_TOOL_FREE_TURN_MS = 120_000;
+
+export type CodexReplayTurnIssueKind =
+  | "high-tool-usage"
+  | "high-new-input"
+  | "high-output"
+  | "low-throughput"
+  | "long-processing";
+
+export interface CodexReplayTurnIssue {
+  kind: CodexReplayTurnIssueKind;
+  label: string;
+  detail: string;
+  severity: number;
+}
+
+export interface CodexReplayTurnAnalysis {
+  index: number;
+  label: string;
+  startedAt?: string;
+  endedAt?: string;
+  durationMs?: number;
+  toolCallCount: number;
+  newInputTokens: number;
+  outputTokens: number;
+  reasoningTokens: number;
+  tokensPerSecond?: number;
+  issues: CodexReplayTurnIssue[];
+  heat: number;
+}
+
+export interface CodexReplayAnalysis {
+  turns: CodexReplayTurnAnalysis[];
+  issueTurnCount: number;
+  maxHeat: number;
+}
+
+export function analyzeCodexReplayTurns(
+  messages: readonly CodexReplayMessage[],
+): CodexReplayAnalysis {
+  const grouped: CodexReplayMessage[][] = [];
+  for (const message of messages) {
+    if (message.role === "user") grouped.push([]);
+    if (grouped.length > 0) grouped[grouped.length - 1]!.push(message);
+  }
+  const turns = grouped.map((turnMessages, index) =>
+    analyzeCodexReplayTurn(turnMessages, index),
+  );
+  return {
+    turns,
+    issueTurnCount: turns.filter((turn) => turn.issues.length > 0).length,
+    maxHeat: turns.reduce((max, turn) => Math.max(max, turn.heat), 0),
+  };
+}
+
+function analyzeCodexReplayTurn(
+  messages: readonly CodexReplayMessage[],
+  index: number,
+): CodexReplayTurnAnalysis {
+  const timestamps = messages
+    .map((message) => message.timestamp)
+    .filter((timestamp): timestamp is string => !!timestamp)
+    .map((timestamp) => ({ timestamp, ms: Date.parse(timestamp) }))
+    .filter(({ ms }) => Number.isFinite(ms))
+    .sort((a, b) => a.ms - b.ms);
+  const startedAt = timestamps[0];
+  const endedAt = timestamps[timestamps.length - 1];
+  const durationMs =
+    startedAt && endedAt ? Math.max(0, endedAt.ms - startedAt.ms) : undefined;
+  const toolIds = new Set<string>();
+  let anonymousToolCalls = 0;
+  let newInputTokens = 0;
+  let outputTokens = 0;
+  let reasoningTokens = 0;
+  for (const message of messages) {
+    for (const block of message.blocks) {
+      if (block.type !== "tool_use") continue;
+      if (block.toolUseId) toolIds.add(block.toolUseId);
+      else anonymousToolCalls += 1;
+    }
+    const usage = message.tokenUsage;
+    if (!usage) continue;
+    newInputTokens += Math.max(0, usage.input - usage.cachedInput);
+    outputTokens += Math.max(0, usage.output);
+    reasoningTokens += Math.max(0, usage.reasoningOutput);
+  }
+  const toolCallCount = toolIds.size + anonymousToolCalls;
+  const durationSeconds = durationMs !== undefined ? durationMs / 1000 : 0;
+  const tokensPerSecond =
+    toolCallCount === 0 && durationSeconds > 0 && outputTokens > 0
+      ? outputTokens / durationSeconds
+      : undefined;
+  const issues: CodexReplayTurnIssue[] = [];
+  if (toolCallCount >= HIGH_TOOL_CALL_COUNT) {
+    issues.push({
+      kind: "high-tool-usage",
+      label: "High tool usage",
+      detail: `${toolCallCount} tool calls`,
+      severity: clamp01(toolCallCount / 24),
+    });
+  }
+  if (newInputTokens >= HIGH_NEW_INPUT_TOKENS) {
+    issues.push({
+      kind: "high-new-input",
+      label: "Large new input",
+      detail: `${formatReplayTokenCount(newInputTokens)} uncached tokens`,
+      severity: clamp01(newInputTokens / 80_000),
+    });
+  }
+  if (outputTokens >= HIGH_OUTPUT_TOKENS) {
+    issues.push({
+      kind: "high-output",
+      label: "Large output",
+      detail: `${formatReplayTokenCount(outputTokens)} output tokens`,
+      severity: clamp01(outputTokens / 24_000),
+    });
+  }
+  if (
+    tokensPerSecond !== undefined &&
+    durationMs !== undefined &&
+    durationMs >= LOW_THROUGHPUT_MIN_DURATION_MS &&
+    outputTokens >= LOW_THROUGHPUT_MIN_OUTPUT_TOKENS &&
+    tokensPerSecond < LOW_THROUGHPUT_TOKENS_PER_SECOND
+  ) {
+    issues.push({
+      kind: "low-throughput",
+      label: "Low throughput",
+      detail: `${tokensPerSecond.toFixed(1)} output tok/s`,
+      severity: clamp01(1 - tokensPerSecond / LOW_THROUGHPUT_TOKENS_PER_SECOND),
+    });
+  }
+  if (
+    toolCallCount === 0 &&
+    durationMs !== undefined &&
+    durationMs >= LONG_TOOL_FREE_TURN_MS
+  ) {
+    issues.push({
+      kind: "long-processing",
+      label: "Long processing",
+      detail: `${formatReplayDuration(durationMs)} without tools`,
+      severity: clamp01(durationMs / 600_000),
+    });
+  }
+  const activityHeat = Math.max(
+    toolCallCount / 20,
+    newInputTokens / 80_000,
+    outputTokens / 16_000,
+    durationMs !== undefined ? durationMs / 300_000 : 0,
+  );
+  return {
+    index,
+    label: replayTurnLabel(messages, index),
+    ...(startedAt ? { startedAt: startedAt.timestamp } : {}),
+    ...(endedAt ? { endedAt: endedAt.timestamp } : {}),
+    ...(durationMs !== undefined ? { durationMs } : {}),
+    toolCallCount,
+    newInputTokens,
+    outputTokens,
+    reasoningTokens,
+    ...(tokensPerSecond !== undefined ? { tokensPerSecond } : {}),
+    issues,
+    heat: clamp01(
+      Math.max(activityHeat, ...issues.map((issue) => issue.severity), 0.04),
+    ),
+  };
+}
+
+function replayTurnLabel(
+  messages: readonly CodexReplayMessage[],
+  index: number,
+): string {
+  const user = messages.find((message) => message.role === "user");
+  const text = user?.blocks.find((block) => block.type === "text")?.text;
+  if (!text) return `Turn ${index + 1}`;
+  const compact = text
+    .replace(
+      /<in-app-browser-context\b[^>]*>[\s\S]*?<\/in-app-browser-context>/g,
+      "",
+    )
+    .replace(/\s+/g, " ")
+    .trim()
+    .replace(/^#+\s*My request(?: for Codex)?:\s*/i, "");
+  if (!compact) return `Turn ${index + 1}`;
+  return compact.length > 64 ? `${compact.slice(0, 63)}…` : compact;
+}
+
+function clamp01(value: number): number {
+  return Math.max(0, Math.min(1, value));
+}
+
+export function formatReplayTokenCount(value: number): string {
+  if (value < 1_000) return String(Math.round(value));
+  if (value < 100_000)
+    return `${(value / 1_000).toFixed(1).replace(/\.0$/, "")}k`;
+  return `${Math.round(value / 1_000)}k`;
+}
+
+export function formatReplayDuration(valueMs: number): string {
+  const seconds = Math.max(0, Math.round(valueMs / 1000));
+  if (seconds < 60) return `${seconds}s`;
+  return `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
+}
+
+export type CodexReplaySessionFilter =
+  | "all"
+  | "both"
+  | "rpc-only"
+  | "transcript-only";
 
 export function summarizeCodexReplaySessions(
-  sessions: readonly { hasTranscript: boolean }[],
+  sessions: readonly { hasTranscript: boolean; rpcFrameCount: number }[],
 ): {
   total: number;
   rpc: number;
   transcript: number;
   both: number;
   rpcOnly: number;
+  transcriptOnly: number;
 } {
+  const rpc = sessions.filter((session) => session.rpcFrameCount > 0).length;
   const transcript = sessions.filter((session) => session.hasTranscript).length;
+  const both = sessions.filter(
+    (session) => session.hasTranscript && session.rpcFrameCount > 0,
+  ).length;
   return {
     total: sessions.length,
-    rpc: sessions.length,
+    rpc,
     transcript,
-    both: transcript,
-    rpcOnly: sessions.length - transcript,
+    both,
+    rpcOnly: rpc - both,
+    transcriptOnly: transcript - both,
   };
 }
 
-export function filterCodexReplaySessions<T extends { hasTranscript: boolean }>(
-  sessions: readonly T[],
-  filter: CodexReplaySessionFilter,
-): T[] {
+export function filterCodexReplaySessions<
+  T extends { hasTranscript: boolean; rpcFrameCount: number },
+>(sessions: readonly T[], filter: CodexReplaySessionFilter): T[] {
   if (filter === "both")
-    return sessions.filter((session) => session.hasTranscript);
+    return sessions.filter(
+      (session) => session.hasTranscript && session.rpcFrameCount > 0,
+    );
   if (filter === "rpc-only") {
-    return sessions.filter((session) => !session.hasTranscript);
+    return sessions.filter(
+      (session) => !session.hasTranscript && session.rpcFrameCount > 0,
+    );
+  }
+  if (filter === "transcript-only") {
+    return sessions.filter(
+      (session) => session.hasTranscript && session.rpcFrameCount === 0,
+    );
   }
   return [...sessions];
 }
