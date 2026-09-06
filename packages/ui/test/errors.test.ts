@@ -12,6 +12,7 @@ import {
   fetchTimingBreakdown,
   performanceObserverCapabilities,
   rendererFramePressureDiagnostic,
+  summarizeAnimationInventory,
   summarizeRendererFrameWindow,
   getErrors,
   __resetFetchTrackingForTests,
@@ -776,6 +777,49 @@ describe("installBrowserResponsivenessTracking", () => {
       framesOver50Ms: 2,
       framesOver100Ms: 0,
     });
+  });
+
+  test("groups live animations by name, target, pseudo-element, and state", () => {
+    const target = {
+      tagName: "SPAN",
+      id: "",
+      classList: ["agent-pill", "working", "svelte-abc123"],
+    };
+    const animations = [
+      {
+        animationName: "pill-sweep",
+        playState: "running",
+        effect: { target, pseudoElement: "::before" },
+      },
+      {
+        animationName: "pill-sweep",
+        playState: "running",
+        effect: { target, pseudoElement: "::before" },
+      },
+      {
+        animationName: "fade",
+        playState: "paused",
+        effect: {
+          target: { tagName: "DIV", id: "hero", classList: ["panel"] },
+          pseudoElement: null,
+        },
+      },
+    ] as unknown as Animation[];
+
+    expect(summarizeAnimationInventory(animations)).toEqual([
+      {
+        name: "pill-sweep",
+        target: "span.agent-pill.working::before",
+        state: "running",
+        count: 2,
+      },
+      {
+        name: "fade",
+        target: "div#hero.panel",
+        state: "paused",
+        count: 1,
+      },
+    ]);
   });
 
   test("requires consecutive bad frame windows and respects cooldown", () => {

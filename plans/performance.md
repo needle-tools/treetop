@@ -1108,3 +1108,16 @@ This is intentionally described as DOM-write visualization rather than paint
 flashing: page JavaScript cannot read WebKit's actual paint invalidation
 rectangles. Browser DevTools paint/layer overlays or native traces remain the
 authority for compositor-only work.
+
+A later busy sample (three concurrently working app-server sessions) made the
+split clearer: synchronous Codex event handling stayed below 1ms p95, while the
+post-Svelte settle span rose to 647ms p95 and WebContent held roughly 30–50%
+CPU over a 13k-element tree. Native `sample` stacks were dominated by
+`updateRendering`, `layoutIfNeeded`, compositing requirements, and transform
+animation extent. Disabling every CSS animation reduced WebContent CPU by about
+18%, but none of the existing named F8 groups reproduced that reduction. The
+renderer-pressure snapshot therefore now includes a grouped animation inventory
+(animation name, concrete target, pseudo-element, state, count); the next busy
+build can identify the previously anonymous 67-animation set directly instead
+of guessing from source selectors. Animations are contributory here, not the
+whole cost, so do not treat the all-off delta as a complete fix.
