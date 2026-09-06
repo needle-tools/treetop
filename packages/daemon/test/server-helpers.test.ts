@@ -29,6 +29,7 @@ import {
   debugAnalyzeInstance,
   rewriteTempWorkspaceAttachmentRefs,
   invalidateReposCacheRuntime,
+  worktreeDetailsChanged,
 } from "../src/server-helpers";
 
 // ---------------------------------------------------------------------------
@@ -846,6 +847,28 @@ describe("patchWorktreeDetailsInRepos", () => {
       fileStatus: { dirtyLines: 4 },
     });
     expect(ok).toBe(true);
+  });
+});
+
+describe("worktreeDetailsChanged", () => {
+  const clean = {
+    fileStatus: { staged: 0, unstaged: 0, untracked: 0, conflicts: 0 },
+    branchStatus: { ahead: 0, behind: 0, upstream: "origin/main" },
+    lastCommit: { sha: "abc", subject: "same" },
+  };
+
+  test("suppresses a watcher event when recomputed git details are unchanged", () => {
+    expect(worktreeDetailsChanged(clean, structuredClone(clean))).toBe(false);
+  });
+
+  test("broadcasts the first observation and real nested changes", () => {
+    expect(worktreeDetailsChanged(undefined, clean)).toBe(true);
+    expect(
+      worktreeDetailsChanged(clean, {
+        ...clean,
+        fileStatus: { ...clean.fileStatus, unstaged: 1 },
+      }),
+    ).toBe(true);
   });
 });
 

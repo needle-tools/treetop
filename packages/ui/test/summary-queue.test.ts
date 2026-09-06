@@ -227,6 +227,7 @@ describe("nextCachedSessionSummaryRequest", () => {
   test("clears when the column no longer has a source", () => {
     expect(
       nextCachedSessionSummaryRequest({
+        enabled: true,
         target: undefined,
         sessionLoaded: false,
         nearViewport: false,
@@ -238,6 +239,7 @@ describe("nextCachedSessionSummaryRequest", () => {
   test("waits until the session is loaded and near the viewport", () => {
     expect(
       nextCachedSessionSummaryRequest({
+        enabled: true,
         target: "source-a",
         sessionLoaded: false,
         nearViewport: true,
@@ -246,6 +248,7 @@ describe("nextCachedSessionSummaryRequest", () => {
     ).toBeNull();
     expect(
       nextCachedSessionSummaryRequest({
+        enabled: true,
         target: "source-a",
         sessionLoaded: true,
         nearViewport: false,
@@ -257,6 +260,7 @@ describe("nextCachedSessionSummaryRequest", () => {
   test("requests a visible loaded source once", () => {
     expect(
       nextCachedSessionSummaryRequest({
+        enabled: true,
         target: "source-a",
         sessionLoaded: true,
         nearViewport: true,
@@ -265,10 +269,23 @@ describe("nextCachedSessionSummaryRequest", () => {
     ).toBe("source-a");
     expect(
       nextCachedSessionSummaryRequest({
+        enabled: true,
         target: "source-a",
         sessionLoaded: true,
         nearViewport: true,
         lastRequested: "source-a",
+      }),
+    ).toBeNull();
+  });
+
+  test("does no background lookup when summaries are disabled", () => {
+    expect(
+      nextCachedSessionSummaryRequest({
+        enabled: false,
+        target: "source-a",
+        sessionLoaded: true,
+        nearViewport: true,
+        lastRequested: undefined,
       }),
     ).toBeNull();
   });

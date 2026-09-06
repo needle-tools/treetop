@@ -40,6 +40,16 @@ export function shouldPauseColumn(isIntersecting: boolean): boolean {
   return !isIntersecting;
 }
 
+/** Key expensive per-session metadata reads only after the owning column is
+ * close enough to become visible. An empty key means no request. */
+export function visibleSessionRequestKey(
+  source: string | undefined | null,
+  daemonId: string | undefined,
+  nearViewport: boolean,
+): string {
+  return source && nearViewport ? `${daemonId ?? ""}\0${source}` : "";
+}
+
 export function rectNearViewport(
   rect: Pick<DOMRect, "top" | "bottom" | "left" | "right">,
   viewport: { width: number; height: number },
