@@ -1086,3 +1086,25 @@ climbs.
       pulses, sleep `zZZ`) — each auto-promotes while running; individually
       small now, collectively the 5%→2% residual. Cap by visibility/row count if
       the JS-side work is ever cleared and this becomes the ceiling.
+
+## Renderer update audit and visual DOM-write probe (2026-09-06)
+
+A fresh native build showed two separate costs. Cold `/api/repos` enrichment
+took 1.79s (1.73s in `asset-explorer`), while the settled WebContent process
+still used roughly 30–48% CPU. The renderer-pressure confirmation window saw
+only 11 DOM mutation records, and session-poll decode/dispatch stayed in the
+low single-digit milliseconds. A native WebKit sample instead remained in
+layout/compositor-tree traversal. This rules out a sustained whole-transcript
+Svelte/DOM rebuild as the cause of that particular steady-state load; it does
+not rule out intermittent mutation bursts.
+
+The F8 renderer panel now has an opt-in **Flash DOM updates** probe for those
+bursts. It observes concrete child/text/selected-attribute writes, flashes the
+nearest visible session/worktree/dock/note/terminal region, shows one-second
+ranked hotspots, and reports FPS plus p95 frame time. It still counts offscreen
+writes but does not animate offscreen boxes, caps flashes per frame, ignores its
+own panel, and tears every observer/timer/rAF down when disabled or closed.
+This is intentionally described as DOM-write visualization rather than paint
+flashing: page JavaScript cannot read WebKit's actual paint invalidation
+rectangles. Browser DevTools paint/layer overlays or native traces remain the
+authority for compositor-only work.

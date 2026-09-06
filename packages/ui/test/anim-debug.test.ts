@@ -14,6 +14,7 @@ import {
   buildOverrideCss,
   classForGroup,
   markerLabel,
+  rankMutationHotspots,
 } from "../src/anim-debug";
 
 describe("anim-debug groups", () => {
@@ -106,5 +107,52 @@ describe("buildOverrideCss", () => {
 
   test("is deterministic", () => {
     expect(buildOverrideCss(ANIM_GROUPS)).toBe(css);
+  });
+});
+
+describe("rankMutationHotspots", () => {
+  test("ranks concrete DOM-write regions by count with a stable tie break", () => {
+    expect(
+      rankMutationHotspots(
+        new Map([
+          ["session: alpha", 7],
+          ["worktree: beta", 12],
+          ["dock", 7],
+        ]),
+      ),
+    ).toEqual([
+      { label: "worktree: beta", count: 12 },
+      { label: "dock", count: 7 },
+      { label: "session: alpha", count: 7 },
+    ]);
+  });
+
+  test("bounds the overlay list without changing the source counts", () => {
+    const counts = new Map([
+      ["a", 4],
+      ["b", 3],
+      ["c", 2],
+      ["d", 1],
+    ]);
+
+    expect(rankMutationHotspots(counts, 2)).toEqual([
+      { label: "a", count: 4 },
+      { label: "b", count: 3 },
+    ]);
+    expect(counts.size).toBe(4);
+  });
+
+  test("drops empty labels and non-positive or non-finite counts", () => {
+    expect(
+      rankMutationHotspots(
+        new Map([
+          ["", 9],
+          ["valid", 3],
+          ["zero", 0],
+          ["negative", -1],
+          ["nan", Number.NaN],
+        ]),
+      ),
+    ).toEqual([{ label: "valid", count: 3 }]);
   });
 });
