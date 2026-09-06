@@ -44,6 +44,7 @@ import {
   visualMediaPathTarget,
   visualObservedProcessOwnerToolUseBlock,
   visualToolRemoteHostLabel,
+  visualTranscriptMessageWindow,
   visualWorkAutoOpenActionGroupId,
   visualWorkDetailEntries,
   visualWorkDetailGroups,
@@ -1051,11 +1052,7 @@ describe("buildVisualTranscriptItems", () => {
           timestamp: "2026-06-19T10:00:01.000Z",
           blocks: [{ type: "marker", text: "[Task started]" }],
         },
-        msg(
-          "assistant",
-          "I’m checking this now.",
-          "2026-06-19T10:00:02.000Z",
-        ),
+        msg("assistant", "I’m checking this now.", "2026-06-19T10:00:02.000Z"),
         {
           role: "system",
           timestamp: "2026-06-19T10:00:03.000Z",
@@ -1887,6 +1884,107 @@ describe("reuseStableVisualTranscriptItems", () => {
 });
 
 describe("updateVisualTranscriptItems", () => {
+  it("keeps transcript rendering bounded to a coherent recent user window", () => {
+    const messages: Message[] = [];
+    for (let i = 0; i < 600; i += 1) {
+      messages.push(
+        msg(
+          "user",
+          `request ${i}`,
+          `2026-06-19T10:${String(i % 60).padStart(2, "0")}:00.000Z`,
+        ),
+      );
+      messages.push(
+        msg(
+          "assistant",
+          `answer ${i}`,
+          `2026-06-19T10:${String(i % 60).padStart(2, "0")}:01.000Z`,
+        ),
+      );
+    }
+
+    const window = visualTranscriptMessageWindow(messages, {
+      minMessages: 100,
+      minUserTurns: 2,
+    });
+
+    expect(window.totalMessageCount).toBe(1200);
+    expect(window.hiddenMessageCount).toBe(1100);
+    expect(window.messageIndexOffset).toBe(1100);
+    expect(window.messages).toHaveLength(100);
+    expect(window.messages[0]?.role).toBe("user");
+    expect(window.messages.at(-2)?.role).toBe("user");
+    expect(window.messages.at(-1)?.role).toBe("assistant");
+  });
+
+  it("extends the visible transcript window to include the last two user turns", () => {
+    const messages: Message[] = [msg("user", "first")];
+    for (let i = 0; i < 160; i += 1) {
+      messages.push(msg("assistant", `tool ${i}`));
+    }
+    messages.push(msg("user", "latest"));
+    messages.push(msg("assistant", "answer"));
+
+    const window = visualTranscriptMessageWindow(messages, {
+      minMessages: 30,
+      minUserTurns: 2,
+    });
+
+    expect(window.messageIndexOffset).toBe(0);
+    expect(window.messages[0]?.blocks[0]?.text).toBe("first");
+    expect(window.messages.at(-2)?.blocks[0]?.text).toBe("latest");
+  });
+
+  it("keeps canonical message indexes when updating a visible tail window", () => {
+    const prefix = Array.from({ length: 50 }, (_, index) =>
+      msg("assistant", `old ${index}`),
+    );
+    const user = msg("user", "fix it", "2026-06-19T10:00:00.000Z");
+    const toolUse: Message = {
+      id: "tool-use",
+      role: "assistant",
+      timestamp: "2026-06-19T10:00:12.000Z",
+      blocks: [{ type: "tool_use", toolName: "exec_command" }],
+    };
+    const previousMessages = [...prefix, user, toolUse];
+    const previousWindow = visualTranscriptMessageWindow(previousMessages, {
+      minMessages: 2,
+      minUserTurns: 1,
+    });
+    const previousItems = buildVisualTranscriptItems(previousWindow.messages, {
+      active: true,
+      messageIndexOffset: previousWindow.messageIndexOffset,
+    });
+    const toolResult: Message = {
+      id: "tool-result",
+      role: "tool",
+      timestamp: "2026-06-19T10:00:13.000Z",
+      blocks: [{ type: "tool_result", text: "ok" }],
+    };
+    const nextMessages = [...previousMessages, toolResult];
+    const nextWindow = visualTranscriptMessageWindow(nextMessages, {
+      minMessages: 2,
+      minUserTurns: 1,
+    });
+
+    const next = updateVisualTranscriptItems({
+      previousMessages: previousWindow.messages,
+      previousItems,
+      previousActive: true,
+      messages: nextWindow.messages,
+      active: true,
+      messageIndexOffset: nextWindow.messageIndexOffset,
+    });
+
+    expect(next[0]?.messageIndex).toBe(50);
+    expect(next[0]).toBe(previousItems[0]);
+    expect(next[1]?.kind).toBe("work");
+    if (next[1]?.kind !== "work") throw new Error("expected work item");
+    expect(next[1].entries.map((entry) => entry.messageIndex)).toEqual([
+      51, 52,
+    ]);
+  });
+
   it("rebuilds only from the affected tail user turn when a live message grows", () => {
     const firstUser = msg("user", "fix it", "2026-06-19T10:00:00.000Z");
     const firstAnswer = msg("assistant", "Done.", "2026-06-19T10:00:02.000Z");
@@ -3251,6 +3349,54 @@ describe("visual tool payload display helpers", () => {
     );
   });
 
+  it("summarizes web.run calls wrapped in custom exec scripts", () => {
+    const block = {
+      type: "tool_use",
+      toolName: "exec",
+      toolInput:
+        'const res = await tools.web__run({search_query:[{"q":"site:spec.c2pa.org specifications 2.4 C2PA Specification"},{"q":"site:mediabunny.dev guide metadata tags Input getMetadataTags Output setMetadataTags"}],"response_length":"medium"}); text(JSON.stringify(res).slice(0,20000));',
+    };
+
+    expect(visualToolPreviewText(block)).toBe(
+      "Search web for site:spec.c2pa.org specifications 2.4 C2PA Specification, site:mediabunny.dev guide metadata tags Input getMetadataTags Output setMetadataTags",
+    );
+    expect(visualToolIconNameForPreview(block)).toBe("fetch");
+    expect(visualToolCallPayloadText(block)).toContain("tools.web__run");
+  });
+
+  it("summarizes web.run find calls with unquoted object keys", () => {
+    const block = {
+      type: "tool_use",
+      toolName: "exec",
+      toolInput:
+        'const r = await tools.web__run({find:[{ref_id:"turn3search0",pattern:"ChapterAtom"},{ref_id:"turn3search0",pattern:"ChapterTimeStart"},{ref_id:"turn3search0",pattern:"Attachments"}],response_length:"long"});text(r);',
+    };
+
+    expect(visualToolPreviewText(block)).toBe(
+      "Find web text ChapterAtom, ChapterTimeStart, Attachments",
+    );
+    expect(visualToolIconNameForPreview(block)).toBe("fetch");
+  });
+
+  it("summarizes direct structured web.run tool calls", () => {
+    const block = {
+      type: "tool_use",
+      toolName: "web.run",
+      toolInput: {
+        open: [
+          { ref_id: "turn0search0" },
+          { ref_id: "https://github.com/contentauth/c2pa-js" },
+        ],
+        response_length: "long",
+      },
+    };
+
+    expect(visualToolPreviewText(block)).toBe(
+      "Open web pages turn0search0, https://github.com/contentauth/c2pa-js",
+    );
+    expect(visualToolIconNameForPreview(block)).toBe("fetch");
+  });
+
   it("summarizes tail log reads as log previews", () => {
     const block = {
       type: "tool_use",
@@ -3439,9 +3585,7 @@ describe("visual tool payload display helpers", () => {
           cmd: "python3 scripts/analyze_conversions.py --input assets.json",
         },
       }),
-    ).toBe(
-      "Run Python script analyze_conversions.py --input assets.json",
-    );
+    ).toBe("Run Python script analyze_conversions.py --input assets.json");
 
     expect(
       visualToolPreviewText({
@@ -6438,19 +6582,21 @@ describe("visualWorkOverview", () => {
       agentPerSecond: 35.5,
       toolPerSecond: 0,
     });
-    expect(overview.categories.map(({ category, count }) => [category, count]))
-      .toEqual([
-        ["docker", 1],
-        ["edit", 1],
-        ["read", 1],
-      ]);
-    expect(overview.categories.find(({ category }) => category === "read"))
-      .toEqual({
-        category: "read",
-        count: 1,
-        label: "read",
-        iconName: "read",
-      });
+    expect(
+      overview.categories.map(({ category, count }) => [category, count]),
+    ).toEqual([
+      ["docker", 1],
+      ["edit", 1],
+      ["read", 1],
+    ]);
+    expect(
+      overview.categories.find(({ category }) => category === "read"),
+    ).toEqual({
+      category: "read",
+      count: 1,
+      label: "read",
+      iconName: "read",
+    });
     expect(overview.changedFiles).toEqual([
       {
         path: "packages/ui/src/VisualTranscript.svelte",
@@ -6703,12 +6849,7 @@ describe("visualWorkOverview", () => {
       "+four",
       "",
     ].join("\n");
-    const secondDiff = [
-      "@@ -8,2 +9,2 @@",
-      "-five",
-      "+six",
-      "",
-    ].join("\n");
+    const secondDiff = ["@@ -8,2 +9,2 @@", "-five", "+six", ""].join("\n");
     const entries = buildVisualWorkDisplayEntries([
       {
         message: {
@@ -6845,9 +6986,11 @@ describe("visualWorkOverview", () => {
         diff: secondDiff.trim(),
       },
     ]);
-    expect(
-      sessionViewArtifact?.changes?.map((change) => change.diff),
-    ).toEqual([undefined, firstDiff.trim(), secondDiff.trim()]);
+    expect(sessionViewArtifact?.changes?.map((change) => change.diff)).toEqual([
+      undefined,
+      firstDiff.trim(),
+      secondDiff.trim(),
+    ]);
     expect(
       overview.artifacts.filter((artifact) => artifact.path === path),
     ).toHaveLength(1);

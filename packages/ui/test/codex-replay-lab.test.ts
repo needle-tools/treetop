@@ -2,8 +2,10 @@ import { describe, expect, test } from "bun:test";
 import {
   codexReplayItemsUntil,
   codexReplayMessagesUntil,
+  createCodexReplayPlayback,
   parseCodexReplayTextAsync,
   parseCodexReplayText,
+  setCodexReplayPlaybackStep,
 } from "../src/codex-replay-lab";
 
 describe("Codex replay lab parser", () => {
@@ -122,6 +124,50 @@ describe("Codex replay lab parser", () => {
       "item/completed",
     ]);
     expect(codexReplayMessagesUntil(replay, 2).length).toBeGreaterThan(0);
+  });
+
+  test("steps replay playback incrementally and keeps rendering bounded", () => {
+    const replay = {
+      mode: "transcript" as const,
+      steps: Array.from({ length: 12 }, (_, index) => ({
+        kind: "message" as const,
+        seq: index + 1,
+        label: "User message",
+        message: {
+          id: `message-${index}`,
+          role: "user" as const,
+          timestamp: `2026-08-27T10:00:${String(index).padStart(2, "0")}.000Z`,
+          blocks: [{ type: "text" as const, text: `message ${index}` }],
+        },
+      })),
+      warnings: [],
+    };
+
+    let playback = createCodexReplayPlayback(replay, {
+      visibleMessageLimit: 5,
+    });
+    expect(playback.stepIndex).toBe(0);
+    expect(playback.renderedMessageCount).toBe(0);
+
+    playback = setCodexReplayPlaybackStep(playback, 8);
+    expect(playback.stepIndex).toBe(8);
+    expect(playback.totalMessageCount).toBe(8);
+    expect(playback.renderedMessageCount).toBe(5);
+    expect(
+      playback.messages
+        .slice(-1)[0]
+        ?.blocks.find((block) => block.type === "text"),
+    ).toMatchObject({ text: "message 7" });
+
+    playback = setCodexReplayPlaybackStep(playback, 9);
+    expect(playback.stepIndex).toBe(9);
+    expect(playback.totalMessageCount).toBe(9);
+    expect(playback.renderedMessageCount).toBe(5);
+
+    playback = setCodexReplayPlaybackStep(playback, 3);
+    expect(playback.stepIndex).toBe(3);
+    expect(playback.totalMessageCount).toBe(3);
+    expect(playback.renderedMessageCount).toBe(3);
   });
 
   test("accepts regular Codex session JSONL as a transcript", () => {

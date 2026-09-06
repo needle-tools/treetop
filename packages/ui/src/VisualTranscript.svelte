@@ -7,7 +7,6 @@
   import { apiUrl } from "./api";
   import { isLocalFileMarkdownHref } from "./open-url";
   import ChangedFilesTooltipBody from "./ChangedFilesTooltipBody.svelte";
-  import Diff from "./Diff.svelte";
   import DiffLoader from "./DiffLoader.svelte";
   import LoadingSpinner from "./LoadingSpinner.svelte";
   import SparseArtifactTree from "./SparseArtifactTree.svelte";
@@ -1111,16 +1110,6 @@
     return visualFileEditSummaryForBlock(workEntryToolUseBlock(entry));
   }
 
-  function fileEditBasename(path: string): string {
-    return path.split(/[\\/]/).filter(Boolean).at(-1) ?? path;
-  }
-
-  function fileEditActionLabel(action: string): string {
-    if (action === "added") return "Added";
-    if (action === "deleted") return "Deleted";
-    return "Edited";
-  }
-
   function workEntryToolPreview(
     block: NormalizedBlock,
     context?: VisualToolPreviewContext,
@@ -1710,6 +1699,22 @@
         .map((file) => [worktreeRelativePreviewPath(file.path), file.diff!]),
     );
     return { staged: [], unstaged: paths, untracked: [], stats, diffs };
+  }
+
+  function workArtifactsForFileEdits(
+    summary: VisualFileEditSummary,
+  ): VisualWorkArtifact[] {
+    return summary.files.map((file, index) => ({
+      id: `edit:${index}:${file.path}`,
+      kind: "file",
+      action: "changed",
+      label: worktreeRelativePreviewPath(file.path),
+      path: file.path,
+      additions: file.additions,
+      deletions: file.deletions,
+      diff: file.raw,
+      fileAction: file.action,
+    }));
   }
 
   function normalizedPreviewPath(path: string): string {
@@ -2458,58 +2463,14 @@
 {/snippet}
 
 {#snippet renderFileEditSummary(summary: VisualFileEditSummary)}
-  {@const pathParts = visualPathPreviewTargets(
-    summary.files.map((file) => file.path),
-  )}
   <div class="work-file-edits">
-    <div class="work-file-edit-list">
-      {#each summary.files as file, fileIndex}
-        {@const pathPart = pathParts[fileIndex] ?? {
-          kind: "path" as const,
-          text: fileEditBasename(file.path),
-          path: file.path,
-          range: "",
-        }}
-        {#if file.raw}
-          <details class="work-file-edit-detail">
-            <summary class="work-file-edit-row">
-              <span class="work-file-action"
-                >{fileEditActionLabel(file.action)}</span
-              >
-              {@render renderPreviewPathChip(pathPart, undefined)}
-              {#if file.additions !== undefined}
-                <span class="work-file-add">+{file.additions}</span>
-              {/if}
-              {#if file.deletions !== undefined}
-                <span class="work-file-del">-{file.deletions}</span>
-              {/if}
-            </summary>
-            <div class="work-file-raw">
-              <Diff
-                text={file.raw}
-                label="diff"
-                copyable
-                compact
-                hideSingleFileHeader
-              />
-            </div>
-          </details>
-        {:else}
-          <div class="work-file-edit-row">
-            <span class="work-file-action"
-              >{fileEditActionLabel(file.action)}</span
-            >
-            {@render renderPreviewPathChip(pathPart, undefined)}
-            {#if file.additions !== undefined}
-              <span class="work-file-add">+{file.additions}</span>
-            {/if}
-            {#if file.deletions !== undefined}
-              <span class="work-file-del">-{file.deletions}</span>
-            {/if}
-          </div>
-        {/if}
-      {/each}
-    </div>
+    <SparseArtifactTree
+      artifacts={workArtifactsForFileEdits(summary)}
+      worktreePath={sessionCwd}
+      {daemonId}
+      diffFallback="none"
+      onOpenPath={openWorkArtifact}
+    />
   </div>
 {/snippet}
 
@@ -3651,7 +3612,8 @@
     flex: 1 1 0;
     min-height: 0;
     max-height: none;
-    overflow: auto;
+    overflow-x: hidden;
+    overflow-y: auto;
     contain: layout paint style;
     display: flex;
     flex-direction: column;
@@ -3852,12 +3814,16 @@
   .work-entry {
     border-radius: var(--radius-sm);
     min-width: 0;
+    max-width: 100%;
   }
   .work-foldout > summary,
   .work-entry > summary {
     display: flex;
     align-items: center;
     gap: 0.45rem;
+    min-width: 0;
+    max-width: 100%;
+    box-sizing: border-box;
     list-style: none;
     color: var(--text-muted);
     cursor: pointer;
@@ -3866,6 +3832,8 @@
   .work-foldout > summary {
     width: fit-content;
     max-width: 100%;
+    flex-wrap: wrap;
+    overflow: visible;
     padding: 0.25rem 0.5rem;
     border: 1px solid color-mix(in srgb, var(--surface-3) 65%, transparent);
     border-radius: 999px;
@@ -3953,7 +3921,10 @@
     display: inline-flex;
     align-items: center;
     gap: 0.25rem;
+    flex: 1 1 auto;
     min-width: 0;
+    max-width: 100%;
+    overflow: hidden;
   }
   .work-subagent-badge {
     display: inline-flex;
@@ -4047,15 +4018,19 @@
   .work-summary-pills {
     display: inline-flex;
     align-items: center;
+    flex-wrap: wrap;
     gap: 0.18rem;
+    flex: 1 1 10rem;
     min-width: 0;
-    overflow: hidden;
+    max-width: 100%;
+    overflow: visible;
   }
   .work-summary-pill-shell {
     display: inline-flex;
     align-items: center;
     flex: 0 0 auto;
     min-width: 0;
+    max-width: 100%;
     will-change: transform;
   }
   .work-summary-chip {
@@ -4195,8 +4170,18 @@
     align-items: center;
     justify-content: flex-end;
     gap: 0.45rem;
-    min-width: max-content;
+    flex: 0 0 auto;
+    margin-left: auto;
+    min-width: 0;
+    max-width: 100%;
+    overflow: hidden;
     color: var(--text-faint);
+  }
+  .work-summary-right-meta > * {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
   .work-summary-meta-dot {
     opacity: 0.7;
@@ -4205,7 +4190,8 @@
     display: inline-flex;
     align-items: baseline;
     gap: 0.34rem;
-    min-width: max-content;
+    min-width: 0;
+    max-width: 100%;
     font-variant-numeric: tabular-nums;
   }
   .work-action-group-entries {
@@ -4791,35 +4777,18 @@
     min-width: 0;
     color: var(--text-2);
   }
-  .work-file-edit-row {
-    display: flex;
-    align-items: baseline;
-    gap: 0.42rem;
-    min-width: 0;
-  }
   .work-file-edits-icon {
     color: var(--text-faint);
     font-family: ui-monospace, monospace;
     line-height: 1;
   }
-  .work-file-edit-list {
-    display: grid;
-    gap: 0.2rem;
-    min-width: 0;
-  }
-  .work-file-edit-detail {
-    min-width: 0;
-  }
-  .work-file-edit-detail > summary,
   .work-raw-tool-details > summary {
     list-style: none;
     cursor: pointer;
   }
-  .work-file-edit-detail > summary::-webkit-details-marker,
   .work-raw-tool-details > summary::-webkit-details-marker {
     display: none;
   }
-  .work-file-edit-detail > summary::before,
   .work-raw-tool-details > summary::before {
     content: "▸";
     display: inline-block;
@@ -4828,13 +4797,8 @@
     line-height: 1;
     transition: transform 0.15s ease-out;
   }
-  .work-file-edit-detail[open] > summary::before,
   .work-raw-tool-details[open] > summary::before {
     transform: rotate(90deg);
-  }
-  .work-file-action {
-    flex: 0 0 auto;
-    color: var(--text-muted);
   }
   .work-file-add,
   .work-file-del {
@@ -4847,10 +4811,6 @@
   }
   .work-file-del {
     color: var(--bad, #ff5a5a);
-  }
-  .work-file-raw {
-    margin: 0.24rem 0 0.42rem 1.1rem;
-    min-width: 0;
   }
   .work-raw-tool-details {
     display: grid;
