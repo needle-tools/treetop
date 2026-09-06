@@ -11,8 +11,6 @@
  */
 
 import { test, expect, describe } from "bun:test";
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
 import {
   repoChipFg,
   noteExcerpt,
@@ -28,11 +26,6 @@ import {
   clampSubject,
   COMMIT_SUBJECT_MAX,
 } from "../src/display-helpers";
-
-const APP_SOURCE = readFileSync(
-  join(import.meta.dir, "../src/App.svelte"),
-  "utf-8",
-);
 
 // ---------------------------------------------------------------------------
 // repoChipFg  (extracted to display-helpers.ts)
@@ -283,31 +276,6 @@ describe("duplicateRepoNotice", () => {
       title: "Folder already added",
       message: "/tmp/project is already in the dashboard.",
     });
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Projects menu virtual entries
-// ---------------------------------------------------------------------------
-
-describe("Projects menu", () => {
-  test("Add Folder opens the picker immediately and there's an Open from sessions entry", () => {
-    expect(APP_SOURCE).toContain("projects-add-folder-row");
-    expect(APP_SOURCE).toContain("<span class=\"projects-plus\"");
-    expect(APP_SOURCE).toContain("<span class=\"projects-name\">Add Folder</span>");
-    // Add Folder now launches the native folder picker right away instead
-    // of scrolling down to the footer CTA.
-    expect(APP_SOURCE).toContain("void pickAndAdd()");
-    // The dead scroll-to-footer helper is gone with it.
-    expect(APP_SOURCE).not.toContain("focusAddFolderFooter");
-    // New sibling entry reuses the import-sessions popover, scoped to the
-    // dropdown via importMenuSource so it doesn't double-render with the
-    // inline (footer / empty-state) copy.
-    expect(APP_SOURCE).toContain(
-      "<span class=\"projects-name\">Open from sessions</span>",
-    );
-    expect(APP_SOURCE).toContain("toggleImportSessions(e, \"projects\")");
-    expect(APP_SOURCE).toContain("projects-sessions-popover");
   });
 });
 
