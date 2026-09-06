@@ -2,14 +2,18 @@
   import { onDestroy } from "svelte";
   import VisualTranscript from "./VisualTranscript.svelte";
   import {
-    codexReplayItemsUntil,
+    createCodexReplayPlayback,
     parseCodexReplayTextAsync,
+    setCodexReplayPlaybackStep,
+    type CodexReplayPlaybackState,
     type ParsedCodexReplay,
   } from "./codex-replay-lab";
 
   let replay: ParsedCodexReplay | null = null;
+  let playback: CodexReplayPlaybackState | null = null;
   let fileName = "";
   let stepIndex = 0;
+  let scrubStepIndex = 0;
   let playing = false;
   let playTimer: ReturnType<typeof setInterval> | null = null;
   let parseError = "";
@@ -24,10 +28,12 @@
   let expandedThinkingWorkKeys = new Set<string>();
 
   $: stepCount = replay?.steps.length ?? 0;
-  $: clampedStepIndex = Math.min(stepIndex, stepCount);
-  $: items = replay ? codexReplayItemsUntil(replay, clampedStepIndex) : [];
+  $: clampedStepIndex = playback?.stepIndex ?? 0;
+  $: items = playback?.items ?? [];
   $: active = !!replay && replay.mode === "rpc" && clampedStepIndex < stepCount;
   $: currentStep = replay?.steps[clampedStepIndex - 1];
+  $: renderedMessageCount = playback?.renderedMessageCount ?? 0;
+  $: totalMessageCount = playback?.totalMessageCount ?? 0;
   $: loadingPercent =
     loadingTotal && loadingTotal > 0
       ? Math.min(100, Math.round((loadingParsed / loadingTotal) * 100))
@@ -57,8 +63,10 @@
       });
       if (requestId !== loadRequestId) return;
       replay = parsed;
+      playback = createCodexReplayPlayback(replay);
       fileName = name;
-      stepIndex = replay.steps.length;
+      stepIndex = playback.stepIndex;
+      scrubStepIndex = playback.stepIndex;
       parseError = "";
       openWorkFoldoutKeys = new Set();
       openWorkEntryKeys = new Set();
@@ -83,8 +91,10 @@
   function clearReplay(): void {
     loadRequestId += 1;
     replay = null;
+    playback = null;
     fileName = "";
     stepIndex = 0;
+    scrubStepIndex = 0;
     playing = false;
     parseError = "";
     loading = false;
@@ -103,7 +113,25 @@
 
   function togglePlay(): void {
     playing = !playing;
-    if (playing && stepIndex >= stepCount) stepIndex = 0;
+    if (playing && stepIndex >= stepCount) setReplayStep(0);
+  }
+
+  function setReplayStep(nextStepIndex: number): void {
+    if (!replay) return;
+    playback = setCodexReplayPlaybackStep(
+      playback ?? createCodexReplayPlayback(replay),
+      nextStepIndex,
+    );
+    stepIndex = playback.stepIndex;
+    scrubStepIndex = playback.stepIndex;
+  }
+
+  function onScrubInput(event: Event): void {
+    scrubStepIndex = Number((event.currentTarget as HTMLInputElement).value);
+  }
+
+  function commitScrub(): void {
+    setReplayStep(scrubStepIndex);
   }
 
   $: {
@@ -117,7 +145,7 @@
           playing = false;
           return;
         }
-        stepIndex += 1;
+        setReplayStep(stepIndex + 1);
       }, 180);
     }
   }
@@ -190,6 +218,9 @@
       <div class="replay-stage-meta">
         <strong>{fileName}</strong>
         <span>{clampedStepIndex} / {stepCount} steps</span>
+        {#if totalMessageCount > renderedMessageCount}
+          <span>showing latest {renderedMessageCount} / {totalMessageCount} messages</span>
+        {/if}
         <span>{replay.mode === "transcript" ? "Transcript" : "RPC replay"}</span
         >
         {#if currentStep}<span>{currentStep.label}</span>{/if}
@@ -211,26 +242,56 @@
           {expandedThinkingWorkKeys}
         />
       </div>
-      {#if replay.mode === "rpc"}
-        <div class="replay-timeline">
+      <div class="replay-timeline">
+        <div class="replay-step-buttons" aria-label="Replay steps">
           <button
-            class="replay-play"
-            on:click={togglePlay}
-            aria-label={playing ? "Pause replay" : "Play replay"}
+            class="replay-step"
+            on:click={() => setReplayStep(0)}
+            disabled={clampedStepIndex <= 0}
           >
-            {playing ? "Pause" : "Play"}
+            Start
           </button>
-          <input
-            type="range"
-            min="0"
-            max={stepCount}
-            step="1"
-            bind:value={stepIndex}
-            aria-label="Replay time"
-          />
-          <span>{clampedStepIndex}/{stepCount}</span>
+          <button
+            class="replay-step"
+            on:click={() => setReplayStep(clampedStepIndex - 1)}
+            disabled={clampedStepIndex <= 0}
+          >
+            -1
+          </button>
+          <button
+            class="replay-step replay-step-primary"
+            on:click={() => setReplayStep(clampedStepIndex + 1)}
+            disabled={clampedStepIndex >= stepCount}
+          >
+            +1 step
+          </button>
+          <button
+            class="replay-step"
+            on:click={() => setReplayStep(stepCount)}
+            disabled={clampedStepIndex >= stepCount}
+          >
+            End
+          </button>
         </div>
-      {/if}
+        <button
+          class="replay-play"
+          on:click={togglePlay}
+          aria-label={playing ? "Pause replay" : "Play replay"}
+        >
+          {playing ? "Pause" : "Play"}
+        </button>
+        <input
+          type="range"
+          min="0"
+          max={stepCount}
+          step="1"
+          value={scrubStepIndex}
+          on:input={onScrubInput}
+          on:change={commitScrub}
+          aria-label="Replay time"
+        />
+        <span>{scrubStepIndex}/{stepCount}</span>
+      </div>
     </div>
   {/if}
 </section>
@@ -362,7 +423,7 @@
 
   .replay-timeline {
     display: grid;
-    grid-template-columns: auto 1fr auto;
+    grid-template-columns: auto auto minmax(140px, 1fr) auto;
     gap: 12px;
     align-items: center;
     padding: 12px;
@@ -370,13 +431,38 @@
     background: color-mix(in srgb, var(--panel-bg, #181818), black 12%);
   }
 
-  .replay-play {
+  .replay-step-buttons {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+  }
+
+  .replay-play,
+  .replay-step {
     min-width: 72px;
     min-height: 34px;
     border: 1px solid var(--border, #3a3a3a);
     border-radius: 999px;
     color: inherit;
     background: var(--button-bg, #252525);
+    font: inherit;
+    cursor: pointer;
+  }
+
+  .replay-step {
+    min-width: 0;
+    padding: 0 10px;
+  }
+
+  .replay-step-primary {
+    border-color: color-mix(in srgb, var(--accent, #9ad45f), white 18%);
+  }
+
+  .replay-play:disabled,
+  .replay-step:disabled {
+    opacity: 0.45;
+    cursor: default;
   }
 
   .replay-timeline input {

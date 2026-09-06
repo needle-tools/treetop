@@ -17,7 +17,6 @@
       visualScrollMemoryByKey.delete(oldest);
     }
   }
-
 </script>
 
 <script lang="ts">
@@ -88,6 +87,7 @@
     latestVisualPlan,
     mergeVisualSessionMessages,
     updateVisualTranscriptItems,
+    visualTranscriptMessageWindow,
     visualPlanFromPayload,
     withOptimisticUserMessageIntent,
     type VisualGoal,
@@ -402,6 +402,9 @@
   }
   let session: NormalizedSession | null = null;
   let liveCodexApp = false;
+  let codexAppHistorySourceActive = false;
+  let codexAppHistoryFetchActive = false;
+  let codexAppSessionKey = "";
   let sessionFileSource = "";
   let sessionMessageSource: SessionMessageSource = {
     kind: "unavailable",
@@ -1188,6 +1191,10 @@
     session?.messages ?? [],
     codexOptimisticUserMessages,
   );
+  $: visualRenderWindow = visualTranscriptMessageWindow(visualSessionMessages, {
+    minMessages: visualHistoryMinMessages,
+    minUserTurns: 2,
+  });
   $: lastUserMessage = lastUserMessageBurst(visualSessionMessages);
   $: lastUserMessageWithContext = buildLastUserMessageWithContext(
     visualSessionMessages,
@@ -1207,20 +1214,30 @@
   >[] = [];
   let previousVisualSessionMessages: NormalizedMessage[] = [];
   let previousVisualTranscriptActive: boolean | undefined;
+  let visualTranscriptChangeStartHint: number | undefined;
   $: if (renderReadBody) {
+    const changeStartHint = visualTranscriptChangeStartHint;
+    const relativeChangeStartHint =
+      typeof changeStartHint === "number"
+        ? Math.max(0, changeStartHint - visualRenderWindow.messageIndexOffset)
+        : undefined;
     visualTranscriptItems = updateVisualTranscriptItems({
       previousMessages: previousVisualSessionMessages,
       previousItems: visualTranscriptItems,
       previousActive: previousVisualTranscriptActive,
-      messages: visualSessionMessages,
+      messages: visualRenderWindow.messages,
       active: visualTranscriptActive,
+      changeStartHint: relativeChangeStartHint,
+      messageIndexOffset: visualRenderWindow.messageIndexOffset,
     });
-    previousVisualSessionMessages = visualSessionMessages;
+    previousVisualSessionMessages = visualRenderWindow.messages;
     previousVisualTranscriptActive = visualTranscriptActive;
+    visualTranscriptChangeStartHint = undefined;
   } else {
     visualTranscriptItems = [];
     previousVisualSessionMessages = [];
     previousVisualTranscriptActive = undefined;
+    visualTranscriptChangeStartHint = undefined;
   }
   $: codexLatestPlan = renderReadBody
     ? latestVisualPlan(visualSessionMessages)
@@ -1738,7 +1755,9 @@
   function onLiveWorkBodyScroll(workKey: string, body: HTMLElement): void {
     setLiveWorkBodyPaused(
       workKey,
-      shouldPauseVisualTailAfterUserScroll({ metrics: visualScrollMetrics(body) }),
+      shouldPauseVisualTailAfterUserScroll({
+        metrics: visualScrollMetrics(body),
+      }),
     );
   }
 
@@ -1789,9 +1808,9 @@
     };
   }
 
-  function visualScrollAnchor(el: HTMLElement):
-    | { key: string; offsetTop: number }
-    | undefined {
+  function visualScrollAnchor(
+    el: HTMLElement,
+  ): { key: string; offsetTop: number } | undefined {
     const scrollerRect = el.getBoundingClientRect();
     const anchors = Array.from(
       el.querySelectorAll<HTMLElement>("[data-visual-scroll-anchor]"),
@@ -1845,11 +1864,7 @@
     void tick().then(() => {
       requestAnimationFrame(() => {
         if (messagesEl !== el) return;
-        if (
-          !memory.followTail &&
-          targetKey &&
-          targetOffset !== undefined
-        ) {
+        if (!memory.followTail && targetKey && targetOffset !== undefined) {
           const target = el.querySelector<HTMLElement>(
             `[data-visual-scroll-anchor="${CSS.escape(targetKey)}"]`,
           );
@@ -1921,7 +1936,9 @@
     visualPausedLiveWorkBodyKeys = new Set();
   }
 
-  function syncVisualTailFollowActive(el: HTMLElement | null = messagesEl): void {
+  function syncVisualTailFollowActive(
+    el: HTMLElement | null = messagesEl,
+  ): void {
     visualTailFollowActive =
       !!el &&
       isVisualTailFollowActive({
@@ -1944,7 +1961,9 @@
     const el = messagesEl;
     if (!el) return;
     setVisualTailFollowPaused(
-      shouldPauseVisualTailAfterUserScroll({ metrics: visualScrollMetrics(el) }),
+      shouldPauseVisualTailAfterUserScroll({
+        metrics: visualScrollMetrics(el),
+      }),
     );
   }
 
@@ -2038,6 +2057,22 @@
     visualExpandedThinkingWorkKeys = new Set();
   }
 
+  function resetToCodexAppSession(): void {
+    if (!codexAppHistorySourceActive || !effectiveSessionId) return;
+    const key = codexAppHistoryKey(effectiveSessionId, effectiveSessionCwd);
+    if (key && key === codexAppSessionKey) return;
+    const previous = session;
+    session = {
+      agent,
+      cwd: effectiveSessionCwd || wtPath,
+      sessionId: effectiveSessionId,
+      startedAt: previous?.startedAt ?? new Date().toISOString(),
+      manualTitle: previous?.manualTitle,
+      messages: [],
+    };
+    codexAppSessionKey = key;
+  }
+
   function maxVisualHistoryMessages(): number {
     const total =
       typeof totalMessageCount === "number" && totalMessageCount > 0
@@ -2070,6 +2105,27 @@
     if (!el || visualHistoryRequestInFlight) return;
     if (el.scrollTop > 180) return;
     if (!canRequestOlderVisualHistory()) return;
+    const loadedMessageCount = session?.messages.length ?? 0;
+    const loadedHistoryMax = Math.min(
+      maxVisualHistoryMessages(),
+      loadedMessageCount,
+    );
+    if (visualHistoryMinMessages < loadedHistoryMax) {
+      visualHistoryMinMessages = Math.min(
+        loadedHistoryMax,
+        visualHistoryMinMessages + VISUAL_HISTORY_MESSAGES_STEP,
+      );
+      visualHistoryScrollAnchor = {
+        el,
+        scrollHeight: el.scrollHeight,
+        scrollTop: el.scrollTop,
+      };
+      setVisualTailFollowPaused(true);
+      void tick().then(() => {
+        preserveVisualHistoryScrollAnchor();
+      });
+      return;
+    }
     if (codexAppHistorySourceActive) {
       visualHistoryRequestInFlight = true;
       visualHistoryScrollAnchor = {
@@ -2138,6 +2194,9 @@
   }
 
   $: {
+    void effectiveSessionId;
+    void effectiveSessionCwd;
+    void sessionMessageSource;
     const key = currentVisualHistorySourceKey();
     if (key !== visualHistorySourceKey) {
       saveVisualScrollMemory();
@@ -2150,6 +2209,8 @@
       codexAppHistoryLoadingKey = "";
       codexAppHistoryFailedKeys = new Set<string>();
       codexLiveDetectedModel = "";
+      if (!codexAppHistorySourceActive) codexAppSessionKey = "";
+      resetToCodexAppSession();
     }
   }
 
@@ -2253,13 +2314,17 @@
         body.thread,
         codexLiveNormalizeContext,
       ) as NormalizedMessage[];
-      session = {
-        ...session,
-        messages: mergeCodexAppHistoryMessages(
-          historyMessages,
-          session.messages,
-        ) as NormalizedMessage[],
-      };
+      const mergedMessages = mergeCodexAppHistoryMessages(
+        historyMessages,
+        session.messages,
+      ) as NormalizedMessage[];
+      if (!sameMessageReferences(session.messages, mergedMessages)) {
+        noteVisualTranscriptChangedFrom(0);
+        session = {
+          ...session,
+          messages: mergedMessages,
+        };
+      }
       codexAppHistoryLoadedKey = targetHistoryKey;
       if (codexAppHistoryFailedKeys.has(targetHistoryKey)) {
         const nextFailed = new Set(codexAppHistoryFailedKeys);
@@ -2434,9 +2499,11 @@
     mode,
   });
   $: codexAppHistorySourceActive = shouldUseCodexAppHistorySource({
-    liveSurfaceActive: codexAppLiveSurfaceActive,
+    liveSurfaceActive: codexVisualAppSurface,
     transcriptSource,
   });
+  $: codexAppHistoryFetchActive =
+    codexAppHistorySourceActive && codexAppLiveSurfaceActive;
   $: sessionFileSource = liveCodexApp ? (transcriptSource ?? "") : source;
   $: sessionMessageSource = resolveSessionMessageSource({
     agent,
@@ -2485,7 +2552,10 @@
   $: if (
     liveCodexApp &&
     resumeSessionId &&
-    (!session || session.sessionId !== resumeSessionId)
+    (!session ||
+      session.sessionId !== resumeSessionId ||
+      (codexAppHistorySourceActive &&
+        codexAppSessionKey !== codexAppHistoryKey(resumeSessionId, wtPath)))
   ) {
     session = {
       agent,
@@ -2494,11 +2564,14 @@
       startedAt: new Date().toISOString(),
       messages: [],
     };
+    codexAppSessionKey = codexAppHistorySourceActive
+      ? codexAppHistoryKey(resumeSessionId, wtPath)
+      : "";
   }
 
   $: if (
     shouldLoadCodexAppThreadHistory({
-      visualAppSurface: codexAppHistorySourceActive,
+      visualAppSurface: codexAppHistoryFetchActive,
       threadId: effectiveSessionId,
       cwd: effectiveSessionCwd,
       hasSession: !!session,
@@ -2691,11 +2764,7 @@
   async function sendOllamaMessage(): Promise<void> {
     const text = inputText.trim();
     const attachments = [...composerAttachments];
-    if (
-      (!text && attachments.length === 0) ||
-      sending ||
-      !session?.sessionId
-    ) {
+    if ((!text && attachments.length === 0) || sending || !session?.sessionId) {
       return;
     }
     sending = true;
@@ -3014,10 +3083,41 @@
     if (!session || codexPendingDeltaPatches.length === 0) return;
     const patches = codexPendingDeltaPatches;
     codexPendingDeltaPatches = [];
+    let firstChangedIndex = session.messages.length;
+    for (const patch of patches) {
+      const existingIndex = session.messages.findIndex(
+        (message) => message.id === patch.id,
+      );
+      firstChangedIndex = Math.min(
+        firstChangedIndex,
+        existingIndex >= 0 ? existingIndex : session.messages.length,
+      );
+    }
+    noteVisualTranscriptChangedFrom(firstChangedIndex);
     session = {
       ...session,
       messages: applyVisualTranscriptDeltaPatches(session.messages, patches),
     };
+  }
+
+  function noteVisualTranscriptChangedFrom(index: number): void {
+    if (!Number.isFinite(index)) return;
+    const cleanIndex = Math.max(0, Math.trunc(index));
+    visualTranscriptChangeStartHint =
+      visualTranscriptChangeStartHint === undefined
+        ? cleanIndex
+        : Math.min(visualTranscriptChangeStartHint, cleanIndex);
+  }
+
+  function sameMessageReferences(
+    a: readonly NormalizedMessage[],
+    b: readonly NormalizedMessage[],
+  ): boolean {
+    if (a.length !== b.length) return false;
+    for (let index = 0; index < a.length; index += 1) {
+      if (a[index] !== b[index]) return false;
+    }
+    return true;
   }
 
   function queueCodexBlockDelta(
@@ -3086,7 +3186,10 @@
     if (liveMessages.length > 0 && !event.method.endsWith("/outputDelta")) {
       flushCodexDeltaPatches();
       upsertCodexLiveMessages(liveMessages);
-      if (event.method === "item/started" || event.method === "item/completed") {
+      if (
+        event.method === "item/started" ||
+        event.method === "item/completed"
+      ) {
         return;
       }
       if (event.method === "thread/tokenUsage/updated") {
@@ -3257,6 +3360,7 @@
     const messages = [...session.messages];
     const existingIndex = messages.findIndex((m) => m.id === id);
     if (existingIndex < 0) {
+      noteVisualTranscriptChangedFrom(messages.length);
       messages.push({
         id,
         role: "assistant",
@@ -3264,6 +3368,7 @@
         blocks: [block],
       });
     } else {
+      noteVisualTranscriptChangedFrom(existingIndex);
       messages[existingIndex] = {
         ...messages[existingIndex]!,
         blocks: [block],
@@ -3275,6 +3380,8 @@
   function upsertCodexLiveMessages(incoming: NormalizedMessage[]): void {
     if (!session || incoming.length === 0) return;
     const messages = [...session.messages];
+    let firstChangedIndex = messages.length;
+    let changed = false;
     for (const message of incoming) {
       const existingIndex =
         message.id !== undefined
@@ -3288,10 +3395,15 @@
       }
       if (existingIndex >= 0) {
         messages[existingIndex] = message;
+        firstChangedIndex = Math.min(firstChangedIndex, existingIndex);
       } else {
+        firstChangedIndex = Math.min(firstChangedIndex, messages.length);
         messages.push(message);
       }
+      changed = true;
     }
+    if (!changed) return;
+    noteVisualTranscriptChangedFrom(firstChangedIndex);
     session = { ...session, messages };
   }
 
@@ -3397,9 +3509,7 @@
       ...(toolMeta.subagentStatus
         ? { subagentStatus: toolMeta.subagentStatus }
         : {}),
-      ...(toolMeta.subagentType
-        ? { subagentType: toolMeta.subagentType }
-        : {}),
+      ...(toolMeta.subagentType ? { subagentType: toolMeta.subagentType } : {}),
       ...(toolMeta.subagentModel
         ? { subagentModel: toolMeta.subagentModel }
         : {}),
@@ -3415,11 +3525,13 @@
     };
     const blocks = [block, ...extraBlocks];
     if (existingIndex >= 0) {
+      noteVisualTranscriptChangedFrom(existingIndex);
       messages[existingIndex] = {
         ...messages[existingIndex]!,
         blocks,
       };
     } else {
+      noteVisualTranscriptChangedFrom(messages.length);
       messages.push({
         id,
         role: "assistant",
@@ -3508,8 +3620,10 @@
       blocks: [block],
     } satisfies NormalizedMessage;
     if (existingIndex >= 0) {
+      noteVisualTranscriptChangedFrom(existingIndex);
       messages[existingIndex] = next;
     } else {
+      noteVisualTranscriptChangedFrom(messages.length);
       messages.push(next);
     }
     session = { ...session, goal: codexGoalStateFromBlock(block), messages };
@@ -3526,6 +3640,7 @@
       })
       .filter((message) => message.blocks.length > 0);
     if (!changed && !session.goal) return;
+    noteVisualTranscriptChangedFrom(0);
     session = { ...session, goal: undefined, messages };
     codexGoalEditing = false;
     codexGoalDraft = "";
@@ -4940,15 +5055,11 @@
   // onSession for transcript/review panes and this column's active-sends slice
   // via onInflight.
   //
-  // Restored Codex app panes use the JSONL transcript for durable history and
-  // app-server SSE for live deltas. The app-server history API is only for the
-  // narrow pre-transcript window after a new app-server thread is created.
-  // Calling thread/read for restored active-writer threads can block the
-  // browser's localhost connection pool during startup.
-  // `source` is keyed in App.svelte's {#each}, but `transcriptSource` may arrive
-  // after mount for app-server rows. `sessionMessageSource` makes the ownership
-  // explicit: app-server history owns only pre-transcript panes; transcript
-  // surfaces use the JSONL/session poller.
+  // Message ownership is intentionally exclusive. Live Codex app panes use
+  // app-server history plus SSE events end to end; transcript/review panes use
+  // the JSONL session poller end to end. `transcriptSource` may arrive after a
+  // live app-server pane mounts, but it must not move that pane onto the
+  // transcript poller.
 
   let unregisterPoll: (() => void) | null = null;
   let mounted = false;
@@ -5507,10 +5618,7 @@
     <p class="error">{error}</p>
   {:else if loading && !session}
     <LoadingOverlay text="loading session…" />
-  {:else if codexVisualAppSurface &&
-    codexAppHistoryLoadingKey &&
-    session &&
-    session.messages.length === 0}
+  {:else if codexVisualAppSurface && codexAppHistoryLoadingKey && session && session.messages.length === 0}
     <LoadingOverlay text="loading conversation…" />
   {:else if session && session.messages.length === 0 && !showChatComposer}
     <p class="muted small">
@@ -6002,9 +6110,7 @@
                 class:expanded={codexGoalExpanded}
                 on:click={toggleCodexGoalPane}
                 title={codexGoalExpanded ? "Collapse goal" : "Show goal"}
-                aria-label={codexGoalExpanded
-                  ? "Collapse goal"
-                  : "Show goal"}
+                aria-label={codexGoalExpanded ? "Collapse goal" : "Show goal"}
               >
                 {codexGoalBadgeLabel(codexLatestGoal)}
               </button>
@@ -6016,9 +6122,7 @@
                 class:expanded={codexPlanExpanded}
                 on:click={toggleCodexPlanPane}
                 title={codexPlanExpanded ? "Collapse todo" : "Show todo"}
-                aria-label={codexPlanExpanded
-                  ? "Collapse todo"
-                  : "Show todo"}
+                aria-label={codexPlanExpanded ? "Collapse todo" : "Show todo"}
               >
                 {codexPlanBadgeLabel(codexLatestPlan)}
               </button>
@@ -6139,7 +6243,11 @@
                 aria-label="Send"
               >
                 {#if sending}
-                  <LoadingSpinner size="0.9rem" thickness="2px" label="Sending" />
+                  <LoadingSpinner
+                    size="0.9rem"
+                    thickness="2px"
+                    label="Sending"
+                  />
                 {:else}
                   {@render composerActionIcon("send")}
                 {/if}
@@ -6596,7 +6704,8 @@
     height: 1.35rem;
     padding: 0 0.48rem;
     border-radius: 999px;
-    border: 1px solid color-mix(in srgb, var(--status-clean) 48%, var(--surface-3));
+    border: 1px solid
+      color-mix(in srgb, var(--status-clean) 48%, var(--surface-3));
     color: var(--text-1);
     background: color-mix(in srgb, var(--status-clean) 18%, transparent);
     font-size: 0.68rem;

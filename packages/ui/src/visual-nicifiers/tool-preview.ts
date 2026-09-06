@@ -402,6 +402,7 @@ export function visualToolIconNameForPreview(
   ) {
     return "git";
   }
+  if (isWebRunPreviewText(preview)) return "fetch";
   if (/^Search\b/.test(preview)) return "search";
   if (commandLikeTool && /^Read\b/.test(preview)) return "read";
   if (/^Count\b/.test(preview)) return "read";
@@ -455,6 +456,12 @@ export function visualToolIconNameForPreview(
   if (/^Fetch\b/.test(preview)) return "fetch";
   if (/^(Configure|Build) CMake\b/.test(preview)) return "cmake";
   return block?.toolName;
+}
+
+function isWebRunPreviewText(preview: string): boolean {
+  return /^(?:Search web|Open web page|Open web pages|Find web text|Search images|Check weather|Check market|Check sports|Check time)\b/.test(
+    preview,
+  );
 }
 
 export interface VisualToolResultBadge {
@@ -1570,6 +1577,8 @@ export function visualToolPreviewParts(
   if (!block || block.type !== "tool_use") return [];
   const name = (block.toolName ?? "").toLowerCase();
   const input = block.toolInput;
+  const webPreview = visualWebRunPreviewParts(name, input);
+  if (webPreview) return webPreview;
   const structuredInlineScript = inlineScriptFromStructuredTool(
     block.toolName ?? "",
     input,
@@ -1966,6 +1975,283 @@ function visualStructuredToolPreviewParts(
   }
 
   return undefined;
+}
+
+interface WebRunOperation {
+  type:
+    | "search"
+    | "image"
+    | "open"
+    | "find"
+    | "screenshot"
+    | "finance"
+    | "weather"
+    | "sports"
+    | "time";
+  count: number;
+  values: string[];
+}
+
+function visualWebRunPreviewParts(
+  toolName: string,
+  input: unknown,
+): VisualToolPreviewPart[] | undefined {
+  const operations =
+    webRunOperationsFromStructuredInput(toolName, input) ??
+    webRunOperationsFromExecWrapper(toolName, input);
+  if (!operations || operations.length === 0) return undefined;
+  return textPreviewParts(operations.map(webRunOperationText).join(" · "));
+}
+
+function webRunOperationsFromStructuredInput(
+  toolName: string,
+  input: unknown,
+): WebRunOperation[] | undefined {
+  if (!isWebRunToolName(toolName)) return undefined;
+  if (!input || typeof input !== "object" || Array.isArray(input)) {
+    return undefined;
+  }
+  return webRunOperationsFromRecord(input as Record<string, unknown>);
+}
+
+function webRunOperationsFromExecWrapper(
+  toolName: string,
+  input: unknown,
+): WebRunOperation[] | undefined {
+  if (typeof input !== "string") return undefined;
+  if (
+    !toolName.includes("exec") &&
+    !/(?:web__run|web_run|web\.run)/.test(input)
+  ) {
+    return undefined;
+  }
+  const literal = extractWebRunObjectLiteral(input);
+  if (!literal) return undefined;
+  return webRunOperationsFromObjectLiteral(literal);
+}
+
+function isWebRunToolName(toolName: string): boolean {
+  const normalized = toolName.toLowerCase();
+  return (
+    normalized === "web.run" ||
+    normalized === "web__run" ||
+    normalized === "web_run" ||
+    normalized.endsWith(".web.run") ||
+    normalized.endsWith(".web__run") ||
+    normalized.endsWith(".web_run")
+  );
+}
+
+function webRunOperationsFromRecord(
+  obj: Record<string, unknown>,
+): WebRunOperation[] {
+  return [
+    webRunArrayOperationFromRecord(obj, "search_query", "search", ["q"]),
+    webRunArrayOperationFromRecord(obj, "image_query", "image", ["q"]),
+    webRunArrayOperationFromRecord(obj, "open", "open", ["ref_id", "url"]),
+    webRunArrayOperationFromRecord(obj, "find", "find", ["pattern", "ref_id"]),
+    webRunArrayOperationFromRecord(obj, "screenshot", "screenshot", [
+      "ref_id",
+    ]),
+    webRunArrayOperationFromRecord(obj, "finance", "finance", ["ticker"]),
+    webRunArrayOperationFromRecord(obj, "weather", "weather", ["location"]),
+    webRunArrayOperationFromRecord(obj, "sports", "sports", [
+      "team",
+      "league",
+    ]),
+    webRunArrayOperationFromRecord(obj, "time", "time", ["utc_offset"]),
+  ].filter((operation): operation is WebRunOperation => !!operation);
+}
+
+function webRunArrayOperationFromRecord(
+  obj: Record<string, unknown>,
+  key: string,
+  type: WebRunOperation["type"],
+  valueKeys: readonly string[],
+): WebRunOperation | undefined {
+  const value = obj[key];
+  if (!Array.isArray(value) || value.length === 0) return undefined;
+  const values: string[] = [];
+  for (const item of value) {
+    if (!item || typeof item !== "object" || Array.isArray(item)) continue;
+    const itemObj = item as Record<string, unknown>;
+    const found = valueKeys
+      .map((valueKey) => stringField(itemObj, valueKey))
+      .find((itemValue): itemValue is string => !!itemValue);
+    if (found) values.push(found);
+  }
+  return { type, count: value.length, values };
+}
+
+function webRunOperationsFromObjectLiteral(literal: string): WebRunOperation[] {
+  const specs: Array<{
+    key: string;
+    type: WebRunOperation["type"];
+    valueKeys: readonly string[];
+  }> = [
+    { key: "search_query", type: "search", valueKeys: ["q"] },
+    { key: "image_query", type: "image", valueKeys: ["q"] },
+    { key: "open", type: "open", valueKeys: ["ref_id", "url"] },
+    { key: "find", type: "find", valueKeys: ["pattern", "ref_id"] },
+    { key: "screenshot", type: "screenshot", valueKeys: ["ref_id"] },
+    { key: "finance", type: "finance", valueKeys: ["ticker"] },
+    { key: "weather", type: "weather", valueKeys: ["location"] },
+    { key: "sports", type: "sports", valueKeys: ["team", "league"] },
+    { key: "time", type: "time", valueKeys: ["utc_offset"] },
+  ];
+  const operations: WebRunOperation[] = [];
+  for (const spec of specs) {
+    const arrayLiteral = extractObjectLiteralArrayProperty(literal, spec.key);
+    if (!arrayLiteral) continue;
+    const values = stringValuesFromObjectLiteralArray(
+      arrayLiteral,
+      spec.valueKeys,
+    );
+    operations.push({
+      type: spec.type,
+      count: countObjectLiteralArrayItems(arrayLiteral, values.length),
+      values,
+    });
+  }
+  return operations;
+}
+
+function extractWebRunObjectLiteral(source: string): string | undefined {
+  const pattern = /tools\.(?:web__run|web_run|web\.run)\s*\(/g;
+  let match: RegExpExecArray | null;
+  while ((match = pattern.exec(source))) {
+    const openParenIndex = pattern.lastIndex - 1;
+    let index = openParenIndex + 1;
+    while (/\s/.test(source[index] ?? "")) index += 1;
+    if (source[index] !== "{") continue;
+    return balancedSegment(source, index, "{", "}");
+  }
+  return undefined;
+}
+
+function extractObjectLiteralArrayProperty(
+  source: string,
+  key: string,
+): string | undefined {
+  const pattern = new RegExp(
+    `(?:["']${escapeRegExp(key)}["']|\\b${escapeRegExp(key)}\\b)\\s*:`,
+    "g",
+  );
+  let match: RegExpExecArray | null;
+  while ((match = pattern.exec(source))) {
+    let index = pattern.lastIndex;
+    while (/\s/.test(source[index] ?? "")) index += 1;
+    if (source[index] !== "[") continue;
+    return balancedSegment(source, index, "[", "]");
+  }
+  return undefined;
+}
+
+function balancedSegment(
+  source: string,
+  startIndex: number,
+  open: "{" | "[",
+  close: "}" | "]",
+): string | undefined {
+  let depth = 0;
+  let quote: "'" | '"' | "`" | null = null;
+  let escaped = false;
+  for (let index = startIndex; index < source.length; index += 1) {
+    const ch = source[index]!;
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (quote) {
+      if (ch === "\\") {
+        escaped = true;
+      } else if (ch === quote) {
+        quote = null;
+      }
+      continue;
+    }
+    if (ch === "'" || ch === '"' || ch === "`") {
+      quote = ch;
+      continue;
+    }
+    if (ch === open) {
+      depth += 1;
+      continue;
+    }
+    if (ch === close) {
+      depth -= 1;
+      if (depth === 0) return source.slice(startIndex, index + 1);
+    }
+  }
+  return undefined;
+}
+
+function stringValuesFromObjectLiteralArray(
+  arrayLiteral: string,
+  keys: readonly string[],
+): string[] {
+  const values: string[] = [];
+  for (const key of keys) {
+    const keyPattern = `(?:["']${escapeRegExp(key)}["']|\\b${escapeRegExp(key)}\\b)`;
+    const pattern = new RegExp(
+      `${keyPattern}\\s*:\\s*(["'])((?:\\\\.|(?!\\1)[\\s\\S])*?)\\1`,
+      "g",
+    );
+    let match: RegExpExecArray | null;
+    while ((match = pattern.exec(arrayLiteral))) {
+      const quote = match[1]!;
+      const value = match[2]!;
+      values.push(unescapeToolLiteral(value, quote).trim());
+    }
+    if (values.length > 0) break;
+  }
+  return values.filter(Boolean);
+}
+
+function countObjectLiteralArrayItems(
+  arrayLiteral: string,
+  fallback: number,
+): number {
+  const objectMatches = arrayLiteral.match(/{/g);
+  return Math.max(objectMatches?.length ?? 0, fallback);
+}
+
+function webRunOperationText(operation: WebRunOperation): string {
+  const values = operation.values.slice(0, 3);
+  const suffix =
+    operation.values.length > 3 ? `, +${operation.values.length - 3}` : "";
+  const listed = values.length ? `${values.join(", ")}${suffix}` : "";
+  const count = operation.count || operation.values.length;
+  switch (operation.type) {
+    case "search":
+      return listed
+        ? `Search web for ${listed}`
+        : `Search web ${count} ${plural(count, "query")}`;
+    case "image":
+      return listed
+        ? `Search images for ${listed}`
+        : `Search images ${count} ${plural(count, "query")}`;
+    case "open":
+      return listed
+        ? `${count === 1 ? "Open web page" : "Open web pages"} ${listed}`
+        : `${count === 1 ? "Open web page" : "Open web pages"}`;
+    case "find":
+      return listed
+        ? `Find web text ${listed}`
+        : `Find web text ${count} ${plural(count, "pattern")}`;
+    case "screenshot":
+      return listed
+        ? `Capture web screenshot ${listed}`
+        : "Capture web screenshot";
+    case "finance":
+      return listed ? `Check market ${listed}` : "Check market";
+    case "weather":
+      return listed ? `Check weather ${listed}` : "Check weather";
+    case "sports":
+      return listed ? `Check sports ${listed}` : "Check sports";
+    case "time":
+      return listed ? `Check time ${listed}` : "Check time";
+  }
 }
 
 function browserNavigationPreview(type: string): string {
