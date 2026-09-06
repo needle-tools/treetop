@@ -11,6 +11,7 @@ import {
   parseCodexReplayTextAsync,
   parseCodexReplayText,
   parseCodexReplaySessionFixture,
+  summarizeCodexReplayPricingUsage,
   setCodexReplayPlaybackStep,
 } from "../src/codex-replay-lab";
 
@@ -118,6 +119,66 @@ describe("Codex replay lab parser", () => {
     expect(analysis.issueTurnCount).toBe(0);
   });
 
+  test("attributes replay turn and session prices across model changes", () => {
+    const messages = [
+      {
+        role: "user" as const,
+        timestamp: "2026-09-06T16:44:34.000Z",
+        blocks: [{ type: "text" as const, text: "Start" }],
+      },
+      {
+        role: "assistant" as const,
+        timestamp: "2026-09-06T16:45:00.000Z",
+        model: "gpt-5.6-terra",
+        blocks: [],
+        tokenUsage: {
+          input: 1_000_000,
+          cachedInput: 0,
+          cacheWriteInput: 0,
+          output: 0,
+          reasoningOutput: 0,
+          total: 1_000_000,
+        },
+      },
+      {
+        role: "user" as const,
+        timestamp: "2026-09-06T18:01:47.000Z",
+        blocks: [{ type: "text" as const, text: "Continue" }],
+      },
+      {
+        role: "assistant" as const,
+        timestamp: "2026-09-06T18:02:00.000Z",
+        model: "gpt-6-astra",
+        blocks: [],
+        tokenUsage: {
+          input: 0,
+          cachedInput: 0,
+          cacheWriteInput: 0,
+          output: 1_000_000,
+          reasoningOutput: 0,
+          total: 1_000_000,
+        },
+      },
+    ];
+
+    const usage = summarizeCodexReplayPricingUsage(messages);
+    expect(usage.map((segment) => segment.model)).toEqual([
+      "gpt-5.6-terra",
+      "gpt-6-astra",
+    ]);
+    expect(usage.map((segment) => segment.usage.total)).toEqual([
+      1_000_000, 1_000_000,
+    ]);
+
+    const analysis = analyzeCodexReplayTurns(messages);
+    expect(analysis.turns[0]?.estimatedCostUsd).toBeGreaterThan(0);
+    expect(analysis.turns[1]?.estimatedCostUsd).toBeGreaterThan(0);
+    expect(analysis.totalEstimatedCostUsd).toBeCloseTo(
+      analysis.turns[0]!.estimatedCostUsd! +
+        analysis.turns[1]!.estimatedCostUsd!,
+    );
+  });
+
   test("uses the user's request rather than ambient browser context as the turn label", () => {
     const analysis = analyzeCodexReplayTurns([
       {
@@ -136,6 +197,24 @@ Narrate this page live`,
     ]);
 
     expect(analysis.turns[0]?.label).toBe("Narrate this page live");
+  });
+
+  test("renders escaped Codex request text cleanly in turn labels", () => {
+    const analysis = analyzeCodexReplayTurns([
+      {
+        role: "user",
+        blocks: [
+          {
+            type: "text",
+            text: "Some bugs:&#x20;1\\) detached object\\. 2\\) bad timing",
+          },
+        ],
+      },
+    ]);
+
+    expect(analysis.turns[0]?.label).toBe(
+      "Some bugs: 1) detached object. 2) bad timing",
+    );
   });
 
   test("builds the selected thread page from its recorded app-server response", () => {
