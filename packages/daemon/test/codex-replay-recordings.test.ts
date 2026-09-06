@@ -286,6 +286,98 @@ describe("Codex replay recording discovery", () => {
     });
   });
 
+  test("keeps resumed rollout files as one ordered transcript session", async () => {
+    await withTempDir(async (dir) => {
+      const recordingDir = join(dir, "recordings");
+      const sessionsRoot = join(dir, "sessions");
+      await mkdir(recordingDir, { recursive: true });
+      await mkdir(sessionsRoot, { recursive: true });
+      const threadId = "01a0779b-7a3d-7cc0-a821-2a20c5c7bb8a";
+      const first = join(
+        sessionsRoot,
+        `rollout-2026-09-06T18-44-33-${threadId}.jsonl`,
+      );
+      const resumed = join(
+        sessionsRoot,
+        `rollout-2026-09-07T00-02-15-${threadId}_child.jsonl`,
+      );
+      const transcript = (timestamp: string, text: string) =>
+        [
+          JSON.stringify({
+            timestamp,
+            type: "session_meta",
+            payload: { id: threadId, cwd: "/repo" },
+          }),
+          JSON.stringify({
+            timestamp,
+            type: "response_item",
+            payload: {
+              type: "message",
+              role: "user",
+              content: [{ type: "input_text", text }],
+            },
+          }),
+        ].join("\n");
+      await writeFile(first, transcript("2026-09-06T16:44:33Z", "First"));
+      await writeFile(
+        resumed,
+        transcript("2026-09-06T22:02:15Z", "Continued"),
+      );
+
+      const sessions = await listCodexReplaySessions({
+        recordingDir,
+        sessionsRoot,
+        codexSessions: [
+          {
+            agent: "codex",
+            cwd: "/repo",
+            lastActive: "2026-09-06T22:00:00Z",
+            sessionId: threadId,
+            source: first,
+          },
+          {
+            agent: "codex",
+            cwd: "/repo",
+            lastActive: "2026-09-06T22:03:00Z",
+            sessionId: threadId,
+            source: resumed,
+          },
+        ],
+      });
+
+      expect(sessions[0]?.transcripts?.map((part) => part.path)).toEqual([
+        first,
+        resumed,
+      ]);
+      const payload = await readCodexReplaySession({
+        recordingDir,
+        sessionsRoot,
+        threadId,
+        codexSessions: [
+          {
+            agent: "codex",
+            cwd: "/repo",
+            lastActive: "2026-09-06T22:00:00Z",
+            sessionId: threadId,
+            source: first,
+          },
+          {
+            agent: "codex",
+            cwd: "/repo",
+            lastActive: "2026-09-06T22:03:00Z",
+            sessionId: threadId,
+            source: resumed,
+          },
+        ],
+      });
+      expect(
+        payload.transcriptSession?.messages.map(
+          (message) => message.blocks[0]?.text,
+        ),
+      ).toEqual(["First", "Continued"]);
+    });
+  });
+
   test("reads the newest complete capture for a selected session", async () => {
     await withTempDir(async (dir) => {
       const recordingDir = join(dir, "recordings");

@@ -4,6 +4,10 @@ import { createReadStream } from "node:fs";
 import { createInterface } from "node:readline";
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import { readCodexSessionOverview, type AgentSession } from "./agents";
+import {
+  parseSessionFile,
+  type NormalizedSession,
+} from "./sessions";
 
 export interface CodexReplayTranscriptRef {
   threadId: string;
@@ -81,6 +85,7 @@ export interface CodexReplaySessionRef {
     Pick<CodexReplayRecordingRef, "path" | "name" | "mtimeMs" | "size">
   >;
   transcript?: CodexReplayTranscriptRef;
+  transcripts?: CodexReplayTranscriptRef[];
 }
 
 export interface CodexReplaySessionPayload {
@@ -88,6 +93,7 @@ export interface CodexReplaySessionPayload {
   recordingText: string;
   transcriptText?: string;
   transcriptTruncated?: boolean;
+  transcriptSession?: NormalizedSession;
 }
 
 export interface CodexReplaySessionReadOptions extends CodexReplayRecordingOptions {
@@ -130,6 +136,14 @@ export async function listCodexReplaySessions(
       transcriptIndex.set(ref.threadId, ref);
     }
   }
+  const agentTranscripts = new Map<string, CodexReplayTranscriptRef[]>();
+  for (const agent of options.codexSessions ?? []) {
+    const ref = transcriptRefFromAgent(agent, sessionsRoot);
+    if (!ref) continue;
+    const refs = agentTranscripts.get(ref.threadId) ?? [];
+    if (!refs.some((candidate) => candidate.path === ref.path)) refs.push(ref);
+    agentTranscripts.set(ref.threadId, refs);
+  }
   const threadIds = [
     ...new Set([
       ...drafts.flatMap(recordingThreadIds),
@@ -142,6 +156,15 @@ export async function listCodexReplaySessions(
         recordingThreadIds(draft).includes(threadId),
       );
       const transcript = transcriptIndex.get(threadId);
+      const transcripts = [
+        ...(agentTranscripts.get(threadId) ?? []),
+        ...(transcript ? [transcript] : []),
+      ]
+        .filter(
+          (candidate, index, all) =>
+            all.findIndex((other) => other.path === candidate.path) === index,
+        )
+        .sort((a, b) => a.path.localeCompare(b.path));
       return {
         threadId,
         title: transcript?.title ?? `Session ${threadId.slice(0, 8)}`,
@@ -167,6 +190,7 @@ export async function listCodexReplaySessions(
             (a, b) => a.mtimeMs - b.mtimeMs || a.name.localeCompare(b.name),
           ),
         ...(transcript ? { transcript } : {}),
+        ...(transcripts.length ? { transcripts } : {}),
       } satisfies CodexReplaySessionRef;
     })
     .filter((session) => session.rpcFrameCount > 0 || session.hasTranscript)
@@ -211,10 +235,29 @@ export async function readCodexReplaySession(
     recordingText = candidate;
     break;
   }
-  if (!recordingText) throw new Error("recorded session has no thread page");
+  if (!recordingText && !session.hasTranscript) {
+    throw new Error("recorded session has no thread page");
+  }
   const transcript = session.transcript
     ? await readReplayTranscript(session.transcript.path)
     : undefined;
+  const transcriptParts = session.transcripts?.length
+    ? session.transcripts
+    : session.transcript
+      ? [session.transcript]
+      : [];
+  let transcriptSession: NormalizedSession | undefined;
+  for (const part of transcriptParts) {
+    const parsed = await parseSessionFile("codex", part.path);
+    if (!transcriptSession) {
+      transcriptSession = parsed;
+    } else {
+      transcriptSession.messages.push(...parsed.messages);
+      transcriptSession.endedAt = parsed.endedAt ?? transcriptSession.endedAt;
+      transcriptSession.cwd ||= parsed.cwd;
+      transcriptSession.sessionId ||= parsed.sessionId;
+    }
+  }
   return {
     session,
     recordingText,
@@ -224,6 +267,7 @@ export async function readCodexReplaySession(
           transcriptTruncated: transcript.truncated,
         }
       : {}),
+    ...(transcriptSession ? { transcriptSession } : {}),
   };
 }
 
