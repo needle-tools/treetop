@@ -99,6 +99,19 @@ export interface VisualMediaBlock extends MessageBlock {
   mimeType?: string;
 }
 
+export function visualWorkImageBlocks<
+  B extends MessageBlock,
+  M extends Message<B>,
+>(entries: readonly VisualWorkEntry<B, M>[]): B[] {
+  return entries.flatMap((entry) =>
+    entry.blocks.filter(
+      (block) =>
+        block.type === "media" &&
+        (block as B & { mediaKind?: string }).mediaKind === "image",
+    ),
+  );
+}
+
 export function visualMediaPathTarget(
   block: MessageBlock,
 ): Extract<VisualToolPreviewPart, { kind: "path" }> | undefined {
@@ -208,6 +221,7 @@ export interface VisualWorkDisplayEntry<
   entry: VisualWorkEntry<B, M>;
   pairedResults?: VisualWorkEntry<B, M>[];
   pairedResult?: VisualWorkEntry<B, M>;
+  pairedMedia?: B[];
   pairedToolUse?: VisualWorkEntry<B, M>;
   markerBlock?: B;
   markerKind?: VisualMarkerKind;
@@ -1059,9 +1073,12 @@ export function buildVisualWorkDisplayEntries<
   M extends Message<B>,
 >(entries: readonly VisualWorkEntry<B, M>[]): VisualWorkDisplayEntry<B, M>[] {
   const toolUseByResult = new Map<number, VisualWorkEntry<B, M>>();
+  const toolUseIndexByResult = new Map<number, number>();
   const resultsByToolUse = new Map<number, VisualWorkEntry<B, M>[]>();
+  const mediaByToolUse = new Map<number, B[]>();
   const toolUseById = new Map<string, number>();
   const pairedToolUses = new Set<number>();
+  const collapsedMediaIndexes = new Set<number>();
   const collapsedResultIndexes = new Set<number>();
   const collapsedSubagentNotificationIndexes = new Set<number>();
 
@@ -1097,6 +1114,7 @@ export function buildVisualWorkDisplayEntries<
     if (pairedToolUseIndex === undefined) continue;
 
     toolUseByResult.set(index, entries[pairedToolUseIndex]!);
+    toolUseIndexByResult.set(index, pairedToolUseIndex);
     const namedResult = withToolResultName(
       entry,
       firstToolUseName(entries[pairedToolUseIndex]),
@@ -1114,6 +1132,30 @@ export function buildVisualWorkDisplayEntries<
       )
     ) {
       collapsedResultIndexes.add(index);
+    }
+  }
+
+  for (let index = 0; index < entries.length; index += 1) {
+    const entry = entries[index]!;
+    if (
+      entry.blocks.length === 0 ||
+      entry.blocks.some((block) => block.type !== "media")
+    ) {
+      continue;
+    }
+    let pairedBlocks = 0;
+    for (const block of entry.blocks) {
+      const toolUseIndex = block.toolUseId
+        ? toolUseById.get(block.toolUseId)
+        : undefined;
+      if (toolUseIndex === undefined) continue;
+      const media = mediaByToolUse.get(toolUseIndex) ?? [];
+      media.push(block);
+      mediaByToolUse.set(toolUseIndex, media);
+      pairedBlocks += 1;
+    }
+    if (pairedBlocks === entry.blocks.length) {
+      collapsedMediaIndexes.add(index);
     }
   }
 
@@ -1158,6 +1200,9 @@ export function buildVisualWorkDisplayEntries<
     if (collapsedResultIndexes.has(index)) {
       continue;
     }
+    if (collapsedMediaIndexes.has(index)) {
+      continue;
+    }
     if (collapsedSubagentNotificationIndexes.has(index)) {
       continue;
     }
@@ -1165,6 +1210,11 @@ export function buildVisualWorkDisplayEntries<
     const pairedResults = hasBlockType(entry, "tool_use")
       ? (resultsByToolUse.get(index) ?? [])
       : undefined;
+    const pairedMedia = mediaByToolUse.get(
+      hasBlockType(entry, "tool_use")
+        ? index
+        : (toolUseIndexByResult.get(index) ?? -1),
+    );
     const displayEntry: VisualWorkDisplayEntry<B, M> = {
       kind: "entry",
       entry: pairedToolUse
@@ -1172,6 +1222,7 @@ export function buildVisualWorkDisplayEntries<
         : entry,
       pairedResults,
       pairedResult: pairedResults?.at(-1),
+      pairedMedia,
       pairedToolUse,
       previewContext: snapshotUidLabels ? { snapshotUidLabels } : undefined,
     };

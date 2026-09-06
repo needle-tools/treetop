@@ -32,6 +32,7 @@ import {
   buildVisualTranscriptItems,
   buildVisualWorkDisplayEntries,
   visualSubagentMetaFromBlocks,
+  visualWorkImageBlocks,
   visualWorkSummary,
 } from "../src/last-user-message";
 
@@ -2170,6 +2171,47 @@ describe("codex event stream hub", () => {
     ]);
   });
 
+  test("keeps app-server imageView items available to collapsed work summaries", () => {
+    const messages = codexAppHistoryMessagesFromThread({
+      turns: [
+        {
+          id: "turn-1",
+          startedAt: 1782122400,
+          items: [
+            {
+              id: "user-1",
+              type: "userMessage",
+              content: [{ type: "text", text: "compare both renders" }],
+            },
+            {
+              id: "image-baseline",
+              type: "imageView",
+              path: "/tmp/baseline.png",
+            },
+            {
+              id: "image-candidate",
+              type: "imageView",
+              path: "/tmp/candidate.png",
+            },
+            {
+              id: "answer-1",
+              type: "agentMessage",
+              text: "The candidate is cleaner.",
+            },
+          ],
+        },
+      ],
+    });
+    const work = buildVisualTranscriptItems(messages).find(
+      (item) => item.kind === "work",
+    );
+    if (!work || work.kind !== "work") throw new Error("expected work item");
+
+    expect(
+      visualWorkImageBlocks(work.entries).map((block) => block.path),
+    ).toEqual(["/tmp/baseline.png", "/tmp/candidate.png"]);
+  });
+
   test("normalizes app-server write_stdin history and live results as read logs", () => {
     const writeStdinItem = {
       id: "call-logs",
@@ -2601,6 +2643,20 @@ describe("codex event stream hub", () => {
     expect(response.blocks.map((block) => block.type)).toEqual([
       "media",
       "text",
+    ]);
+    const work = items.find((item) => item.kind === "work");
+    if (!work || work.kind !== "work") throw new Error("expected work item");
+    const displayEntries = buildVisualWorkDisplayEntries(work.entries);
+    expect(displayEntries).toHaveLength(1);
+    expect(displayEntries[0]?.pairedMedia).toEqual([
+      expect.objectContaining({
+        type: "media",
+        mediaKind: "image",
+        path: "/tmp/duberman.png",
+      }),
+    ]);
+    expect(visualWorkImageBlocks(work.entries)).toEqual([
+      expect.objectContaining({ path: "/tmp/duberman.png" }),
     ]);
   });
 
