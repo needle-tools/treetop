@@ -12,7 +12,7 @@ import {
 import {
   cleanVisualToolResultText,
   visualToolCommandNicifierCoverage,
-} from "@supergit/nicifier";
+} from "@treetop/nicifier";
 
 export type AuditedAgent = "claude" | "codex";
 

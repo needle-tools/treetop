@@ -1,5 +1,5 @@
 {
-  "name": "@supergit/nicifier",
+  "name": "@treetop/nicifier",
   "version": "0.0.0",
   "type": "module",
   "sideEffects": false,
@@ -10,6 +10,7 @@
   "exports": {
     ".": {
       "types": "./src/index.ts",
+      "bun": "./src/index.ts",
       "import": "./dist/index.js",
       "default": "./dist/index.js"
     }

@@ -23,7 +23,7 @@
       },
     },
     "packages/nicifier": {
-      "name": "@supergit/nicifier",
+      "name": "@treetop/nicifier",
       "version": "0.0.0",
     },
     "packages/site": {
@@ -43,7 +43,7 @@
       "version": "0.0.0",
       "dependencies": {
         "@leeoniya/ufuzzy": "^1.0.19",
-        "@supergit/nicifier": "workspace:*",
+        "@treetop/nicifier": "workspace:*",
         "@xterm/addon-fit": "^0.11.0",
         "@xterm/addon-web-links": "^0.12.0",
         "@xterm/addon-webgl": "^0.19.0",
@@ -175,7 +175,7 @@
 
     "@supergit/daemon": ["@supergit/daemon@workspace:packages/daemon"],
 
-    "@supergit/nicifier": ["@supergit/nicifier@workspace:packages/nicifier"],
+    "@treetop/nicifier": ["@treetop/nicifier@workspace:packages/nicifier"],
 
     "@supergit/site": ["@supergit/site@workspace:packages/site"],
 

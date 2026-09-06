@@ -5,7 +5,7 @@ import { join, resolve } from "node:path";
 
 const repositoryRoot = resolve(import.meta.dir, "..");
 const packageRoot = join(repositoryRoot, "packages", "nicifier");
-const tempRoot = await mkdtemp(join(tmpdir(), "supergit-nicifier-package-"));
+const tempRoot = await mkdtemp(join(tmpdir(), "treetop-nicifier-package-"));
 const packDir = join(tempRoot, "pack");
 const consumerDir = join(tempRoot, "consumer");
 
@@ -55,21 +55,24 @@ try {
       name: "nicifier-external-consumer",
       private: true,
       type: "module",
-      dependencies: { "@supergit/nicifier": `file:${tarball}` },
+      dependencies: { "@treetop/nicifier": `file:${tarball}` },
     }),
   );
   const runtimeFixture = `
-import { nicifyCommand } from "@supergit/nicifier";
+import { modelPricingAt, modelsDevPricingSnapshotFrom, nicifyCommand } from "@treetop/nicifier";
 const nested = nicifyCommand(\`ssh host 'docker exec app sh -lc "npm view pkg version && cargo check"'\`);
 if (nested.text !== "Inspect npm package pkg · Run Cargo check" || !nested.fullyNicified) throw new Error("nested nicification failed");
 const partial = nicifyCommand("git status --short && frobnicate --all");
 if (partial.fullyNicified || partial.unnicifiedParts[0] !== "frobnicate --all") throw new Error("recursive fallback was hidden");
-console.log(JSON.stringify({ nested: nested.text, partial: partial.unnicifiedParts }));
+const modelsDev = modelsDevPricingSnapshotFrom({ openai: { id: "openai", models: { "gpt-package-test": { id: "gpt-package-test", cost: { input: 2, output: 12, cache_read: 0.2 } } } } }, "2026-09-06T10:00:00.000Z");
+const pricing = modelPricingAt("gpt-package-test", "2026-09-06T10:00:01.000Z", { modelsDev });
+if (pricing?.rates.output !== 12) throw new Error("packed models.dev pricing failed");
+console.log(JSON.stringify({ nested: nested.text, partial: partial.unnicifiedParts, pricing: pricing.rates }));
 `.trim();
   await Bun.write(join(consumerDir, "consumer.mjs"), runtimeFixture);
   await Bun.write(
     join(consumerDir, "consumer.ts"),
-    `import { nicifyCommand, type NicifiedCommand } from "@supergit/nicifier";\nconst result: NicifiedCommand = nicifyCommand("python3 -m pytest tests");\nconst complete: boolean = result.fullyNicified;\nconsole.log(result.text, complete);\n`,
+    `import { nicifyCommand, type ModelsDevPricingSnapshot, type NicifiedCommand } from "@treetop/nicifier";\nconst result: NicifiedCommand = nicifyCommand("python3 -m pytest tests");\nconst snapshot: ModelsDevPricingSnapshot | undefined = undefined;\nconst complete: boolean = result.fullyNicified;\nconsole.log(result.text, complete, snapshot);\n`,
   );
   await Bun.write(
     join(consumerDir, "tsconfig.json"),
@@ -103,7 +106,7 @@ console.log(JSON.stringify({ nested: nested.text, partial: partial.unnicifiedPar
   const archive = await readFile(tarball);
   const checksum = new Bun.CryptoHasher("sha256").update(archive).digest("hex");
   const installed = await readdir(
-    join(consumerDir, "node_modules", "@supergit", "nicifier"),
+    join(consumerDir, "node_modules", "@treetop", "nicifier"),
   );
   console.log(
     JSON.stringify({

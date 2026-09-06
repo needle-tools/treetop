@@ -37,6 +37,7 @@ export interface VisualTokenUsage {
   input: number;
   cachedInput: number;
   cacheWriteInput: number;
+  cacheWriteInput1h?: number;
   output: number;
   reasoningOutput: number;
   total: number;

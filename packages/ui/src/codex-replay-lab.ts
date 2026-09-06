@@ -762,7 +762,7 @@ function codexTranscriptStepFromRow(
         id: `codex-transcript-token-usage-${seq}`,
         role: "assistant",
         timestamp,
-        tokensUsed: tokenUsage.output + tokenUsage.reasoningOutput,
+        tokensUsed: tokenUsage.output,
         tokenUsage,
         blocks: [],
       });

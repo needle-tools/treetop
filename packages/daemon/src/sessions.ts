@@ -148,6 +148,8 @@ export interface NormalizedMessage {
   tokensUsed?: number;
   /** Full model token usage delta reported by the agent runtime. */
   tokenUsage?: NormalizedTokenUsage;
+  /** Model active when this usage checkpoint was recorded. */
+  model?: string;
   /** Per-agent event id (uuid for Claude, free-form elsewhere). */
   id?: string;
   /** Optional override for the assistant's display name on this turn.
@@ -164,6 +166,7 @@ export interface NormalizedTokenUsage {
   input: number;
   cachedInput: number;
   cacheWriteInput: number;
+  cacheWriteInput1h?: number;
   output: number;
   reasoningOutput: number;
   total: number;
@@ -751,7 +754,38 @@ function parseClaudeJsonlLine(line: string, out: NormalizedSession): void {
     }
   }
 
-  if (blocks.length === 0) return;
+  const usage = objectField(msg.usage);
+  const cacheCreation = finiteCodexNumber(
+    usage?.cache_creation_input_tokens ?? usage?.cacheCreationInputTokens,
+  ) ?? 0;
+  const cacheCreationDetail = objectField(usage?.cache_creation);
+  const cacheWriteInput1h = Math.min(
+    cacheCreation,
+    finiteCodexNumber(cacheCreationDetail?.ephemeral_1h_input_tokens) ?? 0,
+  );
+  const cachedInput = finiteCodexNumber(usage?.cache_read_input_tokens) ?? 0;
+  const freshInput = finiteCodexNumber(usage?.input_tokens) ?? 0;
+  const output = finiteCodexNumber(usage?.output_tokens) ?? 0;
+  const outputDetails = objectField(usage?.output_tokens_details);
+  const reasoningOutput =
+    finiteCodexNumber(
+      outputDetails?.thinking_tokens ?? usage?.reasoning_output_tokens,
+    ) ?? 0;
+  const input = freshInput + cachedInput + cacheCreation;
+  const tokenUsage: NormalizedTokenUsage | undefined =
+    input + output > 0
+      ? {
+          input,
+          cachedInput,
+          cacheWriteInput: cacheCreation,
+          cacheWriteInput1h,
+          output,
+          reasoningOutput,
+          total: input + output,
+        }
+      : undefined;
+
+  if (blocks.length === 0 && !tokenUsage) return;
 
   // Claude's tool-call protocol stores tool *results* as JSONL entries
   // with type=user, msg.role=user — that's the Anthropic API convention
@@ -772,6 +806,8 @@ function parseClaudeJsonlLine(line: string, out: NormalizedSession): void {
     blocks,
     timestamp: ts,
     id: typeof obj.uuid === "string" ? obj.uuid : undefined,
+    ...(typeof msg.model === "string" ? { model: msg.model } : {}),
+    ...(tokenUsage ? { tokensUsed: tokenUsage.output, tokenUsage } : {}),
   });
 }
 
@@ -827,7 +863,11 @@ function pushSessionMessage(
   role: NormalizedRole,
   blocks: NormalizedBlock[],
   timestamp?: string,
-  options: { tokensUsed?: number; tokenUsage?: NormalizedTokenUsage } = {},
+  options: {
+    tokensUsed?: number;
+    tokenUsage?: NormalizedTokenUsage;
+    model?: string;
+  } = {},
 ): void {
   if (
     blocks.length === 0 &&
@@ -1390,6 +1430,7 @@ const codexToolNamesBySession = new WeakMap<
 interface CodexTurnContext {
   approvalPolicy?: string;
   sandboxPolicy?: string;
+  model?: string;
 }
 
 const codexTurnContextsBySession = new WeakMap<
@@ -1434,10 +1475,13 @@ function rememberCodexTurnContext(
       ? record.approval_policy
       : undefined;
   const sandboxPolicy = codexSandboxPolicyLabel(record.sandbox_policy);
-  if (!approvalPolicy && !sandboxPolicy) return;
+  const model = typeof record.model === "string" ? record.model : undefined;
+  if (!approvalPolicy && !sandboxPolicy && !model) return;
+  const previous = codexTurnContextsBySession.get(out);
   codexTurnContextsBySession.set(out, {
-    approvalPolicy,
-    sandboxPolicy,
+    approvalPolicy: approvalPolicy ?? previous?.approvalPolicy,
+    sandboxPolicy: sandboxPolicy ?? previous?.sandboxPolicy,
+    model: model ?? previous?.model,
   });
 }
 
@@ -1747,10 +1791,15 @@ function parseCodexJsonlLine(
   ) {
     const p = obj.payload as Record<string, unknown>;
     const ts = codexTimestamp(obj);
+    if (p.type === "thread_settings_applied") {
+      rememberCodexTurnContext(out, p.thread_settings);
+      return;
+    }
     const tokenUsage = codexOutputTokenUsageFromPayload(p, context);
     if (tokenUsage !== undefined) {
       pushSessionMessage(out, "assistant", [], ts, {
-        tokensUsed: tokenUsage.output + tokenUsage.reasoningOutput,
+        model: codexTurnContextsBySession.get(out)?.model,
+        tokensUsed: tokenUsage.output,
         tokenUsage,
       });
       return;

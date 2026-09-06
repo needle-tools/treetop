@@ -103,6 +103,45 @@ describe("parseClaudeJsonl", () => {
     ]);
   });
 
+  test("attributes Claude usage and cache buckets to the response model", () => {
+    const s = parseClaudeJsonl(
+      JSON.stringify({
+        type: "assistant",
+        timestamp: "2026-08-20T06:05:45.485Z",
+        message: {
+          role: "assistant",
+          model: "claude-opus-5",
+          content: [{ type: "text", text: "done" }],
+          usage: {
+            input_tokens: 2,
+            cache_creation_input_tokens: 10_066,
+            cache_read_input_tokens: 24_018,
+            output_tokens: 306,
+            output_tokens_details: { thinking_tokens: 143 },
+            cache_creation: {
+              ephemeral_1h_input_tokens: 10_066,
+              ephemeral_5m_input_tokens: 0,
+            },
+          },
+        },
+      }),
+    );
+
+    expect(s.messages[0]).toMatchObject({
+      model: "claude-opus-5",
+      tokensUsed: 306,
+      tokenUsage: {
+        input: 34_086,
+        cachedInput: 24_018,
+        cacheWriteInput: 10_066,
+        cacheWriteInput1h: 10_066,
+        output: 306,
+        reasoningOutput: 143,
+        total: 34_392,
+      },
+    });
+  });
+
   test("renders tool_result both for string and structured content", () => {
     const stringForm = JSON.stringify({
       type: "user",
@@ -1271,29 +1310,37 @@ describe("parseCodexJsonl", () => {
   });
 
   test("normalizes Codex token_count rows as assistant token usage", () => {
-    const text = JSON.stringify({
-      timestamp: "2026-05-26T12:00:01.000Z",
-      type: "event_msg",
-      payload: {
-        type: "token_count",
-        info: {
-          last_token_usage: {
-            input_tokens: 1234,
-            cached_input_tokens: 1000,
-            output_tokens: 41,
-            reasoning_output_tokens: 7,
-            total_tokens: 1275,
+    const text = [
+      JSON.stringify({
+        timestamp: "2026-05-26T12:00:00.000Z",
+        type: "turn_context",
+        payload: { model: "gpt-5.6-terra" },
+      }),
+      JSON.stringify({
+        timestamp: "2026-05-26T12:00:01.000Z",
+        type: "event_msg",
+        payload: {
+          type: "token_count",
+          info: {
+            last_token_usage: {
+              input_tokens: 1234,
+              cached_input_tokens: 1000,
+              output_tokens: 41,
+              reasoning_output_tokens: 7,
+              total_tokens: 1275,
+            },
           },
         },
-      },
-    });
+      }),
+    ].join("\n");
     const s = parseCodexJsonl(text);
     expect(s.messages).toEqual([
       {
         role: "assistant",
         blocks: [],
         timestamp: "2026-05-26T12:00:01.000Z",
-        tokensUsed: 48,
+        model: "gpt-5.6-terra",
+        tokensUsed: 41,
         tokenUsage: {
           input: 1234,
           cachedInput: 1000,
@@ -1304,6 +1351,35 @@ describe("parseCodexJsonl", () => {
         },
       },
     ]);
+  });
+
+  test("updates checkpoint attribution from Codex thread settings", () => {
+    const text = [
+      JSON.stringify({
+        timestamp: "2026-08-21T12:00:00.000Z",
+        type: "event_msg",
+        payload: {
+          type: "thread_settings_applied",
+          thread_settings: { model: "gpt-5.6-sol" },
+        },
+      }),
+      JSON.stringify({
+        timestamp: "2026-08-21T12:00:01.000Z",
+        type: "event_msg",
+        payload: {
+          type: "token_count",
+          info: {
+            last_token_usage: {
+              input_tokens: 100,
+              output_tokens: 20,
+              total_tokens: 120,
+            },
+          },
+        },
+      }),
+    ].join("\n");
+
+    expect(parseCodexJsonl(text).messages[0]?.model).toBe("gpt-5.6-sol");
   });
 
   test("does not count a post-compaction context snapshot as newly spent tokens", () => {
