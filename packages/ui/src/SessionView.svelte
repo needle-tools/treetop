@@ -1,8 +1,10 @@
 <script lang="ts">
   import { apiUrl, withRequestDeadline } from "./api";
   import {
+    estimateSessionTokenCost,
     loadModelsDevPricing,
     type ModelsDevPricingSnapshot,
+    type SessionTokenUsageSegment,
   } from "@treetop/nicifier";
   import { play } from "./sound";
   import { onMount, onDestroy, tick } from "svelte";
@@ -64,6 +66,7 @@
     hasCanonicalUserMessageMatchingOptimistic,
     lastUserMessageBurst,
     lastUserMessageWithContext as buildLastUserMessageWithContext,
+    latestSessionMessageActivityIso,
     latestVisualGoal,
     latestVisualPlan,
     mergeVisualSessionMessages,
@@ -283,6 +286,9 @@
   export let contextWindow: number | undefined = undefined;
   /** Model id so the chip can pick a context-window cap (200k vs 1M). */
   export let model: string | undefined = undefined;
+  export let indexedLastMessageIso: string | undefined = undefined;
+  export let pricingUsage: SessionTokenUsageSegment[] | undefined = undefined;
+  export let pricingUsageExact: boolean | undefined = undefined;
   /** When set, skip spawning a new PTY and reattach to this existing
    *  daemon-side terminal. Used when a transient `__new__:` column
    *  migrates to SessionView while the PTY is still alive. */
@@ -2242,7 +2248,6 @@
   let draggingCodexQueueId: string | null = null;
   let codexQueueDropBeforeId: string | null = null;
   let codexQueueDropAtEnd = false;
-  let codexLiveLastActivityIso: string | undefined = undefined;
   let codexGoalBusy = false;
   let codexGoalEditing = false;
   let codexGoalDraft = "";
@@ -2257,7 +2262,6 @@
   let codexModelResolutionKey = "";
   let codexPendingDeltaPatches: VisualTranscriptDeltaPatch<NormalizedBlock>[] =
     [];
-  let codexPendingLastActivityIso = "";
   let codexLiveNormalizeContext: CodexLiveNormalizeContext = {
     toolNames: new Map(),
     toolInputs: new Map(),
@@ -2359,15 +2363,16 @@
   $: codexVisualAppCanStop =
     codexVisualAppSurface && (codexRunning || !!onStopVisualApp);
   $: visualTranscriptActive = liveCodexApp ? codexRunning : sending;
-  $: codexLastMessageActivityIso = session?.messages
-    .map((m) => m.timestamp)
-    .filter((ts): ts is string => !!ts)
-    .at(-1);
-  $: effectiveLastActivityIso = liveCodexApp
-    ? (codexLiveLastActivityIso ??
-      codexLastMessageActivityIso ??
-      session?.endedAt)
-    : session?.endedAt;
+  $: effectiveLastActivityIso = latestSessionMessageActivityIso(
+    session?.messages ?? [],
+    indexedLastMessageIso ?? session?.endedAt,
+  );
+  $: sessionTokenCost =
+    pricingUsageExact && pricingUsage?.length
+      ? estimateSessionTokenCost(pricingUsage, model, {
+          modelsDev: modelsDevPricing,
+        })
+      : undefined;
 
   let reportedWorking: boolean | undefined;
   let reportedAwaiting: boolean | undefined;
@@ -2963,7 +2968,6 @@
       codexDeltaFlushTimer = null;
     }
     codexPendingDeltaPatches = [];
-    codexPendingLastActivityIso = "";
   }
 
   function scheduleCodexDeltaFlush(): void {
@@ -3001,16 +3005,11 @@
       })
     ) {
       codexPendingDeltaPatches = [];
-      codexPendingLastActivityIso = "";
       return;
     }
     if (!session) return;
     const patches = codexPendingDeltaPatches;
     codexPendingDeltaPatches = [];
-    if (codexPendingLastActivityIso) {
-      codexLiveLastActivityIso = codexPendingLastActivityIso;
-      codexPendingLastActivityIso = "";
-    }
     let firstChangedIndex = session.messages.length;
     for (const patch of patches) {
       const existingIndex = session.messages.findIndex(
@@ -3088,12 +3087,8 @@
       const first = codexSeenEvents.values().next().value;
       if (first) codexSeenEvents.delete(first);
     }
-    const activityIso = event.receivedAt || new Date().toISOString();
-    if (delivery === "batched-delta") {
-      codexPendingLastActivityIso = activityIso;
-    } else {
+    if (delivery !== "batched-delta") {
       flushCodexDeltaPatches();
-      codexLiveLastActivityIso = activityIso;
     }
     if (event.kind === "request") {
       flushCodexDeltaPatches();
@@ -4291,7 +4286,6 @@
       new Date().toISOString(),
     );
     rememberComposerQueueMotion(id, sourceRect);
-    codexLiveLastActivityIso = new Date().toISOString();
     codexQueueBlocked = false;
     sendError = "";
     forceVisualTailFollow();
@@ -4320,7 +4314,6 @@
     if (!opts.steer && sending) return false;
     sending = true;
     sendError = "";
-    codexLiveLastActivityIso = new Date().toISOString();
     const optimisticId = optimisticCodexUser(
       payload.text,
       payload.attachments,
@@ -5230,6 +5223,7 @@
       {contextWindow}
       {model}
       lastActivityIso={effectiveLastActivityIso}
+      sessionCost={sessionTokenCost}
       lastUserMessage={lastUserMessageWithContext}
       {pollCount}
       {lastLoadedAt}

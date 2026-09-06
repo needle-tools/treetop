@@ -309,6 +309,21 @@
     contextTokensExact?: boolean;
     contextWindow?: number;
     model?: string;
+    pricingUsage?: Array<{
+      model?: string;
+      at?: string;
+      standardOnly?: boolean;
+      usage: {
+        input: number;
+        cachedInput: number;
+        cacheWriteInput: number;
+        cacheWriteInput1h?: number;
+        output: number;
+        reasoningOutput: number;
+        total: number;
+      };
+    }>;
+    pricingUsageExact?: boolean;
   }
   interface ShellRecord {
     termId: string;
@@ -12114,7 +12129,8 @@
                                   codexModel={s.codexModel}
                                   codexEffort={s.codexEffort}
                                   codexServiceTier={s.codexServiceTier}
-                                  lastActivityIso={newAgentMeta?.lastActive}
+                                  lastActivityIso={newAgentMeta?.lastMessageTs ??
+                                    newAgentMeta?.lastActive}
                                   lastUserMessage={newAgentMeta?.lastUserMessage}
                                   starred={starredSessions.has(titleSource) ||
                                     starredSessions.has(s.source)}
@@ -12386,6 +12402,9 @@
                                   contextTokensExact={agentMeta?.contextTokensExact}
                                   contextWindow={agentMeta?.contextWindow}
                                   model={agentMeta?.model}
+                                  indexedLastMessageIso={agentMeta?.lastMessageTs}
+                                  pricingUsage={agentMeta?.pricingUsage}
+                                  pricingUsageExact={agentMeta?.pricingUsageExact}
                                   claudeModel={s.claudeModel}
                                   claudeEffort={s.claudeEffort}
                                   codexModelOverride={s.codexModel}

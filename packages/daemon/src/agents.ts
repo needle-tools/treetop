@@ -14,6 +14,21 @@ import { createLimiter } from "./concurrency";
 
 export type AgentKind = "claude" | "codex" | "copilot" | "ollama";
 
+export interface SessionTokenUsageSegment {
+  model?: string;
+  at?: string;
+  standardOnly?: boolean;
+  usage: {
+    input: number;
+    cachedInput: number;
+    cacheWriteInput: number;
+    cacheWriteInput1h?: number;
+    output: number;
+    reasoningOutput: number;
+    total: number;
+  };
+}
+
 export interface AgentSession {
   agent: AgentKind;
   /** Resolved absolute path of the cwd the agent was working in. */
@@ -98,6 +113,11 @@ export interface AgentSession {
    *  `gpt-5.5`). Used by the UI for display and, when `contextWindow`
    *  isn't shipped, as the fallback heuristic for the context cap. */
   model?: string;
+  /** Compact whole-session usage, grouped by model and UTC day so the UI
+   *  can apply historical/model-specific prices without loading the JSONL. */
+  pricingUsage?: SessionTokenUsageSegment[];
+  /** False while a large Claude transcript is only represented by its tail. */
+  pricingUsageExact?: boolean;
 }
 
 export const CLAUDE_ROOT = () => join(homedir(), ".claude", "projects");
@@ -413,6 +433,35 @@ interface ClaudeUserScanResult {
    *  messages, which would inflate the file mtime past the actual
    *  last conversation activity. */
   lastMessageTs?: string;
+  pricingUsage?: SessionTokenUsageSegment[];
+  pricingUsageExact?: boolean;
+}
+
+function addSessionPricingUsage(
+  result: { pricingUsage?: SessionTokenUsageSegment[] },
+  segment: SessionTokenUsageSegment,
+): void {
+  const day = segment.at?.slice(0, 10) ?? "";
+  const existing = result.pricingUsage?.find(
+    (candidate) =>
+      candidate.model === segment.model &&
+      candidate.standardOnly === segment.standardOnly &&
+      (candidate.at?.slice(0, 10) ?? "") === day,
+  );
+  if (!existing) {
+    (result.pricingUsage ??= []).push(segment);
+    return;
+  }
+  existing.at = segment.at ?? existing.at;
+  existing.usage.input += segment.usage.input;
+  existing.usage.cachedInput += segment.usage.cachedInput;
+  existing.usage.cacheWriteInput += segment.usage.cacheWriteInput;
+  existing.usage.cacheWriteInput1h =
+    (existing.usage.cacheWriteInput1h ?? 0) +
+    (segment.usage.cacheWriteInput1h ?? 0);
+  existing.usage.output += segment.usage.output;
+  existing.usage.reasoningOutput += segment.usage.reasoningOutput;
+  existing.usage.total += segment.usage.total;
 }
 
 /** (path, mtimeMs) → previous scan result. JSONL session files don't change
@@ -537,6 +586,8 @@ function ingestUserScanLines(
             input_tokens?: unknown;
             cache_read_input_tokens?: unknown;
             cache_creation_input_tokens?: unknown;
+            output_tokens?: unknown;
+            cache_creation?: unknown;
           }
         | undefined;
       if (usage && typeof usage === "object") {
@@ -552,6 +603,30 @@ function ingestUserScanLines(
             : 0;
         result.lastContextTokens = inp + cr + cc;
         result.model = typeof msg?.model === "string" ? msg.model : undefined;
+        const output =
+          typeof usage.output_tokens === "number" ? usage.output_tokens : 0;
+        const cacheCreation =
+          usage.cache_creation && typeof usage.cache_creation === "object"
+            ? (usage.cache_creation as Record<string, unknown>)
+            : undefined;
+        const cacheWrite1h =
+          typeof cacheCreation?.ephemeral_1h_input_tokens === "number"
+            ? cacheCreation.ephemeral_1h_input_tokens
+            : 0;
+        addSessionPricingUsage(result, {
+          model: typeof msg?.model === "string" ? msg.model : undefined,
+          at: typeof obj.timestamp === "string" ? obj.timestamp : undefined,
+          standardOnly: inp + cr + cc <= 200_000,
+          usage: {
+            input: inp + cr + cc,
+            cachedInput: cr,
+            cacheWriteInput: cc,
+            ...(cacheWrite1h > 0 ? { cacheWriteInput1h: cacheWrite1h } : {}),
+            output,
+            reasoningOutput: 0,
+            total: inp + cr + cc + output,
+          },
+        });
       }
     } else if (obj.type === "system" && obj.subtype === "compact_boundary") {
       result.lastContextTokens = undefined;
@@ -593,6 +668,7 @@ async function processBackgroundScans(): Promise<void> {
           recentMessageCount: 0,
         };
         ingestUserScanLines(content, result, true);
+        if (result.pricingUsage) result.pricingUsageExact = true;
         const entry: UserScanCacheEntry = {
           mtimeMs,
           offset: Buffer.byteLength(content, "utf-8"),
@@ -670,6 +746,7 @@ export async function scanClaudeUserMessages(
   if (tailText) {
     ingestUserScanLines(tailText, result, isSmall);
   }
+  if (isSmall && result.pricingUsage) result.pricingUsageExact = true;
   if (mtimeMs !== undefined) {
     const entry: UserScanCacheEntry = {
       mtimeMs,
@@ -697,6 +774,7 @@ export interface CodexTokenUsage {
   lastInputTokens?: number;
   modelContextWindow?: number;
   model?: string;
+  pricingUsage?: SessionTokenUsageSegment["usage"];
 }
 
 interface CodexScanCacheEntry {
@@ -731,6 +809,7 @@ export interface CodexSessionOverview {
   messageCount?: number;
   contextTokens?: number;
   contextTokensExact?: boolean;
+  lastMessageTs?: string;
 }
 
 function isCodexSystemInjected(text: string): boolean {
@@ -810,6 +889,33 @@ function codexLastContextTokens(value: unknown): number | undefined {
   return isCompactedContextSnapshot ? total : input;
 }
 
+function codexPricingUsage(
+  value: unknown,
+): SessionTokenUsageSegment["usage"] | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const usage = value as Record<string, unknown>;
+  const number = (field: string): number => {
+    const candidate = usage[field];
+    return typeof candidate === "number" && Number.isFinite(candidate)
+      ? Math.max(0, candidate)
+      : 0;
+  };
+  const input = number("input_tokens");
+  const cachedInput = number("cached_input_tokens");
+  const output = number("output_tokens");
+  const reasoningOutput = number("reasoning_output_tokens");
+  const total = number("total_tokens") || input + output;
+  if (total <= 0 && cachedInput <= 0 && reasoningOutput <= 0) return undefined;
+  return {
+    input,
+    cachedInput,
+    cacheWriteInput: 0,
+    output,
+    reasoningOutput,
+    total,
+  };
+}
+
 function ingestCodexOverviewLine(
   line: string,
   state: {
@@ -821,6 +927,7 @@ function ingestCodexOverviewLine(
     contextChars: number;
     countMessages: boolean;
     estimateContext: boolean;
+    lastMessageTs?: string;
   },
 ): void {
   if (!line) return;
@@ -873,6 +980,16 @@ function ingestCodexOverviewLine(
         if (typeof infoObj.model_context_window === "number") {
           state.usage.modelContextWindow = infoObj.model_context_window;
         }
+        const pricingUsage = codexPricingUsage(infoObj.total_token_usage);
+        if (pricingUsage) {
+          state.usage.pricingUsage = pricingUsage;
+          if (
+            typeof obj.timestamp === "string" &&
+            (!state.lastMessageTs || obj.timestamp > state.lastMessageTs)
+          ) {
+            state.lastMessageTs = obj.timestamp;
+          }
+        }
       }
     }
   }
@@ -892,6 +1009,11 @@ function ingestCodexOverviewLine(
       : obj;
     const role = payload.role;
     if (role === "user" || role === "assistant") {
+      if (typeof obj.timestamp === "string") {
+        if (!state.lastMessageTs || obj.timestamp > state.lastMessageTs) {
+          state.lastMessageTs = obj.timestamp;
+        }
+      }
       if (state.countMessages) state.messageCount++;
       if (state.estimateContext) {
         const content = payload.content;
@@ -940,6 +1062,7 @@ export async function readCodexSessionOverview(
     contextChars: 0,
     countMessages: exact,
     estimateContext: exact,
+    lastMessageTs: undefined as string | undefined,
   };
 
   for (const line of head.split("\n")) {
@@ -976,6 +1099,7 @@ export async function readCodexSessionOverview(
       exact && state.messageCount > 0 ? state.messageCount : undefined,
     contextTokens,
     contextTokensExact,
+    lastMessageTs: state.lastMessageTs,
   };
 }
 
@@ -1021,6 +1145,7 @@ async function ensureCodexScanCached(
   let lastInputTokens: number | undefined;
   let modelContextWindow: number | undefined;
   let model: string | undefined;
+  let pricingUsage: SessionTokenUsageSegment["usage"] | undefined;
 
   function ingestMetaAndUsage(text: string): void {
     for (const line of text.split("\n")) {
@@ -1073,6 +1198,8 @@ async function ensureCodexScanCached(
             if (typeof infoObj.model_context_window === "number") {
               modelContextWindow = infoObj.model_context_window;
             }
+            pricingUsage =
+              codexPricingUsage(infoObj.total_token_usage) ?? pricingUsage;
           }
         }
       }
@@ -1206,7 +1333,12 @@ async function ensureCodexScanCached(
     // File unreadable — keep whatever we got from head/tail.
   }
 
-  const usage: CodexTokenUsage = { lastInputTokens, modelContextWindow, model };
+  const usage: CodexTokenUsage = {
+    lastInputTokens,
+    modelContextWindow,
+    model,
+    pricingUsage,
+  };
   const entry: CodexScanCacheEntry = {
     mtimeMs: mtimeMs ?? 0,
     messageCount,
@@ -1259,7 +1391,12 @@ const UUID_RE =
  *  path + mtime. Returns null if nothing usable is found. */
 async function bestSubagentFile(
   sessionDir: string,
-): Promise<{ path: string; mtimeMs: number; mtime: Date; size: number } | null> {
+): Promise<{
+  path: string;
+  mtimeMs: number;
+  mtime: Date;
+  size: number;
+} | null> {
   const subDir = join(sessionDir, "subagents");
   let entries: string[];
   try {
@@ -1330,6 +1467,8 @@ async function claudeSessionFromFile(
     contextTokensExact:
       userStats.lastContextTokens !== undefined ? true : undefined,
     model: userStats.model,
+    pricingUsage: userStats.pricingUsage,
+    pricingUsageExact: userStats.pricingUsageExact,
   };
 }
 
@@ -1518,6 +1657,20 @@ export async function scanCodex(
                 contextTokensExact: overview.contextTokensExact,
                 contextWindow: overview.usage.modelContextWindow,
                 model: overview.usage.model,
+                lastMessageTs: overview.lastMessageTs,
+                pricingUsage: overview.usage.pricingUsage
+                  ? [
+                      {
+                        model: overview.usage.model,
+                        at: overview.lastMessageTs,
+                        standardOnly: true,
+                        usage: overview.usage.pricingUsage,
+                      },
+                    ]
+                  : undefined,
+                pricingUsageExact: overview.usage.pricingUsage
+                  ? true
+                  : undefined,
               },
             };
           } catch {

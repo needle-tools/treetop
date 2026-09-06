@@ -557,6 +557,34 @@ describe("scanClaudeUserMessages", () => {
     const stats = await scanClaudeUserMessages(file);
     expect(stats.lastContextTokens).toBe(4 + 1000 + 50000);
     expect(stats.model).toBe("claude-opus-4-7");
+    expect(stats.pricingUsage).toEqual([
+      {
+        model: "claude-sonnet-4-6",
+        at: undefined,
+        standardOnly: true,
+        usage: {
+          input: 103,
+          cachedInput: 0,
+          cacheWriteInput: 100,
+          output: 5,
+          reasoningOutput: 0,
+          total: 108,
+        },
+      },
+      {
+        model: "claude-opus-4-7",
+        at: undefined,
+        standardOnly: true,
+        usage: {
+          input: 51_004,
+          cachedInput: 50_000,
+          cacheWriteInput: 1_000,
+          output: 7,
+          reasoningOutput: 0,
+          total: 51_011,
+        },
+      },
+    ]);
   });
 
   test("ignores assistant turns without a usage block when picking the latest", async () => {
@@ -1205,6 +1233,45 @@ describe("scanCodexTokenUsage", () => {
     expect(usage.lastInputTokens).toBe(49_868);
     expect(usage.modelContextWindow).toBe(258_400);
     expect(usage.model).toBe("gpt-5.5");
+    expect(usage.pricingUsage).toEqual({
+      input: 242_571,
+      cachedInput: 144_896,
+      cacheWriteInput: 0,
+      output: 2_775,
+      reasoningOutput: 1_106,
+      total: 245_346,
+    });
+  });
+
+  test("records the last real message timestamp instead of a later file event", async () => {
+    const dir = await tempDir();
+    const file = join(dir, "s.jsonl");
+    await writeFile(
+      file,
+      [
+        JSON.stringify({
+          timestamp: "2026-09-05T10:00:00.000Z",
+          type: "response_item",
+          payload: { type: "message", role: "user", content: "question" },
+        }),
+        JSON.stringify({
+          timestamp: "2026-09-05T10:01:00.000Z",
+          type: "response_item",
+          payload: { type: "message", role: "assistant", content: "answer" },
+        }),
+        JSON.stringify({
+          timestamp: "2026-09-06T09:00:00.000Z",
+          type: "event_msg",
+          payload: { type: "thread_settings_applied" },
+        }),
+      ].join("\n"),
+    );
+
+    const overview = await readCodexSessionOverview(
+      file,
+      (await stat(file)).size,
+    );
+    expect(overview.lastMessageTs).toBe("2026-09-05T10:01:00.000Z");
   });
 
   test("uses the latest turn_context.payload.model when multiple are present", async () => {
