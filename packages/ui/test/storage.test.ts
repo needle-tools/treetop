@@ -579,12 +579,25 @@ describe("filterToExistingSessions", () => {
     ).toBe(true);
   });
 
-  test("live Codex App panes never poll the transcript source", () => {
+  test("restored Codex App panes poll their transcript source for history", () => {
     expect(
       resolveSessionMessageSource({
         agent: "codex",
         source: codexAppSource("thread-123"),
         transcriptSource: "/Users/me/.codex/sessions/thread-123.jsonl",
+        liveAppSurface: false,
+      }),
+    ).toEqual({
+      kind: "transcript",
+      source: "/Users/me/.codex/sessions/thread-123.jsonl",
+    });
+  });
+
+  test("new Codex App panes use app-server history until a transcript exists", () => {
+    expect(
+      resolveSessionMessageSource({
+        agent: "codex",
+        source: codexAppSource("thread-123"),
         liveAppSurface: true,
       }),
     ).toEqual({

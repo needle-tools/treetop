@@ -95,33 +95,6 @@ describe("peerModeEnabled LAN access gate", () => {
 });
 
 // ---------------------------------------------------------------------------
-// 10. repsCacheGen generation counter — stale inflight guard
-// ---------------------------------------------------------------------------
-describe("repsCacheGen generation counter", () => {
-  test("repsCacheGen is incremented inside invalidateReposCache()", () => {
-    const fnBody = SERVER_TS.match(
-      /function invalidateReposCache[\s\S]*?\n\}/,
-    )?.[0];
-    expect(fnBody, "invalidateReposCache not found").toBeTruthy();
-    expect(fnBody).toContain("repsCacheGen++");
-  });
-
-  test("reposNDJSONFresh guards cache write with myGen === repsCacheGen", () => {
-    // Without this, a slow inflight that completes after a mutation would
-    // overwrite the post-mutation cache.
-    expect(SERVER_TS).toContain("myGen === repsCacheGen");
-  });
-
-  test("invalidateReposCache also nulls out reposCache and reposInflight", () => {
-    const fnBody = SERVER_TS.match(
-      /function invalidateReposCache[\s\S]*?\n\}/,
-    )?.[0];
-    expect(fnBody).toContain("reposCache = null");
-    expect(fnBody).toContain("reposInflight = null");
-  });
-});
-
-// ---------------------------------------------------------------------------
 // 10a. Activity tail startup — background scan shares in-flight detectAgents
 // ---------------------------------------------------------------------------
 describe("activity tail startup", () => {

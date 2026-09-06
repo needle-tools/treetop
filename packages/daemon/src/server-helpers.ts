@@ -517,6 +517,21 @@ export function patchWorktreeDetailsInRepos(
   return false;
 }
 
+export function invalidateReposCacheRuntime<TInflight>({
+  inflight,
+  generation,
+}: {
+  cache: unknown | null;
+  inflight: TInflight | null;
+  generation: number;
+}): { cache: null; inflight: TInflight | null; generation: number } {
+  return {
+    cache: null,
+    inflight,
+    generation: generation + 1,
+  };
+}
+
 export function codexThreadIdFromTitleSource(source: string): string | undefined {
   const livePrefix = "__codex_app__:";
   if (source.startsWith(livePrefix)) return source.slice(livePrefix.length);
