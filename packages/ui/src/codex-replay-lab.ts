@@ -14,6 +14,11 @@ import {
   visualTranscriptMessageWindow,
   type VisualTranscriptItem,
 } from "./last-user-message";
+import {
+  estimateModelTokenCost,
+  type ModelsDevPricingSnapshot,
+  type SessionTokenUsageSegment,
+} from "@treetop/nicifier";
 
 export interface ReplayFrame {
   seq?: number;
@@ -118,6 +123,8 @@ export interface CodexReplayTurnAnalysis {
   outputTokens: number;
   reasoningTokens: number;
   tokensPerSecond?: number;
+  estimatedCostUsd?: number;
+  unpricedCheckpoints: number;
   issues: CodexReplayTurnIssue[];
   heat: number;
 }
@@ -126,10 +133,16 @@ export interface CodexReplayAnalysis {
   turns: CodexReplayTurnAnalysis[];
   issueTurnCount: number;
   maxHeat: number;
+  totalEstimatedCostUsd: number;
+  unpricedCheckpoints: number;
 }
 
 export function analyzeCodexReplayTurns(
   messages: readonly CodexReplayMessage[],
+  options: {
+    defaultModel?: string;
+    modelsDev?: ModelsDevPricingSnapshot;
+  } = {},
 ): CodexReplayAnalysis {
   const grouped: CodexReplayMessage[][] = [];
   for (const message of messages) {
@@ -137,18 +150,46 @@ export function analyzeCodexReplayTurns(
     if (grouped.length > 0) grouped[grouped.length - 1]!.push(message);
   }
   const turns = grouped.map((turnMessages, index) =>
-    analyzeCodexReplayTurn(turnMessages, index),
+    analyzeCodexReplayTurn(turnMessages, index, options),
   );
   return {
     turns,
     issueTurnCount: turns.filter((turn) => turn.issues.length > 0).length,
     maxHeat: turns.reduce((max, turn) => Math.max(max, turn.heat), 0),
+    totalEstimatedCostUsd: turns.reduce(
+      (total, turn) => total + (turn.estimatedCostUsd ?? 0),
+      0,
+    ),
+    unpricedCheckpoints: turns.reduce(
+      (total, turn) => total + turn.unpricedCheckpoints,
+      0,
+    ),
   };
+}
+
+export function summarizeCodexReplayPricingUsage(
+  messages: readonly CodexReplayMessage[],
+): SessionTokenUsageSegment[] {
+  return messages.flatMap((message) =>
+    message.tokenUsage
+      ? [
+          {
+            model: message.model,
+            at: message.timestamp,
+            usage: message.tokenUsage,
+          },
+        ]
+      : [],
+  );
 }
 
 function analyzeCodexReplayTurn(
   messages: readonly CodexReplayMessage[],
   index: number,
+  options: {
+    defaultModel?: string;
+    modelsDev?: ModelsDevPricingSnapshot;
+  },
 ): CodexReplayTurnAnalysis {
   const timestamps = messages
     .map((message) => message.timestamp)
@@ -165,6 +206,9 @@ function analyzeCodexReplayTurn(
   let newInputTokens = 0;
   let outputTokens = 0;
   let reasoningTokens = 0;
+  let estimatedCostUsd = 0;
+  let pricedCheckpoints = 0;
+  let unpricedCheckpoints = 0;
   for (const message of messages) {
     for (const block of message.blocks) {
       if (block.type !== "tool_use") continue;
@@ -176,6 +220,18 @@ function analyzeCodexReplayTurn(
     newInputTokens += Math.max(0, usage.input - usage.cachedInput);
     outputTokens += Math.max(0, usage.output);
     reasoningTokens += Math.max(0, usage.reasoningOutput);
+    const cost = estimateModelTokenCost(
+      usage,
+      message.model ?? options.defaultModel,
+      message.timestamp,
+      { modelsDev: options.modelsDev },
+    );
+    if (cost) {
+      estimatedCostUsd += cost.totalUsd;
+      pricedCheckpoints += 1;
+    } else {
+      unpricedCheckpoints += 1;
+    }
   }
   const toolCallCount = toolIds.size + anonymousToolCalls;
   const durationSeconds = durationMs !== undefined ? durationMs / 1000 : 0;
@@ -250,6 +306,8 @@ function analyzeCodexReplayTurn(
     newInputTokens,
     outputTokens,
     reasoningTokens,
+    ...(pricedCheckpoints > 0 ? { estimatedCostUsd } : {}),
+    unpricedCheckpoints,
     ...(tokensPerSecond !== undefined ? { tokensPerSecond } : {}),
     issues,
     heat: clamp01(
@@ -270,6 +328,19 @@ function replayTurnLabel(
       /<in-app-browser-context\b[^>]*>[\s\S]*?<\/in-app-browser-context>/g,
       "",
     )
+    .replace(/&#(?:x([0-9a-f]+)|(\d+));/gi, (entity, hex, decimal) => {
+      const codePoint = Number.parseInt(hex ?? decimal, hex ? 16 : 10);
+      if (
+        !Number.isInteger(codePoint) ||
+        codePoint < 0 ||
+        codePoint > 0x10ffff ||
+        (codePoint >= 0xd800 && codePoint <= 0xdfff)
+      ) {
+        return entity;
+      }
+      return String.fromCodePoint(codePoint);
+    })
+    .replace(/\\([!"#$%&'()*+,\-./:;<=>?@[\]^_`{|}~])/g, "$1")
     .replace(/\s+/g, " ")
     .trim()
     .replace(/^#+\s*My request(?: for Codex)?:\s*/i, "");
@@ -286,6 +357,13 @@ export function formatReplayTokenCount(value: number): string {
   if (value < 100_000)
     return `${(value / 1_000).toFixed(1).replace(/\.0$/, "")}k`;
   return `${Math.round(value / 1_000)}k`;
+}
+
+export function formatReplayCost(value: number): string {
+  if (value === 0) return "$0";
+  if (value < 0.01) return `$${value.toFixed(4)}`;
+  if (value < 100) return `$${value.toFixed(2)}`;
+  return `$${value.toLocaleString(undefined, { maximumFractionDigits: 0 })}`;
 }
 
 export function formatReplayDuration(valueMs: number): string {

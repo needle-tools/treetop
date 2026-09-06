@@ -4,13 +4,19 @@
   import { codexAppSource } from "./storage";
   import { installIdleTracker } from "./ui-idle";
   import {
+    loadModelsDevPricing,
+    type ModelsDevPricingSnapshot,
+  } from "@treetop/nicifier";
+  import {
     analyzeCodexReplayTurns,
     createCodexReplaySessionTransport,
     filterCodexReplaySessions,
+    formatReplayCost,
     formatReplayDuration,
     formatReplayTokenCount,
     parseCodexReplaySessionFixture,
     summarizeCodexReplaySessions,
+    summarizeCodexReplayPricingUsage,
     type CodexReplaySessionFilter,
     type CodexReplaySessionFixture,
     type CodexReplaySessionTransport,
@@ -36,11 +42,19 @@
   let sessionFilter: CodexReplaySessionFilter = "all";
   let sessionQuery = "";
   let transcriptSession: ReplaySessionIndexEntry | null = null;
+  let transcriptSessionOverride: ReplayTranscriptSession | undefined;
   let analysisCollapsed = false;
   let analysisMessages: readonly CodexReplayMessage[] = [];
+  let modelsDevPricing: ModelsDevPricingSnapshot | undefined;
 
   $: stepCount = transport?.stepCount ?? 0;
-  $: turnAnalysis = analyzeCodexReplayTurns(analysisMessages);
+  $: replayModel =
+    [...analysisMessages].reverse().find((message) => message.model)?.model;
+  $: replayPricingUsage = summarizeCodexReplayPricingUsage(analysisMessages);
+  $: turnAnalysis = analyzeCodexReplayTurns(analysisMessages, {
+    defaultModel: replayModel,
+    modelsDev: modelsDevPricing,
+  });
   $: sessionCounts = summarizeCodexReplaySessions(sessions);
   $: visibleSessions = filterCodexReplaySessions(
     sessions,
@@ -99,14 +113,9 @@
     fixture = null;
     transport = null;
     transcriptSession = null;
+    transcriptSessionOverride = undefined;
     analysisMessages = [];
     playing = false;
-    if (entry.rpcFrameCount === 0 && entry.transcript) {
-      transcriptSession = entry;
-      loading = false;
-      loadingLabel = "";
-      return;
-    }
     try {
       const params = new URLSearchParams({ threadId: entry.threadId });
       const res = await fetch(`/api/codex-app/recordings/read?${params}`);
@@ -117,6 +126,16 @@
         throw new Error(body?.error ?? `HTTP ${res.status}`);
       }
       if (requestId !== loadRequestId) return;
+      if (entry.rpcFrameCount === 0 && entry.transcript) {
+        if (!body.transcriptSession) {
+          throw new Error("Replay response has no transcript session");
+        }
+        transcriptSession = entry;
+        transcriptSessionOverride = body.transcriptSession;
+        analysisMessages = body.transcriptSession.messages;
+        selectedThreadId = entry.threadId;
+        return;
+      }
       installFixture(
         parseCodexReplaySessionFixture(body.recordingText, entry.threadId),
         body.session.title,
@@ -138,6 +157,7 @@
     fixture = null;
     transport = null;
     transcriptSession = null;
+    transcriptSessionOverride = undefined;
     analysisMessages = [];
     fileName = "";
     stepIndex = 0;
@@ -204,6 +224,9 @@
   onMount(() => {
     const uninstallIdleTracker = installIdleTracker();
     void fetchRecordings();
+    void loadModelsDevPricing().then((snapshot) => {
+      modelsDevPricing = snapshot;
+    });
     return uninstallIdleTracker;
   });
 
@@ -221,7 +244,17 @@
     ok: boolean;
     session: ReplaySessionIndexEntry;
     recordingText: string;
+    transcriptSession?: ReplayTranscriptSession;
     error?: string;
+  }
+
+  interface ReplayTranscriptSession {
+    agent: "codex";
+    cwd: string;
+    sessionId: string;
+    startedAt?: string;
+    endedAt?: string;
+    messages: CodexReplayMessage[];
   }
 </script>
 
@@ -378,6 +411,10 @@
                   resumeSessionId={transcriptSession.threadId}
                   wtPath={transcriptSession.transcript.cwd ?? ""}
                   manualTitleOverride={transcriptSession.title}
+                  model={replayModel}
+                  pricingUsage={replayPricingUsage}
+                  pricingUsageExact={replayPricingUsage.length > 0}
+                  {transcriptSessionOverride}
                   visualAppEnabled={false}
                   spawnReady={false}
                   onMessagesChange={receiveSessionMessages}
@@ -481,7 +518,10 @@
             <div class="replay-analysis-content">
               <header class="replay-analysis-header">
                 <strong>Turns</strong>
-                <span>{turnAnalysis.issueTurnCount} issues</span>
+                <span>
+                  {turnAnalysis.issueTurnCount} issues ·
+                  {formatReplayCost(turnAnalysis.totalEstimatedCostUsd)} total
+                </span>
               </header>
               {#if !turnAnalysis.turns.length}
                 <span class="replay-analysis-empty">No turn data</span>
@@ -517,6 +557,9 @@
                           <span
                             >{formatReplayTokenCount(turn.outputTokens)} out</span
                           >
+                        {/if}
+                        {#if turn.estimatedCostUsd !== undefined}
+                          <span>{formatReplayCost(turn.estimatedCostUsd)}</span>
                         {/if}
                         {#if turn.tokensPerSecond !== undefined}
                           <span>{turn.tokensPerSecond.toFixed(1)} tok/s</span>
