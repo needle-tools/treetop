@@ -76,6 +76,40 @@ adding another identity system later.
 | Sticky notes | `notes/*.md` | `notes` | Full frontmatter + body. |
 | Onboarding state | localStorage flag | `onboarding` | So walkthrough doesn't re-trigger on a new machine. |
 
+### Local durability baseline (implemented 2026-08-29)
+
+Sync is not the first line of defence against a failed write. Preference
+patches are serialized, written by atomic rename, and snapshot both a
+previously unversioned baseline and the complete resulting `prefs.json`
+before installation. Snapshots live under
+`.supergit/backups/prefs/full/` with 5 latest, 24 hourly, and 7 daily copies;
+an unreadable primary automatically falls back to the newest valid snapshot.
+This includes note positions and z-order, not only open sessions.
+
+An open session embeds its Visual/Terminal display choice in its own record.
+The `supergit:sessionSurfaces` alias map remains only to remember the choice
+after a session is closed or its transcript source is canonicalized. Legacy
+records migrate from their durable mode (`mode: "terminal"`; absence means the
+session was open visually), so restoring `openSessions` cannot silently reset
+the view choice even when the older alias-only state is unavailable.
+
+Codex execution settings are part of that same self-contained open-session
+record: model, reasoning effort, service tier, sandbox, approval policy, and
+reasoning-summary mode. `supergit:codexApp:turnSettings` is only the default for
+new sessions and the one-time seed for legacy records: hydration freezes those
+effective defaults into every Codex session that still lacks them. Changing a
+setting in a session immediately copies it into that session's `openSessions`
+entry, and both Visual turns and Terminal resume commands use the embedded
+value. This keeps differently trusted worktrees distinct and makes a restored
+session resume with the permissions it actually had instead of whichever
+global value was selected most recently.
+
+Every sticky-note create, update, and delete also records a complete note
+version under `.supergit/backups/notes/<id>/` with the same retention tiers,
+and note-file writes use atomic rename. A corrupt existing note is read from
+its newest valid version; an intentionally deleted note stays deleted while
+its versions remain available for manual recovery.
+
 ### Don't sync (machine-local)
 
 | Data | Why |

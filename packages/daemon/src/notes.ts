@@ -6,6 +6,8 @@ import {
   readdir,
   unlink,
   access,
+  link,
+  rename,
 } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 
@@ -88,12 +90,86 @@ export interface Note {
 }
 
 const NOTES_DIR = "notes";
+const NOTE_BACKUP_LATEST = 5;
+const NOTE_BACKUP_HOURLY = 24;
+const NOTE_BACKUP_DAILY = 7;
 // Mirrors a valid filename slug. Lowercase keeps file lookups predictable
 // on case-sensitive filesystems and avoids two notes only differing by case.
 const ID_RE = /^[a-z0-9][a-z0-9-]*$/;
 
 function isValidId(id: string): boolean {
   return typeof id === "string" && id.length > 0 && ID_RE.test(id);
+}
+
+function backupTimestamp(date = new Date()): string {
+  return date.toISOString().replace(/:/g, "-").replace(".", "-");
+}
+
+async function writeTextFileAtomic(path: string, value: string): Promise<void> {
+  const tmp = `${path}.tmp-${randomUUID()}`;
+  try {
+    await writeFile(tmp, value);
+    await rename(tmp, path);
+  } finally {
+    try {
+      await unlink(tmp);
+    } catch {}
+  }
+}
+
+async function writeTextFileIfAbsentAtomic(
+  path: string,
+  value: string,
+): Promise<void> {
+  try {
+    await access(path);
+    return;
+  } catch {}
+  const tmp = `${path}.tmp-${randomUUID()}`;
+  try {
+    await writeFile(tmp, value);
+    try {
+      await link(tmp, path);
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
+    }
+  } finally {
+    try {
+      await unlink(tmp);
+    } catch {}
+  }
+}
+
+async function uniqueBackupPath(
+  dir: string,
+  basename: string,
+): Promise<string> {
+  let candidate = join(dir, `${basename}.md`);
+  for (let i = 1; ; i++) {
+    try {
+      await access(candidate);
+    } catch {
+      return candidate;
+    }
+    candidate = join(dir, `${basename}-${i}.md`);
+  }
+}
+
+async function pruneNoteBackups(dir: string, keep: number): Promise<void> {
+  let names: string[];
+  try {
+    names = await readdir(dir);
+  } catch {
+    return;
+  }
+  const backups = names
+    .filter((name) => name.endsWith(".md"))
+    .sort((a, b) => b.localeCompare(a));
+  for (const stale of backups.slice(keep)) {
+    try {
+      await unlink(join(dir, stale));
+    } catch {}
+  }
 }
 
 /** Parse a note file's full text into a Note. Throws if frontmatter or
@@ -342,6 +418,8 @@ export interface ListFilter {
 }
 
 export class NotesStore {
+  private lastBackupRaw = new Map<string, string>();
+
   private constructor(public readonly workspacePath: string) {}
 
   static async open(workspacePath: string): Promise<NotesStore> {
@@ -369,6 +447,89 @@ export class NotesStore {
     }
   }
 
+  private backupRoot(id: string): string {
+    return join(this.workspacePath, ".supergit", "backups", "notes", id);
+  }
+
+  private async backupVersion(note: Note, raw: string): Promise<void> {
+    if (!this.lastBackupRaw.has(note.id)) {
+      const latest = await this.readLatestValidBackupVersion(note.id);
+      this.lastBackupRaw.set(note.id, latest?.raw ?? "");
+    }
+    if (this.lastBackupRaw.get(note.id) === raw) return;
+
+    const root = this.backupRoot(note.id);
+    const latestDir = join(root, "latest");
+    const hourlyDir = join(root, "hourly");
+    const dailyDir = join(root, "daily");
+    await mkdir(latestDir, { recursive: true });
+    await mkdir(hourlyDir, { recursive: true });
+    await mkdir(dailyDir, { recursive: true });
+    const timestamp = backupTimestamp();
+    await writeTextFileAtomic(
+      await uniqueBackupPath(latestDir, timestamp),
+      raw,
+    );
+    await writeTextFileIfAbsentAtomic(
+      join(hourlyDir, `${timestamp.slice(0, 13)}.md`),
+      raw,
+    );
+    await writeTextFileIfAbsentAtomic(
+      join(dailyDir, `${timestamp.slice(0, 10)}.md`),
+      raw,
+    );
+    await pruneNoteBackups(latestDir, NOTE_BACKUP_LATEST);
+    await pruneNoteBackups(hourlyDir, NOTE_BACKUP_HOURLY);
+    await pruneNoteBackups(dailyDir, NOTE_BACKUP_DAILY);
+    this.lastBackupRaw.set(note.id, raw);
+  }
+
+  private async readLatestValidBackupVersion(
+    id: string,
+  ): Promise<{ note: Note; raw: string } | null> {
+    const root = this.backupRoot(id);
+    for (const tier of ["latest", "hourly", "daily"]) {
+      let names: string[];
+      try {
+        names = (await readdir(join(root, tier)))
+          .filter((name) => name.endsWith(".md"))
+          .sort((a, b) => b.localeCompare(a));
+      } catch {
+        continue;
+      }
+      for (const name of names) {
+        try {
+          const raw = await readFile(join(root, tier, name), "utf-8");
+          const note = parseNoteFile(raw);
+          if (note.id === id) return { note, raw };
+        } catch {}
+      }
+    }
+    return null;
+  }
+
+  private async readLatestValidBackup(id: string): Promise<Note | null> {
+    return (await this.readLatestValidBackupVersion(id))?.note ?? null;
+  }
+
+  private async readCurrentOrBackup(id: string): Promise<Note | null> {
+    let raw: string;
+    try {
+      raw = await readFile(this.filePath(id), "utf-8");
+    } catch (err) {
+      // A missing primary is a deliberate deletion, not corruption. Keep its
+      // versions available for manual recovery without resurrecting it in the
+      // live note list.
+      if ((err as NodeJS.ErrnoException).code === "ENOENT") return null;
+      return this.readLatestValidBackup(id);
+    }
+    try {
+      return parseNoteFile(raw);
+    } catch {
+      return this.readLatestValidBackup(id);
+    }
+  }
+
   async list(filter: ListFilter = {}): Promise<Note[]> {
     let entries: string[];
     try {
@@ -379,16 +540,10 @@ export class NotesStore {
     const notes: Note[] = [];
     for (const name of entries) {
       if (!name.endsWith(".md")) continue;
-      const raw = await readFile(join(this.dir(), name), "utf-8").catch(
-        () => null,
-      );
-      if (raw === null) continue;
-      let note: Note;
-      try {
-        note = parseNoteFile(raw);
-      } catch {
-        continue;
-      }
+      const id = name.slice(0, -3);
+      if (!isValidId(id)) continue;
+      const note = await this.readCurrentOrBackup(id);
+      if (note === null) continue;
       if (filter.anchorPrefix !== undefined) {
         const p = filter.anchorPrefix;
         if (!note.anchors.some((a) => a.startsWith(p))) continue;
@@ -401,17 +556,7 @@ export class NotesStore {
 
   async get(id: string): Promise<Note | null> {
     if (!isValidId(id)) return null;
-    let raw: string;
-    try {
-      raw = await readFile(this.filePath(id), "utf-8");
-    } catch {
-      return null;
-    }
-    try {
-      return parseNoteFile(raw);
-    } catch {
-      return null;
-    }
+    return this.readCurrentOrBackup(id);
   }
 
   async create(input: CreateInput): Promise<Note> {
@@ -445,7 +590,9 @@ export class NotesStore {
       ...(input.target !== undefined ? { target: input.target } : {}),
       ...(input.secret === true ? { secret: true } : {}),
     };
-    await writeFile(this.filePath(id), serializeNoteFile(note));
+    const raw = serializeNoteFile(note);
+    await this.backupVersion(note, raw);
+    await writeTextFileAtomic(this.filePath(id), raw);
     return note;
   }
 
@@ -488,12 +635,18 @@ export class NotesStore {
     } else if (input.secret === true) {
       next.secret = true;
     }
-    await writeFile(this.filePath(id), serializeNoteFile(next));
+    await this.backupVersion(existing, serializeNoteFile(existing));
+    const raw = serializeNoteFile(next);
+    await this.backupVersion(next, raw);
+    await writeTextFileAtomic(this.filePath(id), raw);
     return next;
   }
 
   async remove(id: string): Promise<boolean> {
     if (!isValidId(id)) return false;
+    const existing = await this.get(id);
+    if (existing === null) return false;
+    await this.backupVersion(existing, serializeNoteFile(existing));
     try {
       await unlink(this.filePath(id));
       return true;
