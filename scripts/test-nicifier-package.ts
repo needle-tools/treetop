@@ -59,7 +59,7 @@ try {
     }),
   );
   const runtimeFixture = `
-import { modelPricingAt, modelsDevPricingSnapshotFrom, nicifyCommand } from "@treetop/nicifier";
+import { estimateSessionTokenCost, modelPricingAt, modelsDevPricingSnapshotFrom, nicifyCommand } from "@treetop/nicifier";
 const nested = nicifyCommand(\`ssh host 'docker exec app sh -lc "npm view pkg version && cargo check"'\`);
 if (nested.text !== "Inspect npm package pkg · Run Cargo check" || !nested.fullyNicified) throw new Error("nested nicification failed");
 const partial = nicifyCommand("git status --short && frobnicate --all");
@@ -67,12 +67,14 @@ if (partial.fullyNicified || partial.unnicifiedParts[0] !== "frobnicate --all") 
 const modelsDev = modelsDevPricingSnapshotFrom({ openai: { id: "openai", models: { "gpt-package-test": { id: "gpt-package-test", cost: { input: 2, output: 12, cache_read: 0.2 } } } } }, "2026-09-06T10:00:00.000Z");
 const pricing = modelPricingAt("gpt-package-test", "2026-09-06T10:00:01.000Z", { modelsDev });
 if (pricing?.rates.output !== 12) throw new Error("packed models.dev pricing failed");
-console.log(JSON.stringify({ nested: nested.text, partial: partial.unnicifiedParts, pricing: pricing.rates }));
+const sessionCost = estimateSessionTokenCost([{ model: "gpt-package-test", at: "2026-09-06T10:00:01.000Z", usage: { input: 1_000_000, cachedInput: 0, cacheWriteInput: 0, output: 1_000_000, reasoningOutput: 0, total: 2_000_000 } }], undefined, { modelsDev });
+if (sessionCost.totalUsd !== 14) throw new Error("packed session pricing failed");
+console.log(JSON.stringify({ nested: nested.text, partial: partial.unnicifiedParts, pricing: pricing.rates, sessionCost: sessionCost.totalUsd }));
 `.trim();
   await Bun.write(join(consumerDir, "consumer.mjs"), runtimeFixture);
   await Bun.write(
     join(consumerDir, "consumer.ts"),
-    `import { nicifyCommand, type ModelsDevPricingSnapshot, type NicifiedCommand } from "@treetop/nicifier";\nconst result: NicifiedCommand = nicifyCommand("python3 -m pytest tests");\nconst snapshot: ModelsDevPricingSnapshot | undefined = undefined;\nconst complete: boolean = result.fullyNicified;\nconsole.log(result.text, complete, snapshot);\n`,
+    `import { estimateSessionTokenCost, nicifyCommand, type ModelsDevPricingSnapshot, type NicifiedCommand, type SessionTokenUsageSegment } from "@treetop/nicifier";\nconst result: NicifiedCommand = nicifyCommand("python3 -m pytest tests");\nconst snapshot: ModelsDevPricingSnapshot | undefined = undefined;\nconst segment: SessionTokenUsageSegment | undefined = undefined;\nconst complete: boolean = result.fullyNicified;\nconsole.log(result.text, complete, snapshot, segment, estimateSessionTokenCost([]));\n`,
   );
   await Bun.write(
     join(consumerDir, "tsconfig.json"),
