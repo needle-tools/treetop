@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import {
+  analyzeCodexReplayTurns,
   codexReplayItemsUntil,
   codexReplayMessagesUntil,
   createCodexReplaySessionTransport,
@@ -14,6 +15,129 @@ import {
 } from "../src/codex-replay-lab";
 
 describe("Codex replay lab parser", () => {
+  test("scores suspicious turn activity without blaming tool time on model throughput", () => {
+    const toolBlocks = Array.from({ length: 12 }, (_, index) => ({
+      type: "tool_use" as const,
+      toolName: "exec_command",
+      toolUseId: `tool-${index}`,
+    }));
+    const analysis = analyzeCodexReplayTurns([
+      {
+        role: "user",
+        timestamp: "2026-09-04T10:00:00.000Z",
+        blocks: [{ type: "text", text: "Run the audit" }],
+      },
+      {
+        role: "assistant",
+        timestamp: "2026-09-04T10:00:05.000Z",
+        blocks: toolBlocks,
+      },
+      {
+        role: "assistant",
+        timestamp: "2026-09-04T10:00:10.000Z",
+        blocks: [],
+        tokenUsage: {
+          input: 30_000,
+          cachedInput: 5_000,
+          cacheWriteInput: 0,
+          output: 100,
+          reasoningOutput: 20,
+          total: 30_120,
+        },
+      },
+      {
+        role: "user",
+        timestamp: "2026-09-04T10:01:00.000Z",
+        blocks: [{ type: "text", text: "Answer directly" }],
+      },
+      {
+        role: "assistant",
+        timestamp: "2026-09-04T10:01:20.000Z",
+        blocks: [],
+        tokenUsage: {
+          input: 100,
+          cachedInput: 90,
+          cacheWriteInput: 0,
+          output: 30,
+          reasoningOutput: 0,
+          total: 160,
+        },
+      },
+    ]);
+
+    expect(analysis.turns).toHaveLength(2);
+    expect(analysis.turns[0]).toEqual(
+      expect.objectContaining({
+        toolCallCount: 12,
+        newInputTokens: 25_000,
+        outputTokens: 100,
+      }),
+    );
+    expect(analysis.turns[0]?.issues.map((issue) => issue.kind)).toEqual([
+      "high-tool-usage",
+      "high-new-input",
+    ]);
+    expect(analysis.turns[1]).toEqual(
+      expect.objectContaining({
+        durationMs: 20_000,
+        tokensPerSecond: 1.5,
+        toolCallCount: 0,
+      }),
+    );
+    expect(analysis.turns[1]?.issues.map((issue) => issue.kind)).toEqual([
+      "low-throughput",
+    ]);
+    expect(analysis.issueTurnCount).toBe(2);
+  });
+
+  test("keeps ordinary turns visible in the heat map without inventing issues", () => {
+    const analysis = analyzeCodexReplayTurns([
+      {
+        role: "user",
+        timestamp: "2026-09-04T10:00:00.000Z",
+        blocks: [{ type: "text", text: "Hello" }],
+      },
+      {
+        role: "assistant",
+        timestamp: "2026-09-04T10:00:02.000Z",
+        blocks: [{ type: "text", text: "Hi" }],
+        tokenUsage: {
+          input: 80,
+          cachedInput: 70,
+          cacheWriteInput: 0,
+          output: 40,
+          reasoningOutput: 0,
+          total: 120,
+        },
+      },
+    ]);
+
+    expect(analysis.turns).toHaveLength(1);
+    expect(analysis.turns[0]?.issues).toEqual([]);
+    expect(analysis.turns[0]?.heat).toBeGreaterThan(0);
+    expect(analysis.issueTurnCount).toBe(0);
+  });
+
+  test("uses the user's request rather than ambient browser context as the turn label", () => {
+    const analysis = analyzeCodexReplayTurns([
+      {
+        role: "user",
+        blocks: [
+          {
+            type: "text",
+            text: `<in-app-browser-context source="ambient-ui-state">
+Current page details that are not part of the request.
+</in-app-browser-context>
+## My request for Codex:
+Narrate this page live`,
+          },
+        ],
+      },
+    ]);
+
+    expect(analysis.turns[0]?.label).toBe("Narrate this page live");
+  });
+
   test("builds the selected thread page from its recorded app-server response", () => {
     const recording = [
       JSON.stringify({
@@ -138,17 +262,19 @@ describe("Codex replay lab parser", () => {
 
   test("summarizes and filters session coverage", () => {
     const sessions = [
-      { threadId: "both", hasTranscript: true },
-      { threadId: "rpc-only", hasTranscript: false },
-      { threadId: "also-both", hasTranscript: true },
+      { threadId: "both", hasTranscript: true, rpcFrameCount: 2 },
+      { threadId: "rpc-only", hasTranscript: false, rpcFrameCount: 1 },
+      { threadId: "also-both", hasTranscript: true, rpcFrameCount: 3 },
+      { threadId: "transcript-only", hasTranscript: true, rpcFrameCount: 0 },
     ];
 
     expect(summarizeCodexReplaySessions(sessions)).toEqual({
-      total: 3,
+      total: 4,
       rpc: 3,
-      transcript: 2,
+      transcript: 3,
       both: 2,
       rpcOnly: 1,
+      transcriptOnly: 1,
     });
     expect(
       filterCodexReplaySessions(sessions, "both").map((item) => item.threadId),
@@ -158,6 +284,11 @@ describe("Codex replay lab parser", () => {
         (item) => item.threadId,
       ),
     ).toEqual(["rpc-only"]);
+    expect(
+      filterCodexReplaySessions(sessions, "transcript-only").map(
+        (item) => item.threadId,
+      ),
+    ).toEqual(["transcript-only"]);
   });
 
   test("replays captured app-server JSON-RPC frames through the live visual shape", () => {

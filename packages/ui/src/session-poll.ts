@@ -21,6 +21,7 @@
 
 import { apiUrl, withRequestDeadline } from "./api";
 import { isUiIdle, onResume } from "./ui-idle";
+import { record } from "./timings";
 
 export interface InflightRec {
   id: string;
@@ -298,14 +299,21 @@ export function createSessionPoller(deps: SessionPollerDeps): SessionPoller {
                 signal,
               },
             );
+            const decodeStartedAt = performance.now();
+            const payload = res.ok
+              ? ((await res.json()) as { results: BatchResult[] })
+              : undefined;
+            record(
+              "session-poll.batch-decode",
+              performance.now() - decodeStartedAt,
+            );
             return {
-              results: res.ok
-                ? ((await res.json()) as { results: BatchResult[] }).results
-                : undefined,
+              results: payload?.results,
             };
           },
         );
         if (response.results) {
+          const dispatchStartedAt = performance.now();
           const { results } = response;
           const bySource = new Map(sessionGroup.map((g) => [g.reg.source, g]));
           for (const result of results) {
@@ -358,6 +366,10 @@ export function createSessionPoller(deps: SessionPollerDeps): SessionPoller {
             }
             // 403: source no longer allowed — leave the column's last state.
           }
+          record(
+            "session-poll.batch-dispatch",
+            performance.now() - dispatchStartedAt,
+          );
         }
       } catch {
         // Network blip — keep cached state, try again next tick.
@@ -377,12 +389,18 @@ export function createSessionPoller(deps: SessionPollerDeps): SessionPoller {
             apiUrl("/api/active-sends", daemonId),
             { headers, signal },
           );
+          const decodeStartedAt = performance.now();
+          const body =
+            res.status !== 304 && res.ok
+              ? ((await res.json()) as InflightRec[])
+              : undefined;
+          record(
+            "session-poll.active-sends-decode",
+            performance.now() - decodeStartedAt,
+          );
           return {
             res,
-            body:
-              res.status !== 304 && res.ok
-                ? ((await res.json()) as InflightRec[])
-                : undefined,
+            body,
           };
         },
       );
@@ -396,6 +414,7 @@ export function createSessionPoller(deps: SessionPollerDeps): SessionPoller {
     } catch {
       // Best-effort indicator; keep the cached list.
     }
+    const inflightDispatchStartedAt = performance.now();
     for (const g of group) {
       const sid = g.reg.getSessionId();
       const slice = sid ? list.filter((r) => r.sessionId === sid) : [];
@@ -405,6 +424,10 @@ export function createSessionPoller(deps: SessionPollerDeps): SessionPoller {
         g.reg.onInflight(slice);
       }
     }
+    record(
+      "session-poll.inflight-dispatch",
+      performance.now() - inflightDispatchStartedAt,
+    );
   }
 
   async function runTick(): Promise<void> {
