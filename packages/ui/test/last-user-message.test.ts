@@ -11,6 +11,7 @@ import {
   formatVisualWorkDuration,
   lastUserMessageBurst,
   lastUserMessageWithContext,
+  latestSessionMessageActivityIso,
   latestVisualGoal,
   latestVisualPlan,
   mergeVisualSessionMessages,
@@ -219,6 +220,34 @@ describe("formatVisualWorkDuration", () => {
         "2026-06-22T10:00:04.200Z",
       ),
     ).toBeUndefined();
+  });
+});
+
+describe("latestSessionMessageActivityIso", () => {
+  it("uses actual conversational timestamps and ignores empty usage rows", () => {
+    expect(latestSessionMessageActivityIso([
+      msg("user", "question", "2026-09-05T10:00:00.000Z"),
+      msg("assistant", "answer", "2026-09-05T10:01:00.000Z"),
+      {
+        role: "assistant",
+        blocks: [],
+        timestamp: "2026-09-06T08:00:00.000Z",
+        tokenUsage: {
+          input: 10,
+          cachedInput: 0,
+          cacheWriteInput: 0,
+          output: 1,
+          reasoningOutput: 0,
+          total: 11,
+        },
+      },
+      msg("system", "startup replay", "2026-09-06T09:00:00.000Z"),
+    ], "2026-09-05T09:00:00.000Z")).toBe("2026-09-05T10:01:00.000Z");
+  });
+
+  it("uses indexed last-message activity when the loaded tail has no conversation", () => {
+    expect(latestSessionMessageActivityIso([], "2026-09-04T12:34:56.000Z"))
+      .toBe("2026-09-04T12:34:56.000Z");
   });
 });
 
