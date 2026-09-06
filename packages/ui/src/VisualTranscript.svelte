@@ -198,6 +198,10 @@
   export let onMessagesLeave: () => void = () => {};
   export let onMessagesWheel: (e: WheelEvent) => void = () => {};
   export let onMessagesScroll: () => void = () => {};
+  export let onLiveWorkBodyScroll: (
+    workKey: string,
+    body: HTMLElement,
+  ) => void = () => {};
   export let showLiveThinkingLine = false;
   export let messageMotionSources: Map<string, ComposerMotionRect> = new Map();
   export let onMessageMotionDone: (id: string) => void = () => {};
@@ -3275,6 +3279,12 @@
             <div
               class="work-foldout-body"
               data-work-key={workKey}
+              on:wheel|capture={handOffNestedWheel}
+              on:scroll={(event) =>
+                onLiveWorkBodyScroll(
+                  workKey,
+                  event.currentTarget as HTMLElement,
+                )}
             >
               <div class="work-overview">
                 {#if workOverview.lines.length > 0}
@@ -3998,7 +4008,12 @@
     max-width: calc(100% - 1.7rem);
   }
   .work-foldout-live > .work-foldout-body {
+    max-height: clamp(8rem, 28vh, 16rem);
+    overflow-x: hidden;
+    overflow-y: auto;
     padding-right: 0.35rem;
+    overscroll-behavior-x: contain;
+    overscroll-behavior-y: auto;
   }
   .work-overview {
     display: grid;

@@ -11,6 +11,7 @@
     buildProjectSearchItems,
     buildReadmeSearchItems,
     buildSessionSearchItems,
+    workspaceSearchDaemonIds,
     type ProjectSearchAction,
     type NoteSearchLike,
     type ReadmeSearchLike,
@@ -206,14 +207,21 @@
     if (readmesLoaded || readmesLoading) return;
     readmesLoading = true;
     try {
-      const res = await fetch(apiUrl("/api/readmes"), { cache: "no-cache" });
-      const body = (await res.json().catch(() => null)) as {
-        readmes?: ReadmeSearchLike[];
-      } | null;
-      if (res.ok && Array.isArray(body?.readmes)) {
-        readmeRecords = body.readmes;
-        readmesLoaded = true;
-      }
+      const batches = await Promise.all(
+        workspaceSearchDaemonIds(repos).map(async (daemonId) => {
+          const res = await fetch(apiUrl("/api/readmes", daemonId), {
+            cache: "no-cache",
+          }).catch(() => null);
+          if (!res?.ok) return null;
+          const body = (await res.json().catch(() => null)) as {
+            readmes?: ReadmeSearchLike[];
+          } | null;
+          if (!Array.isArray(body?.readmes)) return null;
+          return body.readmes.map((readme) => ({ ...readme, daemonId }));
+        }),
+      );
+      readmeRecords = batches.flatMap((batch) => batch ?? []);
+      readmesLoaded = batches.every((batch) => batch !== null);
     } finally {
       readmesLoading = false;
     }

@@ -4,6 +4,14 @@ import { createCounter, trackEffect } from "./reactivity-poc.svelte.ts";
 import { patchWorktreeDetails } from "../src/ndjson-client";
 import { nextCachedSessionSummaryRequest } from "../src/summary-queue";
 import { shouldCancelBackgroundSummary } from "../src/tui-auto-summary";
+import {
+  CODEX_LIVE_OUTPUT_LIMIT,
+  codexEventVisualDelivery,
+  codexOutputDeltaNeedsToolUse,
+  shouldUseCodexAppHistorySource,
+} from "../src/codex-event-stream";
+import { applyVisualTranscriptDeltaPatches } from "../src/last-user-message";
+import { resolveSessionMessageSource } from "../src/storage";
 
 const { flush } = $;
 
@@ -164,6 +172,175 @@ describe("svelte 5 runes — DOM-free reactivity", () => {
       $.set(enabled, false);
       $.flush();
       expect(controller.signal.aborted).toBe(true);
+    } finally {
+      destroy();
+    }
+  });
+
+  test("a late transcript path never changes a live Codex pane's message owner", () => {
+    const liveSurface = $.state(true);
+    const transcriptSource = $.state<string | undefined>(undefined);
+    const owners: string[] = [];
+    const owner = $.derived(() =>
+      resolveSessionMessageSource({
+        agent: "codex",
+        source: "__codex_app__:thread-1",
+        transcriptSource: $.get(transcriptSource),
+        liveAppSurface: shouldUseCodexAppHistorySource({
+          liveSurfaceActive: $.get(liveSurface),
+          transcriptSource: $.get(transcriptSource),
+        }),
+      }),
+    );
+    const destroy = $.effect_root(() => {
+      $.effect(() => owners.push($.get(owner).kind));
+    });
+
+    try {
+      $.flush();
+      expect($.get(owner).kind).toBe("app-server");
+
+      $.set(transcriptSource, "/Users/me/.codex/sessions/thread-1.jsonl");
+      $.flush();
+      expect($.get(owner).kind).toBe("app-server");
+      expect(owners).not.toContain("transcript");
+
+      $.set(liveSurface, false);
+      $.flush();
+      expect($.get(owner)).toEqual({
+        kind: "transcript",
+        source: "/Users/me/.codex/sessions/thread-1.jsonl",
+      });
+      expect(owners.at(-1)).toBe("transcript");
+    } finally {
+      destroy();
+    }
+  });
+
+  test("a burst of Codex deltas commits activity to Svelte only once per visual batch", () => {
+    const liveActivityIso = $.state("");
+    let pendingActivityIso = "";
+    let reactiveRuns = 0;
+    const observed: string[] = [];
+    const destroy = $.effect_root(() => {
+      $.effect(() => {
+        reactiveRuns += 1;
+        observed.push($.get(liveActivityIso));
+      });
+    });
+
+    try {
+      $.flush();
+      expect(reactiveRuns).toBe(1);
+
+      for (let index = 0; index < 70; index += 1) {
+        const delivery = codexEventVisualDelivery({
+          kind: "notification",
+          method: "item/agentMessage/delta",
+        });
+        expect(delivery).toBe("batched-delta");
+        pendingActivityIso = `2026-09-01T10:41:10.${String(index).padStart(3, "0")}Z`;
+      }
+      $.flush();
+      expect(reactiveRuns).toBe(1);
+
+      $.set(liveActivityIso, pendingActivityIso);
+      pendingActivityIso = "";
+      $.flush();
+      expect(reactiveRuns).toBe(2);
+      expect(observed.at(-1)).toBe("2026-09-01T10:41:10.069Z");
+
+      const immediate = codexEventVisualDelivery({
+        kind: "notification",
+        method: "item/completed",
+      });
+      expect(immediate).toBe("immediate");
+      $.set(liveActivityIso, "2026-09-01T10:41:11.000Z");
+      $.flush();
+      expect(reactiveRuns).toBe(3);
+    } finally {
+      destroy();
+    }
+  });
+
+  test("thousands of live command-output deltas stay outside Svelte until one bounded visual commit", () => {
+    const initialMessages = [
+      {
+        id: "codex-tool-exec-1",
+        role: "assistant",
+        blocks: [
+          {
+            type: "tool_use",
+            toolName: "exec_command",
+            toolUseId: "exec-1",
+          },
+        ],
+      },
+    ];
+    const liveMessages = $.state(initialMessages);
+    let renderRuns = 0;
+    let renderedOutputLength = 0;
+    const destroy = $.effect_root(() => {
+      $.effect(() => {
+        renderRuns += 1;
+        renderedOutputLength =
+          $.get(liveMessages).find(
+            (message) => message.id === "codex-output-exec-1",
+          )?.blocks[0]?.text?.length ?? 0;
+      });
+    });
+
+    try {
+      $.flush();
+      expect(renderRuns).toBe(1);
+
+      let pendingOutput = "";
+      let everyDeltaStayedBatched = true;
+      let everyDeltaReusedToolUse = true;
+      for (let index = 0; index < 4_623; index += 1) {
+        everyDeltaStayedBatched &&=
+          codexEventVisualDelivery({
+            kind: "notification",
+            method: "item/commandExecution/outputDelta",
+          }) === "batched-delta";
+        everyDeltaReusedToolUse &&= !codexOutputDeltaNeedsToolUse(
+          $.get(liveMessages),
+          {
+            id: "codex-tool-exec-1",
+          },
+        );
+        pendingOutput += `${String(index).padStart(4, "0")}:${"x".repeat(250)}\n`;
+      }
+      $.flush();
+      expect(renderRuns).toBe(1);
+      expect(everyDeltaStayedBatched).toBe(true);
+      expect(everyDeltaReusedToolUse).toBe(true);
+
+      $.set(
+        liveMessages,
+        applyVisualTranscriptDeltaPatches($.get(liveMessages), [
+          {
+            id: "codex-output-exec-1",
+            role: "tool",
+            type: "tool_result",
+            delta: pendingOutput,
+            blockFields: {
+              toolName: "exec_command",
+              toolUseId: "exec-1",
+              streaming: true,
+            },
+            maxTextChars: CODEX_LIVE_OUTPUT_LIMIT,
+          },
+        ]),
+      );
+      $.flush();
+      expect(renderRuns).toBe(2);
+      expect(renderedOutputLength).toBe(CODEX_LIVE_OUTPUT_LIMIT);
+      expect(
+        $.get(liveMessages)
+          .at(-1)
+          ?.blocks[0]?.text?.endsWith("4622:" + "x".repeat(250) + "\n"),
+      ).toBe(true);
     } finally {
       destroy();
     }

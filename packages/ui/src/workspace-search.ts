@@ -403,13 +403,23 @@ export interface ReadmeSearchLike {
   path: string;
   text: string;
   updatedAt?: string;
+  daemonId?: string;
+}
+
+export function workspaceSearchDaemonIds(
+  repos: readonly { daemonId?: string }[],
+): Array<string | undefined> {
+  return [
+    undefined,
+    ...new Set(repos.flatMap((repo) => (repo.daemonId ? [repo.daemonId] : []))),
+  ];
 }
 
 export function buildReadmeSearchItems(
   readmes: ReadmeSearchLike[],
 ): SearchItem[] {
   return readmes.map((readme) => ({
-    id: `readme:${readme.id}`,
+    id: `readme:${readme.daemonId ?? "local"}:${readme.id}`,
     kind: "readme",
     title: `${readme.repoName} README`,
     subtitle: readme.path,

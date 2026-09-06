@@ -9,6 +9,7 @@ import {
   nextSearchKindsSelection,
   parseAgeQuery,
   searchItems,
+  workspaceSearchDaemonIds,
   type SearchItem,
 } from "../src/workspace-search";
 
@@ -276,6 +277,21 @@ describe("workspace fuzzy search", () => {
   test("builds searchable project action records with common aliases", () => {
     const items = buildProjectActionSearchItems();
 
+    expect(items).toEqual([
+      expect.objectContaining({
+        id: "action:add-folder",
+        kind: "action",
+        title: "Add folder",
+        data: { action: "add-folder" },
+      }),
+      expect.objectContaining({
+        id: "action:open-from-sessions",
+        kind: "action",
+        title: "Open from sessions",
+        data: { action: "open-from-sessions" },
+      }),
+    ]);
+
     expect(
       searchItems(items, "new project", { now: NOW }).map((r) => r.item.id),
     ).toEqual(["action:add-folder"]);
@@ -370,6 +386,17 @@ describe("workspace fuzzy search", () => {
       id: "n1",
       anchors: ["worktree:/Users/herbst/git/supergit"],
     });
+  });
+
+  test("loads workspace search data once from local and each represented remote daemon", () => {
+    expect(
+      workspaceSearchDaemonIds([
+        { daemonId: "remote-a" },
+        {},
+        { daemonId: "remote-a" },
+        { daemonId: "remote-b" },
+      ]),
+    ).toEqual([undefined, "remote-a", "remote-b"]);
   });
 
   test("parseAgeQuery strips recognized age words and leaves the text query", () => {
