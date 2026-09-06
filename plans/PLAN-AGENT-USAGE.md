@@ -133,10 +133,12 @@ Caching strategy:
   starts? Rolling is simpler and avoids timezone surprises in the
   CI; calendar is what users intuitively read. Default: rolling, with
   the asOf timestamp shown in the tooltip footer.
-- **Cost estimate.** Tempting to multiply tokens by model price for a
-  $/day figure, but per-session model varies (Sonnet 4.6 vs Opus 4.7)
-  and pricing changes. Defer — show tokens, let the user do the math
-  if they care.
+- **Cost estimate.** Session “Working for” / “Worked for” rows now calculate
+  API-equivalent estimates per model-and-timestamp token checkpoint, including
+  cache read/write buckets and long-context rates, then roll those checkpoints
+  up into steps and rounds. The reusable catalog keeps immutable `from` /
+  `before` price periods so later price changes do not rewrite old sessions.
+  A separate $/day menubar rollup remains deferred until this scanner lands.
 - **Privacy / share session.** When a session is shared via
   session-share, do remote turns count toward the host's stats?
   Probably yes (the host machine *did* spend the cycles), but flag
@@ -144,8 +146,9 @@ Caching strategy:
 
 ## Anti-scope
 
-- Not a billing dashboard. No per-model cost breakdown, no exports,
-  no historical archive beyond 7 days.
+- Not a billing dashboard. Session costs are explicitly estimates at public API
+  list prices, not claims about subscription charges or Codex/Claude credits.
+  No exports or historical aggregate archive beyond 7 days.
 - Not a leaderboard. Single-user host stays the v0/v1 surface; if
   multi-user lands (PLAN.md v2 invitable workspaces), agent-usage
   per member is a separate plan.

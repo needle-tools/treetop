@@ -1,5 +1,6 @@
 import { defineConfig, type Plugin } from "vite";
 import { svelte } from "@sveltejs/vite-plugin-svelte";
+import { fileURLToPath } from "node:url";
 import { PRODUCT_NAME } from "../../product";
 
 function envFlag(value: string | undefined): boolean {
@@ -23,6 +24,13 @@ function replayLabDevRoutePlugin(): Plugin {
 }
 
 export default defineConfig(() => ({
+  resolve: {
+    alias: {
+      "@supergit/nicifier": fileURLToPath(
+        new URL("../nicifier/src/index.ts", import.meta.url),
+      ),
+    },
+  },
   plugins: [
     svelte(),
     // Inject the product name into index.html's <title> from the shared
