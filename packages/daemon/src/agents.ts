@@ -8,6 +8,7 @@
  */
 
 import { readdir, stat, readFile, open } from "node:fs/promises";
+import { Database } from "bun:sqlite";
 import { homedir } from "node:os";
 import { dirname, join, resolve, sep } from "node:path";
 import { createLimiter } from "./concurrency";
@@ -1731,20 +1732,57 @@ async function readCodexSessionIndexTitles(
   try {
     text = await readFile(path, "utf8");
   } catch {
-    return titles;
+    text = "";
   }
-  for (const line of text.split(/\r?\n/)) {
-    if (!line.trim()) continue;
-    try {
-      const entry = JSON.parse(line) as { id?: unknown; thread_name?: unknown };
-      if (
-        typeof entry.id === "string" &&
-        typeof entry.thread_name === "string"
-      ) {
-        titles.set(entry.id, entry.thread_name);
+  if (text) {
+    for (const line of text.split(/\r?\n/)) {
+      if (!line.trim()) continue;
+      try {
+        const entry = JSON.parse(line) as {
+          id?: unknown;
+          thread_name?: unknown;
+        };
+        if (
+          typeof entry.id === "string" &&
+          typeof entry.thread_name === "string"
+        ) {
+          titles.set(entry.id, entry.thread_name);
+        }
+      } catch {
+        // Codex appends this index; one interrupted row must not hide the rest.
       }
+    }
+  }
+
+  // Current Codex builds keep user-facing thread names in state_5.sqlite;
+  // session_index.jsonl may contain only ids and timestamps. Prefer the
+  // explicit `name`, then Codex's generated `title`, over the legacy index.
+  for (const databasePath of [
+    join(dirname(path), "state_5.sqlite"),
+    join(dirname(path), "sqlite", "state_5.sqlite"),
+  ]) {
+    let database: Database | undefined;
+    try {
+      database = new Database(databasePath, { readonly: true, create: false });
+      const rows = database
+        .query("select id, title, name from threads")
+        .all() as Array<{ id?: unknown; title?: unknown; name?: unknown }>;
+      for (const row of rows) {
+        if (typeof row.id !== "string") continue;
+        const title =
+          typeof row.name === "string" && row.name.trim()
+            ? row.name.trim()
+            : typeof row.title === "string" && row.title.trim()
+              ? row.title.trim()
+              : undefined;
+        if (title) titles.set(row.id, title);
+      }
+      break;
     } catch {
-      // Codex appends this index; one interrupted row must not hide the rest.
+      // Older Codex installs have no state database; the JSONL index remains
+      // authoritative there.
+    } finally {
+      database?.close();
     }
   }
   return titles;

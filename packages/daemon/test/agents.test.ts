@@ -5,6 +5,7 @@
  */
 
 import { test, expect, describe } from "bun:test";
+import { Database } from "bun:sqlite";
 import { mkdtemp, mkdir, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -1573,6 +1574,48 @@ describe("scanCodex", () => {
 
     expect(sessions[0]?.title).toBe("Narrate open webpage live");
     expect(sessions[0]?.firstUserMessage).toBe("Please inspect this page");
+  });
+
+  test("uses Codex's current SQLite thread name when the JSONL index has no title", async () => {
+    clearCodexScanCache();
+    const home = await tempDir("supergit-codex-sqlite-title-");
+    const root = join(home, "sessions");
+    await mkdir(root, { recursive: true });
+    const id = "01a0779b-7a3d-7cc0-a821-2a20c5c7bb8a";
+    await writeFile(
+      join(root, `rollout-${id}.jsonl`),
+      [
+        JSON.stringify({
+          type: "session_meta",
+          payload: { id, cwd: "/proj" },
+        }),
+        JSON.stringify({
+          type: "response_item",
+          payload: {
+            type: "message",
+            role: "user",
+            content: [{ type: "input_text", text: "Install the add-on" }],
+          },
+        }),
+      ].join("\n"),
+    );
+    await writeFile(
+      join(home, "session_index.jsonl"),
+      `${JSON.stringify({ id, updated_at: "2026-09-06T21:56:17.378Z" })}\n`,
+    );
+    const db = new Database(join(home, "state_5.sqlite"), { create: true });
+    db.exec("create table threads (id text primary key, title text, name text)");
+    db.query("insert into threads (id, title, name) values (?, ?, ?)").run(
+      id,
+      "Install the add-on",
+      "Verify Blender MCP add-on",
+    );
+    db.close();
+
+    const sessions = await scanCodex([root]);
+
+    expect(sessions[0]?.title).toBe("Verify Blender MCP add-on");
+    expect(sessions[0]?.firstUserMessage).toBe("Install the add-on");
   });
 
   test("skips system-injected user messages for title (AGENTS.md, XML tags)", async () => {

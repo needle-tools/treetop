@@ -289,6 +289,11 @@
   export let indexedLastMessageIso: string | undefined = undefined;
   export let pricingUsage: SessionTokenUsageSegment[] | undefined = undefined;
   export let pricingUsageExact: boolean | undefined = undefined;
+  /** Pre-parsed transcript supplied by the replay lab. This is deliberately
+   * transcript-only: while present, SessionView does not poll or subscribe to
+   * app-server history for the same thread. */
+  export let transcriptSessionOverride: NormalizedSession | undefined =
+    undefined;
   /** When set, skip spawning a new PTY and reattach to this existing
    *  daemon-side terminal. Used when a transient `__new__:` column
    *  migrates to SessionView while the PTY is still alive. */
@@ -1227,7 +1232,7 @@
    *  of intent rather than only the last fragment. */
   let codexOptimisticUserMessages: NormalizedMessage[] = [];
   $: visualSessionMessages = mergeVisualSessionMessages(
-    session?.messages ?? [],
+    transcriptSessionOverride?.messages ?? session?.messages ?? [],
     codexOptimisticUserMessages,
   );
   $: visualRenderWindow = visualTranscriptMessageWindow(visualSessionMessages, {
@@ -1239,7 +1244,8 @@
     visualSessionMessages,
     lastUserMessage,
   );
-  $: renderReadBody = mode !== "read" || columnNearViewport;
+  $: renderReadBody =
+    mode !== "read" || columnNearViewport || !!transcriptSessionOverride;
   let previousRenderReadBody = renderReadBody;
   $: if (previousRenderReadBody !== renderReadBody) {
     if (previousRenderReadBody && !renderReadBody) {
@@ -2343,7 +2349,8 @@
     liveAppSurface: codexAppHistorySourceActive,
   });
   $: titleStorageSource = sessionFileSource || source;
-  $: shouldPollTranscript = sessionMessageSource.kind === "transcript";
+  $: shouldPollTranscript =
+    sessionMessageSource.kind === "transcript" && !transcriptSessionOverride;
   $: {
     const statsSource =
       sessionMessageSource.kind === "transcript"
@@ -2363,6 +2370,21 @@
       sessionStatsKey = "";
       sessionLineCount = undefined;
       measuredFileSizeBytes = undefined;
+    }
+  }
+  let appliedTranscriptSessionOverrideKey = "";
+  $: {
+    const overrideKey = transcriptSessionOverride
+      ? `${visualHistorySourceKey}:${transcriptSessionOverride.startedAt ?? ""}:${transcriptSessionOverride.messages.length}`
+      : "";
+    if (
+      transcriptSessionOverride &&
+      overrideKey !== appliedTranscriptSessionOverrideKey
+    ) {
+      appliedTranscriptSessionOverrideKey = overrideKey;
+      applyParsedSession(transcriptSessionOverride);
+    } else if (!transcriptSessionOverride) {
+      appliedTranscriptSessionOverrideKey = "";
     }
   }
   $: effectiveSessionId = resumeSessionId ?? session?.sessionId;

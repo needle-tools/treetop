@@ -1331,10 +1331,65 @@ function codexVisibleUserText(text: string): string {
     /<codex_internal_context\b[^>]*>[\s\S]*?<\/codex_internal_context>/g,
     "",
   );
-  const trimmed = visible.trim();
+  const trimmed = decodeNumericHtmlEntities(visible).trim();
   if (/^#\s+(AGENTS|CLAUDE)\.md instructions\b/i.test(trimmed)) return "";
   if (/^#\s+(Instructions|Context|System)\b/i.test(trimmed)) return "";
   return trimmed;
+}
+
+function decodeNumericHtmlEntities(text: string): string {
+  return text.replace(
+    /&#(?:x([0-9a-f]+)|(\d+));/gi,
+    (entity, hex: string | undefined, decimal: string | undefined) => {
+      const codePoint = Number.parseInt(hex ?? decimal ?? "", hex ? 16 : 10);
+      if (
+        !Number.isInteger(codePoint) ||
+        codePoint < 0 ||
+        codePoint > 0x10ffff ||
+        (codePoint >= 0xd800 && codePoint <= 0xdfff)
+      ) {
+        return entity;
+      }
+      return String.fromCodePoint(codePoint);
+    },
+  );
+}
+
+interface CodexMentionedFile {
+  title: string;
+  path: string;
+}
+
+function codexAttachmentEnvelope(text: string): {
+  text: string;
+  files: CodexMentionedFile[];
+} | null {
+  const match = text.match(
+    /^\s*# Files mentioned by the user:\s*\n([\s\S]*?)\n## My request(?: for Codex)?:\s*\n?([\s\S]*)$/i,
+  );
+  if (!match) return null;
+  const files: CodexMentionedFile[] = [];
+  for (const line of match[1]!.split("\n")) {
+    const file = line.match(/^##\s+(.+?):\s+(\/.*)$/);
+    if (file) files.push({ title: file[1]!.trim(), path: file[2]!.trim() });
+  }
+  return { text: codexVisibleUserText(match[2]!), files };
+}
+
+function codexImageWrapperPath(text: string): string | undefined {
+  const match = text.trim().match(/^<image\b[^>]*\bpath="([^"]+)"[^>]*>$/i);
+  return match?.[1];
+}
+
+function codexMentionedFileBlock(file: CodexMentionedFile): NormalizedBlock {
+  const mediaKind = mediaKindFrom(undefined, undefined, file.path);
+  return {
+    type: "media",
+    mediaKind,
+    path: file.path,
+    title: file.title,
+    alt: file.title,
+  };
 }
 
 function codexGoalBlockFromToolOutput(output: string): NormalizedBlock | null {
@@ -1738,11 +1793,31 @@ function parseCodexJsonlLine(
     })();
     if (role === "system") return;
     const blocks: NormalizedBlock[] = [];
+    const mentionedFiles: CodexMentionedFile[] = [];
+    const representedFiles = new Set<string>();
+    let pendingImagePath: string | undefined;
     if (Array.isArray(p.content)) {
       for (const raw of p.content) {
         if (typeof raw !== "object" || raw === null) continue;
         const b = raw as Record<string, unknown>;
         if (typeof b.text === "string") {
+          if (role === "user") {
+            const envelope = codexAttachmentEnvelope(b.text);
+            if (envelope) {
+              mentionedFiles.push(...envelope.files);
+              if (envelope.text) blocks.push(...codexTextBlocks(envelope.text));
+              continue;
+            }
+            const wrapperPath = codexImageWrapperPath(b.text);
+            if (wrapperPath) {
+              pendingImagePath = wrapperPath;
+              continue;
+            }
+            if (b.text.trim() === "</image>") {
+              pendingImagePath = undefined;
+              continue;
+            }
+          }
           const subagent = codexSubagentNotificationBlock(b.text);
           if (subagent) {
             blocks.push(subagent);
@@ -1752,7 +1827,17 @@ function parseCodexJsonlLine(
           }
         } else {
           const media = mediaBlockFromContent(b);
-          if (media) blocks.push(media);
+          if (media) {
+            if (role === "user" && pendingImagePath) {
+              const title = mediaTitleFromPath(pendingImagePath);
+              media.path = pendingImagePath;
+              media.title = title;
+              media.alt = title;
+              representedFiles.add(pendingImagePath);
+              pendingImagePath = undefined;
+            }
+            blocks.push(media);
+          }
         }
       }
     } else if (typeof p.content === "string") {
@@ -1763,6 +1848,11 @@ function parseCodexJsonlLine(
         const text =
           role === "user" ? codexVisibleUserText(p.content) : p.content;
         if (text) blocks.push(...codexTextBlocks(text));
+      }
+    }
+    for (const file of mentionedFiles) {
+      if (!representedFiles.has(file.path)) {
+        blocks.push(codexMentionedFileBlock(file));
       }
     }
     pushSessionMessage(
@@ -2117,7 +2207,11 @@ export async function parseSessionFile(
     return emptySession(agent);
   }
   if (agent === "claude") return parseClaudeJsonl(text);
-  if (agent === "codex") return parseCodexJsonl(text, { sourcePath: path });
+  if (agent === "codex") {
+    const session = parseCodexJsonl(text, { sourcePath: path });
+    attachSessionInlineMediaUrls(session, path);
+    return session;
+  }
   if (agent === "ollama") return parseOllamaJsonl(text);
   // No reader for copilot yet — its data isn't a tail-friendly JSONL.
   return emptySession(agent);
