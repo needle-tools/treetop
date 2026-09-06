@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
   estimateModelTokenCost,
+  estimateSessionTokenCost,
   loadModelsDevPricing,
   modelPricingAt,
   modelsDevPricingSnapshotFrom,
@@ -13,6 +14,65 @@ import {
 } from "../src/codex-event-stream";
 
 describe("model pricing", () => {
+  test("prices compact full-session usage segments and reports gaps", () => {
+    const summary = estimateSessionTokenCost(
+      [
+        {
+          model: "gpt-5.6-terra",
+          at: "2026-09-06T10:00:00.000Z",
+          usage: {
+            input: 1_000_000,
+            cachedInput: 500_000,
+            cacheWriteInput: 0,
+            output: 100_000,
+            reasoningOutput: 0,
+            total: 1_100_000,
+          },
+        },
+        {
+          model: "unknown-future-model",
+          at: "2026-09-06T10:01:00.000Z",
+          usage: {
+            input: 10,
+            cachedInput: 0,
+            cacheWriteInput: 0,
+            output: 5,
+            reasoningOutput: 0,
+            total: 15,
+          },
+        },
+      ],
+      undefined,
+    );
+
+    expect(summary).toMatchObject({
+      pricedSegments: 1,
+      unpricedSegments: 1,
+      models: ["gpt-5.6-terra"],
+    });
+    expect(summary.totalUsd).toBeCloseTo(4, 10);
+  });
+
+  test("does not turn aggregated standard-context requests into one long-context request", () => {
+    const summary = estimateSessionTokenCost([
+      {
+        model: "gpt-5.6-terra",
+        at: "2026-09-06T10:00:00.000Z",
+        standardOnly: true,
+        usage: {
+          input: 1_000_000,
+          cachedInput: 0,
+          cacheWriteInput: 0,
+          output: 0,
+          reasoningOutput: 0,
+          total: 1_000_000,
+        },
+      },
+    ]);
+
+    expect(summary.totalUsd).toBeCloseTo(2, 10);
+  });
+
   test("normalizes models.dev prices and context tiers", () => {
     const snapshot = modelsDevPricingSnapshotFrom(
       {

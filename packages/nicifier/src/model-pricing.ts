@@ -45,6 +45,7 @@ export interface ModelsDevPricingSnapshot {
 
 export interface ModelPricingOptions {
   modelsDev?: ModelsDevPricingSnapshot;
+  standardOnly?: boolean;
 }
 
 export interface LoadModelsDevPricingOptions {
@@ -85,6 +86,22 @@ export interface TokenCostAtRates {
   outputTokens: number;
   parts: ModelTokenCost["parts"];
   totalUsd: number;
+}
+
+export interface SessionTokenUsageSegment {
+  usage: VisualTokenUsage;
+  model?: string;
+  at?: string;
+  /** Aggregated requests known to use standard-context rates. */
+  standardOnly?: boolean;
+}
+
+export interface SessionTokenCost {
+  totalUsd: number;
+  pricedSegments: number;
+  unpricedSegments: number;
+  models: string[];
+  sources: string[];
 }
 
 const GPT_56_TERRA_LUNA_CUTOVER = "2026-07-30T00:00:00.000Z";
@@ -604,7 +621,9 @@ export function estimateModelTokenCost(
 ): ModelTokenCost | undefined {
   const pricing = modelPricingAt(model, at, options);
   if (!pricing) return undefined;
-  const estimated = estimateTokenCostAtRates(usage, pricing.rates);
+  const estimated = estimateTokenCostAtRates(usage, pricing.rates, {
+    standardOnly: options.standardOnly,
+  });
   return {
     model: pricing.model,
     provider: pricing.provider,
@@ -613,5 +632,41 @@ export function estimateModelTokenCost(
     ...estimated,
     source: pricing.period.source,
     note: pricing.period.note,
+  };
+}
+
+/** Prices a compact whole-session usage summary without needing transcript rows. */
+export function estimateSessionTokenCost(
+  segments: readonly SessionTokenUsageSegment[],
+  defaultModel?: string,
+  options: ModelPricingOptions = {},
+): SessionTokenCost {
+  let totalUsd = 0;
+  let pricedSegments = 0;
+  let unpricedSegments = 0;
+  const models = new Set<string>();
+  const sources = new Set<string>();
+  for (const segment of segments) {
+    const cost = estimateModelTokenCost(
+      segment.usage,
+      segment.model ?? defaultModel,
+      segment.at,
+      { ...options, standardOnly: segment.standardOnly },
+    );
+    if (!cost) {
+      unpricedSegments += 1;
+      continue;
+    }
+    totalUsd += cost.totalUsd;
+    pricedSegments += 1;
+    models.add(cost.model);
+    sources.add(cost.source);
+  }
+  return {
+    totalUsd,
+    pricedSegments,
+    unpricedSegments,
+    models: [...models],
+    sources: [...sources],
   };
 }
