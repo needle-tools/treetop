@@ -4,15 +4,51 @@ import {
   shouldPauseVisualTailAfterUserScroll,
   isVisualTailFollowActive,
   replacementVisualScrollTop,
+  selectVisualScrollAnchor,
   shouldFollowLiveWorkBody,
   shouldFollowVisualTail,
   shouldRememberVisualScrollMemory,
   canRequestOlderTranscriptMessages,
   visualScrollMemoryFromMetrics,
   visualScrollTopFromMemory,
+  zenLiveWorkScrollDelta,
 } from "../src/visual-tail-follow";
 
 describe("visual transcript tail following", () => {
+  it("positions live zen work near the top while keeping the end of the user turn visible", () => {
+    expect(
+      zenLiveWorkScrollDelta({
+        viewportTop: 100,
+        viewportHeight: 500,
+        userHeight: 80,
+        workTop: 430,
+      }),
+    ).toBe(250);
+
+    expect(
+      zenLiveWorkScrollDelta({
+        viewportTop: 100,
+        viewportHeight: 500,
+        userHeight: 400,
+        workTop: 430,
+      }),
+    ).toBe(155);
+  });
+  it("anchors a paused reader to the nested row nearest the viewport, not its rebuilt work container", () => {
+    expect(
+      selectVisualScrollAnchor({
+        viewportTop: 100,
+        viewportBottom: 700,
+        candidates: [
+          { key: "work:turn", top: -1_200, bottom: 1_800, depth: 0 },
+          { key: "entry:old", top: -240, bottom: 80, depth: 1 },
+          { key: "entry:reading", top: 116, bottom: 360, depth: 1 },
+          { key: "entry:later", top: 390, bottom: 640, depth: 1 },
+        ],
+      }),
+    ).toEqual({ key: "entry:reading", offsetTop: 16 });
+  });
+
   it("follows passive updates only when the scroller is already near the end", () => {
     expect(
       shouldFollowVisualTail({

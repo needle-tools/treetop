@@ -1,6 +1,21 @@
 export const VISUAL_TAIL_FOLLOW_NEAR_PX = 64;
 export const VISUAL_TAIL_FOLLOW_RESUME_PX = 4;
 
+/** Keep live zen work high enough to remain a status surface while reserving
+ *  room above it for the end of the user turn that started the work. */
+export function zenLiveWorkScrollDelta(input: {
+  viewportTop: number;
+  viewportHeight: number;
+  userHeight: number;
+  workTop: number;
+}): number {
+  const userContextHeight = Math.min(
+    Math.max(input.userHeight, 64),
+    input.viewportHeight * 0.35,
+  );
+  return input.workTop - (input.viewportTop + userContextHeight);
+}
+
 export interface VisualScrollMetrics {
   scrollHeight: number;
   scrollTop: number;
@@ -11,6 +26,36 @@ export interface VisualScrollMemory extends VisualScrollMetrics {
   followTail: boolean;
   anchorKey?: string;
   anchorOffsetTop?: number;
+}
+
+export interface VisualScrollAnchorCandidate {
+  key: string;
+  top: number;
+  bottom: number;
+  depth?: number;
+}
+
+export function selectVisualScrollAnchor(opts: {
+  viewportTop: number;
+  viewportBottom: number;
+  candidates: readonly VisualScrollAnchorCandidate[];
+}): { key: string; offsetTop: number } | undefined {
+  const visible = opts.candidates.filter(
+    (candidate) =>
+      candidate.bottom >= opts.viewportTop &&
+      candidate.top <= opts.viewportBottom,
+  );
+  visible.sort((a, b) => {
+    const depthDelta = (b.depth ?? 0) - (a.depth ?? 0);
+    if (depthDelta !== 0) return depthDelta;
+    return (
+      Math.abs(a.top - opts.viewportTop) - Math.abs(b.top - opts.viewportTop)
+    );
+  });
+  const selected = visible[0];
+  return selected
+    ? { key: selected.key, offsetTop: selected.top - opts.viewportTop }
+    : undefined;
 }
 
 export function isNearVisualScrollEnd(
