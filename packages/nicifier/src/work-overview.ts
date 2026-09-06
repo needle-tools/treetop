@@ -14,11 +14,16 @@ import {
   visualToolPreviewText,
   visualToolRemoteHostLabel,
 } from "./tool-preview.js";
+import {
+  estimateModelTokenCost,
+  type ModelsDevPricingSnapshot,
+} from "./model-pricing.js";
 
 interface VisualWorkEntryLike {
   message: {
     role: string;
     timestamp?: string;
+    model?: string;
     tokensUsed?: number;
     tokenUsage?: TokenUsage;
   };
@@ -118,12 +123,22 @@ export interface VisualWorkOverview {
   time: VisualWorkTimeOverview;
   tokenCount: number;
   tokens: VisualWorkTokenOverview;
+  cost: VisualWorkCostOverview;
   actionCount: number;
   responseCount: number;
   categories: VisualWorkCategoryCount[];
   languages: VisualWorkLanguageCount[];
   changedFiles: VisualWorkChangedFile[];
   remoteHosts: string[];
+}
+
+export interface VisualWorkCostOverview {
+  totalUsd: number;
+  pricedCheckpoints: number;
+  unpricedCheckpoints: number;
+  longContextCheckpoints: number;
+  models: string[];
+  sources: string[];
 }
 
 export interface VisualWorkDetailOptions {
@@ -133,12 +148,16 @@ export interface VisualWorkDetailOptions {
 export interface VisualWorkOverviewOptions {
   now?: string | number | Date;
   timeScope?: "item" | "entries";
+  model?: string;
+  modelsDev?: ModelsDevPricingSnapshot;
 }
 
 export interface VisualWorkDetailGroup<T extends VisualWorkDisplayEntryLike> {
   id: string;
   kind: "actions" | "response";
   entries: T[];
+  /** Includes non-rendered token checkpoints attributed to this visible step. */
+  overviewEntries: T[];
 }
 
 interface ToolTimingInterval {
@@ -473,7 +492,8 @@ function tokenOverview(
     },
   );
   const freshInput = Math.max(0, totals.input - totals.cachedInput);
-  const generatedOutput = totals.output + totals.reasoningOutput;
+  // Codex reports reasoning_output_tokens as a subset of output_tokens.
+  const generatedOutput = totals.output;
   const total = freshInput + generatedOutput;
   const agent = total;
   return {
@@ -491,6 +511,46 @@ function tokenOverview(
     perSecond: tokenRate(totals.output, time.elapsedMs),
     agentPerSecond: tokenRate(agent, time.elapsedMs),
     toolPerSecond: tokenRate(tool, time.elapsedMs),
+  };
+}
+
+function costOverview(
+  entries: readonly VisualWorkDisplayEntryLike[],
+  defaultModel: string | undefined,
+  modelsDev: ModelsDevPricingSnapshot | undefined,
+): VisualWorkCostOverview {
+  let totalUsd = 0;
+  let pricedCheckpoints = 0;
+  let unpricedCheckpoints = 0;
+  let longContextCheckpoints = 0;
+  const models = new Set<string>();
+  const sources = new Set<string>();
+  for (const entry of entries) {
+    const usage = tokenUsageFromEntry(entry);
+    if (!usage) continue;
+    const cost = estimateModelTokenCost(
+      usage,
+      entry.entry.message.model ?? defaultModel,
+      entry.entry.message.timestamp,
+      { modelsDev },
+    );
+    if (!cost) {
+      unpricedCheckpoints += 1;
+      continue;
+    }
+    totalUsd += cost.totalUsd;
+    pricedCheckpoints += 1;
+    if (cost.longContext) longContextCheckpoints += 1;
+    models.add(cost.model);
+    sources.add(cost.source);
+  }
+  return {
+    totalUsd,
+    pricedCheckpoints,
+    unpricedCheckpoints,
+    longContextCheckpoints,
+    models: [...models],
+    sources: [...sources],
   };
 }
 
@@ -977,6 +1037,7 @@ export function visualWorkOverview(
     options.timeScope === "entries" ? itemScopedToEntries(item, entries) : item;
   const time = workTimeOverview(scopedItem, entries, safeNowMs);
   const tokens = tokenOverview(entries, time);
+  const cost = costOverview(entries, options.model, options.modelsDev);
   const categories = actionCategoryCounts(entries);
   const languages = languageCounts(entries);
   const changedFiles = changedFileSummary(entries);
@@ -992,6 +1053,7 @@ export function visualWorkOverview(
     time,
     tokenCount: tokens.total,
     tokens,
+    cost,
     actionCount: categories.reduce((sum, category) => sum + category.count, 0),
     responseCount: entries.filter(isAgentResponseEntry).length,
     categories,
@@ -1025,6 +1087,7 @@ function isRenderableDetailEntry(entry: VisualWorkDisplayEntryLike): boolean {
 
 export function visualWorkDetailGroups<T extends VisualWorkDisplayEntryLike>(
   entries: readonly T[],
+  allEntries: readonly T[] = entries,
 ): VisualWorkDetailGroup<T>[] {
   const groups: VisualWorkDetailGroup<T>[] = [];
   let pendingActions: T[] = [];
@@ -1037,6 +1100,7 @@ export function visualWorkDetailGroups<T extends VisualWorkDisplayEntryLike>(
       id: `actions:${visualWorkDisplayEntryGroupKey(first)}:${visualWorkDisplayEntryGroupKey(last)}`,
       kind: "actions",
       entries: pendingActions,
+      overviewEntries: [...pendingActions],
     });
     pendingActions = [];
   }
@@ -1051,9 +1115,26 @@ export function visualWorkDetailGroups<T extends VisualWorkDisplayEntryLike>(
       id: `response:${visualWorkDisplayEntryGroupKey(entry)}`,
       kind: "response",
       entries: [entry],
+      overviewEntries: [entry],
     });
   }
   flushActions();
+  const visibleEntries = new Set(entries);
+  for (const hiddenEntry of allEntries) {
+    if (visibleEntries.has(hiddenEntry) || !tokenUsageFromEntry(hiddenEntry)) {
+      continue;
+    }
+    let target = groups[0];
+    for (const group of groups) {
+      const lastIndex = group.entries.at(-1)?.entry.messageIndex ?? -Infinity;
+      if (lastIndex <= hiddenEntry.entry.messageIndex) target = group;
+    }
+    if (!target) continue;
+    target.overviewEntries.push(hiddenEntry);
+    target.overviewEntries.sort(
+      (a, b) => a.entry.messageIndex - b.entry.messageIndex,
+    );
+  }
   return groups;
 }
 

@@ -96,6 +96,7 @@ export interface CodexLiveNormalizeContext {
   toolNames?: Map<string, string>;
   toolInputs?: Map<string, unknown>;
   previousTotalTokenUsage?: CodexAppTokenUsage;
+  model?: string;
 }
 
 function codexLiveToolNameMap(
@@ -154,6 +155,7 @@ export interface CodexAppHistoryMessage {
   id?: string;
   tokensUsed?: number;
   tokenUsage?: CodexAppTokenUsage;
+  model?: string;
 }
 
 export interface CodexAppTokenUsage {
@@ -617,6 +619,13 @@ export function codexLiveMessagesFromEvent(
   context: CodexLiveNormalizeContext = {},
 ): CodexAppHistoryMessage[] {
   const messages: CodexAppHistoryMessage[] = [];
+  const settings =
+    codexObjectField(event.params, "thread_settings") ??
+    codexObjectField(event.params, "threadSettings");
+  const eventModel =
+    stringField(event.params, "model") ??
+    (settings ? stringField(settings, "model") : undefined);
+  if (eventModel) context.model = eventModel;
   const timestamp = codexLiveItemTimestamp(event);
   const tokenUsage = codexTokenUsageFromEvent(event, context);
   if (tokenUsage !== undefined) {
@@ -624,6 +633,7 @@ export function codexLiveMessagesFromEvent(
       id: `codex-usage-${event.turnId ?? event.params.turnId ?? "turn"}-${event.seq ?? event.receivedAt}`,
       role: "assistant",
       timestamp,
+      ...(context.model ? { model: context.model } : {}),
       tokensUsed: codexOutputTokensFromUsage(tokenUsage),
       tokenUsage,
       blocks: [],
@@ -697,8 +707,11 @@ export function codexAppHistoryMessagesFromThread(
   const turns = (thread as Record<string, unknown>).turns;
   if (!Array.isArray(turns)) return [];
   const messages: CodexAppHistoryMessage[] = [];
+  const threadRecord = thread as Record<string, unknown>;
   const toolNames = codexLiveToolNameMap(context);
-  const usageContext: CodexLiveNormalizeContext = {};
+  const usageContext: CodexLiveNormalizeContext = {
+    model: stringField(threadRecord, "model") ?? context.model,
+  };
   for (const turn of turns) {
     if (!turn || typeof turn !== "object") continue;
     const turnRecord = turn as Record<string, unknown>;
@@ -785,6 +798,7 @@ function codexAppMessagesFromThreadItem(
         id: `codex-usage-${itemId}`,
         role: "assistant",
         timestamp,
+        ...(usageContext.model ? { model: usageContext.model } : {}),
         tokensUsed: codexOutputTokensFromUsage(tokenUsage),
         tokenUsage,
         blocks: [],
@@ -1166,7 +1180,7 @@ function codexTokenUsageFromSources(
 }
 
 function codexOutputTokensFromUsage(usage: CodexAppTokenUsage): number {
-  return usage.output + usage.reasoningOutput;
+  return usage.output;
 }
 
 function finiteNumber(value: unknown): number | undefined {

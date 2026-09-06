@@ -1463,7 +1463,7 @@ describe("codex event stream hub", () => {
         id: "codex-usage-turn-usage-2026-06-22T10:00:00.000Z",
         role: "assistant",
         timestamp: "2026-06-22T10:00:00.000Z",
-        tokensUsed: 315,
+        tokensUsed: 286,
         tokenUsage: {
           input: 1234,
           cachedInput: 1000,
@@ -1505,7 +1505,7 @@ describe("codex event stream hub", () => {
         id: "codex-usage-usage-item",
         role: "assistant",
         timestamp: "2026-06-22T10:00:00.000Z",
-        tokensUsed: 315,
+        tokensUsed: 286,
         tokenUsage: {
           input: 1234,
           cachedInput: 1000,
@@ -1657,7 +1657,7 @@ describe("codex event stream hub", () => {
         id: "codex-usage-turn-usage-2026-06-22T10:00:02.000Z",
         role: "assistant",
         timestamp: "2026-06-22T10:00:02.000Z",
-        tokensUsed: 108,
+        tokensUsed: 91,
         tokenUsage: {
           input: 2345,
           cachedInput: 2000,
@@ -1696,7 +1696,7 @@ describe("codex event stream hub", () => {
         id: "codex-usage-turn-usage-2026-06-22T10:00:02.000Z",
         role: "assistant",
         timestamp: "2026-06-22T10:00:02.000Z",
-        tokensUsed: 15,
+        tokensUsed: 12,
         tokenUsage: {
           input: 70,
           cachedInput: 64,

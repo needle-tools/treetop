@@ -7,7 +7,7 @@ import {
   type VisualObservedProcessOutput,
   type VisualToolPreviewContext,
   type VisualToolPreviewPart,
-} from "@supergit/nicifier";
+} from "@treetop/nicifier";
 
 export {
   cleanVisualToolResultText,
@@ -58,7 +58,7 @@ export {
   type VisualWorkArtifactChange,
   type VisualWorkOverview,
   type VisualWorkTimeOverview,
-} from "@supergit/nicifier";
+} from "@treetop/nicifier";
 
 export interface MessageBlock {
   type: string;
@@ -136,6 +136,7 @@ export interface TokenUsage {
   input: number;
   cachedInput: number;
   cacheWriteInput: number;
+  cacheWriteInput1h?: number;
   output: number;
   reasoningOutput: number;
   total: number;
@@ -148,6 +149,7 @@ export interface Message<B extends MessageBlock = MessageBlock> {
   id?: string;
   tokensUsed?: number;
   tokenUsage?: TokenUsage;
+  model?: string;
   intent?: "steer";
   optimisticAfterMessageId?: string;
   optimisticAfterMessageIndex?: number;
