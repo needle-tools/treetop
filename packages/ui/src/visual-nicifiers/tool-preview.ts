@@ -4,6 +4,15 @@ import type {
   VisualFileEditSummary,
   VisualMediaBlock,
 } from "../last-user-message";
+import {
+  summarizeDirectScriptCommand,
+  summarizeSystemProbe,
+  summarizeWorkflowCli,
+  systemProbeLabel,
+} from "./core";
+import type { VisualCommandSummary, VisualToolEnvAssignment } from "./core";
+
+export type { VisualCommandSummary, VisualToolEnvAssignment } from "./core";
 
 export interface VisualToolResultText {
   title: string;
@@ -398,10 +407,14 @@ export function visualToolIconNameForPreview(
   if (/^Count\b/.test(preview)) return "read";
   if (/^Query JSON\b/.test(preview)) return "read";
   if (/^Process text\b/.test(preview)) return "read";
+  if (/^(?:Check disk space|Check file metadata|Identify file|Resolve link|Checksum)\b/.test(preview))
+    return "read";
+  if (/^Find command\b/.test(preview)) return "process_check";
   if (/^Check listeners\b/.test(preview)) return "port_check";
   if (/^Query (?:PostgreSQL|MySQL|MariaDB|SQLite)\b/.test(preview))
     return "database";
   if (/^Run .*(?:tests|check)\b/.test(preview)) return "test";
+  if (/^Run .* script\b/.test(preview)) return "evaluate_script";
   if (/^Reload page\b/.test(preview)) return "reload_page";
   if (/^Wait for\b/.test(preview)) return "wait_for";
   if (/^Check console\b/.test(preview)) return "list_console_messages";
@@ -418,12 +431,16 @@ export function visualToolIconNameForPreview(
   if (/^Scroll browser\b/.test(preview)) return "scroll_browser";
   if (/^Run browser script\b/.test(preview)) return "evaluate_script";
   if (/^List screen sessions\b/.test(preview)) return "list";
+  if (/^List tmux sessions\b/.test(preview)) return "list";
   if (/^Emulate\b/.test(preview)) return "emulate";
   if (/^Open tunnel\b/.test(preview)) return "port_check";
   if (/^(?:Navigate to|Open|Open browser)\b/.test(preview))
     return "navigate_page";
   if (/^Check processes?\b/.test(preview)) return "process_check";
   if (/^Check containers?\b/.test(preview)) return "process_check";
+  if (/^(?:Inspect|List) GitHub\b/.test(preview)) return "git";
+  if (/^Check Tailscale\b/.test(preview)) return "process_check";
+  if (/^(?:Check|List) Google Cloud\b/.test(preview)) return "process_check";
   if (/^Check (?:host name|system info|GPU info)\b/.test(preview)) {
     return "process_check";
   }
@@ -1722,11 +1739,6 @@ export function visualToolRemoteHostLabel(
   return transfer?.host;
 }
 
-export interface VisualToolEnvAssignment {
-  name: string;
-  value: string;
-}
-
 export interface VisualToolConfigAssignment {
   name: string;
   value: string;
@@ -1813,137 +1825,6 @@ export function visualToolCanStillRun(
   if (name === "view_image" || name.endsWith(".view_image")) return false;
   return true;
 }
-
-type VisualCommandSummary =
-  | { kind: "read"; targets: string[] }
-  | { kind: "directory"; targets: string[] }
-  | { kind: "logs"; targets: string[]; tailLines?: number }
-  | { kind: "search"; pattern: string; paths: string[]; source?: string }
-  | { kind: "find"; root: string; patterns: string[] }
-  | { kind: "batch-files"; tool: string; targets: string[] }
-  | {
-      kind: "count";
-      metric: "lines" | "bytes" | "words" | "chars" | "items";
-      targets: string[];
-    }
-  | { kind: "size"; targets: string[] }
-  | { kind: "json-query"; filter: string; targets: string[]; source?: string }
-  | {
-      kind: "text-process";
-      tool: "awk";
-      expression: string;
-      targets: string[];
-      source?: string;
-    }
-  | { kind: "script-file"; language: string; script: string; args: string[] }
-  | { kind: "process-check"; pattern?: string; pids?: string[] }
-  | { kind: "container-check"; pattern?: string }
-  | {
-      kind: "git";
-      action:
-        | "status"
-        | "remote"
-        | "diff"
-        | "diff-stat"
-        | "diff-check"
-        | "show"
-        | "show-file"
-        | "show-file-search"
-        | "ls-files"
-        | "log"
-        | "branch"
-        | "rev-parse"
-        | "rev-list-count"
-        | "check-ignore"
-        | "add"
-        | "commit";
-      targets: string[];
-      rev?: string;
-      pattern?: string;
-      staged?: boolean;
-    }
-  | {
-      kind: "test";
-      runner:
-        | "Bun"
-        | "Vitest"
-        | "npm"
-        | "Pytest"
-        | "Playwright"
-        | "Shell"
-        | "TypeScript"
-        | "Svelte";
-      targets: string[];
-      check?: boolean;
-    }
-  | { kind: "process-end"; pids: string[] }
-  | { kind: "system-info"; action: "host" | "kernel" | "gpu" }
-  | { kind: "drive-check" }
-  | { kind: "port-check"; ports: string[] }
-  | { kind: "ssh-tunnel"; local: string; remote: string }
-  | {
-      kind: "remote-transfer";
-      action: "upload" | "download";
-      host: string;
-      local: string;
-      remotePath: string;
-    }
-  | { kind: "screen-sessions" }
-  | { kind: "listener-check"; terms: string[] }
-  | { kind: "wait"; seconds: string }
-  | {
-      kind: "wait-url";
-      url: string;
-      attempts?: number;
-      intervalSeconds?: number;
-    }
-  | {
-      kind: "database";
-      engine: "PostgreSQL" | "MySQL" | "MariaDB" | "SQLite";
-      database?: string;
-      query?: string;
-    }
-  | {
-      kind: "browser";
-      action:
-        | "open"
-        | "close"
-        | "snapshot"
-        | "screenshot"
-        | "click"
-        | "upload"
-        | "download"
-        | "fill"
-        | "press"
-        | "wait"
-        | "get"
-        | "scroll"
-        | "console"
-        | "network"
-        | "pages"
-        | "reload"
-        | "emulate"
-        | "mouse"
-        | "script";
-      target?: string;
-      targetLabel?: string;
-      detail?: string;
-    }
-  | { kind: "fetch"; url: string; output?: string }
-  | { kind: "image-transform"; input: string; output: string }
-  | {
-      kind: "cmake";
-      action: "configure" | "build";
-      source?: string;
-      build?: string;
-      generator?: string;
-    }
-  | {
-      kind: "filesystem";
-      action: "create" | "delete" | "copy" | "move";
-      targetKind: "file" | "folder" | "path";
-      targets: string[];
-    };
 
 function textPreviewParts(text: string): VisualToolPreviewPart[] {
   return text ? [{ kind: "text", text }] : [];
@@ -2438,6 +2319,29 @@ function visualCommandPreview(
       env,
       summaries: [fileLoopSummary],
     };
+  }
+  const repeatLoop = splitForLoopCommand(unwrapped);
+  if (repeatLoop) {
+    const loopPreview = visualCommandPreview(repeatLoop.command, context);
+    if (loopPreview.parts.length > 0 || loopPreview.summaries.length > 0) {
+      const parts = repeatLoop.iterations
+        ? [
+            ...loopPreview.parts,
+            {
+              kind: "text" as const,
+              text: ` · ${repeatLoop.iterations} runs`,
+            },
+          ]
+        : loopPreview.parts;
+      return {
+        text: parts.map((part) => part.text).join(""),
+        parts,
+        launcher: normalized.launcher ?? loopPreview.launcher,
+        remoteHost: normalized.remoteHost ?? loopPreview.remoteHost,
+        env: [...env, ...loopPreview.env],
+        summaries: loopPreview.summaries,
+      };
+    }
   }
   const parts = splitShellCommandChain(unwrapped);
   if (parts.length === 0) {
@@ -3315,6 +3219,9 @@ function applyRemoteContextCwdToSummary(
   if (summary.kind === "script-file") {
     return { ...summary, script: qualifyRemotePathTarget(summary.script, cwd) };
   }
+  if (summary.kind === "system-probe") {
+    return { ...summary, targets: qualifyTargets(summary.targets) };
+  }
   if (summary.kind === "test") {
     return { ...summary, targets: qualifyTargets(summary.targets) };
   }
@@ -3457,6 +3364,8 @@ function summarizeShellCommand(
   if (sshTunnel) return sshTunnel;
   const scpTransfer = summarizeScp(tokens);
   if (scpTransfer) return scpTransfer;
+  const workflow = summarizeWorkflowCli(tokens);
+  if (workflow) return workflow;
   const screen = summarizeScreenSessions(tokens);
   if (screen) return screen;
   const test = summarizeTestCommand(tokens);
@@ -3465,6 +3374,8 @@ function summarizeShellCommand(
   if (browser) return browser;
   const database = summarizeDatabase(tokens);
   if (database) return database;
+  const systemProbe = summarizeSystemProbe(tokens);
+  if (systemProbe) return systemProbe;
   const systemInfo = summarizeSystemInfo(tokens);
   if (systemInfo) return systemInfo;
   const scriptFile = directScriptCommand(command);
@@ -3579,6 +3490,61 @@ function summarizeFileLoop(
   if (!tool || tool === "echo" || tool === "printf") return undefined;
   if (!bodyReferencesLoopVariable(bodyTokens, variable)) return undefined;
   return { kind: "batch-files", tool, targets };
+}
+
+function splitForLoopCommand(
+  command: string,
+): { command: string; iterations?: number } | undefined {
+  const match = command.match(
+    /^\s*for\s+[A-Za-z_][A-Za-z0-9_]*\s+in\s+([\s\S]+?)\s*;\s*do\s+([\s\S]+?)\s*;\s*done\s*$/i,
+  );
+  if (!match) return undefined;
+  const body = match[2]!.trim();
+  if (!body || body === command.trim()) return undefined;
+  return {
+    command: body,
+    iterations: shellLoopIterationCount(match[1]!),
+  };
+}
+
+function shellLoopIterationCount(listExpression: string): number | undefined {
+  const expression = listExpression.trim();
+  const brace = expression.match(/^\{(-?\d+)\.\.(-?\d+)(?:\.\.(-?\d+))?\}$/);
+  if (brace) {
+    return inclusiveIntegerRangeCount(brace[1]!, brace[2]!, brace[3]);
+  }
+  const seq = expression.match(
+    /^(?:\$\(seq\s+|seq\s+)(-?\d+)(?:\s+(-?\d+))?(?:\s+(-?\d+))?\)?$/i,
+  );
+  if (seq) {
+    const end = seq[2] ?? seq[1];
+    const start = seq[2] ? seq[1] : "1";
+    const step = seq[3];
+    return inclusiveIntegerRangeCount(start!, end!, step);
+  }
+  const tokens = shellTokens(expression).filter((token) => token !== "--");
+  if (tokens.length === 0) return undefined;
+  return tokens.some((token) => /[;&|]/.test(token)) ? undefined : tokens.length;
+}
+
+function inclusiveIntegerRangeCount(
+  startText: string,
+  endText: string,
+  stepText?: string,
+): number | undefined {
+  const start = Number(startText);
+  const end = Number(endText);
+  const rawStep = stepText ? Number(stepText) : end >= start ? 1 : -1;
+  if (
+    !Number.isInteger(start) ||
+    !Number.isInteger(end) ||
+    !Number.isInteger(rawStep) ||
+    rawStep === 0
+  ) {
+    return undefined;
+  }
+  if ((end - start) * rawStep < 0) return 0;
+  return Math.floor(Math.abs((end - start) / rawStep)) + 1;
 }
 
 function bodyReferencesLoopVariable(
@@ -5474,6 +5440,7 @@ function commandSummaryParts(
   }
   if (summary.kind === "script-file") {
     return [
+      { kind: "text", text: `Run ${summary.language} script ` },
       ...interspersePathParts([summary.script]),
       ...(summary.args.length
         ? [{ kind: "text" as const, text: ` ${summary.args.join(" ")}` }]
@@ -5523,6 +5490,22 @@ function commandSummaryParts(
     }
     return [{ kind: "text", text: "Check GPU info" }];
   }
+  if (summary.kind === "system-probe") {
+    if (summary.action === "find-command") {
+      return [{ kind: "text", text: systemProbeLabel(summary) }];
+    }
+    const prefix =
+      summary.action === "disk-space"
+        ? "Check disk space "
+        : summary.action === "file-metadata"
+          ? "Check file metadata "
+          : summary.action === "file-type"
+            ? "Identify file "
+            : summary.action === "resolve-link"
+              ? "Resolve link "
+              : "Checksum ";
+    return [{ kind: "text", text: prefix }, ...interspersePathParts(summary.targets)];
+  }
   if (summary.kind === "drive-check") {
     return [{ kind: "text", text: "Check Windows drives" }];
   }
@@ -5553,6 +5536,12 @@ function commandSummaryParts(
   }
   if (summary.kind === "screen-sessions") {
     return [{ kind: "text", text: "List screen sessions" }];
+  }
+  if (summary.kind === "session-manager") {
+    return [{ kind: "text", text: "List tmux sessions" }];
+  }
+  if (summary.kind === "workflow") {
+    return [{ kind: "text", text: summary.action }];
   }
   if (summary.kind === "listener-check") {
     return [
@@ -6154,35 +6143,7 @@ function agentBrowserEvalScriptFromCommand(
 function directScriptCommand(
   command: string,
 ): Extract<VisualCommandSummary, { kind: "script-file" }> | undefined {
-  const tokens = shellTokens(command);
-  if (tokens.length < 2) return undefined;
-  const runtimeIndex = tokens.findIndex((token) =>
-    /^(?:python3?|node|bun|deno|swift|ruby|perl)$/.test(
-      token.split("/").pop() ?? token,
-    ),
-  );
-  if (runtimeIndex < 0) return undefined;
-  const runtime =
-    tokens[runtimeIndex]!.split("/").pop() ?? tokens[runtimeIndex]!;
-  for (let i = runtimeIndex + 1; i < tokens.length; i += 1) {
-    const token = tokens[i]!;
-    if (token === "-c" || token === "-e" || token === "--eval") {
-      return undefined;
-    }
-    if (token.startsWith("-")) continue;
-    if (!looksLikeScriptPath(token)) continue;
-    return {
-      kind: "script-file",
-      language: inlineScriptLanguage(runtime),
-      script: token,
-      args: tokens.slice(i + 1),
-    };
-  }
-  return undefined;
-}
-
-function looksLikeScriptPath(path: string): boolean {
-  return /\.(?:[cm]?js|jsx|ts|tsx|mjs|cjs|py|rb|pl|swift)$/i.test(path);
+  return summarizeDirectScriptCommand(shellTokens(command));
 }
 
 function inlineScriptFromCommand(
