@@ -2,14 +2,164 @@ import { describe, expect, test } from "bun:test";
 import {
   codexReplayItemsUntil,
   codexReplayMessagesUntil,
+  createCodexReplaySessionTransport,
   createCodexReplayPlayback,
   filterCodexReplayTextForThread,
+  filterCodexReplaySessions,
+  summarizeCodexReplaySessions,
   parseCodexReplayTextAsync,
   parseCodexReplayText,
+  parseCodexReplaySessionFixture,
   setCodexReplayPlaybackStep,
 } from "../src/codex-replay-lab";
 
 describe("Codex replay lab parser", () => {
+  test("builds the selected thread page from its recorded app-server response", () => {
+    const recording = [
+      JSON.stringify({
+        seq: 1,
+        direction: "server",
+        message: {
+          id: 7,
+          result: {
+            thread: { id: "thread-a", cwd: "/repo/a", turns: [] },
+            initialTurnsPage: {
+              data: [{ id: "turn-a", items: [] }],
+              nextCursor: "older-a",
+            },
+          },
+        },
+      }),
+      JSON.stringify({
+        seq: 2,
+        direction: "server",
+        message: {
+          id: 8,
+          result: {
+            thread: { id: "thread-b", cwd: "/repo/b", turns: [] },
+          },
+        },
+      }),
+      JSON.stringify({
+        seq: 3,
+        direction: "server",
+        message: {
+          id: 9,
+          result: {
+            thread: { id: "thread-b", cwd: "/repo/b", turns: [] },
+            model: "gpt-test",
+            initialTurnsPage: {
+              data: [{ id: "turn-b", items: [] }],
+              nextCursor: "older-b",
+            },
+          },
+        },
+      }),
+      JSON.stringify({
+        seq: 4,
+        direction: "server",
+        message: {
+          method: "turn/started",
+          params: {
+            threadId: "thread-b",
+            turn: { id: "turn-live", items: [] },
+          },
+        },
+      }),
+    ].join("\n");
+
+    const fixture = parseCodexReplaySessionFixture(recording, "thread-b");
+
+    expect(fixture.threadId).toBe("thread-b");
+    expect(fixture.cwd).toBe("/repo/b");
+    expect(fixture.page).toEqual({
+      thread: {
+        id: "thread-b",
+        cwd: "/repo/b",
+        turns: [{ id: "turn-b", items: [] }],
+      },
+      model: "gpt-test",
+      nextCursor: "older-b",
+    });
+    expect(fixture.events.map((event) => event.method)).toEqual([
+      "turn/started",
+    ]);
+  });
+
+  test("feeds recorded events through a SessionView-compatible transport", async () => {
+    const fixture = parseCodexReplaySessionFixture(
+      [
+        JSON.stringify({
+          seq: 1,
+          direction: "server",
+          message: {
+            id: 4,
+            result: {
+              thread: { id: "thread-b", cwd: "/repo/b", turns: [] },
+              initialTurnsPage: { data: [] },
+            },
+          },
+        }),
+        JSON.stringify({
+          seq: 2,
+          direction: "server",
+          message: {
+            method: "turn/started",
+            params: { threadId: "thread-b", turn: { id: "turn-1" } },
+          },
+        }),
+        JSON.stringify({
+          seq: 3,
+          direction: "server",
+          message: {
+            method: "turn/completed",
+            params: { threadId: "thread-b", turn: { id: "turn-1" } },
+          },
+        }),
+      ].join("\n"),
+      "thread-b",
+    );
+    const transport = createCodexReplaySessionTransport(fixture);
+    const states: string[] = [];
+    const methods: string[] = [];
+
+    expect(await transport.readThread()).toEqual(fixture.page);
+    const unsubscribe = transport.subscribe("thread-b", {
+      onState: (state) => states.push(state),
+      onEvent: (event) => methods.push(event.method),
+    });
+    transport.setStep(1);
+    transport.setStep(2);
+    unsubscribe();
+
+    expect(states).toEqual(["live"]);
+    expect(methods).toEqual(["turn/started", "turn/completed"]);
+  });
+
+  test("summarizes and filters session coverage", () => {
+    const sessions = [
+      { threadId: "both", hasTranscript: true },
+      { threadId: "rpc-only", hasTranscript: false },
+      { threadId: "also-both", hasTranscript: true },
+    ];
+
+    expect(summarizeCodexReplaySessions(sessions)).toEqual({
+      total: 3,
+      rpc: 3,
+      transcript: 2,
+      both: 2,
+      rpcOnly: 1,
+    });
+    expect(
+      filterCodexReplaySessions(sessions, "both").map((item) => item.threadId),
+    ).toEqual(["both", "also-both"]);
+    expect(
+      filterCodexReplaySessions(sessions, "rpc-only").map(
+        (item) => item.threadId,
+      ),
+    ).toEqual(["rpc-only"]);
+  });
+
   test("replays captured app-server JSON-RPC frames through the live visual shape", () => {
     const replay = parseCodexReplayText(
       JSON.stringify({
@@ -219,7 +369,9 @@ describe("Codex replay lab parser", () => {
       ],
     });
 
-    const filtered = JSON.parse(filterCodexReplayTextForThread(text, "thread-b"));
+    const filtered = JSON.parse(
+      filterCodexReplayTextForThread(text, "thread-b"),
+    );
 
     expect(filtered.events).toHaveLength(1);
     expect(filtered.events[0].message.params.threadId).toBe("thread-b");

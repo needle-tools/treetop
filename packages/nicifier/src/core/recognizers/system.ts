@@ -1,13 +1,19 @@
-import type { VisualCommandSummary } from "../types";
-import { lastPathSegment, lowerCommandName, positionalTokens } from "./common";
+import type { VisualCommandSummary } from "../types.js";
+import {
+  lastPathSegment,
+  lowerCommandName,
+  positionalTokens,
+} from "./common.js";
 
 export function summarizeSystemProbe(
   tokens: readonly string[],
 ): VisualCommandSummary | undefined {
   const command = lowerCommandName(tokens[0]);
   if (command === "df") {
-    const targets = positionalTokens(tokens.slice(1), new Set(["-B", "--block-size"]))
-      .filter((token) => token !== ".");
+    const targets = positionalTokens(
+      tokens.slice(1),
+      new Set(["-B", "--block-size"]),
+    ).filter((token) => token !== ".");
     return {
       kind: "system-probe",
       action: "disk-space",

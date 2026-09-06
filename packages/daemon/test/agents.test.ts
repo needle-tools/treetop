@@ -5,7 +5,7 @@
  */
 
 import { test, expect, describe } from "bun:test";
-import { mkdtemp, mkdir, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import {
@@ -19,6 +19,7 @@ import {
   scanCodexMessageCount,
   scanCodexContextTokens,
   scanCodexTokenUsage,
+  readCodexSessionOverview,
   clearCodexScanCache,
   findCodexSessionSourceById,
   scanClaude,
@@ -1088,6 +1089,51 @@ describe("scanCodexTokenUsage", () => {
       lastInputTokens: undefined,
       modelContextWindow: undefined,
       model: undefined,
+    });
+  });
+
+  test("uses Codex's post-compaction context snapshot as the current context size", async () => {
+    const dir = await tempDir();
+    const file = join(dir, "s.jsonl");
+    await writeFile(
+      file,
+      [
+        JSON.stringify({
+          type: "session_meta",
+          payload: { id: "session-1", cwd: "/p" },
+        }),
+        JSON.stringify({
+          type: "event_msg",
+          payload: {
+            type: "token_count",
+            info: {
+              total_token_usage: {
+                input_tokens: 7_212_290,
+                output_tokens: 29_569,
+                total_tokens: 7_241_859,
+              },
+              last_token_usage: {
+                input_tokens: 0,
+                cached_input_tokens: 0,
+                output_tokens: 0,
+                reasoning_output_tokens: 0,
+                total_tokens: 14_484,
+              },
+              model_context_window: 258_400,
+            },
+          },
+        }),
+      ].join("\n"),
+    );
+
+    expect(await scanCodexTokenUsage(file)).toMatchObject({
+      lastInputTokens: 14_484,
+      modelContextWindow: 258_400,
+    });
+    const fileSize = (await stat(file)).size;
+    expect(await readCodexSessionOverview(file, fileSize)).toMatchObject({
+      contextTokens: 14_484,
+      contextTokensExact: true,
     });
   });
 

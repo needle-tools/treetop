@@ -3,7 +3,9 @@ export function commandName(token: string | undefined): string {
 }
 
 export function lowerCommandName(token: string | undefined): string {
-  return commandName(token).toLowerCase().replace(/\.(?:exe|cmd|bat)$/i, "");
+  return commandName(token)
+    .toLowerCase()
+    .replace(/\.(?:exe|cmd|bat)$/i, "");
 }
 
 export function optionValue(

@@ -16,6 +16,8 @@
     "test": "bash -lc 'bun test $(find packages -type f \\( -path \"*/test/*.test.ts\" -o -path \"*/test/*.spec.ts\" -o -path \"*/test/*.test.js\" -o -path \"*/test/*.spec.js\" \\))'",
     "test:watch": "bash -lc 'bun test --watch $(find packages -type f \\( -path \"*/test/*.test.ts\" -o -path \"*/test/*.spec.ts\" -o -path \"*/test/*.test.js\" -o -path \"*/test/*.spec.js\" \\))'",
     "test:coverage": "bash -lc 'bun test --coverage $(find packages -type f \\( -path \"*/test/*.test.ts\" -o -path \"*/test/*.spec.ts\" -o -path \"*/test/*.test.js\" -o -path \"*/test/*.spec.js\" \\))'",
+    "audit:sessions": "bun scripts/audit-agent-sessions.ts",
+    "test:nicifier-package": "bun scripts/test-nicifier-package.ts",
     "test:two-daemon": "SUPERGIT_TWO_DAEMON_TESTS=1 bun test ./packages/daemon/test/two-daemon-e2e.test.ts",
     "test:provision-docker": "SUPERGIT_DOCKER_TESTS=1 bun test ./packages/daemon/test/provision-docker-e2e.test.ts",
     "format": "prettier --write \"packages/**/*.{js,ts,svelte,css,json}\" \"*.ts\"",
