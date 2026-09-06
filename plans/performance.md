@@ -393,6 +393,15 @@ housekeeping that surfaced alongside.
 after a **native** rebuild (`electrobun build`), not an SPA-only
 `vite build`.
 
+**Build smoke regression (2026-09-01):** the native smoke daemon starts from
+a temporary copy of the default workspace. That copy accidentally included
+`.debugging/` (1.8 GB locally), so the daemon remained in its pre-log copy on a
+nearly full disk and the smoke probe timed out after 10 seconds. Temporary
+workspaces now exclude `.debugging/`, like logs and other runtime-only state.
+Codex RPC recordings inside that directory are also segmented at 256 MiB and
+evict the oldest recording files before their aggregate size exceeds 2 GiB;
+the in-memory replay buffer remains independently bounded by frame count.
+
 ### Held daemon RSS — the token-scan dead cache (the real ~2.9 GB)
 
 Separate from the cold-start spike above: after the restart fixes landed,
@@ -731,6 +740,47 @@ request per daemon per tick** → O(1) in column count.
 
 Coalescing active-sends behind the global revision-ETag also removes the
 unconditional `inflight` reassignment (folds in much of Lever 3 for free).
+
+### Stuck-request recovery (2026-09-01)
+
+Production diagnostics showed that the shared-poll design still had one
+single-flight failure mode: a request without a response kept `runningTick`
+settled to neither success nor failure, so every later 2 s tick only joined
+that promise. Two restored `POST /api/codex-app/turns` requests had likewise
+remained active for more than six hours, consuming browser connections while
+session panes appeared never to load. The affected Baker JSONL itself parsed
+normally (463 messages, about 1 MB response, 16–17 ms via both direct and
+batch endpoints), which separated request starvation from parser cost.
+
+All shared session-poll requests now bound both fetch and body decoding to 15
+seconds; a timeout retains cached state and releases the single-flight guard
+so the next tick retries. Codex app-server RPCs now reject unanswered requests
+after 30 seconds, and the UI turn submission has a 35-second outer deadline so
+restored queue draining becomes visibly blocked/retryable instead of holding a
+connection indefinitely. Regression tests cover recovery on the next poll and
+a late app-server response not poisoning the next RPC.
+
+The first timeout this exposed was a distinct payload-amplification bug. A
+9.56 GB Codex transcript with repeated ~64 MB compaction records could still be
+viewed through the bounded history path, but continuing it called
+`thread/resume` without `excludeTurns`. App-server then tried to return the
+entire thread before Supergit could call `turn/start`, remained busy after the
+client deadline, and made the deadline look like the cause. Turn resumes now
+request thread state without returning historical turns; paged transcript and
+app-server history reads remain responsible for rendering history.
+
+Session size is now surfaced without adding another cold-start transcript
+scan. Agent discovery carries the file size from its existing `stat`; the exact
+JSONL line count is requested only for an opened session, streamed through a
+bounded 1 MiB buffer at global concurrency 1, coalesced per snapshot, and
+incrementally scans appended bytes on later requests. This keeps unusually
+large sessions visible in the header and dock without making every historical
+session pay the line-count cost during `/api/repos` enrichment.
+
+This investigation also found the data volume at 100% capacity (about 3 GiB
+free) and repeated `ENOSPC` writes in daemon diagnostics. That is an independent
+startup/reliability risk and requires freeing disk space; session code must not
+silently reinterpret it as malformed transcript data.
 
 ### Deferred levers (do only if Lever 1 isn't enough)
 

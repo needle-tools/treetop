@@ -47,9 +47,10 @@ export const CHANGE_KINDS_INVALIDATING_REPOS: ReadonlySet<string> = new Set([
   // Titles surface as `agent.manualTitle` in the enriched repo response.
   "session_title",
   "session_title_migrate",
-  // Session copy/import creates new JSONLs and the enrichment picks them up.
+  // Session inventory mutations change which JSONLs enrichment should expose.
   "session_copied",
   "session_imported",
+  "session_archived",
 ]);
 
 export function changeKindInvalidatesRepos(kind: unknown): boolean {

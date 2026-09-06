@@ -31,6 +31,7 @@ describe("change-kind cache gating", () => {
       "session_title_migrate",
       "session_copied",
       "session_imported",
+      "session_archived",
     ]) {
       expect(changeKindInvalidatesRepos(kind)).toBe(true);
     }

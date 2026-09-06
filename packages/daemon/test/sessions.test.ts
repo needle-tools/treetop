@@ -21,6 +21,7 @@ import {
   sessionCacheStats,
   tailParseSessionFile,
   clearParseCache,
+  getSessionFileStats,
   readSessionInlineMedia,
 } from "../src/sessions";
 
@@ -295,6 +296,37 @@ describe("parseClaudeJsonl", () => {
         timestamp: "2026-05-26T12:00:00.000Z",
       },
     ]);
+  });
+});
+
+describe("getSessionFileStats", () => {
+  test("reports exact JSONL rows and bytes, including a final unterminated row", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "supergit-session-stats-"));
+    const source = join(dir, "session.jsonl");
+    const initial = '{"n":1}\n{"n":2}\n{"n":3}';
+    await writeFile(source, initial);
+
+    expect(await getSessionFileStats(source)).toEqual({
+      fileSizeBytes: Buffer.byteLength(initial),
+      lineCount: 3,
+    });
+
+    await appendFile(source, '\n{"n":4}\n');
+    expect(await getSessionFileStats(source)).toEqual({
+      fileSizeBytes: Buffer.byteLength(initial + '\n{"n":4}\n'),
+      lineCount: 4,
+    });
+  });
+
+  test("reports zero rows for an empty session file", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "supergit-session-stats-"));
+    const source = join(dir, "empty.jsonl");
+    await writeFile(source, "");
+
+    expect(await getSessionFileStats(source)).toEqual({
+      fileSizeBytes: 0,
+      lineCount: 0,
+    });
   });
 });
 

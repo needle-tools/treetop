@@ -43,6 +43,20 @@ export interface ContextChip {
   exact: boolean;
 }
 
+export function formatByteSize(bytes: number): string {
+  if (!Number.isFinite(bytes) || bytes <= 0) return "0 B";
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  let value = bytes;
+  let unit = 0;
+  while (value >= 1000 && unit < units.length - 1) {
+    value /= 1000;
+    unit++;
+  }
+  if (unit === 0) return `${Math.round(value)} B`;
+  const digits = value < 10 ? 2 : value < 100 ? 1 : 0;
+  return `${value.toFixed(digits).replace(/\.0+$/, "")} ${units[unit]}`;
+}
+
 /** Pick a context-window cap (in tokens) for the given model id. Returns
  *  undefined for unknown models so the chip can fall back to absolute-only.
  *

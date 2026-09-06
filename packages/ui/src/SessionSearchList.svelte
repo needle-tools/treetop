@@ -35,6 +35,7 @@
   } from "./sessionSearch";
   import { isLiveCodexAppSource, type SessionSurface } from "./storage";
   import { importedTooltip } from "./imported-badge";
+  import { formatByteSize } from "./context-tokens";
 
   /** Number of trailing shell commands to show in the hover dock.
    *  Matches the chat preview's "last few turns" feel without
@@ -507,7 +508,8 @@
                     : "no messages counted")}
             >
               {#if surfaceLabel}{surfaceLabel}{:else if sess.messageCount}{sess.messageCount.toLocaleString()}
-                {sess.agent === "shell" ? "cmd" : "msg"}{:else}—{/if}
+                {sess.agent === "shell" ? "cmd" : "msg"}{:else}—{/if}{#if sess.fileSizeBytes !== undefined}
+                · {formatByteSize(sess.fileSizeBytes)}{/if}
             </span>
             <span class="muted small agent-time"
               >{relTime(sess.lastActive)}</span
