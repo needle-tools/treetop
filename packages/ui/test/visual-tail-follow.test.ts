@@ -7,6 +7,7 @@ import {
   shouldFollowLiveWorkBody,
   shouldFollowVisualTail,
   shouldRememberVisualScrollMemory,
+  canRequestOlderTranscriptMessages,
   visualScrollMemoryFromMetrics,
   visualScrollTopFromMemory,
 } from "../src/visual-tail-follow";
@@ -177,6 +178,35 @@ describe("visual transcript tail following", () => {
       shouldFollowLiveWorkBody({
         parentShouldStick: true,
         bodyPaused: true,
+      }),
+    ).toBe(false);
+  });
+
+  it("allows older transcript paging whenever the loaded window has more history", () => {
+    expect(
+      canRequestOlderTranscriptMessages({
+        minMessages: 100,
+        maxMessages: 2_000,
+        loadedMessages: 100,
+        totalMessageCount: 500,
+      }),
+    ).toBe(true);
+
+    expect(
+      canRequestOlderTranscriptMessages({
+        minMessages: 2_000,
+        maxMessages: 2_000,
+        loadedMessages: 1_900,
+        totalMessageCount: 3_000,
+      }),
+    ).toBe(false);
+
+    expect(
+      canRequestOlderTranscriptMessages({
+        minMessages: 100,
+        maxMessages: 2_000,
+        loadedMessages: 500,
+        totalMessageCount: 500,
       }),
     ).toBe(false);
   });

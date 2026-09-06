@@ -100,6 +100,18 @@ export function applySessionMessagePatch(
   }
 }
 
+export function shouldStartSingleFlightPoll({
+  hasTarget,
+  idle,
+  inFlight,
+}: {
+  hasTarget: boolean;
+  idle: boolean;
+  inFlight: boolean;
+}): boolean {
+  return hasTarget && !idle && !inFlight;
+}
+
 interface MessageCursorEntry {
   index: number;
   hash: string;

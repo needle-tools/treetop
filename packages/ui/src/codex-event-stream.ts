@@ -82,8 +82,10 @@ export interface CodexAppHistoryBlock {
     | "tool_result"
     | "media"
     | "marker"
+    | "system_reminder"
     | "subagent";
   text?: string;
+  tagName?: string;
   toolName?: string;
   toolInput?: unknown;
   toolUseId?: string;
@@ -125,10 +127,7 @@ export interface CodexAppTokenUsage {
   total: number;
 }
 
-export type CodexEventStreamState =
-  | "connecting"
-  | "live"
-  | "reconnecting";
+export type CodexEventStreamState = "connecting" | "live" | "reconnecting";
 
 interface EventSourceLike {
   onopen: (() => void) | null;
@@ -190,6 +189,28 @@ export function shouldLoadCodexAppThreadHistory(opts: {
   );
 }
 
+export function shouldRunCodexAppLiveSurface(opts: {
+  visualAppSurface: boolean;
+  mode: "read" | "terminal";
+  nearViewport: boolean;
+}): boolean {
+  return opts.visualAppSurface && opts.mode === "read" && opts.nearViewport;
+}
+
+export function shouldSubscribeCodexAppLiveState(opts: {
+  visualAppSurface: boolean;
+  mode: "read" | "terminal";
+}): boolean {
+  return opts.visualAppSurface && opts.mode === "read";
+}
+
+export function shouldUseCodexAppHistorySource(opts: {
+  liveSurfaceActive: boolean;
+  transcriptSource: string | undefined;
+}): boolean {
+  return opts.liveSurfaceActive && !opts.transcriptSource;
+}
+
 export function canRequestOlderCodexAppThreadHistory(opts: {
   threadId: string | undefined;
   cwd: string | undefined;
@@ -210,12 +231,20 @@ const hubs = new Map<string, Hub>();
 const HISTORY_LIMIT = 1_000;
 let eventSourceCtorForTests: EventSourceConstructor | null = null;
 
-function daemonKey(daemonId: string | undefined): string {
-  return daemonId ?? "";
+function hubKey(
+  daemonId: string | undefined,
+  threadId: string | undefined,
+): string {
+  return `${daemonId ?? ""}\0${threadId ?? ""}`;
 }
 
-function eventSourceUrl(daemonId: string | undefined): string {
-  return apiUrl("/api/codex-app/events", daemonId);
+function eventSourceUrl(
+  daemonId: string | undefined,
+  threadId: string | undefined,
+): string {
+  if (!threadId) return apiUrl("/api/codex-app/events", daemonId);
+  const qs = new URLSearchParams({ threadId });
+  return apiUrl(`/api/codex-app/events?${qs.toString()}`, daemonId);
 }
 
 function eventSourceCtor(): EventSourceConstructor {
@@ -232,7 +261,9 @@ function setState(hub: Hub, state: CodexEventStreamState): void {
 function eventThreadId(event: CodexAppEvent): string | undefined {
   return (
     event.threadId ??
-    (typeof event.params.threadId === "string" ? event.params.threadId : undefined)
+    (typeof event.params.threadId === "string"
+      ? event.params.threadId
+      : undefined)
   );
 }
 
@@ -260,7 +291,8 @@ function parseEvent(data: unknown): CodexAppEvent | null {
     const parsed = JSON.parse(data) as CodexAppEvent;
     if (!parsed || typeof parsed !== "object") return null;
     if (typeof parsed.method !== "string") return null;
-    if (parsed.kind !== "notification" && parsed.kind !== "request") return null;
+    if (parsed.kind !== "notification" && parsed.kind !== "request")
+      return null;
     if (!parsed.params || typeof parsed.params !== "object") return null;
     if (typeof parsed.receivedAt !== "string") return null;
     return parsed;
@@ -462,7 +494,10 @@ export function codexLiveMessagesFromEvent(
   const liveGeneratedMedia = codexLiveImageGenerationMedia(event);
   if (liveGeneratedMedia.length > 0) {
     const mediaId =
-      liveToolResult?.toolUseId ?? codexEventItemId(event) ?? event.seq ?? "image";
+      liveToolResult?.toolUseId ??
+      codexEventItemId(event) ??
+      event.seq ??
+      "image";
     messages.push({
       id: `codex-media-${mediaId}`,
       role: "assistant",
@@ -516,10 +551,13 @@ export function codexAppHistoryMessagesFromTurnPage(
   if (!thread || typeof thread !== "object") return [];
   const record = thread as Record<string, unknown>;
   const turns = Array.isArray(record.turns) ? [...record.turns] : [];
-  return codexAppHistoryMessagesFromThread({
-    ...record,
-    turns: turns.reverse(),
-  }, context);
+  return codexAppHistoryMessagesFromThread(
+    {
+      ...record,
+      turns: turns.reverse(),
+    },
+    context,
+  );
 }
 
 export function mergeCodexAppHistoryMessages<
@@ -541,10 +579,9 @@ export function mergeCodexAppHistoryMessages<
     const currentMessage = currentById.get(id);
     const keepCurrent =
       currentMessage &&
-      messagePayloadWeight(currentMessage) >= messagePayloadWeight(historyMessage);
-    merged.push(
-      keepCurrent ? currentMessage : historyMessage,
-    );
+      messagePayloadWeight(currentMessage) >=
+        messagePayloadWeight(historyMessage);
+    merged.push(keepCurrent ? currentMessage : historyMessage);
   }
   for (const currentMessage of current) {
     if (!currentMessage.id || !seen.has(currentMessage.id)) {
@@ -869,7 +906,10 @@ function codexTokenUsageFromPayload(
     return lastUsage;
   }
   if (!totalUsage) return undefined;
-  const delta = codexTokenUsageDelta(totalUsage, context.previousTotalTokenUsage);
+  const delta = codexTokenUsageDelta(
+    totalUsage,
+    context.previousTotalTokenUsage,
+  );
   context.previousTotalTokenUsage = totalUsage;
   return codexTokenUsageHasContent(delta) ? delta : undefined;
 }
@@ -1043,8 +1083,7 @@ function codexCommandExecutionResultText(
   if (!completed && exitCode === undefined && durationMs === undefined) {
     return output;
   }
-  const seconds =
-    durationMs !== undefined ? Math.max(0, durationMs / 1000) : 0;
+  const seconds = durationMs !== undefined ? Math.max(0, durationMs / 1000) : 0;
   return `Exit code: ${exitCode ?? 0}\nWall time: ${seconds.toFixed(4)} seconds\nOutput:\n${output ?? ""}`;
 }
 
@@ -1091,11 +1130,14 @@ function codexSubagentBlockFromToolUse(
   input: unknown,
 ): Partial<CodexAppHistoryBlock> {
   if (tool !== "spawn_agent" && tool !== "wait_agent") return {};
-  const record = input && typeof input === "object"
-    ? (input as Record<string, unknown>)
-    : {};
+  const record =
+    input && typeof input === "object"
+      ? (input as Record<string, unknown>)
+      : {};
   const targets = Array.isArray(record.targets)
-    ? record.targets.filter((target): target is string => typeof target === "string")
+    ? record.targets.filter(
+        (target): target is string => typeof target === "string",
+      )
     : [];
   return definedHistoryFields({
     subagentAction: tool === "spawn_agent" ? "spawn" : "wait",
@@ -1150,10 +1192,14 @@ function codexSubagentBlockFromToolOutput(
   });
 }
 
-function codexSubagentNotificationBlock(text: string): CodexAppHistoryBlock | null {
+function codexSubagentNotificationBlock(
+  text: string,
+): CodexAppHistoryBlock | null {
   const match = text
     .trim()
-    .match(/^<subagent_notification>\s*([\s\S]*?)\s*<\/subagent_notification>$/);
+    .match(
+      /^<subagent_notification>\s*([\s\S]*?)\s*<\/subagent_notification>$/,
+    );
   if (!match) return null;
   let parsed: unknown;
   try {
@@ -1206,9 +1252,7 @@ function definedHistoryFields(
   return out;
 }
 
-function codexGenericToolResultPayload(
-  item: Record<string, unknown>,
-): unknown {
+function codexGenericToolResultPayload(item: Record<string, unknown>): unknown {
   return item.result ?? item.output ?? item.contentItems ?? item.error;
 }
 
@@ -1289,9 +1333,7 @@ function codexMediaTitleFromPath(path: string): string {
   return path.split(/[\\/]/).filter(Boolean).at(-1) ?? path;
 }
 
-function codexViewImageMediaBlock(
-  input: unknown,
-): CodexAppHistoryBlock | null {
+function codexViewImageMediaBlock(input: unknown): CodexAppHistoryBlock | null {
   if (!input || typeof input !== "object") return null;
   const record = input as Record<string, unknown>;
   const path = stringField(record, "path");
@@ -1393,7 +1435,11 @@ function codexMediaBlockFromContent(
     stringField(container, "title") ??
     stringField(container, "name") ??
     stringField(container, "filename") ??
-    (kind === "image" ? "Image" : path ? codexMediaTitleFromPath(path) : "Artifact");
+    (kind === "image"
+      ? "Image"
+      : path
+        ? codexMediaTitleFromPath(path)
+        : "Artifact");
   const alt =
     stringField(raw, "alt") ??
     stringField(raw, "alt_text") ??
@@ -1558,7 +1604,10 @@ function parseCodexToolScriptInvocation(
   return { name, input: input ?? trimmedArgs };
 }
 
-function balancedCallArgument(source: string, openParen: number): string | undefined {
+function balancedCallArgument(
+  source: string,
+  openParen: number,
+): string | undefined {
   if (openParen < 0 || source[openParen] !== "(") return undefined;
   let depth = 0;
   let quote: '"' | "'" | "`" | undefined;
@@ -1591,7 +1640,10 @@ function balancedCallArgument(source: string, openParen: number): string | undef
   return undefined;
 }
 
-function stringVariableValue(source: string, variable: string): string | undefined {
+function stringVariableValue(
+  source: string,
+  variable: string,
+): string | undefined {
   const match = new RegExp(
     `(?:const|let|var)\\s+${escapeRegExp(variable)}\\s*=\\s*(\"(?:\\\\.|[^\"\\\\])*\")\\s*;`,
     "s",
@@ -1612,10 +1664,7 @@ function parseCodexToolScriptObject(source: string): unknown {
     // keys. Normalize that concrete transport shape without executing it.
   }
   if (!source.startsWith("{") && !source.startsWith("[")) return undefined;
-  const jsonish = source.replace(
-    /([{,]\s*)([A-Za-z_$][\w$]*)\s*:/g,
-    '$1"$2":',
-  );
+  const jsonish = source.replace(/([{,]\s*)([A-Za-z_$][\w$]*)\s*:/g, '$1"$2":');
   try {
     return JSON.parse(jsonish);
   } catch {
@@ -1707,11 +1756,11 @@ export function codexEventItemId(event: CodexAppEvent): string | undefined {
     ? event.params.itemId
     : typeof event.params.callId === "string"
       ? event.params.callId
-    : typeof item?.id === "string"
-      ? item.id
-    : typeof item?.call_id === "string"
-      ? item.call_id
-    : event.turnId;
+      : typeof item?.id === "string"
+        ? item.id
+        : typeof item?.call_id === "string"
+          ? item.call_id
+          : event.turnId;
 }
 
 export function codexToolInputQuality(input: unknown): number {
@@ -1903,8 +1952,9 @@ function cleanCodexToolInput(
 
 function createHub(
   daemonId: string | undefined,
+  threadId: string | undefined,
 ): Hub {
-  const es = new (eventSourceCtor())(eventSourceUrl(daemonId));
+  const es = new (eventSourceCtor())(eventSourceUrl(daemonId, threadId));
   const hub: Hub = {
     es,
     state: "connecting",
@@ -1925,10 +1975,10 @@ export function subscribeCodexEvents(
   threadId: string | undefined,
   subscriber: Subscriber,
 ): () => void {
-  const key = daemonKey(daemonId);
+  const key = hubKey(daemonId, threadId);
   let hub = hubs.get(key);
   if (!hub) {
-    hub = createHub(daemonId);
+    hub = createHub(daemonId, threadId);
     hubs.set(key, hub);
   }
   const hubSubscriber: HubSubscriber = { ...subscriber, threadId };

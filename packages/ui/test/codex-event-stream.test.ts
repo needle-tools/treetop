@@ -15,6 +15,9 @@ import {
   codexEventThreadIdForSession,
   mergeCodexAppHistoryMessages,
   shouldLoadCodexAppThreadHistory,
+  shouldRunCodexAppLiveSurface,
+  shouldSubscribeCodexAppLiveState,
+  shouldUseCodexAppHistorySource,
   subscribeCodexEvents,
   type CodexAppEvent,
   type CodexEventStreamState,
@@ -84,7 +87,9 @@ describe("codex event stream hub", () => {
     });
 
     expect(FakeEventSource.instances.length).toBe(1);
-    expect(FakeEventSource.instances[0]?.url).toBe("/api/codex-app/events");
+    expect(FakeEventSource.instances[0]?.url).toBe(
+      "/api/codex-app/events?threadId=t1",
+    );
 
     FakeEventSource.instances[0]?.emit("codex", event("t1", 1));
     expect(a.map((e) => e.seq)).toEqual([1]);
@@ -96,14 +101,15 @@ describe("codex event stream hub", () => {
     expect(FakeEventSource.instances[0]?.closed).toBe(true);
   });
 
-  test("keeps one shared stream per daemon, not per thread", () => {
+  test("keeps one shared stream per daemon and thread", () => {
     subscribeCodexEvents(undefined, "t1", { onEvent: () => {} });
     subscribeCodexEvents(undefined, "t2", { onEvent: () => {} });
     subscribeCodexEvents("remote-1", "t1", { onEvent: () => {} });
 
     expect(FakeEventSource.instances.map((es) => es.url)).toEqual([
-      "/api/codex-app/events",
-      "/api/daemons/remote-1/codex-app/events",
+      "/api/codex-app/events?threadId=t1",
+      "/api/codex-app/events?threadId=t2",
+      "/api/daemons/remote-1/codex-app/events?threadId=t1",
     ]);
   });
 
@@ -114,9 +120,9 @@ describe("codex event stream hub", () => {
     subscribeCodexEvents(undefined, "t1", { onEvent: (e) => a.push(e) });
     subscribeCodexEvents(undefined, "t2", { onEvent: (e) => b.push(e) });
 
-    expect(FakeEventSource.instances.length).toBe(1);
+    expect(FakeEventSource.instances.length).toBe(2);
     FakeEventSource.instances[0]?.emit("codex", event("t1", 1));
-    FakeEventSource.instances[0]?.emit("codex", event("t2", 2));
+    FakeEventSource.instances[1]?.emit("codex", event("t2", 2));
     FakeEventSource.instances[0]?.emit("codex", {
       kind: "notification",
       method: "mcpServer/startupStatus/updated",
@@ -177,6 +183,80 @@ describe("codex event stream hub", () => {
         liveCodexApp: true,
       }),
     ).toBeUndefined();
+  });
+
+  test("runs app-server live work only while the visual body is rendered", () => {
+    expect(
+      shouldRunCodexAppLiveSurface({
+        visualAppSurface: true,
+        mode: "read",
+        nearViewport: true,
+      }),
+    ).toBe(true);
+    expect(
+      shouldRunCodexAppLiveSurface({
+        visualAppSurface: true,
+        mode: "read",
+        nearViewport: false,
+      }),
+    ).toBe(false);
+    expect(
+      shouldRunCodexAppLiveSurface({
+        visualAppSurface: true,
+        mode: "terminal",
+        nearViewport: true,
+      }),
+    ).toBe(false);
+    expect(
+      shouldRunCodexAppLiveSurface({
+        visualAppSurface: false,
+        mode: "read",
+        nearViewport: true,
+      }),
+    ).toBe(false);
+  });
+
+  test("keeps app-server lifecycle subscribed even when the visual body is offscreen", () => {
+    expect(
+      shouldSubscribeCodexAppLiveState({
+        visualAppSurface: true,
+        mode: "read",
+      }),
+    ).toBe(true);
+    expect(
+      shouldRunCodexAppLiveSurface({
+        visualAppSurface: true,
+        mode: "read",
+        nearViewport: false,
+      }),
+    ).toBe(false);
+    expect(
+      shouldSubscribeCodexAppLiveState({
+        visualAppSurface: true,
+        mode: "terminal",
+      }),
+    ).toBe(false);
+  });
+
+  test("uses app-server history only until a transcript source exists", () => {
+    expect(
+      shouldUseCodexAppHistorySource({
+        liveSurfaceActive: true,
+        transcriptSource: undefined,
+      }),
+    ).toBe(true);
+    expect(
+      shouldUseCodexAppHistorySource({
+        liveSurfaceActive: true,
+        transcriptSource: "/Users/me/.codex/sessions/thread-1.jsonl",
+      }),
+    ).toBe(false);
+    expect(
+      shouldUseCodexAppHistorySource({
+        liveSurfaceActive: false,
+        transcriptSource: undefined,
+      }),
+    ).toBe(false);
   });
 
   test("loads app-server history once the visual pane has thread, cwd, and synthetic session", () => {

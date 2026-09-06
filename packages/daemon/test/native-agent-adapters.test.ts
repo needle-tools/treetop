@@ -1,4 +1,6 @@
 import { describe, expect, test } from "bun:test";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   CodexAppServerAdapter,
@@ -6,6 +8,7 @@ import {
   classifyRealtimeVoiceError,
   codexAppServerCommand,
   realtimeVoiceStartParams,
+  resolveCodexBinary,
   type CodexAppServerProcess,
 } from "../src/codex-app-server";
 import {
@@ -85,6 +88,32 @@ function parseWrite(writes: string[], index: number): Record<string, unknown> {
 }
 
 describe("CodexAppServerAdapter", () => {
+  test("prefers the standalone Codex CLI over the ChatGPT app bundle", () => {
+    const bundled = "/Applications/ChatGPT.app/Contents/Resources/codex";
+    expect(
+      resolveCodexBinary({
+        env: {},
+        findOnPath: () => "/Users/test/.bun/bin/codex",
+        bundledPath: bundled,
+        exists: (path) => path === bundled,
+      }),
+    ).toBe("/Users/test/.bun/bin/codex");
+  });
+
+  test("finds the Bun-installed CLI when the GUI daemon PATH only sees Homebrew", () => {
+    const bundled = "/Applications/ChatGPT.app/Contents/Resources/codex";
+    const bunCli = "/Users/test/.bun/bin/codex";
+    expect(
+      resolveCodexBinary({
+        env: {},
+        homeDir: "/Users/test",
+        findOnPath: () => "/opt/homebrew/bin/codex",
+        bundledPath: bundled,
+        exists: (path) => path === bunCli || path === bundled,
+      }),
+    ).toBe(bunCli);
+  });
+
   test("enables realtime conversations in the app-server process", () => {
     expect(codexAppServerCommand("/opt/codex")).toEqual([
       "/opt/codex",
@@ -125,6 +154,7 @@ describe("CodexAppServerAdapter", () => {
       threadId: "thr_voice",
       outputModality: "audio",
       includeStartupContext: true,
+      model: "gpt-live-1-codex",
       prompt: "Current Treetop context.",
       version: "v3",
       voice: "sol",
@@ -240,6 +270,7 @@ describe("CodexAppServerAdapter", () => {
         threadId: "thr_voice",
         outputModality: "audio",
         includeStartupContext: true,
+        model: "gpt-live-1-codex",
         prompt: "Current Treetop context: project alpha.",
         version: "v3",
         voice: "sol",
@@ -525,6 +556,57 @@ describe("CodexAppServerAdapter", () => {
     const saved = adapter.stopRecording();
     expect(saved?.frames).toHaveLength(3);
     expect(adapter.recordingSnapshot()?.frames).toEqual([]);
+  });
+
+  test("persists app-server json-rpc replay frames beyond the bounded buffer", async () => {
+    const recordingDir = mkdtempSync(join(tmpdir(), "supergit-codex-rpc-"));
+    try {
+      const fake = fakeCodexProcess();
+      const adapter = new CodexAppServerAdapter({
+        spawn: () => fake.proc,
+        recordingDir,
+        recordingFrameLimit: 2,
+      });
+
+      const models = adapter.listModels("/repo");
+      await waitFor(() => fake.writes[0], "initialize request");
+      fake.enqueue({ id: 0, result: {} });
+      await waitFor(() => fake.writes[2], "model list request");
+      fake.enqueue({
+        id: 1,
+        result: {
+          data: [{ id: "codex", model: "gpt-5.6-sol" }],
+          nextCursor: null,
+        },
+      });
+      await models;
+
+      const recording = adapter.recordingSnapshot();
+      expect(recording?.frames).toHaveLength(2);
+      expect(recording?.path?.endsWith(".jsonl")).toBe(true);
+
+      const replayRows = readFileSync(recording!.path!, "utf8")
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line) as Record<string, unknown>);
+      expect(replayRows).toHaveLength(5);
+      expect(replayRows.map((row) => row.direction)).toEqual([
+        "client",
+        "server",
+        "client",
+        "client",
+        "server",
+      ]);
+      expect(replayRows.some((row) => row.seq === 1)).toBe(true);
+      expect(replayRows.some((row) => row.seq === 5)).toBe(true);
+      expect(replayRows[3]?.message).toEqual({
+        id: 1,
+        method: "model/list",
+        params: { limit: 100 },
+      });
+    } finally {
+      rmSync(recordingDir, { recursive: true, force: true });
+    }
   });
 
   test("emits live app-server events and answers approval requests", async () => {

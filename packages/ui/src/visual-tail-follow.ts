@@ -74,6 +74,23 @@ export function shouldFollowLiveWorkBody(opts: {
   return opts.parentShouldStick && opts.bodyPaused !== true;
 }
 
+export function canRequestOlderTranscriptMessages(opts: {
+  minMessages: number;
+  maxMessages: number;
+  loadedMessages: number;
+  totalMessageCount?: number;
+}): boolean {
+  if (opts.minMessages >= opts.maxMessages) return false;
+  if (
+    opts.totalMessageCount !== undefined &&
+    opts.totalMessageCount > 0 &&
+    opts.loadedMessages >= opts.totalMessageCount
+  ) {
+    return false;
+  }
+  return true;
+}
+
 export function replacementVisualScrollTop(opts: {
   previous: VisualScrollMetrics;
   next: VisualScrollMetrics;
