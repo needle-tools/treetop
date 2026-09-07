@@ -274,6 +274,9 @@
   export let totalMessageCount: number | undefined = undefined;
   /** Current transcript byte size from the daemon's cheap agent-file stat. */
   export let fileSizeBytes: number | undefined = undefined;
+  /** Exact row count supplied by a non-daemon source such as a locally
+   * dropped Replay Lab file. */
+  export let fileLineCount: number | undefined = undefined;
   /** Estimated context size, sourced from /api/repos' agent metadata.
    *  For Claude this is exact (last assistant turn's `usage.input +
    *  cache_read + cache_creation`); for Codex it's a chars/4 estimate.
@@ -297,6 +300,9 @@
    * app-server history for the same thread. */
   export let transcriptSessionOverride: NormalizedSession | undefined =
     undefined;
+  /** Render a supplied transcript without daemon-backed controls or reads.
+   * Used by Replay Lab when it is hosted as a static file-drop page. */
+  export let renderOnly: boolean = false;
   /** When set, skip spawning a new PTY and reattach to this existing
    *  daemon-side terminal. Used when a transient `__new__:` column
    *  migrates to SessionView while the PTY is still alive. */
@@ -1374,6 +1380,7 @@
   }
 
   function canResumeCurrentSurface(): boolean {
+    if (renderOnly) return false;
     return transcriptSurface === "terminal"
       ? canResumeInTerminalSurface()
       : canResumeInVisualSurface();
@@ -1477,6 +1484,7 @@
    *  popover, click-outside handling, and "Copied to clipboard" flash
    *  for `kind: "copy"` items. */
   $: menuItems = ((): SessionMenuItem[] => {
+    if (renderOnly) return extraMenuItems;
     const sid = effectiveSessionId;
     const claudeItems: SessionMenuItem[] =
       agent === "claude"
@@ -2373,8 +2381,9 @@
   $: shouldPollTranscript =
     sessionMessageSource.kind === "transcript" && !transcriptSessionOverride;
   $: {
-    const statsSource =
-      sessionMessageSource.kind === "transcript"
+    const statsSource = renderOnly
+      ? ""
+      : sessionMessageSource.kind === "transcript"
         ? sessionMessageSource.source
         : sessionFileSource;
     const key = visibleSessionRequestKey(
@@ -5254,6 +5263,7 @@
       source={titleStorageSource}
       {manualTitle}
       aiTitle={summaryTitle}
+      titleEditable={!renderOnly}
       {mode}
       canResume={canResumeCurrentSurface()}
       canEnd={mode === "read"
@@ -5267,7 +5277,7 @@
         : codexVisualAppSurface && codexRunning}
       loadedMessageCount={session?.messages.length}
       {totalMessageCount}
-      lineCount={sessionLineCount}
+      lineCount={sessionLineCount ?? fileLineCount}
       fileSizeBytes={measuredFileSizeBytes ?? fileSizeBytes}
       {contextTokens}
       {contextTokensExact}
