@@ -24,6 +24,9 @@
   /** Compact = ShellView's smaller, lighter variant; default = the bold
    *  inline-title variant SessionView / NewSessionCol use. */
   export let compact: boolean = false;
+  /** Static/read-only consumers can retain the production title treatment
+   * without exposing a save action that requires the daemon. */
+  export let editable: boolean = true;
   /** Optional extra line appended to the rest-state hover tooltip after
    *  "Click to rename · <name>". Used by SessionView to surface the
    *  cached Ollama summary, so the user can glance the session's gist
@@ -43,6 +46,7 @@
   $: current = value ?? "";
 
   function startEdit() {
+    if (!editable) return;
     draft = current;
     editing = true;
     onEditingChange(true);
@@ -122,9 +126,11 @@
     class="manual-title"
     class:compact
     class:placeholder={!current}
-    title={(current ? `Click to rename · ${current}` : placeholder) +
-      (extraTooltip ? `\n${extraTooltip}` : "")}
+    title={(editable && current
+      ? `Click to rename · ${current}`
+      : current || placeholder) + (extraTooltip ? `\n${extraTooltip}` : "")}
     on:click={startEdit}
+    disabled={!editable}
   >
     {current || placeholder}
   </button>
@@ -155,6 +161,12 @@
   }
   .manual-title:hover {
     background: var(--surface-3);
+  }
+  .manual-title:disabled {
+    cursor: default;
+  }
+  .manual-title:disabled:hover {
+    background: transparent;
   }
   .manual-title.placeholder {
     color: var(--text-faint);

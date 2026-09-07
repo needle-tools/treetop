@@ -14,6 +14,8 @@
     formatReplayCost,
     formatReplayDuration,
     formatReplayTokenCount,
+    codexReplayMessagesUntil,
+    parseCodexReplayBlobAsync,
     parseCodexReplaySessionFixture,
     summarizeCodexReplaySessions,
     summarizeCodexReplayPricingUsage,
@@ -38,6 +40,7 @@
   let sessions: ReplaySessionIndexEntry[] = [];
   let recordingsLoading = false;
   let recordingsError = "";
+  let daemonAvailable: boolean | undefined;
   let selectedThreadId = "";
   let sessionFilter: CodexReplaySessionFilter = "all";
   let sessionQuery = "";
@@ -46,10 +49,17 @@
   let analysisCollapsed = false;
   let analysisMessages: readonly CodexReplayMessage[] = [];
   let modelsDevPricing: ModelsDevPricingSnapshot | undefined;
+  let fileInput: HTMLInputElement | null = null;
+  let localFile = false;
+  let localFileSize: number | undefined;
+  let localLineCount: number | undefined;
+  let localWarnings: string[] = [];
+  let dragActive = false;
 
   $: stepCount = transport?.stepCount ?? 0;
-  $: replayModel =
-    [...analysisMessages].reverse().find((message) => message.model)?.model;
+  $: replayModel = [...analysisMessages]
+    .reverse()
+    .find((message) => message.model)?.model;
   $: replayPricingUsage = summarizeCodexReplayPricingUsage(analysisMessages);
   $: turnAnalysis = analyzeCodexReplayTurns(analysisMessages, {
     defaultModel: replayModel,
@@ -95,8 +105,10 @@
       if (!res.ok || !body?.ok) {
         throw new Error(body?.error ?? `HTTP ${res.status}`);
       }
+      daemonAvailable = true;
       sessions = body.sessions ?? [];
     } catch (err) {
+      daemonAvailable = false;
       recordingsError = err instanceof Error ? err.message : String(err);
     } finally {
       recordingsLoading = false;
@@ -115,6 +127,10 @@
     transcriptSession = null;
     transcriptSessionOverride = undefined;
     analysisMessages = [];
+    localFile = false;
+    localFileSize = undefined;
+    localLineCount = undefined;
+    localWarnings = [];
     playing = false;
     try {
       const params = new URLSearchParams({ threadId: entry.threadId });
@@ -152,6 +168,102 @@
     }
   }
 
+  async function loadDroppedFile(file: File): Promise<void> {
+    const requestId = ++loadRequestId;
+    loading = true;
+    loadingLabel = "Reading local JSONL";
+    fileName = file.name;
+    parseError = "";
+    fixture = null;
+    transport = null;
+    transcriptSession = null;
+    transcriptSessionOverride = undefined;
+    analysisMessages = [];
+    selectedThreadId = "";
+    playing = false;
+    localFile = true;
+    localFileSize = file.size;
+    localLineCount = undefined;
+    localWarnings = [];
+    try {
+      const replay = await parseCodexReplayBlobAsync(file, {
+        onProgress: ({ parsed, total }) => {
+          if (requestId !== loadRequestId) return;
+          const percent = total ? Math.round((parsed / total) * 100) : 0;
+          loadingLabel = `Reading local JSONL · ${percent}%`;
+        },
+      });
+      if (requestId !== loadRequestId) return;
+      const messages = codexReplayMessagesUntil(replay, replay.steps.length);
+      if (!messages.length) {
+        throw new Error("No displayable Codex messages found in this file");
+      }
+      const sessionId = replay.id ?? `local-${file.lastModified}-${file.size}`;
+      const cwd = replay.cwd ?? "";
+      transcriptSession = {
+        threadId: sessionId,
+        title: file.name,
+        mtimeMs: file.lastModified,
+        rpcRecordingCount: replay.mode === "rpc" ? 1 : 0,
+        rpcFrameCount: replay.mode === "rpc" ? replay.steps.length : 0,
+        hasTranscript: true,
+        transcript: {
+          path: "",
+          messageCount: messages.length,
+          cwd,
+        },
+      };
+      transcriptSessionOverride = {
+        agent: "codex",
+        cwd,
+        sessionId,
+        startedAt: replay.startedAt,
+        endedAt: [...messages].reverse().find((message) => message.timestamp)
+          ?.timestamp,
+        messages,
+      };
+      analysisMessages = messages;
+      localLineCount = replay.lineCount;
+      localWarnings = replay.warnings;
+    } catch (err) {
+      if (requestId !== loadRequestId) return;
+      parseError = err instanceof Error ? err.message : String(err);
+      transcriptSession = null;
+      transcriptSessionOverride = undefined;
+    } finally {
+      if (requestId === loadRequestId) {
+        loading = false;
+        loadingLabel = "";
+      }
+    }
+  }
+
+  function onFileInput(event: Event): void {
+    const input = event.currentTarget as HTMLInputElement;
+    const file = input.files?.[0];
+    input.value = "";
+    if (file) void loadDroppedFile(file);
+  }
+
+  function onDragOver(event: DragEvent): void {
+    if (!event.dataTransfer?.types.includes("Files")) return;
+    event.preventDefault();
+    event.dataTransfer.dropEffect = "copy";
+    dragActive = true;
+  }
+
+  function onDragLeave(event: DragEvent): void {
+    if (event.currentTarget !== event.target) return;
+    dragActive = false;
+  }
+
+  function onDrop(event: DragEvent): void {
+    event.preventDefault();
+    dragActive = false;
+    const file = event.dataTransfer?.files[0];
+    if (file) void loadDroppedFile(file);
+  }
+
   function clearReplay(): void {
     loadRequestId += 1;
     fixture = null;
@@ -167,6 +279,10 @@
     selectedThreadId = "";
     loading = false;
     loadingLabel = "";
+    localFile = false;
+    localFileSize = undefined;
+    localLineCount = undefined;
+    localWarnings = [];
   }
 
   function togglePlay(): void {
@@ -258,16 +374,44 @@
   }
 </script>
 
-<section class="replay-lab">
+<div
+  class="replay-lab"
+  class:drag-active={dragActive}
+  role="region"
+  aria-label="Codex Replay Lab"
+  on:dragover={onDragOver}
+  on:dragleave={onDragLeave}
+  on:drop={onDrop}
+>
   <header class="replay-lab-header">
     <div>
       <h1>Codex App Replay Lab</h1>
       <p>
-        Recorded app-server traffic rendered by Treetop's production session
-        component.
+        Drop a Codex JSONL file locally, or inspect an available recorded
+        session.
       </p>
     </div>
     <div class="replay-actions">
+      {#if localWarnings.length}
+        <span class="replay-warning" title={localWarnings.join("\n")}
+          >{localWarnings.length} parse
+          {localWarnings.length === 1 ? "warning" : "warnings"}</span
+        >
+      {/if}
+      <input
+        bind:this={fileInput}
+        class="replay-file-input"
+        type="file"
+        accept=".jsonl,.json,application/json,application/x-ndjson"
+        on:change={onFileInput}
+      />
+      <button
+        type="button"
+        class="replay-open"
+        on:click={() => fileInput?.click()}
+      >
+        Open JSONL
+      </button>
       <button
         type="button"
         class="replay-clear"
@@ -351,7 +495,11 @@
       {#if recordingsLoading}
         <span class="replay-browser-muted">Loading sessions...</span>
       {:else if recordingsError}
-        <span class="replay-browser-error">{recordingsError}</span>
+        <span
+          class:replay-browser-error={daemonAvailable !== false}
+          class:replay-browser-muted={daemonAvailable === false}
+          >Drop a JSONL file to begin.</span
+        >
       {:else if !sessions.length}
         <span class="replay-browser-muted">No replay sessions found.</span>
       {:else if !visibleSessions.length}
@@ -407,16 +555,21 @@
               {#key transcriptSession.threadId}
                 <SessionView
                   agent="codex"
-                  source={transcriptSession.transcript.path}
+                  source={localFile ? "" : transcriptSession.transcript.path}
                   resumeSessionId={transcriptSession.threadId}
                   wtPath={transcriptSession.transcript.cwd ?? ""}
                   manualTitleOverride={transcriptSession.title}
                   model={replayModel}
                   pricingUsage={replayPricingUsage}
                   pricingUsageExact={replayPricingUsage.length > 0}
+                  totalMessageCount={transcriptSession.transcript.messageCount}
+                  fileSizeBytes={localFile ? localFileSize : undefined}
+                  fileLineCount={localFile ? localLineCount : undefined}
                   {transcriptSessionOverride}
+                  renderOnly={localFile}
                   visualAppEnabled={false}
                   spawnReady={false}
+                  onClose={localFile ? clearReplay : () => {}}
                   onMessagesChange={receiveSessionMessages}
                 />
               {/key}
@@ -424,10 +577,8 @@
           </div>
         {:else if !fixture || !transport}
           <div class="replay-drop" role="region" aria-label="Replay status">
-            <strong>Select a recorded session</strong>
-            <span
-              >The selected recording will load through Treetop's SessionView.</span
-            >
+            <strong>Drop a Codex JSONL file here</strong>
+            <span>or select an available recorded session.</span>
             {#if parseError}<small>{parseError}</small>{/if}
           </div>
         {:else}
@@ -582,7 +733,7 @@
       {/if}
     </main>
   </div>
-</section>
+</div>
 
 <style>
   .replay-lab {
@@ -595,6 +746,22 @@
     overflow: hidden;
     color: var(--text, #f0f0f0);
     background: var(--bg, #151515);
+  }
+
+  .replay-lab.drag-active::after {
+    content: "Drop JSONL to inspect";
+    position: fixed;
+    z-index: 1000;
+    inset: 12px;
+    display: grid;
+    place-items: center;
+    border: 2px dashed var(--accent, #7dd3fc);
+    border-radius: 16px;
+    color: var(--text, #f0f0f0);
+    background: color-mix(in srgb, var(--bg, #151515) 88%, transparent);
+    font-size: 20px;
+    font-weight: 700;
+    pointer-events: none;
   }
 
   .replay-lab-header {
@@ -621,7 +788,13 @@
     gap: 8px;
   }
 
-  .replay-clear {
+  .replay-warning {
+    color: var(--warning, #fbbf24);
+    font-size: 12px;
+  }
+
+  .replay-clear,
+  .replay-open {
     position: relative;
     display: inline-flex;
     align-items: center;
@@ -634,8 +807,13 @@
     white-space: nowrap;
   }
 
-  .replay-clear {
+  .replay-clear,
+  .replay-open {
     font: inherit;
+  }
+
+  .replay-file-input {
+    display: none;
   }
 
   .replay-clear:disabled {
