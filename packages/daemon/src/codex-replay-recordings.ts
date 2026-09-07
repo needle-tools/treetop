@@ -5,7 +5,7 @@ import { createInterface } from "node:readline";
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import { readCodexSessionOverview, type AgentSession } from "./agents";
 import {
-  parseSessionFile,
+  tailParseSessionFile,
   type NormalizedSession,
 } from "./sessions";
 
@@ -248,7 +248,11 @@ export async function readCodexReplaySession(
       : [];
   let transcriptSession: NormalizedSession | undefined;
   for (const part of transcriptParts) {
-    const parsed = await parseSessionFile("codex", part.path);
+    // Replay Lab must remain safe for real-world transcripts, which can be
+    // multiple gigabytes. The production session surface is tail-bounded too;
+    // feeding it a full parse here only inflated the daemon until the dev
+    // proxy observed a socket hang-up. Small files are still read in full.
+    const parsed = await tailParseSessionFile("codex", part.path);
     if (!transcriptSession) {
       transcriptSession = parsed;
     } else {
