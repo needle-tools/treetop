@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import {
+  chmodSync,
   existsSync,
   mkdtempSync,
   readFileSync,
@@ -223,6 +224,36 @@ describe("CodexAppServerAdapter", () => {
       model: "gpt-5.5",
     });
     expect(fake.killed).toEqual([]);
+  });
+
+  test("restarts a silent Codex app-server after an RPC timeout", async () => {
+    const first = fakeCodexProcess();
+    const second = fakeCodexProcess();
+    const processes = [first, second];
+    let spawnCount = 0;
+    const adapter = new CodexAppServerAdapter({
+      requestTimeoutMs: 5,
+      spawn: () => processes[spawnCount++]!.proc,
+    });
+
+    const stalled = adapter.listModels("/repo");
+    await waitFor(() => first.writes[0], "first initialize request");
+    first.enqueue({ id: 0, result: {} });
+    await waitFor(() => first.writes[2], "first model list request");
+
+    await expect(stalled).rejects.toThrow(
+      "codex app-server model/list timed out after 5ms",
+    );
+    expect(first.killed).toEqual(["SIGTERM"]);
+
+    const recovered = adapter.listModels("/repo");
+    await waitFor(() => second.writes[0], "replacement initialize request");
+    second.enqueue({ id: 0, result: {} });
+    await waitFor(() => second.writes[2], "replacement model list request");
+    second.enqueue({ id: 1, result: { data: [], nextCursor: null } });
+
+    await expect(recovered).resolves.toEqual([]);
+    expect(spawnCount).toBe(2);
   });
 
   test("starts and stops an ephemeral global realtime voice thread over WebRTC", async () => {
@@ -616,6 +647,32 @@ describe("CodexAppServerAdapter", () => {
         method: "model/list",
         params: { limit: 100 },
       });
+    } finally {
+      rmSync(recordingDir, { recursive: true, force: true });
+    }
+  });
+
+  test("keeps the RPC stream alive when recording disk writes fail", async () => {
+    const recordingDir = mkdtempSync(join(tmpdir(), "treetop-codex-rpc-"));
+    try {
+      const fake = fakeCodexProcess();
+      const adapter = new CodexAppServerAdapter({
+        spawn: () => fake.proc,
+        recordingDir,
+      });
+      const recordingPath = adapter.recordingSnapshot()!.path!;
+      chmodSync(recordingPath, 0o444);
+
+      const models = adapter.listModels("/repo");
+      await waitFor(() => fake.writes[0], "initialize after recording failure");
+      fake.enqueue({ id: 0, result: {} });
+      await waitFor(() => fake.writes[2], "model list after recording failure");
+      fake.enqueue({ id: 1, result: { data: [], nextCursor: null } });
+
+      await expect(models).resolves.toEqual([]);
+      expect(fake.killed).toEqual([]);
+      expect(adapter.recordingSnapshot()?.path).toBeUndefined();
+      expect(adapter.recordingSnapshot()?.frames.length).toBeGreaterThan(0);
     } finally {
       rmSync(recordingDir, { recursive: true, force: true });
     }
