@@ -378,6 +378,61 @@ describe("Codex replay recording discovery", () => {
     });
   });
 
+  test("bounds transcript parsing for very large replay sessions", async () => {
+    await withTempDir(async (dir) => {
+      const recordingDir = join(dir, "recordings");
+      const sessionsRoot = join(dir, "sessions");
+      await mkdir(recordingDir, { recursive: true });
+      await mkdir(sessionsRoot, { recursive: true });
+      const threadId = "01a0779b-7a3d-7cc0-a821-2a20c5c7bb8b";
+      const source = join(sessionsRoot, `rollout-${threadId}.jsonl`);
+      const message = (text: string) =>
+        JSON.stringify({
+          type: "response_item",
+          payload: {
+            type: "message",
+            role: "user",
+            content: [{ type: "input_text", text }],
+          },
+        });
+      await writeFile(
+        source,
+        [
+          JSON.stringify({
+            timestamp: "2026-09-06T16:44:33Z",
+            type: "session_meta",
+            payload: { id: threadId, cwd: "/repo" },
+          }),
+          message("outside bounded tail"),
+          JSON.stringify({ type: "ignored", payload: "x".repeat(9 << 20) }),
+          message("inside bounded tail"),
+        ].join("\n"),
+      );
+
+      const payload = await readCodexReplaySession({
+        recordingDir,
+        sessionsRoot,
+        threadId,
+        codexSessions: [
+          {
+            agent: "codex",
+            cwd: "/repo",
+            lastActive: "2026-09-06T22:03:00Z",
+            sessionId: threadId,
+            source,
+          },
+        ],
+      });
+
+      expect(payload.transcriptSession?.cwd).toBe("/repo");
+      expect(
+        payload.transcriptSession?.messages.map(
+          (entry) => entry.blocks[0]?.text,
+        ),
+      ).toEqual(["inside bounded tail"]);
+    });
+  });
+
   test("reads the newest complete capture for a selected session", async () => {
     await withTempDir(async (dir) => {
       const recordingDir = join(dir, "recordings");
