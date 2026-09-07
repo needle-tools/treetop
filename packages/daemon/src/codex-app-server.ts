@@ -34,6 +34,7 @@ export interface CodexClientInfo {
 export interface CodexAppServerAdapterOptions {
   spawn?: (cwd: string) => CodexAppServerProcess;
   clientInfo?: CodexClientInfo;
+  requestTimeoutMs?: number;
   autoRecord?: boolean;
   recordingFrameLimit?: number;
   recordingDir?: string;
@@ -455,6 +456,7 @@ export class CodexAppServerAdapter implements NativeAgentAdapter {
 
   private readonly spawnProc: (cwd: string) => CodexAppServerProcess;
   private readonly clientInfo: CodexClientInfo;
+  private readonly requestTimeoutMs: number;
   private proc: CodexAppServerProcess | null = null;
   private rpc: CodexAppServerRpc | null = null;
   private initializePromise: Promise<void> | null = null;
@@ -482,6 +484,8 @@ export class CodexAppServerAdapter implements NativeAgentAdapter {
       title: "supergit",
       version: "0.0.0",
     };
+    this.requestTimeoutMs =
+      opts.requestTimeoutMs ?? DEFAULT_RPC_REQUEST_TIMEOUT_MS;
     this.autoRecord = opts.autoRecord !== false;
     this.recordingFrameLimit =
       opts.recordingFrameLimit ?? DEFAULT_RECORDING_FRAME_LIMIT;
@@ -909,19 +913,25 @@ export class CodexAppServerAdapter implements NativeAgentAdapter {
     let id = `codex-app-${startedAt.replace(/[:.]/g, "-")}`;
     let path: string | undefined;
     if (dir) {
-      mkdirSync(dir, { recursive: true });
-      this.recordingDiskBytes = this.pruneRecordingFiles();
-      while (true) {
-        const suffix = this.recordingFileSeq++;
-        const candidateId = suffix === 0 ? id : `${id}-${suffix}`;
-        const candidatePath = join(dir, `${candidateId}.jsonl`);
-        if (!existsSync(candidatePath)) {
-          id = candidateId;
-          path = candidatePath;
-          break;
+      try {
+        mkdirSync(dir, { recursive: true });
+        this.recordingDiskBytes = this.pruneRecordingFiles();
+        while (true) {
+          const suffix = this.recordingFileSeq++;
+          const candidateId = suffix === 0 ? id : `${id}-${suffix}`;
+          const candidatePath = join(dir, `${candidateId}.jsonl`);
+          if (!existsSync(candidatePath)) {
+            id = candidateId;
+            path = candidatePath;
+            break;
+          }
         }
+        writeFileSync(path, "");
+      } catch (error) {
+        this.warnRecordingDiskFailure(path ?? dir, error);
+        path = undefined;
+        this.recordingDiskBytes = 0;
       }
-      writeFileSync(path, "");
     }
     this.recordingPathBytes = 0;
     this.recording = {
@@ -996,8 +1006,11 @@ export class CodexAppServerAdapter implements NativeAgentAdapter {
   private async ensureRpc(cwd: string): Promise<CodexAppServerRpc> {
     if (this.rpc && this.proc) return this.rpc;
     const proc = this.spawnProc(cwd);
-    const rpc = new CodexAppServerRpc(proc, (frame) =>
-      this.recordRpcFrame(frame),
+    const rpc = new CodexAppServerRpc(
+      proc,
+      (frame) => this.recordRpcFrame(frame),
+      this.requestTimeoutMs,
+      (error) => this.resetUnresponsiveRpc(proc, rpc, error),
     );
     this.proc = proc;
     this.rpc = rpc;
@@ -1014,6 +1027,24 @@ export class CodexAppServerAdapter implements NativeAgentAdapter {
     });
     await this.initializePromise;
     return rpc;
+  }
+
+  private resetUnresponsiveRpc(
+    proc: CodexAppServerProcess,
+    rpc: CodexAppServerRpc,
+    error: Error,
+  ): void {
+    if (this.proc !== proc || this.rpc !== rpc) return;
+    console.warn(
+      `treetop daemon: ${error.message}; restarting the unresponsive Codex app-server`,
+    );
+    this.proc = null;
+    this.rpc = null;
+    this.initializePromise = null;
+    this.loadedThreads.clear();
+    this.activeTurns.clear();
+    rpc.close(error);
+    proc.kill("SIGTERM");
   }
 
   private async initialize(rpc: CodexAppServerRpc): Promise<void> {
@@ -1092,6 +1123,8 @@ export class CodexAppServerAdapter implements NativeAgentAdapter {
       if (!this.autoRecord) return;
       this.startRecording();
     }
+    let recording = this.recording;
+    if (!recording) return;
     const makeRecordedFrame = (): CodexAppServerRecordedFrame => ({
       seq: ++this.recordingSeq,
       at: new Date().toISOString(),
@@ -1103,29 +1136,43 @@ export class CodexAppServerAdapter implements NativeAgentAdapter {
     let line = `${JSON.stringify(recorded)}\n`;
     let lineBytes = Buffer.byteLength(line);
     if (
-      this.recording.path &&
+      recording.path &&
       this.recordingPathBytes > 0 &&
       this.recordingPathBytes + lineBytes > this.recordingSegmentMaxBytes
     ) {
       this.startRecording();
+      recording = this.recording;
+      if (!recording) return;
       recorded = makeRecordedFrame();
       line = `${JSON.stringify(recorded)}\n`;
       lineBytes = Buffer.byteLength(line);
     }
-    this.recording.frames.push(recorded);
-    trim(this.recording.frames, this.recordingFrameLimit);
-    if (this.recording.path) {
-      if (lineBytes > this.recordingMaxBytes) return;
-      if (this.recordingDiskBytes + lineBytes > this.recordingMaxBytes) {
-        this.recordingDiskBytes = this.pruneRecordingFiles(
-          lineBytes,
-          this.recording.path,
-        );
+    recording.frames.push(recorded);
+    trim(recording.frames, this.recordingFrameLimit);
+    if (recording.path) {
+      try {
+        if (lineBytes > this.recordingMaxBytes) return;
+        if (this.recordingDiskBytes + lineBytes > this.recordingMaxBytes) {
+          this.recordingDiskBytes = this.pruneRecordingFiles(
+            lineBytes,
+            recording.path,
+          );
+        }
+        appendFileSync(recording.path, line);
+        this.recordingPathBytes += lineBytes;
+        this.recordingDiskBytes += lineBytes;
+      } catch (error) {
+        this.warnRecordingDiskFailure(recording.path, error);
+        recording.path = undefined;
       }
-      appendFileSync(this.recording.path!, line);
-      this.recordingPathBytes += lineBytes;
-      this.recordingDiskBytes += lineBytes;
     }
+  }
+
+  private warnRecordingDiskFailure(path: string, error: unknown): void {
+    const message = error instanceof Error ? error.message : String(error);
+    console.warn(
+      `treetop daemon: Codex app-server recording disabled after disk write failed path=${path} — ${message}`,
+    );
   }
 
   private pruneRecordingFiles(
@@ -1316,11 +1363,13 @@ export class CodexAppServerRpc {
     reject(err: Error): void;
   }[] = [];
   private closed = false;
+  private serverFrameCount = 0;
 
   constructor(
     private readonly proc: CodexAppServerProcess,
     private readonly recorder?: CodexAppServerRpcRecorder,
     private readonly requestTimeoutMs = DEFAULT_RPC_REQUEST_TIMEOUT_MS,
+    private readonly onUnresponsive?: (error: Error) => void,
   ) {
     void this.pump();
     void proc.exited.then(
@@ -1340,14 +1389,17 @@ export class CodexAppServerRpc {
     if (this.closed)
       return Promise.reject(new Error("codex app-server closed"));
     const id = this.nextId++;
+    const serverFrameCountAtStart = this.serverFrameCount;
     const promise = new Promise<JsonObject>((resolve, reject) => {
       const timer = setTimeout(() => {
         if (!this.pending.delete(id)) return;
-        reject(
-          new Error(
-            `codex app-server ${method} timed out after ${this.requestTimeoutMs}ms`,
-          ),
+        const error = new Error(
+          `codex app-server ${method} timed out after ${this.requestTimeoutMs}ms`,
         );
+        reject(error);
+        if (this.serverFrameCount === serverFrameCountAtStart) {
+          this.onUnresponsive?.(error);
+        }
       }, this.requestTimeoutMs);
       this.pending.set(id, { resolve, reject, timer });
     });
@@ -1383,8 +1435,10 @@ export class CodexAppServerRpc {
     });
   }
 
-  close(): void {
+  close(error = new Error("codex app-server closed")): void {
+    if (this.closed) return;
     this.closed = true;
+    this.rejectAll(error);
   }
 
   private write(message: JsonObject): void {
@@ -1406,7 +1460,10 @@ export class CodexAppServerRpc {
         while ((idx = buffered.indexOf("\n")) >= 0) {
           const line = buffered.slice(0, idx).trim();
           buffered = buffered.slice(idx + 1);
-          if (line) this.handleLine(line);
+          if (line) {
+            this.serverFrameCount += 1;
+            this.handleLine(line);
+          }
         }
       }
     } catch (e) {
