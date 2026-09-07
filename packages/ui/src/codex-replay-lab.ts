@@ -47,7 +47,10 @@ export type ReplayStep =
 export interface ParsedCodexReplay {
   mode: "rpc" | "transcript";
   id?: string;
+  cwd?: string;
   startedAt?: string;
+  lineCount?: number;
+  fileSizeBytes?: number;
   steps: ReplayStep[];
   warnings: string[];
 }
@@ -97,6 +100,12 @@ const LOW_THROUGHPUT_TOKENS_PER_SECOND = 5;
 const LOW_THROUGHPUT_MIN_OUTPUT_TOKENS = 20;
 const LOW_THROUGHPUT_MIN_DURATION_MS = 10_000;
 const LONG_TOOL_FREE_TURN_MS = 120_000;
+const REPLAY_TEXT_LIMIT = 16 * 1024;
+const REPLAY_TEXT_CLIP_SUFFIX = "… [truncated by Treetop]";
+const REPLAY_STREAM_YIELD_BYTES = 4 * 1024 * 1024;
+const REPLAY_INLINE_MEDIA_LIMIT = 2 * 1024 * 1024;
+const REPLAY_INLINE_MEDIA_TOTAL_LIMIT = 32 * 1024 * 1024;
+const REPLAY_JSONL_ROW_LIMIT = 16 * 1024 * 1024;
 
 export type CodexReplayTurnIssueKind =
   | "high-tool-usage"
@@ -570,6 +579,216 @@ export async function parseCodexReplayTextAsync(
   return parseCodexReplayRoot(records, warnings);
 }
 
+/** Parse a browser-dropped JSONL file without first materializing the entire
+ * file as one string. Real Codex transcripts can be gigabytes; retaining only
+ * normalized replay steps keeps raw records collectible after each line. */
+export async function parseCodexReplayBlobAsync(
+  blob: Pick<Blob, "size" | "stream">,
+  options: CodexReplayParseOptions = {},
+): Promise<ParsedCodexReplay> {
+  const warnings: string[] = [];
+  const steps: ReplayStep[] = [];
+  const toolNames = new Map<string, string>();
+  const usageContext: CodexReplayUsageContext = {};
+  const decoder = new TextDecoder();
+  const reader = blob.stream().getReader();
+  let pendingLineParts: string[] = [];
+  let pendingLineLength = 0;
+  let oversizedLinePrefix = "";
+  let discardingOversizedLine = false;
+  let bytesRead = 0;
+  let lastYieldAt = 0;
+  let lineCount = 0;
+  let mode: ParsedCodexReplay["mode"] | undefined;
+  let id: string | undefined;
+  let cwd: string | undefined;
+  let startedAt: string | undefined;
+  let retainedInlineMediaBytes = 0;
+  let inlineMediaLimitWarned = false;
+
+  const retainStep = (step: ReplayStep) => {
+    if (step.kind !== "message") {
+      steps.push(step);
+      return;
+    }
+    const blocks = step.message.blocks.filter((block) => {
+      if (block.type !== "media" || !block.url?.startsWith("data:")) {
+        return true;
+      }
+      if (
+        retainedInlineMediaBytes + block.url.length <=
+        REPLAY_INLINE_MEDIA_TOTAL_LIMIT
+      ) {
+        retainedInlineMediaBytes += block.url.length;
+        return true;
+      }
+      if (!inlineMediaLimitWarned) {
+        warnings.push("Omitted inline media after 32 MiB safety limit");
+        inlineMediaLimitWarned = true;
+      }
+      return false;
+    });
+    if (blocks.length || step.message.tokenUsage) {
+      steps.push({
+        ...step,
+        message: { ...step.message, blocks },
+      });
+    }
+  };
+
+  const ingestLine = (line: string) => {
+    lineCount += 1;
+    const clean = line.trim();
+    if (!clean) return;
+    let record: unknown;
+    try {
+      record = JSON.parse(clean);
+    } catch {
+      warnings.push(`Skipped line ${lineCount}: not JSON`);
+      return;
+    }
+    mode ??= isCodexTranscriptRecord(record) ? "transcript" : "rpc";
+    if (mode === "transcript") {
+      const row = objectRecord(record);
+      const payload = objectRecord(row?.payload);
+      if (objectString(row, "type") === "session_meta") {
+        id ??= objectString(payload, "id");
+        cwd ??= objectString(payload, "cwd");
+        startedAt ??=
+          objectString(payload, "timestamp") ?? objectString(row, "timestamp");
+        return;
+      }
+      const step = codexTranscriptStepFromRow(
+        row,
+        payload,
+        lineCount,
+        toolNames,
+        usageContext,
+        warnings,
+      );
+      if (step) retainStep(step);
+      return;
+    }
+    const identity = replayIdentityFromRecord(record);
+    id ??= identity.id;
+    cwd ??= identity.cwd;
+    startedAt ??= identity.startedAt;
+    for (const step of replayStepsFromRecord(record, lineCount, warnings)) {
+      retainStep(step);
+    }
+  };
+
+  const appendLinePart = (part: string) => {
+    if (discardingOversizedLine) return;
+    if (oversizedLinePrefix.length < 4096) {
+      oversizedLinePrefix += part.slice(0, 4096 - oversizedLinePrefix.length);
+    }
+    pendingLineLength += part.length;
+    if (pendingLineLength > REPLAY_JSONL_ROW_LIMIT) {
+      pendingLineParts = [];
+      discardingOversizedLine = true;
+      return;
+    }
+    pendingLineParts.push(part);
+  };
+
+  const finishLine = () => {
+    if (discardingOversizedLine) {
+      lineCount += 1;
+      warnings.push(`Skipped line ${lineCount}: exceeds 16 MiB safety limit`);
+      if (
+        mode === "transcript" &&
+        /"type"\s*:\s*"(?:compacted|compact_context)"/.test(
+          oversizedLinePrefix,
+        )
+      ) {
+        retainStep(
+          transcriptMessageStep(
+            lineCount,
+            undefined,
+            "Context compacted",
+            {
+              id: `codex-transcript-marker-${lineCount}`,
+              role: "system",
+              blocks: [{ type: "marker", text: "Context compacted" }],
+            },
+          ),
+        );
+      }
+    } else {
+      ingestLine(pendingLineParts.join(""));
+    }
+    pendingLineParts = [];
+    pendingLineLength = 0;
+    oversizedLinePrefix = "";
+    discardingOversizedLine = false;
+  };
+
+  try {
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      bytesRead += value.byteLength;
+      const parts = decoder.decode(value, { stream: true }).split("\n");
+      if (parts.length === 1) {
+        appendLinePart(parts[0] ?? "");
+      } else {
+        appendLinePart(parts[0] ?? "");
+        finishLine();
+        for (let index = 1; index < parts.length - 1; index += 1) {
+          appendLinePart(parts[index] ?? "");
+          finishLine();
+        }
+        appendLinePart(parts.at(-1) ?? "");
+      }
+      if (bytesRead - lastYieldAt >= REPLAY_STREAM_YIELD_BYTES) {
+        lastYieldAt = bytesRead;
+        options.onProgress?.({
+          label: `Reading ${bytesRead} / ${blob.size} bytes`,
+          parsed: bytesRead,
+          total: blob.size,
+        });
+        await nextParseFrame();
+      }
+    }
+    appendLinePart(decoder.decode());
+    if (pendingLineLength > 0 || discardingOversizedLine) finishLine();
+  } finally {
+    reader.releaseLock();
+  }
+  options.onProgress?.({
+    label: "Building transcript",
+    parsed: blob.size,
+    total: blob.size,
+  });
+  return {
+    mode: mode ?? "transcript",
+    id,
+    cwd,
+    startedAt,
+    lineCount,
+    fileSizeBytes: blob.size,
+    steps,
+    warnings,
+  };
+}
+
+function replayIdentityFromRecord(record: unknown): {
+  id?: string;
+  cwd?: string;
+  startedAt?: string;
+} {
+  const frame = replayFrameFromRecord(record);
+  const message = frame?.message ?? parseRawMessage(frame?.raw);
+  const result = objectRecord(message?.result);
+  const thread = objectRecord(result?.thread);
+  return {
+    id: objectString(thread, "id"),
+    cwd: objectString(thread, "cwd"),
+    startedAt: frame?.at,
+  };
+}
+
 export function filterCodexReplayTextForThread(
   text: string,
   threadId: string,
@@ -824,6 +1043,11 @@ function codexTranscriptStepFromRow(
   const timestamp =
     objectString(row, "timestamp") ?? objectString(payload, "timestamp");
 
+  if (rowType === "turn_context") {
+    usageContext.model = objectString(payload, "model") ?? usageContext.model;
+    return undefined;
+  }
+
   if (rowType === "compacted" || payloadType === "compact_context") {
     return transcriptMessageStep(seq, timestamp, "Context compacted", {
       id: `codex-transcript-marker-${seq}`,
@@ -840,6 +1064,7 @@ function codexTranscriptStepFromRow(
         id: `codex-transcript-token-usage-${seq}`,
         role: "assistant",
         timestamp,
+        model: usageContext.model,
         tokensUsed: tokenUsage.output,
         tokenUsage,
         blocks: [],
@@ -1030,6 +1255,7 @@ function transcriptToolInput(
     objectString(payload, "input") ??
     objectString(payload, "content");
   if (!raw) return {};
+  if (raw.length > REPLAY_TEXT_LIMIT) return clipReplayText(raw);
   try {
     return JSON.parse(raw);
   } catch {
@@ -1043,7 +1269,9 @@ function transcriptToolOutputBlocks(payload: Record<string, unknown>): {
 } {
   for (const key of ["output", "content", "text", "result"]) {
     const value = payload[key];
-    if (typeof value === "string") return { text: value, mediaBlocks: [] };
+    if (typeof value === "string") {
+      return { text: clipReplayText(value), mediaBlocks: [] };
+    }
     if (Array.isArray(value)) return transcriptOutputArrayBlocks(value);
   }
   return { text: JSON.stringify(payload), mediaBlocks: [] };
@@ -1071,7 +1299,7 @@ function transcriptOutputArrayBlocks(items: unknown[]): {
       objectString(record, "text") ?? objectString(record, "content");
     if (text) textParts.push(text);
   }
-  return { text: textParts.join("\n"), mediaBlocks };
+  return { text: clipReplayText(textParts.join("\n")), mediaBlocks };
 }
 
 function transcriptContentBlocks(content: unknown): CodexAppHistoryBlock[] {
@@ -1079,7 +1307,7 @@ function transcriptContentBlocks(content: unknown): CodexAppHistoryBlock[] {
   const blocks: CodexAppHistoryBlock[] = [];
   for (const item of items) {
     if (typeof item === "string" && item.trim()) {
-      blocks.push({ type: "text", text: item });
+      blocks.push({ type: "text", text: clipReplayText(item) });
       continue;
     }
     const record = objectRecord(item);
@@ -1092,8 +1320,8 @@ function transcriptContentBlocks(content: unknown): CodexAppHistoryBlock[] {
     if (text) {
       blocks.push(
         type === "reasoning_text"
-          ? { type: "thinking", text }
-          : { type: "text", text },
+          ? { type: "thinking", text: clipReplayText(text) }
+          : { type: "text", text: clipReplayText(text) },
       );
     }
     const media = transcriptMediaBlock(record);
@@ -1115,6 +1343,13 @@ function transcriptMediaBlock(
       ? imageUrlValue
       : objectString(objectRecord(imageUrlValue), "url");
   const url = objectString(record, "url") ?? imageUrl;
+  if (
+    !path &&
+    url?.startsWith("data:") &&
+    url.length > REPLAY_INLINE_MEDIA_LIMIT
+  ) {
+    return undefined;
+  }
   if (!path && !url) return undefined;
   return {
     type: "media",
@@ -1150,9 +1385,15 @@ function transcriptReasoningText(
     const parts = summary
       .map((item) => objectString(objectRecord(item), "text"))
       .filter((text): text is string => !!text);
-    if (parts.length) return parts.join("\n\n");
+    if (parts.length) return clipReplayText(parts.join("\n\n"));
   }
-  return objectString(payload, "text");
+  const text = objectString(payload, "text");
+  return text ? clipReplayText(text) : undefined;
+}
+
+function clipReplayText(text: string): string {
+  if (text.length <= REPLAY_TEXT_LIMIT) return text;
+  return `${text.slice(0, REPLAY_TEXT_LIMIT)}${REPLAY_TEXT_CLIP_SUFFIX}`;
 }
 
 function transcriptRole(
@@ -1217,6 +1458,7 @@ interface CodexReplayUsage {
 
 interface CodexReplayUsageContext {
   previousTotalTokenUsage?: CodexReplayUsage;
+  model?: string;
 }
 
 function codexReplayTokenUsageFromPayload(
@@ -1407,6 +1649,7 @@ function isCodexTranscriptRecord(value: unknown): boolean {
     type === "session_meta" ||
     type === "response_item" ||
     type === "event_msg" ||
+    type === "turn_context" ||
     type === "compacted"
   );
 }
