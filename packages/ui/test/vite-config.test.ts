@@ -9,7 +9,12 @@ async function resolveConfig() {
     typeof exported === "function"
       ? exported({ command: "build", mode: "production" })
       : exported;
-  return (await value) as { build?: { sourcemap?: unknown } };
+  return (await value) as {
+    build?: {
+      sourcemap?: unknown;
+      rollupOptions?: { input?: Record<string, string> };
+    };
+  };
 }
 
 describe("Vite config", () => {
@@ -27,5 +32,13 @@ describe("Vite config", () => {
     } finally {
       delete process.env.TREETOP_BUILD_SOURCEMAPS;
     }
+  });
+
+  test("emits Replay Lab as a standalone static entry page", async () => {
+    const resolved = await resolveConfig();
+    expect(resolved.build?.rollupOptions?.input).toEqual({
+      app: expect.stringContaining("/packages/ui/index.html"),
+      replayLab: expect.stringContaining("/packages/ui/replay-lab.html"),
+    });
   });
 });

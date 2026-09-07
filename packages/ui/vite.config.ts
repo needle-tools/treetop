@@ -72,5 +72,11 @@ export default defineConfig(() => ({
   },
   build: {
     sourcemap: envFlag(process.env.TREETOP_BUILD_SOURCEMAPS),
+    rollupOptions: {
+      input: {
+        app: fileURLToPath(new URL("./index.html", import.meta.url)),
+        replayLab: fileURLToPath(new URL("./replay-lab.html", import.meta.url)),
+      },
+    },
   },
 }));
