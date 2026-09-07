@@ -8,6 +8,7 @@ import {
   filterCodexReplayTextForThread,
   filterCodexReplaySessions,
   summarizeCodexReplaySessions,
+  parseCodexReplayBlobAsync,
   parseCodexReplayTextAsync,
   parseCodexReplayText,
   parseCodexReplaySessionFixture,
@@ -16,6 +17,162 @@ import {
 } from "../src/codex-replay-lab";
 
 describe("Codex replay lab parser", () => {
+  test("streams a dropped Codex JSONL blob into a local transcript", async () => {
+    const rows = [
+      JSON.stringify({
+        timestamp: "2026-09-07T10:00:00.000Z",
+        type: "session_meta",
+        payload: { id: "session-local", cwd: "/repo/local" },
+      }),
+      JSON.stringify({
+        timestamp: "2026-09-07T10:00:01.000Z",
+        type: "response_item",
+        payload: {
+          type: "message",
+          role: "user",
+          content: [{ type: "input_text", text: "Dropped locally" }],
+        },
+      }),
+      "not json",
+      JSON.stringify({
+        timestamp: "2026-09-07T10:00:02.000Z",
+        type: "response_item",
+        payload: {
+          type: "message",
+          role: "assistant",
+          content: [{ type: "output_text", text: "Rendered locally" }],
+        },
+      }),
+    ];
+    const source = new Blob([rows.join("\n")]);
+    const progress: number[] = [];
+
+    const replay = await parseCodexReplayBlobAsync(source, {
+      onProgress: (update) => progress.push(update.parsed),
+    });
+
+    expect(replay).toMatchObject({
+      mode: "transcript",
+      id: "session-local",
+      cwd: "/repo/local",
+      lineCount: 4,
+      fileSizeBytes: source.size,
+    });
+    expect(codexReplayMessagesUntil(replay, replay.steps.length)).toEqual([
+      expect.objectContaining({
+        role: "user",
+        blocks: [{ type: "text", text: "Dropped locally" }],
+      }),
+      expect.objectContaining({
+        role: "assistant",
+        blocks: [{ type: "text", text: "Rendered locally" }],
+      }),
+    ]);
+    expect(replay.warnings).toEqual(["Skipped line 3: not JSON"]);
+    expect(progress.at(-1)).toBe(source.size);
+  });
+
+  test("clips retained output from a large dropped JSONL row", async () => {
+    const source = new Blob([
+      JSON.stringify({
+        type: "session_meta",
+        payload: { id: "session-large", cwd: "/repo" },
+      }),
+      "\n",
+      JSON.stringify({
+        type: "response_item",
+        payload: {
+          type: "function_call_output",
+          call_id: "call-1",
+          output: "x".repeat(128 * 1024),
+        },
+      }),
+    ]);
+
+    const replay = await parseCodexReplayBlobAsync(source);
+    const output = codexReplayMessagesUntil(replay, replay.steps.length)[0]
+      ?.blocks[0]?.text;
+
+    expect(output?.length).toBeLessThan(20 * 1024);
+    expect(output).toEndWith("… [truncated by Treetop]");
+  });
+
+  test("attributes dropped transcript usage across turn-context model changes", async () => {
+    const usage = (input: number) =>
+      JSON.stringify({
+        type: "event_msg",
+        payload: {
+          type: "token_count",
+          info: {
+            last_token_usage: {
+              input_tokens: input,
+              cached_input_tokens: 0,
+              output_tokens: 10,
+              reasoning_output_tokens: 2,
+              total_tokens: input + 10,
+            },
+          },
+        },
+      });
+    const source = new Blob([
+      [
+        JSON.stringify({
+          type: "session_meta",
+          payload: { id: "session-models", cwd: "/repo" },
+        }),
+        JSON.stringify({
+          type: "turn_context",
+          payload: { model: "gpt-5.6-terra" },
+        }),
+        usage(100),
+        JSON.stringify({
+          type: "turn_context",
+          payload: { model: "gpt-6-astra" },
+        }),
+        usage(200),
+      ].join("\n"),
+    ]);
+
+    const replay = await parseCodexReplayBlobAsync(source);
+    const messages = codexReplayMessagesUntil(replay, replay.steps.length);
+
+    expect(
+      summarizeCodexReplayPricingUsage(messages).map((entry) => entry.model),
+    ).toEqual(["gpt-5.6-terra", "gpt-6-astra"]);
+  });
+
+  test("skips an oversized JSONL row and continues with later messages", async () => {
+    const source = new Blob([
+      JSON.stringify({
+        type: "session_meta",
+        payload: { id: "session-oversized", cwd: "/repo" },
+      }),
+      "\n",
+      JSON.stringify({ type: "ignored", payload: "x".repeat(17 << 20) }),
+      "\n",
+      JSON.stringify({
+        type: "response_item",
+        payload: {
+          type: "message",
+          role: "assistant",
+          content: [{ type: "output_text", text: "Still parsed" }],
+        },
+      }),
+    ]);
+
+    const replay = await parseCodexReplayBlobAsync(source);
+
+    expect(replay.lineCount).toBe(3);
+    expect(replay.warnings).toContain(
+      "Skipped line 2: exceeds 16 MiB safety limit",
+    );
+    expect(codexReplayMessagesUntil(replay, replay.steps.length)[0]).toEqual(
+      expect.objectContaining({
+        blocks: [{ type: "text", text: "Still parsed" }],
+      }),
+    );
+  });
+
   test("scores suspicious turn activity without blaming tool time on model throughput", () => {
     const toolBlocks = Array.from({ length: 12 }, (_, index) => ({
       type: "tool_use" as const,
