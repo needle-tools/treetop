@@ -790,6 +790,15 @@ incrementally scans appended bytes on later requests. This keeps unusually
 large sessions visible in the header and dock without making every historical
 session pay the line-count cost during `/api/repos` enrichment.
 
+Replay Lab had a separate unbounded path: its read route prepared a projected
+16 MiB transcript tail, then also called the legacy full-file parser to build
+the `SessionView` override. Opening a 1.39 GB transcript drove the debug daemon
+past 4 GB RSS and blocked unrelated startup discovery for 319 seconds; Vite's
+`/api/session/stats` socket hang-up was collateral. Replay transcript rendering
+now uses the same bounded tail parser as the production session surface. The
+exact stats scan for that file remains bounded and completed in 0.47 seconds;
+the replay read completed in 0.14 seconds after the fix.
+
 The attempted startup optimization that routed a live Codex App pane to its
 JSONL as soon as `transcriptSource` appeared was invalid. Message ownership is
 mode-exclusive: a live `__codex_app__:*` visual pane uses app-server history
