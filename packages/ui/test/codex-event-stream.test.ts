@@ -15,6 +15,7 @@ import {
   codexToolInputQuality,
   codexEventThreadIdForSession,
   codexEventVisualDelivery,
+  codexAppEventDeliveryMode,
   CODEX_LIVE_OUTPUT_LIMIT,
   codexOutputDeltaNeedsToolUse,
   mergeCodexAppHistoryMessages,
@@ -318,6 +319,28 @@ describe("codex event stream hub", () => {
         mode: "terminal",
       }),
     ).toBe(false);
+  });
+
+  test("routes offscreen app-server events to state without rebuilding transcript data", () => {
+    const ownership = {
+      liveStateActive: true,
+      subscribedThreadId: "thread-1",
+      eventThreadId: "thread-1",
+      currentThreadId: "thread-1",
+    };
+    expect(
+      codexAppEventDeliveryMode({ ...ownership, liveSurfaceActive: false }),
+    ).toBe("state-only");
+    expect(
+      codexAppEventDeliveryMode({ ...ownership, liveSurfaceActive: true }),
+    ).toBe("visual");
+    expect(
+      codexAppEventDeliveryMode({
+        ...ownership,
+        liveSurfaceActive: true,
+        eventThreadId: "thread-2",
+      }),
+    ).toBe("ignore");
   });
 
   test("keeps live visual panes app-server owned when a transcript source exists", () => {

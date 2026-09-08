@@ -320,6 +320,28 @@ export function shouldApplyCodexAppMutation(opts: {
   );
 }
 
+export type CodexAppEventDeliveryMode = "ignore" | "state-only" | "visual";
+
+export function codexAppEventDeliveryMode(opts: {
+  liveStateActive: boolean;
+  liveSurfaceActive: boolean;
+  subscribedThreadId: string;
+  eventThreadId: string | undefined;
+  currentThreadId: string | undefined;
+}): CodexAppEventDeliveryMode {
+  if (
+    !shouldApplyCodexAppMutation({
+      sourceActive: opts.liveStateActive,
+      subscribedThreadId: opts.subscribedThreadId,
+      eventThreadId: opts.eventThreadId,
+      currentThreadId: opts.currentThreadId,
+    })
+  ) {
+    return "ignore";
+  }
+  return opts.liveSurfaceActive ? "visual" : "state-only";
+}
+
 export function canRequestOlderCodexAppThreadHistory(opts: {
   threadId: string | undefined;
   cwd: string | undefined;

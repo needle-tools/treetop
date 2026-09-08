@@ -96,6 +96,7 @@
   import {
     CODEX_APP_HISTORY_TURNS_PAGE_SIZE,
     canRequestOlderCodexAppThreadHistory,
+    codexAppEventDeliveryMode,
     codexEventItemId,
     codexAppHistoryMessagesFromTurnPage,
     codexAppHistoryKey,
@@ -2074,7 +2075,7 @@
     const targetHistoryKey = codexAppHistoryKey(threadId, cwd);
     const targetStillOwned = () =>
       shouldApplyCodexAppHistoryResponse({
-        sourceActive: codexAppHistorySourceActive,
+        sourceActive: codexAppHistoryFetchActive,
         requestedThreadId: targetThreadId,
         requestedCwd: targetCwd,
         currentThreadId: effectiveSessionId,
@@ -2923,16 +2924,20 @@
         codexEventStreamState = state;
       },
       onEvent: (event) => {
-        if (
-          !shouldApplyCodexAppMutation({
-            sourceActive: codexAppLiveStateActive,
-            subscribedThreadId: threadId,
-            eventThreadId: event.threadId,
-            currentThreadId: effectiveSessionId,
-          })
-        )
-          return;
+        const deliveryMode = codexAppEventDeliveryMode({
+          liveStateActive: codexAppLiveStateActive,
+          liveSurfaceActive: codexAppLiveSurfaceActive,
+          subscribedThreadId: threadId,
+          eventThreadId: event.threadId,
+          currentThreadId: effectiveSessionId,
+        });
+        if (deliveryMode === "ignore") return;
         codexEventStreamState = "live";
+        if (deliveryMode === "state-only") {
+          applyCodexEventStateOnly(event);
+          codexAppHistoryLoadedKey = "";
+          return;
+        }
         const startedAt = performance.now();
         time("codex-event.sync", () =>
           time(codexEventTimingName(event.method), () =>
@@ -3029,7 +3034,7 @@
     if (
       !codexEventsThreadId ||
       !shouldApplyCodexAppMutation({
-        sourceActive: codexAppLiveStateActive,
+        sourceActive: codexAppLiveSurfaceActive,
         subscribedThreadId: codexEventsThreadId,
         eventThreadId: undefined,
         currentThreadId: effectiveSessionId,
@@ -3087,7 +3092,11 @@
   ): void {
     if (!delta || !session) return;
     const previous = codexPendingDeltaPatches.at(-1);
-    if (previous?.id === id && previous.type === type && previous.role === role) {
+    if (
+      previous?.id === id &&
+      previous.type === type &&
+      previous.role === role
+    ) {
       previous.delta += delta;
       previous.blockFields = { ...previous.blockFields, ...blockFields };
       previous.timestamp = new Date().toISOString();
@@ -3106,6 +3115,67 @@
         : {}),
     });
     scheduleCodexDeltaFlush();
+  }
+
+  function applyCodexEventStateOnly(event: CodexAppEvent): void {
+    if (event.kind === "request") {
+      codexRequests = [
+        ...codexRequests.filter((request) => request.id !== event.id),
+        event,
+      ];
+      awaitingInput = true;
+      return;
+    }
+    if (event.method === "turn/started") {
+      codexActiveTurnId = event.turnId ?? codexActiveTurnId;
+      sending = true;
+      sendError = "";
+      return;
+    }
+    if (event.method === "turn/status") {
+      const active = event.params?.active === true;
+      codexActiveTurnId = active
+        ? (event.turnId ??
+          (typeof event.params?.turnId === "string"
+            ? event.params.turnId
+            : codexActiveTurnId))
+        : null;
+      sending = active;
+      return;
+    }
+    if (event.method === "turn/completed") {
+      codexActiveTurnId = null;
+      sending = false;
+      awaitingInput = codexRequests.length > 0;
+      if (pendingTimer) {
+        clearTimeout(pendingTimer);
+        pendingTimer = null;
+      }
+      void drainCodexQueue();
+      return;
+    }
+    if (event.method === "serverRequest/resolved") {
+      const id = (event.params?.requestId ?? event.params?.id) as
+        | string
+        | number
+        | undefined;
+      if (id !== undefined) {
+        codexRequests = codexRequests.filter((request) => request.id !== id);
+      }
+      awaitingInput = codexRequests.length > 0;
+      return;
+    }
+    if (event.method === "error" || event.method === "warning") {
+      const error = event.params.error;
+      sendError =
+        typeof event.params.message === "string"
+          ? event.params.message
+          : error &&
+              typeof error === "object" &&
+              typeof (error as Record<string, unknown>).message === "string"
+            ? String((error as Record<string, unknown>).message)
+            : JSON.stringify(event.params);
+    }
   }
 
   function applyCodexEvent(event: CodexAppEvent): void {

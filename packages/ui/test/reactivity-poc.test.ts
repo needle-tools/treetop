@@ -6,6 +6,7 @@ import { nextCachedSessionSummaryRequest } from "../src/summary-queue";
 import { shouldCancelBackgroundSummary } from "../src/tui-auto-summary";
 import {
   CODEX_LIVE_OUTPUT_LIMIT,
+  codexAppEventDeliveryMode,
   codexEventVisualDelivery,
   codexOutputDeltaNeedsToolUse,
   shouldUseCodexAppHistorySource,
@@ -341,6 +342,66 @@ describe("svelte 5 runes — DOM-free reactivity", () => {
           .at(-1)
           ?.blocks[0]?.text?.endsWith("4622:" + "x".repeat(250) + "\n"),
       ).toBe(true);
+    } finally {
+      destroy();
+    }
+  });
+
+  test("offscreen Codex activity updates lifecycle without waking transcript work", () => {
+    const working = $.state(false);
+    const liveMessages = $.state([{ id: "request", role: "user", blocks: [] }]);
+    let lifecycleRuns = 0;
+    let transcriptRuns = 0;
+    const destroy = $.effect_root(() => {
+      $.effect(() => {
+        $.get(working);
+        lifecycleRuns += 1;
+      });
+      $.effect(() => {
+        $.get(liveMessages);
+        transcriptRuns += 1;
+      });
+    });
+
+    try {
+      $.flush();
+      expect({ lifecycleRuns, transcriptRuns }).toEqual({
+        lifecycleRuns: 1,
+        transcriptRuns: 1,
+      });
+
+      const offscreen = codexAppEventDeliveryMode({
+        liveStateActive: true,
+        liveSurfaceActive: false,
+        subscribedThreadId: "thread-1",
+        eventThreadId: "thread-1",
+        currentThreadId: "thread-1",
+      });
+      expect(offscreen).toBe("state-only");
+      $.set(working, true);
+      $.flush();
+      expect({ lifecycleRuns, transcriptRuns }).toEqual({
+        lifecycleRuns: 2,
+        transcriptRuns: 1,
+      });
+
+      const visible = codexAppEventDeliveryMode({
+        liveStateActive: true,
+        liveSurfaceActive: true,
+        subscribedThreadId: "thread-1",
+        eventThreadId: "thread-1",
+        currentThreadId: "thread-1",
+      });
+      expect(visible).toBe("visual");
+      $.set(liveMessages, [
+        ...$.get(liveMessages),
+        { id: "reply", role: "assistant", blocks: [] },
+      ]);
+      $.flush();
+      expect({ lifecycleRuns, transcriptRuns }).toEqual({
+        lifecycleRuns: 2,
+        transcriptRuns: 2,
+      });
     } finally {
       destroy();
     }
