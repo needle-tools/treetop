@@ -931,6 +931,22 @@ the frame flush, and live visual command output preserves a bounded head and
 tail (128 KiB) while the full output remains in Codex's session data. The same
 bound applies when the completed item snapshot replaces its streaming row.
 
+The 2026-09-09 recurrence was another renderer-retention variant. WebContent
+held about 49% CPU and 4.5 GB RSS while the daemon stayed near 5% CPU and
+340 MB. Browser diagnostics counted 65 session columns (more than 60
+offscreen), a 13k-element tree, sub-millisecond synchronous Codex event
+handlers, but 1.5-second p95 Svelte settles and multi-second item-completion
+settles. A long-lived active app-server thread dominated the recording.
+
+Offscreen live columns correctly retained their app-server subscription, but
+they still normalized and reassigned transcript messages for every event.
+Offscreen events now update only lifecycle state (working, requests, errors,
+queue draining), invalidate cached history, and leave transcript state alone;
+returning to the viewport reloads the app-server turn page. This keeps the box
+and subscription while gating the expensive normalization work. The existing
+2,000-message setting remains solely a progressive history-loading ceiling; it
+must not be reused to truncate live session state.
+
 ### Renderer attribution diagnostics (2026-09-04)
 
 The previous browser diagnostics had a blind spot between smooth rendering and
