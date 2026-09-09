@@ -13,6 +13,7 @@ import {
   filterCodexReplaySessions,
   filterCodexReplaySessionsByModel,
   formatReplayClock,
+  formatReplayStepPosition,
   summarizeCodexReplaySessions,
   parseCodexReplayBlobAsync,
   parseCodexReplayTextAsync,
@@ -1358,6 +1359,13 @@ Narrate this page live`,
     expect(formatReplayClock(0)).toBe("0:00");
     expect(formatReplayClock(62_000)).toBe("1:02");
     expect(formatReplayClock(3_661_000)).toBe("1:01:01");
+  });
+
+  test("formats replay step position as a separate readable status", () => {
+    expect(formatReplayStepPosition(10_783, 10_783)).toBe(
+      "10,783 / 10,783 steps",
+    );
+    expect(formatReplayStepPosition(1, 1)).toBe("1 / 1 step");
   });
 
   test("defines realtime multipliers and fixed step rates independently", () => {
