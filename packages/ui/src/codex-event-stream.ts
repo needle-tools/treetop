@@ -1,4 +1,8 @@
 import { apiUrl } from "./api";
+import {
+  canonicalCodexToolName,
+  parseCodexToolScriptInvocation,
+} from "@treetop/nicifier";
 
 export interface CodexAppEvent {
   kind: "notification" | "request";
@@ -1737,14 +1741,6 @@ function codexToolArguments(input: unknown): unknown {
   }
 }
 
-function canonicalCodexToolName(name: string): string {
-  if (name === "exec") return "exec_command";
-  if (name === "image_gen.imagegen" || name === "imagegen.imagegen") {
-    return "image_generation_call";
-  }
-  return name;
-}
-
 interface CodexWrappedToolInvocation {
   name: string;
   input: unknown;
@@ -1759,98 +1755,9 @@ function codexWrappedToolInvocation(
     return { name: canonicalName, input };
   }
   const invocation = parseCodexToolScriptInvocation(input);
-  return invocation ?? { name: canonicalName, input };
-}
-
-function parseCodexToolScriptInvocation(
-  source: string,
-): CodexWrappedToolInvocation | undefined {
-  const call = source.match(/tools\.([A-Za-z_$][\w$]*)\s*\(/);
-  if (!call?.[1] || call.index === undefined) return undefined;
-  const argsStart = source.indexOf("(", call.index);
-  const args = balancedCallArgument(source, argsStart);
-  if (!args) return undefined;
-  const rawName = call[1].replace(/__/g, ".");
-  const name = canonicalCodexToolName(rawName);
-  const trimmedArgs = args.trim();
-  const variable = trimmedArgs.match(/^[A-Za-z_$][\w$]*$/)?.[0];
-  const input =
-    variable !== undefined
-      ? stringVariableValue(source, variable)
-      : parseCodexToolScriptObject(trimmedArgs);
-  return { name, input: input ?? trimmedArgs };
-}
-
-function balancedCallArgument(
-  source: string,
-  openParen: number,
-): string | undefined {
-  if (openParen < 0 || source[openParen] !== "(") return undefined;
-  let depth = 0;
-  let quote: '"' | "'" | "`" | undefined;
-  let escaped = false;
-  for (let i = openParen; i < source.length; i++) {
-    const ch = source[i];
-    if (quote) {
-      if (escaped) {
-        escaped = false;
-      } else if (ch === "\\") {
-        escaped = true;
-      } else if (ch === quote) {
-        quote = undefined;
-      }
-      continue;
-    }
-    if (ch === '"' || ch === "'" || ch === "`") {
-      quote = ch;
-      continue;
-    }
-    if (ch === "(") {
-      depth++;
-      continue;
-    }
-    if (ch === ")") {
-      depth--;
-      if (depth === 0) return source.slice(openParen + 1, i);
-    }
-  }
-  return undefined;
-}
-
-function stringVariableValue(
-  source: string,
-  variable: string,
-): string | undefined {
-  const match = new RegExp(
-    `(?:const|let|var)\\s+${escapeRegExp(variable)}\\s*=\\s*(\"(?:\\\\.|[^\"\\\\])*\")\\s*;`,
-    "s",
-  ).exec(source);
-  if (!match?.[1]) return undefined;
-  try {
-    return JSON.parse(match[1]) as string;
-  } catch {
-    return undefined;
-  }
-}
-
-function parseCodexToolScriptObject(source: string): unknown {
-  try {
-    return JSON.parse(source);
-  } catch {
-    // Codex Desktop custom-tool scripts use JS object literals with unquoted
-    // keys. Normalize that concrete transport shape without executing it.
-  }
-  if (!source.startsWith("{") && !source.startsWith("[")) return undefined;
-  const jsonish = source.replace(/([{,]\s*)([A-Za-z_$][\w$]*)\s*:/g, '$1"$2":');
-  try {
-    return JSON.parse(jsonish);
-  } catch {
-    return undefined;
-  }
-}
-
-function escapeRegExp(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return invocation
+    ? { name: invocation.toolName, input: invocation.toolInput }
+    : { name: canonicalName, input };
 }
 
 function codexReasoningText(item: Record<string, unknown>): string | undefined {

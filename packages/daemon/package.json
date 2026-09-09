@@ -9,6 +9,7 @@
   },
   "type": "module",
   "dependencies": {
+    "@treetop/nicifier": "workspace:*",
     "bonjour-service": "^1.4.0",
     "node-pty": "^1.1.0",
     "ssh2": "^1.16.0"

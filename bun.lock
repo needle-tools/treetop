@@ -17,6 +17,7 @@
       "name": "@supergit/daemon",
       "version": "0.0.0",
       "dependencies": {
+        "@treetop/nicifier": "workspace:*",
         "bonjour-service": "^1.4.0",
         "node-pty": "^1.1.0",
         "ssh2": "^1.16.0",
@@ -175,8 +176,6 @@
 
     "@supergit/daemon": ["@supergit/daemon@workspace:packages/daemon"],
 
-    "@treetop/nicifier": ["@treetop/nicifier@workspace:packages/nicifier"],
-
     "@supergit/site": ["@supergit/site@workspace:packages/site"],
 
     "@supergit/ui": ["@supergit/ui@workspace:packages/ui"],
@@ -186,6 +185,8 @@
     "@sveltejs/vite-plugin-svelte": ["@sveltejs/vite-plugin-svelte@7.1.2", "", { "dependencies": { "deepmerge": "^4.3.1", "magic-string": "^0.30.21", "obug": "^2.1.0", "vitefu": "^1.1.2" }, "peerDependencies": { "svelte": "^5.46.4", "vite": "^8.0.0-beta.7 || ^8.0.0" } }, "sha512-DrUBA2UXRfDmUX/ZTiEopd3X40yavsJF1FX2RygcuIScHL7o5YX1fMvoYnDhjeJQC4weCOklirpNWlcb2NiSeA=="],
 
     "@tootallnate/quickjs-emscripten": ["@tootallnate/quickjs-emscripten@0.23.0", "", {}, "sha512-C5Mc6rdnsaJDjO3UpGW/CQTHtCKaYlScZTly4JIu97Jxo/odCiH0ITnDXSJPTOrEKk/ycSZ0AOgTmkDtkOsvIA=="],
+
+    "@treetop/nicifier": ["@treetop/nicifier@workspace:packages/nicifier"],
 
     "@tsconfig/svelte": ["@tsconfig/svelte@5.0.8", "", {}, "sha512-UkNnw1/oFEfecR8ypyHIQuWYdkPvHiwcQ78sh+ymIiYoF+uc5H1UBetbjyqT+vgGJ3qQN6nhucJviX6HesWtKQ=="],
 

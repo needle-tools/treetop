@@ -15,7 +15,11 @@ import {
   type VisualTranscriptItem,
 } from "./last-user-message";
 import {
+  canonicalCodexToolName,
+  codexPatchApplyResultText,
   estimateModelTokenCost,
+  parseCodexImageWrapper,
+  parseCodexToolScriptInvocation,
   type ModelsDevPricingSnapshot,
   type SessionTokenUsageSegment,
 } from "@treetop/nicifier";
@@ -794,7 +798,7 @@ export async function parseCodexReplayBlobAsync(
           objectString(payload, "timestamp") ?? objectString(row, "timestamp");
         return;
       }
-      const step = codexTranscriptStepFromRow(
+      const parsedSteps = codexTranscriptStepFromRow(
         row,
         payload,
         lineCount,
@@ -802,7 +806,7 @@ export async function parseCodexReplayBlobAsync(
         usageContext,
         warnings,
       );
-      if (step) retainStep(step);
+      for (const step of replaySteps(parsedSteps)) retainStep(step);
       return;
     }
     const identity = replayIdentityFromRecord(record);
@@ -1455,7 +1459,7 @@ function codexTranscriptFromRecords(
         objectString(payload, "timestamp") ?? objectString(row, "timestamp");
       continue;
     }
-    const step = codexTranscriptStepFromRow(
+    const parsedSteps = codexTranscriptStepFromRow(
       row,
       payload,
       index + 1,
@@ -1463,7 +1467,7 @@ function codexTranscriptFromRecords(
       usageContext,
       warnings,
     );
-    if (step) steps.push(step);
+    steps.push(...replaySteps(parsedSteps));
   }
   return { agent: "codex", mode: "transcript", id, startedAt, steps, warnings };
 }
@@ -1475,7 +1479,7 @@ function codexTranscriptStepFromRow(
   toolNames: Map<string, string>,
   usageContext: CodexReplayUsageContext,
   warnings: string[],
-): ReplayStep | undefined {
+): ReplayStep | ReplayStep[] | undefined {
   if (!row || !payload) return undefined;
   const rowType = objectString(row, "type");
   const payloadType = objectString(payload, "type");
@@ -1497,6 +1501,43 @@ function codexTranscriptStepFromRow(
   }
 
   if (rowType === "event_msg") {
+    if (payloadType === "patch_apply_end") {
+      const toolUseId = objectString(payload, "call_id");
+      const patchSteps: ReplayStep[] = [];
+      if (payload.changes && typeof payload.changes === "object") {
+        patchSteps.push(
+          transcriptMessageStep(seq, timestamp, "file change", {
+            id: `codex-transcript-patch-${seq}`,
+            role: "assistant",
+            timestamp,
+            blocks: [
+              {
+                type: "tool_use",
+                toolName: "file change",
+                toolUseId,
+                toolInput: { changes: payload.changes },
+              },
+            ],
+          }),
+        );
+      }
+      patchSteps.push(
+        transcriptMessageStep(seq, timestamp, "Patch result", {
+          id: `codex-transcript-patch-result-${seq}`,
+          role: "tool",
+          timestamp,
+          blocks: [
+            {
+              type: "tool_result",
+              toolName: toolNames.get(toolUseId ?? "") ?? "apply_patch",
+              toolUseId,
+              text: codexPatchApplyResultText(payload),
+            },
+          ],
+        }),
+      );
+      return patchSteps;
+    }
     const tokenUsage = codexReplayTokenUsageFromPayload(payload, usageContext);
     if (tokenUsage) {
       return transcriptMessageStep(seq, timestamp, "Token usage", {
@@ -1613,17 +1654,19 @@ function codexTranscriptStepFromRow(
   }
 
   if (payloadType === "reasoning") {
-    const text = transcriptReasoningText(payload);
-    if (!text) return undefined;
-    return transcriptMessageStep(seq, timestamp, "Thinking", {
-      id: `codex-transcript-thinking-${seq}`,
-      role: "assistant",
-      timestamp,
-      blocks: [{ type: "thinking", text }],
-    });
+    // The production transcript parser intentionally omits encrypted/summary
+    // reasoning records. Replay must not reinterpret them into extra steps.
+    return undefined;
   }
 
   return undefined;
+}
+
+function replaySteps(
+  value: ReplayStep | ReplayStep[] | undefined,
+): ReplayStep[] {
+  if (!value) return [];
+  return Array.isArray(value) ? value : [value];
 }
 
 function transcriptContextStep(
@@ -1666,7 +1709,7 @@ function transcriptToolInvocation(
   warnings: string[],
   seq: number,
 ): { toolName: string; toolInput: unknown } {
-  const canonicalToolName = canonicalReplayToolName(toolName);
+  const canonicalToolName = canonicalCodexToolName(toolName);
   const input = transcriptToolInput(payload, warnings, seq);
   if (canonicalToolName !== "exec_command" || typeof input !== "string") {
     return { toolName: canonicalToolName, toolInput: input };
@@ -1744,6 +1787,9 @@ function transcriptOutputArrayBlocks(items: unknown[]): {
 function transcriptContentBlocks(content: unknown): CodexAppHistoryBlock[] {
   const items = Array.isArray(content) ? content : [content];
   const blocks: CodexAppHistoryBlock[] = [];
+  let pendingImageWrapper:
+    | ReturnType<typeof parseCodexImageWrapper>
+    | undefined;
   for (const item of items) {
     if (typeof item === "string" && item.trim()) {
       blocks.push({ type: "text", text: clipReplayText(item) });
@@ -1757,6 +1803,15 @@ function transcriptContentBlocks(content: unknown): CodexAppHistoryBlock[] {
       objectString(record, "input_text") ??
       objectString(record, "output_text");
     if (text) {
+      const wrapper = parseCodexImageWrapper(text);
+      if (wrapper) {
+        pendingImageWrapper = wrapper;
+        continue;
+      }
+      if (text.trim() === "</image>") {
+        pendingImageWrapper = undefined;
+        continue;
+      }
       blocks.push(
         type === "reasoning_text"
           ? { type: "thinking", text: clipReplayText(text) }
@@ -1764,7 +1819,15 @@ function transcriptContentBlocks(content: unknown): CodexAppHistoryBlock[] {
       );
     }
     const media = transcriptMediaBlock(record);
-    if (media) blocks.push(media);
+    if (media) {
+      if (pendingImageWrapper) {
+        media.path = pendingImageWrapper.path;
+        media.title = pendingImageWrapper.label;
+        media.alt = pendingImageWrapper.label;
+        pendingImageWrapper = undefined;
+      }
+      blocks.push(media);
+    }
   }
   return blocks;
 }
@@ -1814,20 +1877,6 @@ function transcriptVisibleUserBlocks(
     if (text) visible.push({ ...block, text });
   }
   return visible;
-}
-
-function transcriptReasoningText(
-  payload: Record<string, unknown>,
-): string | undefined {
-  const summary = payload.summary;
-  if (Array.isArray(summary)) {
-    const parts = summary
-      .map((item) => objectString(objectRecord(item), "text"))
-      .filter((text): text is string => !!text);
-    if (parts.length) return clipReplayText(parts.join("\n\n"));
-  }
-  const text = objectString(payload, "text");
-  return text ? clipReplayText(text) : undefined;
 }
 
 function clipReplayText(text: string): string {
@@ -1999,85 +2048,6 @@ function finiteCodexNumber(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value)
     ? Math.max(0, value)
     : undefined;
-}
-
-function canonicalReplayToolName(name: string): string {
-  if (name === "exec") return "exec_command";
-  if (name === "image_gen.imagegen" || name === "imagegen.imagegen") {
-    return "image_generation_call";
-  }
-  return name;
-}
-
-function parseCodexToolScriptInvocation(
-  source: string,
-): { toolName: string; toolInput: unknown } | undefined {
-  const call = source.match(/tools\.([A-Za-z_$][\w$]*)\s*\(/);
-  if (!call?.[1] || call.index === undefined) return undefined;
-  const argsStart = source.indexOf("(", call.index);
-  const args = balancedCallArgument(source, argsStart);
-  if (!args) return undefined;
-  const rawName = call[1].replace(/__/g, ".");
-  const toolName = canonicalReplayToolName(rawName);
-  const trimmedArgs = args.trim();
-  const toolInput = parseCodexToolScriptObject(trimmedArgs) ?? trimmedArgs;
-  return { toolName, toolInput };
-}
-
-function balancedCallArgument(
-  source: string,
-  openParen: number,
-): string | undefined {
-  if (openParen < 0 || source[openParen] !== "(") return undefined;
-  let depth = 0;
-  let quote: '"' | "'" | "`" | undefined;
-  let escaped = false;
-  for (let i = openParen; i < source.length; i++) {
-    const ch = source[i];
-    if (quote) {
-      if (escaped) {
-        escaped = false;
-        continue;
-      }
-      if (ch === "\\") {
-        escaped = true;
-        continue;
-      }
-      if (ch === quote) quote = undefined;
-      continue;
-    }
-    if (ch === '"' || ch === "'" || ch === "`") {
-      quote = ch;
-      continue;
-    }
-    if (ch === "(") {
-      depth++;
-      continue;
-    }
-    if (ch !== ")") continue;
-    depth--;
-    if (depth === 0) return source.slice(openParen + 1, i);
-  }
-  return undefined;
-}
-
-function parseCodexToolScriptObject(source: string): unknown {
-  const trimmed = source.trim();
-  if (!trimmed) return undefined;
-  try {
-    return JSON.parse(trimmed);
-  } catch {
-    // Tool wrappers often contain JavaScript object literals with quoted keys.
-  }
-  if (!trimmed.startsWith("{") || !trimmed.endsWith("}")) return undefined;
-  const normalized = trimmed
-    .replace(/([{,]\s*)([A-Za-z_$][\w$]*)\s*:/g, '$1"$2":')
-    .replace(/'/g, '"');
-  try {
-    return JSON.parse(normalized);
-  } catch {
-    return undefined;
-  }
 }
 
 function isCodexTranscriptRecord(value: unknown): boolean {
