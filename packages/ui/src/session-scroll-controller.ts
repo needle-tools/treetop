@@ -41,7 +41,6 @@ export interface SessionScrollControllerOptions {
   historyAnchorActive?: () => boolean;
   transcriptActive?: () => boolean;
   onActiveChange?: (active: boolean) => void;
-  scrollWindowBy?: (deltaY: number) => void;
   getSelection?: () => Selection | null;
 }
 
@@ -202,13 +201,10 @@ export class SessionScrollController {
       if (event.deltaY < 0) this.options.requestOlder?.();
       return;
     }
-    if (Math.abs(event.deltaX) > Math.abs(event.deltaY)) return;
-    event.preventDefault();
-    if (this.options.scrollWindowBy) {
-      this.options.scrollWindowBy(event.deltaY);
-    } else {
-      window.scrollBy({ top: event.deltaY, behavior: "auto" });
-    }
+    // Let the transcript's native scroller own the first gesture too. Its
+    // scroll event updates pause state and requests older history. Redirecting
+    // this gesture to an outer window made the same SessionView behave
+    // differently depending on which shell mounted it.
   }
 
   onScroll(): void {
@@ -299,9 +295,7 @@ export class SessionScrollController {
     const pauseSeq = this.pauseSeq;
     const selecting = this.hasActiveSelection();
     const shouldStick =
-      (!this.paused &&
-        !selecting &&
-        this.zenLiveWorkDelta(el) !== undefined) ||
+      (!this.paused && !selecting && this.zenLiveWorkDelta(el) !== undefined) ||
       shouldFollowVisualTail({
         force,
         firstRender,
