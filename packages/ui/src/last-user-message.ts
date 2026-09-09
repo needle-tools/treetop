@@ -1753,6 +1753,7 @@ export function mergeVisualSessionMessages<
   B extends MessageBlock,
   M extends Message<B>,
 >(messages: readonly M[], overlays: readonly M[]): M[] {
+  if (overlays.length === 0) return messages as M[];
   const messagesWithIntent = withOptimisticUserMessageIntent(
     messages,
     overlays,
@@ -1782,6 +1783,40 @@ export function mergeVisualSessionMessages<
     if (anchored) merged.push(...anchored);
   });
   return withoutDuplicateOptimisticUserMessages(merged);
+}
+
+function visualTranscriptTailBlockKey(block: MessageBlock): string {
+  const media = block as MessageBlock & { path?: string; url?: string };
+  return [
+    block.type,
+    block.toolUseId ?? "",
+    block.toolName ?? "",
+    block.text?.length ?? 0,
+    media.path ?? media.url ?? "",
+    block.planItems
+      ?.map((item) => `${item.status}:${item.step.length}`)
+      .join(",") ?? "",
+  ].join(":");
+}
+
+/** A bounded signature for scroll-tail decisions. Historical rows cannot
+ * affect whether a new tail update should follow, so never walk the full
+ * transcript here. */
+export function visualTranscriptTailKey<
+  B extends MessageBlock,
+  M extends Message<B>,
+>(messages: readonly M[]): string {
+  const tail = messages.slice(-4);
+  return `${messages.length}|${tail
+    .map((message) =>
+      [
+        message.id ?? "",
+        message.role,
+        message.timestamp ?? "",
+        message.blocks.map(visualTranscriptTailBlockKey).join(","),
+      ].join("#"),
+    )
+    .join("|")}`;
 }
 
 function optimisticInsertionIndex<B extends MessageBlock, M extends Message<B>>(
