@@ -978,6 +978,24 @@ and subscription while gating the expensive normalization work. The existing
 2,000-message setting remains solely a progressive history-loading ceiling; it
 must not be reused to truncate live session state.
 
+A fresh 2026-09-09 build confirmed that gate but exposed a separate steady-
+state dock cost. With no new app-server events during a 12-second SSE capture,
+WebContent still held roughly 35–40% CPU (briefly 92%) and 1.7 GB RSS. A native
+five-second sample spent the active portion in `updateRendering`, layout, and
+compositing-requirement traversal. The animation inventory explained the
+trigger: about 30 status-badge pseudo-elements kept animating inside collapsed
+dock labels, while 15 repo arrows ran `infinite` ten-second timelines despite
+moving only during their first 0.8 seconds. Repo status retains its at-a-glance
+motion: collapsed-label badge animations are de-promoted only while those
+labels are invisible, and return for every badge when the dock expands. Arrows
+keep the same two-bounces-per-ten-seconds cadence using a real 0.8-second finite
+animation followed by 9.2 seconds with no active animation timeline. WebKit can
+de-promote those layers during the still interval without changing the visible
+signal. The historical ~932k/917k event counters in
+older persisted diagnostics belong to the prior 46-hour control process; the
+fresh process had only 38 visual-event settle batches when this capture was
+taken, so those old totals must not be attributed to the current build.
+
 ### Renderer attribution diagnostics (2026-09-04)
 
 The previous browser diagnostics had a blind spot between smooth rendering and

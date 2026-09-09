@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import {
+  dockArrowAnimationDelayMs,
   dockToggleOffset,
   reposWithLiveSessions,
   shouldMeasureDockBackdrop,
@@ -183,6 +184,16 @@ describe("reposWithLiveSessions", () => {
       entry("r3", "s3"),
     ]);
     expect([...ids].sort()).toEqual(["r1", "r3"]);
+  });
+});
+
+describe("dock repo status animation", () => {
+  test("keeps the existing ten-second arrow cadence without a ten-second active timeline", () => {
+    expect(dockArrowAnimationDelayMs(true)).toBe(800);
+    expect(dockArrowAnimationDelayMs(false)).toBe(9_200);
+    expect(
+      dockArrowAnimationDelayMs(true) + dockArrowAnimationDelayMs(false),
+    ).toBe(10_000);
   });
 });
 
