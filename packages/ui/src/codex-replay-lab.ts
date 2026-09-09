@@ -489,6 +489,93 @@ export function formatReplayDuration(valueMs: number): string {
   return `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
 }
 
+export function formatReplayClock(valueMs: number): string {
+  const seconds = Math.max(0, Math.floor(valueMs / 1000));
+  const hours = Math.floor(seconds / 3600);
+  const minutes = Math.floor((seconds % 3600) / 60);
+  const remainder = seconds % 60;
+  return hours > 0
+    ? `${hours}:${String(minutes).padStart(2, "0")}:${String(remainder).padStart(2, "0")}`
+    : `${minutes}:${String(remainder).padStart(2, "0")}`;
+}
+
+type ReplayTimeline = { steps: readonly { at?: string }[] };
+export type ReplayPlaybackRate =
+  | "time:1"
+  | "time:10"
+  | "steps:1"
+  | "steps:2"
+  | "steps:5"
+  | "steps:20";
+const replayStepTimeOffsetCache = new WeakMap<
+  ReplayTimeline,
+  { steps: ReplayTimeline["steps"]; offsets: number[] }
+>();
+
+export function replayPlaybackTiming(
+  rate: ReplayPlaybackRate,
+):
+  | { mode: "time"; multiplier: number; tickMs: 50 }
+  | { mode: "steps"; stepsPerSecond: number; tickMs: number } {
+  const value = Number(rate.slice(rate.indexOf(":") + 1));
+  return rate.startsWith("time:")
+    ? { mode: "time", multiplier: value, tickMs: 50 }
+    : { mode: "steps", stepsPerSecond: value, tickMs: 1000 / value };
+}
+
+export function replayElapsedMsAtStep(
+  replay: ReplayTimeline,
+  stepIndex: number,
+): number {
+  const offsets = replayStepTimeOffsets(replay);
+  const target = Math.max(
+    0,
+    Math.min(offsets.length, Math.trunc(stepIndex) || 0),
+  );
+  return target === 0 ? 0 : (offsets[target - 1] ?? 0);
+}
+
+export function replayDurationMs(replay: ReplayTimeline): number {
+  return replayElapsedMsAtStep(replay, replay.steps.length);
+}
+
+export function replayStepIndexAtElapsedMs(
+  replay: ReplayTimeline,
+  elapsedMs: number,
+): number {
+  const offsets = replayStepTimeOffsets(replay);
+  const target = Math.max(0, elapsedMs);
+  let low = 0;
+  let high = offsets.length;
+  while (low < high) {
+    const middle = Math.floor((low + high) / 2);
+    if ((offsets[middle] ?? 0) <= target) low = middle + 1;
+    else high = middle;
+  }
+  return low;
+}
+
+function replayStepTimeOffsets(replay: ReplayTimeline): number[] {
+  const cached = replayStepTimeOffsetCache.get(replay);
+  if (cached?.steps === replay.steps) return cached.offsets;
+  const timestamps = replay.steps.map((step) => Date.parse(step.at ?? ""));
+  const first = timestamps.find((timestamp) => Number.isFinite(timestamp));
+  if (first === undefined) {
+    const offsets = timestamps.map(() => 0);
+    replayStepTimeOffsetCache.set(replay, { steps: replay.steps, offsets });
+    return offsets;
+  }
+  let previous = 0;
+  const offsets = timestamps.map((timestamp) => {
+    if (Number.isFinite(timestamp)) {
+      previous = Math.max(previous, timestamp - first);
+    }
+    return previous;
+  });
+  replayStepTimeOffsetCache.set(replay, { steps: replay.steps, offsets });
+  return offsets;
+}
+
 export type CodexReplaySessionFilter =
   | "all"
   | "both"
