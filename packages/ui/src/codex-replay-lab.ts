@@ -516,6 +516,10 @@ export function formatReplayClock(valueMs: number): string {
     : `${minutes}:${String(remainder).padStart(2, "0")}`;
 }
 
+export function formatReplayStepPosition(current: number, total: number): string {
+  return `${current.toLocaleString()} / ${total.toLocaleString()} ${total === 1 ? "step" : "steps"}`;
+}
+
 type ReplayTimeline = {
   steps: readonly {
     at?: string;

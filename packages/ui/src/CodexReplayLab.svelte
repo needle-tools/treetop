@@ -19,6 +19,7 @@
     formatReplayCost,
     formatReplayClock,
     formatReplayDuration,
+    formatReplayStepPosition,
     formatReplayTokenCount,
     inspectCodexReplayFilePrefix,
     listCodexReplayModels,
@@ -709,23 +710,42 @@
 
 {#snippet replayTimeline()}
   <div class="replay-timeline">
-    <div class="replay-step-buttons" aria-label="Replay steps">
+    <div class="replay-transport" aria-label="Replay controls">
       <button
         class="replay-step"
         on:click={() => seekReplayStep(0)}
         disabled={stepIndex <= 0}
+        aria-label="Go to start"
+        title="Go to start"
       >
-        Start
+        <svg viewBox="0 0 20 20" aria-hidden="true">
+          <path d="M4 4v12M16 5l-8 5 8 5V5Z" />
+        </svg>
       </button>
       <button
         class="replay-step"
         on:click={() => seekReplayStep(stepIndex - 1)}
         disabled={stepIndex <= 0}
       >
-        -1
+        −1
       </button>
       <button
-        class="replay-step replay-step-primary"
+        class="replay-play"
+        on:click={togglePlay}
+        aria-label={playing ? "Pause replay" : "Play replay"}
+      >
+        {#if playing}
+          <svg viewBox="0 0 20 20" aria-hidden="true">
+            <path d="M6 5v10M14 5v10" />
+          </svg>
+        {:else}
+          <svg viewBox="0 0 20 20" aria-hidden="true">
+            <path d="m7 5 8 5-8 5V5Z" />
+          </svg>
+        {/if}
+      </button>
+      <button
+        class="replay-step"
         on:click={() => seekReplayStep(stepIndex + 1)}
         disabled={stepIndex >= stepCount}
       >
@@ -739,34 +759,35 @@
           stopPlayback();
         }}
         disabled={stepIndex >= stepCount}
+        aria-label="Go to end"
+        title="Go to end"
       >
-        End
+        <svg viewBox="0 0 20 20" aria-hidden="true">
+          <path d="M16 4v12M4 5l8 5-8 5V5Z" />
+        </svg>
       </button>
     </div>
-    <button
-      class="replay-play"
-      on:click={togglePlay}
-      aria-label={playing ? "Pause replay" : "Play replay"}
-    >
-      {playing ? "Pause" : "Play"}
-    </button>
-    <select
-      value={playbackRate}
-      on:change={setPlaybackRate}
-      aria-label="Playback speed"
-    >
-      <optgroup label="Time based">
-        <option value="time:1">1× realtime</option>
-        <option value="time:10">10× realtime</option>
-      </optgroup>
-      <optgroup label="Step based">
-        <option value="steps:1">1 step/s</option>
-        <option value="steps:2">2 steps/s</option>
-        <option value="steps:5">5 steps/s</option>
-        <option value="steps:20">20 steps/s</option>
-      </optgroup>
-    </select>
+    <label class="replay-rate">
+      <span>Speed</span>
+      <select
+        value={playbackRate}
+        on:change={setPlaybackRate}
+        aria-label="Playback speed"
+      >
+        <optgroup label="Time based">
+          <option value="time:1">1× realtime</option>
+          <option value="time:10">10× realtime</option>
+        </optgroup>
+        <optgroup label="Step based">
+          <option value="steps:1">1 step/s</option>
+          <option value="steps:2">2 steps/s</option>
+          <option value="steps:5">5 steps/s</option>
+          <option value="steps:20">20 steps/s</option>
+        </optgroup>
+      </select>
+    </label>
     <input
+      class="replay-scrubber"
       type="range"
       min="0"
       max={stepCount}
@@ -776,10 +797,16 @@
       on:change={commitScrub}
       aria-label="Replay time"
     />
-    <span class="replay-clock"
-      >{formatReplayClock(replayCurrentMs)} / {formatReplayClock(replayTotalMs)}
-      · {scrubStepIndex}/{stepCount}</span
-    >
+    <div class="replay-position" aria-live="off">
+      <span class="replay-clock"
+        >{formatReplayClock(replayCurrentMs)} / {formatReplayClock(
+          replayTotalMs,
+        )}</span
+      >
+      <span class="replay-step-position"
+        >{formatReplayStepPosition(scrubStepIndex, stepCount)}</span
+      >
+    </div>
   </div>
 {/snippet}
 
@@ -1417,6 +1444,10 @@
     display: grid;
     grid-template-columns: minmax(0, 1fr) 310px;
     gap: 10px;
+    width: auto;
+    max-width: none;
+    margin: 0;
+    padding: 0;
   }
 
   .replay-main.analysis-collapsed {
@@ -1722,6 +1753,7 @@
     border-radius: 12px;
     overflow: hidden;
     background: var(--panel-bg, #181818);
+    container-type: inline-size;
   }
 
   .replay-transcript-stage {
@@ -1739,41 +1771,71 @@
 
   .replay-timeline {
     display: grid;
-    grid-template-columns: auto auto auto minmax(140px, 1fr) auto;
-    gap: 12px;
+    grid-template-areas:
+      "transport rate position"
+      "scrubber scrubber scrubber";
+    grid-template-columns: auto auto minmax(0, 1fr);
+    gap: 10px 14px;
     align-items: center;
     padding: 12px;
     border-top: 1px solid var(--border, #303030);
     background: color-mix(in srgb, var(--panel-bg, #181818), black 12%);
   }
 
-  .replay-step-buttons {
+  .replay-transport {
+    grid-area: transport;
+    justify-self: start;
     display: inline-flex;
     align-items: center;
-    gap: 6px;
     min-width: 0;
+    overflow: hidden;
+    border: 1px solid var(--border, #3a3a3a);
+    border-radius: 999px;
+    background: var(--button-bg, #252525);
   }
 
   .replay-play,
-  .replay-step,
-  .replay-timeline select {
-    min-width: 72px;
+  .replay-step {
+    min-width: 40px;
     min-height: 34px;
-    border: 1px solid var(--border, #3a3a3a);
-    border-radius: 999px;
+    padding: 0 8px;
+    border: 0;
+    border-left: 1px solid var(--border, #3a3a3a);
     color: inherit;
-    background: var(--button-bg, #252525);
+    background: transparent;
     font: inherit;
+    font-size: 12px;
     cursor: pointer;
   }
 
-  .replay-step {
-    min-width: 0;
-    padding: 0 10px;
+  .replay-transport button:first-child {
+    border-left: 0;
   }
 
-  .replay-step-primary {
-    border-color: color-mix(in srgb, var(--accent, #9ad45f), white 18%);
+  .replay-play {
+    min-width: 42px;
+    color: var(--text, #f4f4f4);
+    background: color-mix(in srgb, var(--accent, #9ad45f), transparent 78%);
+    font-weight: 700;
+  }
+
+  .replay-transport svg {
+    width: 16px;
+    height: 16px;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1.8;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+  }
+
+  .replay-play svg {
+    fill: currentColor;
+    stroke: currentColor;
+  }
+
+  .replay-transport button:hover:not(:disabled) {
+    background: color-mix(in srgb, var(--accent, #9ad45f), transparent 86%);
   }
 
   .replay-play:disabled,
@@ -1782,19 +1844,99 @@
     cursor: default;
   }
 
-  .replay-timeline input {
-    width: 100%;
+  .replay-scrubber {
+    grid-area: scrubber;
+    width: auto;
+    min-width: 0;
+    margin: 0;
+    accent-color: var(--accent, #9ad45f);
   }
 
-  .replay-timeline select {
-    min-width: 118px;
+  .replay-rate {
+    grid-area: rate;
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    color: var(--muted, #999);
+    font-size: 11px;
+  }
+
+  .replay-rate select {
+    min-width: 126px;
+    min-height: 34px;
     padding: 0 10px;
+    border: 1px solid var(--border, #3a3a3a);
+    border-radius: 999px;
+    color: inherit;
+    background: var(--button-bg, #252525);
+    font: inherit;
     font-size: 12px;
   }
 
-  .replay-clock {
+  .replay-position {
+    grid-area: position;
+    min-width: 0;
+    display: flex;
+    justify-content: flex-end;
+    gap: 6px 14px;
     color: var(--muted, #999);
+    font-size: 12px;
     font-variant-numeric: tabular-nums;
     white-space: nowrap;
+  }
+
+  .replay-step-position {
+    color: color-mix(in srgb, var(--muted, #999), transparent 18%);
+  }
+
+  @container (max-width: 900px) {
+    .replay-timeline {
+      grid-template-areas:
+        "transport rate"
+        "scrubber scrubber"
+        "position position";
+      grid-template-columns: minmax(0, 1fr) auto;
+    }
+
+    .replay-position {
+      justify-content: space-between;
+    }
+  }
+
+  @container (max-width: 520px) {
+    .replay-timeline {
+      grid-template-areas:
+        "transport"
+        "rate"
+        "scrubber"
+        "position";
+      grid-template-columns: minmax(0, 1fr);
+    }
+
+    .replay-transport {
+      width: 100%;
+      justify-self: stretch;
+    }
+
+    .replay-transport button {
+      flex: 1 1 0;
+      min-width: 0;
+      padding-inline: 4px;
+    }
+
+    .replay-rate {
+      display: grid;
+      grid-template-columns: auto minmax(0, 1fr);
+    }
+
+    .replay-rate select {
+      width: 100%;
+      min-width: 0;
+    }
+
+    .replay-position {
+      justify-content: space-between;
+      flex-wrap: wrap;
+    }
   }
 </style>
