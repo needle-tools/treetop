@@ -265,6 +265,21 @@ describe("Codex replay recording discovery", () => {
             source,
             fileSizeBytes: 24,
             messageCount: 8,
+            model: "gpt-5.3-codex",
+            pricingUsage: [
+              {
+                model: "gpt-5.2-codex",
+                at: "2026-09-03T11:00:00.000Z",
+                usage: {
+                  input: 10,
+                  cachedInput: 0,
+                  cacheWriteInput: 0,
+                  output: 2,
+                  reasoningOutput: 0,
+                  total: 12,
+                },
+              },
+            ],
             title: "Narrate open webpage live",
           },
         ],
@@ -278,6 +293,7 @@ describe("Codex replay recording discovery", () => {
           rpcRecordingCount: 0,
           rpcFrameCount: 0,
           hasTranscript: true,
+          models: ["gpt-5.2-codex", "gpt-5.3-codex"],
           transcript: expect.objectContaining({
             path: source,
             messageCount: 8,

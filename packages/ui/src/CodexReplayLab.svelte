@@ -14,11 +14,14 @@
     createCodexReplaySessionTransport,
     createCodexReplayViewModel,
     filterCodexReplaySessions,
+    filterCodexReplaySessionsByModel,
     formatReplayCost,
     formatReplayClock,
     formatReplayDuration,
     formatReplayTokenCount,
     inspectCodexReplayFilePrefix,
+    listCodexReplayModels,
+    listCodexReplaySessionModels,
     parseCodexReplayBlobAsync,
     parseCodexReplaySessionFixture,
     REPLAY_SESSION_LOCATIONS,
@@ -35,6 +38,7 @@
     type CodexReplaySessionFilter,
     type CodexReplaySessionFixture,
     type CodexReplaySessionTransport,
+    type CodexReplaySessionSelection,
     type CodexReplaySessionSort,
     type CodexReplayMessage,
     type ReplayPlaybackRate,
@@ -68,7 +72,7 @@
   let selectedThreadId = "";
   let sessionFilter: CodexReplaySessionFilter = "all";
   let sessionQuery = "";
-  let sessionSort: CodexReplaySessionSort = "recent";
+  let sessionSelection: CodexReplaySessionSelection = "recent";
   let transcriptSession: ReplaySessionIndexEntry | null = null;
   let transcriptSessionOverride: CodexReplayTranscriptSession | undefined;
   let analysisCollapsed = false;
@@ -110,17 +114,26 @@
     modelsDev: modelsDevPricing,
   });
   $: sessionCounts = summarizeCodexReplaySessions(sessions);
+  $: sessionModels = listCodexReplaySessionModels(sessions);
+  $: selectedSessionModel = sessionSelection.startsWith("model:")
+    ? sessionSelection.slice("model:".length)
+    : undefined;
   $: visibleSessions = sortCodexReplaySessions(
-    filterCodexReplaySessions(sessions, sessionFilter).filter((entry) => {
-      const query = sessionQuery.trim().toLowerCase();
-      return (
-        !query ||
-        entry.title.toLowerCase().includes(query) ||
-        entry.threadId.toLowerCase().includes(query) ||
-        entry.transcript?.path.toLowerCase().includes(query)
-      );
-    }),
-    sessionSort,
+    filterCodexReplaySessionsByModel(
+      filterCodexReplaySessions(sessions, sessionFilter).filter((entry) => {
+        const query = sessionQuery.trim().toLowerCase();
+        return (
+          !query ||
+          entry.title.toLowerCase().includes(query) ||
+          entry.threadId.toLowerCase().includes(query) ||
+          entry.transcript?.path.toLowerCase().includes(query)
+        );
+      }),
+      selectedSessionModel,
+    ),
+    (selectedSessionModel
+      ? "recent"
+      : sessionSelection) as CodexReplaySessionSort,
   );
 
   function installFixture(
@@ -168,6 +181,7 @@
 
   async function fetchRecordings(): Promise<void> {
     sessionListMode = "daemon";
+    sessionSelection = "recent";
     recordingsLoading = true;
     recordingsError = "";
     try {
@@ -313,6 +327,7 @@
           entry.directoryKey === options.entry?.directoryKey
             ? {
                 ...entry,
+                models: listCodexReplayModels(messages),
                 transcript: {
                   ...entry.transcript!,
                   lineCount: replay.lineCount,
@@ -393,6 +408,7 @@
     const generation = ++directoryGeneration;
     sessionListMode = "directory";
     sessionFilter = "all";
+    sessionSelection = "recent";
     directoryLabel = label;
     directoryStatus = `Indexing ${references.length.toLocaleString()} files`;
     recordingsError = "";
@@ -467,6 +483,7 @@
             if (overview) {
               updates.set(reference.relativePath, {
                 agent: overview.agent,
+                models: overview.models,
                 ...(overview.title ? { title: overview.title } : {}),
                 transcript: {
                   ...entry.transcript!,
@@ -666,6 +683,7 @@
 
   interface ReplaySessionIndexEntry {
     agent?: "codex" | "claude";
+    models?: string[];
     threadId: string;
     title: string;
     mtimeMs: number;
@@ -906,16 +924,23 @@
           aria-label="Search sessions"
           bind:value={sessionQuery}
         />
-        <select bind:value={sessionSort} aria-label="Sort sessions">
+        <select
+          bind:value={sessionSelection}
+          aria-label="Sort or filter sessions"
+        >
           <optgroup label="Sort by">
             <option value="recent">Recent</option>
             <option value="size">File size</option>
             <option value="lines">Lines</option>
             <option value="name">Name</option>
           </optgroup>
-          <optgroup label="Group by">
-            <option value="agent">Agent</option>
-          </optgroup>
+          {#if sessionModels.length}
+            <optgroup label="Models">
+              {#each sessionModels as model}
+                <option value={`model:${model}`}>{model}</option>
+              {/each}
+            </optgroup>
+          {/if}
         </select>
       </div>
       {#if sessionListMode === "daemon"}
@@ -980,7 +1005,13 @@
               on:click={() => loadSession(entry)}
             >
               <span class="replay-recording-name">{entry.title}</span>
-              <span class="replay-session-id">{entry.threadId}</span>
+              {#if entry.models?.length}
+                <span class="replay-session-id" title={entry.models.join(", ")}
+                  >{entry.models.join(" · ")}</span
+                >
+              {:else if !entry.directoryKey}
+                <span class="replay-session-id">{entry.threadId}</span>
+              {/if}
               <span class="replay-session-coverage">
                 {#if entry.directoryKey}
                   {#if entry.transcript?.size !== undefined}
