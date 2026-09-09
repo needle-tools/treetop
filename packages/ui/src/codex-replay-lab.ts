@@ -45,6 +45,7 @@ export type ReplayStep =
     };
 
 export interface ParsedCodexReplay {
+  agent: "codex" | "claude";
   mode: "rpc" | "transcript";
   id?: string;
   cwd?: string;
@@ -78,6 +79,25 @@ export interface CodexReplayParseOptions {
   chunkSize?: number;
   onProgress?: (progress: CodexReplayParseProgress) => void;
 }
+
+export const REPLAY_SESSION_LOCATIONS = [
+  {
+    platform: "macOS",
+    codex: [
+      "~/.codex/sessions/YYYY/MM/DD/*.jsonl",
+      "~/.codex/archived_sessions/*.jsonl",
+    ],
+    claude: ["~/.claude/projects/<project-folder>/*.jsonl"],
+  },
+  {
+    platform: "Windows",
+    codex: [
+      "%USERPROFILE%\\.codex\\sessions\\YYYY\\MM\\DD\\*.jsonl",
+      "%USERPROFILE%\\.codex\\archived_sessions\\*.jsonl",
+    ],
+    claude: ["%USERPROFILE%\\.claude\\projects\\<project-folder>\\*.jsonl"],
+  },
+] as const;
 
 export interface CodexReplaySessionFixture {
   threadId: string;
@@ -600,6 +620,7 @@ export async function parseCodexReplayBlobAsync(
   let lastYieldAt = 0;
   let lineCount = 0;
   let mode: ParsedCodexReplay["mode"] | undefined;
+  let agent: ParsedCodexReplay["agent"] | undefined;
   let id: string | undefined;
   let cwd: string | undefined;
   let startedAt: string | undefined;
@@ -647,10 +668,28 @@ export async function parseCodexReplayBlobAsync(
       warnings.push(`Skipped line ${lineCount}: not JSON`);
       return;
     }
-    mode ??= isCodexTranscriptRecord(record) ? "transcript" : "rpc";
+    if (!mode && isClaudeTranscriptRecord(record)) {
+      agent = "claude";
+      mode = "transcript";
+    } else if (!mode && isCodexTranscriptRecord(record)) {
+      agent = "codex";
+      mode = "transcript";
+    } else if (!mode && replayFrameFromRecord(record)) {
+      agent = "codex";
+      mode = "rpc";
+    }
+    if (!mode) return;
     if (mode === "transcript") {
       const row = objectRecord(record);
       const payload = objectRecord(row?.payload);
+      if (agent === "claude") {
+        id ??= objectString(row, "sessionId");
+        cwd ??= objectString(row, "cwd");
+        startedAt ??= objectString(row, "timestamp");
+        const step = claudeTranscriptStepFromRow(row, lineCount);
+        if (step) retainStep(step);
+        return;
+      }
       if (objectString(row, "type") === "session_meta") {
         id ??= objectString(payload, "id");
         cwd ??= objectString(payload, "cwd");
@@ -698,21 +737,14 @@ export async function parseCodexReplayBlobAsync(
       warnings.push(`Skipped line ${lineCount}: exceeds 16 MiB safety limit`);
       if (
         mode === "transcript" &&
-        /"type"\s*:\s*"(?:compacted|compact_context)"/.test(
-          oversizedLinePrefix,
-        )
+        /"type"\s*:\s*"(?:compacted|compact_context)"/.test(oversizedLinePrefix)
       ) {
         retainStep(
-          transcriptMessageStep(
-            lineCount,
-            undefined,
-            "Context compacted",
-            {
-              id: `codex-transcript-marker-${lineCount}`,
-              role: "system",
-              blocks: [{ type: "marker", text: "Context compacted" }],
-            },
-          ),
+          transcriptMessageStep(lineCount, undefined, "Context compacted", {
+            id: `codex-transcript-marker-${lineCount}`,
+            role: "system",
+            blocks: [{ type: "marker", text: "Context compacted" }],
+          }),
         );
       }
     } else {
@@ -762,6 +794,7 @@ export async function parseCodexReplayBlobAsync(
     total: blob.size,
   });
   return {
+    agent: agent ?? "codex",
     mode: mode ?? "transcript",
     id,
     cwd,
@@ -831,6 +864,29 @@ function parseCodexReplayRoot(
   warnings: string[],
 ): ParsedCodexReplay {
   const records = replayRecords(root);
+  if (records.some(isClaudeTranscriptRecord)) {
+    const steps: ReplayStep[] = [];
+    let id: string | undefined;
+    let cwd: string | undefined;
+    let startedAt: string | undefined;
+    for (const [index, record] of records.entries()) {
+      const row = objectRecord(record);
+      id ??= objectString(row, "sessionId");
+      cwd ??= objectString(row, "cwd");
+      startedAt ??= objectString(row, "timestamp");
+      const step = claudeTranscriptStepFromRow(row, index + 1);
+      if (step) steps.push(step);
+    }
+    return {
+      agent: "claude",
+      mode: "transcript",
+      id,
+      cwd,
+      startedAt,
+      steps,
+      warnings,
+    };
+  }
   const transcript = codexTranscriptFromRecords(records, warnings);
   if (transcript) return transcript;
   const steps: ReplayStep[] = [];
@@ -842,12 +898,119 @@ function parseCodexReplayRoot(
   }
   const rootRecord = objectRecord(root);
   return {
+    agent: "codex",
     mode: "rpc",
     id: objectString(rootRecord, "id"),
     startedAt: objectString(rootRecord, "startedAt"),
     steps,
     warnings,
   };
+}
+
+function claudeTranscriptStepFromRow(
+  row: Record<string, unknown> | undefined,
+  seq: number,
+): ReplayStep | undefined {
+  if (!row) return undefined;
+  const type = objectString(row, "type");
+  const timestamp = objectString(row, "timestamp");
+  if (type === "summary") {
+    return transcriptMessageStep(seq, timestamp, "Context compacted", {
+      id: objectString(row, "uuid") ?? `claude-transcript-marker-${seq}`,
+      role: "system",
+      timestamp,
+      blocks: [{ type: "marker", text: "Context compacted" }],
+    });
+  }
+  if ((type !== "user" && type !== "assistant") || row.isMeta === true) {
+    return undefined;
+  }
+  const message = objectRecord(row.message);
+  if (!message) return undefined;
+  const blocks: CodexAppHistoryBlock[] = [];
+  const content = message.content;
+  const pushText = (value: unknown) => {
+    if (typeof value === "string" && value.trim()) {
+      blocks.push({ type: "text", text: clipReplayText(value) });
+    }
+  };
+  if (typeof content === "string") {
+    pushText(content);
+  } else if (Array.isArray(content)) {
+    for (const value of content) {
+      const block = objectRecord(value);
+      const blockType = objectString(block, "type");
+      if (blockType === "text") {
+        pushText(block?.text);
+      } else if (blockType === "thinking") {
+        const text = objectString(block, "thinking");
+        if (text) blocks.push({ type: "thinking", text: clipReplayText(text) });
+      } else if (blockType === "tool_use") {
+        blocks.push({
+          type: "tool_use",
+          toolName: objectString(block, "name"),
+          toolUseId: objectString(block, "id"),
+          toolInput: block?.input,
+        });
+      } else if (blockType === "tool_result") {
+        const resultContent = block?.content;
+        const text =
+          typeof resultContent === "string"
+            ? resultContent
+            : Array.isArray(resultContent)
+              ? resultContent
+                  .map((item) => objectString(objectRecord(item), "text") ?? "")
+                  .join("\n")
+              : "";
+        blocks.push({
+          type: "tool_result",
+          toolUseId: objectString(block, "tool_use_id"),
+          text: clipReplayText(text),
+        });
+      }
+    }
+  }
+  const usage = objectRecord(message.usage);
+  const freshInput = replayFiniteNumber(usage?.input_tokens);
+  const cachedInput = replayFiniteNumber(usage?.cache_read_input_tokens);
+  const cacheWriteInput = replayFiniteNumber(
+    usage?.cache_creation_input_tokens,
+  );
+  const output = replayFiniteNumber(usage?.output_tokens);
+  const input = freshInput + cachedInput + cacheWriteInput;
+  const tokenUsage =
+    input + output > 0
+      ? {
+          input,
+          cachedInput,
+          cacheWriteInput,
+          output,
+          reasoningOutput: 0,
+          total: input + output,
+        }
+      : undefined;
+  if (!blocks.length && !tokenUsage) return undefined;
+  const role =
+    type === "user" &&
+    blocks.length > 0 &&
+    blocks.every((block) => block.type === "tool_result")
+      ? "tool"
+      : type;
+  return transcriptMessageStep(seq, timestamp, `${capitalize(role)} message`, {
+    id: objectString(row, "uuid") ?? `claude-transcript-message-${seq}`,
+    role,
+    timestamp,
+    model: objectString(message, "model"),
+    tokensUsed: tokenUsage?.output,
+    tokenUsage,
+    blocks,
+  });
+}
+
+function replayFiniteNumber(value: unknown): number {
+  return typeof value === "number" && Number.isFinite(value)
+    ? Math.max(0, value)
+    : 0;
 }
 
 function nextParseFrame(): Promise<void> {
@@ -1026,7 +1189,7 @@ function codexTranscriptFromRecords(
     );
     if (step) steps.push(step);
   }
-  return { mode: "transcript", id, startedAt, steps, warnings };
+  return { agent: "codex", mode: "transcript", id, startedAt, steps, warnings };
 }
 
 function codexTranscriptStepFromRow(
@@ -1652,6 +1815,13 @@ function isCodexTranscriptRecord(value: unknown): boolean {
     type === "turn_context" ||
     type === "compacted"
   );
+}
+
+function isClaudeTranscriptRecord(value: unknown): boolean {
+  const record = objectRecord(value);
+  if (!record) return false;
+  const type = objectString(record, "type");
+  return type === "user" || type === "assistant" || type === "summary";
 }
 
 function capitalize(value: string): string {
