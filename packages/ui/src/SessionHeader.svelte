@@ -97,6 +97,7 @@
   export let totalMessageCount: number | undefined = undefined;
   export let lineCount: number | undefined = undefined;
   export let fileSizeBytes: number | undefined = undefined;
+  export let fileStatsExact = true;
   export let contextTokens: number | undefined = undefined;
   export let contextTokensExact: boolean | undefined = undefined;
   /** Authoritative cap shipped by the agent's JSONL (Codex 0.130+).
@@ -657,8 +658,11 @@
     {#if lineCount !== undefined || fileSizeBytes !== undefined}
       <span
         class="muted small file-stats"
-        title="Exact on-disk JSONL line count and transcript file size"
+        title={fileStatsExact
+          ? "Exact JSONL lines and transcript bytes represented here"
+          : "Estimated JSONL lines and bytes reached at this replay step"}
       >
+        {#if !fileStatsExact}~{/if}
         {#if lineCount !== undefined}
           {lineCount.toLocaleString()} {lineCount === 1 ? "line" : "lines"}
         {/if}

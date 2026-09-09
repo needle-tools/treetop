@@ -272,9 +272,10 @@
   export let totalMessageCount: number | undefined = undefined;
   /** Current transcript byte size from the daemon's cheap agent-file stat. */
   export let fileSizeBytes: number | undefined = undefined;
-  /** Exact row count supplied by a non-daemon source such as a locally
-   * dropped Replay Lab file. */
+  /** Current row count supplied by a non-daemon source such as Replay Lab. */
   export let fileLineCount: number | undefined = undefined;
+  /** Whether supplied file stats are exact rather than replay-progress estimates. */
+  export let fileStatsExact = true;
   /** Estimated context size, sourced from /api/repos' agent metadata.
    *  For Claude this is exact (last assistant turn's `usage.input +
    *  cache_read + cache_creation`); for Codex it's a chars/4 estimate.
@@ -5358,6 +5359,7 @@
       {totalMessageCount}
       lineCount={sessionLineCount ?? fileLineCount}
       fileSizeBytes={measuredFileSizeBytes ?? fileSizeBytes}
+      {fileStatsExact}
       {contextTokens}
       {contextTokensExact}
       {contextWindow}
