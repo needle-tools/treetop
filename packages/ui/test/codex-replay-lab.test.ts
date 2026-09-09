@@ -10,6 +10,7 @@ import {
   createCodexReplayViewModel,
   filterCodexReplayTextForThread,
   filterCodexReplaySessions,
+  formatReplayClock,
   summarizeCodexReplaySessions,
   parseCodexReplayBlobAsync,
   parseCodexReplayTextAsync,
@@ -19,6 +20,10 @@ import {
   REPLAY_SESSION_LOCATIONS,
   summarizeCodexReplayPricingUsage,
   setCodexReplayPlaybackStep,
+  replayDurationMs,
+  replayElapsedMsAtStep,
+  replayPlaybackTiming,
+  replayStepIndexAtElapsedMs,
   sortCodexReplaySessions,
 } from "../src/codex-replay-lab";
 import {
@@ -1262,6 +1267,47 @@ Narrate this page live`,
     expect(playback.stepIndex).toBe(3);
     expect(playback.totalMessageCount).toBe(3);
     expect(playback.renderedMessageCount).toBe(3);
+  });
+
+  test("maps replay steps onto transcript time for realtime playback", () => {
+    const replay = {
+      mode: "transcript" as const,
+      steps: [
+        { at: "2026-09-09T10:00:00.000Z" },
+        { at: "2026-09-09T10:00:02.000Z" },
+        {},
+        { at: "2026-09-09T10:00:12.000Z" },
+      ],
+    };
+
+    expect(replayElapsedMsAtStep(replay, 0)).toBe(0);
+    expect(replayElapsedMsAtStep(replay, 2)).toBe(2_000);
+    expect(replayElapsedMsAtStep(replay, 3)).toBe(2_000);
+    expect(replayDurationMs(replay)).toBe(12_000);
+    expect(replayStepIndexAtElapsedMs(replay, 0)).toBe(1);
+    expect(replayStepIndexAtElapsedMs(replay, 1_999)).toBe(1);
+    expect(replayStepIndexAtElapsedMs(replay, 2_000)).toBe(3);
+    expect(replayStepIndexAtElapsedMs(replay, 11_999)).toBe(3);
+    expect(replayStepIndexAtElapsedMs(replay, 12_000)).toBe(4);
+  });
+
+  test("formats replay clock time without losing hour-scale sessions", () => {
+    expect(formatReplayClock(0)).toBe("0:00");
+    expect(formatReplayClock(62_000)).toBe("1:02");
+    expect(formatReplayClock(3_661_000)).toBe("1:01:01");
+  });
+
+  test("defines realtime multipliers and fixed step rates independently", () => {
+    expect(replayPlaybackTiming("time:10")).toEqual({
+      mode: "time",
+      multiplier: 10,
+      tickMs: 50,
+    });
+    expect(replayPlaybackTiming("steps:5")).toEqual({
+      mode: "steps",
+      stepsPerSecond: 5,
+      tickMs: 200,
+    });
   });
 
   test("opens a dropped transcript at the end while retaining replay state", () => {

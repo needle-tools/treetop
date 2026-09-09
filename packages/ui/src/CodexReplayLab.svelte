@@ -15,12 +15,17 @@
     createCodexReplayViewModel,
     filterCodexReplaySessions,
     formatReplayCost,
+    formatReplayClock,
     formatReplayDuration,
     formatReplayTokenCount,
     inspectCodexReplayFilePrefix,
     parseCodexReplayBlobAsync,
     parseCodexReplaySessionFixture,
     REPLAY_SESSION_LOCATIONS,
+    replayDurationMs,
+    replayElapsedMsAtStep,
+    replayPlaybackTiming,
+    replayStepIndexAtElapsedMs,
     summarizeCodexReplaySessions,
     summarizeCodexReplayPricingUsage,
     setCodexReplayPlaybackStep,
@@ -31,6 +36,7 @@
     type CodexReplaySessionTransport,
     type CodexReplaySessionSort,
     type CodexReplayMessage,
+    type ReplayPlaybackRate,
     type CodexReplayDirectoryFile,
     type CodexReplayDirectoryHandleLike,
     type CodexReplayTranscriptSession,
@@ -48,6 +54,8 @@
   let replayGeneration = 0;
   let playing = false;
   let playTimer: ReturnType<typeof setInterval> | null = null;
+  let playbackRate: ReplayPlaybackRate = "time:10";
+  let playbackCursorMs = 0;
   let parseError = "";
   let loading = false;
   let loadingLabel = "";
@@ -80,6 +88,17 @@
   let directoryFiles = new Map<string, CodexReplayDirectoryFile>();
 
   $: stepCount = transport?.stepCount ?? localReplay?.steps.length ?? 0;
+  $: playbackTimeline = localReplay
+    ? localReplay
+    : fixture
+      ? { steps: fixture.events.map((event) => ({ at: event.receivedAt })) }
+      : null;
+  $: replayTotalMs = playbackTimeline ? replayDurationMs(playbackTimeline) : 0;
+  $: replayCurrentMs = playbackTimeline
+    ? playbackRate.startsWith("time:")
+      ? playbackCursorMs
+      : replayElapsedMsAtStep(playbackTimeline, scrubStepIndex)
+    : 0;
   $: replayModel = [...analysisMessages]
     .reverse()
     .find((message) => message.model)?.model;
@@ -114,6 +133,10 @@
     fileName = name;
     stepIndex = initialStep;
     scrubStepIndex = initialStep;
+    playbackCursorMs = replayElapsedMsAtStep(
+      { steps: nextFixture.events.map((event) => ({ at: event.receivedAt })) },
+      initialStep,
+    );
     replayGeneration += 1;
   }
 
@@ -131,6 +154,10 @@
     transcriptSessionOverride = view.session;
     stepIndex = view.playback.stepIndex;
     scrubStepIndex = view.playback.stepIndex;
+    playbackCursorMs = replayElapsedMsAtStep(
+      view.replay,
+      view.playback.stepIndex,
+    );
     analysisMessages = view.playback.messages;
     localFile = options.localFile;
     localFileSize = view.fileSizeBytes;
@@ -195,7 +222,7 @@
     localFileSize = undefined;
     localLineCount = undefined;
     localWarnings = [];
-    playing = false;
+    stopPlayback();
     try {
       const params = new URLSearchParams({ threadId: entry.threadId });
       const res = await fetch(`/api/codex-app/recordings/read?${params}`);
@@ -255,7 +282,7 @@
     transcriptSessionOverride = undefined;
     analysisMessages = [];
     selectedThreadId = options.entry?.threadId ?? "";
-    playing = false;
+    stopPlayback();
     localFile = true;
     localFileSize = file.size;
     localLineCount = undefined;
@@ -502,7 +529,8 @@
     fileName = "";
     stepIndex = 0;
     scrubStepIndex = 0;
-    playing = false;
+    playbackCursorMs = 0;
+    stopPlayback();
     parseError = "";
     selectedThreadId = "";
     loading = false;
@@ -514,8 +542,16 @@
   }
 
   function togglePlay(): void {
-    playing = !playing;
-    if (playing && stepIndex >= stepCount) setReplayStep(0);
+    if (playing) {
+      stopPlayback();
+      return;
+    }
+    if (stepIndex >= stepCount) {
+      setReplayStep(0);
+      playbackCursorMs = 0;
+    }
+    playing = true;
+    startPlaybackTimer();
   }
 
   function receiveSessionMessages(
@@ -558,28 +594,71 @@
   }
 
   function commitScrub(): void {
-    setReplayStep(scrubStepIndex);
+    seekReplayStep(scrubStepIndex);
   }
 
-  $: {
+  function seekReplayStep(nextStepIndex: number): void {
+    setReplayStep(nextStepIndex);
+    playbackCursorMs = playbackTimeline
+      ? replayElapsedMsAtStep(playbackTimeline, stepIndex)
+      : 0;
+    if (playing) startPlaybackTimer();
+  }
+
+  function stopPlayback(): void {
+    playing = false;
     if (playTimer) {
       clearInterval(playTimer);
       playTimer = null;
     }
-    if (playing && (fixture || localReplay)) {
+  }
+
+  function startPlaybackTimer(): void {
+    if (playTimer) clearInterval(playTimer);
+    playTimer = null;
+    if (!playing || !playbackTimeline) return;
+    const timeline = playbackTimeline;
+    const timing = replayPlaybackTiming(playbackRate);
+    if (timing.mode === "steps") {
       playTimer = setInterval(() => {
         if (stepIndex >= stepCount) {
-          playing = false;
+          stopPlayback();
           return;
         }
-        setReplayStep(stepIndex + 1);
-      }, 180);
+        const next = stepIndex + 1;
+        setReplayStep(next);
+        playbackCursorMs = replayElapsedMsAtStep(timeline, next);
+        if (next >= stepCount) stopPlayback();
+      }, timing.tickMs);
+      return;
     }
+
+    let previousTick = performance.now();
+    playTimer = setInterval(() => {
+      const now = performance.now();
+      playbackCursorMs = Math.min(
+        replayTotalMs,
+        playbackCursorMs + (now - previousTick) * timing.multiplier,
+      );
+      previousTick = now;
+      const targetStep = replayStepIndexAtElapsedMs(timeline, playbackCursorMs);
+      if (targetStep !== stepIndex) setReplayStep(targetStep);
+      if (playbackCursorMs >= replayTotalMs) stopPlayback();
+    }, 50);
+  }
+
+  function setPlaybackRate(event: Event): void {
+    playbackRate = (event.currentTarget as HTMLSelectElement)
+      .value as ReplayPlaybackRate;
+    playbackCursorMs = playbackTimeline
+      ? replayElapsedMsAtStep(playbackTimeline, stepIndex)
+      : 0;
+    if (playing) startPlaybackTimer();
   }
 
   onDestroy(() => {
     directoryGeneration += 1;
-    if (playTimer) clearInterval(playTimer);
+    stopPlayback();
   });
 
   onMount(() => {
@@ -624,28 +703,32 @@
     <div class="replay-step-buttons" aria-label="Replay steps">
       <button
         class="replay-step"
-        on:click={() => setReplayStep(0)}
+        on:click={() => seekReplayStep(0)}
         disabled={stepIndex <= 0}
       >
         Start
       </button>
       <button
         class="replay-step"
-        on:click={() => setReplayStep(stepIndex - 1)}
+        on:click={() => seekReplayStep(stepIndex - 1)}
         disabled={stepIndex <= 0}
       >
         -1
       </button>
       <button
         class="replay-step replay-step-primary"
-        on:click={() => setReplayStep(stepIndex + 1)}
+        on:click={() => seekReplayStep(stepIndex + 1)}
         disabled={stepIndex >= stepCount}
       >
         +1 step
       </button>
       <button
         class="replay-step"
-        on:click={() => setReplayStep(stepCount)}
+        on:click={() => {
+          setReplayStep(stepCount);
+          playbackCursorMs = replayTotalMs;
+          stopPlayback();
+        }}
         disabled={stepIndex >= stepCount}
       >
         End
@@ -658,6 +741,22 @@
     >
       {playing ? "Pause" : "Play"}
     </button>
+    <select
+      value={playbackRate}
+      on:change={setPlaybackRate}
+      aria-label="Playback speed"
+    >
+      <optgroup label="Time based">
+        <option value="time:1">1× realtime</option>
+        <option value="time:10">10× realtime</option>
+      </optgroup>
+      <optgroup label="Step based">
+        <option value="steps:1">1 step/s</option>
+        <option value="steps:2">2 steps/s</option>
+        <option value="steps:5">5 steps/s</option>
+        <option value="steps:20">20 steps/s</option>
+      </optgroup>
+    </select>
     <input
       type="range"
       min="0"
@@ -668,7 +767,10 @@
       on:change={commitScrub}
       aria-label="Replay time"
     />
-    <span>{scrubStepIndex}/{stepCount}</span>
+    <span class="replay-clock"
+      >{formatReplayClock(replayCurrentMs)} / {formatReplayClock(replayTotalMs)}
+      · {scrubStepIndex}/{stepCount}</span
+    >
   </div>
 {/snippet}
 
@@ -1606,7 +1708,7 @@
 
   .replay-timeline {
     display: grid;
-    grid-template-columns: auto auto minmax(140px, 1fr) auto;
+    grid-template-columns: auto auto auto minmax(140px, 1fr) auto;
     gap: 12px;
     align-items: center;
     padding: 12px;
@@ -1622,7 +1724,8 @@
   }
 
   .replay-play,
-  .replay-step {
+  .replay-step,
+  .replay-timeline select {
     min-width: 72px;
     min-height: 34px;
     border: 1px solid var(--border, #3a3a3a);
@@ -1650,5 +1753,17 @@
 
   .replay-timeline input {
     width: 100%;
+  }
+
+  .replay-timeline select {
+    min-width: 118px;
+    padding: 0 10px;
+    font-size: 12px;
+  }
+
+  .replay-clock {
+    color: var(--muted, #999);
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
   }
 </style>
