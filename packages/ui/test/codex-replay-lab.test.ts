@@ -1534,6 +1534,43 @@ Narrate this page live`,
     );
   });
 
+  test("keeps Codex subagent activity when a transcript is dropped", () => {
+    const replay = parseCodexReplayText(
+      [
+        JSON.stringify({
+          timestamp: "2026-09-09T17:51:52.750Z",
+          type: "event_msg",
+          payload: {
+            type: "item_completed",
+            item: {
+              type: "SubAgentActivity",
+              id: "call-spawn-audio",
+              kind: "started",
+              agent_thread_id: "01a0874c-317f-7b63-ad0d-3b22af3faa93",
+              agent_path: "/root/audio_types",
+            },
+          },
+        }),
+      ].join("\n"),
+    );
+
+    expect(replay.steps).toEqual([
+      expect.objectContaining({
+        kind: "message",
+        message: expect.objectContaining({
+          blocks: [
+            expect.objectContaining({
+              type: "subagent",
+              subagentNickname: "audio_types",
+              subagentAction: "spawn",
+              subagentStatus: "running",
+            }),
+          ],
+        }),
+      }),
+    ]);
+  });
+
   test("collapses Codex transcript bootstrap rows and filters event-message duplicates", () => {
     const replay = parseCodexReplayText(
       [

@@ -330,6 +330,13 @@ function stringFromUnknown(value: unknown): string | undefined {
   return typeof value === "string" && value.trim() ? value : undefined;
 }
 
+function visibleSubagentText(value: unknown): string | undefined {
+  const text = stringFromUnknown(value);
+  if (!text) return undefined;
+  if (/^gAAAAA[A-Za-z0-9_-]{80,}={0,2}$/.test(text)) return undefined;
+  return text;
+}
+
 function normalizedSubagentToolName(
   toolName: string | undefined,
 ): "spawn_agent" | "wait_agent" | undefined {
@@ -353,10 +360,14 @@ export function visualSubagentMetaFromBlocks(
   const input = recordFromUnknown(toolUseBlock?.toolInput);
   return {
     ...direct,
+    nickname:
+      direct.nickname ??
+      stringFromUnknown(input?.task_name) ??
+      stringFromUnknown(input?.target),
     type: direct.type ?? stringFromUnknown(input?.agent_type),
     model: direct.model ?? stringFromUnknown(input?.model),
     effort: direct.effort ?? stringFromUnknown(input?.reasoning_effort),
-    task: direct.task ?? stringFromUnknown(input?.message),
+    task: visibleSubagentText(direct.task ?? input?.message),
   };
 }
 
@@ -425,7 +436,7 @@ export function visualSubagentMetaFromBlock(
       type: block.subagentType,
       model: block.subagentModel,
       effort: block.subagentEffort,
-      task: block.subagentMessage,
+      task: visibleSubagentText(block.subagentMessage),
       result: block.subagentResult ?? block.text,
     };
   }
@@ -450,9 +461,65 @@ export function visualSubagentMetaFromBlock(
     type: block.subagentType ?? stringFromUnknown(input?.agent_type),
     model: block.subagentModel ?? stringFromUnknown(input?.model),
     effort: block.subagentEffort ?? stringFromUnknown(input?.reasoning_effort),
-    task: block.subagentMessage ?? stringFromUnknown(input?.message),
+    task: visibleSubagentText(block.subagentMessage ?? input?.message),
     result: block.subagentResult,
   };
+}
+
+/** Merge subagent lifecycle/tool rows by the stable child thread id. Activity
+ * rows can carry the id for an earlier collaboration tool through toolUseId. */
+export function visualWorkSubagents<
+  B extends MessageBlock,
+  M extends Message<B>,
+>(entries: readonly VisualWorkDisplayEntry<B, M>[]): VisualSubagentMeta[] {
+  const subagentIdByToolUseId = new Map<string, string>();
+  const blocksFor = (entry: VisualWorkDisplayEntry<B, M>): B[] => [
+    ...entry.entry.blocks,
+    ...(entry.pairedToolUse?.blocks ?? []),
+    ...(entry.pairedResult?.blocks ?? []),
+  ];
+  for (const entry of entries) {
+    for (const block of blocksFor(entry)) {
+      const meta = visualSubagentMetaFromBlock(block);
+      if (meta?.id && block.toolUseId) {
+        subagentIdByToolUseId.set(block.toolUseId, meta.id);
+      }
+    }
+  }
+
+  const byKey = new Map<string, VisualSubagentMeta>();
+  for (const displayEntry of entries) {
+    if (displayEntry.kind !== "entry") continue;
+    const toolUse = blocksFor(displayEntry).find(
+      (block) => block.type === "tool_use",
+    );
+    const result = blocksFor(displayEntry).find(
+      (block) => block.type === "tool_result",
+    );
+    const directBlock = blocksFor(displayEntry).find(
+      (block) => block.type === "subagent",
+    );
+    const meta =
+      visualSubagentMetaFromBlocks(toolUse, result) ??
+      visualSubagentMetaFromBlock(directBlock);
+    if (!meta) continue;
+    const toolUseId =
+      toolUse?.toolUseId ?? result?.toolUseId ?? directBlock?.toolUseId;
+    const id =
+      meta.id ??
+      (toolUseId ? subagentIdByToolUseId.get(toolUseId) : undefined);
+    const key = id ?? `${meta.action}:${visualSubagentLabel(meta)}`;
+    const existing = byKey.get(key);
+    byKey.set(key, {
+      ...existing,
+      ...meta,
+      ...(id ? { id } : {}),
+      nickname: existing?.nickname ?? meta.nickname,
+      task: existing?.task ?? meta.task,
+      result: meta.result ?? existing?.result,
+    });
+  }
+  return [...byKey.values()];
 }
 
 export function visualSubagentLabel(meta: VisualSubagentMeta): string {

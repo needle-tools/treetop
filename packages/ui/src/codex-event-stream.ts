@@ -1,7 +1,9 @@
 import { apiUrl } from "./api";
 import {
   canonicalCodexToolName,
+  codexSubagentActivityFields,
   parseCodexToolScriptInvocation,
+  type CodexSubagentActivityFields,
 } from "@treetop/nicifier";
 
 export interface CodexAppEvent {
@@ -627,6 +629,10 @@ export function codexLiveMessagesFromEvent(
       blocks: [],
     });
   }
+  const activity = codexSubagentActivityFields(codexEventItem(event.params));
+  if (activity) {
+    messages.push(codexSubagentActivityMessage(activity, timestamp));
+  }
   const liveToolUse = codexLiveToolUseFromEvent(event, context);
   if (liveToolUse && !event.method.endsWith("/outputDelta")) {
     messages.push(
@@ -792,6 +798,10 @@ function codexAppMessagesFromThreadItem(
         blocks: [],
       },
     ];
+  }
+  const activity = codexSubagentActivityFields(item);
+  if (activity) {
+    return [codexSubagentActivityMessage(activity, timestamp)];
   }
   if (itemType === "userMessage") {
     const blocks = codexUserInputBlocks(item.content);
@@ -979,6 +989,18 @@ function codexAppMessagesFromThreadItem(
     ];
   }
   return [];
+}
+
+function codexSubagentActivityMessage(
+  activity: CodexSubagentActivityFields,
+  timestamp: string | undefined,
+): CodexAppHistoryMessage {
+  return {
+    id: `codex-subagent-${activity.toolUseId}`,
+    role: "assistant",
+    timestamp,
+    blocks: [{ type: "subagent", ...activity }],
+  };
 }
 
 function codexTokenUsageFromEvent(
