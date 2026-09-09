@@ -77,6 +77,7 @@ export interface CodexReplayTranscriptSession {
 
 export interface CodexReplayViewEntry {
   agent: "codex" | "claude";
+  models: string[];
   threadId: string;
   title: string;
   mtimeMs: number;
@@ -153,6 +154,7 @@ export interface CodexReplayDirectoryFile {
 
 export interface CodexReplayFileOverview {
   agent: "codex" | "claude";
+  models: string[];
   sessionId?: string;
   cwd?: string;
   startedAt?: string;
@@ -161,12 +163,10 @@ export interface CodexReplayFileOverview {
   lineCountExact?: boolean;
 }
 
-export type CodexReplaySessionSort =
-  | "recent"
-  | "agent"
-  | "size"
-  | "lines"
-  | "name";
+export type CodexReplaySessionSort = "recent" | "size" | "lines" | "name";
+export type CodexReplaySessionSelection =
+  | CodexReplaySessionSort
+  | `model:${string}`;
 
 export const REPLAY_SESSION_LOCATIONS = [
   {
@@ -298,6 +298,18 @@ export function summarizeCodexReplayPricingUsage(
         ]
       : [],
   );
+}
+
+export function listCodexReplayModels(
+  messages: readonly CodexReplayMessage[],
+): string[] {
+  return [
+    ...new Set(
+      messages
+        .map((message) => message.model?.trim())
+        .filter((model): model is string => !!model),
+    ),
+  ].sort((a, b) => a.localeCompare(b));
 }
 
 function analyzeCodexReplayTurn(
@@ -696,15 +708,6 @@ export function sortCodexReplaySessions<
   },
 >(sessions: readonly T[], sort: CodexReplaySessionSort): T[] {
   return [...sessions].sort((a, b) => {
-    if (sort === "agent") {
-      const agentRank = (agent: T["agent"]): number =>
-        agent === "codex" ? 0 : agent === "claude" ? 1 : 2;
-      return (
-        agentRank(a.agent) - agentRank(b.agent) ||
-        b.mtimeMs - a.mtimeMs ||
-        a.title.localeCompare(b.title)
-      );
-    }
     if (sort === "name") return a.title.localeCompare(b.title);
     if (sort === "size") {
       return (b.transcript?.size ?? -1) - (a.transcript?.size ?? -1);
@@ -714,6 +717,25 @@ export function sortCodexReplaySessions<
     }
     return b.mtimeMs - a.mtimeMs;
   });
+}
+
+export function filterCodexReplaySessionsByModel<
+  T extends { models?: readonly string[] },
+>(sessions: readonly T[], model: string | undefined): T[] {
+  if (!model) return [...sessions];
+  return sessions.filter((session) => session.models?.includes(model));
+}
+
+export function listCodexReplaySessionModels(
+  sessions: readonly { models?: readonly string[] }[],
+): string[] {
+  return [
+    ...new Set(
+      sessions.flatMap((session) =>
+        (session.models ?? []).filter((model) => model.trim()),
+      ),
+    ),
+  ].sort((a, b) => a.localeCompare(b));
 }
 
 export function parseCodexReplaySessionFixture(
@@ -1138,6 +1160,7 @@ export async function inspectCodexReplayFilePrefix(
   if (!replay.id && !replay.cwd && messages.length === 0) return undefined;
   return {
     agent: replay.agent,
+    models: listCodexReplayModels(messages),
     sessionId: replay.id,
     cwd: replay.cwd,
     startedAt: replay.startedAt,
@@ -1499,6 +1522,7 @@ export function createCodexReplayViewModel(
     session,
     entry: {
       agent: session.agent,
+      models: listCodexReplayModels(messages),
       threadId: session.sessionId,
       title: input.title,
       mtimeMs: input.mtimeMs,

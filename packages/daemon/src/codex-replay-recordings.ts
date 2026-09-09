@@ -18,6 +18,7 @@ export interface CodexReplayTranscriptRef {
   title?: string;
   messageCount?: number;
   cwd?: string;
+  models?: string[];
 }
 
 export interface CodexReplayRecordingRef {
@@ -76,6 +77,7 @@ const sessionDraftCache = new Map<string, SessionDraftCacheEntry>();
 
 export interface CodexReplaySessionRef {
   agent: "codex";
+  models: string[];
   threadId: string;
   title: string;
   mtimeMs: number;
@@ -168,6 +170,11 @@ export async function listCodexReplaySessions(
         .sort((a, b) => a.path.localeCompare(b.path));
       return {
         agent: "codex",
+        models: [
+          ...new Set(
+            transcripts.flatMap((candidate) => candidate.models ?? []),
+          ),
+        ].sort((a, b) => a.localeCompare(b)),
         threadId,
         title: transcript?.title ?? `Session ${threadId.slice(0, 8)}`,
         mtimeMs: Math.max(
@@ -217,6 +224,16 @@ function transcriptRefFromAgent(
       session.firstUserMessage,
     messageCount: session.messageCount,
     cwd: session.cwd,
+    models: [
+      ...new Set(
+        [
+          session.model,
+          ...(session.pricingUsage ?? []).map((item) => item.model),
+        ]
+          .map((model) => model?.trim())
+          .filter((model): model is string => !!model),
+      ),
+    ].sort((a, b) => a.localeCompare(b)),
   };
 }
 
@@ -715,6 +732,7 @@ async function transcriptRef(
       size: stats.size,
       title: sessionTitles?.[path] ?? overview.firstUserMessage,
       messageCount: overview.messageCount,
+      models: overview.usage.model ? [overview.usage.model] : [],
     };
   } catch {
     return null;
