@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { parseCodexJsonl } from "../../daemon/src/sessions";
 import {
   analyzeCodexReplayTurns,
   collectCodexReplayDirectoryFiles,
@@ -20,6 +21,11 @@ import {
   setCodexReplayPlaybackStep,
   sortCodexReplaySessions,
 } from "../src/codex-replay-lab";
+import {
+  buildVisualWorkDisplayEntries,
+  buildVisualTranscriptItems,
+  visualWorkOverview,
+} from "../src/last-user-message";
 
 test("documents loadable Codex and Claude session locations on macOS and Windows", () => {
   expect(REPLAY_SESSION_LOCATIONS).toEqual([
@@ -43,6 +49,138 @@ test("documents loadable Codex and Claude session locations on macOS and Windows
 });
 
 describe("Codex replay lab parser", () => {
+  test("normalizes wrapped edits and image envelopes like the session parser", () => {
+    const patch = [
+      "*** Begin Patch",
+      "*** Update File: /repo/src/app.css",
+      "@@",
+      "-color: red;",
+      "+color: grey;",
+      "*** End Patch",
+    ].join("\n");
+    const dataUrl = `data:image/png;base64,${Buffer.from("image").toString("base64")}`;
+    const text = [
+      JSON.stringify({
+        timestamp: "2026-09-09T09:29:04.249Z",
+        type: "response_item",
+        payload: {
+          type: "message",
+          role: "user",
+          content: [
+            { type: "input_text", text: "Match these greys" },
+            {
+              type: "input_text",
+              text: '<image name=[Image #1] path="/repo/reference.png">',
+            },
+            { type: "input_image", image_url: dataUrl },
+            { type: "input_text", text: "</image>" },
+          ],
+        },
+      }),
+      JSON.stringify({
+        timestamp: "2026-09-09T09:30:26.257Z",
+        type: "response_item",
+        payload: {
+          type: "custom_tool_call",
+          name: "exec",
+          call_id: "call-patch",
+          input: `const patch = ${JSON.stringify(patch)};\nconst r = await tools.apply_patch(patch); text(r);`,
+        },
+      }),
+      JSON.stringify({
+        timestamp: "2026-09-09T09:30:26.284Z",
+        type: "response_item",
+        payload: {
+          type: "custom_tool_call_output",
+          call_id: "call-patch",
+          output: "Success",
+        },
+      }),
+      JSON.stringify({
+        timestamp: "2026-09-09T09:30:26.267Z",
+        type: "event_msg",
+        payload: {
+          type: "patch_apply_end",
+          call_id: "exec-patch",
+          success: true,
+          changes: {
+            "/repo/src/app.css": {
+              type: "update",
+              unified_diff: "@@\n-color: red;\n+color: grey;",
+            },
+          },
+        },
+      }),
+      JSON.stringify({
+        timestamp: "2026-09-09T09:30:30.000Z",
+        type: "response_item",
+        payload: {
+          type: "message",
+          role: "assistant",
+          content: [{ type: "output_text", text: "Done" }],
+        },
+      }),
+    ].join("\n");
+
+    const replay = parseCodexReplayText(text);
+    const messages = codexReplayMessagesUntil(replay, replay.steps.length);
+    const userBlocks = messages.find((message) => message.role === "user")!
+      .blocks;
+    expect(userBlocks.filter((block) => block.type === "media")).toHaveLength(
+      1,
+    );
+    expect(userBlocks.filter((block) => block.type === "text")).toEqual([
+      { type: "text", text: "Match these greys" },
+    ]);
+
+    const work = buildVisualTranscriptItems(messages, { active: false }).find(
+      (item) => item.kind === "work",
+    );
+    expect(work?.kind).toBe("work");
+    if (!work || work.kind !== "work") return;
+    const entries = buildVisualWorkDisplayEntries(work.entries);
+    const overview = visualWorkOverview(work, entries);
+    expect(overview.changedFiles).toEqual([
+      {
+        path: "/repo/src/app.css",
+        label: "app.css",
+        additions: 2,
+        deletions: 2,
+        diff: [
+          "*** Update File: /repo/src/app.css",
+          "@@",
+          "-color: red;",
+          "+color: grey;",
+          "@@",
+          "-color: red;",
+          "+color: grey;",
+        ].join("\n"),
+      },
+    ]);
+
+    const productionMessages = parseCodexJsonl(text).messages;
+    const productionWork = buildVisualTranscriptItems(productionMessages, {
+      active: false,
+    }).find((item) => item.kind === "work");
+    expect(productionWork?.kind).toBe("work");
+    if (!productionWork || productionWork.kind !== "work") return;
+    const productionOverview = visualWorkOverview(
+      productionWork,
+      buildVisualWorkDisplayEntries(productionWork.entries),
+    );
+    expect({
+      messageCount: messages.length,
+      actionCount: overview.actionCount,
+      categories: overview.categories,
+      changedFiles: overview.changedFiles,
+    }).toEqual({
+      messageCount: productionMessages.length,
+      actionCount: productionOverview.actionCount,
+      categories: productionOverview.categories,
+      changedFiles: productionOverview.changedFiles,
+    });
+  });
+
   test("enumerates nested session handles without opening file bodies", async () => {
     let getFileCalls = 0;
     const sessionHandle = {
