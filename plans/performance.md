@@ -802,6 +802,25 @@ retains at most 512 KiB for a potentially relevant record, so giant compaction
 or tool-output rows are counted without being accumulated or parsed. Live
 session stats refresh once per completed turn, never once per output append.
 
+On 2026-09-09, the still-running 2026-09-07 13:48 build provided a long-lived
+control case for the later offscreen app-server gate. After about 46 hours its
+WebKit content process held a 10.2 GiB physical footprint (17.5 GiB peak), used
+roughly 115% CPU, and reported browser event-loop stalls up to 74.8 seconds.
+The daemon remained responsive: `/api/debug/analyze` completed in 25 ms,
+ordinary session cache hits were sub-millisecond, and route timings attributed
+the apparent multi-second fetches almost entirely to time outside the server.
+The page retained 65 session columns, 61 offscreen, including 19 live
+app-server sources, and had received about 932,000 app-server events. A native
+sample spent essentially the whole five-second window rebuilding WebKit author
+style resolution and walking CSS animations while under memory pressure; VM
+accounting attributed 6.7 GiB resident memory to WebKit's allocator rather than
+the daemon or graphics surfaces. This build predates `bf6033ff`, so it still
+performed visual app-server mutation work for hidden live columns. The capture
+therefore confirms the mechanism that commit fixes: retain the cheap lifecycle
+subscription, but route offscreen events through state-only handling until the
+column is near the viewport. Do not use this old process to judge that fix; a
+fresh build is required for validation.
+
 Replay Lab had a separate unbounded path: its read route prepared a projected
 16 MiB transcript tail, then also called the legacy full-file parser to build
 the `SessionView` override. Opening a 1.39 GB transcript drove the debug daemon
