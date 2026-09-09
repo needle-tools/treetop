@@ -1659,19 +1659,6 @@ export async function scanCodex(
                 contextWindow: overview.usage.modelContextWindow,
                 model: overview.usage.model,
                 lastMessageTs: overview.lastMessageTs,
-                pricingUsage: overview.usage.pricingUsage
-                  ? [
-                      {
-                        model: overview.usage.model,
-                        at: overview.lastMessageTs,
-                        standardOnly: true,
-                        usage: overview.usage.pricingUsage,
-                      },
-                    ]
-                  : undefined,
-                pricingUsageExact: overview.usage.pricingUsage
-                  ? true
-                  : undefined,
               },
             };
           } catch {

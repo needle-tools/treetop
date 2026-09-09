@@ -339,6 +339,121 @@ describe("parseClaudeJsonl", () => {
 });
 
 describe("getSessionFileStats", () => {
+  test("attributes exact Codex pricing across model changes and compaction resets", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "supergit-session-stats-"));
+    const source = join(dir, "codex.jsonl");
+    const tokenCount = (
+      timestamp: string,
+      total: number,
+      last: number,
+      cached = 0,
+    ) =>
+      JSON.stringify({
+        timestamp,
+        type: "event_msg",
+        payload: {
+          type: "token_count",
+          info: {
+            total_token_usage: {
+              input_tokens: total,
+              cached_input_tokens: cached,
+              output_tokens: 0,
+              total_tokens: total,
+            },
+            last_token_usage: {
+              input_tokens: last,
+              cached_input_tokens: Math.min(cached, last),
+              output_tokens: 0,
+              total_tokens: last,
+            },
+          },
+        },
+      });
+    const lines = [
+      JSON.stringify({
+        type: "session_meta",
+        payload: { id: "large", padding: "x".repeat(80_000) },
+      }),
+      JSON.stringify({
+        timestamp: "2026-09-04T10:00:00.000Z",
+        type: "turn_context",
+        payload: { model: "gpt-model-a", padding: "y".repeat(1_200_000) },
+      }),
+      tokenCount("2026-09-04T10:01:00.000Z", 100, 100, 40),
+      tokenCount("2026-09-04T10:02:00.000Z", 160, 60, 70),
+      JSON.stringify({
+        timestamp: "2026-09-05T10:00:00.000Z",
+        type: "turn_context",
+        payload: { model: "gpt-model-b" },
+      }),
+      tokenCount("2026-09-05T10:01:00.000Z", 30, 30, 10),
+    ];
+    await writeFile(source, `${lines.join("\n")}\n`);
+
+    const stats = await getSessionFileStats(source);
+    expect(stats.lineCount).toBe(lines.length);
+    expect(stats.model).toBe("gpt-model-b");
+    expect(stats.pricingUsageExact).toBe(true);
+    expect(stats.pricingUsage).toEqual([
+      {
+        model: "gpt-model-a",
+        at: "2026-09-04T10:01:00.000Z",
+        usage: {
+          input: 100,
+          cachedInput: 40,
+          cacheWriteInput: 0,
+          output: 0,
+          reasoningOutput: 0,
+          total: 100,
+        },
+      },
+      {
+        model: "gpt-model-a",
+        at: "2026-09-04T10:02:00.000Z",
+        usage: {
+          input: 60,
+          cachedInput: 30,
+          cacheWriteInput: 0,
+          output: 0,
+          reasoningOutput: 0,
+          total: 60,
+        },
+      },
+      {
+        model: "gpt-model-b",
+        at: "2026-09-05T10:01:00.000Z",
+        usage: {
+          input: 30,
+          cachedInput: 10,
+          cacheWriteInput: 0,
+          output: 0,
+          reasoningOutput: 0,
+          total: 30,
+        },
+      },
+    ]);
+
+    await appendFile(
+      source,
+      `${tokenCount("2026-09-05T10:02:00.000Z", 50, 20, 15)}\n`,
+    );
+    expect((await getSessionFileStats(source)).pricingUsage).toEqual([
+      ...stats.pricingUsage!,
+      {
+        model: "gpt-model-b",
+        at: "2026-09-05T10:02:00.000Z",
+        usage: {
+          input: 20,
+          cachedInput: 5,
+          cacheWriteInput: 0,
+          output: 0,
+          reasoningOutput: 0,
+          total: 20,
+        },
+      },
+    ]);
+  });
+
   test("reports exact JSONL rows and bytes, including a final unterminated row", async () => {
     const dir = await mkdtemp(join(tmpdir(), "supergit-session-stats-"));
     const source = join(dir, "session.jsonl");

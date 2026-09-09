@@ -542,7 +542,10 @@
   let pollCount = 0;
   let sessionLineCount: number | undefined = undefined;
   let measuredFileSizeBytes: number | undefined = undefined;
+  let measuredPricingModel: string | undefined = undefined;
+  let measuredPricingUsage: SessionTokenUsageSegment[] | undefined = undefined;
   let sessionStatsKey = "";
+  let sessionStatsRefreshSeq = 0;
   const DEFAULT_VISUAL_HISTORY_MESSAGES = 100;
   const VISUAL_HISTORY_MESSAGES_STEP = 100;
   const MAX_VISUAL_HISTORY_MESSAGES = 2_000;
@@ -2178,6 +2181,9 @@
       const body = (await res.json().catch(() => null)) as {
         fileSizeBytes?: unknown;
         lineCount?: unknown;
+        model?: unknown;
+        pricingUsage?: unknown;
+        pricingUsageExact?: unknown;
       } | null;
       if (!res.ok || sessionStatsKey !== key) return;
       measuredFileSizeBytes =
@@ -2186,6 +2192,12 @@
           : undefined;
       sessionLineCount =
         typeof body?.lineCount === "number" ? body.lineCount : undefined;
+      measuredPricingModel =
+        typeof body?.model === "string" ? body.model : undefined;
+      measuredPricingUsage =
+        body?.pricingUsageExact === true && Array.isArray(body.pricingUsage)
+          ? (body.pricingUsage as SessionTokenUsageSegment[])
+          : undefined;
     } catch {
       // The cheap stat supplied by /api/repos remains useful even when the
       // optional exact row count cannot be read.
@@ -2362,16 +2374,21 @@
       statsSource,
       daemonId,
       columnNearViewport,
+      sessionStatsRefreshSeq,
     );
     if (key && key !== sessionStatsKey) {
       sessionStatsKey = key;
       sessionLineCount = undefined;
       measuredFileSizeBytes = undefined;
+      measuredPricingModel = undefined;
+      measuredPricingUsage = undefined;
       void loadSessionFileStats(statsSource, key);
     } else if (!statsSource) {
       sessionStatsKey = "";
       sessionLineCount = undefined;
       measuredFileSizeBytes = undefined;
+      measuredPricingModel = undefined;
+      measuredPricingUsage = undefined;
     }
   }
   let appliedTranscriptSessionOverrideKey = "";
@@ -2400,10 +2417,14 @@
     indexedLastMessageIso ?? session?.endedAt,
   );
   $: sessionTokenCost =
-    pricingUsageExact && pricingUsage?.length
-      ? estimateSessionTokenCost(pricingUsage, model, {
-          modelsDev: modelsDevPricing,
-        })
+    measuredPricingUsage?.length || (pricingUsageExact && pricingUsage?.length)
+      ? estimateSessionTokenCost(
+          measuredPricingUsage ?? pricingUsage ?? [],
+          measuredPricingModel ?? model,
+          {
+            modelsDev: modelsDevPricing,
+          },
+        )
       : undefined;
 
   let reportedWorking: boolean | undefined;
@@ -3146,6 +3167,7 @@
     if (event.method === "turn/completed") {
       codexActiveTurnId = null;
       sending = false;
+      sessionStatsRefreshSeq += 1;
       awaitingInput = codexRequests.length > 0;
       if (pendingTimer) {
         clearTimeout(pendingTimer);
@@ -3273,6 +3295,7 @@
       flushCodexDeltaPatches();
       codexActiveTurnId = null;
       sending = false;
+      sessionStatsRefreshSeq += 1;
       awaitingInput = codexRequests.length > 0;
       if (pendingTimer) {
         clearTimeout(pendingTimer);

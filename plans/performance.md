@@ -790,6 +790,18 @@ incrementally scans appended bytes on later requests. This keeps unusually
 large sessions visible in the header and dock without making every historical
 session pay the line-count cost during `/api/repos` enrichment.
 
+The same visibility-gated scan now computes exact Codex session pricing. The
+former discovery shortcut sampled only 64 KiB from each end and treated the
+latest cumulative token counter as the whole session; large turns could put
+both `turn_context` model evidence outside those samples, while compaction
+resets made the last cumulative counter undercount prior work. The exact scan
+tracks the active model, prices positive `token_count` deltas, and falls back
+to `last_token_usage` when a cumulative counter resets. Its state is cached by
+file snapshot and only appended bytes are processed later. The line scanner
+retains at most 512 KiB for a potentially relevant record, so giant compaction
+or tool-output rows are counted without being accumulated or parsed. Live
+session stats refresh once per completed turn, never once per output append.
+
 Replay Lab had a separate unbounded path: its read route prepared a projected
 16 MiB transcript tail, then also called the legacy full-file parser to build
 the `SessionView` override. Opening a 1.39 GB transcript drove the debug daemon
