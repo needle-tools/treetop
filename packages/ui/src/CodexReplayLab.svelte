@@ -17,6 +17,7 @@
     codexReplayMessagesUntil,
     parseCodexReplayBlobAsync,
     parseCodexReplaySessionFixture,
+    REPLAY_SESSION_LOCATIONS,
     summarizeCodexReplaySessions,
     summarizeCodexReplayPricingUsage,
     type CodexReplaySessionFilter,
@@ -50,6 +51,7 @@
   let analysisMessages: readonly CodexReplayMessage[] = [];
   let modelsDevPricing: ModelsDevPricingSnapshot | undefined;
   let fileInput: HTMLInputElement | null = null;
+  let helpDialog: HTMLDialogElement | null = null;
   let localFile = false;
   let localFileSize: number | undefined;
   let localLineCount: number | undefined;
@@ -196,7 +198,9 @@
       if (requestId !== loadRequestId) return;
       const messages = codexReplayMessagesUntil(replay, replay.steps.length);
       if (!messages.length) {
-        throw new Error("No displayable Codex messages found in this file");
+        throw new Error(
+          "No displayable Codex or Claude messages found in this file",
+        );
       }
       const sessionId = replay.id ?? `local-${file.lastModified}-${file.size}`;
       const cwd = replay.cwd ?? "";
@@ -214,7 +218,7 @@
         },
       };
       transcriptSessionOverride = {
-        agent: "codex",
+        agent: replay.agent,
         cwd,
         sessionId,
         startedAt: replay.startedAt,
@@ -365,7 +369,7 @@
   }
 
   interface ReplayTranscriptSession {
-    agent: "codex";
+    agent: "codex" | "claude";
     cwd: string;
     sessionId: string;
     startedAt?: string;
@@ -378,17 +382,17 @@
   class="replay-lab"
   class:drag-active={dragActive}
   role="region"
-  aria-label="Codex Replay Lab"
+  aria-label="Treetop Replay Lab"
   on:dragover={onDragOver}
   on:dragleave={onDragLeave}
   on:drop={onDrop}
 >
   <header class="replay-lab-header">
     <div>
-      <h1>Codex App Replay Lab</h1>
+      <h1>Treetop Replay Lab</h1>
       <p>
-        Drop a Codex JSONL file locally, or inspect an available recorded
-        session.
+        Drop a Codex or Claude JSONL file locally, or inspect an available
+        recorded Codex session.
       </p>
     </div>
     <div class="replay-actions">
@@ -414,6 +418,14 @@
       </button>
       <button
         type="button"
+        class="replay-help"
+        aria-haspopup="dialog"
+        on:click={() => helpDialog?.showModal()}
+      >
+        Help
+      </button>
+      <button
+        type="button"
         class="replay-clear"
         disabled={!fixture &&
           !transcriptSession &&
@@ -426,6 +438,38 @@
       </button>
     </div>
   </header>
+
+  <dialog bind:this={helpDialog} class="replay-help-dialog">
+    <div class="replay-help-heading">
+      <div>
+        <h2>Finding session files</h2>
+        <p>
+          Choose any session JSONL below, then open or drop it into Replay Lab.
+        </p>
+      </div>
+      <button
+        type="button"
+        aria-label="Close help"
+        on:click={() => helpDialog?.close()}>×</button
+      >
+    </div>
+    <div class="replay-help-platforms">
+      {#each REPLAY_SESSION_LOCATIONS as location}
+        <section>
+          <h3>{location.platform}</h3>
+          <strong>Codex</strong>
+          {#each location.codex as path}<code>{path}</code>{/each}
+          <strong>Claude Code</strong>
+          {#each location.claude as path}<code>{path}</code>{/each}
+        </section>
+      {/each}
+    </div>
+    <p class="replay-help-note">
+      The Claude project folder is your working-directory path encoded with
+      dashes. Your browser reads a selected file locally; Replay Lab does not
+      upload it.
+    </p>
+  </dialog>
 
   <div class="replay-workspace">
     <aside
@@ -554,7 +598,7 @@
             <div class="replay-production-session">
               {#key transcriptSession.threadId}
                 <SessionView
-                  agent="codex"
+                  agent={transcriptSessionOverride?.agent ?? "codex"}
                   source={localFile ? "" : transcriptSession.transcript.path}
                   resumeSessionId={transcriptSession.threadId}
                   wtPath={transcriptSession.transcript.cwd ?? ""}
@@ -577,7 +621,7 @@
           </div>
         {:else if !fixture || !transport}
           <div class="replay-drop" role="region" aria-label="Replay status">
-            <strong>Drop a Codex JSONL file here</strong>
+            <strong>Drop a Codex or Claude JSONL file here</strong>
             <span>or select an available recorded session.</span>
             {#if parseError}<small>{parseError}</small>{/if}
           </div>
@@ -794,7 +838,8 @@
   }
 
   .replay-clear,
-  .replay-open {
+  .replay-open,
+  .replay-help {
     position: relative;
     display: inline-flex;
     align-items: center;
@@ -808,8 +853,88 @@
   }
 
   .replay-clear,
-  .replay-open {
+  .replay-open,
+  .replay-help {
     font: inherit;
+  }
+
+  .replay-help-dialog {
+    width: min(680px, calc(100vw - 32px));
+    padding: 20px;
+    border: 1px solid var(--border, #3a3a3a);
+    border-radius: 14px;
+    color: var(--text, #f0f0f0);
+    background: var(--panel-bg, #181818);
+    box-shadow: 0 24px 80px rgb(0 0 0 / 55%);
+  }
+
+  .replay-help-dialog::backdrop {
+    background: rgb(0 0 0 / 68%);
+  }
+
+  .replay-help-heading {
+    display: flex;
+    justify-content: space-between;
+    gap: 16px;
+    align-items: flex-start;
+  }
+
+  .replay-help-heading h2,
+  .replay-help-platforms h3 {
+    margin: 0;
+  }
+
+  .replay-help-heading p,
+  .replay-help-note {
+    margin: 5px 0 0;
+    color: var(--muted, #aaa);
+    font-size: 13px;
+  }
+
+  .replay-help-heading button {
+    width: 32px;
+    height: 32px;
+    border: 1px solid var(--border, #3a3a3a);
+    border-radius: 50%;
+    color: inherit;
+    background: var(--button-bg, #252525);
+    font: inherit;
+    font-size: 20px;
+    cursor: pointer;
+  }
+
+  .replay-help-platforms {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 12px;
+    margin-top: 18px;
+  }
+
+  .replay-help-platforms section {
+    min-width: 0;
+    display: grid;
+    gap: 8px;
+    padding: 14px;
+    border: 1px solid var(--border, #303030);
+    border-radius: 10px;
+    background: color-mix(in srgb, var(--button-bg, #252525), transparent 30%);
+  }
+
+  .replay-help-platforms strong {
+    margin-top: 5px;
+    font-size: 12px;
+  }
+
+  .replay-help-platforms code {
+    overflow-wrap: anywhere;
+    color: var(--accent, #9ad45f);
+    font-size: 12px;
+  }
+
+  @media (max-width: 720px) {
+    .replay-help-platforms {
+      grid-template-columns: 1fr;
+    }
   }
 
   .replay-file-input {

@@ -12,11 +12,116 @@ import {
   parseCodexReplayTextAsync,
   parseCodexReplayText,
   parseCodexReplaySessionFixture,
+  REPLAY_SESSION_LOCATIONS,
   summarizeCodexReplayPricingUsage,
   setCodexReplayPlaybackStep,
 } from "../src/codex-replay-lab";
 
+test("documents loadable Codex and Claude session locations on macOS and Windows", () => {
+  expect(REPLAY_SESSION_LOCATIONS).toEqual([
+    {
+      platform: "macOS",
+      codex: [
+        "~/.codex/sessions/YYYY/MM/DD/*.jsonl",
+        "~/.codex/archived_sessions/*.jsonl",
+      ],
+      claude: ["~/.claude/projects/<project-folder>/*.jsonl"],
+    },
+    {
+      platform: "Windows",
+      codex: [
+        "%USERPROFILE%\\.codex\\sessions\\YYYY\\MM\\DD\\*.jsonl",
+        "%USERPROFILE%\\.codex\\archived_sessions\\*.jsonl",
+      ],
+      claude: ["%USERPROFILE%\\.claude\\projects\\<project-folder>\\*.jsonl"],
+    },
+  ]);
+});
+
 describe("Codex replay lab parser", () => {
+  test("streams a dropped Claude JSONL blob into the same local transcript view", async () => {
+    const source = new Blob([
+      [
+        JSON.stringify({
+          type: "mode",
+          mode: "normal",
+          sessionId: "claude-session",
+        }),
+        JSON.stringify({
+          type: "file-history-snapshot",
+          messageId: "snapshot-1",
+          snapshot: {},
+        }),
+        JSON.stringify({
+          type: "user",
+          uuid: "u-1",
+          sessionId: "claude-session",
+          cwd: "/repo/claude",
+          timestamp: "2026-09-09T10:00:00.000Z",
+          message: { role: "user", content: "Inspect this" },
+        }),
+        JSON.stringify({
+          type: "assistant",
+          uuid: "a-1",
+          sessionId: "claude-session",
+          cwd: "/repo/claude",
+          timestamp: "2026-09-09T10:00:01.000Z",
+          message: {
+            role: "assistant",
+            model: "claude-sonnet-4-6",
+            content: [
+              { type: "text", text: "Done" },
+              {
+                type: "tool_use",
+                id: "tool-1",
+                name: "Read",
+                input: { file_path: "/tmp/a" },
+              },
+            ],
+            usage: {
+              input_tokens: 12,
+              output_tokens: 4,
+              cache_read_input_tokens: 3,
+            },
+          },
+        }),
+        JSON.stringify({
+          type: "summary",
+          timestamp: "2026-09-09T10:00:02.000Z",
+        }),
+      ].join("\n"),
+    ]);
+
+    const replay = await parseCodexReplayBlobAsync(source);
+    const messages = codexReplayMessagesUntil(replay, replay.steps.length);
+
+    expect(replay).toMatchObject({
+      agent: "claude",
+      mode: "transcript",
+      id: "claude-session",
+      cwd: "/repo/claude",
+    });
+    expect(messages).toEqual([
+      expect.objectContaining({
+        role: "user",
+        blocks: [{ type: "text", text: "Inspect this" }],
+      }),
+      expect.objectContaining({
+        role: "assistant",
+        model: "claude-sonnet-4-6",
+        tokenUsage: expect.objectContaining({
+          input: 15,
+          cachedInput: 3,
+          output: 4,
+        }),
+      }),
+      expect.objectContaining({
+        role: "system",
+        blocks: [{ type: "marker", text: "Context compacted" }],
+      }),
+    ]);
+  });
+
   test("streams a dropped Codex JSONL blob into a local transcript", async () => {
     const rows = [
       JSON.stringify({
