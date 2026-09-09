@@ -75,6 +75,7 @@ interface SessionDraftCacheEntry {
 const sessionDraftCache = new Map<string, SessionDraftCacheEntry>();
 
 export interface CodexReplaySessionRef {
+  agent: "codex";
   threadId: string;
   title: string;
   mtimeMs: number;
@@ -166,6 +167,7 @@ export async function listCodexReplaySessions(
         )
         .sort((a, b) => a.path.localeCompare(b.path));
       return {
+        agent: "codex",
         threadId,
         title: transcript?.title ?? `Session ${threadId.slice(0, 8)}`,
         mtimeMs: Math.max(

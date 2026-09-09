@@ -353,6 +353,20 @@ describe("Codex replay lab parser", () => {
     ).toEqual(["Small dense", "Middle", "Large sparse"]);
   });
 
+  test("groups folder sessions by their detected agent", () => {
+    const sessions = [
+      { title: "Older Codex", agent: "codex", mtimeMs: 1 },
+      { title: "Claude", agent: "claude", mtimeMs: 3 },
+      { title: "Newer Codex", agent: "codex", mtimeMs: 2 },
+    ] as const;
+
+    expect(
+      sortCodexReplaySessions(sessions, "agent").map(
+        (session) => `${session.agent}:${session.title}`,
+      ),
+    ).toEqual(["codex:Newer Codex", "codex:Older Codex", "claude:Claude"]);
+  });
+
   test("adapts server sessions and dropped files through one replay view model", async () => {
     const droppedReplay = await parseCodexReplayBlobAsync(
       new Blob([
