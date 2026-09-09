@@ -727,6 +727,36 @@ export function filterCodexReplaySessionsByModel<
   return sessions.filter((session) => session.models?.includes(model));
 }
 
+export function searchCodexReplaySessions<
+  T extends {
+    title: string;
+    threadId: string;
+    transcript?: { path: string; cwd?: string };
+  },
+>(sessions: readonly T[], query: string): T[] {
+  const needle = query.trim().toLowerCase();
+  if (!needle) return [...sessions];
+  return sessions.filter((session) =>
+    [
+      session.title,
+      session.threadId,
+      session.transcript?.path,
+      session.transcript?.cwd,
+    ].some((value) => value?.toLowerCase().includes(needle)),
+  );
+}
+
+export function codexReplayProjectLabel(
+  cwd: string | undefined,
+): string | undefined {
+  const normalized = cwd
+    ?.trim()
+    .replace(/[\\/]+$/, "")
+    .replace(/\\/g, "/");
+  if (!normalized) return undefined;
+  return normalized.split("/").pop() || normalized;
+}
+
 export function listCodexReplaySessionModels(
   sessions: readonly { models?: readonly string[] }[],
 ): string[] {

@@ -732,6 +732,7 @@ async function transcriptRef(
       size: stats.size,
       title: sessionTitles?.[path] ?? overview.firstUserMessage,
       messageCount: overview.messageCount,
+      cwd: overview.meta.cwd,
       models: overview.usage.model ? [overview.usage.model] : [],
     };
   } catch {

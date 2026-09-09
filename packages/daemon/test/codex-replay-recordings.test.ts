@@ -60,7 +60,10 @@ describe("Codex replay recording discovery", () => {
       );
       await writeFile(
         transcriptPath,
-        JSON.stringify({ type: "session_meta", payload: { id: threadId } }),
+        JSON.stringify({
+          type: "session_meta",
+          payload: { id: threadId, cwd: "/repo/recorded-project" },
+        }),
       );
       const recordingPath = join(recordingDir, "codex-app-test.jsonl");
       await writeFile(
@@ -81,6 +84,9 @@ describe("Codex replay recording discovery", () => {
       expect(recordings).toHaveLength(1);
       expect(recordings[0]?.threadIds).toEqual([threadId]);
       expect(recordings[0]?.transcriptPaths[0]?.path).toBe(transcriptPath);
+      expect(recordings[0]?.transcriptPaths[0]?.cwd).toBe(
+        "/repo/recorded-project",
+      );
     });
   });
 
