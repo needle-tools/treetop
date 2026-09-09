@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
   analyzeCodexReplayTurns,
+  collectCodexReplayDirectoryFiles,
   codexReplayItemsUntil,
   codexReplayMessagesUntil,
   createCodexReplaySessionTransport,
@@ -13,9 +14,11 @@ import {
   parseCodexReplayTextAsync,
   parseCodexReplayText,
   parseCodexReplaySessionFixture,
+  inspectCodexReplayFilePrefix,
   REPLAY_SESSION_LOCATIONS,
   summarizeCodexReplayPricingUsage,
   setCodexReplayPlaybackStep,
+  sortCodexReplaySessions,
 } from "../src/codex-replay-lab";
 
 test("documents loadable Codex and Claude session locations on macOS and Windows", () => {
@@ -40,6 +43,178 @@ test("documents loadable Codex and Claude session locations on macOS and Windows
 });
 
 describe("Codex replay lab parser", () => {
+  test("enumerates nested session handles without opening file bodies", async () => {
+    let getFileCalls = 0;
+    const sessionHandle = {
+      kind: "file" as const,
+      name: "session.jsonl",
+      getFile: async () => {
+        getFileCalls += 1;
+        return new File([], "session.jsonl");
+      },
+    };
+    const ignoredHandle = {
+      kind: "file" as const,
+      name: "notes.txt",
+      getFile: async () => new File([], "notes.txt"),
+    };
+    const nested = {
+      kind: "directory" as const,
+      name: "09",
+      async *entries() {
+        yield [sessionHandle.name, sessionHandle] as const;
+        yield [ignoredHandle.name, ignoredHandle] as const;
+      },
+    };
+    const root = {
+      kind: "directory" as const,
+      name: "sessions",
+      async *entries() {
+        yield [nested.name, nested] as const;
+      },
+    };
+
+    const files = await collectCodexReplayDirectoryFiles(root);
+
+    expect(files.map((file) => file.relativePath)).toEqual([
+      "09/session.jsonl",
+    ]);
+    expect(files[0]?.handle).toBe(sessionHandle);
+    expect(getFileCalls).toBe(0);
+  });
+
+  test("derives a session name from a bounded file prefix", async () => {
+    const head = [
+      JSON.stringify({
+        timestamp: "2026-09-09T10:00:00.000Z",
+        type: "session_meta",
+        payload: { id: "folder-session", cwd: "/repo/folder" },
+      }),
+      JSON.stringify({
+        timestamp: "2026-09-09T10:00:01.000Z",
+        type: "response_item",
+        payload: {
+          type: "message",
+          role: "user",
+          content: [{ type: "input_text", text: "Make folder loading lazy" }],
+        },
+      }),
+    ].join("\n");
+    const sourceText = `${head}\n${"x".repeat(256 * 1024)}`;
+    const requestedRanges: Array<[number, number]> = [];
+    const file = {
+      size: sourceText.length,
+      slice(start?: number, end?: number) {
+        requestedRanges.push([start ?? 0, end ?? sourceText.length]);
+        return new Blob([sourceText.slice(start, end)]);
+      },
+    };
+
+    const overview = await inspectCodexReplayFilePrefix(file, {
+      maxBytes: 64 * 1024,
+    });
+
+    expect(requestedRanges).toContainEqual([0, 64 * 1024]);
+    expect(
+      requestedRanges.reduce((total, [start, end]) => total + end - start, 0),
+    ).toBe(160 * 1024);
+    expect(overview).toMatchObject({
+      agent: "codex",
+      sessionId: "folder-session",
+      cwd: "/repo/folder",
+      startedAt: "2026-09-09T10:00:00.000Z",
+      title: "Make folder loading lazy",
+    });
+  });
+
+  test("samples large files for line estimates without reading the body", async () => {
+    const line = `${"x".repeat(99)}\n`;
+    const sourceText = [
+      JSON.stringify({
+        type: "session_meta",
+        payload: { id: "sampled-session", cwd: "/repo" },
+      }),
+      "\n",
+      line.repeat(10_000),
+    ].join("");
+    let bytesRequested = 0;
+    const file = {
+      size: sourceText.length,
+      slice(start?: number, end?: number) {
+        bytesRequested += (end ?? sourceText.length) - (start ?? 0);
+        return new Blob([sourceText.slice(start, end)]);
+      },
+    };
+
+    const overview = await inspectCodexReplayFilePrefix(file, {
+      maxBytes: 128 * 1024,
+      lineSampleBytes: 16 * 1024,
+    });
+
+    expect(bytesRequested).toBeLessThan(256 * 1024);
+    expect(overview?.lineCountExact).toBe(false);
+    expect(overview?.lineCount).toBeGreaterThan(9_900);
+    expect(overview?.lineCount).toBeLessThan(10_100);
+  });
+
+  test("widens the bounded title window only when the first pass has no name", async () => {
+    const sourceText = [
+      JSON.stringify({
+        type: "session_meta",
+        payload: { id: "late-title", cwd: "/repo" },
+      }),
+      "\n",
+      JSON.stringify({ type: "bootstrap", text: "x".repeat(150 * 1024) }),
+      "\n",
+      JSON.stringify({
+        type: "response_item",
+        payload: {
+          type: "message",
+          role: "user",
+          content: [{ type: "input_text", text: "Found after bootstrap" }],
+        },
+      }),
+      "\n",
+      "tail".repeat(300 * 1024),
+    ].join("");
+    const source = {
+      size: sourceText.length,
+      slice: (start?: number, end?: number) =>
+        new Blob([sourceText.slice(start, end)]),
+    };
+
+    const overview = await inspectCodexReplayFilePrefix(source);
+
+    expect(overview?.title).toBe("Found after bootstrap");
+  });
+
+  test("sorts folder sessions by exact size and sampled line count", () => {
+    const sessions = [
+      {
+        title: "Small dense",
+        mtimeMs: 3,
+        transcript: { size: 100, lineCount: 80 },
+      },
+      {
+        title: "Large sparse",
+        mtimeMs: 2,
+        transcript: { size: 10_000, lineCount: 12 },
+      },
+      {
+        title: "Middle",
+        mtimeMs: 1,
+        transcript: { size: 1_000, lineCount: 40 },
+      },
+    ];
+
+    expect(
+      sortCodexReplaySessions(sessions, "size").map((s) => s.title),
+    ).toEqual(["Large sparse", "Middle", "Small dense"]);
+    expect(
+      sortCodexReplaySessions(sessions, "lines").map((s) => s.title),
+    ).toEqual(["Small dense", "Middle", "Large sparse"]);
+  });
+
   test("adapts server sessions and dropped files through one replay view model", async () => {
     const droppedReplay = await parseCodexReplayBlobAsync(
       new Blob([
