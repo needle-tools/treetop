@@ -56,6 +56,7 @@ function fakeScroller(anchorTop: () => number): HTMLElement {
     scrollTop: 400,
     clientHeight: 500,
     getBoundingClientRect: () => rect(100, 500),
+    closest: () => null,
     querySelectorAll: (selector: string) =>
       selector === "[data-visual-scroll-anchor]" ? [anchor] : [],
     querySelector: (selector: string) =>
@@ -200,5 +201,22 @@ describe("session scroll controller", () => {
     controller.forceTailFollow();
     scheduler.flush();
     expect(workBody.scrollTop).toBe(1_000_000_000);
+  });
+
+  test("keeps a paused reader in place when a new transcript step arrives", () => {
+    const scheduler = new ManualScheduler();
+    const scroller = fakeScroller(() => 220);
+    const controller = createSessionScrollController({ scheduler });
+
+    controller.setElement(scroller);
+    controller.updateTail("initial-step");
+    scheduler.flush();
+    scroller.scrollTop = 400;
+    controller.setPaused(true);
+    controller.updateTail("next-step");
+    scheduler.flush();
+
+    expect(scroller.scrollTop).toBe(400);
+    expect(controller.isPaused).toBe(true);
   });
 });

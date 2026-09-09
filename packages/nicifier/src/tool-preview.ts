@@ -514,32 +514,54 @@ export interface VisualToolInlineScript {
   code: string;
 }
 
+const visualToolInlineScriptCache = new WeakMap<
+  MessageBlock,
+  VisualToolInlineScript | null
+>();
+
 export function visualToolInlineScript(
   block: MessageBlock | undefined,
 ): VisualToolInlineScript | undefined {
   if (!block || block.type !== "tool_use") return undefined;
+  const cached = visualToolInlineScriptCache.get(block);
+  if (cached !== undefined) return cached ?? undefined;
   const structuredScript = inlineScriptFromStructuredTool(
     block.toolName ?? "",
     block.toolInput,
   );
-  if (structuredScript) return structuredScript;
+  if (structuredScript) {
+    visualToolInlineScriptCache.set(block, structuredScript);
+    return structuredScript;
+  }
   const command = commandTextFromToolInput(block.toolInput, block.toolName);
-  if (!command) return undefined;
-  return inlineScriptFromCommandPreservingHeredoc(command);
+  const script = command
+    ? inlineScriptFromCommandPreservingHeredoc(command)
+    : undefined;
+  visualToolInlineScriptCache.set(block, script ?? null);
+  return script;
 }
+
+const visualToolInlineScriptLanguageCache = new WeakMap<MessageBlock, string>();
 
 export function visualToolInlineScriptLanguageLabel(
   block: MessageBlock | undefined,
 ): string {
-  const inlineScript = visualToolInlineScript(block);
-  if (inlineScript) return inlineScriptLanguageLabel(inlineScript.language);
   if (!block || block.type !== "tool_use") return "";
-  const command = commandTextFromToolInput(block.toolInput, block.toolName);
-  if (!command) return "";
-  const scriptFile = directScriptCommand(
-    normalizeLaunchedCommand(command).command,
-  );
-  return scriptFile ? inlineScriptLanguageLabel(scriptFile.language) : "";
+  const cached = visualToolInlineScriptLanguageCache.get(block);
+  if (cached !== undefined) return cached;
+  const inlineScript = visualToolInlineScript(block);
+  let label = inlineScript
+    ? inlineScriptLanguageLabel(inlineScript.language)
+    : "";
+  if (!label) {
+    const command = commandTextFromToolInput(block.toolInput, block.toolName);
+    const scriptFile = command
+      ? directScriptCommand(normalizeLaunchedCommand(command).command)
+      : undefined;
+    label = scriptFile ? inlineScriptLanguageLabel(scriptFile.language) : "";
+  }
+  visualToolInlineScriptLanguageCache.set(block, label);
+  return label;
 }
 
 export function visualToolInlineScriptPreviewText(
@@ -703,9 +725,12 @@ export function visualSnapshotUidLabelsFromToolResult(
   const toolName = (toolUseBlock?.toolName ?? "").toLowerCase();
   const isNativeSnapshotTool =
     toolName === "take_snapshot" || toolName.endsWith(".take_snapshot");
-  const isAgentBrowserSnapshotCommand = /^Capture browser snapshot\b/.test(
-    visualToolPreviewText(toolUseBlock),
-  );
+  const command = isNativeSnapshotTool
+    ? undefined
+    : commandTextFromToolInput(toolUseBlock?.toolInput, toolUseBlock?.toolName);
+  const isAgentBrowserSnapshotCommand =
+    !!command?.toLowerCase().includes("snapshot") &&
+    /^Capture browser snapshot\b/.test(visualToolPreviewText(toolUseBlock));
   if (!isNativeSnapshotTool && !isAgentBrowserSnapshotCommand) {
     return undefined;
   }
@@ -1431,7 +1456,16 @@ function visualToolFetchSummaries(
   );
 }
 
-export function visualToolMediaBlocks(
+const visualToolMediaWithoutResultCache = new WeakMap<
+  MessageBlock,
+  VisualMediaBlock[]
+>();
+const visualToolMediaWithResultCache = new WeakMap<
+  MessageBlock,
+  WeakMap<MessageBlock, VisualMediaBlock[]>
+>();
+
+function computeVisualToolMediaBlocks(
   block: MessageBlock | undefined,
   resultBlock?: MessageBlock | undefined,
 ): VisualMediaBlock[] {
@@ -1529,6 +1563,30 @@ export function visualToolMediaBlocks(
     addImagePath(path, resultImageTitle, commandResultCwd);
   }
   return out;
+}
+
+export function visualToolMediaBlocks(
+  block: MessageBlock | undefined,
+  resultBlock?: MessageBlock | undefined,
+): VisualMediaBlock[] {
+  if (!block || block.type !== "tool_use") return [];
+  if (!resultBlock) {
+    const cached = visualToolMediaWithoutResultCache.get(block);
+    if (cached) return cached;
+    const media = computeVisualToolMediaBlocks(block);
+    visualToolMediaWithoutResultCache.set(block, media);
+    return media;
+  }
+  let results = visualToolMediaWithResultCache.get(block);
+  if (!results) {
+    results = new WeakMap();
+    visualToolMediaWithResultCache.set(block, results);
+  }
+  const cached = results.get(resultBlock);
+  if (cached) return cached;
+  const media = computeVisualToolMediaBlocks(block, resultBlock);
+  results.set(resultBlock, media);
+  return media;
 }
 
 function absoluteLocalWorkingDirectoryFromToolInput(
@@ -1782,7 +1840,12 @@ function formatHumanBytes(bytes: number): string {
   return `${value.toFixed(digits)} ${unit}`;
 }
 
-export function visualToolPreviewParts(
+const visualToolPreviewPartsCache = new WeakMap<
+  MessageBlock,
+  VisualToolPreviewPart[]
+>();
+
+function computeVisualToolPreviewParts(
   block: MessageBlock | undefined,
   context?: VisualToolPreviewContext,
 ): VisualToolPreviewPart[] {
@@ -1815,6 +1878,18 @@ export function visualToolPreviewParts(
       ? normalizeLaunchedCommand(command).command
       : stringifyToolPayload(input);
   return textPreviewParts(text.replace(/\s+/g, " ").trim());
+}
+
+export function visualToolPreviewParts(
+  block: MessageBlock | undefined,
+  context?: VisualToolPreviewContext,
+): VisualToolPreviewPart[] {
+  if (!block || context) return computeVisualToolPreviewParts(block, context);
+  const cached = visualToolPreviewPartsCache.get(block);
+  if (cached) return cached;
+  const parts = computeVisualToolPreviewParts(block);
+  visualToolPreviewPartsCache.set(block, parts);
+  return parts;
 }
 
 export interface VisualToolApprovalBadge {
@@ -1920,21 +1995,33 @@ export function visualToolLauncherLabel(
   return normalizeLaunchedCommand(command).launcher;
 }
 
+const visualToolRemoteHostCache = new WeakMap<MessageBlock, string | null>();
+
 export function visualToolRemoteHostLabel(
   block: MessageBlock | undefined,
 ): string | undefined {
   if (!block || block.type !== "tool_use") return undefined;
+  const cached = visualToolRemoteHostCache.get(block);
+  if (cached !== undefined) return cached ?? undefined;
   const command = commandTextFromToolInput(block.toolInput, block.toolName);
-  if (!command) return undefined;
+  if (!command) {
+    visualToolRemoteHostCache.set(block, null);
+    return undefined;
+  }
   const normalized = normalizeLaunchedCommand(command);
-  if (normalized.remoteHost) return normalized.remoteHost;
+  if (normalized.remoteHost) {
+    visualToolRemoteHostCache.set(block, normalized.remoteHost);
+    return normalized.remoteHost;
+  }
   const transfer = visualCommandPreview(command).summaries.find(
     (
       summary,
     ): summary is Extract<VisualCommandSummary, { kind: "remote-transfer" }> =>
       summary.kind === "remote-transfer",
   );
-  return transfer?.host;
+  const host = transfer?.host;
+  visualToolRemoteHostCache.set(block, host ?? null);
+  return host;
 }
 
 export interface VisualToolConfigAssignment {

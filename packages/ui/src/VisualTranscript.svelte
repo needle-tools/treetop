@@ -207,6 +207,8 @@
   export let onMessagesLeave: () => void = () => {};
   export let onMessagesWheel: (e: WheelEvent) => void = () => {};
   export let onMessagesScroll: () => void = () => {};
+  export let loadingOlder = false;
+  export let hiddenMessageCount = 0;
   export let onLiveWorkBodyScroll: (
     workKey: string,
     body: HTMLElement,
@@ -3238,6 +3240,19 @@
   data-supergit-session-cwd={sessionCwd}
   data-supergit-daemon-id={daemonId}
 >
+  {#if loadingOlder}
+    <li
+      class="visual-history-skeleton"
+      role="status"
+      aria-label={`Loading ${hiddenMessageCount.toLocaleString()} earlier messages`}
+    >
+      <span class="visual-history-skeleton-label">Loading earlier messages</span>
+      {#each [72, 91, 63] as width}
+        <span class="visual-history-skeleton-line" style={`--width:${width}%`}
+        ></span>
+      {/each}
+    </li>
+  {/if}
   {#each items as item, itemIndex (getVisualTranscriptItemKey(item, itemIndex))}
     {#if item.kind === "work"}
       {@const workKey = getVisualTranscriptItemKey(item, itemIndex)}
@@ -3720,6 +3735,43 @@
     flex-direction: column;
     gap: 0.4rem;
     overscroll-behavior: auto contain;
+  }
+  .visual-history-skeleton {
+    display: grid;
+    gap: 0.48rem;
+    min-height: min(14rem, 38vh);
+    padding: 1rem 0.7rem;
+    box-sizing: border-box;
+    color: var(--text-muted);
+  }
+  .visual-history-skeleton-label {
+    font-size: 0.7rem;
+  }
+  .visual-history-skeleton-line {
+    width: var(--width);
+    height: 0.7rem;
+    border-radius: 999px;
+    background: linear-gradient(
+      90deg,
+      color-mix(in srgb, var(--surface-3) 62%, transparent),
+      color-mix(in srgb, var(--text-muted) 18%, var(--surface-2)),
+      color-mix(in srgb, var(--surface-3) 62%, transparent)
+    );
+    background-size: 220% 100%;
+    animation: visual-history-skeleton-shimmer 1.4s ease-in-out infinite;
+  }
+  @keyframes visual-history-skeleton-shimmer {
+    from {
+      background-position: 100% 0;
+    }
+    to {
+      background-position: -120% 0;
+    }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .visual-history-skeleton-line {
+      animation: none;
+    }
   }
   .messages.terminal-transcript {
     gap: 0.18rem;

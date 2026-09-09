@@ -136,6 +136,17 @@ export function canRequestOlderTranscriptMessages(opts: {
   return true;
 }
 
+export function shouldPrefetchOlderVisualHistory(opts: {
+  scrollTop: number;
+  clientHeight: number;
+  hasMore: boolean;
+  requestInFlight: boolean;
+}): boolean {
+  if (!opts.hasMore || opts.requestInFlight) return false;
+  const threshold = Math.max(600, opts.clientHeight * 2.5);
+  return opts.scrollTop <= threshold;
+}
+
 export function replacementVisualScrollTop(opts: {
   previous: VisualScrollMetrics;
   next: VisualScrollMetrics;

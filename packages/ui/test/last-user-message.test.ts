@@ -15,6 +15,7 @@ import {
   latestVisualGoal,
   latestVisualPlan,
   mergeVisualSessionMessages,
+  visualTranscriptTailKey,
   reuseStableVisualTranscriptItems,
   shouldShowLiveToolTimer,
   shouldShowLiveWorkTimer,
@@ -2422,6 +2423,12 @@ describe("withoutDuplicateOptimisticUserMessages", () => {
 });
 
 describe("mergeVisualSessionMessages", () => {
+  it("reuses canonical history when there are no optimistic overlays", () => {
+    const messages = [msg("user", "hello"), msg("assistant", "world")];
+
+    expect(mergeVisualSessionMessages(messages, [])).toBe(messages);
+  });
+
   it("places optimistic user rows after their send-time anchor", () => {
     const before = msg("assistant", "before", "2026-06-19T10:00:00.000Z");
     before.id = "before";
@@ -2525,6 +2532,22 @@ describe("mergeVisualSessionMessages", () => {
     expect(mergeVisualSessionMessages([canonical], [optimistic])).toEqual([
       canonical,
     ]);
+  });
+});
+
+describe("visualTranscriptTailKey", () => {
+  it("does not walk deep history to identify a tail-only update", () => {
+    const messages = Array.from({ length: 10_000 }, (_, index) =>
+      msg("assistant", `old ${index}`),
+    );
+    Object.defineProperty(messages, 0, {
+      get() {
+        throw new Error("tail key walked old history");
+      },
+    });
+
+    expect(() => visualTranscriptTailKey(messages)).not.toThrow();
+    expect(visualTranscriptTailKey(messages)).toContain("10000");
   });
 });
 
@@ -3108,6 +3131,40 @@ describe("visual tool payload display helpers", () => {
         families: ["git"],
       },
     );
+  });
+
+  it("reuses an immutable tool preview across transcript rerenders", () => {
+    const block = {
+      type: "tool_use",
+      toolName: "exec_command",
+      toolInput: { cmd: "git status --short" },
+    };
+    const scriptBlock = {
+      type: "tool_use",
+      toolName: "exec_command",
+      toolInput: { cmd: "python3 -c 'print(1)'" },
+    };
+
+    expect(visualToolPreviewParts(block)).toBe(visualToolPreviewParts(block));
+    expect(visualToolMediaBlocks(block)).toBe(visualToolMediaBlocks(block));
+    expect(visualToolInlineScript(scriptBlock)).toBe(
+      visualToolInlineScript(scriptBlock),
+    );
+
+    let commandReads = 0;
+    const remoteBlock = {
+      type: "tool_use",
+      toolName: "exec_command",
+      toolInput: {
+        get cmd() {
+          commandReads += 1;
+          return "ssh build-host git status --short";
+        },
+      },
+    };
+    expect(visualToolRemoteHostLabel(remoteBlock)).toBe("build-host");
+    expect(visualToolRemoteHostLabel(remoteBlock)).toBe("build-host");
+    expect(commandReads).toBe(1);
   });
 
   it("summarizes sed file reads while preserving the raw command payload", () => {

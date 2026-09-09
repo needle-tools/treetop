@@ -1195,3 +1195,23 @@ renderer-pressure snapshot therefore now includes a grouped animation inventory
 build can identify the previously anonymous 67-animation set directly instead
 of guessing from source selectors. Animations are contributory here, not the
 whole cost, so do not treat the all-off delta as a complete fix.
+
+## Deep transcript stepping and history prefetch (2026-09-09)
+
+Replay Lab exposed a shared transcript scaling bug: advancing the supplied
+session from step 3000 to 3001 took about 554ms, versus 25ms at step 5. A CPU
+profile showed that parsing was not the bottleneck. `VisualTranscript` was
+re-running command tokenization for immutable historical tool blocks while
+recomputing work overviews and media metadata. Weak caches in the reusable
+nicifier helpers now retain previews, inline-script metadata, remote hosts, and
+media derivations for the lifetime of their immutable block objects. The same
+browser check is now about 56ms at step 3000 versus 24ms at step 5. A second
+check on a 165MB transcript measured 59ms at step 10000 versus 19ms at step 5;
+the remaining difference includes roughly 25ms of browser layout.
+
+Older-history paging now starts within 2.5 viewports of the top (with a 600px
+minimum lead) and shows a geometry-preserving loading skeleton while a backing
+request is outstanding. The single shared session scroll controller publishes
+the existing tail-follow state and marker, keeps a paused reader anchored while
+new steps arrive, and resumes tail following only when the reader returns to
+the end.
