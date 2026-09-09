@@ -25,6 +25,7 @@
     replayDurationMs,
     replayElapsedMsAtStep,
     replayPlaybackTiming,
+    replaySourceProgressAtStep,
     replayStepIndexAtElapsedMs,
     summarizeCodexReplaySessions,
     summarizeCodexReplayPricingUsage,
@@ -77,8 +78,6 @@
   let folderInput: HTMLInputElement | null = null;
   let helpDialog: HTMLDialogElement | null = null;
   let localFile = false;
-  let localFileSize: number | undefined;
-  let localLineCount: number | undefined;
   let localWarnings: string[] = [];
   let dragActive = false;
   let sessionListMode: "daemon" | "directory" = "daemon";
@@ -99,6 +98,9 @@
       ? playbackCursorMs
       : replayElapsedMsAtStep(playbackTimeline, scrubStepIndex)
     : 0;
+  $: replaySourceProgress = localReplay
+    ? replaySourceProgressAtStep(localReplay, stepIndex)
+    : { exact: true };
   $: replayModel = [...analysisMessages]
     .reverse()
     .find((message) => message.model)?.model;
@@ -160,8 +162,6 @@
     );
     analysisMessages = view.playback.messages;
     localFile = options.localFile;
-    localFileSize = view.fileSizeBytes;
-    localLineCount = view.lineCount;
     localWarnings = options.warnings ?? view.replay.warnings;
     replayGeneration += 1;
   }
@@ -219,8 +219,6 @@
     transcriptSessionOverride = undefined;
     analysisMessages = [];
     localFile = false;
-    localFileSize = undefined;
-    localLineCount = undefined;
     localWarnings = [];
     stopPlayback();
     try {
@@ -284,8 +282,6 @@
     selectedThreadId = options.entry?.threadId ?? "";
     stopPlayback();
     localFile = true;
-    localFileSize = file.size;
-    localLineCount = undefined;
     localWarnings = [];
     try {
       const replay = await parseCodexReplayBlobAsync(file, {
@@ -536,8 +532,6 @@
     loading = false;
     loadingLabel = "";
     localFile = false;
-    localFileSize = undefined;
-    localLineCount = undefined;
     localWarnings = [];
   }
 
@@ -1053,9 +1047,10 @@
                   model={replayModel}
                   pricingUsage={replayPricingUsage}
                   pricingUsageExact={replayPricingUsage.length > 0}
-                  totalMessageCount={transcriptSession.transcript.messageCount}
-                  fileSizeBytes={localFile ? localFileSize : undefined}
-                  fileLineCount={localFile ? localLineCount : undefined}
+                  totalMessageCount={analysisMessages.length}
+                  fileSizeBytes={replaySourceProgress.fileSizeBytes}
+                  fileLineCount={replaySourceProgress.lineCount}
+                  fileStatsExact={replaySourceProgress.exact}
                   {transcriptSessionOverride}
                   renderOnly={true}
                   visualAppEnabled={false}

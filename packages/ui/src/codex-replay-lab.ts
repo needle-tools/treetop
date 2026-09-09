@@ -37,6 +37,8 @@ export type ReplayStep =
       kind: "message";
       seq: number;
       at?: string;
+      sourceLine?: number;
+      sourceByteEnd?: number;
       label: string;
       message: CodexAppHistoryMessage & { intent?: "steer" };
     }
@@ -44,6 +46,8 @@ export type ReplayStep =
       kind: "event";
       seq: number;
       at?: string;
+      sourceLine?: number;
+      sourceByteEnd?: number;
       label: string;
       event: CodexAppEvent;
     };
@@ -499,7 +503,13 @@ export function formatReplayClock(valueMs: number): string {
     : `${minutes}:${String(remainder).padStart(2, "0")}`;
 }
 
-type ReplayTimeline = { steps: readonly { at?: string }[] };
+type ReplayTimeline = {
+  steps: readonly {
+    at?: string;
+    sourceLine?: number;
+    sourceByteEnd?: number;
+  }[];
+};
 export type ReplayPlaybackRate =
   | "time:1"
   | "time:10"
@@ -553,6 +563,56 @@ export function replayStepIndexAtElapsedMs(
     else high = middle;
   }
   return low;
+}
+
+export function replaySourceProgressAtStep(
+  replay: ReplayTimeline & {
+    lineCount?: number;
+    fileSizeBytes?: number;
+  },
+  stepIndex: number,
+): { lineCount?: number; fileSizeBytes?: number; exact: boolean } {
+  const target = Math.max(
+    0,
+    Math.min(replay.steps.length, Math.trunc(stepIndex) || 0),
+  );
+  if (target === 0) {
+    return {
+      ...(replay.lineCount !== undefined ? { lineCount: 0 } : {}),
+      ...(replay.fileSizeBytes !== undefined ? { fileSizeBytes: 0 } : {}),
+      exact: true,
+    };
+  }
+  if (target === replay.steps.length) {
+    return {
+      ...(replay.lineCount !== undefined
+        ? { lineCount: replay.lineCount }
+        : {}),
+      ...(replay.fileSizeBytes !== undefined
+        ? { fileSizeBytes: replay.fileSizeBytes }
+        : {}),
+      exact: true,
+    };
+  }
+  const step = replay.steps[target - 1];
+  const ratio = replay.steps.length > 0 ? target / replay.steps.length : 0;
+  const exact =
+    (replay.lineCount === undefined || step?.sourceLine !== undefined) &&
+    (replay.fileSizeBytes === undefined || step?.sourceByteEnd !== undefined);
+  return {
+    ...(replay.lineCount !== undefined
+      ? {
+          lineCount: step?.sourceLine ?? Math.round(replay.lineCount * ratio),
+        }
+      : {}),
+    ...(replay.fileSizeBytes !== undefined
+      ? {
+          fileSizeBytes:
+            step?.sourceByteEnd ?? Math.round(replay.fileSizeBytes * ratio),
+        }
+      : {}),
+    exact,
+  };
 }
 
 function replayStepTimeOffsets(replay: ReplayTimeline): number[] {
@@ -830,10 +890,15 @@ export async function parseCodexReplayBlobAsync(
   let startedAt: string | undefined;
   let retainedInlineMediaBytes = 0;
   let inlineMediaLimitWarned = false;
+  let currentLineByteEnd = 0;
 
   const retainStep = (step: ReplayStep) => {
     if (step.kind !== "message") {
-      steps.push(step);
+      steps.push({
+        ...step,
+        sourceLine: lineCount,
+        sourceByteEnd: currentLineByteEnd,
+      });
       return;
     }
     const blocks = step.message.blocks.filter((block) => {
@@ -856,6 +921,8 @@ export async function parseCodexReplayBlobAsync(
     if (blocks.length || step.message.tokenUsage) {
       steps.push({
         ...step,
+        sourceLine: lineCount,
+        sourceByteEnd: currentLineByteEnd,
         message: { ...step.message, blocks },
       });
     }
@@ -935,7 +1002,8 @@ export async function parseCodexReplayBlobAsync(
     pendingLineParts.push(part);
   };
 
-  const finishLine = () => {
+  const finishLine = (sourceByteEnd: number) => {
+    currentLineByteEnd = sourceByteEnd;
     if (discardingOversizedLine) {
       lineCount += 1;
       warnings.push(`Skipped line ${lineCount}: exceeds 16 MiB safety limit`);
@@ -964,16 +1032,24 @@ export async function parseCodexReplayBlobAsync(
     while (true) {
       const { value, done } = await reader.read();
       if (done) break;
+      const chunkStart = bytesRead;
       bytesRead += value.byteLength;
+      const newlineByteEnds: number[] = [];
+      let newlineAt = value.indexOf(10);
+      while (newlineAt >= 0) {
+        newlineByteEnds.push(chunkStart + newlineAt + 1);
+        newlineAt = value.indexOf(10, newlineAt + 1);
+      }
+      let newlineIndex = 0;
       const parts = decoder.decode(value, { stream: true }).split("\n");
       if (parts.length === 1) {
         appendLinePart(parts[0] ?? "");
       } else {
         appendLinePart(parts[0] ?? "");
-        finishLine();
+        finishLine(newlineByteEnds[newlineIndex++] ?? bytesRead);
         for (let index = 1; index < parts.length - 1; index += 1) {
           appendLinePart(parts[index] ?? "");
-          finishLine();
+          finishLine(newlineByteEnds[newlineIndex++] ?? bytesRead);
         }
         appendLinePart(parts.at(-1) ?? "");
       }
@@ -988,7 +1064,7 @@ export async function parseCodexReplayBlobAsync(
       }
     }
     appendLinePart(decoder.decode());
-    if (pendingLineLength > 0 || discardingOversizedLine) finishLine();
+    if (pendingLineLength > 0 || discardingOversizedLine) finishLine(blob.size);
   } finally {
     reader.releaseLock();
   }
@@ -1390,7 +1466,15 @@ export function createCodexReplayPlayback(
 export function createCodexReplayViewModel(
   input: CodexReplayViewModelInput,
 ): CodexReplayViewModel {
-  const replay = input.replay ?? replayFromTranscriptSession(input.session);
+  const parsedReplay =
+    input.replay ?? replayFromTranscriptSession(input.session);
+  const lineCount = input.lineCount ?? parsedReplay.lineCount;
+  const fileSizeBytes = input.fileSizeBytes ?? parsedReplay.fileSizeBytes;
+  const replay =
+    lineCount === parsedReplay.lineCount &&
+    fileSizeBytes === parsedReplay.fileSizeBytes
+      ? parsedReplay
+      : { ...parsedReplay, lineCount, fileSizeBytes };
   const playback = createCodexReplayPlayback(replay, {
     stepIndex: replay.steps.length,
   });
