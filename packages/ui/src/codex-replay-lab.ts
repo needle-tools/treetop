@@ -123,6 +123,37 @@ export interface CodexReplayParseOptions {
   onProgress?: (progress: CodexReplayParseProgress) => void;
 }
 
+export interface CodexReplayFileHandleLike {
+  readonly kind: "file";
+  readonly name: string;
+  getFile(): Promise<File>;
+}
+
+export interface CodexReplayDirectoryHandleLike {
+  readonly kind: "directory";
+  readonly name: string;
+  entries(): AsyncIterableIterator<
+    [string, CodexReplayFileHandleLike | CodexReplayDirectoryHandleLike]
+  >;
+}
+
+export interface CodexReplayDirectoryFile {
+  relativePath: string;
+  handle: CodexReplayFileHandleLike;
+}
+
+export interface CodexReplayFileOverview {
+  agent: "codex" | "claude";
+  sessionId?: string;
+  cwd?: string;
+  startedAt?: string;
+  title?: string;
+  lineCount?: number;
+  lineCountExact?: boolean;
+}
+
+export type CodexReplaySessionSort = "recent" | "size" | "lines" | "name";
+
 export const REPLAY_SESSION_LOCATIONS = [
   {
     platform: "macOS",
@@ -395,6 +426,10 @@ function replayTurnLabel(
   const user = messages.find((message) => message.role === "user");
   const text = user?.blocks.find((block) => block.type === "text")?.text;
   if (!text) return `Turn ${index + 1}`;
+  return compactReplayTitle(text) ?? `Turn ${index + 1}`;
+}
+
+function compactReplayTitle(text: string): string | undefined {
   const compact = text
     .replace(
       /<in-app-browser-context\b[^>]*>[\s\S]*?<\/in-app-browser-context>/g,
@@ -416,7 +451,7 @@ function replayTurnLabel(
     .replace(/\s+/g, " ")
     .trim()
     .replace(/^#+\s*My request(?: for Codex)?:\s*/i, "");
-  if (!compact) return `Turn ${index + 1}`;
+  if (!compact) return undefined;
   return compact.length > 64 ? `${compact.slice(0, 63)}…` : compact;
 }
 
@@ -493,6 +528,25 @@ export function filterCodexReplaySessions<
     );
   }
   return [...sessions];
+}
+
+export function sortCodexReplaySessions<
+  T extends {
+    title: string;
+    mtimeMs: number;
+    transcript?: { size?: number; lineCount?: number };
+  },
+>(sessions: readonly T[], sort: CodexReplaySessionSort): T[] {
+  return [...sessions].sort((a, b) => {
+    if (sort === "name") return a.title.localeCompare(b.title);
+    if (sort === "size") {
+      return (b.transcript?.size ?? -1) - (a.transcript?.size ?? -1);
+    }
+    if (sort === "lines") {
+      return (b.transcript?.lineCount ?? -1) - (a.transcript?.lineCount ?? -1);
+    }
+    return b.mtimeMs - a.mtimeMs;
+  });
 }
 
 export function parseCodexReplaySessionFixture(
@@ -847,6 +901,118 @@ export async function parseCodexReplayBlobAsync(
     steps,
     warnings,
   };
+}
+
+/** Recursively enumerate JSONL handles without opening any file. */
+export async function collectCodexReplayDirectoryFiles(
+  root: CodexReplayDirectoryHandleLike,
+): Promise<CodexReplayDirectoryFile[]> {
+  const files: CodexReplayDirectoryFile[] = [];
+  async function visit(
+    directory: CodexReplayDirectoryHandleLike,
+    parentPath: string,
+  ): Promise<void> {
+    for await (const [name, handle] of directory.entries()) {
+      const relativePath = parentPath ? `${parentPath}/${name}` : name;
+      if (handle.kind === "directory") {
+        await visit(handle, relativePath);
+      } else if (name.toLowerCase().endsWith(".jsonl")) {
+        files.push({ relativePath, handle });
+      }
+    }
+  }
+  await visit(root, "");
+  return files.sort((a, b) => a.relativePath.localeCompare(b.relativePath));
+}
+
+/** Read only the head of a candidate session to identify it for a folder
+ * index. Opening the session later uses the normal streaming parser. */
+export async function inspectCodexReplayFilePrefix(
+  file: Pick<Blob, "size" | "slice">,
+  options: { maxBytes?: number; lineSampleBytes?: number } = {},
+): Promise<CodexReplayFileOverview | undefined> {
+  const maxBytes = Math.max(1, Math.trunc(options.maxBytes ?? 512 * 1024));
+  const lineSamplePromise = sampleReplayLineCount(
+    file,
+    options.lineSampleBytes,
+  );
+  const availableBytes = Math.min(file.size, maxBytes);
+  let prefixBytes = Math.min(availableBytes, 128 * 1024);
+  let replay = await parseCodexReplayBlobAsync(file.slice(0, prefixBytes));
+  let messages = codexReplayMessagesUntil(replay, replay.steps.length);
+  let userText = messages
+    .find((message) => message.role === "user")
+    ?.blocks.find((block) => block.type === "text")?.text;
+  while (!userText && prefixBytes < availableBytes) {
+    prefixBytes = Math.min(availableBytes, prefixBytes * 2);
+    replay = await parseCodexReplayBlobAsync(file.slice(0, prefixBytes));
+    messages = codexReplayMessagesUntil(replay, replay.steps.length);
+    userText = messages
+      .find((message) => message.role === "user")
+      ?.blocks.find((block) => block.type === "text")?.text;
+  }
+  const lineSample = await lineSamplePromise;
+  if (!replay.id && !replay.cwd && messages.length === 0) return undefined;
+  return {
+    agent: replay.agent,
+    sessionId: replay.id,
+    cwd: replay.cwd,
+    startedAt: replay.startedAt,
+    title: userText ? compactReplayTitle(userText) : undefined,
+    lineCount: lineSample.count,
+    lineCountExact: lineSample.exact,
+  };
+}
+
+async function sampleReplayLineCount(
+  file: Pick<Blob, "size" | "slice">,
+  requestedSampleBytes?: number,
+): Promise<{ count: number; exact: boolean }> {
+  if (file.size === 0) return { count: 0, exact: true };
+  const sampleBytes = Math.max(
+    1024,
+    Math.trunc(requestedSampleBytes ?? 32 * 1024),
+  );
+  if (file.size <= sampleBytes * 3) {
+    return {
+      count: await countBlobLines(file.slice(0, file.size)),
+      exact: true,
+    };
+  }
+  const middleStart = Math.floor((file.size - sampleBytes) / 2);
+  const ranges = [
+    [0, sampleBytes],
+    [middleStart, middleStart + sampleBytes],
+    [file.size - sampleBytes, file.size],
+  ] as const;
+  let newlines = 0;
+  for (const [start, end] of ranges) {
+    newlines += await countBlobNewlines(file.slice(start, end));
+  }
+  return {
+    count: Math.max(
+      1,
+      Math.round((newlines / (sampleBytes * ranges.length)) * file.size),
+    ),
+    exact: false,
+  };
+}
+
+async function countBlobLines(blob: Blob): Promise<number> {
+  if (blob.size === 0) return 0;
+  const bytes = new Uint8Array(await blob.arrayBuffer());
+  const newlines = countNewlineBytes(bytes);
+  return newlines + (bytes.at(-1) === 10 ? 0 : 1);
+}
+
+async function countBlobNewlines(blob: Blob): Promise<number> {
+  return countNewlineBytes(new Uint8Array(await blob.arrayBuffer()));
+}
+
+function countNewlineBytes(bytes: Uint8Array): number {
+  let count = 0;
+  for (const byte of bytes) if (byte === 10) count += 1;
+  return count;
 }
 
 function replayIdentityFromRecord(record: unknown): {
