@@ -16,6 +16,7 @@ import {
 } from "./last-user-message";
 import {
   canonicalCodexToolName,
+  codexSubagentActivityFields,
   codexPatchApplyResultText,
   estimateModelTokenCost,
   parseCodexImageWrapper,
@@ -1713,6 +1714,17 @@ function codexTranscriptStepFromRow(
   }
 
   if (rowType === "event_msg") {
+    if (payloadType === "item_completed") {
+      const activity = codexSubagentActivityFields(payload.item);
+      if (activity) {
+        return transcriptMessageStep(seq, timestamp, "Subagent activity", {
+          id: `codex-transcript-subagent-${seq}`,
+          role: "assistant",
+          timestamp,
+          blocks: [{ type: "subagent", ...activity }],
+        });
+      }
+    }
     if (payloadType === "patch_apply_end") {
       const toolUseId = objectString(payload, "call_id");
       const patchSteps: ReplayStep[] = [];

@@ -16,6 +16,7 @@ import type { AgentKind } from "./agents";
 import { createLimiter } from "./concurrency";
 import {
   canonicalCodexToolName,
+  codexSubagentActivityFields,
   codexPatchApplyResultText,
   parseCodexImageWrapper,
   parseCodexToolScriptInvocation,
@@ -1780,6 +1781,18 @@ function parseCodexJsonlLine(
   ) {
     const p = obj.payload as Record<string, unknown>;
     const ts = codexTimestamp(obj);
+    if (p.type === "item_completed") {
+      const activity = codexSubagentActivityFields(p.item);
+      if (activity) {
+        pushSessionMessage(
+          out,
+          "assistant",
+          [{ type: "subagent", ...activity }],
+          ts,
+        );
+        return;
+      }
+    }
     if (p.type === "thread_settings_applied") {
       rememberCodexTurnContext(out, p.thread_settings);
       return;

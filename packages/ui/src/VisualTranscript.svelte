@@ -63,6 +63,7 @@
     visualSubagentLabel,
     visualSubagentMetaFromBlock,
     visualSubagentMetaFromBlocks,
+    visualWorkSubagents,
     visualWorkSummary,
     visualUserImageAttachments,
     type VisualFileEditSummary,
@@ -1154,34 +1155,7 @@
   function workSummarySubagents(
     entries: VisualWorkDisplayEntry<NormalizedBlock, NormalizedMessage>[],
   ): VisualSubagentMeta[] {
-    const byKey = new Map<string, VisualSubagentMeta>();
-    for (const displayEntry of entries) {
-      if (displayEntry.kind !== "entry") continue;
-      const toolUse =
-        workEntryToolUseBlock(displayEntry.entry) ??
-        (displayEntry.pairedToolUse
-          ? workEntryToolUseBlock(displayEntry.pairedToolUse)
-          : undefined);
-      const result = workEntryToolResultBlock(
-        displayEntry.entry.blocks.some((block) => block.type === "tool_result")
-          ? displayEntry.entry
-          : displayEntry.pairedResult,
-      );
-      const meta =
-        visualSubagentMetaFromBlocks(toolUse, result) ??
-        visualSubagentMetaFromBlock(displayEntry.entry.blocks[0]);
-      if (!meta) continue;
-      const key = meta.id ?? `${meta.action}:${visualSubagentLabel(meta)}`;
-      const existing = byKey.get(key);
-      byKey.set(key, {
-        ...existing,
-        ...meta,
-        nickname: existing?.nickname ?? meta.nickname,
-        task: existing?.task ?? meta.task,
-        result: meta.result ?? existing?.result,
-      });
-    }
-    return [...byKey.values()];
+    return visualWorkSubagents(entries);
   }
 
   function openSubagent(meta: VisualSubagentMeta, event: MouseEvent): void {

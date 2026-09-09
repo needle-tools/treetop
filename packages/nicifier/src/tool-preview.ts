@@ -36,6 +36,54 @@ export interface CodexToolScriptInvocation {
   toolInput: unknown;
 }
 
+export interface CodexSubagentActivityFields {
+  toolUseId: string;
+  subagentId: string;
+  subagentNickname?: string;
+  subagentAction: "spawn" | "notification";
+  subagentStatus: "running" | "completed" | "failed";
+}
+
+/** Normalize the same Codex subagent lifecycle item from its JSONL
+ * snake_case/PascalCase representation and app-server camelCase shape. */
+export function codexSubagentActivityFields(
+  value: unknown,
+): CodexSubagentActivityFields | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const item = value as Record<string, unknown>;
+  if (item.type !== "SubAgentActivity" && item.type !== "subAgentActivity") {
+    return undefined;
+  }
+  const toolUseId = subagentStringField(item.id);
+  const subagentId = subagentStringField(
+    item.agent_thread_id ?? item.agentThreadId,
+  );
+  const kind = subagentStringField(item.kind);
+  if (!toolUseId || !subagentId || !kind) return undefined;
+  const path = subagentStringField(item.agent_path ?? item.agentPath);
+  const nickname = path
+    ?.replace(/\\/g, "/")
+    .split("/")
+    .filter(Boolean)
+    .pop();
+  return {
+    toolUseId,
+    subagentId,
+    ...(nickname ? { subagentNickname: nickname } : {}),
+    subagentAction: kind === "started" ? "spawn" : "notification",
+    subagentStatus:
+      kind === "completed"
+        ? "completed"
+        : kind === "interrupted"
+          ? "failed"
+          : "running",
+  };
+}
+
+function subagentStringField(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
 /** Normalize the JavaScript wrapper used by Codex custom-tool transcript
  * records. This is shared by the daemon, app-server events, and Replay Lab so
  * variable-backed calls such as `tools.apply_patch(patch)` cannot drift. */

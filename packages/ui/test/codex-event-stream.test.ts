@@ -1939,6 +1939,46 @@ describe("codex event stream hub", () => {
     });
   });
 
+  test("normalizes dedicated app-server subagent activity in history and live mode", () => {
+    const activity = {
+      type: "subAgentActivity",
+      id: "call-spawn-audio",
+      kind: "started",
+      agentThreadId: "01a0874c-317f-7b63-ad0d-3b22af3faa93",
+      agentPath: "/root/audio_types",
+    };
+    const history = codexAppHistoryMessagesFromThread({
+      turns: [{ id: "turn-1", items: [activity] }],
+    });
+    const live = codexLiveMessagesFromEvent({
+      kind: "notification",
+      method: "item/completed",
+      params: { item: activity, threadId: "thread-1", turnId: "turn-1" },
+      threadId: "thread-1",
+      turnId: "turn-1",
+      receivedAt: "2026-09-09T17:51:52.750Z",
+    });
+
+    expect(stripTimestamps(live)).toEqual(stripTimestamps(history));
+    expect(history).toEqual([
+      {
+        id: "codex-subagent-call-spawn-audio",
+        role: "assistant",
+        timestamp: undefined,
+        blocks: [
+          {
+            type: "subagent",
+            toolUseId: "call-spawn-audio",
+            subagentId: "01a0874c-317f-7b63-ad0d-3b22af3faa93",
+            subagentNickname: "audio_types",
+            subagentAction: "spawn",
+            subagentStatus: "running",
+          },
+        ],
+      },
+    ]);
+  });
+
   test("normalizes response-style app-server subagent calls into visible work entries", () => {
     const subagentId = "019f2814-918b-7ba2-bc07-ed683bb1a769";
     const spawnCall = {

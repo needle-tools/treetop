@@ -14,6 +14,7 @@ import {
   latestVisualPlan,
   visualSubagentMetaFromBlock,
   visualSubagentMetaFromBlocks,
+  visualWorkSubagents,
 } from "../src/last-user-message";
 
 function jsonl(entries: object[]): string {
@@ -381,6 +382,97 @@ describe("visual transcript provider flow", () => {
       status: "completed",
       id: subagentId,
     });
+  });
+
+  test("normalizes Codex SubAgentActivity rows and keeps one badge per child", () => {
+    const childId = "01a0874c-317f-7b63-ad0d-3b22af3faa93";
+    const session = parseCodexJsonl(
+      jsonl([
+        {
+          timestamp: "2026-09-09T17:51:50.000Z",
+          type: "response_item",
+          payload: {
+            type: "message",
+            role: "user",
+            content: [{ type: "input_text", text: "check the type surface" }],
+          },
+        },
+        {
+          timestamp: "2026-09-09T17:51:52.678Z",
+          type: "response_item",
+          payload: {
+            type: "function_call",
+            name: "spawn_agent",
+            call_id: "call-spawn-audio",
+            arguments: JSON.stringify({
+              task_name: "audio_types",
+              model: "gpt-5.6-luna",
+              message: `gAAAAABq${"x".repeat(120)}`,
+            }),
+          },
+        },
+        {
+          timestamp: "2026-09-09T17:51:52.750Z",
+          type: "event_msg",
+          payload: {
+            type: "item_completed",
+            item: {
+              type: "SubAgentActivity",
+              id: "call-spawn-audio",
+              kind: "started",
+              agent_thread_id: childId,
+              agent_path: "/root/audio_types",
+            },
+          },
+        },
+        {
+          timestamp: "2026-09-09T18:03:49.658Z",
+          type: "event_msg",
+          payload: {
+            type: "item_completed",
+            item: {
+              type: "SubAgentActivity",
+              id: "subagent-completed-audio",
+              kind: "completed",
+              agent_thread_id: childId,
+              agent_path: "/root/audio_types",
+            },
+          },
+        },
+      ]),
+    );
+
+    const activities = session.messages.filter((message) =>
+      message.blocks.some((block) => block.type === "subagent"),
+    );
+    expect(activities).toHaveLength(2);
+    expect(activities[0]?.blocks[0]).toMatchObject({
+      type: "subagent",
+      toolUseId: "call-spawn-audio",
+      subagentId: childId,
+      subagentNickname: "audio_types",
+      subagentAction: "spawn",
+      subagentStatus: "running",
+    });
+    expect(activities[1]?.blocks[0]).toMatchObject({
+      type: "subagent",
+      subagentId: childId,
+      subagentAction: "notification",
+      subagentStatus: "completed",
+    });
+
+    const { work } = onlyWorkItem(session.messages);
+    const agents = visualWorkSubagents(
+      buildVisualWorkDisplayEntries(work.entries),
+    );
+    expect(agents).toEqual([
+      expect.objectContaining({
+        id: childId,
+        nickname: "audio_types",
+        status: "completed",
+      }),
+    ]);
+    expect(agents[0]?.task).toBeUndefined();
   });
 
   test("attaches Codex turn approval context to command tools", () => {
