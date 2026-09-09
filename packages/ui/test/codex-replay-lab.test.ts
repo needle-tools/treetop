@@ -10,6 +10,7 @@ import {
   createCodexReplayViewModel,
   filterCodexReplayTextForThread,
   filterCodexReplaySessions,
+  filterCodexReplaySessionsByModel,
   formatReplayClock,
   summarizeCodexReplaySessions,
   parseCodexReplayBlobAsync,
@@ -17,6 +18,7 @@ import {
   parseCodexReplayText,
   parseCodexReplaySessionFixture,
   inspectCodexReplayFilePrefix,
+  listCodexReplaySessionModels,
   REPLAY_SESSION_LOCATIONS,
   summarizeCodexReplayPricingUsage,
   setCodexReplayPlaybackStep,
@@ -359,18 +361,27 @@ describe("Codex replay lab parser", () => {
     ).toEqual(["Small dense", "Middle", "Large sparse"]);
   });
 
-  test("groups folder sessions by their detected agent", () => {
+  test("lists detected models and filters to the selected model", () => {
     const sessions = [
-      { title: "Older Codex", agent: "codex", mtimeMs: 1 },
-      { title: "Claude", agent: "claude", mtimeMs: 3 },
-      { title: "Newer Codex", agent: "codex", mtimeMs: 2 },
+      { title: "Older GPT", models: ["gpt-5.3-codex"], mtimeMs: 1 },
+      { title: "Opus", models: ["claude-opus-4-6"], mtimeMs: 3 },
+      {
+        title: "Changed model",
+        models: ["gpt-5.2-codex", "gpt-5.3-codex"],
+        mtimeMs: 2,
+      },
     ] as const;
 
+    expect(listCodexReplaySessionModels(sessions)).toEqual([
+      "claude-opus-4-6",
+      "gpt-5.2-codex",
+      "gpt-5.3-codex",
+    ]);
     expect(
-      sortCodexReplaySessions(sessions, "agent").map(
-        (session) => `${session.agent}:${session.title}`,
+      filterCodexReplaySessionsByModel(sessions, "gpt-5.3-codex").map(
+        (session) => session.title,
       ),
-    ).toEqual(["codex:Newer Codex", "codex:Older Codex", "claude:Claude"]);
+    ).toEqual(["Older GPT", "Changed model"]);
   });
 
   test("adapts server sessions and dropped files through one replay view model", async () => {
@@ -623,6 +634,13 @@ describe("Codex replay lab parser", () => {
 
     expect(
       summarizeCodexReplayPricingUsage(messages).map((entry) => entry.model),
+    ).toEqual(["gpt-5.6-terra", "gpt-6-astra"]);
+    expect(
+      createCodexReplayViewModel({
+        replay,
+        title: "model changes",
+        mtimeMs: 1,
+      }).entry.models,
     ).toEqual(["gpt-5.6-terra", "gpt-6-astra"]);
   });
 
