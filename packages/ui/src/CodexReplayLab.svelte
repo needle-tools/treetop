@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onDestroy, onMount } from "svelte";
   import SessionView from "./SessionView.svelte";
+  import { formatByteSize } from "./context-tokens";
   import { codexAppSource } from "./storage";
   import { installIdleTracker } from "./ui-idle";
   import {
@@ -9,23 +10,29 @@
   } from "@treetop/nicifier";
   import {
     analyzeCodexReplayTurns,
+    collectCodexReplayDirectoryFiles,
     createCodexReplaySessionTransport,
     createCodexReplayViewModel,
     filterCodexReplaySessions,
     formatReplayCost,
     formatReplayDuration,
     formatReplayTokenCount,
+    inspectCodexReplayFilePrefix,
     parseCodexReplayBlobAsync,
     parseCodexReplaySessionFixture,
     REPLAY_SESSION_LOCATIONS,
     summarizeCodexReplaySessions,
     summarizeCodexReplayPricingUsage,
     setCodexReplayPlaybackStep,
+    sortCodexReplaySessions,
     type CodexReplayPlaybackState,
     type CodexReplaySessionFilter,
     type CodexReplaySessionFixture,
     type CodexReplaySessionTransport,
+    type CodexReplaySessionSort,
     type CodexReplayMessage,
+    type CodexReplayDirectoryFile,
+    type CodexReplayDirectoryHandleLike,
     type CodexReplayTranscriptSession,
     type CodexReplayViewModel,
     type ParsedCodexReplay,
@@ -52,18 +59,25 @@
   let selectedThreadId = "";
   let sessionFilter: CodexReplaySessionFilter = "all";
   let sessionQuery = "";
+  let sessionSort: CodexReplaySessionSort = "recent";
   let transcriptSession: ReplaySessionIndexEntry | null = null;
   let transcriptSessionOverride: CodexReplayTranscriptSession | undefined;
   let analysisCollapsed = false;
   let analysisMessages: readonly CodexReplayMessage[] = [];
   let modelsDevPricing: ModelsDevPricingSnapshot | undefined;
   let fileInput: HTMLInputElement | null = null;
+  let folderInput: HTMLInputElement | null = null;
   let helpDialog: HTMLDialogElement | null = null;
   let localFile = false;
   let localFileSize: number | undefined;
   let localLineCount: number | undefined;
   let localWarnings: string[] = [];
   let dragActive = false;
+  let sessionListMode: "daemon" | "directory" = "daemon";
+  let directoryLabel = "";
+  let directoryStatus = "";
+  let directoryGeneration = 0;
+  let directoryFiles = new Map<string, CodexReplayDirectoryFile>();
 
   $: stepCount = transport?.stepCount ?? localReplay?.steps.length ?? 0;
   $: replayModel = [...analysisMessages]
@@ -75,18 +89,18 @@
     modelsDev: modelsDevPricing,
   });
   $: sessionCounts = summarizeCodexReplaySessions(sessions);
-  $: visibleSessions = filterCodexReplaySessions(
-    sessions,
-    sessionFilter,
-  ).filter((entry) => {
-    const query = sessionQuery.trim().toLowerCase();
-    return (
-      !query ||
-      entry.title.toLowerCase().includes(query) ||
-      entry.threadId.toLowerCase().includes(query) ||
-      entry.transcript?.path.toLowerCase().includes(query)
-    );
-  });
+  $: visibleSessions = sortCodexReplaySessions(
+    filterCodexReplaySessions(sessions, sessionFilter).filter((entry) => {
+      const query = sessionQuery.trim().toLowerCase();
+      return (
+        !query ||
+        entry.title.toLowerCase().includes(query) ||
+        entry.threadId.toLowerCase().includes(query) ||
+        entry.transcript?.path.toLowerCase().includes(query)
+      );
+    }),
+    sessionSort,
+  );
 
   function installFixture(
     nextFixture: CodexReplaySessionFixture,
@@ -126,6 +140,7 @@
   }
 
   async function fetchRecordings(): Promise<void> {
+    sessionListMode = "daemon";
     recordingsLoading = true;
     recordingsError = "";
     try {
@@ -138,17 +153,31 @@
       if (!res.ok || !body?.ok) {
         throw new Error(body?.error ?? `HTTP ${res.status}`);
       }
+      if (sessionListMode !== "daemon") return;
       daemonAvailable = true;
       sessions = body.sessions ?? [];
     } catch (err) {
-      daemonAvailable = false;
-      recordingsError = err instanceof Error ? err.message : String(err);
+      if (sessionListMode === "daemon") {
+        daemonAvailable = false;
+        recordingsError = err instanceof Error ? err.message : String(err);
+      }
     } finally {
       recordingsLoading = false;
     }
   }
 
   async function loadSession(entry: ReplaySessionIndexEntry): Promise<void> {
+    if (entry.directoryKey) {
+      const reference = directoryFiles.get(entry.directoryKey);
+      if (!reference) return;
+      try {
+        selectedThreadId = entry.threadId;
+        await loadDroppedFile(await reference.handle.getFile(), { entry });
+      } catch (err) {
+        parseError = err instanceof Error ? err.message : String(err);
+      }
+      return;
+    }
     const requestId = ++loadRequestId;
     loading = true;
     loadingLabel = "Loading session";
@@ -209,11 +238,14 @@
     }
   }
 
-  async function loadDroppedFile(file: File): Promise<void> {
+  async function loadDroppedFile(
+    file: File,
+    options: { entry?: ReplaySessionIndexEntry } = {},
+  ): Promise<void> {
     const requestId = ++loadRequestId;
     loading = true;
     loadingLabel = "Reading local JSONL";
-    fileName = file.name;
+    fileName = options.entry?.title ?? file.name;
     parseError = "";
     fixture = null;
     transport = null;
@@ -222,7 +254,7 @@
     transcriptSession = null;
     transcriptSessionOverride = undefined;
     analysisMessages = [];
-    selectedThreadId = "";
+    selectedThreadId = options.entry?.threadId ?? "";
     playing = false;
     localFile = true;
     localFileSize = file.size;
@@ -239,7 +271,7 @@
       if (requestId !== loadRequestId) return;
       const view = createCodexReplayViewModel({
         replay,
-        title: file.name,
+        title: options.entry?.title ?? file.name,
         mtimeMs: file.lastModified,
         fileSizeBytes: file.size,
       });
@@ -253,6 +285,21 @@
         localFile: true,
         warnings: replay.warnings,
       });
+      if (options.entry?.directoryKey) {
+        sessions = sessions.map((entry) =>
+          entry.directoryKey === options.entry?.directoryKey
+            ? {
+                ...entry,
+                transcript: {
+                  ...entry.transcript!,
+                  lineCount: replay.lineCount,
+                  lineCountExact: true,
+                },
+              }
+            : entry,
+        );
+      }
+      selectedThreadId = options.entry?.threadId ?? "";
     } catch (err) {
       if (requestId !== loadRequestId) return;
       parseError = err instanceof Error ? err.message : String(err);
@@ -271,6 +318,156 @@
     const file = input.files?.[0];
     input.value = "";
     if (file) void loadDroppedFile(file);
+  }
+
+  async function chooseFolder(): Promise<void> {
+    const picker = (
+      window as typeof window & {
+        showDirectoryPicker?: () => Promise<CodexReplayDirectoryHandleLike>;
+      }
+    ).showDirectoryPicker;
+    if (!picker) {
+      folderInput?.click();
+      return;
+    }
+    try {
+      const root = await picker.call(window);
+      await loadDirectory(
+        root.name,
+        await collectCodexReplayDirectoryFiles(root),
+      );
+    } catch (err) {
+      if (err instanceof DOMException && err.name === "AbortError") return;
+      recordingsError = err instanceof Error ? err.message : String(err);
+    }
+  }
+
+  async function onFolderInput(event: Event): Promise<void> {
+    const input = event.currentTarget as HTMLInputElement;
+    const files = Array.from(input.files ?? []).filter((file) =>
+      file.name.toLowerCase().endsWith(".jsonl"),
+    );
+    input.value = "";
+    if (!files.length) return;
+    const rootName = files[0]?.webkitRelativePath.split("/")[0] || "folder";
+    await loadDirectory(
+      rootName,
+      files.map((file) => ({
+        relativePath: file.webkitRelativePath || file.name,
+        handle: {
+          kind: "file",
+          name: file.name,
+          getFile: async () => file,
+        },
+      })),
+    );
+  }
+
+  async function loadDirectory(
+    label: string,
+    references: CodexReplayDirectoryFile[],
+  ): Promise<void> {
+    const generation = ++directoryGeneration;
+    sessionListMode = "directory";
+    sessionFilter = "all";
+    directoryLabel = label;
+    directoryStatus = `Indexing ${references.length.toLocaleString()} files`;
+    recordingsError = "";
+    recordingsLoading = false;
+    const fileMap = new Map(
+      references.map((reference) => [reference.relativePath, reference]),
+    );
+    directoryFiles = fileMap;
+    const entries: ReplaySessionIndexEntry[] = [];
+    let nextIndex = 0;
+    const workers = Array.from(
+      { length: Math.min(8, Math.max(1, references.length)) },
+      async () => {
+        while (nextIndex < references.length) {
+          const reference = references[nextIndex++];
+          if (!reference) continue;
+          const file = await reference.handle.getFile();
+          entries.push({
+            threadId: `directory:${reference.relativePath}`,
+            title: file.name.replace(/\.jsonl$/i, ""),
+            mtimeMs: file.lastModified,
+            rpcRecordingCount: 0,
+            rpcFrameCount: 0,
+            hasTranscript: true,
+            directoryKey: reference.relativePath,
+            transcript: {
+              path: reference.relativePath,
+              size: file.size,
+            },
+          });
+        }
+      },
+    );
+    await Promise.all(workers);
+    if (generation !== directoryGeneration) return;
+    sessions = entries.sort(
+      (a, b) => b.mtimeMs - a.mtimeMs || a.title.localeCompare(b.title),
+    );
+    directoryStatus = `Finding names · 0/${entries.length.toLocaleString()}`;
+    void enrichDirectoryNames(generation, entries);
+  }
+
+  async function enrichDirectoryNames(
+    generation: number,
+    entries: ReplaySessionIndexEntry[],
+  ): Promise<void> {
+    let nextIndex = 0;
+    let completed = 0;
+    const updates = new Map<string, Partial<ReplaySessionIndexEntry>>();
+    const flush = () => {
+      if (generation !== directoryGeneration || updates.size === 0) return;
+      sessions = sessions.map((entry) => {
+        const update = updates.get(entry.directoryKey ?? "");
+        return update ? { ...entry, ...update } : entry;
+      });
+      updates.clear();
+    };
+    const workers = Array.from(
+      { length: Math.min(4, Math.max(1, entries.length)) },
+      async () => {
+        while (nextIndex < entries.length) {
+          const entry = entries[nextIndex++];
+          const reference = entry?.directoryKey
+            ? directoryFiles.get(entry.directoryKey)
+            : undefined;
+          if (!entry || !reference || generation !== directoryGeneration)
+            return;
+          try {
+            const overview = await inspectCodexReplayFilePrefix(
+              await reference.handle.getFile(),
+            );
+            if (overview) {
+              updates.set(reference.relativePath, {
+                ...(overview.title ? { title: overview.title } : {}),
+                transcript: {
+                  ...entry.transcript!,
+                  cwd: overview.cwd,
+                  lineCount: overview.lineCount,
+                  lineCountExact: overview.lineCountExact,
+                },
+              });
+            }
+          } catch {
+            // Keep the filename fallback for an unreadable/non-session JSONL.
+          }
+          completed += 1;
+          if (updates.size >= 24 || completed === entries.length) flush();
+          if (generation === directoryGeneration) {
+            directoryStatus = `Finding names · ${completed.toLocaleString()}/${entries.length.toLocaleString()}`;
+          }
+        }
+      },
+    );
+    await Promise.all(workers);
+    flush();
+    if (generation === directoryGeneration) {
+      directoryStatus = `${entries.length.toLocaleString()} sessions · sampled without full reads`;
+    }
   }
 
   function onDragOver(event: DragEvent): void {
@@ -380,6 +577,7 @@
   }
 
   onDestroy(() => {
+    directoryGeneration += 1;
     if (playTimer) clearInterval(playTimer);
   });
 
@@ -399,11 +597,14 @@
     rpcRecordingCount: number;
     rpcFrameCount: number;
     hasTranscript: boolean;
+    directoryKey?: string;
     transcript?: {
       path: string;
       messageCount?: number;
       cwd?: string;
       size?: number;
+      lineCount?: number;
+      lineCountExact?: boolean;
     };
   }
 
@@ -482,8 +683,8 @@
     <div>
       <h1>Treetop Replay Lab</h1>
       <p>
-        Drop a Codex or Claude JSONL file locally, or inspect an available
-        recorded Codex session.
+        Drop a Codex or Claude JSONL file, open a session folder, or inspect an
+        available recorded session.
       </p>
     </div>
     <div class="replay-actions">
@@ -500,12 +701,23 @@
         accept=".jsonl,.json,application/json,application/x-ndjson"
         on:change={onFileInput}
       />
+      <input
+        bind:this={folderInput}
+        class="replay-file-input"
+        type="file"
+        multiple
+        webkitdirectory
+        on:change={(event) => void onFolderInput(event)}
+      />
       <button
         type="button"
         class="replay-open"
         on:click={() => fileInput?.click()}
       >
         Open JSONL
+      </button>
+      <button type="button" class="replay-open" on:click={chooseFolder}>
+        Open folder
       </button>
       <button
         type="button"
@@ -563,70 +775,86 @@
   </dialog>
 
   <div class="replay-workspace">
-    <aside
-      class="replay-browser"
-      aria-label="Recorded Codex app-server sessions"
-    >
+    <aside class="replay-browser" aria-label="Replay sessions">
       <div class="replay-browser-title">
-        <strong>Sessions <span>{sessionCounts.total}</span></strong>
+        <strong
+          >{sessionListMode === "directory" ? directoryLabel : "Sessions"}
+          <span>{sessionCounts.total}</span></strong
+        >
         <button
           type="button"
           on:click={fetchRecordings}
           disabled={recordingsLoading}
         >
-          Refresh
+          {sessionListMode === "directory" ? "Server" : "Refresh"}
         </button>
       </div>
-      <div class="replay-browser-counts" aria-label="Replay coverage">
-        <span>RPC {sessionCounts.rpc}</span>
-        <span>Transcript {sessionCounts.transcript}</span>
-        <span>Both {sessionCounts.both}</span>
+      {#if sessionListMode === "directory"}
+        <div class="replay-browser-counts" aria-label="Folder indexing status">
+          <span>{directoryStatus}</span>
+        </div>
+      {:else}
+        <div class="replay-browser-counts" aria-label="Replay coverage">
+          <span>RPC {sessionCounts.rpc}</span>
+          <span>Transcript {sessionCounts.transcript}</span>
+          <span>Both {sessionCounts.both}</span>
+        </div>
+      {/if}
+      <div class="replay-browser-controls">
+        <input
+          class="replay-browser-search"
+          type="search"
+          placeholder="Search sessions"
+          aria-label="Search sessions"
+          bind:value={sessionQuery}
+        />
+        <select bind:value={sessionSort} aria-label="Sort sessions">
+          <option value="recent">Recent</option>
+          <option value="size">File size</option>
+          <option value="lines">Lines</option>
+          <option value="name">Name</option>
+        </select>
       </div>
-      <input
-        class="replay-browser-search"
-        type="search"
-        placeholder="Search sessions"
-        aria-label="Search sessions"
-        bind:value={sessionQuery}
-      />
-      <div
-        class="replay-browser-filters"
-        role="tablist"
-        aria-label="Filter sessions"
-      >
-        <button
-          type="button"
-          role="tab"
-          aria-selected={sessionFilter === "all"}
-          class:selected={sessionFilter === "all"}
-          on:click={() => (sessionFilter = "all")}
-          >All {sessionCounts.total}</button
+      {#if sessionListMode === "daemon"}
+        <div
+          class="replay-browser-filters"
+          role="tablist"
+          aria-label="Filter sessions"
         >
-        <button
-          type="button"
-          role="tab"
-          aria-selected={sessionFilter === "both"}
-          class:selected={sessionFilter === "both"}
-          on:click={() => (sessionFilter = "both")}
-          >Both {sessionCounts.both}</button
-        >
-        <button
-          type="button"
-          role="tab"
-          aria-selected={sessionFilter === "rpc-only"}
-          class:selected={sessionFilter === "rpc-only"}
-          on:click={() => (sessionFilter = "rpc-only")}
-          >RPC only {sessionCounts.rpcOnly}</button
-        >
-        <button
-          type="button"
-          role="tab"
-          aria-selected={sessionFilter === "transcript-only"}
-          class:selected={sessionFilter === "transcript-only"}
-          on:click={() => (sessionFilter = "transcript-only")}
-          >Transcript only {sessionCounts.transcriptOnly}</button
-        >
-      </div>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={sessionFilter === "all"}
+            class:selected={sessionFilter === "all"}
+            on:click={() => (sessionFilter = "all")}
+            >All {sessionCounts.total}</button
+          >
+          <button
+            type="button"
+            role="tab"
+            aria-selected={sessionFilter === "both"}
+            class:selected={sessionFilter === "both"}
+            on:click={() => (sessionFilter = "both")}
+            >Both {sessionCounts.both}</button
+          >
+          <button
+            type="button"
+            role="tab"
+            aria-selected={sessionFilter === "rpc-only"}
+            class:selected={sessionFilter === "rpc-only"}
+            on:click={() => (sessionFilter = "rpc-only")}
+            >RPC only {sessionCounts.rpcOnly}</button
+          >
+          <button
+            type="button"
+            role="tab"
+            aria-selected={sessionFilter === "transcript-only"}
+            class:selected={sessionFilter === "transcript-only"}
+            on:click={() => (sessionFilter = "transcript-only")}
+            >Transcript only {sessionCounts.transcriptOnly}</button
+          >
+        </div>
+      {/if}
       {#if recordingsLoading}
         <span class="replay-browser-muted">Loading sessions...</span>
       {:else if recordingsError}
@@ -651,15 +879,31 @@
               <span class="replay-recording-name">{entry.title}</span>
               <span class="replay-session-id">{entry.threadId}</span>
               <span class="replay-session-coverage">
-                <span>RPC {entry.rpcFrameCount}</span>
-                {#if entry.hasTranscript}
-                  <span
-                    >Transcript{entry.transcript?.messageCount
-                      ? ` ${entry.transcript.messageCount}`
-                      : ""}</span
-                  >
+                {#if entry.directoryKey}
+                  {#if entry.transcript?.size !== undefined}
+                    <span>{formatByteSize(entry.transcript.size)}</span>
+                  {/if}
+                  {#if entry.transcript?.lineCount !== undefined}
+                    <span
+                      >{entry.transcript.lineCountExact
+                        ? ""
+                        : "~"}{entry.transcript.lineCount.toLocaleString()}
+                      lines</span
+                    >
+                  {/if}
                 {:else}
-                  <span>RPC only</span>
+                  <span>RPC {entry.rpcFrameCount}</span>
+                {/if}
+                {#if !entry.directoryKey}
+                  {#if entry.hasTranscript}
+                    <span
+                      >Transcript{entry.transcript?.messageCount
+                        ? ` ${entry.transcript.messageCount}`
+                        : ""}</span
+                    >
+                  {:else}
+                    <span>RPC only</span>
+                  {/if}
                 {/if}
               </span>
             </button>
@@ -762,7 +1006,8 @@
               <header class="replay-analysis-header">
                 <strong>Turns</strong>
                 <span>
-                  {turnAnalysis.issueTurnCount}/{turnAnalysis.turns.length} turns flagged ·
+                  {turnAnalysis.issueTurnCount}/{turnAnalysis.turns.length} turns
+                  flagged ·
                   {formatReplayCost(turnAnalysis.totalEstimatedCostUsd)} total
                 </span>
               </header>
@@ -1219,15 +1464,27 @@
     border-bottom: 1px solid var(--border, #303030);
   }
 
-  .replay-browser-search {
-    min-width: 0;
+  .replay-browser-controls {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 6px;
     margin: 8px 8px 0;
+  }
+
+  .replay-browser-search,
+  .replay-browser-controls select {
+    min-width: 0;
     padding: 7px 9px;
     border: 1px solid var(--border, #3a3a3a);
     border-radius: 6px;
     color: inherit;
     background: var(--button-bg, #252525);
     font: inherit;
+  }
+
+  .replay-browser-controls select {
+    max-width: 7.5rem;
+    font-size: 12px;
   }
 
   .replay-browser-filters button {
