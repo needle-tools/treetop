@@ -100,3 +100,11 @@ export function shouldMeasureDockBackdrop(
 ): boolean {
   return showLabels && dotCount > 0;
 }
+
+/** Preserve the dock's two-bounces-per-ten-seconds cadence while removing the
+ * active CSS timeline during the long still portion. A completed finite
+ * animation can be de-promoted; an `infinite` animation whose keyframes happen
+ * to stay still cannot. */
+export function dockArrowAnimationDelayMs(isAnimating: boolean): number {
+  return isAnimating ? 800 : 9_200;
+}

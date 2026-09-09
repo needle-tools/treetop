@@ -101,6 +101,7 @@
   } from "./RepoStatusPreview.svelte";
   import StatusBadge from "./StatusBadge.svelte";
   import {
+    dockArrowAnimationDelayMs,
     dockToggleOffset,
     reposWithLiveSessions,
     shouldMeasureDockBackdrop,
@@ -283,17 +284,32 @@
    *  cadence without per-row timers. */
   let nowTick = Date.now();
   let nowTimer: ReturnType<typeof setInterval> | null = null;
+  let dockArrowAnimationActive = true;
+  let dockArrowAnimationTimer: ReturnType<typeof setTimeout> | null = null;
+
+  function scheduleDockArrowAnimationStep(): void {
+    dockArrowAnimationTimer = setTimeout(() => {
+      dockArrowAnimationActive = !dockArrowAnimationActive;
+      scheduleDockArrowAnimationStep();
+    }, dockArrowAnimationDelayMs(dockArrowAnimationActive));
+  }
+
   onMount(() => {
     nowTimer = setInterval(() => {
       nowTick = Date.now();
     }, 5_000);
     window.addEventListener("resize", clampPreviewTop);
     window.addEventListener("resize", updateToggleAnchor);
+    scheduleDockArrowAnimationStep();
   });
   onDestroy(() => {
     if (nowTimer) {
       clearInterval(nowTimer);
       nowTimer = null;
+    }
+    if (dockArrowAnimationTimer) {
+      clearTimeout(dockArrowAnimationTimer);
+      dockArrowAnimationTimer = null;
     }
     window.removeEventListener("resize", clampPreviewTop);
     window.removeEventListener("resize", updateToggleAnchor);
@@ -828,6 +844,7 @@
     style:--dock-shift="{toggleShift}px"
     class:collapsed={collapseAfterClick}
     class:show-labels={showLabels}
+    class:dock-arrow-animation-active={dockArrowAnimationActive}
     role="toolbar"
     aria-label="Open sessions"
     on:pointerover={(ev) => {
@@ -1695,30 +1712,44 @@
     stroke-linecap: round;
     stroke-linejoin: round;
   }
-  /* Two quick bounces in the first ~20% of the cycle, then idle for
-     the remaining ~80% (~3s pause at 4s total). The 2× speed comes
-     from cramming both bounces into the first 800ms of the 4s loop. */
-  .dock-arrow-up {
-    animation: dock-arrow-bounce-up 10s ease-in-out infinite;
+  /* Two quick bounces for 800ms, then the root class is removed for 9.2s.
+     This looks like the previous 10s keyframe loop but actually releases the
+     animation layers while the arrows are still. */
+  .session-dock.dock-arrow-animation-active .dock-arrow-up {
+    animation: dock-arrow-bounce-up 0.8s ease-in-out;
   }
-  .dock-arrow-down {
-    animation: dock-arrow-bounce-down 10s ease-in-out infinite;
+  .session-dock.dock-arrow-animation-active .dock-arrow-down {
+    animation: dock-arrow-bounce-down 0.8s ease-in-out;
+  }
+  /* The labels are collapsed at rest, so their badge animations provide no
+     signal then. De-promote those hidden descendants, but restore all badge
+     motion as soon as the dock expands so its at-a-glance status stays intact.
+     The arrows keep their original two-bounces-per-10s cadence via the root
+     class above; unlike one 10s infinite timeline, the class is absent during
+     the 9.2s still interval and WebKit can release the animation layers. */
+  .session-dock:not(.show-labels)
+    .dock-label-badges
+    :global(.status-badge),
+  .session-dock:not(.show-labels)
+    .dock-label-badges
+    :global(.status-badge::before),
+  .session-dock:not(.show-labels)
+    .dock-label-badges
+    :global(.status-badge::after) {
+    animation: none !important;
   }
   @keyframes dock-arrow-bounce-up {
     0% {
       transform: translateY(0);
     }
-    2% {
+    25% {
       transform: translateY(-3px);
     }
-    4% {
+    50% {
       transform: translateY(0);
     }
-    6% {
+    75% {
       transform: translateY(-3px);
-    }
-    8% {
-      transform: translateY(0);
     }
     100% {
       transform: translateY(0);
@@ -1728,17 +1759,14 @@
     0% {
       transform: translateY(0);
     }
-    2% {
+    25% {
       transform: translateY(3px);
     }
-    4% {
+    50% {
       transform: translateY(0);
     }
-    6% {
+    75% {
       transform: translateY(3px);
-    }
-    8% {
-      transform: translateY(0);
     }
     100% {
       transform: translateY(0);
