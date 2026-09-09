@@ -894,6 +894,42 @@ Narrate this page live`,
     expect(playback.renderedMessageCount).toBe(3);
   });
 
+  test("opens a dropped transcript at the end while retaining replay state", () => {
+    const replay = parseCodexReplayText(
+      [
+        JSON.stringify({
+          timestamp: "2026-09-09T10:00:00.000Z",
+          type: "response_item",
+          payload: {
+            type: "message",
+            role: "user",
+            content: [{ type: "input_text", text: "first" }],
+          },
+        }),
+        JSON.stringify({
+          timestamp: "2026-09-09T10:00:01.000Z",
+          type: "response_item",
+          payload: {
+            type: "message",
+            role: "assistant",
+            content: [{ type: "output_text", text: "second" }],
+          },
+        }),
+      ].join("\n"),
+    );
+
+    const playback = createCodexReplayPlayback(replay, {
+      stepIndex: replay.steps.length,
+    });
+    expect(playback.stepIndex).toBe(replay.steps.length);
+    expect(playback.totalMessageCount).toBe(2);
+    expect(
+      setCodexReplayPlaybackStep(playback, 1).messages.map(
+        (message) => message.role,
+      ),
+    ).toEqual(["user"]);
+  });
+
   test("accepts regular Codex session JSONL as a transcript", () => {
     const replay = parseCodexReplayText(
       [

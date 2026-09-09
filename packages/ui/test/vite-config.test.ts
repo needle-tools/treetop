@@ -1,19 +1,23 @@
 import { describe, expect, test } from "bun:test";
 import config from "../vite.config";
 
-async function resolveConfig() {
+async function resolveConfig(mode = "production") {
   const exported = config as unknown as
     | Record<string, unknown>
     | ((env: { command: string; mode: string }) => unknown);
   const value =
     typeof exported === "function"
-      ? exported({ command: "build", mode: "production" })
+      ? exported({ command: "build", mode })
       : exported;
   return (await value) as {
     build?: {
+      outDir?: string;
       sourcemap?: unknown;
       rollupOptions?: { input?: Record<string, string> };
     };
+    base?: string;
+    preview?: { proxy?: Record<string, unknown> };
+    server?: { proxy?: Record<string, unknown> };
   };
 }
 
@@ -40,5 +44,16 @@ describe("Vite config", () => {
       app: expect.stringContaining("/packages/ui/index.html"),
       replayLab: expect.stringContaining("/packages/ui/replay-lab.html"),
     });
+  });
+
+  test("builds the drop-only Replay Lab with relative assets and no dashboard entry", async () => {
+    const resolved = await resolveConfig("replay-lab-static");
+    expect(resolved.base).toBe("./");
+    expect(resolved.build?.outDir).toBe("dist-replay-lab");
+    expect(resolved.build?.rollupOptions?.input).toEqual({
+      replayLab: expect.stringContaining("/packages/ui/replay-lab.html"),
+    });
+    expect(resolved.preview?.proxy).toEqual({});
+    expect(resolved.server?.proxy).toEqual({});
   });
 });
