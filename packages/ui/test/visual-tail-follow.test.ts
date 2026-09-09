@@ -9,6 +9,7 @@ import {
   shouldFollowVisualTail,
   shouldRememberVisualScrollMemory,
   canRequestOlderTranscriptMessages,
+  shouldPrefetchOlderVisualHistory,
   visualScrollMemoryFromMetrics,
   visualScrollTopFromMemory,
   zenLiveWorkScrollDelta,
@@ -254,6 +255,33 @@ describe("visual transcript tail following", () => {
         totalMessageCount: 4_412,
       }),
     ).toBe(true);
+  });
+
+  it("prefetches older history before the reader reaches the visible top", () => {
+    expect(
+      shouldPrefetchOlderVisualHistory({
+        scrollTop: 1_400,
+        clientHeight: 600,
+        hasMore: true,
+        requestInFlight: false,
+      }),
+    ).toBe(true);
+    expect(
+      shouldPrefetchOlderVisualHistory({
+        scrollTop: 1_600,
+        clientHeight: 600,
+        hasMore: true,
+        requestInFlight: false,
+      }),
+    ).toBe(false);
+    expect(
+      shouldPrefetchOlderVisualHistory({
+        scrollTop: 0,
+        clientHeight: 600,
+        hasMore: true,
+        requestInFlight: true,
+      }),
+    ).toBe(false);
   });
 
   it("preserves a reader's scroll position when the transcript scroller is replaced", () => {

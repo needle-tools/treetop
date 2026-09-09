@@ -11,7 +11,10 @@
   import { flip } from "svelte/animate";
   import TerminalView from "./TerminalView.svelte";
   import VisualTranscript from "./VisualTranscript.svelte";
-  import { canRequestOlderTranscriptMessages } from "./visual-tail-follow";
+  import {
+    canRequestOlderTranscriptMessages,
+    shouldPrefetchOlderVisualHistory,
+  } from "./visual-tail-follow";
   import {
     createSessionScrollController,
     type PausedSessionReaderAnchor,
@@ -72,6 +75,7 @@
     mergeVisualSessionMessages,
     updateVisualTranscriptItems,
     visualTranscriptMessageWindow,
+    visualTranscriptTailKey,
     visualPlanFromPayload,
     withOptimisticUserMessageIntent,
     type VisualGoal,
@@ -1242,6 +1246,14 @@
     minMessages: visualHistoryMinMessages,
     minUserTurns: 2,
   });
+  $: visualHistoryHiddenMessageCount = Math.max(
+    visualRenderWindow.hiddenMessageCount,
+    Math.max(
+      0,
+      (totalMessageCount ?? visualSessionMessages.length) -
+        visualRenderWindow.messages.length,
+    ),
+  );
   $: lastUserMessage = lastUserMessageBurst(visualSessionMessages);
   $: lastUserMessageWithContext = buildLastUserMessageWithContext(
     visualSessionMessages,
@@ -1767,36 +1779,6 @@
     },
   });
 
-  function visualBlockTailKey(block: NormalizedBlock): string {
-    const planKey =
-      block.planItems
-        ?.map((item) => `${item.status}:${item.step.length}`)
-        .join(",") ?? "";
-    return [
-      block.type,
-      block.toolUseId ?? "",
-      block.toolName ?? "",
-      block.text?.length ?? 0,
-      block.path ?? block.url ?? "",
-      planKey,
-    ].join(":");
-  }
-
-  function visualMessagesTailKey(
-    messages: readonly NormalizedMessage[],
-  ): string {
-    return messages
-      .map((message) =>
-        [
-          message.id ?? "",
-          message.role,
-          message.timestamp ?? "",
-          message.blocks.map(visualBlockTailKey).join(","),
-        ].join("#"),
-      )
-      .join("|");
-  }
-
   function openSessionFind(): void {
     sessionFindScope?.openFind();
   }
@@ -1907,9 +1889,18 @@
 
   function maybeRequestOlderVisualHistory(): void {
     const el = messagesEl;
-    if (!el || visualHistoryRequestInFlight) return;
-    if (el.scrollTop > 180) return;
-    if (!canRequestOlderVisualHistory()) return;
+    if (!el) return;
+    const hasMore = canRequestOlderVisualHistory();
+    if (
+      !shouldPrefetchOlderVisualHistory({
+        scrollTop: el.scrollTop,
+        clientHeight: el.clientHeight,
+        hasMore,
+        requestInFlight: visualHistoryRequestInFlight,
+      })
+    ) {
+      return;
+    }
     const loadedMessageCount = session?.messages.length ?? 0;
     const loadedHistoryMax = Math.min(
       maxVisualHistoryMessages(),
@@ -2034,11 +2025,14 @@
    *  composer once a pending send has landed in the JSONL. Shared by load()
    *  (event-driven immediate refresh) and the shared poller (periodic). */
   function applyParsedSession(next: NormalizedSession) {
-    const messages = withOptimisticUserMessageIntent(
-      next.messages,
-      codexOptimisticUserMessages,
-    );
-    session = { ...next, messages: [...messages] };
+    const messages =
+      codexOptimisticUserMessages.length > 0
+        ? withOptimisticUserMessageIntent(
+            next.messages,
+            codexOptimisticUserMessages,
+          )
+        : next.messages;
+    session = { ...next, messages };
     preserveVisualHistoryScrollAnchor();
     if (codexOptimisticUserMessages.length > 0) {
       codexOptimisticUserMessages = codexOptimisticUserMessages.filter(
@@ -5141,7 +5135,7 @@
   $: {
     sessionScroll.setElement(messagesEl);
     if (messagesEl) {
-      sessionScroll.updateTail(visualMessagesTailKey(visualSessionMessages));
+      sessionScroll.updateTail(visualTranscriptTailKey(visualSessionMessages));
     }
   }
 
@@ -5319,6 +5313,7 @@
   class:terminal-transcript-surface={mode === "read" &&
     transcriptSurface === "terminal"}
   class:stopped-transcript-surface={stoppedTranscriptSurface}
+  class:tail-following={visualTailFollowActive && !showChatComposer}
   class:empty-chat-composer={showChatComposer &&
     (session?.messages.length ?? 0) === 0}
   bind:this={sessionEl}
@@ -5748,6 +5743,8 @@
       {onMessagesWheel}
       {onMessagesScroll}
       {onLiveWorkBodyScroll}
+      loadingOlder={visualHistoryRequestInFlight}
+      hiddenMessageCount={visualHistoryHiddenMessageCount}
       active={visualTranscriptActive}
       showLiveThinkingLine={codexVisualAppSurface && codexRunning}
       messageMotionSources={composerMessageMotionSources}
@@ -6725,10 +6722,10 @@
   .composer.wide-actions {
     padding-right: 8rem;
   }
+  .session.tail-following::before,
   .composer.tail-following::before {
     content: "";
     position: absolute;
-    top: -1px;
     left: 50%;
     width: 1.65rem;
     height: 2px;
@@ -6736,6 +6733,12 @@
     background: color-mix(in srgb, var(--text-muted) 62%, transparent);
     transform: translateX(-50%);
     pointer-events: none;
+  }
+  .session.tail-following::before {
+    bottom: 0;
+  }
+  .composer.tail-following::before {
+    top: -1px;
   }
   .session.empty-chat-composer:not(.has-composer-error) .composer-shell {
     margin-top: auto;
