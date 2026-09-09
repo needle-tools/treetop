@@ -23,7 +23,8 @@ function replayLabDevRoutePlugin(): Plugin {
   };
 }
 
-export default defineConfig(() => ({
+export default defineConfig(({ mode }) => ({
+  base: mode === "replay-lab-static" ? "./" : undefined,
   resolve: {
     alias: {
       "@treetop/nicifier": fileURLToPath(
@@ -56,27 +57,41 @@ export default defineConfig(() => ({
     // `HOST=localhost bun dev` recovers the old behaviour.
     host: process.env.HOST ?? "0.0.0.0",
     strictPort: true,
-    proxy: {
-      "/api": {
-        // Daemon port follows SUPERGIT_PORT (the same env the daemon
-        // itself reads). dev.ts passes the resolved dev-daemon port
-        // (default 7777, overridable via SUPERGIT_DEV_PORT) through to
-        // the Vite child so the two stay in lockstep when the user runs
-        // a second worktree on a different port set.
-        target: `http://localhost:${process.env.SUPERGIT_PORT ?? 7777}`,
-        // Forward WebSocket upgrades too — used by /api/terminals/:id/io
-        // for xterm.js byte streaming.
-        ws: true,
-      },
-    },
+    proxy:
+      mode === "replay-lab-static"
+        ? {}
+        : {
+            "/api": {
+              // Daemon port follows SUPERGIT_PORT (the same env the daemon
+              // itself reads). dev.ts passes the resolved dev-daemon port
+              // (default 7777, overridable via SUPERGIT_DEV_PORT) through to
+              // the Vite child so the two stay in lockstep when the user runs
+              // a second worktree on a different port set.
+              target: `http://localhost:${process.env.SUPERGIT_PORT ?? 7777}`,
+              // Forward WebSocket upgrades too — used by /api/terminals/:id/io
+              // for xterm.js byte streaming.
+              ws: true,
+            },
+          },
   },
+  preview: mode === "replay-lab-static" ? { proxy: {} } : undefined,
   build: {
+    outDir: mode === "replay-lab-static" ? "dist-replay-lab" : undefined,
     sourcemap: envFlag(process.env.TREETOP_BUILD_SOURCEMAPS),
     rollupOptions: {
-      input: {
-        app: fileURLToPath(new URL("./index.html", import.meta.url)),
-        replayLab: fileURLToPath(new URL("./replay-lab.html", import.meta.url)),
-      },
+      input:
+        mode === "replay-lab-static"
+          ? {
+              replayLab: fileURLToPath(
+                new URL("./replay-lab.html", import.meta.url),
+              ),
+            }
+          : {
+              app: fileURLToPath(new URL("./index.html", import.meta.url)),
+              replayLab: fileURLToPath(
+                new URL("./replay-lab.html", import.meta.url),
+              ),
+            },
     },
   },
 }));
