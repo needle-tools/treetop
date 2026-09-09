@@ -31,6 +31,149 @@ export interface VisualToolResultText {
   processSessionId?: number;
 }
 
+export interface CodexToolScriptInvocation {
+  toolName: string;
+  toolInput: unknown;
+}
+
+/** Normalize the JavaScript wrapper used by Codex custom-tool transcript
+ * records. This is shared by the daemon, app-server events, and Replay Lab so
+ * variable-backed calls such as `tools.apply_patch(patch)` cannot drift. */
+export function parseCodexToolScriptInvocation(
+  source: string,
+): CodexToolScriptInvocation | undefined {
+  const call = source.match(/tools\.([A-Za-z_$][\w$]*)\s*\(/);
+  if (!call?.[1] || call.index === undefined) return undefined;
+  const argsStart = source.indexOf("(", call.index);
+  const args = codexBalancedCallArgument(source, argsStart);
+  if (!args) return undefined;
+  const rawName = call[1].replace(/__/g, ".");
+  const toolName = canonicalCodexToolName(rawName);
+  const trimmedArgs = args.trim();
+  const variable = trimmedArgs.match(/^[A-Za-z_$][\w$]*$/)?.[0];
+  const toolInput =
+    variable !== undefined
+      ? codexStringVariableValue(source, variable)
+      : parseCodexToolScriptObject(trimmedArgs);
+  return { toolName, toolInput: toolInput ?? trimmedArgs };
+}
+
+export function canonicalCodexToolName(name: string): string {
+  if (name === "exec") return "exec_command";
+  if (name === "image_gen.imagegen" || name === "imagegen.imagegen") {
+    return "image_generation_call";
+  }
+  return name;
+}
+
+export interface CodexImageWrapper {
+  path: string;
+  label: string;
+}
+
+/** Parse the text envelope Codex writes immediately before an input_image.
+ * Consumers must merge this metadata into that image instead of rendering the
+ * envelope as a second attachment. */
+export function parseCodexImageWrapper(
+  text: string,
+): CodexImageWrapper | undefined {
+  const match = /^\s*<image\b([^>]*)>\s*$/i.exec(text);
+  if (!match?.[1]) return undefined;
+  const attrs: Record<string, string> = {};
+  const attrPattern =
+    /([A-Za-z_][\w-]*)\s*=\s*(?:"([^"]*)"|'([^']*)'|(\[[^\]]+\]|[^\s>]+))/g;
+  let attr: RegExpExecArray | null;
+  while ((attr = attrPattern.exec(match[1])) !== null) {
+    attrs[(attr[1] ?? "").toLowerCase()] =
+      attr[2] ?? attr[3] ?? attr[4] ?? "";
+  }
+  const path = attrs.path ?? attrs.file_path ?? attrs.src;
+  if (!path) return undefined;
+  const rawLabel = attrs.name?.trim() ?? "";
+  const label =
+    rawLabel.match(/^\[(.+)\]$/)?.[1]?.trim() ||
+    rawLabel ||
+    path.replace(/\\/g, "/").split("/").pop() ||
+    "Image";
+  return { path, label };
+}
+
+export function codexPatchApplyResultText(
+  payload: Record<string, unknown>,
+): string {
+  const stdout = typeof payload.stdout === "string" ? payload.stdout : "";
+  const stderr = typeof payload.stderr === "string" ? payload.stderr : "";
+  const text = [stdout, stderr].filter(Boolean).join("\n");
+  if (text) return text;
+  return payload.success === false ? "Patch apply failed" : "Patch applied";
+}
+
+function codexBalancedCallArgument(
+  source: string,
+  openParen: number,
+): string | undefined {
+  if (openParen < 0 || source[openParen] !== "(") return undefined;
+  let depth = 0;
+  let quote: '"' | "'" | "`" | undefined;
+  let escaped = false;
+  for (let index = openParen; index < source.length; index += 1) {
+    const char = source[index];
+    if (quote) {
+      if (escaped) escaped = false;
+      else if (char === "\\") escaped = true;
+      else if (char === quote) quote = undefined;
+      continue;
+    }
+    if (char === '"' || char === "'" || char === "`") {
+      quote = char;
+      continue;
+    }
+    if (char === "(") depth += 1;
+    else if (char === ")" && --depth === 0) {
+      return source.slice(openParen + 1, index);
+    }
+  }
+  return undefined;
+}
+
+function codexStringVariableValue(
+  source: string,
+  variable: string,
+): string | undefined {
+  const match = new RegExp(
+    `(?:const|let|var)\\s+${codexEscapeRegExp(variable)}\\s*=\\s*("(?:\\\\.|[^"\\\\])*")\\s*;`,
+    "s",
+  ).exec(source);
+  if (!match?.[1]) return undefined;
+  try {
+    return JSON.parse(match[1]) as string;
+  } catch {
+    return undefined;
+  }
+}
+
+function parseCodexToolScriptObject(source: string): unknown {
+  try {
+    return JSON.parse(source);
+  } catch {
+    // Codex wrappers also use JavaScript object literals with unquoted keys.
+  }
+  if (!source.startsWith("{") && !source.startsWith("[")) return undefined;
+  const jsonish = source.replace(
+    /([{,]\s*)([A-Za-z_$][\w$]*)\s*:/g,
+    '$1"$2":',
+  );
+  try {
+    return JSON.parse(jsonish);
+  } catch {
+    return undefined;
+  }
+}
+
+function codexEscapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
 function finiteNumber(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value)
     ? value

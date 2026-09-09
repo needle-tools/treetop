@@ -1339,6 +1339,10 @@
     block: NormalizedBlock,
     options: { thumbnail?: boolean } = {},
   ): string | undefined {
+    // A dropped standalone transcript can retain the inline image bytes while
+    // also carrying the original path for identity/deduplication. There is no
+    // daemon available to serve that path, so keep the self-contained source.
+    if (block.url?.startsWith("data:")) return block.url;
     if (block.path && block.mediaKind === "image") {
       const path = `/api/image?path=${encodeURIComponent(block.path)}`;
       return apiUrl(
