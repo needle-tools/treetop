@@ -9,8 +9,8 @@
   } from "@treetop/nicifier";
   import {
     analyzeCodexReplayTurns,
-    createCodexReplayPlayback,
     createCodexReplaySessionTransport,
+    createCodexReplayViewModel,
     filterCodexReplaySessions,
     formatReplayCost,
     formatReplayDuration,
@@ -26,6 +26,8 @@
     type CodexReplaySessionFixture,
     type CodexReplaySessionTransport,
     type CodexReplayMessage,
+    type CodexReplayTranscriptSession,
+    type CodexReplayViewModel,
     type ParsedCodexReplay,
   } from "./codex-replay-lab";
 
@@ -51,7 +53,7 @@
   let sessionFilter: CodexReplaySessionFilter = "all";
   let sessionQuery = "";
   let transcriptSession: ReplaySessionIndexEntry | null = null;
-  let transcriptSessionOverride: ReplayTranscriptSession | undefined;
+  let transcriptSessionOverride: CodexReplayTranscriptSession | undefined;
   let analysisCollapsed = false;
   let analysisMessages: readonly CodexReplayMessage[] = [];
   let modelsDevPricing: ModelsDevPricingSnapshot | undefined;
@@ -98,6 +100,28 @@
     fileName = name;
     stepIndex = initialStep;
     scrubStepIndex = initialStep;
+    replayGeneration += 1;
+  }
+
+  function installTranscriptReplay(
+    view: CodexReplayViewModel,
+    options: { localFile: boolean; warnings?: string[] } = {
+      localFile: false,
+    },
+  ): void {
+    fixture = null;
+    transport = null;
+    localReplay = view.replay;
+    localPlayback = view.playback;
+    transcriptSession = view.entry;
+    transcriptSessionOverride = view.session;
+    stepIndex = view.playback.stepIndex;
+    scrubStepIndex = view.playback.stepIndex;
+    analysisMessages = view.playback.messages;
+    localFile = options.localFile;
+    localFileSize = view.fileSizeBytes;
+    localLineCount = view.lineCount;
+    localWarnings = options.warnings ?? view.replay.warnings;
     replayGeneration += 1;
   }
 
@@ -157,9 +181,15 @@
         if (!body.transcriptSession) {
           throw new Error("Replay response has no transcript session");
         }
-        transcriptSession = entry;
-        transcriptSessionOverride = body.transcriptSession;
-        analysisMessages = body.transcriptSession.messages;
+        installTranscriptReplay(
+          createCodexReplayViewModel({
+            session: body.transcriptSession,
+            title: body.session.title,
+            mtimeMs: body.session.mtimeMs,
+            source: body.session.transcript?.path ?? entry.transcript.path,
+            fileSizeBytes: body.session.transcript?.size,
+          }),
+        );
         selectedThreadId = entry.threadId;
         return;
       }
@@ -207,46 +237,22 @@
         },
       });
       if (requestId !== loadRequestId) return;
-      const playback = createCodexReplayPlayback(replay, {
-        stepIndex: replay.steps.length,
+      const view = createCodexReplayViewModel({
+        replay,
+        title: file.name,
+        mtimeMs: file.lastModified,
+        fileSizeBytes: file.size,
       });
-      const messages = playback.messages;
+      const messages = view.playback.messages;
       if (!messages.length) {
         throw new Error(
           "No displayable Codex or Claude messages found in this file",
         );
       }
-      const sessionId = replay.id ?? `local-${file.lastModified}-${file.size}`;
-      const cwd = replay.cwd ?? "";
-      transcriptSession = {
-        threadId: sessionId,
-        title: file.name,
-        mtimeMs: file.lastModified,
-        rpcRecordingCount: replay.mode === "rpc" ? 1 : 0,
-        rpcFrameCount: replay.mode === "rpc" ? replay.steps.length : 0,
-        hasTranscript: true,
-        transcript: {
-          path: "",
-          messageCount: messages.length,
-          cwd,
-        },
-      };
-      transcriptSessionOverride = {
-        agent: replay.agent,
-        cwd,
-        sessionId,
-        startedAt: replay.startedAt,
-        endedAt: [...messages].reverse().find((message) => message.timestamp)
-          ?.timestamp,
-        messages,
-      };
-      localReplay = replay;
-      localPlayback = playback;
-      stepIndex = playback.stepIndex;
-      scrubStepIndex = playback.stepIndex;
-      analysisMessages = messages;
-      localLineCount = replay.lineCount;
-      localWarnings = replay.warnings;
+      installTranscriptReplay(view, {
+        localFile: true,
+        warnings: replay.warnings,
+      });
     } catch (err) {
       if (requestId !== loadRequestId) return;
       parseError = err instanceof Error ? err.message : String(err);
@@ -393,24 +399,20 @@
     rpcRecordingCount: number;
     rpcFrameCount: number;
     hasTranscript: boolean;
-    transcript?: { path: string; messageCount?: number; cwd?: string };
+    transcript?: {
+      path: string;
+      messageCount?: number;
+      cwd?: string;
+      size?: number;
+    };
   }
 
   interface ReplaySessionReadResponse {
     ok: boolean;
     session: ReplaySessionIndexEntry;
     recordingText: string;
-    transcriptSession?: ReplayTranscriptSession;
+    transcriptSession?: CodexReplayTranscriptSession;
     error?: string;
-  }
-
-  interface ReplayTranscriptSession {
-    agent: "codex" | "claude";
-    cwd: string;
-    sessionId: string;
-    startedAt?: string;
-    endedAt?: string;
-    messages: CodexReplayMessage[];
   }
 </script>
 
@@ -702,7 +704,7 @@
                   fileSizeBytes={localFile ? localFileSize : undefined}
                   fileLineCount={localFile ? localLineCount : undefined}
                   {transcriptSessionOverride}
-                  renderOnly={localFile}
+                  renderOnly={true}
                   visualAppEnabled={false}
                   spawnReady={false}
                   onClose={localFile ? clearReplay : () => {}}

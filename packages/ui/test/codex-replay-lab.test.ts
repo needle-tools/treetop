@@ -5,6 +5,7 @@ import {
   codexReplayMessagesUntil,
   createCodexReplaySessionTransport,
   createCodexReplayPlayback,
+  createCodexReplayViewModel,
   filterCodexReplayTextForThread,
   filterCodexReplaySessions,
   summarizeCodexReplaySessions,
@@ -39,6 +40,48 @@ test("documents loadable Codex and Claude session locations on macOS and Windows
 });
 
 describe("Codex replay lab parser", () => {
+  test("adapts server sessions and dropped files through one replay view model", async () => {
+    const droppedReplay = await parseCodexReplayBlobAsync(
+      new Blob([
+        [
+          JSON.stringify({
+            timestamp: "2026-09-09T10:00:00.000Z",
+            type: "session_meta",
+            payload: { id: "shared-session", cwd: "/repo/shared" },
+          }),
+          JSON.stringify({
+            timestamp: "2026-09-09T10:00:01.000Z",
+            type: "response_item",
+            payload: {
+              type: "message",
+              role: "user",
+              content: [{ type: "input_text", text: "Same transcript" }],
+            },
+          }),
+        ].join("\n"),
+      ]),
+    );
+    const dropped = createCodexReplayViewModel({
+      replay: droppedReplay,
+      title: "dropped.jsonl",
+      mtimeMs: 123,
+      fileSizeBytes: 456,
+    });
+    const server = createCodexReplayViewModel({
+      session: dropped.session,
+      title: "server session",
+      mtimeMs: 789,
+      source: "/sessions/shared.jsonl",
+      lineCount: 2,
+      fileSizeBytes: 456,
+    });
+
+    expect(server.playback.messages).toEqual(dropped.playback.messages);
+    expect(server.session).toEqual(dropped.session);
+    expect(server.entry.transcript?.path).toBe("/sessions/shared.jsonl");
+    expect(dropped.entry.transcript?.path).toBe("");
+  });
+
   test("streams a dropped Claude JSONL blob into the same local transcript view", async () => {
     const source = new Blob([
       [
