@@ -58,6 +58,49 @@ export interface ParsedCodexReplay {
 
 export type CodexReplayMessage = CodexAppHistoryMessage & { intent?: "steer" };
 
+export interface CodexReplayTranscriptSession {
+  agent: "codex" | "claude";
+  cwd: string;
+  sessionId: string;
+  startedAt?: string;
+  endedAt?: string;
+  messages: CodexReplayMessage[];
+}
+
+export interface CodexReplayViewEntry {
+  threadId: string;
+  title: string;
+  mtimeMs: number;
+  rpcRecordingCount: number;
+  rpcFrameCount: number;
+  hasTranscript: true;
+  transcript: {
+    path: string;
+    messageCount: number;
+    cwd: string;
+  };
+}
+
+export interface CodexReplayViewModel {
+  replay: ParsedCodexReplay;
+  playback: CodexReplayPlaybackState;
+  session: CodexReplayTranscriptSession;
+  entry: CodexReplayViewEntry;
+  lineCount?: number;
+  fileSizeBytes?: number;
+}
+
+export type CodexReplayViewModelInput = {
+  title: string;
+  mtimeMs: number;
+  source?: string;
+  lineCount?: number;
+  fileSizeBytes?: number;
+} & (
+  | { replay: ParsedCodexReplay; session?: never }
+  | { replay?: never; session: CodexReplayTranscriptSession }
+);
+
 export interface CodexReplayPlaybackState {
   replay: ParsedCodexReplay;
   stepIndex: number;
@@ -1066,6 +1109,73 @@ export function createCodexReplayPlayback(
     },
     options.stepIndex ?? 0,
   );
+}
+
+/** Canonical boundary between replay ingestion and Replay Lab rendering.
+ * Reading bytes differs for a browser File and a daemon-owned path; after
+ * parsing, both sources become this exact replay/playback/session shape. */
+export function createCodexReplayViewModel(
+  input: CodexReplayViewModelInput,
+): CodexReplayViewModel {
+  const replay = input.replay ?? replayFromTranscriptSession(input.session);
+  const playback = createCodexReplayPlayback(replay, {
+    stepIndex: replay.steps.length,
+  });
+  const messages = playback.messages;
+  const sessionInput = input.session;
+  const session: CodexReplayTranscriptSession = {
+    agent: sessionInput?.agent ?? replay.agent,
+    cwd: sessionInput?.cwd ?? replay.cwd ?? "",
+    sessionId:
+      sessionInput?.sessionId ??
+      replay.id ??
+      `replay-${input.mtimeMs}-${input.fileSizeBytes ?? 0}`,
+    startedAt: sessionInput?.startedAt ?? replay.startedAt,
+    endedAt:
+      sessionInput?.endedAt ??
+      [...messages].reverse().find((message) => message.timestamp)?.timestamp,
+    messages,
+  };
+  return {
+    replay,
+    playback,
+    session,
+    entry: {
+      threadId: session.sessionId,
+      title: input.title,
+      mtimeMs: input.mtimeMs,
+      rpcRecordingCount: replay.mode === "rpc" ? 1 : 0,
+      rpcFrameCount: replay.mode === "rpc" ? replay.steps.length : 0,
+      hasTranscript: true,
+      transcript: {
+        path: input.source ?? "",
+        messageCount: messages.length,
+        cwd: session.cwd,
+      },
+    },
+    lineCount: input.lineCount ?? replay.lineCount,
+    fileSizeBytes: input.fileSizeBytes ?? replay.fileSizeBytes,
+  };
+}
+
+function replayFromTranscriptSession(
+  session: CodexReplayTranscriptSession,
+): ParsedCodexReplay {
+  return {
+    agent: session.agent,
+    mode: "transcript",
+    id: session.sessionId,
+    cwd: session.cwd,
+    startedAt: session.startedAt,
+    steps: session.messages.map((message, index) => ({
+      kind: "message",
+      seq: index + 1,
+      at: message.timestamp,
+      label: message.role,
+      message,
+    })),
+    warnings: [],
+  };
 }
 
 export function setCodexReplayPlaybackStep(
