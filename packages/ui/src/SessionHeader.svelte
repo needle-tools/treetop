@@ -618,7 +618,7 @@
     {#if sessionCost && sessionCost.pricedSegments > 0}
       <span
         class="muted small session-cost"
-        title={`${sessionCost.unpricedSegments > 0 ? "Partial" : "Estimated"} API-equivalent session token cost · ${sessionCost.models.join(", ")} · pricing: ${sessionCost.sources.join(", ")}${sessionCost.unpricedSegments > 0 ? ` · ${sessionCost.unpricedSegments} usage segment${sessionCost.unpricedSegments === 1 ? "" : "s"} could not be priced` : ""}`}
+        title={`${sessionCost.unpricedSegments > 0 ? "Partial" : "Estimated"} session token cost · ${sessionCost.models.join(", ")} · pricing: ${sessionCost.sources.join(", ")}${sessionCost.unpricedSegments > 0 ? ` · ${sessionCost.unpricedSegments} usage segment${sessionCost.unpricedSegments === 1 ? "" : "s"} could not be priced` : ""}`}
       >
         session {sessionCost.totalUsd === 0
           ? "$0.00"
@@ -626,7 +626,7 @@
             ? `$${sessionCost.totalUsd.toFixed(4)}`
             : sessionCost.totalUsd < 100
               ? `$${sessionCost.totalUsd.toFixed(2)}`
-              : `$${sessionCost.totalUsd.toLocaleString(undefined, { maximumFractionDigits: 0 })}`}{sessionCost.unpricedSegments > 0 ? "+" : ""} est.
+              : `$${sessionCost.totalUsd.toLocaleString(undefined, { maximumFractionDigits: 0 })}`}{sessionCost.unpricedSegments > 0 ? "+" : ""}
       </span>
     {/if}
     {#if loadedMessageCount !== undefined}

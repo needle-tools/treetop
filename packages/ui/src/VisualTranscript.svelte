@@ -1655,12 +1655,12 @@
           : usd < 100
             ? usd.toFixed(2)
             : usd.toLocaleString(undefined, { maximumFractionDigits: 0 });
-    return `$${amount} est.`;
+    return `$${amount}`;
   }
 
   function workOverviewCostTitle(overview: VisualWorkOverview): string {
     const parts = [
-      `${workOverviewCostLabel(overview)} API-equivalent token cost`,
+      `${workOverviewCostLabel(overview)} estimated token cost`,
       `${overview.cost.pricedCheckpoints} priced ${overview.cost.pricedCheckpoints === 1 ? "checkpoint" : "checkpoints"}`,
     ];
     if (overview.cost.models.length > 0) {
@@ -3386,7 +3386,7 @@
                   <span>{workOverviewTokenLabel(workOverview)}</span>
                   {#if workOverview.cost.pricedCheckpoints > 0}
                     <span title={workOverviewCostTitle(workOverview)}>
-                      {workOverviewCostLabel(workOverview)} API-equivalent
+                      {workOverviewCostLabel(workOverview)}
                     </span>
                   {/if}
                   {#if workOverview.tokens.total > 0}
