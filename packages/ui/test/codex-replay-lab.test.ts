@@ -3,6 +3,7 @@ import { parseCodexJsonl } from "../../daemon/src/sessions";
 import {
   analyzeCodexReplayTurns,
   collectCodexReplayDirectoryFiles,
+  codexReplayProjectLabel,
   codexReplayItemsUntil,
   codexReplayMessagesUntil,
   createCodexReplaySessionTransport,
@@ -27,6 +28,7 @@ import {
   replayPlaybackTiming,
   replaySourceProgressAtStep,
   replayStepIndexAtElapsedMs,
+  searchCodexReplaySessions,
   sortCodexReplaySessions,
 } from "../src/codex-replay-lab";
 import {
@@ -382,6 +384,44 @@ describe("Codex replay lab parser", () => {
         (session) => session.title,
       ),
     ).toEqual(["Older GPT", "Changed model"]);
+  });
+
+  test("searches session project paths and derives compact project labels", () => {
+    const sessions = [
+      {
+        title: "Unrelated title",
+        threadId: "session-a",
+        transcript: {
+          path: "/Users/herbst/.codex/sessions/a.jsonl",
+          cwd: "/Users/herbst/git/Needle/fastvid",
+        },
+      },
+      {
+        title: "Another session",
+        threadId: "session-b",
+        transcript: {
+          path: "/Users/herbst/.codex/sessions/b.jsonl",
+          cwd: "/Users/herbst/git/supergit",
+        },
+      },
+    ];
+
+    expect(
+      searchCodexReplaySessions(sessions, "needle").map(
+        (session) => session.threadId,
+      ),
+    ).toEqual(["session-a"]);
+    expect(
+      searchCodexReplaySessions(sessions, "SUPERGIT").map(
+        (session) => session.threadId,
+      ),
+    ).toEqual(["session-b"]);
+    expect(codexReplayProjectLabel("/Users/herbst/git/Needle/fastvid/")).toBe(
+      "fastvid",
+    );
+    expect(codexReplayProjectLabel("C:\\Users\\herbst\\git\\treetop")).toBe(
+      "treetop",
+    );
   });
 
   test("adapts server sessions and dropped files through one replay view model", async () => {

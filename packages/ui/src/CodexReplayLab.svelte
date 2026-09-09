@@ -11,6 +11,7 @@
   import {
     analyzeCodexReplayTurns,
     collectCodexReplayDirectoryFiles,
+    codexReplayProjectLabel,
     createCodexReplaySessionTransport,
     createCodexReplayViewModel,
     filterCodexReplaySessions,
@@ -30,6 +31,7 @@
     replayPlaybackTiming,
     replaySourceProgressAtStep,
     replayStepIndexAtElapsedMs,
+    searchCodexReplaySessions,
     summarizeCodexReplaySessions,
     summarizeCodexReplayPricingUsage,
     setCodexReplayPlaybackStep,
@@ -120,15 +122,10 @@
     : undefined;
   $: visibleSessions = sortCodexReplaySessions(
     filterCodexReplaySessionsByModel(
-      filterCodexReplaySessions(sessions, sessionFilter).filter((entry) => {
-        const query = sessionQuery.trim().toLowerCase();
-        return (
-          !query ||
-          entry.title.toLowerCase().includes(query) ||
-          entry.threadId.toLowerCase().includes(query) ||
-          entry.transcript?.path.toLowerCase().includes(query)
-        );
-      }),
+      searchCodexReplaySessions(
+        filterCodexReplaySessions(sessions, sessionFilter),
+        sessionQuery,
+      ),
       selectedSessionModel,
     ),
     (selectedSessionModel
@@ -998,6 +995,8 @@
       {:else}
         <div class="replay-recording-list">
           {#each visibleSessions as entry (entry.threadId)}
+            {@const projectPath = entry.transcript?.cwd}
+            {@const projectLabel = codexReplayProjectLabel(projectPath)}
             <button
               type="button"
               class:selected={selectedThreadId === entry.threadId}
@@ -1005,9 +1004,15 @@
               on:click={() => loadSession(entry)}
             >
               <span class="replay-recording-name">{entry.title}</span>
-              {#if entry.models?.length}
-                <span class="replay-session-id" title={entry.models.join(", ")}
-                  >{entry.models.join(" · ")}</span
+              {#if projectLabel || entry.models?.length}
+                <span
+                  class="replay-session-id"
+                  title={[projectPath, ...(entry.models ?? [])]
+                    .filter(Boolean)
+                    .join(" · ")}
+                  >{[projectLabel, ...(entry.models ?? [])]
+                    .filter(Boolean)
+                    .join(" · ")}</span
                 >
               {:else if !entry.directoryKey}
                 <span class="replay-session-id">{entry.threadId}</span>
