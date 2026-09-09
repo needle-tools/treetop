@@ -72,6 +72,7 @@ export interface CodexReplayTranscriptSession {
 }
 
 export interface CodexReplayViewEntry {
+  agent: "codex" | "claude";
   threadId: string;
   title: string;
   mtimeMs: number;
@@ -156,7 +157,12 @@ export interface CodexReplayFileOverview {
   lineCountExact?: boolean;
 }
 
-export type CodexReplaySessionSort = "recent" | "size" | "lines" | "name";
+export type CodexReplaySessionSort =
+  | "recent"
+  | "agent"
+  | "size"
+  | "lines"
+  | "name";
 
 export const REPLAY_SESSION_LOCATIONS = [
   {
@@ -536,12 +542,22 @@ export function filterCodexReplaySessions<
 
 export function sortCodexReplaySessions<
   T extends {
+    agent?: "codex" | "claude";
     title: string;
     mtimeMs: number;
     transcript?: { size?: number; lineCount?: number };
   },
 >(sessions: readonly T[], sort: CodexReplaySessionSort): T[] {
   return [...sessions].sort((a, b) => {
+    if (sort === "agent") {
+      const agentRank = (agent: T["agent"]): number =>
+        agent === "codex" ? 0 : agent === "claude" ? 1 : 2;
+      return (
+        agentRank(a.agent) - agentRank(b.agent) ||
+        b.mtimeMs - a.mtimeMs ||
+        a.title.localeCompare(b.title)
+      );
+    }
     if (sort === "name") return a.title.localeCompare(b.title);
     if (sort === "size") {
       return (b.transcript?.size ?? -1) - (a.transcript?.size ?? -1);
@@ -1311,6 +1327,7 @@ export function createCodexReplayViewModel(
     playback,
     session,
     entry: {
+      agent: session.agent,
       threadId: session.sessionId,
       title: input.title,
       mtimeMs: input.mtimeMs,

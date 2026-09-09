@@ -443,6 +443,7 @@
             );
             if (overview) {
               updates.set(reference.relativePath, {
+                agent: overview.agent,
                 ...(overview.title ? { title: overview.title } : {}),
                 transcript: {
                   ...entry.transcript!,
@@ -591,6 +592,7 @@
   });
 
   interface ReplaySessionIndexEntry {
+    agent?: "codex" | "claude";
     threadId: string;
     title: string;
     mtimeMs: number;
@@ -809,10 +811,15 @@
           bind:value={sessionQuery}
         />
         <select bind:value={sessionSort} aria-label="Sort sessions">
-          <option value="recent">Recent</option>
-          <option value="size">File size</option>
-          <option value="lines">Lines</option>
-          <option value="name">Name</option>
+          <optgroup label="Sort by">
+            <option value="recent">Recent</option>
+            <option value="size">File size</option>
+            <option value="lines">Lines</option>
+            <option value="name">Name</option>
+          </optgroup>
+          <optgroup label="Group by">
+            <option value="agent">Agent</option>
+          </optgroup>
         </select>
       </div>
       {#if sessionListMode === "daemon"}

@@ -272,6 +272,7 @@ describe("Codex replay recording discovery", () => {
 
       expect(sessions).toEqual([
         expect.objectContaining({
+          agent: "codex",
           threadId,
           title: "Narrate open webpage live",
           rpcRecordingCount: 0,
