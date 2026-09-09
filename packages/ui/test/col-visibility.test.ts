@@ -78,6 +78,15 @@ describe("visibleSessionRequestKey", () => {
       "remote\0/session.jsonl",
     );
   });
+
+  test("accepts an explicit refresh revision for completed live turns", () => {
+    expect(visibleSessionRequestKey("/session.jsonl", "remote", true, 4)).toBe(
+      `remote\0/session.jsonl\0${4}`,
+    );
+    expect(visibleSessionRequestKey("/session.jsonl", "remote", true, 5)).toBe(
+      `remote\0/session.jsonl\0${5}`,
+    );
+  });
 });
 
 describe("offscreen class helpers", () => {
