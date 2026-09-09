@@ -2279,27 +2279,244 @@ interface SessionFileStatsCacheEntry {
   size: number;
   newlineCount: number;
   endsWithNewline: boolean;
+  codexPricing: CodexPricingScanState;
+}
+
+interface SessionPricingUsage {
+  input: number;
+  cachedInput: number;
+  cacheWriteInput: number;
+  output: number;
+  reasoningOutput: number;
+  total: number;
+}
+
+interface SessionPricingUsageSegment {
+  model?: string;
+  at?: string;
+  usage: SessionPricingUsage;
+}
+
+interface CodexPricingScanState {
+  model?: string;
+  previousTotal?: SessionPricingUsage;
+  segments: SessionPricingUsageSegment[];
+}
+
+export interface SessionFileStats {
+  fileSizeBytes: number;
+  lineCount: number;
+  model?: string;
+  pricingUsage?: SessionPricingUsageSegment[];
+  pricingUsageExact?: boolean;
 }
 
 const sessionFileStatsCache = new Map<string, SessionFileStatsCacheEntry>();
-const sessionFileStatsInflight = new Map<
-  string,
-  Promise<{ fileSizeBytes: number; lineCount: number }>
->();
+const sessionFileStatsInflight = new Map<string, Promise<SessionFileStats>>();
 const MAX_SESSION_FILE_STATS_CACHE = 512;
 const sessionFileStatsLimit = createLimiter(1);
 
-async function countNewlinesInRange(
+function codexPricingUsage(value: unknown): SessionPricingUsage | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const record = value as Record<string, unknown>;
+  const number = (key: string): number => {
+    const candidate = record[key];
+    return typeof candidate === "number" && Number.isFinite(candidate)
+      ? Math.max(0, candidate)
+      : 0;
+  };
+  const input = number("input_tokens");
+  const cachedInput = number("cached_input_tokens");
+  const cacheWriteInput = number("cache_write_input_tokens");
+  const output = number("output_tokens");
+  const reasoningOutput = number("reasoning_output_tokens");
+  const total = number("total_tokens") || input + output;
+  if (total <= 0 && cachedInput <= 0 && reasoningOutput <= 0) return undefined;
+  return {
+    input,
+    cachedInput,
+    cacheWriteInput,
+    output,
+    reasoningOutput,
+    total,
+  };
+}
+
+function codexPricingDelta(
+  current: SessionPricingUsage,
+  previous: SessionPricingUsage | undefined,
+  last: SessionPricingUsage | undefined,
+): SessionPricingUsage {
+  if (!previous) return current;
+  if (current.total < previous.total) return last ?? current;
+  return {
+    input: Math.max(0, current.input - previous.input),
+    cachedInput: Math.max(0, current.cachedInput - previous.cachedInput),
+    cacheWriteInput: Math.max(
+      0,
+      current.cacheWriteInput - previous.cacheWriteInput,
+    ),
+    output: Math.max(0, current.output - previous.output),
+    reasoningOutput: Math.max(
+      0,
+      current.reasoningOutput - previous.reasoningOutput,
+    ),
+    total: Math.max(0, current.total - previous.total),
+  };
+}
+
+function ingestCodexPricingLine(
+  line: string,
+  state: CodexPricingScanState,
+): void {
+  let record: Record<string, unknown>;
+  try {
+    record = JSON.parse(line) as Record<string, unknown>;
+  } catch {
+    return;
+  }
+  const payload =
+    record.payload && typeof record.payload === "object"
+      ? (record.payload as Record<string, unknown>)
+      : undefined;
+  if (record.type === "turn_context" && payload) {
+    const collaborationMode =
+      payload.collaboration_mode &&
+      typeof payload.collaboration_mode === "object"
+        ? (payload.collaboration_mode as Record<string, unknown>)
+        : undefined;
+    const settings =
+      collaborationMode?.settings &&
+      typeof collaborationMode.settings === "object"
+        ? (collaborationMode.settings as Record<string, unknown>)
+        : undefined;
+    const model = payload.model ?? settings?.model;
+    if (typeof model === "string" && model.trim()) state.model = model.trim();
+    return;
+  }
+  if (record.type !== "event_msg" || payload?.type !== "token_count") return;
+  const info =
+    payload.info && typeof payload.info === "object"
+      ? (payload.info as Record<string, unknown>)
+      : undefined;
+  if (!info) return;
+  const eventModel =
+    info.model ?? info.model_name ?? payload.model ?? record.model;
+  if (!state.model && typeof eventModel === "string" && eventModel.trim()) {
+    state.model = eventModel.trim();
+  }
+  const total = codexPricingUsage(info.total_token_usage);
+  if (!total) return;
+  const delta = codexPricingDelta(
+    total,
+    state.previousTotal,
+    codexPricingUsage(info.last_token_usage),
+  );
+  state.previousTotal = total;
+  if (delta.total <= 0) return;
+  state.segments.push({
+    model: state.model,
+    at: typeof record.timestamp === "string" ? record.timestamp : undefined,
+    usage: delta,
+  });
+}
+
+function cloneCodexPricingState(
+  state: CodexPricingScanState | undefined,
+): CodexPricingScanState {
+  return state
+    ? {
+        model: state.model,
+        previousTotal: state.previousTotal
+          ? { ...state.previousTotal }
+          : undefined,
+        segments: [...state.segments],
+      }
+    : { segments: [] };
+}
+
+async function scanSessionStatsRange(
   path: string,
   start: number,
   end: number,
-): Promise<{ newlineCount: number; endsWithNewline: boolean }> {
-  if (end <= start) return { newlineCount: 0, endsWithNewline: false };
+  initialPricing?: CodexPricingScanState,
+): Promise<{
+  newlineCount: number;
+  endsWithNewline: boolean;
+  codexPricing: CodexPricingScanState;
+}> {
+  const codexPricing = cloneCodexPricingState(initialPricing);
+  if (end <= start) {
+    return { newlineCount: 0, endsWithNewline: false, codexPricing };
+  }
   const fh = await open(path, "r");
   const buffer = Buffer.allocUnsafe(1024 * 1024);
+  const decoder = new TextDecoder();
   let offset = start;
   let newlineCount = 0;
   let lastByte = -1;
+  let lineProbe = "";
+  let relevantLine = false;
+  let discardLine = false;
+  const MAX_LINE_PROBE = 4 * 1024;
+  const MAX_RELEVANT_LINE = 512 * 1024;
+  const looksRelevant = (value: string) =>
+    /"type"\s*:\s*"turn_context"/.test(value) ||
+    (/"type"\s*:\s*"event_msg"/.test(value) &&
+      /"type"\s*:\s*"token_count"/.test(value));
+  const captureOversizedTurnContext = () => {
+    if (!/"type"\s*:\s*"turn_context"/.test(lineProbe)) return;
+    const match = /"model"\s*:\s*("(?:\\.|[^"\\])*")/.exec(lineProbe);
+    if (!match?.[1]) return;
+    try {
+      const model = JSON.parse(match[1]);
+      if (typeof model === "string" && model.trim()) {
+        codexPricing.model = model.trim();
+      }
+    } catch {
+      // The bounded prefix ended inside the model string; a later context row
+      // can still provide model evidence without retaining this giant line.
+    }
+  };
+  const discardOversizedRelevantLine = () => {
+    captureOversizedTurnContext();
+    lineProbe = "";
+    relevantLine = false;
+    discardLine = true;
+  };
+  const appendLineFragment = (fragment: string) => {
+    if (!fragment || discardLine) return;
+    if (relevantLine) {
+      if (lineProbe.length + fragment.length > MAX_RELEVANT_LINE) {
+        discardOversizedRelevantLine();
+      } else {
+        lineProbe += fragment;
+      }
+      return;
+    }
+    const remainingProbe = MAX_LINE_PROBE - lineProbe.length;
+    lineProbe += fragment.slice(0, Math.max(0, remainingProbe));
+    if (looksRelevant(lineProbe)) {
+      relevantLine = true;
+      const remainder = fragment.slice(Math.max(0, remainingProbe));
+      if (lineProbe.length + remainder.length > MAX_RELEVANT_LINE) {
+        discardOversizedRelevantLine();
+      } else {
+        lineProbe += remainder;
+      }
+    } else if (lineProbe.length >= MAX_LINE_PROBE) {
+      lineProbe = "";
+      discardLine = true;
+    }
+  };
+  const finishLine = () => {
+    if (!discardLine && (relevantLine || looksRelevant(lineProbe))) {
+      ingestCodexPricingLine(lineProbe, codexPricing);
+    }
+    lineProbe = "";
+    relevantLine = false;
+    discardLine = false;
+  };
   try {
     while (offset < end) {
       const length = Math.min(buffer.length, end - offset);
@@ -2310,13 +2527,29 @@ async function countNewlinesInRange(
         if (newlineAt < 0) break;
         newlineCount++;
       }
+      const text = decoder.decode(buffer.subarray(0, bytesRead), {
+        stream: offset + bytesRead < end,
+      });
+      let textStart = 0;
+      let textNewline = -1;
+      while ((textNewline = text.indexOf("\n", textStart)) >= 0) {
+        appendLineFragment(text.slice(textStart, textNewline));
+        finishLine();
+        textStart = textNewline + 1;
+      }
+      appendLineFragment(text.slice(textStart));
       lastByte = buffer[bytesRead - 1] ?? -1;
       offset += bytesRead;
     }
+    if (lineProbe || relevantLine) finishLine();
   } finally {
     await fh.close();
   }
-  return { newlineCount, endsWithNewline: lastByte === 10 };
+  return {
+    newlineCount,
+    endsWithNewline: lastByte === 10,
+    codexPricing,
+  };
 }
 
 /**
@@ -2327,7 +2560,7 @@ async function countNewlinesInRange(
  */
 export async function getSessionFileStats(
   path: string,
-): Promise<{ fileSizeBytes: number; lineCount: number }> {
+): Promise<SessionFileStats> {
   const st = await stat(path);
   const key = `${path}\0${st.mtimeMs}\0${st.size}`;
   const pending = sessionFileStatsInflight.get(key);
@@ -2337,17 +2570,26 @@ export async function getSessionFileStats(
     const cached = sessionFileStatsCache.get(path);
     let newlineCount = 0;
     let endsWithNewline = false;
+    let codexPricing: CodexPricingScanState;
     if (cached && cached.mtimeMs === st.mtimeMs && cached.size === st.size) {
       newlineCount = cached.newlineCount;
       endsWithNewline = cached.endsWithNewline;
-    } else if (cached && st.size > cached.size) {
-      const appended = await countNewlinesInRange(path, cached.size, st.size);
+      codexPricing = cached.codexPricing;
+    } else if (cached && cached.endsWithNewline && st.size > cached.size) {
+      const appended = await scanSessionStatsRange(
+        path,
+        cached.size,
+        st.size,
+        cached.codexPricing,
+      );
       newlineCount = cached.newlineCount + appended.newlineCount;
       endsWithNewline = appended.endsWithNewline;
+      codexPricing = appended.codexPricing;
     } else {
-      const full = await countNewlinesInRange(path, 0, st.size);
+      const full = await scanSessionStatsRange(path, 0, st.size);
       newlineCount = full.newlineCount;
       endsWithNewline = full.endsWithNewline;
+      codexPricing = full.codexPricing;
     }
     sessionFileStatsCache.delete(path);
     sessionFileStatsCache.set(path, {
@@ -2355,15 +2597,21 @@ export async function getSessionFileStats(
       size: st.size,
       newlineCount,
       endsWithNewline,
+      codexPricing,
     });
     if (sessionFileStatsCache.size > MAX_SESSION_FILE_STATS_CACHE) {
       const oldest = sessionFileStatsCache.keys().next().value;
       if (oldest !== undefined) sessionFileStatsCache.delete(oldest);
     }
+    const pricingUsage =
+      codexPricing.segments.length > 0 ? codexPricing.segments : undefined;
     return {
       fileSizeBytes: st.size,
-      lineCount:
-        newlineCount + (st.size > 0 && !endsWithNewline ? 1 : 0),
+      lineCount: newlineCount + (st.size > 0 && !endsWithNewline ? 1 : 0),
+      ...(codexPricing.model ? { model: codexPricing.model } : {}),
+      ...(pricingUsage
+        ? { pricingUsage, pricingUsageExact: true as const }
+        : {}),
     };
   }).finally(() => {
     sessionFileStatsInflight.delete(key);

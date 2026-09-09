@@ -46,8 +46,12 @@ export function visibleSessionRequestKey(
   source: string | undefined | null,
   daemonId: string | undefined,
   nearViewport: boolean,
+  refreshRevision?: number,
 ): string {
-  return source && nearViewport ? `${daemonId ?? ""}\0${source}` : "";
+  if (!source || !nearViewport) return "";
+  const revision =
+    typeof refreshRevision === "number" ? `\0${refreshRevision}` : "";
+  return `${daemonId ?? ""}\0${source}${revision}`;
 }
 
 export function rectNearViewport(
