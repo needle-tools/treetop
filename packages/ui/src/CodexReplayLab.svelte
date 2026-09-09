@@ -9,25 +9,30 @@
   } from "@treetop/nicifier";
   import {
     analyzeCodexReplayTurns,
+    createCodexReplayPlayback,
     createCodexReplaySessionTransport,
     filterCodexReplaySessions,
     formatReplayCost,
     formatReplayDuration,
     formatReplayTokenCount,
-    codexReplayMessagesUntil,
     parseCodexReplayBlobAsync,
     parseCodexReplaySessionFixture,
     REPLAY_SESSION_LOCATIONS,
     summarizeCodexReplaySessions,
     summarizeCodexReplayPricingUsage,
+    setCodexReplayPlaybackStep,
+    type CodexReplayPlaybackState,
     type CodexReplaySessionFilter,
     type CodexReplaySessionFixture,
     type CodexReplaySessionTransport,
     type CodexReplayMessage,
+    type ParsedCodexReplay,
   } from "./codex-replay-lab";
 
   let fixture: CodexReplaySessionFixture | null = null;
   let transport: CodexReplaySessionTransport | null = null;
+  let localReplay: ParsedCodexReplay | null = null;
+  let localPlayback: CodexReplayPlaybackState | null = null;
   let fileName = "";
   let stepIndex = 0;
   let scrubStepIndex = 0;
@@ -58,7 +63,7 @@
   let localWarnings: string[] = [];
   let dragActive = false;
 
-  $: stepCount = transport?.stepCount ?? 0;
+  $: stepCount = transport?.stepCount ?? localReplay?.steps.length ?? 0;
   $: replayModel = [...analysisMessages]
     .reverse()
     .find((message) => message.model)?.model;
@@ -86,6 +91,8 @@
     name: string,
     initialStep = 0,
   ): void {
+    localReplay = null;
+    localPlayback = null;
     fixture = nextFixture;
     transport = createCodexReplaySessionTransport(nextFixture, initialStep);
     fileName = name;
@@ -126,6 +133,8 @@
     parseError = "";
     fixture = null;
     transport = null;
+    localReplay = null;
+    localPlayback = null;
     transcriptSession = null;
     transcriptSessionOverride = undefined;
     analysisMessages = [];
@@ -178,6 +187,8 @@
     parseError = "";
     fixture = null;
     transport = null;
+    localReplay = null;
+    localPlayback = null;
     transcriptSession = null;
     transcriptSessionOverride = undefined;
     analysisMessages = [];
@@ -196,7 +207,10 @@
         },
       });
       if (requestId !== loadRequestId) return;
-      const messages = codexReplayMessagesUntil(replay, replay.steps.length);
+      const playback = createCodexReplayPlayback(replay, {
+        stepIndex: replay.steps.length,
+      });
+      const messages = playback.messages;
       if (!messages.length) {
         throw new Error(
           "No displayable Codex or Claude messages found in this file",
@@ -226,6 +240,10 @@
           ?.timestamp,
         messages,
       };
+      localReplay = replay;
+      localPlayback = playback;
+      stepIndex = playback.stepIndex;
+      scrubStepIndex = playback.stepIndex;
       analysisMessages = messages;
       localLineCount = replay.lineCount;
       localWarnings = replay.warnings;
@@ -272,6 +290,8 @@
     loadRequestId += 1;
     fixture = null;
     transport = null;
+    localReplay = null;
+    localPlayback = null;
     transcriptSession = null;
     transcriptSessionOverride = undefined;
     analysisMessages = [];
@@ -301,6 +321,22 @@
   }
 
   function setReplayStep(nextStepIndex: number): void {
+    if (localReplay && localPlayback && transcriptSessionOverride) {
+      const next = Math.min(stepCount, Math.max(0, Math.floor(nextStepIndex)));
+      if (next < stepIndex) replayGeneration += 1;
+      localPlayback = setCodexReplayPlaybackStep(localPlayback, next);
+      const messages = localPlayback.messages;
+      transcriptSessionOverride = {
+        ...transcriptSessionOverride,
+        endedAt: [...messages].reverse().find((message) => message.timestamp)
+          ?.timestamp,
+        messages,
+      };
+      analysisMessages = messages;
+      stepIndex = next;
+      scrubStepIndex = next;
+      return;
+    }
     if (!fixture || !transport) return;
     const next = Math.min(stepCount, Math.max(0, Math.floor(nextStepIndex)));
     if (next < stepIndex) {
@@ -326,7 +362,7 @@
       clearInterval(playTimer);
       playTimer = null;
     }
-    if (playing && fixture) {
+    if (playing && (fixture || localReplay)) {
       playTimer = setInterval(() => {
         if (stepIndex >= stepCount) {
           playing = false;
@@ -377,6 +413,59 @@
     messages: CodexReplayMessage[];
   }
 </script>
+
+{#snippet replayTimeline()}
+  <div class="replay-timeline">
+    <div class="replay-step-buttons" aria-label="Replay steps">
+      <button
+        class="replay-step"
+        on:click={() => setReplayStep(0)}
+        disabled={stepIndex <= 0}
+      >
+        Start
+      </button>
+      <button
+        class="replay-step"
+        on:click={() => setReplayStep(stepIndex - 1)}
+        disabled={stepIndex <= 0}
+      >
+        -1
+      </button>
+      <button
+        class="replay-step replay-step-primary"
+        on:click={() => setReplayStep(stepIndex + 1)}
+        disabled={stepIndex >= stepCount}
+      >
+        +1 step
+      </button>
+      <button
+        class="replay-step"
+        on:click={() => setReplayStep(stepCount)}
+        disabled={stepIndex >= stepCount}
+      >
+        End
+      </button>
+    </div>
+    <button
+      class="replay-play"
+      on:click={togglePlay}
+      aria-label={playing ? "Pause replay" : "Play replay"}
+    >
+      {playing ? "Pause" : "Play"}
+    </button>
+    <input
+      type="range"
+      min="0"
+      max={stepCount}
+      step="1"
+      value={scrubStepIndex}
+      on:input={onScrubInput}
+      on:change={commitScrub}
+      aria-label="Replay time"
+    />
+    <span>{scrubStepIndex}/{stepCount}</span>
+  </div>
+{/snippet}
 
 <div
   class="replay-lab"
@@ -594,9 +683,12 @@
             <progress></progress>
           </div>
         {:else if transcriptSession?.transcript}
-          <div class="replay-stage replay-transcript-stage">
+          <div
+            class="replay-stage"
+            class:replay-transcript-stage={!localReplay}
+          >
             <div class="replay-production-session">
-              {#key transcriptSession.threadId}
+              {#key `${transcriptSession.threadId}:${replayGeneration}`}
                 <SessionView
                   agent={transcriptSessionOverride?.agent ?? "codex"}
                   source={localFile ? "" : transcriptSession.transcript.path}
@@ -618,6 +710,9 @@
                 />
               {/key}
             </div>
+            {#if localReplay}
+              {@render replayTimeline()}
+            {/if}
           </div>
         {:else if !fixture || !transport}
           <div class="replay-drop" role="region" aria-label="Replay status">
@@ -642,56 +737,7 @@
                 />
               {/key}
             </div>
-            <div class="replay-timeline">
-              <div class="replay-step-buttons" aria-label="Replay steps">
-                <button
-                  class="replay-step"
-                  on:click={() => setReplayStep(0)}
-                  disabled={stepIndex <= 0}
-                >
-                  Start
-                </button>
-                <button
-                  class="replay-step"
-                  on:click={() => setReplayStep(stepIndex - 1)}
-                  disabled={stepIndex <= 0}
-                >
-                  -1
-                </button>
-                <button
-                  class="replay-step replay-step-primary"
-                  on:click={() => setReplayStep(stepIndex + 1)}
-                  disabled={stepIndex >= stepCount}
-                >
-                  +1 step
-                </button>
-                <button
-                  class="replay-step"
-                  on:click={() => setReplayStep(stepCount)}
-                  disabled={stepIndex >= stepCount}
-                >
-                  End
-                </button>
-              </div>
-              <button
-                class="replay-play"
-                on:click={togglePlay}
-                aria-label={playing ? "Pause replay" : "Play replay"}
-              >
-                {playing ? "Pause" : "Play"}
-              </button>
-              <input
-                type="range"
-                min="0"
-                max={stepCount}
-                step="1"
-                value={scrubStepIndex}
-                on:input={onScrubInput}
-                on:change={commitScrub}
-                aria-label="Replay time"
-              />
-              <span>{scrubStepIndex}/{stepCount}</span>
-            </div>
+            {@render replayTimeline()}
           </div>
         {/if}
       </div>
@@ -714,7 +760,7 @@
               <header class="replay-analysis-header">
                 <strong>Turns</strong>
                 <span>
-                  {turnAnalysis.issueTurnCount} issues ·
+                  {turnAnalysis.issueTurnCount}/{turnAnalysis.turns.length} turns flagged ·
                   {formatReplayCost(turnAnalysis.totalEstimatedCostUsd)} total
                 </span>
               </header>

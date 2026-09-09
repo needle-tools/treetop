@@ -245,6 +245,15 @@ describe("visual transcript tail following", () => {
         totalMessageCount: 500,
       }),
     ).toBe(false);
+
+    expect(
+      canRequestOlderTranscriptMessages({
+        minMessages: 1_491,
+        maxMessages: 4_412,
+        loadedMessages: 1_491,
+        totalMessageCount: 4_412,
+      }),
+    ).toBe(true);
   });
 
   it("preserves a reader's scroll position when the transcript scroller is replaced", () => {

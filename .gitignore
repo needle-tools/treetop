@@ -1,5 +1,6 @@
 node_modules/
 dist/
+packages/ui/dist-replay-lab/
 .DS_Store
 *.af~lock~
 *.log

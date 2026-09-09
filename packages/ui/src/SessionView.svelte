@@ -1895,6 +1895,9 @@
   }
 
   function maxVisualHistoryMessages(): number {
+    if (transcriptSessionOverride) {
+      return transcriptSessionOverride.messages.length;
+    }
     const total =
       typeof totalMessageCount === "number" && totalMessageCount > 0
         ? totalMessageCount
@@ -1904,6 +1907,15 @@
 
   function canRequestOlderVisualHistory(): boolean {
     if (!session || !messagesEl) return false;
+    if (transcriptSessionOverride) {
+      const renderedMessages = visualRenderWindow.messages.length;
+      return canRequestOlderTranscriptMessages({
+        minMessages: renderedMessages,
+        maxMessages: transcriptSessionOverride.messages.length,
+        loadedMessages: renderedMessages,
+        totalMessageCount: transcriptSessionOverride.messages.length,
+      });
+    }
     if (codexAppHistorySourceActive) {
       const threadId = effectiveSessionId;
       return canRequestOlderCodexAppThreadHistory({
@@ -1934,7 +1946,10 @@
     if (visualHistoryMinMessages < loadedHistoryMax) {
       visualHistoryMinMessages = Math.min(
         loadedHistoryMax,
-        visualHistoryMinMessages + VISUAL_HISTORY_MESSAGES_STEP,
+        Math.max(
+          visualHistoryMinMessages + VISUAL_HISTORY_MESSAGES_STEP,
+          visualRenderWindow.messages.length + VISUAL_HISTORY_MESSAGES_STEP,
+        ),
       );
       visualHistoryScrollAnchor = {
         el,
