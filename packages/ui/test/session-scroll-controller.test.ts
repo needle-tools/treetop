@@ -108,6 +108,23 @@ function fakeLiveWorkScroller(opts: { zen?: boolean } = {}): {
 }
 
 describe("session scroll controller", () => {
+  test("keeps the first wheel gesture inside every transcript", () => {
+    const controller = createSessionScrollController();
+    let prevented = false;
+
+    controller.onMouseEnter();
+    controller.onWheel({
+      deltaX: 0,
+      deltaY: -120,
+      preventDefault: () => {
+        prevented = true;
+      },
+    } as WheelEvent);
+    controller.dispose();
+
+    expect(prevented).toBe(false);
+  });
+
   test("restores the same visible row after a paused live update", () => {
     const scheduler = new ManualScheduler();
     let anchorTop = 220;
