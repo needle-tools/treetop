@@ -159,3 +159,29 @@ Caching strategy:
   per member is a separate plan.
 - Not a session browser. Hover gives summary stats; the deeper view
   is v3+ and out of this plan's scope.
+
+## Further reading
+
+- The local `codex-session-dashboard` reference implementation remains the
+  clearest JavaScript example of streaming a complete Codex JSONL, attributing
+  cumulative-token deltas across resets, and retaining the active model for
+  session totals.
+- [CodexBar's CostUsage subsystem](https://github.com/steipete/CodexBar/tree/main/Sources/CodexBarCore/Vendored/CostUsage)
+  is the strongest behavioral reference for harder Codex cases: compaction and
+  truncated prefixes, fork/subagent lineage, mixed models, incremental scans,
+  cache reconciliation, and bounded catch-up scheduling. Despite the directory
+  name, it is not a separate package or public repository; it is MIT-licensed
+  Swift compiled directly into `CodexBarCore`.
+- [`codexbar cost`](https://github.com/steipete/CodexBar/blob/main/docs/cli.md)
+  can emit JSON grouped by session and is useful as an optional development
+  parity oracle. Treetop must not depend on the executable at runtime: it does
+  not provide Treetop's per-turn attribution and would introduce an unrelated
+  installation dependency.
+- [ccusage](https://github.com/ryoppippi/ccusage) is the external project
+  CodexBar credits for cost-usage tracking. It is useful prior art, especially
+  for Claude, but CodexBar's newer Codex-specific scanner behavior is the closer
+  comparison for native Codex session logs.
+- [models.dev](https://models.dev/) remains the live catalog input for the
+  reusable `@treetop/nicifier` pricing module. Historical bundled periods and
+  transcript-derived attribution remain ours so a current catalog snapshot
+  cannot rewrite old sessions.
