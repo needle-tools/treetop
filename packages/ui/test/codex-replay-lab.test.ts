@@ -23,6 +23,7 @@ import {
   replayDurationMs,
   replayElapsedMsAtStep,
   replayPlaybackTiming,
+  replaySourceProgressAtStep,
   replayStepIndexAtElapsedMs,
   sortCodexReplaySessions,
 } from "../src/codex-replay-lab";
@@ -411,6 +412,10 @@ describe("Codex replay lab parser", () => {
     expect(server.playback.messages).toEqual(dropped.playback.messages);
     expect(server.session).toEqual(dropped.session);
     expect(server.entry.transcript?.path).toBe("/sessions/shared.jsonl");
+    expect(server.replay).toMatchObject({
+      lineCount: 2,
+      fileSizeBytes: 456,
+    });
     expect(dropped.entry.transcript?.path).toBe("");
   });
 
@@ -1307,6 +1312,65 @@ Narrate this page live`,
       mode: "steps",
       stepsPerSecond: 5,
       tickMs: 200,
+    });
+  });
+
+  test("tracks exact source bytes and lines as a streamed replay advances", async () => {
+    const lines = [
+      JSON.stringify({
+        type: "session_meta",
+        payload: { id: "progress", cwd: "/repo" },
+      }),
+      JSON.stringify({
+        type: "response_item",
+        payload: {
+          type: "message",
+          role: "user",
+          content: [{ type: "input_text", text: "first 🧪" }],
+        },
+      }),
+      JSON.stringify({
+        type: "response_item",
+        payload: {
+          type: "message",
+          role: "assistant",
+          content: [{ type: "output_text", text: "second" }],
+        },
+      }),
+    ];
+    const text = `${lines.join("\n")}\n`;
+    const replay = await parseCodexReplayBlobAsync(new Blob([text]));
+
+    expect(replaySourceProgressAtStep(replay, 0)).toEqual({
+      lineCount: 0,
+      fileSizeBytes: 0,
+      exact: true,
+    });
+    expect(replaySourceProgressAtStep(replay, 1)).toEqual({
+      lineCount: 2,
+      fileSizeBytes: new TextEncoder().encode(`${lines[0]}\n${lines[1]}\n`)
+        .byteLength,
+      exact: true,
+    });
+    expect(replaySourceProgressAtStep(replay, replay.steps.length)).toEqual({
+      lineCount: 3,
+      fileSizeBytes: new TextEncoder().encode(text).byteLength,
+      exact: true,
+    });
+  });
+
+  test("falls back to proportional source progress without raw offsets", () => {
+    const replay = {
+      mode: "transcript" as const,
+      lineCount: 40,
+      fileSizeBytes: 1_000,
+      steps: [{}, {}, {}, {}],
+    };
+
+    expect(replaySourceProgressAtStep(replay, 1)).toEqual({
+      lineCount: 10,
+      fileSizeBytes: 250,
+      exact: false,
     });
   });
 
