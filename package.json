@@ -26,6 +26,7 @@
     "build:launch": "bun run scripts/build-launch.ts",
     "build:replay-lab": "cd packages/ui && vite build --mode replay-lab-static",
     "build:launch:replay-lab": "bun run build:replay-lab && bun run replay-lab",
+    "deploy:replay": "bun run build:replay-lab && npx needle-cloud@latest deploy packages/ui/dist-replay-lab --team \"Needle\" --name \"Treetop Replay\"",
     "replay-lab": "bun run scripts/replay-lab-app.ts",
     "dev:replay-lab": "TREETOP_REPLAY_LAB_DEV=1 bun run scripts/replay-lab-app.ts",
     "build:native": "bun run scripts/build-native.ts",
