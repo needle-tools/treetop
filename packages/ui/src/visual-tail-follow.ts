@@ -35,6 +35,36 @@ export interface VisualScrollAnchorCandidate {
   depth?: number;
 }
 
+export interface VisualScrollIndexCandidate {
+  index: number;
+  top: number;
+  bottom: number;
+}
+
+/** Selects the semantic row occupying the middle of a scroll viewport. */
+export function selectVisualScrollIndex(opts: {
+  viewportTop: number;
+  viewportBottom: number;
+  candidates: readonly VisualScrollIndexCandidate[];
+}): number | undefined {
+  const focus = (opts.viewportTop + opts.viewportBottom) / 2;
+  let selected: VisualScrollIndexCandidate | undefined;
+  let selectedDistance = Number.POSITIVE_INFINITY;
+  for (const candidate of opts.candidates) {
+    const distance =
+      focus < candidate.top
+        ? candidate.top - focus
+        : focus > candidate.bottom
+          ? focus - candidate.bottom
+          : 0;
+    if (distance >= selectedDistance) continue;
+    selected = candidate;
+    selectedDistance = distance;
+    if (distance === 0) break;
+  }
+  return selected?.index;
+}
+
 export function selectVisualScrollAnchor(opts: {
   viewportTop: number;
   viewportBottom: number;

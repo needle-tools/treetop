@@ -1,9 +1,10 @@
 <script lang="ts">
-  import { onDestroy, onMount } from "svelte";
+  import { onDestroy, onMount, tick } from "svelte";
   import SessionView from "./SessionView.svelte";
   import { formatByteSize } from "./context-tokens";
   import { codexAppSource } from "./storage";
   import { installIdleTracker } from "./ui-idle";
+  import { selectVisualScrollIndex } from "./visual-tail-follow";
   import {
     loadModelsDevPricing,
     type ModelsDevPricingSnapshot,
@@ -81,6 +82,13 @@
   let transcriptSessionOverride: CodexReplayTranscriptSession | undefined;
   let analysisCollapsed = false;
   let analysisMessages: readonly CodexReplayMessage[] = [];
+  let replaySessionView: {
+    scrollToTranscriptTurn(turnIndex: number): void;
+  } | null = null;
+  let replayTurnMap: HTMLElement | null = null;
+  let visibleTranscriptTurnIndex = -1;
+  let replayTurnMapSyncSeq = 0;
+  let syncingReplayTurnMap = false;
   let modelsDevPricing: ModelsDevPricingSnapshot | undefined;
   let fileInput: HTMLInputElement | null = null;
   let folderInput: HTMLInputElement | null = null;
@@ -140,6 +148,7 @@
     name: string,
     initialStep = 0,
   ): void {
+    visibleTranscriptTurnIndex = -1;
     localReplay = null;
     localPlayback = null;
     fixture = nextFixture;
@@ -160,6 +169,7 @@
       localFile: false,
     },
   ): void {
+    visibleTranscriptTurnIndex = -1;
     fixture = null;
     transport = null;
     localReplay = view.replay;
@@ -538,6 +548,7 @@
     transcriptSession = null;
     transcriptSessionOverride = undefined;
     analysisMessages = [];
+    visibleTranscriptTurnIndex = -1;
     fileName = "";
     stepIndex = 0;
     scrubStepIndex = 0;
@@ -568,6 +579,55 @@
     messages: readonly CodexReplayMessage[],
   ): void {
     analysisMessages = messages;
+  }
+
+  function onTranscriptTurnChange(turnIndex: number): void {
+    if (turnIndex === visibleTranscriptTurnIndex) return;
+    visibleTranscriptTurnIndex = turnIndex;
+    const syncSeq = ++replayTurnMapSyncSeq;
+    syncingReplayTurnMap = true;
+    void tick().then(() => {
+      const map = replayTurnMap;
+      const row = map?.querySelector<HTMLElement>(
+        `[data-replay-turn-index="${turnIndex}"]`,
+      );
+      if (!map || !row) {
+        if (syncSeq === replayTurnMapSyncSeq) syncingReplayTurnMap = false;
+        return;
+      }
+      const viewport = map.getBoundingClientRect();
+      const box = row.getBoundingClientRect();
+      map.scrollTop +=
+        (box.top + box.bottom) / 2 - (viewport.top + viewport.bottom) / 2;
+      requestAnimationFrame(() => {
+        if (syncSeq === replayTurnMapSyncSeq) syncingReplayTurnMap = false;
+      });
+    });
+  }
+
+  function onReplayTurnMapScroll(): void {
+    const map = replayTurnMap;
+    if (!map || syncingReplayTurnMap) return;
+    const viewport = map.getBoundingClientRect();
+    const turnIndex = selectVisualScrollIndex({
+      viewportTop: viewport.top,
+      viewportBottom: viewport.bottom,
+      candidates: Array.from(
+        map.querySelectorAll<HTMLElement>("[data-replay-turn-index]"),
+      ).map((row) => {
+        const box = row.getBoundingClientRect();
+        return {
+          index: Number(row.dataset.replayTurnIndex),
+          top: box.top,
+          bottom: box.bottom,
+        };
+      }),
+    });
+    if (turnIndex === undefined || turnIndex === visibleTranscriptTurnIndex) {
+      return;
+    }
+    visibleTranscriptTurnIndex = turnIndex;
+    replaySessionView?.scrollToTranscriptTurn(turnIndex);
   }
 
   function setReplayStep(nextStepIndex: number): void {
@@ -1117,6 +1177,7 @@
             <div class="replay-production-session">
               {#key `${transcriptSession.threadId}:${replayGeneration}`}
                 <SessionView
+                  bind:this={replaySessionView}
                   agent={transcriptSessionOverride?.agent ?? "codex"}
                   source={localFile ? "" : transcriptSession.transcript.path}
                   resumeSessionId={transcriptSession.threadId}
@@ -1135,6 +1196,7 @@
                   spawnReady={false}
                   onClose={localFile ? clearReplay : () => {}}
                   onMessagesChange={receiveSessionMessages}
+                  {onTranscriptTurnChange}
                 />
               {/key}
             </div>
@@ -1153,6 +1215,7 @@
             <div class="replay-production-session">
               {#key replayGeneration}
                 <SessionView
+                  bind:this={replaySessionView}
                   agent="codex"
                   source={codexAppSource(fixture.threadId)}
                   resumeSessionId={fixture.threadId}
@@ -1162,6 +1225,7 @@
                   codexAppTransport={transport}
                   spawnReady={false}
                   onMessagesChange={receiveSessionMessages}
+                  {onTranscriptTurnChange}
                 />
               {/key}
             </div>
@@ -1196,11 +1260,17 @@
               {#if !turnAnalysis.turns.length}
                 <span class="replay-analysis-empty">No turn data</span>
               {:else}
-                <div class="replay-turn-map">
+                <div
+                  class="replay-turn-map"
+                  bind:this={replayTurnMap}
+                  on:scroll={onReplayTurnMapScroll}
+                >
                   {#each turnAnalysis.turns as turn}
                     <article
                       class="replay-turn"
                       class:has-issues={turn.issues.length > 0}
+                      class:visible-turn={turn.index === visibleTranscriptTurnIndex}
+                      data-replay-turn-index={turn.index}
                       title={turn.issues.length
                         ? turn.issues
                             .map((issue) => `${issue.label}: ${issue.detail}`)
@@ -1549,6 +1619,16 @@
 
   .replay-turn.has-issues {
     border-left-color: #ff765f;
+  }
+
+  .replay-turn.visible-turn {
+    background: color-mix(
+      in srgb,
+      var(--accent, #9ad45f) 12%,
+      var(--button-bg, #252525)
+    );
+    box-shadow: inset 0 0 0 1px
+      color-mix(in srgb, var(--accent, #9ad45f) 34%, transparent);
   }
 
   .replay-turn-heading {

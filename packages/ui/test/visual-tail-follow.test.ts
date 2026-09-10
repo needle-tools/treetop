@@ -5,6 +5,7 @@ import {
   isVisualTailFollowActive,
   replacementVisualScrollTop,
   selectVisualScrollAnchor,
+  selectVisualScrollIndex,
   shouldFollowLiveWorkBody,
   shouldFollowVisualTail,
   shouldRememberVisualScrollMemory,
@@ -16,6 +17,20 @@ import {
 } from "../src/visual-tail-follow";
 
 describe("visual transcript tail following", () => {
+  it("selects the turn occupying the viewport focus line", () => {
+    expect(
+      selectVisualScrollIndex({
+        viewportTop: 100,
+        viewportBottom: 700,
+        candidates: [
+          { index: 3, top: -300, bottom: 180 },
+          { index: 4, top: 180, bottom: 620 },
+          { index: 5, top: 620, bottom: 900 },
+        ],
+      }),
+    ).toBe(4);
+  });
+
   it("positions live zen work near the top while keeping the end of the user turn visible", () => {
     expect(
       zenLiveWorkScrollDelta({
