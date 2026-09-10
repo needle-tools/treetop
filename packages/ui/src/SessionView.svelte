@@ -1839,6 +1839,25 @@
     });
   }
 
+  export function scrollTranscriptToEdge(edge: "start" | "end"): void {
+    if (edge === "end") {
+      transcriptTurnNavigationTarget = undefined;
+      sessionScroll.scrollToEdge("end");
+      return;
+    }
+    visualHistoryMinMessages = visualSessionMessages.length;
+    transcriptTurnNavigationTarget = 0;
+    const navigationSeq = ++transcriptTurnNavigationSeq;
+    void tick().then(() => {
+      requestAnimationFrame(() => {
+        if (navigationSeq !== transcriptTurnNavigationSeq) return;
+        sessionScroll.scrollToEdge("start");
+        transcriptTurnNavigationTarget = undefined;
+        publishTranscriptTurn();
+      });
+    });
+  }
+
   function openSessionFind(): void {
     sessionFindScope?.openFind();
   }
