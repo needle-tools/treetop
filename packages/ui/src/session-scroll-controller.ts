@@ -98,6 +98,8 @@ export class SessionScrollController {
   private active = false;
   private pauseSeq = 0;
   private readerRestoreSeq = 0;
+  private tailFollowSeq = 0;
+  private pendingTailFollowSeq = 0;
   private layoutObserver: ResizeObserver | null = null;
   private cursorSettled = false;
   private settleTimer: ReturnType<typeof setTimeout> | null = null;
@@ -146,6 +148,8 @@ export class SessionScrollController {
   }
 
   reset(): void {
+    this.tailFollowSeq += 1;
+    this.pendingTailFollowSeq = 0;
     this.renderedOnce = false;
     this.tailKey = "";
     this.paused = false;
@@ -195,12 +199,12 @@ export class SessionScrollController {
   }
 
   onWheel(event: WheelEvent): void {
-    if (this.cursorSettled) {
-      if (event.deltaY < 0) this.setPaused(true);
-      else if (event.deltaY > 0) this.updateIntent();
-      if (event.deltaY < 0) this.options.requestOlder?.();
+    if (event.deltaY < 0) {
+      this.setPaused(true);
+      this.options.requestOlder?.();
       return;
     }
+    if (this.cursorSettled && event.deltaY > 0) this.updateIntent();
     // Let the transcript's native scroller own the first gesture too. Its
     // scroll event updates pause state and requests older history. Redirecting
     // this gesture to an outer window made the same SessionView behave
@@ -208,6 +212,12 @@ export class SessionScrollController {
   }
 
   onScroll(): void {
+    // A tail update can replace a tall live-work row with a short completed
+    // summary before adding the next turn. The browser clamps scrollTop and
+    // emits a normal scroll event for that layout change. It is not reader
+    // intent, and treating it as such cancels follow between replay/live
+    // turns. Explicit wheel intent still updates pause state in onWheel.
+    if (this.pendingTailFollowSeq !== 0 && !this.paused) return;
     this.updateIntent();
     this.saveMemory();
     this.options.requestOlder?.();
@@ -286,6 +296,8 @@ export class SessionScrollController {
   scheduleTailFollow(options: { force?: boolean } = {}): void {
     const el = this.el;
     if (!el) return;
+    const followSeq = ++this.tailFollowSeq;
+    this.pendingTailFollowSeq = followSeq;
     const force = options.force === true;
     const firstRender = !this.renderedOnce;
     if (firstRender && !usableLayout(el)) {
@@ -313,14 +325,23 @@ export class SessionScrollController {
       const mayFollow = firstRender || this.canApplyFollow(pauseSeq);
       if (!mayFollow) this.setActive(false);
       if (shouldStick && mayFollow) this.applyTailFollow(current);
-      if (!this.options.transcriptActive?.()) return;
       this.scheduler.nextFrame(() => {
         const settled = this.el;
         const mayFollowSettled = firstRender || this.canApplyFollow(pauseSeq);
         if (!mayFollowSettled) this.setActive(false);
-        if (settled && shouldStick && mayFollowSettled) {
+        if (
+          settled &&
+          shouldStick &&
+          mayFollowSettled &&
+          this.options.transcriptActive?.()
+        ) {
           this.applyTailFollow(settled);
         }
+        this.scheduler.nextFrame(() => {
+          if (this.pendingTailFollowSeq !== followSeq) return;
+          this.pendingTailFollowSeq = 0;
+          this.syncActive();
+        });
       });
     });
   }
