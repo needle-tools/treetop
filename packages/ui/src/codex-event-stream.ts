@@ -2,8 +2,10 @@ import { apiUrl } from "./api";
 import {
   canonicalCodexToolName,
   codexSubagentActivityFields,
+  contextTokenSnapshotFromUsageRecord,
   parseCodexToolScriptInvocation,
   type CodexSubagentActivityFields,
+  type ContextCompactionDetails,
 } from "@treetop/nicifier";
 
 export interface CodexAppEvent {
@@ -58,12 +60,17 @@ export interface CodexLiveToolResult {
 export interface CodexLiveMarker {
   id: string;
   text: string;
+  compaction?: CodexAppHistoryBlock["compaction"];
 }
 
 export interface CodexLiveNormalizeContext {
   toolNames?: Map<string, string>;
   toolInputs?: Map<string, unknown>;
   previousTotalTokenUsage?: CodexAppTokenUsage;
+  latestContextTokens?: number;
+  compactionStartedAtMs?: Map<string, number>;
+  pendingCompactionMarker?: CodexLiveMarker & { timestamp?: string };
+  pendingCompactionBlock?: CodexAppHistoryBlock;
   model?: string;
 }
 
@@ -105,6 +112,7 @@ export interface CodexAppHistoryBlock {
   url?: string;
   title?: string;
   alt?: string;
+  compaction?: ContextCompactionDetails;
   subagentId?: string;
   subagentNickname?: string;
   subagentAction?: "spawn" | "wait" | "notification";
@@ -580,12 +588,41 @@ export function codexLiveToolResultFromEvent(
 
 export function codexLiveMarkerFromEvent(
   event: CodexAppEvent,
+  context: CodexLiveNormalizeContext = {},
 ): CodexLiveMarker | null {
   const item = codexObjectField(event.params, "item");
+  if (event.method === "item/started" && item?.type === "contextCompaction") {
+    const id = stringField(item, "id") ?? `${event.seq ?? "context"}`;
+    const startedAtMs = finiteNumber(event.params.startedAtMs);
+    if (startedAtMs !== undefined) {
+      context.compactionStartedAtMs ??= new Map<string, number>();
+      context.compactionStartedAtMs.set(id, startedAtMs);
+    }
+    return null;
+  }
   if (event.method === "item/completed" && item?.type === "contextCompaction") {
+    const itemId = stringField(item, "id") ?? `${event.seq ?? "context"}`;
+    const startedAtMs = context.compactionStartedAtMs?.get(itemId);
+    const completedAtMs = finiteNumber(event.params.completedAtMs);
+    context.compactionStartedAtMs?.delete(itemId);
+    const durationMs =
+      startedAtMs !== undefined &&
+      completedAtMs !== undefined &&
+      completedAtMs >= startedAtMs
+        ? completedAtMs - startedAtMs
+        : undefined;
     return {
-      id: `codex-marker-${stringField(item, "id") ?? event.seq ?? "context"}`,
+      id: `codex-marker-${itemId}`,
       text: "[Context compacted]",
+      ...((context.latestContextTokens !== undefined ||
+        durationMs !== undefined) && {
+        compaction: {
+          ...(context.latestContextTokens !== undefined
+            ? { beforeTokens: context.latestContextTokens }
+            : {}),
+          ...(durationMs !== undefined ? { durationMs } : {}),
+        },
+      }),
     };
   }
   if (
@@ -595,6 +632,9 @@ export function codexLiveMarkerFromEvent(
     return {
       id: `codex-marker-${event.turnId ?? event.params.turnId ?? "context"}-context-${event.seq ?? event.receivedAt}`,
       text: "[Context compacted]",
+      ...(context.latestContextTokens !== undefined
+        ? { compaction: { beforeTokens: context.latestContextTokens } }
+        : {}),
     };
   }
   if (event.method === "warning") {
@@ -657,6 +697,26 @@ export function codexLiveMessagesFromEvent(
     (settings ? stringField(settings, "model") : undefined);
   if (eventModel) context.model = eventModel;
   const timestamp = codexLiveItemTimestamp(event);
+  const contextSnapshot = codexContextSnapshotFromPayload(event.params);
+  if (contextSnapshot) {
+    const pending = context.pendingCompactionMarker;
+    if (pending?.compaction && contextSnapshot.attributedTokens === 0) {
+      const compaction = {
+        ...pending.compaction,
+        afterTokens: contextSnapshot.totalTokens,
+      };
+      messages.push(
+        codexMarkerMessage(
+          pending.id,
+          pending.timestamp,
+          pending.text,
+          compaction,
+        ),
+      );
+      context.pendingCompactionMarker = undefined;
+    }
+    context.latestContextTokens = contextSnapshot.totalTokens;
+  }
   const tokenUsage = codexTokenUsageFromEvent(event, context);
   if (tokenUsage !== undefined) {
     messages.push({
@@ -724,11 +784,19 @@ export function codexLiveMessagesFromEvent(
       blocks: liveGeneratedMedia,
     });
   }
-  const liveMarker = codexLiveMarkerFromEvent(event);
+  const liveMarker = codexLiveMarkerFromEvent(event, context);
   if (liveMarker) {
     messages.push(
-      codexMarkerMessage(liveMarker.id, timestamp, liveMarker.text),
+      codexMarkerMessage(
+        liveMarker.id,
+        timestamp,
+        liveMarker.text,
+        liveMarker.compaction,
+      ),
     );
+    if (liveMarker.compaction) {
+      context.pendingCompactionMarker = { ...liveMarker, timestamp };
+    }
   }
   return messages;
 }
@@ -903,6 +971,18 @@ function codexAppMessagesFromThreadItem(
   const itemType = stringField(item, "type");
   const itemId =
     stringField(item, "id") ?? stringField(item, "call_id") ?? turnId ?? "item";
+  const contextSnapshot = codexContextSnapshotFromPayload(item);
+  if (contextSnapshot) {
+    if (
+      usageContext.pendingCompactionBlock?.compaction &&
+      contextSnapshot.attributedTokens === 0
+    ) {
+      usageContext.pendingCompactionBlock.compaction.afterTokens =
+        contextSnapshot.totalTokens;
+      usageContext.pendingCompactionBlock = undefined;
+    }
+    usageContext.latestContextTokens = contextSnapshot.totalTokens;
+  }
   const tokenUsage = codexTokenUsageFromPayload(item, usageContext);
   if (tokenUsage !== undefined) {
     return [
@@ -1098,11 +1178,35 @@ function codexAppMessagesFromThreadItem(
     return messages;
   }
   if (itemType === "contextCompaction") {
+    const startedAtMs = finiteNumber(item.startedAtMs);
+    const completedAtMs = finiteNumber(item.completedAtMs);
+    const durationMs =
+      finiteNumber(item.durationMs) ??
+      (startedAtMs !== undefined &&
+      completedAtMs !== undefined &&
+      completedAtMs >= startedAtMs
+        ? completedAtMs - startedAtMs
+        : undefined);
+    const block: CodexAppHistoryBlock = {
+      type: "marker",
+      text: "[Context compacted]",
+      ...((usageContext.latestContextTokens !== undefined ||
+        durationMs !== undefined) && {
+        compaction: {
+          ...(usageContext.latestContextTokens !== undefined
+            ? { beforeTokens: usageContext.latestContextTokens }
+            : {}),
+          ...(durationMs !== undefined ? { durationMs } : {}),
+        },
+      }),
+    };
+    usageContext.pendingCompactionBlock = block;
     return [
       codexMarkerMessage(
         `codex-marker-${itemId}`,
         timestamp,
         "[Context compacted]",
+        block.compaction,
       ),
     ];
   }
@@ -1231,6 +1335,21 @@ function codexTokenUsageFromPayload(
   );
   context.previousTotalTokenUsage = totalUsage;
   return codexTokenUsageHasContent(delta) ? delta : undefined;
+}
+
+function codexContextSnapshotFromPayload(
+  payload: Record<string, unknown>,
+): { totalTokens: number; attributedTokens: number } | undefined {
+  for (const source of codexTokenUsageSources(payload)) {
+    const tokenUsage = codexObjectField(source, "tokenUsage");
+    const record =
+      (tokenUsage ? codexObjectField(tokenUsage, "last") : undefined) ??
+      codexObjectField(source, "last_token_usage") ??
+      codexObjectField(source, "lastTokenUsage");
+    const snapshot = contextTokenSnapshotFromUsageRecord(record);
+    if (snapshot) return snapshot;
+  }
+  return undefined;
 }
 
 function codexPayloadHasTokenUsage(payload: Record<string, unknown>): boolean {
@@ -1641,12 +1760,13 @@ function codexMarkerMessage(
   id: string,
   timestamp: string | undefined,
   text: string,
+  compaction?: CodexAppHistoryBlock["compaction"],
 ): CodexAppHistoryMessage {
   return {
     id,
     role: "system",
     timestamp,
-    blocks: [{ type: "marker", text }],
+    blocks: [{ type: "marker", text, ...(compaction ? { compaction } : {}) }],
   };
 }
 

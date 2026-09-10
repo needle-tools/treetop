@@ -18,8 +18,11 @@ import {
   canonicalCodexToolName,
   codexSubagentActivityFields,
   codexPatchApplyResultText,
+  contextCompactionDetailsFromMetadata,
+  contextTokenSnapshotFromUsageRecord,
   parseCodexImageWrapper,
   parseCodexToolScriptInvocation,
+  type ContextCompactionDetails,
 } from "@treetop/nicifier";
 
 export type NormalizedRole = "user" | "assistant" | "system" | "tool";
@@ -88,6 +91,8 @@ export interface NormalizedBlock {
   title?: string;
   alt?: string;
   hasAlpha?: boolean;
+  /** Context-compaction measurements reported by the agent runtime. */
+  compaction?: ContextCompactionDetails;
   /** subagent only, and mirrored onto related subagent tool rows. */
   subagentId?: string;
   subagentNickname?: string;
@@ -195,6 +200,8 @@ export interface NormalizedSession {
 interface CodexParseContext {
   sourcePath?: string;
   previousTotalTokenUsage?: NormalizedTokenUsage;
+  latestContextTokens?: number;
+  pendingCompactionBlock?: NormalizedBlock;
   pendingWebSearchIds?: string[];
 }
 
@@ -683,6 +690,18 @@ function parseClaudeJsonlLine(line: string, out: NormalizedSession): void {
     out.sessionId = obj.sessionId;
 
   const type = obj.type;
+  if (type === "system" && obj.subtype === "compact_boundary") {
+    const ts = typeof obj.timestamp === "string" ? obj.timestamp : undefined;
+    const compaction = contextCompactionDetailsFromMetadata(obj.compactMetadata);
+    if (ts && !out.startedAt) out.startedAt = ts;
+    if (ts) out.endedAt = ts;
+    pushSessionMessage(out, "system", [{
+      type: "marker",
+      text: "[Context compacted]",
+      ...(compaction ? { compaction } : {}),
+    }], ts);
+    return;
+  }
   if (type === "summary") {
     const ts = typeof obj.timestamp === "string" ? obj.timestamp : undefined;
     if (ts && !out.startedAt) out.startedAt = ts;
@@ -983,14 +1002,21 @@ function codexOutputTokenUsageFromPayload(
   context?: CodexParseContext,
 ): NormalizedTokenUsage | undefined {
   const info = objectField(payload.info) ?? payload;
-  const lastUsage = codexTokenUsageFromObject(
-    objectField(info.last_token_usage) ??
-      objectField(payload.lastTokenUsage) ??
-      objectField(payload.usage),
-  );
+  const lastUsageRecord = objectField(info.last_token_usage) ??
+    objectField(payload.lastTokenUsage) ?? objectField(payload.usage);
+  const lastUsage = codexTokenUsageFromObject(lastUsageRecord);
   const totalUsage = codexTokenUsageFromObject(
     objectField(info.total_token_usage) ?? objectField(payload.totalTokenUsage),
   );
+  if (lastUsageRecord && context) {
+    const snapshot = contextTokenSnapshotFromUsageRecord(lastUsageRecord);
+    if (context.pendingCompactionBlock?.compaction &&
+      snapshot && snapshot.attributedTokens === 0) {
+      context.pendingCompactionBlock.compaction.afterTokens = snapshot.totalTokens;
+      context.pendingCompactionBlock = undefined;
+    }
+    if (snapshot) context.latestContextTokens = snapshot.totalTokens;
+  }
   if (lastUsage) {
     if (totalUsage && context) {
       context.previousTotalTokenUsage = totalUsage;
@@ -1766,10 +1792,18 @@ function parseCodexJsonlLine(
     return;
   }
   if (obj.type === "compacted") {
+    const block: NormalizedBlock = {
+      type: "marker",
+      text: "[Context compacted]",
+      ...(context.latestContextTokens !== undefined
+        ? { compaction: { beforeTokens: context.latestContextTokens } }
+        : {}),
+    };
+    context.pendingCompactionBlock = block;
     pushSessionMessage(
       out,
       "system",
-      [{ type: "marker", text: "[Context compacted]" }],
+      [block],
       codexTimestamp(obj),
     );
     return;
@@ -1808,7 +1842,15 @@ function parseCodexJsonlLine(
     }
     const marker = codexEventMarker(p);
     if (marker) {
-      pushSessionMessage(out, "system", [{ type: "marker", text: marker }], ts);
+      const block: NormalizedBlock = {
+        type: "marker",
+        text: marker,
+        ...(marker === "[Context compacted]" && context.latestContextTokens !== undefined
+          ? { compaction: { beforeTokens: context.latestContextTokens } }
+          : {}),
+      };
+      if (block.compaction) context.pendingCompactionBlock = block;
+      pushSessionMessage(out, "system", [block], ts);
       return;
     }
     if (p.type === "patch_apply_end") {

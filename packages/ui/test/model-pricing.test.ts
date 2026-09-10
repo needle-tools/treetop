@@ -1,5 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
+  contextCompactionDetailsFromMetadata,
+  contextTokenSnapshotFromUsageRecord,
   estimateModelTokenCost,
   estimateSessionTokenCost,
   loadModelsDevPricing,
@@ -14,6 +16,23 @@ import {
 } from "../src/codex-event-stream";
 
 describe("model pricing", () => {
+  test("normalizes shared Claude and Codex compaction measurements", () => {
+    expect(contextCompactionDetailsFromMetadata({
+      preTokens: 999_820,
+      postTokens: 15_028,
+      durationMs: 127_824,
+    })).toEqual({
+      beforeTokens: 999_820,
+      afterTokens: 15_028,
+      durationMs: 127_824,
+    });
+    expect(contextTokenSnapshotFromUsageRecord({
+      total_tokens: 14_484,
+      input_tokens: 0,
+      output_tokens: 0,
+    })).toEqual({ totalTokens: 14_484, attributedTokens: 0 });
+  });
+
   test("prices compact full-session usage segments and reports gaps", () => {
     const summary = estimateSessionTokenCost(
       [

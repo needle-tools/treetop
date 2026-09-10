@@ -18,6 +18,8 @@ import {
   canonicalCodexToolName,
   codexSubagentActivityFields,
   codexPatchApplyResultText,
+  contextCompactionDetailsFromMetadata,
+  contextTokenSnapshotFromUsageRecord,
   estimateModelTokenCost,
   parseCodexImageWrapper,
   parseCodexToolScriptInvocation,
@@ -1364,6 +1366,19 @@ function claudeTranscriptStepFromRow(
   if (!row) return undefined;
   const type = objectString(row, "type");
   const timestamp = objectString(row, "timestamp");
+  if (type === "system" && objectString(row, "subtype") === "compact_boundary") {
+    const compaction = contextCompactionDetailsFromMetadata(row.compactMetadata);
+    return transcriptMessageStep(seq, timestamp, "Context compacted", {
+      id: objectString(row, "uuid") ?? `claude-transcript-marker-${seq}`,
+      role: "system",
+      timestamp,
+      blocks: [{
+        type: "marker",
+        text: "Context compacted",
+        ...(compaction ? { compaction } : {}),
+      }],
+    });
+  }
   if (type === "summary") {
     return transcriptMessageStep(seq, timestamp, "Context compacted", {
       id: objectString(row, "uuid") ?? `claude-transcript-marker-${seq}`,
@@ -1739,11 +1754,19 @@ function codexTranscriptStepFromRow(
   }
 
   if (rowType === "compacted" || payloadType === "compact_context") {
+    const block: CodexAppHistoryBlock = {
+      type: "marker",
+      text: "Context compacted",
+      ...(usageContext.latestContextTokens !== undefined
+        ? { compaction: { beforeTokens: usageContext.latestContextTokens } }
+        : {}),
+    };
+    usageContext.pendingCompactionBlock = block;
     return transcriptMessageStep(seq, timestamp, "Context compacted", {
       id: `codex-transcript-marker-${seq}`,
       role: "system",
       timestamp,
-      blocks: [{ type: "marker", text: "Context compacted" }],
+      blocks: [block],
     });
   }
 
@@ -2204,6 +2227,8 @@ interface CodexReplayUsage {
 
 interface CodexReplayUsageContext {
   previousTotalTokenUsage?: CodexReplayUsage;
+  latestContextTokens?: number;
+  pendingCompactionBlock?: CodexAppHistoryBlock;
   model?: string;
 }
 
@@ -2212,11 +2237,17 @@ function codexReplayTokenUsageFromPayload(
   context: CodexReplayUsageContext,
 ): CodexReplayUsage | undefined {
   const info = objectRecord(payload.info) ?? payload;
-  const lastUsage = codexReplayTokenUsageFromObject(
-    objectRecord(info.last_token_usage) ??
-      objectRecord(payload.lastTokenUsage) ??
-      objectRecord(payload.usage),
-  );
+  const lastUsageRecord = objectRecord(info.last_token_usage) ??
+    objectRecord(payload.lastTokenUsage) ?? objectRecord(payload.usage);
+  const snapshot = contextTokenSnapshotFromUsageRecord(lastUsageRecord);
+  if (snapshot) {
+    if (context.pendingCompactionBlock?.compaction && snapshot.attributedTokens === 0) {
+      context.pendingCompactionBlock.compaction.afterTokens = snapshot.totalTokens;
+      context.pendingCompactionBlock = undefined;
+    }
+    context.latestContextTokens = snapshot.totalTokens;
+  }
+  const lastUsage = codexReplayTokenUsageFromObject(lastUsageRecord);
   const totalUsage = codexReplayTokenUsageFromObject(
     objectRecord(info.total_token_usage) ??
       objectRecord(payload.totalTokenUsage),
@@ -2258,7 +2289,7 @@ function codexReplayTokenUsageFromObject(
   const total =
     finiteCodexNumber(usage.total_tokens ?? usage.totalTokens) ??
     input + output;
-  if (total <= 0 && output + reasoning <= 0) return undefined;
+  if (input + cachedInput + cacheWriteInput + output + reasoning <= 0) return undefined;
   return {
     input,
     cachedInput,
@@ -2325,7 +2356,8 @@ function isClaudeTranscriptRecord(value: unknown): boolean {
   const record = objectRecord(value);
   if (!record) return false;
   const type = objectString(record, "type");
-  return type === "user" || type === "assistant" || type === "summary";
+  return type === "user" || type === "assistant" || type === "summary" ||
+    (type === "system" && objectString(record, "subtype") === "compact_boundary");
 }
 
 function capitalize(value: string): string {
