@@ -27,6 +27,7 @@ import {
   replayDurationMs,
   replayElapsedMsAtStep,
   replayPlaybackTiming,
+  replayStepAdvanceForElapsed,
   replaySourceProgressAtStep,
   replayStepIndexAtElapsedMs,
   searchCodexReplaySessions,
@@ -1457,6 +1458,25 @@ Narrate this page live`,
       stepsPerSecond: 5,
       tickMs: 200,
     });
+    expect(replayPlaybackTiming("time:100")).toEqual({
+      mode: "time",
+      multiplier: 100,
+      tickMs: 50,
+    });
+    expect(replayPlaybackTiming("steps:100")).toEqual({
+      mode: "steps",
+      stepsPerSecond: 100,
+      tickMs: 10,
+    });
+  });
+
+  test("batches high-rate step playback without losing fractional timing", () => {
+    const first = replayStepAdvanceForElapsed(100, 52, 0);
+    expect(first.advance).toBe(5);
+    expect(first.remainder).toBeCloseTo(0.2);
+    const second = replayStepAdvanceForElapsed(100, 8, first.remainder);
+    expect(second.advance).toBe(1);
+    expect(second.remainder).toBeCloseTo(0);
   });
 
   test("tracks exact source bytes and lines as a streamed replay advances", async () => {

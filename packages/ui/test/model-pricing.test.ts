@@ -68,6 +68,9 @@ describe("model pricing", () => {
       pricedSegments: 1,
       unpricedSegments: 1,
       models: ["gpt-5.6-terra"],
+      newInputTokens: 500_010,
+      cachedInputTokens: 500_000,
+      outputTokens: 100_005,
     });
     expect(summary.totalUsd).toBeCloseTo(4, 10);
   });
