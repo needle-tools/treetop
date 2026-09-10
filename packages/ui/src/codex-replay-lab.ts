@@ -1448,12 +1448,12 @@ function claudeTranscriptStepFromRow(
     }
   }
   const usage = objectRecord(message.usage);
-  const freshInput = replayFiniteNumber(usage?.input_tokens);
-  const cachedInput = replayFiniteNumber(usage?.cache_read_input_tokens);
-  const cacheWriteInput = replayFiniteNumber(
+  const freshInput = nonNegativeNumberOrZero(usage?.input_tokens);
+  const cachedInput = nonNegativeNumberOrZero(usage?.cache_read_input_tokens);
+  const cacheWriteInput = nonNegativeNumberOrZero(
     usage?.cache_creation_input_tokens,
   );
-  const output = replayFiniteNumber(usage?.output_tokens);
+  const output = nonNegativeNumberOrZero(usage?.output_tokens);
   const input = freshInput + cachedInput + cacheWriteInput;
   const tokenUsage =
     input + output > 0
@@ -1484,10 +1484,8 @@ function claudeTranscriptStepFromRow(
   });
 }
 
-function replayFiniteNumber(value: unknown): number {
-  return typeof value === "number" && Number.isFinite(value)
-    ? Math.max(0, value)
-    : 0;
+function nonNegativeNumberOrZero(value: unknown): number {
+  return finiteNonNegativeNumber(value) ?? 0;
 }
 
 function nextParseFrame(): Promise<void> {
@@ -2281,25 +2279,27 @@ function codexReplayTokenUsageFromObject(
   usage: Record<string, unknown> | undefined,
 ): CodexReplayUsage | undefined {
   if (!usage) return undefined;
-  const input = finiteCodexNumber(usage.input_tokens ?? usage.inputTokens) ?? 0;
+  const input =
+    finiteNonNegativeNumber(usage.input_tokens ?? usage.inputTokens) ?? 0;
   const cachedInput =
-    finiteCodexNumber(usage.cached_input_tokens ?? usage.cachedInputTokens) ??
-    0;
+    finiteNonNegativeNumber(
+      usage.cached_input_tokens ?? usage.cachedInputTokens,
+    ) ?? 0;
   const cacheWriteInput =
-    finiteCodexNumber(
+    finiteNonNegativeNumber(
       usage.cache_write_input_tokens ??
         usage.cacheWriteInputTokens ??
         usage.cache_creation_input_tokens ??
         usage.cacheCreationInputTokens,
     ) ?? 0;
   const output =
-    finiteCodexNumber(usage.output_tokens ?? usage.outputTokens) ?? 0;
+    finiteNonNegativeNumber(usage.output_tokens ?? usage.outputTokens) ?? 0;
   const reasoning =
-    finiteCodexNumber(
+    finiteNonNegativeNumber(
       usage.reasoning_output_tokens ?? usage.reasoningOutputTokens,
     ) ?? 0;
   const total =
-    finiteCodexNumber(usage.total_tokens ?? usage.totalTokens) ??
+    finiteNonNegativeNumber(usage.total_tokens ?? usage.totalTokens) ??
     input + output;
   if (input + cachedInput + cacheWriteInput + output + reasoning <= 0) return undefined;
   return {
@@ -2345,7 +2345,7 @@ function codexReplayTokenUsageHasContent(
   );
 }
 
-function finiteCodexNumber(value: unknown): number | undefined {
+function finiteNonNegativeNumber(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value)
     ? Math.max(0, value)
     : undefined;
