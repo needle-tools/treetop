@@ -109,7 +109,7 @@ function fakeLiveWorkScroller(opts: { zen?: boolean } = {}): {
 }
 
 describe("session scroll controller", () => {
-  test("keeps the first wheel gesture inside every transcript", () => {
+  test("keeps the first wheel gesture native while recording upward reader intent", () => {
     const controller = createSessionScrollController();
     let prevented = false;
 
@@ -124,6 +124,7 @@ describe("session scroll controller", () => {
     controller.dispose();
 
     expect(prevented).toBe(false);
+    expect(controller.isPaused).toBe(true);
   });
 
   test("restores the same visible row after a paused live update", () => {
@@ -218,5 +219,29 @@ describe("session scroll controller", () => {
 
     expect(scroller.scrollTop).toBe(400);
     expect(controller.isPaused).toBe(true);
+  });
+
+  test("does not mistake a turn-boundary relayout for reader scroll intent", () => {
+    const scheduler = new ManualScheduler();
+    const scroller = fakeScroller(() => 220);
+    const controller = createSessionScrollController({ scheduler });
+
+    controller.setElement(scroller);
+    controller.updateTail("initial-turn");
+    scheduler.flush();
+
+    // The old live-work row is still at the tail when the next replay step is
+    // scheduled. Replacing it with the completed turn can clamp scrollTop and
+    // emit a scroll event before Svelte's new tail has settled.
+    scroller.scrollHeight = 1_200;
+    scroller.scrollTop = 700;
+    controller.updateTail("next-turn");
+    scroller.scrollHeight = 1_800;
+    scroller.scrollTop = 50;
+    controller.onScroll();
+    scheduler.flush();
+
+    expect(controller.isPaused).toBe(false);
+    expect(scroller.scrollTop).toBe(1_000_000_000);
   });
 });

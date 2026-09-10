@@ -1229,3 +1229,12 @@ request is outstanding. The single shared session scroll controller publishes
 the existing tail-follow state and marker, keeps a paused reader anchored while
 new steps arrive, and resumes tail following only when the reader returns to
 the end.
+
+Fast replay exposed a turn-boundary race in that controller: replacing the
+open live-work row with its completed summary can clamp `scrollTop` and emit a
+browser scroll event before the next turn settles. That geometry event was
+mistaken for reader intent, so one update followed and every later update ran
+offscreen. Tail updates now keep a short settling epoch; scroll events produced
+inside it cannot pause following, while explicit upward wheel input still does.
+The shared controller test models the clamp between scheduling and render, and
+the 100-steps/s browser repro remains at zero tail distance across turns.
