@@ -33,6 +33,79 @@ function onlyWorkItem(messages: NormalizedMessage[]) {
 }
 
 describe("visual transcript provider flow", () => {
+  test("keeps Codex transcript timing and usage when a turn has no tools", () => {
+    const session = parseCodexJsonl(
+      jsonl([
+        {
+          timestamp: "2026-09-10T11:02:55.516Z",
+          type: "event_msg",
+          payload: { type: "task_started" },
+        },
+        {
+          timestamp: "2026-09-10T11:02:56.176Z",
+          type: "response_item",
+          payload: {
+            type: "message",
+            role: "user",
+            content: [{ type: "input_text", text: "hello" }],
+          },
+        },
+        {
+          timestamp: "2026-09-10T11:03:00.333Z",
+          type: "response_item",
+          payload: {
+            type: "message",
+            role: "assistant",
+            content: [{ type: "output_text", text: "Hi!" }],
+          },
+        },
+        {
+          timestamp: "2026-09-10T11:03:00.362Z",
+          type: "event_msg",
+          payload: {
+            type: "token_count",
+            info: {
+              last_token_usage: {
+                input_tokens: 21_678,
+                cached_input_tokens: 0,
+                output_tokens: 15,
+                reasoning_output_tokens: 0,
+                total_tokens: 21_693,
+              },
+            },
+          },
+        },
+        {
+          timestamp: "2026-09-10T11:03:00.367Z",
+          type: "event_msg",
+          payload: { type: "task_complete" },
+        },
+      ]),
+    );
+
+    const { items, work } = onlyWorkItem(session.messages);
+    expect(items.map((item) => item.kind)).toEqual([
+      "message",
+      "work",
+      "message",
+    ]);
+    expect(work).toMatchObject({
+      startedAt: "2026-09-10T11:02:56.176Z",
+      endedAt: "2026-09-10T11:03:00.367Z",
+    });
+    expect(
+      work.entries.find((entry) => entry.message.tokenUsage)?.message
+        .tokenUsage,
+    ).toEqual({
+      input: 21_678,
+      cachedInput: 0,
+      cacheWriteInput: 0,
+      output: 15,
+      reasoningOutput: 0,
+      total: 21_693,
+    });
+  });
+
   test("turns Codex JSONL into paired command work and marker badges", () => {
     const session = parseCodexJsonl(
       jsonl([

@@ -1603,12 +1603,14 @@ function isBoundaryMarkerOnlyWork<B extends MessageBlock, M extends Message<B>>(
 ): boolean {
   return (
     entries.length > 0 &&
-    entries.every((entry) =>
-      entry.blocks.every((block) => {
-        if (block.type !== "marker") return false;
-        const kind = visualMarkerKind(block.text);
-        return kind === "started" || kind === "complete";
-      }),
+    entries.every(
+      (entry) =>
+        entry.blocks.length > 0 &&
+        entry.blocks.every((block) => {
+          if (block.type !== "marker") return false;
+          const kind = visualMarkerKind(block.text);
+          return kind === "started" || kind === "complete";
+        }),
     )
   );
 }
