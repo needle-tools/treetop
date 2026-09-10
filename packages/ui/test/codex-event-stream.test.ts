@@ -14,11 +14,15 @@ import {
   codexAppHistoryKey,
   codexToolInputQuality,
   codexEventThreadIdForSession,
+  codexEventReplayKey,
+  codexEventLifecycleHandledStateOnly,
   codexEventVisualDelivery,
   codexAppEventDeliveryMode,
   CODEX_LIVE_OUTPUT_LIMIT,
   codexOutputDeltaNeedsToolUse,
   mergeCodexAppHistoryMessages,
+  reconcileCodexAppHistoryMessages,
+  replayCodexEventsFrom,
   shouldLoadCodexAppThreadHistory,
   shouldRunCodexAppLiveSurface,
   shouldSubscribeCodexAppLiveState,
@@ -151,6 +155,40 @@ describe("codex event stream hub", () => {
 
     expect(a.map((e) => e.seq)).toEqual([1]);
     expect(b.map((e) => e.seq)).toEqual([1]);
+  });
+
+  test("replays the exact offscreen event interval without another subscription", () => {
+    subscribeCodexEvents(undefined, "t1", { onEvent: () => {} });
+    const firstMissed = event("t1", 11);
+    FakeEventSource.instances[0]?.emit("codex", firstMissed);
+    FakeEventSource.instances[0]?.emit("codex", event("t2", 12));
+    FakeEventSource.instances[0]?.emit("codex", event("t1", 13));
+
+    const replay = replayCodexEventsFrom(
+      undefined,
+      "t1",
+      codexEventReplayKey(firstMissed),
+    );
+
+    expect(replay.complete).toBe(true);
+    expect(replay.events.map((entry) => entry.seq)).toEqual([11, 13]);
+  });
+
+  test("requires authoritative history when the first offscreen event was evicted", () => {
+    subscribeCodexEvents(undefined, "t1", { onEvent: () => {} });
+    const firstMissed = event("t1", 1);
+    FakeEventSource.instances[0]?.emit("codex", firstMissed);
+    for (let seq = 2; seq <= 1_002; seq += 1) {
+      FakeEventSource.instances[0]?.emit("codex", event("t1", seq));
+    }
+
+    const replay = replayCodexEventsFrom(
+      undefined,
+      "t1",
+      codexEventReplayKey(firstMissed),
+    );
+
+    expect(replay).toEqual({ complete: false, events: [] });
   });
 
   test("reports connection state to each subscriber", () => {
@@ -341,6 +379,27 @@ describe("codex event stream hub", () => {
         eventThreadId: "thread-2",
       }),
     ).toBe("ignore");
+  });
+
+  test("replay suppresses only lifecycle effects already handled offscreen", () => {
+    expect(
+      codexEventLifecycleHandledStateOnly({
+        kind: "notification",
+        method: "turn/completed",
+      }),
+    ).toBe(true);
+    expect(
+      codexEventLifecycleHandledStateOnly({
+        kind: "request",
+        method: "item/commandExecution/requestApproval",
+      }),
+    ).toBe(true);
+    expect(
+      codexEventLifecycleHandledStateOnly({
+        kind: "notification",
+        method: "item/completed",
+      }),
+    ).toBe(false);
   });
 
   test("keeps live visual panes app-server owned when a transcript source exists", () => {
@@ -2755,6 +2814,69 @@ describe("codex event stream hub", () => {
     expect(mergeCodexAppHistoryMessages(history, live)).toEqual([
       live[0],
       live[1],
+    ]);
+  });
+
+  test("reconciles a refreshed latest page without retaining stale messages inside it", () => {
+    const older = {
+      id: "older",
+      role: "user" as const,
+      timestamp: "2026-09-10T09:00:00.000Z",
+      blocks: [{ type: "text", text: "older" }],
+    };
+    const partial = {
+      id: "overlap",
+      role: "assistant" as const,
+      timestamp: "2026-09-10T10:00:00.000Z",
+      blocks: [{ type: "text", text: "partial" }],
+    };
+    const stale = {
+      id: "stale",
+      role: "assistant" as const,
+      timestamp: "2026-09-10T10:01:00.000Z",
+      blocks: [{ type: "text", text: "no longer in the thread" }],
+    };
+    const authoritative = {
+      ...partial,
+      blocks: [{ type: "text", text: "complete authoritative reply" }],
+    };
+    const latest = {
+      id: "latest",
+      role: "user" as const,
+      timestamp: "2026-09-10T10:02:00.000Z",
+      blocks: [{ type: "text", text: "latest" }],
+    };
+    const arrivedDuringRead = {
+      id: "live-tail",
+      role: "assistant" as const,
+      timestamp: "2026-09-10T10:02:00.000Z",
+      blocks: [{ type: "text", text: "still live" }],
+    };
+
+    expect(
+      reconcileCodexAppHistoryMessages(
+        [authoritative, latest],
+        [older, partial, stale, arrivedDuringRead],
+        [older, partial, stale],
+      ),
+    ).toEqual([older, authoritative, latest, arrivedDuringRead]);
+  });
+
+  test("keeps older loaded turns before a non-overlapping latest refresh", () => {
+    const older = {
+      id: "older",
+      timestamp: "2026-09-10T09:00:00.000Z",
+      blocks: [{ type: "text", text: "older" }],
+    };
+    const latest = {
+      id: "latest",
+      timestamp: "2026-09-10T10:00:00.000Z",
+      blocks: [{ type: "text", text: "latest" }],
+    };
+
+    expect(reconcileCodexAppHistoryMessages([latest], [older])).toEqual([
+      older,
+      latest,
     ]);
   });
 });

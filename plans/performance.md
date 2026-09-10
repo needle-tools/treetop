@@ -821,6 +821,20 @@ subscription, but route offscreen events through state-only handling until the
 column is near the viewport. Do not use this old process to judge that fix; a
 fresh build is required for validation.
 
+The first state-only implementation had a lifecycle correctness regression:
+it discarded the visual projection of every offscreen event and only
+invalidated a four-turn `thread/read` key. Re-entering a column therefore
+painted its stale message array before that asynchronous repair, and the
+history merge could retain rows that the refreshed latest page no longer
+contained. Offscreen panels now remember a cursor into the already-bounded,
+shared event-stream history and replay that exact thread interval as one batch
+before their transcript body becomes renderable. If the cursor has fallen out
+of the bounded history, the body stays deferred until an authoritative latest
+page is reconciled; older history and SSE events newer than the read survive,
+but stale rows inside the refreshed range do not. Source changes clear both the
+cursor and event-deduplication state so one panel lifecycle cannot contaminate
+another thread.
+
 Replay Lab had a separate unbounded path: its read route prepared a projected
 16 MiB transcript tail, then also called the legacy full-file parser to build
 the `SessionView` override. Opening a 1.39 GB transcript drove the debug daemon
