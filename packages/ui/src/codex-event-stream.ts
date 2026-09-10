@@ -328,6 +328,20 @@ export function shouldApplyCodexAppMutation(opts: {
 
 export type CodexAppEventDeliveryMode = "ignore" | "state-only" | "visual";
 
+export function codexEventLifecycleHandledStateOnly(
+  event: Pick<CodexAppEvent, "kind" | "method">,
+): boolean {
+  return (
+    event.kind === "request" ||
+    event.method === "turn/started" ||
+    event.method === "turn/status" ||
+    event.method === "turn/completed" ||
+    event.method === "serverRequest/resolved" ||
+    event.method === "error" ||
+    event.method === "warning"
+  );
+}
+
 export function codexAppEventDeliveryMode(opts: {
   liveStateActive: boolean;
   liveSurfaceActive: boolean;
@@ -394,6 +408,32 @@ function eventThreadId(event: CodexAppEvent): string | undefined {
       ? event.params.threadId
       : undefined)
   );
+}
+
+export function codexEventReplayKey(event: CodexAppEvent): string {
+  const id = event.id ?? "";
+  const delta =
+    typeof event.params?.delta === "string" ? event.params.delta : "";
+  return `${eventThreadId(event) ?? ""}:${event.kind}:${event.method}:${id}:${event.seq ?? event.receivedAt}:${delta}`;
+}
+
+export function replayCodexEventsFrom(
+  daemonId: string | undefined,
+  threadId: string,
+  firstEventKey: string,
+): { complete: boolean; events: CodexAppEvent[] } {
+  const hub = hubs.get(daemonKey(daemonId));
+  if (!hub || !firstEventKey) return { complete: false, events: [] };
+  const firstIndex = hub.history.findIndex(
+    (event) => codexEventReplayKey(event) === firstEventKey,
+  );
+  if (firstIndex < 0) return { complete: false, events: [] };
+  return {
+    complete: true,
+    events: hub.history
+      .slice(firstIndex)
+      .filter((event) => eventThreadId(event) === threadId),
+  };
 }
 
 function subscriberWantsEvent(
@@ -771,6 +811,84 @@ export function mergeCodexAppHistoryMessages<
     }
   }
   return merged;
+}
+
+/** Reconcile a refreshed latest-turn page with the previous live projection.
+ * Older messages before the overlap remain valid. The refreshed range belongs
+ * to the authoritative page, while messages newer than that page may have
+ * arrived over SSE during the read and must survive. */
+export function reconcileCodexAppHistoryMessages<
+  M extends { id?: string; blocks: unknown[]; timestamp?: string },
+>(
+  history: readonly M[],
+  current: readonly M[],
+  currentAtReadStart: readonly M[] = current,
+): M[] {
+  if (history.length === 0) return [...current];
+  if (current.length === 0) return [...history];
+
+  const historyIds = new Set(
+    history.flatMap((message) => (message.id ? [message.id] : [])),
+  );
+  const idsAtReadStart = new Set(
+    currentAtReadStart.flatMap((message) => (message.id ? [message.id] : [])),
+  );
+  const referencesAtReadStart = new Set(currentAtReadStart);
+  const arrivedDuringRead = (message: M): boolean =>
+    message.id
+      ? !idsAtReadStart.has(message.id)
+      : !referencesAtReadStart.has(message);
+  const overlapIndexes = current.flatMap((message, index) =>
+    message.id && historyIds.has(message.id) ? [index] : [],
+  );
+  const firstOverlap = overlapIndexes.at(0);
+  const lastOverlap = overlapIndexes.at(-1);
+  const historyStart = history.reduce<string | undefined>(
+    (earliest, message) => {
+      if (!message.timestamp) return earliest;
+      return !earliest || message.timestamp < earliest
+        ? message.timestamp
+        : earliest;
+    },
+    undefined,
+  );
+  const historyEnd = history.reduce<string | undefined>((latest, message) => {
+    if (!message.timestamp) return latest;
+    return !latest || message.timestamp > latest ? message.timestamp : latest;
+  }, undefined);
+
+  const older =
+    firstOverlap !== undefined
+      ? current.slice(0, firstOverlap)
+      : current.filter(
+          (message) =>
+            !arrivedDuringRead(message) &&
+            (!message.id || !historyIds.has(message.id)) &&
+            (!historyStart ||
+              !message.timestamp ||
+              message.timestamp < historyStart),
+        );
+  const possibleLiveTail =
+    lastOverlap !== undefined ? current.slice(lastOverlap + 1) : current;
+  const liveTail = possibleLiveTail.filter(
+    (message) =>
+      (!message.id || !historyIds.has(message.id)) &&
+      (arrivedDuringRead(message) ||
+        !historyEnd ||
+        !message.timestamp ||
+        message.timestamp > historyEnd),
+  );
+  const refreshed = mergeCodexAppHistoryMessages(history, current).slice(
+    0,
+    history.length,
+  );
+  const seen = new Set<string>();
+  return [...older, ...refreshed, ...liveTail].filter((message) => {
+    if (!message.id) return true;
+    if (seen.has(message.id)) return false;
+    seen.add(message.id);
+    return true;
+  });
 }
 
 function codexAppMessagesFromThreadItem(

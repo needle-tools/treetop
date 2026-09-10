@@ -28,6 +28,7 @@ import {
   shouldHoldOffscreenAttachedTerminal,
   shouldMountNewSessionTerminal,
   shouldMountTerminalView,
+  shouldRenderSessionReadBody,
   type AgentSession,
   type ShellRecord,
   type OpenSession,
@@ -64,6 +65,41 @@ describe("sidebarDockRows", () => {
     expect(
       sidebarDockRows(rows, { "repo-a|wt-2": true }).map((row) => row.key),
     ).toEqual(["repo-a|wt-1", "repo-c|wt-3"]);
+  });
+});
+
+describe("shouldRenderSessionReadBody", () => {
+  test("keeps a returning live panel deferred until its offscreen events catch up", () => {
+    expect(
+      shouldRenderSessionReadBody({
+        mode: "read",
+        nearViewport: true,
+        transcriptOverride: false,
+        liveAppHistorySource: true,
+        hasDeferredVisualEvents: true,
+      }),
+    ).toBe(false);
+    expect(
+      shouldRenderSessionReadBody({
+        mode: "read",
+        nearViewport: true,
+        transcriptOverride: false,
+        liveAppHistorySource: true,
+        hasDeferredVisualEvents: false,
+      }),
+    ).toBe(true);
+  });
+
+  test("does not let live catch-up state hide supplied transcript playback", () => {
+    expect(
+      shouldRenderSessionReadBody({
+        mode: "read",
+        nearViewport: false,
+        transcriptOverride: true,
+        liveAppHistorySource: false,
+        hasDeferredVisualEvents: true,
+      }),
+    ).toBe(true);
   });
 });
 

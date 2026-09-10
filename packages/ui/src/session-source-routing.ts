@@ -117,6 +117,20 @@ export function shouldMountTerminalView(args: {
   );
 }
 
+export function shouldRenderSessionReadBody(args: {
+  mode: "read" | "terminal";
+  nearViewport: boolean;
+  transcriptOverride: boolean;
+  liveAppHistorySource: boolean;
+  hasDeferredVisualEvents: boolean;
+}): boolean {
+  const bodyIsNear =
+    args.mode !== "read" || args.nearViewport || args.transcriptOverride;
+  const liveProjectionIsCurrent =
+    !args.liveAppHistorySource || !args.hasDeferredVisualEvents;
+  return bodyIsNear && liveProjectionIsCurrent;
+}
+
 export function shouldMountNewSessionTerminal(args: {
   hasCwd: boolean;
   nearViewport: boolean;
