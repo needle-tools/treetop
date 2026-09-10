@@ -29,7 +29,7 @@
   import Tooltip from "./Tooltip.svelte";
   import SleepIndicationAnimation from "./SleepIndicationAnimation.svelte";
   import { ICONS } from "./icons";
-  import { contextChip, formatByteSize } from "./context-tokens";
+  import { contextChip, formatByteSize, formatTokens } from "./context-tokens";
   import type { AgentSettingGroup } from "./claude-session-menu";
   import type { SessionTokenCost } from "@treetop/nicifier";
 
@@ -616,18 +616,24 @@
         >{lastActivityFallback}</span
       >
     {/if}
-    {#if sessionCost && sessionCost.pricedSegments > 0}
+    {#if sessionCost}
       <span
         class="muted small session-cost"
-        title={`${sessionCost.unpricedSegments > 0 ? "Partial" : "Estimated"} session token cost · ${sessionCost.models.join(", ")} · pricing: ${sessionCost.sources.join(", ")}${sessionCost.unpricedSegments > 0 ? ` · ${sessionCost.unpricedSegments} usage segment${sessionCost.unpricedSegments === 1 ? "" : "s"} could not be priced` : ""}`}
+        title={`${sessionCost.pricedSegments > 0 ? `${sessionCost.unpricedSegments > 0 ? "Partial" : "Estimated"} session token cost · ${sessionCost.models.join(", ")} · pricing: ${sessionCost.sources.join(", ")}${sessionCost.unpricedSegments > 0 ? ` · ${sessionCost.unpricedSegments} usage segment${sessionCost.unpricedSegments === 1 ? "" : "s"} could not be priced` : ""} · ` : ""}${sessionCost.newInputTokens.toLocaleString()} new input tokens · ${sessionCost.outputTokens.toLocaleString()} output tokens · ${sessionCost.cachedInputTokens.toLocaleString()} cached input tokens`}
       >
-        session {sessionCost.totalUsd === 0
-          ? "$0.00"
-          : sessionCost.totalUsd < 0.01
-            ? `$${sessionCost.totalUsd.toFixed(4)}`
-            : sessionCost.totalUsd < 100
-              ? `$${sessionCost.totalUsd.toFixed(2)}`
-              : `$${sessionCost.totalUsd.toLocaleString(undefined, { maximumFractionDigits: 0 })}`}{sessionCost.unpricedSegments > 0 ? "+" : ""}
+        {#if sessionCost.pricedSegments > 0}
+          session {sessionCost.totalUsd === 0
+            ? "$0.00"
+            : sessionCost.totalUsd < 0.01
+              ? `$${sessionCost.totalUsd.toFixed(4)}`
+              : sessionCost.totalUsd < 100
+                ? `$${sessionCost.totalUsd.toFixed(2)}`
+                : `$${sessionCost.totalUsd.toLocaleString(undefined, { maximumFractionDigits: 0 })}`}{sessionCost.unpricedSegments > 0 ? "+" : ""}
+          ·
+        {/if}
+        {formatTokens(sessionCost.newInputTokens)} new in · {formatTokens(
+          sessionCost.outputTokens,
+        )} out · {formatTokens(sessionCost.cachedInputTokens)} cached
       </span>
     {/if}
     {#if loadedMessageCount !== undefined}

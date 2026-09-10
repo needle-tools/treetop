@@ -147,6 +147,9 @@ export interface SessionTokenCost {
   totalUsd: number;
   pricedSegments: number;
   unpricedSegments: number;
+  newInputTokens: number;
+  cachedInputTokens: number;
+  outputTokens: number;
   models: string[];
   sources: string[];
 }
@@ -691,9 +694,20 @@ export function estimateSessionTokenCost(
   let totalUsd = 0;
   let pricedSegments = 0;
   let unpricedSegments = 0;
+  let newInputTokens = 0;
+  let cachedInputTokens = 0;
+  let outputTokens = 0;
   const models = new Set<string>();
   const sources = new Set<string>();
   for (const segment of segments) {
+    const input = finiteTokens(segment.usage.input);
+    const cachedInput = Math.min(
+      input,
+      finiteTokens(segment.usage.cachedInput),
+    );
+    newInputTokens += input - cachedInput;
+    cachedInputTokens += cachedInput;
+    outputTokens += finiteTokens(segment.usage.output);
     const cost = estimateModelTokenCost(
       segment.usage,
       segment.model ?? defaultModel,
@@ -713,6 +727,9 @@ export function estimateSessionTokenCost(
     totalUsd,
     pricedSegments,
     unpricedSegments,
+    newInputTokens,
+    cachedInputTokens,
+    outputTokens,
     models: [...models],
     sources: [...sources],
   };

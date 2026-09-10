@@ -30,6 +30,7 @@
     replayDurationMs,
     replayElapsedMsAtStep,
     replayPlaybackTiming,
+    replayStepAdvanceForElapsed,
     replaySourceProgressAtStep,
     replayStepIndexAtElapsedMs,
     searchCodexReplaySessions,
@@ -629,16 +630,28 @@
     const timeline = playbackTimeline;
     const timing = replayPlaybackTiming(playbackRate);
     if (timing.mode === "steps") {
+      let previousTick = performance.now();
+      let pendingSteps = 0;
       playTimer = setInterval(() => {
         if (stepIndex >= stepCount) {
           stopPlayback();
           return;
         }
-        const next = stepIndex + 1;
+        const now = performance.now();
+        const elapsed = replayStepAdvanceForElapsed(
+          timing.stepsPerSecond,
+          now - previousTick,
+          pendingSteps,
+        );
+        previousTick = now;
+        const advance = elapsed.advance;
+        pendingSteps = elapsed.remainder;
+        if (advance < 1) return;
+        const next = Math.min(stepCount, stepIndex + advance);
         setReplayStep(next);
         playbackCursorMs = replayElapsedMsAtStep(timeline, next);
         if (next >= stepCount) stopPlayback();
-      }, timing.tickMs);
+      }, Math.max(50, timing.tickMs));
       return;
     }
 
@@ -777,12 +790,14 @@
         <optgroup label="Time based">
           <option value="time:1">1× realtime</option>
           <option value="time:10">10× realtime</option>
+          <option value="time:100">100× realtime</option>
         </optgroup>
         <optgroup label="Step based">
           <option value="steps:1">1 step/s</option>
           <option value="steps:2">2 steps/s</option>
           <option value="steps:5">5 steps/s</option>
           <option value="steps:20">20 steps/s</option>
+          <option value="steps:100">100 steps/s</option>
         </optgroup>
       </select>
     </label>

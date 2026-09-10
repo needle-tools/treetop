@@ -532,10 +532,12 @@ type ReplayTimeline = {
 export type ReplayPlaybackRate =
   | "time:1"
   | "time:10"
+  | "time:100"
   | "steps:1"
   | "steps:2"
   | "steps:5"
-  | "steps:20";
+  | "steps:20"
+  | "steps:100";
 const replayStepTimeOffsetCache = new WeakMap<
   ReplayTimeline,
   { steps: ReplayTimeline["steps"]; offsets: number[] }
@@ -550,6 +552,16 @@ export function replayPlaybackTiming(
   return rate.startsWith("time:")
     ? { mode: "time", multiplier: value, tickMs: 50 }
     : { mode: "steps", stepsPerSecond: value, tickMs: 1000 / value };
+}
+
+export function replayStepAdvanceForElapsed(
+  stepsPerSecond: number,
+  elapsedMs: number,
+  remainder = 0,
+): { advance: number; remainder: number } {
+  const pending = remainder + (elapsedMs * stepsPerSecond) / 1_000;
+  const advance = Math.floor(pending);
+  return { advance, remainder: pending - advance };
 }
 
 export function replayElapsedMsAtStep(
