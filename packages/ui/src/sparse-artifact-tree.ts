@@ -234,6 +234,8 @@ export function sparseArtifactSignature(
         artifact.additions ?? "",
         artifact.deletions ?? "",
         artifact.diff ?? "",
+        artifact.preview ?? "",
+        artifact.previewTitle ?? "",
         artifact.fileAction ?? "",
         ...(artifact.changes ?? []).map((change) =>
           [
@@ -243,6 +245,8 @@ export function sparseArtifactSignature(
             change.additions ?? "",
             change.deletions ?? "",
             change.diff ?? "",
+            change.preview ?? "",
+            change.previewTitle ?? "",
             change.fileAction ?? "",
           ].join("\u0003"),
         ),
@@ -326,6 +330,8 @@ function artifactChanges(
           additions: artifact.additions,
           deletions: artifact.deletions,
           diff: artifact.diff,
+          preview: artifact.preview,
+          previewTitle: artifact.previewTitle,
           diffKind: artifact.diffKind,
           fileAction: artifact.fileAction,
         },
@@ -343,6 +349,14 @@ export function sparseArtifactRowDiffChanges(
 ): VisualWorkArtifactChange[] {
   return sparseArtifactRowChanges(row).filter(
     (change) => change.diff !== undefined,
+  );
+}
+
+export function sparseArtifactRowPreviewChanges(
+  row: Pick<SparseArtifactTreeRow, "artifacts">,
+): VisualWorkArtifactChange[] {
+  return sparseArtifactRowChanges(row).filter(
+    (change) => change.preview !== undefined,
   );
 }
 

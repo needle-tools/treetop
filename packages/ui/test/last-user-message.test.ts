@@ -33,6 +33,7 @@ import {
   visualToolLauncherLabel,
   visualToolPreviewParts,
   visualToolPreviewText,
+  visualToolReadResultPreview,
   visualToolCommandNicifierCoverage,
   visualToolWaitForDurationLabel,
   visualToolEnvAssignments,
@@ -2810,6 +2811,59 @@ describe("cleanVisualToolResultText", () => {
       body: "tests passed",
       wrappedCodexChunk: false,
     });
+  });
+});
+
+describe("visualToolReadResultPreview", () => {
+  it("keeps the normalized output for file, directory, and log reads", () => {
+    const result = {
+      type: "tool_result",
+      text: "Chunk ID: read\nWall time: 0.1 seconds\nProcess exited with code 0\nOutput:\nfirst line\nsecond line",
+    };
+
+    expect(
+      visualToolReadResultPreview(
+        {
+          type: "tool_use",
+          toolName: "exec_command",
+          toolInput: { cmd: "sed -n '1,2p' src/app.ts" },
+        },
+        result,
+      ),
+    ).toEqual({ title: "Read app.ts:1-2", body: "first line\nsecond line" });
+    expect(
+      visualToolReadResultPreview(
+        {
+          type: "tool_use",
+          toolName: "exec_command",
+          toolInput: { cmd: "ls -lah && find . -maxdepth 2 -type f | sort" },
+        },
+        result,
+      ),
+    ).toEqual({ title: "Read directory .", body: "first line\nsecond line" });
+    expect(
+      visualToolReadResultPreview(
+        {
+          type: "tool_use",
+          toolName: "exec_command",
+          toolInput: { cmd: "tail -n 80 logs/treetop.log" },
+        },
+        result,
+      ),
+    ).toEqual({
+      title: "Read logs treetop.log last 80",
+      body: "first line\nsecond line",
+    });
+    expect(
+      visualToolReadResultPreview(
+        {
+          type: "tool_use",
+          toolName: "exec_command",
+          toolInput: { cmd: "bun test src/app.ts" },
+        },
+        result,
+      ),
+    ).toBeUndefined();
   });
 });
 
@@ -7413,6 +7467,19 @@ describe("visualWorkOverview", () => {
     expect(overview.time.elapsedMs).toBe(2_000);
     expect(overview.time.toolWaitMs).toBe(2_000);
     expect(overview.time.agentPercent).toBe(0);
+    expect(overview.artifacts).toMatchObject([
+      {
+        path: "packages/ui/src/VisualTranscript.svelte",
+        previewTitle: "Read VisualTranscript.svelte:1-40",
+        preview: "ok",
+        changes: [
+          {
+            previewTitle: "Read VisualTranscript.svelte:1-40",
+            preview: "ok",
+          },
+        ],
+      },
+    ]);
   });
 
   it("summarizes fresh token work without using cached context as the headline", () => {
