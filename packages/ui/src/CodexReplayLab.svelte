@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onDestroy, onMount, tick } from "svelte";
   import SessionView from "./SessionView.svelte";
+  import { writeClipboard } from "./clipboard-write";
   import { formatByteSize } from "./context-tokens";
   import { codexAppSource } from "./storage";
   import { installIdleTracker } from "./ui-idle";
@@ -94,6 +95,8 @@
   let fileInput: HTMLInputElement | null = null;
   let folderInput: HTMLInputElement | null = null;
   let helpDialog: HTMLDialogElement | null = null;
+  let copiedHelpPath = "";
+  let copiedHelpPathTimer: ReturnType<typeof setTimeout> | null = null;
   let localFile = false;
   let localWarnings: string[] = [];
   let dragActive = false;
@@ -758,9 +761,48 @@
     if (playing) startPlaybackTimer();
   }
 
+  function markHelpPathCopied(path: string): void {
+    copiedHelpPath = path;
+    if (copiedHelpPathTimer) clearTimeout(copiedHelpPathTimer);
+    copiedHelpPathTimer = setTimeout(() => {
+      copiedHelpPath = "";
+      copiedHelpPathTimer = null;
+    }, 1200);
+  }
+
+  function copyHelpPath(path: string): void {
+    writeClipboard(path, {
+      syncCopy: (text) => {
+        const textarea = document.createElement("textarea");
+        textarea.value = text;
+        textarea.setAttribute("readonly", "");
+        textarea.style.position = "fixed";
+        textarea.style.left = "-9999px";
+        document.body.appendChild(textarea);
+        textarea.select();
+        let copied = false;
+        try {
+          copied = document.execCommand("copy");
+        } finally {
+          textarea.remove();
+        }
+        if (copied) markHelpPathCopied(path);
+        return copied;
+      },
+      asyncWrite: navigator.clipboard?.writeText
+        ? async (text) => {
+            await navigator.clipboard.writeText(text);
+            markHelpPathCopied(path);
+          }
+        : null,
+      warn: (message) => console.warn(message),
+    });
+  }
+
   onDestroy(() => {
     directoryGeneration += 1;
     stopPlayback();
+    if (copiedHelpPathTimer) clearTimeout(copiedHelpPathTimer);
   });
 
   onMount(() => {
@@ -996,17 +1038,32 @@
         <section>
           <h3>{location.platform}</h3>
           <strong>Codex</strong>
-          {#each location.codex as path}<code>{path}</code>{/each}
+          {#each location.codex as path}
+            <div class="replay-help-path">
+              <code>{path}</code>
+              <button
+                type="button"
+                aria-label={`Copy ${path}`}
+                on:click={() => copyHelpPath(path)}
+                >{copiedHelpPath === path ? "Copied" : "Copy"}</button
+              >
+            </div>
+          {/each}
           <strong>Claude Code</strong>
-          {#each location.claude as path}<code>{path}</code>{/each}
+          {#each location.claude as path}
+            <div class="replay-help-path">
+              <code>{path}</code>
+              <button
+                type="button"
+                aria-label={`Copy ${path}`}
+                on:click={() => copyHelpPath(path)}
+                >{copiedHelpPath === path ? "Copied" : "Copy"}</button
+              >
+            </div>
+          {/each}
         </section>
       {/each}
     </div>
-    <p class="replay-help-note">
-      The Claude project folder is your working-directory path encoded with
-      dashes. Your browser reads a selected file locally; Replay Lab does not
-      upload it.
-    </p>
   </dialog>
 
   <div class="replay-workspace">
@@ -1451,8 +1508,7 @@
     margin: 0;
   }
 
-  .replay-help-heading p,
-  .replay-help-note {
+  .replay-help-heading p {
     margin: 5px 0 0;
     color: var(--muted, #aaa);
     font-size: 13px;
@@ -1493,9 +1549,32 @@
   }
 
   .replay-help-platforms code {
+    min-width: 0;
     overflow-wrap: anywhere;
     color: var(--accent, #9ad45f);
     font-size: 12px;
+  }
+
+  .replay-help-path {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .replay-help-path code {
+    flex: 1;
+  }
+
+  .replay-help-path button {
+    flex: none;
+    padding: 3px 8px;
+    border: 1px solid var(--border, #3a3a3a);
+    border-radius: 6px;
+    color: inherit;
+    background: var(--button-bg, #252525);
+    font: inherit;
+    font-size: 11px;
+    cursor: pointer;
   }
 
   @media (max-width: 720px) {

@@ -42,20 +42,17 @@ import {
 test("documents loadable Codex and Claude session locations on macOS and Windows", () => {
   expect(REPLAY_SESSION_LOCATIONS).toEqual([
     {
-      platform: "macOS",
-      codex: [
-        "~/.codex/sessions/YYYY/MM/DD/*.jsonl",
-        "~/.codex/archived_sessions/*.jsonl",
-      ],
-      claude: ["~/.claude/projects/<project-folder>/*.jsonl"],
+      platform: "macOS / Linux",
+      codex: ["~/.codex/sessions/", "~/.codex/archived_sessions/"],
+      claude: ["~/.claude/projects/"],
     },
     {
       platform: "Windows",
       codex: [
-        "%USERPROFILE%\\.codex\\sessions\\YYYY\\MM\\DD\\*.jsonl",
-        "%USERPROFILE%\\.codex\\archived_sessions\\*.jsonl",
+        "%USERPROFILE%\\.codex\\sessions\\",
+        "%USERPROFILE%\\.codex\\archived_sessions\\",
       ],
-      claude: ["%USERPROFILE%\\.claude\\projects\\<project-folder>\\*.jsonl"],
+      claude: ["%USERPROFILE%\\.claude\\projects\\"],
     },
   ]);
 });
