@@ -4,6 +4,7 @@ import {
   visualPathPreviewTargets,
   visualSnapshotUidLabelsFromToolResult,
   visualToolIsTestCommand,
+  type ContextCompactionDetails,
   type VisualObservedProcessOutput,
   type VisualToolPreviewContext,
   type VisualToolPreviewPart,
@@ -78,6 +79,7 @@ export interface MessageBlock {
   goalTimeUsedSeconds?: number;
   goalUpdatedAt?: number;
   goalThreadId?: string;
+  compaction?: ContextCompactionDetails;
   subagentId?: string;
   subagentNickname?: string;
   subagentAction?: "spawn" | "wait" | "notification";
@@ -836,6 +838,23 @@ export function formatVisualDurationSeconds(
     return seconds === 0 ? `${minutes}m` : `${minutes}m ${seconds}s`;
   }
   return `${seconds}s`;
+}
+
+/** Compact, provider-backed facts shown beside a context-compaction marker. */
+export function visualCompactionDetails(block: MessageBlock): string[] {
+  const details = block.compaction;
+  if (!details) return [];
+  const result: string[] = [];
+  if (Number.isFinite(details.beforeTokens) && Number.isFinite(details.afterTokens)) {
+    result.push(
+      `${Math.round(details.beforeTokens!).toLocaleString()} → ${Math.round(details.afterTokens!).toLocaleString()} tok`,
+    );
+  }
+  if (Number.isFinite(details.durationMs) && details.durationMs! >= 0) {
+    const duration = formatVisualDurationSeconds(details.durationMs! / 1000);
+    if (duration) result.push(duration);
+  }
+  return result;
 }
 
 export function visualToolWaitForDurationLabel(

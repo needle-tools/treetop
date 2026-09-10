@@ -8,6 +8,7 @@ import {
   cleanVisualUserText,
   cleanVisualToolResultText,
   formatVisualDurationSeconds,
+  visualCompactionDetails,
   formatVisualWorkDuration,
   lastUserMessageBurst,
   lastUserMessageWithContext,
@@ -110,6 +111,22 @@ describe("formatVisualWorkDuration", () => {
     expect(
       formatVisualDurationSeconds(3 * 86400 + 4 * 3600 + 12 * 60 + 5),
     ).toBe("3d 4h 12m 5s");
+  });
+
+  it("formats authoritative context-compaction details for inline display", () => {
+    expect(visualCompactionDetails({
+      type: "marker",
+      text: "[Context compacted]",
+      compaction: {
+        beforeTokens: 999_820,
+        afterTokens: 15_028,
+        durationMs: 127_824,
+      },
+    })).toEqual(["999,820 → 15,028 tok", "2m 7s"]);
+    expect(visualCompactionDetails({
+      type: "marker",
+      text: "[Context compacted]",
+    })).toEqual([]);
   });
 
   it("shows work timers only for the active open tail", () => {
