@@ -2,7 +2,7 @@
 /**
  * Patch electrobun's launcher main.js with two hooks:
  *
- * 1. PRE-INIT cleanup (before startEventLoop):
+ * 1. PRE-INIT cleanup (before starting the app Worker):
  *    Kill orphan msedgewebview2.exe from a previous crash that are
  *    holding the WebView2 profile lockfile (HRESULT 0x800700AA).
  *
@@ -30,6 +30,23 @@ const targets = [
 ];
 
 const MARKER = "/* SUPERGIT_LAUNCHER_PATCHED */";
+
+/** Cleanup must finish before the Worker can create its first WebView2.
+ * Existing patched templates also need migration: the marker alone does
+ * not mean they have the safe startup order. */
+export function moveCleanupBeforeWorker(source: string): string {
+  const marker = source.indexOf(MARKER);
+  const worker = source.indexOf("new Worker(");
+  if (marker < 0 || worker < 0) {
+    throw new Error("Unrecognized launcher: missing cleanup or app Worker");
+  }
+  if (marker < worker) return source;
+  const entry = /^[\t ]*(?:const\s+\w+\s*=\s*)?lib\.symbols\.(?:electrobun_core_run_main_thread|startEventLoop)\s*\(/m.exec(source.slice(marker));
+  if (!entry) throw new Error("Unrecognized launcher: missing native event loop");
+  const cleanupEnd = marker + entry.index;
+  return source.slice(0, worker) + source.slice(marker, cleanupEnd) +
+    source.slice(worker, marker) + source.slice(cleanupEnd);
+}
 
 // Helper: resolve the WebView2 partition path. Used by both snippets.
 //
@@ -119,14 +136,16 @@ const ENTRY_OLD = /lib\.symbols\.startEventLoop\s*\(/;
 const EXIT_OLD = /lib\.symbols\.forceExit\s*\(/;
 const ENTRY_NEW = /lib\.symbols\.electrobun_core_run_main_thread\s*\(/;
 
-for (const path of targets) {
+if (import.meta.main) for (const path of targets) {
   if (!existsSync(path)) {
     console.log(`  skip (not present): ${path}`);
     continue;
   }
   const src = readFileSync(path, "utf8");
   if (src.includes(MARKER)) {
-    console.log(`  already patched: ${path}`);
+    const migrated = moveCleanupBeforeWorker(src);
+    if (migrated !== src) writeFileSync(path, migrated);
+    console.log(`  ${migrated !== src ? "moved cleanup before Worker" : "already patched"}: ${path}`);
     continue;
   }
 
@@ -161,7 +180,7 @@ for (const path of targets) {
       "\n" +
       POST_CLOSE +
       src.slice(found);
-    writeFileSync(path, out);
+    writeFileSync(path, moveCleanupBeforeWorker(out));
     console.log(`  patched (new API): ${path}`);
     continue;
   }
@@ -180,6 +199,6 @@ for (const path of targets) {
   let out = src.slice(0, mExit.index!) + POST_CLOSE + "  " + src.slice(mExit.index!);
   const mStart2 = out.match(ENTRY_OLD);
   out = out.slice(0, mStart2!.index!) + PRE_INIT + "  " + out.slice(mStart2!.index!);
-  writeFileSync(path, out);
+  writeFileSync(path, moveCleanupBeforeWorker(out));
   console.log(`  patched (old API): ${path}`);
 }

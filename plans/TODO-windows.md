@@ -81,6 +81,21 @@ Tracking cross-platform issues found while porting supergit to Windows.
 
 ## Fixed (general bugs)
 
+- [x] **White window on rapid close/reopen (2026-09-10, source fix)** —
+      installed `Resources/main.js` started the app Worker before running
+      synchronous WebView2 cleanup. The first launch took 3.7s to start the
+      daemon; subsequent launches created the window in 0.35–0.4s. Cleanup
+      could therefore kill the new browser and delay native initialization.
+      At diagnosis, the daemon and UI assets returned HTTP 200, but no Treetop
+      WebView2 process remained. Windows recorded two `bun.exe` hangs.
+      Move cleanup before `new Worker`, including migration of already-patched
+      templates. Execution-based tests cover both native event-loop APIs and
+      repeated patching. Applied the launcher-only fix to the installed app
+      and relaunched: its WebView2 browser and renderer stayed alive, Windows
+      reported the window responsive, and the user confirmed it works.
+      Full packaging remains blocked by a separate native daemon smoke-test
+      failure; the installed app retains its existing daemon binary.
+
 - [x] **Claude directory-based sessions not discovered** — newer Claude
       stores sessions as `<project>/<uuid>/subagents/*.jsonl` instead of
       flat `<project>/<uuid>.jsonl` files. `scanClaude` now also probes
