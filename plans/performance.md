@@ -1239,6 +1239,15 @@ inside it cannot pause following, while explicit upward wheel input still does.
 The shared controller test models the clamp between scheduling and render, and
 the 100-steps/s browser repro remains at zero tail distance across turns.
 
+A 24.95MB Fastvid/Astra transcript exposed a second source of synthetic scroll
+events: decoded inline images changed the transcript's `scrollHeight` after the
+tail key had settled. Chrome's scroll anchoring moved `scrollTop` and emitted a
+scroll event 21–22px from the new tail; the controller treated it as reader
+intent and stayed detached. Reader detachment now requires an input signal
+(upward wheel or an active pointer gesture). Passive layout scrolls preserve
+the armed follow intent, including an extra settling write when geometry changes
+between the final tail write and pending-state cleanup.
+
 Replay Lab's transcript and turn analysis now synchronize through the shared
 `SessionView` scroll controller using absolute normalized-message turn indexes.
 The viewport's semantic center drives the analysis map; scrolling the map asks
