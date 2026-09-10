@@ -5,6 +5,7 @@
     normalizeSessionForOpen,
     shellToSession,
     shellSourceToDismiss,
+    commandTerminalForSource,
     moveSessionStateKey,
     openSessionHasLiveTerminal,
     openSessionHasDockActivity,
@@ -12377,6 +12378,17 @@
                                     }
                                   }}
                                   on:exit={() => {
+                                    const command = commandTerminalForSource(
+                                      commandTermSources,
+                                      s.source,
+                                    );
+                                    if (command) {
+                                      forgetCommandTerm(
+                                        command.linkId,
+                                        command.entry,
+                                      );
+                                      return;
+                                    }
                                     markTerminalExited(
                                       resolveTermId(s, newTermIds) ??
                                         s.attachTermId,

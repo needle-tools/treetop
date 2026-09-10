@@ -101,6 +101,16 @@ export interface LiveAgentTerminal {
   exitedAt?: string;
 }
 
+export function commandTerminalForSource<T extends { source: string }>(
+  commands: ReadonlyMap<string, T>,
+  source: string,
+): { linkId: string; entry: T } | undefined {
+  for (const [linkId, entry] of commands) {
+    if (entry.source === source) return { linkId, entry };
+  }
+  return undefined;
+}
+
 export function shouldMountTerminalView(args: {
   mode: "read" | "terminal";
   hasSessionId: boolean;

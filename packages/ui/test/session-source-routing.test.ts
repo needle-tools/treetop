@@ -20,6 +20,7 @@ import {
   shellSourceToDismiss,
   moveSessionStateKey,
   canResumeVisualSurface,
+  commandTerminalForSource,
   openSessionHasDockActivity,
   openSessionHasLiveTerminal,
   sidebarDockRows,
@@ -67,6 +68,31 @@ describe("sidebarDockRows", () => {
     expect(
       sidebarDockRows(rows, { "repo-a|wt-2": true }).map((row) => row.key),
     ).toEqual(["repo-a|wt-1", "repo-c|wt-3"]);
+  });
+});
+
+describe("commandTerminalForSource", () => {
+  test("identifies an exited internal-command terminal for shared cleanup", () => {
+    const commands = new Map([
+      [
+        "serve-fastvid",
+        { wtPath: "/repo/fastvid", source: "__attached__:shell:t_dev" },
+      ],
+      [
+        "test-fastvid",
+        { wtPath: "/repo/fastvid", source: "__attached__:shell:t_test" },
+      ],
+    ]);
+
+    expect(
+      commandTerminalForSource(commands, "__attached__:shell:t_dev"),
+    ).toEqual({
+      linkId: "serve-fastvid",
+      entry: { wtPath: "/repo/fastvid", source: "__attached__:shell:t_dev" },
+    });
+    expect(
+      commandTerminalForSource(commands, "__attached__:shell:t_shell"),
+    ).toBeUndefined();
   });
 });
 
