@@ -781,20 +781,22 @@ function parseClaudeJsonlLine(line: string, out: NormalizedSession): void {
   }
 
   const usage = objectField(msg.usage);
-  const cacheCreation = finiteCodexNumber(
+  const cacheCreation = finiteNonNegativeNumber(
     usage?.cache_creation_input_tokens ?? usage?.cacheCreationInputTokens,
   ) ?? 0;
   const cacheCreationDetail = objectField(usage?.cache_creation);
   const cacheWriteInput1h = Math.min(
     cacheCreation,
-    finiteCodexNumber(cacheCreationDetail?.ephemeral_1h_input_tokens) ?? 0,
+    finiteNonNegativeNumber(cacheCreationDetail?.ephemeral_1h_input_tokens) ??
+      0,
   );
-  const cachedInput = finiteCodexNumber(usage?.cache_read_input_tokens) ?? 0;
-  const freshInput = finiteCodexNumber(usage?.input_tokens) ?? 0;
-  const output = finiteCodexNumber(usage?.output_tokens) ?? 0;
+  const cachedInput =
+    finiteNonNegativeNumber(usage?.cache_read_input_tokens) ?? 0;
+  const freshInput = finiteNonNegativeNumber(usage?.input_tokens) ?? 0;
+  const output = finiteNonNegativeNumber(usage?.output_tokens) ?? 0;
   const outputDetails = objectField(usage?.output_tokens_details);
   const reasoningOutput =
-    finiteCodexNumber(
+    finiteNonNegativeNumber(
       outputDetails?.thinking_tokens ?? usage?.reasoning_output_tokens,
     ) ?? 0;
   const input = freshInput + cachedInput + cacheCreation;
@@ -915,7 +917,7 @@ function codexToolInput(input: unknown): unknown {
   }
 }
 
-function finiteCodexNumber(value: unknown): number | undefined {
+function finiteNonNegativeNumber(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value)
     ? Math.max(0, value)
     : undefined;
@@ -932,24 +934,26 @@ function codexTokenUsageFromObject(
 ): NormalizedTokenUsage | undefined {
   if (!usage) return undefined;
   const input =
-    finiteCodexNumber(usage.input_tokens ?? usage.inputTokens) ?? 0;
+    finiteNonNegativeNumber(usage.input_tokens ?? usage.inputTokens) ?? 0;
   const cachedInput =
-    finiteCodexNumber(usage.cached_input_tokens ?? usage.cachedInputTokens) ?? 0;
+    finiteNonNegativeNumber(
+      usage.cached_input_tokens ?? usage.cachedInputTokens,
+    ) ?? 0;
   const cacheWriteInput =
-    finiteCodexNumber(
+    finiteNonNegativeNumber(
       usage.cache_write_input_tokens ??
         usage.cacheWriteInputTokens ??
         usage.cache_creation_input_tokens ??
         usage.cacheCreationInputTokens,
     ) ?? 0;
   const output =
-    finiteCodexNumber(usage.output_tokens ?? usage.outputTokens) ?? 0;
+    finiteNonNegativeNumber(usage.output_tokens ?? usage.outputTokens) ?? 0;
   const reasoning =
-    finiteCodexNumber(
+    finiteNonNegativeNumber(
       usage.reasoning_output_tokens ?? usage.reasoningOutputTokens,
     ) ?? 0;
   const total =
-    finiteCodexNumber(usage.total_tokens ?? usage.totalTokens) ??
+    finiteNonNegativeNumber(usage.total_tokens ?? usage.totalTokens) ??
     input + output;
   if (input + cachedInput + cacheWriteInput + output + reasoning <= 0) {
     return undefined;
