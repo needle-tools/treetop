@@ -48,6 +48,53 @@ export interface ModelPricingOptions {
   standardOnly?: boolean;
 }
 
+export interface ContextCompactionDetails {
+  beforeTokens?: number;
+  afterTokens?: number;
+  durationMs?: number;
+}
+
+export interface ContextTokenSnapshot {
+  totalTokens: number;
+  attributedTokens: number;
+}
+
+/** Shared provider-boundary normalization for Claude's compactMetadata. */
+export function contextCompactionDetailsFromMetadata(
+  value: unknown,
+): ContextCompactionDetails | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const metadata = value as Record<string, unknown>;
+  const beforeTokens = finiteRate(metadata.preTokens);
+  const afterTokens = finiteRate(metadata.postTokens);
+  const durationMs = finiteRate(metadata.durationMs);
+  if (beforeTokens === undefined && afterTokens === undefined && durationMs === undefined) {
+    return undefined;
+  }
+  return {
+    ...(beforeTokens !== undefined ? { beforeTokens } : {}),
+    ...(afterTokens !== undefined ? { afterTokens } : {}),
+    ...(durationMs !== undefined ? { durationMs } : {}),
+  };
+}
+
+/** Shared interpretation of Codex's pre/post-compaction token snapshots. */
+export function contextTokenSnapshotFromUsageRecord(
+  value: unknown,
+): ContextTokenSnapshot | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const usage = value as Record<string, unknown>;
+  const totalTokens = finiteRate(usage.total_tokens ?? usage.totalTokens);
+  if (totalTokens === undefined || totalTokens <= 0) return undefined;
+  const attributedTokens = [
+    usage.input_tokens ?? usage.inputTokens,
+    usage.cached_input_tokens ?? usage.cachedInputTokens,
+    usage.output_tokens ?? usage.outputTokens,
+    usage.reasoning_output_tokens ?? usage.reasoningOutputTokens,
+  ].reduce<number>((sum, tokenCount) => sum + (finiteRate(tokenCount) ?? 0), 0);
+  return { totalTokens, attributedTokens };
+}
+
 export interface LoadModelsDevPricingOptions {
   fetcher?: typeof fetch;
   cacheKey?: string;
