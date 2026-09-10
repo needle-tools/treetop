@@ -557,6 +557,12 @@
   function onMessagesWheel(ev: WheelEvent): void {
     sessionScroll.onWheel(ev);
   }
+  function onMessagesPointerDown(): void {
+    sessionScroll.onPointerDown();
+  }
+  function onMessagesPointerUp(): void {
+    sessionScroll.onPointerUp();
+  }
   function onMessagesScroll(): void {
     sessionScroll.onScroll();
     publishTranscriptTurn();
@@ -5892,6 +5898,8 @@
       {onMessagesEnter}
       {onMessagesLeave}
       {onMessagesWheel}
+      {onMessagesPointerDown}
+      {onMessagesPointerUp}
       {onMessagesScroll}
       {onLiveWorkBodyScroll}
       loadingOlder={visualHistoryRequestInFlight}

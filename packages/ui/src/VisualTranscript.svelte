@@ -214,6 +214,8 @@
   export let onMessagesEnter: () => void = () => {};
   export let onMessagesLeave: () => void = () => {};
   export let onMessagesWheel: (e: WheelEvent) => void = () => {};
+  export let onMessagesPointerDown: () => void = () => {};
+  export let onMessagesPointerUp: () => void = () => {};
   export let onMessagesScroll: () => void = () => {};
   export let loadingOlder = false;
   export let hiddenMessageCount = 0;
@@ -3294,6 +3296,9 @@
   on:mouseenter={onMessagesEnter}
   on:mouseleave={onMessagesLeave}
   on:wheel={onMessagesWheel}
+  on:pointerdown={onMessagesPointerDown}
+  on:pointerup={onMessagesPointerUp}
+  on:pointercancel={onMessagesPointerUp}
   on:scroll={onMessagesScroll}
   use:codeCopy
   data-supergit-session-cwd={sessionCwd}

@@ -103,6 +103,7 @@ export class SessionScrollController {
   private pendingTailFollowSeq = 0;
   private layoutObserver: ResizeObserver | null = null;
   private cursorSettled = false;
+  private pointerScrollIntent = false;
   private settleTimer: ReturnType<typeof setTimeout> | null = null;
   private pausedLiveWorkBodyKeys = new Set<string>();
 
@@ -172,6 +173,7 @@ export class SessionScrollController {
 
   setElement(next: HTMLElement | null): void {
     if (next === this.el) return;
+    this.pointerScrollIntent = false;
     const previous = this.el;
     if (previous && this.renderedOnce) this.saveMemory(previous);
     this.el = next;
@@ -197,6 +199,7 @@ export class SessionScrollController {
     this.renderedOnce = false;
     this.tailKey = "";
     this.paused = false;
+    this.pointerScrollIntent = false;
     this.pausedLiveWorkBodyKeys.clear();
     this.pauseSeq += 1;
     this.setActive(false);
@@ -255,13 +258,42 @@ export class SessionScrollController {
     // differently depending on which shell mounted it.
   }
 
+  onPointerDown(): void {
+    this.pointerScrollIntent = true;
+  }
+
+  onPointerUp(): void {
+    this.pointerScrollIntent = false;
+  }
+
   onScroll(): void {
     // A tail update can replace a tall live-work row with a short completed
     // summary before adding the next turn. The browser clamps scrollTop and
     // emits a normal scroll event for that layout change. It is not reader
     // intent, and treating it as such cancels follow between replay/live
     // turns. Explicit wheel intent still updates pause state in onWheel.
-    if (this.pendingTailFollowSeq !== 0 && !this.paused) return;
+    if (this.pendingTailFollowSeq !== 0 && !this.paused) {
+      if (
+        this.el &&
+        !isNearVisualScrollEnd(this.el, VISUAL_TAIL_FOLLOW_RESUME_PX)
+      ) {
+        this.settleTailFollow(this.el);
+      }
+      return;
+    }
+    if (!this.paused && !this.pointerScrollIntent) {
+      if (
+        this.el &&
+        !isNearVisualScrollEnd(this.el, VISUAL_TAIL_FOLLOW_RESUME_PX)
+      ) {
+        this.scheduleTailFollow({ force: true });
+      } else {
+        this.syncActive();
+        this.saveMemory();
+      }
+      return;
+    }
+    this.pointerScrollIntent = false;
     this.updateIntent();
     this.saveMemory();
     this.options.requestOlder?.();
