@@ -84,6 +84,7 @@
   let analysisMessages: readonly CodexReplayMessage[] = [];
   let replaySessionView: {
     scrollToTranscriptTurn(turnIndex: number): void;
+    scrollTranscriptToEdge(edge: "start" | "end"): void;
   } | null = null;
   let replayTurnMap: HTMLElement | null = null;
   let visibleTranscriptTurnIndex = -1;
@@ -608,13 +609,27 @@
   function onReplayTurnMapScroll(): void {
     const map = replayTurnMap;
     if (!map || syncingReplayTurnMap) return;
+    const rows = Array.from(
+      map.querySelectorAll<HTMLElement>("[data-replay-turn-index]"),
+    );
+    const maxScrollTop = map.scrollHeight - map.clientHeight;
+    if (maxScrollTop > 1 && map.scrollTop <= 1) {
+      const turnIndex = Number(rows[0]?.dataset.replayTurnIndex);
+      if (Number.isInteger(turnIndex)) visibleTranscriptTurnIndex = turnIndex;
+      replaySessionView?.scrollTranscriptToEdge("start");
+      return;
+    }
+    if (maxScrollTop > 1 && maxScrollTop - map.scrollTop <= 1) {
+      const turnIndex = Number(rows.at(-1)?.dataset.replayTurnIndex);
+      if (Number.isInteger(turnIndex)) visibleTranscriptTurnIndex = turnIndex;
+      replaySessionView?.scrollTranscriptToEdge("end");
+      return;
+    }
     const viewport = map.getBoundingClientRect();
     const turnIndex = selectVisualScrollIndex({
       viewportTop: viewport.top,
       viewportBottom: viewport.bottom,
-      candidates: Array.from(
-        map.querySelectorAll<HTMLElement>("[data-replay-turn-index]"),
-      ).map((row) => {
+      candidates: rows.map((row) => {
         const box = row.getBoundingClientRect();
         return {
           index: Number(row.dataset.replayTurnIndex),
@@ -626,6 +641,11 @@
     if (turnIndex === undefined || turnIndex === visibleTranscriptTurnIndex) {
       return;
     }
+    visibleTranscriptTurnIndex = turnIndex;
+    replaySessionView?.scrollToTranscriptTurn(turnIndex);
+  }
+
+  function jumpToReplayTurn(turnIndex: number): void {
     visibleTranscriptTurnIndex = turnIndex;
     replaySessionView?.scrollToTranscriptTurn(turnIndex);
   }
@@ -1266,7 +1286,8 @@
                   on:scroll={onReplayTurnMapScroll}
                 >
                   {#each turnAnalysis.turns as turn}
-                    <article
+                    <button
+                      type="button"
                       class="replay-turn"
                       class:has-issues={turn.issues.length > 0}
                       class:visible-turn={turn.index === visibleTranscriptTurnIndex}
@@ -1276,6 +1297,7 @@
                             .map((issue) => `${issue.label}: ${issue.detail}`)
                             .join("\n")
                         : turn.label}
+                      on:click={() => jumpToReplayTurn(turn.index)}
                     >
                       <div class="replay-turn-heading">
                         <span>{turn.index + 1}</span>
@@ -1312,7 +1334,7 @@
                           {/each}
                         </div>
                       {/if}
-                    </article>
+                    </button>
                   {/each}
                 </div>
               {/if}
@@ -1609,12 +1631,32 @@
   }
 
   .replay-turn {
+    width: 100%;
     display: grid;
     gap: 5px;
     margin-bottom: 5px;
     padding: 8px;
+    border: 0;
     border-left: 2px solid transparent;
+    color: inherit;
+    font: inherit;
+    text-align: left;
     background: color-mix(in srgb, var(--button-bg, #252525), transparent 35%);
+    cursor: pointer;
+  }
+
+  .replay-turn:hover,
+  .replay-turn:focus-visible {
+    background: color-mix(
+      in srgb,
+      var(--accent, #9ad45f) 8%,
+      var(--button-bg, #252525)
+    );
+  }
+
+  .replay-turn:focus-visible {
+    outline: 1px solid var(--accent, #9ad45f);
+    outline-offset: -1px;
   }
 
   .replay-turn.has-issues {

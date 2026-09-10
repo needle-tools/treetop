@@ -278,4 +278,20 @@ describe("session scroll controller", () => {
     expect(scroller.scrollTop).toBe(700);
     expect(controller.isPaused).toBe(true);
   });
+
+  test("scrolls to exact transcript edges instead of centering their turns", () => {
+    const scroller = fakeScroller(() => 220);
+    const scheduler = new ManualScheduler();
+    const controller = createSessionScrollController({ scheduler });
+    controller.setElement(scroller);
+
+    controller.scrollToEdge("start");
+    expect(scroller.scrollTop).toBe(0);
+    expect(controller.isPaused).toBe(true);
+
+    controller.scrollToEdge("end");
+    scheduler.flush();
+    expect(scroller.scrollTop).toBe(1_000_000_000);
+    expect(controller.isPaused).toBe(false);
+  });
 });

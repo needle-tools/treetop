@@ -1246,4 +1246,6 @@ The viewport's semantic center drives the analysis map; scrolling the map asks
 The callback is opt-in, so ordinary sessions do not acquire analysis-map layout
 reads. The tail marker is also the real reattachment control: its hit target
 remains available while detached, reveals on hover or keyboard focus, and jumps
-the shared transcript scroller back to its live tail.
+the shared transcript scroller back to its live tail. Analysis rows navigate
+through that same controller; exact analysis-map edges map to exact transcript
+edges, while interior rows retain semantic turn-centered navigation.
