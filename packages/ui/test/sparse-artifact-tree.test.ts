@@ -3,6 +3,7 @@ import {
   buildSparseArtifactRows,
   sparseArtifactRowActionSummary,
   sparseArtifactRowLifecycle,
+  sparseArtifactRowPreviewChanges,
 } from "../src/sparse-artifact-tree";
 import type { VisualWorkArtifact } from "../src/last-user-message";
 
@@ -138,6 +139,41 @@ describe("buildSparseArtifactRows", () => {
       { label: "Downloads", depth: 1, kind: "folder", artifacts: 1 },
       { label: "videos_cloud", depth: 2, kind: "folder", artifacts: 0 },
       { label: "nefertiti-vid.otiod", depth: 3, kind: "file", artifacts: 1 },
+    ]);
+  });
+
+  test("keeps read output available on file and directory rows", () => {
+    const rows = buildSparseArtifactRows(
+      [
+        artifact("/repo/src", {
+          previewTitle: "Read directory src",
+          preview: "app.ts\nindex.ts",
+        }),
+        artifact("/repo/src/app.ts:1-2", {
+          previewTitle: "Read app.ts:1-2",
+          preview: "export const app = true;",
+        }),
+      ],
+      "/repo",
+    );
+
+    expect(
+      rows
+        .filter((row) => row.artifacts.length > 0)
+        .map((row) => sparseArtifactRowPreviewChanges(row)),
+    ).toEqual([
+      [
+        expect.objectContaining({
+          previewTitle: "Read directory src",
+          preview: "app.ts\nindex.ts",
+        }),
+      ],
+      [
+        expect.objectContaining({
+          previewTitle: "Read app.ts:1-2",
+          preview: "export const app = true;",
+        }),
+      ],
     ]);
   });
 

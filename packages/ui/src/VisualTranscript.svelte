@@ -7,6 +7,7 @@
   import { apiUrl } from "./api";
   import { isLocalFileMarkdownHref } from "./open-url";
   import ChangedFilesTooltipBody from "./ChangedFilesTooltipBody.svelte";
+  import Diff from "./Diff.svelte";
   import DiffLoader from "./DiffLoader.svelte";
   import LoadingSpinner from "./LoadingSpinner.svelte";
   import SparseArtifactTree from "./SparseArtifactTree.svelte";
@@ -57,6 +58,7 @@
     visualToolPreviewParts,
     visualToolPreviewText,
     visualToolRemoteHostLabel,
+    visualToolReadResultPreview,
     visualToolTestResultBadges,
     visualToolWaitForDurationLabel,
     visualWorkAutoOpenActionGroupId,
@@ -2087,6 +2089,7 @@
 {#snippet renderPreviewPathChip(
   part: VisualPreviewPathPart,
   remoteHost: string | undefined,
+  contentPreview?: { title: string; body: string },
 )}
   {#if part.diffKind && !remoteHost && sessionCwd}
     <Tooltip variant="wide" escapeClip>
@@ -2106,6 +2109,16 @@
         />
       </span>
     </Tooltip>
+  {:else if contentPreview}
+    <Tooltip variant="wide" escapeClip>
+      <span slot="trigger" class="work-preview-path-trigger">
+        {@render renderPreviewPathButton(part, remoteHost)}
+      </span>
+      <span slot="content" class="visual-preview-diff-tooltip">
+        <span class="visual-preview-diff-head">{contentPreview.title}</span>
+        <Diff text={contentPreview.body} compact />
+      </span>
+    </Tooltip>
   {:else}
     {@render renderPreviewPathButton(part, remoteHost)}
   {/if}
@@ -2116,13 +2129,15 @@
   preview: string,
   remoteHost: string | undefined,
   context?: VisualToolPreviewContext,
+  resultBlock?: NormalizedBlock,
 )}
   {@const parts = visualToolPreviewParts(block, context)}
+  {@const contentPreview = visualToolReadResultPreview(block, resultBlock)}
   <div class="work-tool-preview" title={preview}>
     {#if parts.length > 0}
       {#each parts as part, i (`${part.kind}:${part.text}:${i}`)}
         {#if part.kind === "path"}
-          {@render renderPreviewPathChip(part, remoteHost)}
+          {@render renderPreviewPathChip(part, remoteHost, contentPreview)}
         {:else}
           <span>{part.text}</span>
         {/if}
@@ -2944,12 +2959,26 @@
                                     <ToolIcon name="write_stdin" />
                                     <span>{observedProcessOutput.title}</span>
                                   </span>
-                                  <span
-                                    class="work-tool-preview work-process-output-preview"
-                                    title={observedProcessOutput.preview}
-                                  >
-                                    {observedProcessOutput.preview}
-                                  </span>
+                                  <Tooltip variant="wide" escapeClip>
+                                    <span
+                                      slot="trigger"
+                                      class="work-tool-preview work-process-output-preview"
+                                    >
+                                      {observedProcessOutput.preview}
+                                    </span>
+                                    <span
+                                      slot="content"
+                                      class="visual-preview-diff-tooltip"
+                                    >
+                                      <span class="visual-preview-diff-head">
+                                        {observedProcessOutput.title}
+                                      </span>
+                                      <Diff
+                                        text={observedProcessOutput.preview}
+                                        compact
+                                      />
+                                    </span>
+                                  </Tooltip>
                                   {#if toolElapsedDuration || observedProcessOutput.wallTimeSeconds !== undefined}
                                     <span class="work-tool-meta">
                                       {toolElapsedDuration ??
@@ -3066,6 +3095,7 @@
                                       toolPreview,
                                       remoteHost,
                                       displayEntry.previewContext,
+                                      visibleResultBlock,
                                     )}
                                   {/if}
                                   {@render renderToolApprovalBadge(toolBlock)}

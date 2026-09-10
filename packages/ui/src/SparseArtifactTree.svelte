@@ -10,7 +10,7 @@
   import {
     buildSparseArtifactRows,
     sparseArtifactRowActionSummary,
-    sparseArtifactRowDiffChanges,
+    sparseArtifactRowChanges,
     sparseArtifactRowLifecycle,
     sparseArtifactSignature,
     type SparseArtifactTreeRow,
@@ -80,9 +80,10 @@
         {#if row.artifacts[0]}
           {@const artifact = row.artifacts[0]}
           {@const lifecycle = sparseArtifactRowLifecycle(row)}
-          {@const diffChanges = sparseArtifactRowDiffChanges(row)}
+          {@const contentChanges = sparseArtifactRowChanges(row)
+            .filter((change) => change.diff !== undefined || change.preview !== undefined)}
           {@const gitDiffKind = row.artifacts.find((item) => item.diffKind)?.diffKind}
-          {#if row.kind === "file" && (diffChanges.length > 0 || (diffFallback === "git" && gitDiffKind && worktreePath))}
+          {#if contentChanges.length > 0 || (row.kind === "file" && diffFallback === "git" && gitDiffKind && worktreePath)}
             <Tooltip variant="wide" escapeClip>
               <button
                 slot="trigger"
@@ -98,17 +99,30 @@
                 {row.label}
               </button>
               <span slot="content" class="sparse-artifact-diff">
-                {#if diffChanges.length === 1}
-                  {@const change = diffChanges[0]}
-                  <Diff text={change.diff ?? ""} hideSingleFileHeader />
-                {:else if diffChanges.length > 1}
+                {#if contentChanges.length === 1}
+                  {@const change = contentChanges[0]}
+                  {#if change.previewTitle}
+                    <span class="sparse-artifact-change-label">
+                      {change.previewTitle}
+                    </span>
+                  {/if}
+                  <Diff
+                    text={change.diff ?? change.preview ?? ""}
+                    hideSingleFileHeader={change.diff !== undefined}
+                    compact={change.preview !== undefined}
+                  />
+                {:else if contentChanges.length > 1}
                   <span class="sparse-artifact-change-chain">
-                    {#each diffChanges as change, index}
+                    {#each contentChanges as change, index}
                       <span class="sparse-artifact-change">
                         <span class="sparse-artifact-change-label">
-                          {changeLabel(change, index)}
+                          {change.previewTitle ?? changeLabel(change, index)}
                         </span>
-                        <Diff text={change.diff ?? ""} hideSingleFileHeader />
+                        <Diff
+                          text={change.diff ?? change.preview ?? ""}
+                          hideSingleFileHeader={change.diff !== undefined}
+                          compact={change.preview !== undefined}
+                        />
                       </span>
                     {/each}
                   </span>

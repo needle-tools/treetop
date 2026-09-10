@@ -12,6 +12,7 @@ import {
   visualToolMediaBlocks,
   visualToolPreviewParts,
   visualToolPreviewText,
+  visualToolReadResultPreview,
   visualToolRemoteHostLabel,
 } from "./tool-preview.js";
 import {
@@ -63,6 +64,8 @@ export interface VisualWorkArtifact {
   additions?: number;
   deletions?: number;
   diff?: string;
+  preview?: string;
+  previewTitle?: string;
   diffKind?: "workdir" | "staged" | "untracked";
   fileAction?: VisualFileEdit["action"];
   changes?: VisualWorkArtifactChange[];
@@ -76,6 +79,8 @@ export interface VisualWorkArtifactChange {
   additions?: number;
   deletions?: number;
   diff?: string;
+  preview?: string;
+  previewTitle?: string;
   diffKind?: "workdir" | "staged" | "untracked";
   fileAction?: VisualFileEdit["action"];
 }
@@ -739,6 +744,8 @@ function addArtifact(
     additions: artifact.additions,
     deletions: artifact.deletions,
     diff: artifact.diff?.trim() || artifact.diff,
+    preview: artifact.preview?.trim() || artifact.preview,
+    previewTitle: artifact.previewTitle,
     diffKind: artifact.diffKind,
     fileAction: artifact.fileAction,
   };
@@ -798,6 +805,8 @@ function mergeArtifact(
             ? current.deletions + next.deletions
             : Math.max(current.deletions, next.deletions),
     diff: mergeArtifactDiff(current.diff, next.diff),
+    preview: mergeArtifactDiff(current.preview, next.preview),
+    previewTitle: next.previewTitle ?? current.previewTitle,
     diffKind: next.diffKind ?? current.diffKind,
     fileAction: next.fileAction ?? current.fileAction,
     changes: [...(current.changes ?? []), ...(next.changes ?? [])],
@@ -838,9 +847,20 @@ function looksLikeArtifactPath(path: string, label: string): boolean {
 function artifactsForEntry(
   entry: VisualWorkDisplayEntryLike,
 ): VisualWorkArtifact[] {
+  // Long-running results may remain as a second display row while still
+  // pointing back to their original tool use. The artifact belongs to that
+  // one tool lifecycle; deriving it again from the result row would duplicate
+  // its read/write provenance without there having been a second operation.
+  if (
+    entry.pairedToolUse &&
+    firstBlockOfType(entry.entry, "tool_result")
+  ) {
+    return [];
+  }
   const artifacts: VisualWorkArtifact[] = [];
   const toolBlock = toolUseBlock(entry);
   const resultBlock = toolResultBlock(entry);
+  const readPreview = visualToolReadResultPreview(toolBlock, resultBlock);
   const editSummary = visualFileEditSummaryForBlock(toolBlock);
   if (editSummary) {
     for (const file of editSummary.files) {
@@ -868,6 +888,8 @@ function artifactsForEntry(
         action: "used",
         label: part.text,
         path: part.path,
+        preview: readPreview?.body,
+        previewTitle: readPreview?.title,
       });
     }
   }
