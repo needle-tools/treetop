@@ -13,7 +13,10 @@
   import Tooltip from "./Tooltip.svelte";
   import ToolIcon from "./ToolIcon.svelte";
   import { formatAbsoluteTimeTitle } from "./display-helpers";
-  import type { ModelsDevPricingSnapshot } from "@treetop/nicifier";
+  import type {
+    ContextCompactionDetails,
+    ModelsDevPricingSnapshot,
+  } from "@treetop/nicifier";
   import {
     buildVisualWorkDisplayEntries,
     buildVisibleVisualWorkDisplayEntries,
@@ -24,6 +27,7 @@
     getVisualTranscriptItemKey,
     getVisualWorkDisplayEntryKey,
     visualFileEditCountBadge,
+    visualCompactionDetails,
     visualFileEditSummaryForBlock,
     visualFileEditTotals,
     visualMediaPathTarget,
@@ -147,6 +151,7 @@
     title?: string;
     alt?: string;
     hasAlpha?: boolean;
+    compaction?: ContextCompactionDetails;
     subagentId?: string;
     subagentNickname?: string;
     subagentAction?: "spawn" | "wait" | "notification";
@@ -2730,6 +2735,8 @@
                           </div>
                         {:else if displayEntry.kind === "marker" && displayEntry.markerBlock}
                           {@const markerBlock = displayEntry.markerBlock}
+                          {@const compactionDetails =
+                            visualCompactionDetails(markerBlock)}
                           <div
                             class="work-marker-pill"
                             data-visual-scroll-anchor={getVisualWorkDisplayEntryKey(
@@ -2746,12 +2753,19 @@
                             class:failed={displayEntry.markerKind === "failed"}
                             class:aborted={displayEntry.markerKind ===
                               "aborted"}
-                            title={markerBlock.text}
+                            title={[markerBlock.text, ...compactionDetails]
+                              .filter(Boolean)
+                              .join(" · ")}
                           >
                             <span class="work-marker-icon" aria-hidden="true">
                               {workMarkerIcon(displayEntry.markerKind)}
                             </span>
                             <span>{displayEntry.markerLabel}</span>
+                            {#if compactionDetails.length > 0}
+                              <span class="marker-details">
+                                {compactionDetails.join(" · ")}
+                              </span>
+                            {/if}
                             {#if entry.message.timestamp}
                               <span
                                 class="muted small"
@@ -3533,6 +3547,7 @@
         </details>
       </li>
     {:else if item.kind === "marker"}
+      {@const compactionDetails = visualCompactionDetails(item.markerBlock)}
       <li
         class="marker-row"
         data-visual-scroll-anchor={getVisualTranscriptItemKey(item, itemIndex)}
@@ -3545,12 +3560,19 @@
           class:warning={item.markerKind === "warning"}
           class:failed={item.markerKind === "failed"}
           class:aborted={item.markerKind === "aborted"}
-          title={item.markerBlock.text}
+          title={[item.markerBlock.text, ...compactionDetails]
+            .filter(Boolean)
+            .join(" · ")}
         >
           <span class="work-marker-icon" aria-hidden="true">
             {workMarkerIcon(item.markerKind)}
           </span>
           <span>{item.markerLabel}</span>
+          {#if compactionDetails.length > 0}
+            <span class="marker-details">
+              {compactionDetails.join(" · ")}
+            </span>
+          {/if}
           {#if item.entry.message.timestamp}
             <span
               class="muted small"
@@ -4440,6 +4462,12 @@
     font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas,
       "Liberation Mono", "Courier New", monospace;
     font-size: 0.7rem;
+  }
+  .marker-details {
+    color: color-mix(in srgb, currentColor 78%, var(--text-muted));
+    font-size: 0.78rem;
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
   }
   .transcript-marker-pill {
     padding-inline: 0.62rem;
