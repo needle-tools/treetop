@@ -154,6 +154,18 @@ export class SessionScrollController {
     this.saveMemory();
   }
 
+  scrollToEdge(edge: "start" | "end"): void {
+    if (!this.el) return;
+    if (edge === "end") {
+      this.forceTailFollow();
+      this.el.scrollTop = 1_000_000_000;
+    } else {
+      this.setPaused(true);
+      this.el.scrollTop = 0;
+    }
+    this.saveMemory();
+  }
+
   setMemoryKey(key: string): void {
     this.memoryKey = key;
   }
