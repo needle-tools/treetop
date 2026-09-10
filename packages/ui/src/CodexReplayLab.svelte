@@ -12,6 +12,7 @@
   } from "@treetop/nicifier";
   import {
     analyzeCodexReplayTurns,
+    DEFAULT_REPLAY_PLAYBACK_RATE,
     collectCodexReplayDirectoryFiles,
     codexReplayProjectLabel,
     createCodexReplaySessionTransport,
@@ -32,8 +33,10 @@
     replayDurationMs,
     replayElapsedMsAtStep,
     replayPlaybackTiming,
+    replayOutputTokensAtStep,
     replayStepAdvanceForElapsed,
     replaySourceProgressAtStep,
+    replayStepIndexAtOutputTokens,
     replayStepIndexAtElapsedMs,
     replayLabHasDaemon,
     searchCodexReplaySessions,
@@ -68,8 +71,9 @@
   let replayGeneration = 0;
   let playing = false;
   let playTimer: ReturnType<typeof setInterval> | null = null;
-  let playbackRate: ReplayPlaybackRate = "time:10";
+  let playbackRate: ReplayPlaybackRate = DEFAULT_REPLAY_PLAYBACK_RATE;
   let playbackCursorMs = 0;
+  let playbackCursorTokens = 0;
   let parseError = "";
   let loading = false;
   let loadingLabel = "";
@@ -113,7 +117,12 @@
   $: playbackTimeline = localReplay
     ? localReplay
     : fixture
-      ? { steps: fixture.events.map((event) => ({ at: event.receivedAt })) }
+      ? {
+          steps: fixture.events.map((event) => ({
+            at: event.receivedAt,
+            event,
+          })),
+        }
       : null;
   $: replayTotalMs = playbackTimeline ? replayDurationMs(playbackTimeline) : 0;
   $: replayCurrentMs = playbackTimeline
@@ -163,10 +172,14 @@
     fileName = name;
     stepIndex = initialStep;
     scrubStepIndex = initialStep;
-    playbackCursorMs = replayElapsedMsAtStep(
-      { steps: nextFixture.events.map((event) => ({ at: event.receivedAt })) },
-      initialStep,
-    );
+    const timeline = {
+      steps: nextFixture.events.map((event) => ({
+        at: event.receivedAt,
+        event,
+      })),
+    };
+    playbackCursorMs = replayElapsedMsAtStep(timeline, initialStep);
+    playbackCursorTokens = replayOutputTokensAtStep(timeline, initialStep);
     replayGeneration += 1;
   }
 
@@ -186,6 +199,10 @@
     stepIndex = view.playback.stepIndex;
     scrubStepIndex = view.playback.stepIndex;
     playbackCursorMs = replayElapsedMsAtStep(
+      view.replay,
+      view.playback.stepIndex,
+    );
+    playbackCursorTokens = replayOutputTokensAtStep(
       view.replay,
       view.playback.stepIndex,
     );
@@ -560,6 +577,7 @@
     stepIndex = 0;
     scrubStepIndex = 0;
     playbackCursorMs = 0;
+    playbackCursorTokens = 0;
     stopPlayback();
     parseError = "";
     selectedThreadId = "";
@@ -577,6 +595,7 @@
     if (stepIndex >= stepCount) {
       setReplayStep(0);
       playbackCursorMs = 0;
+      playbackCursorTokens = 0;
     }
     playing = true;
     startPlaybackTimer();
@@ -698,6 +717,9 @@
     playbackCursorMs = playbackTimeline
       ? replayElapsedMsAtStep(playbackTimeline, stepIndex)
       : 0;
+    playbackCursorTokens = playbackTimeline
+      ? replayOutputTokensAtStep(playbackTimeline, stepIndex)
+      : 0;
     if (playing) startPlaybackTimer();
   }
 
@@ -741,6 +763,31 @@
       return;
     }
 
+    if (timing.mode === "tokens") {
+      let previousTick = performance.now();
+      const totalTokens = replayOutputTokensAtStep(timeline, stepCount);
+      playTimer = setInterval(() => {
+        if (stepIndex >= stepCount) {
+          stopPlayback();
+          return;
+        }
+        const now = performance.now();
+        playbackCursorTokens = Math.min(
+          totalTokens,
+          playbackCursorTokens +
+            ((now - previousTick) * timing.tokensPerSecond) / 1_000,
+        );
+        previousTick = now;
+        const targetStep = replayStepIndexAtOutputTokens(
+          timeline,
+          playbackCursorTokens,
+        );
+        if (targetStep !== stepIndex) setReplayStep(targetStep);
+        if (targetStep >= stepCount) stopPlayback();
+      }, timing.tickMs);
+      return;
+    }
+
     let previousTick = performance.now();
     playTimer = setInterval(() => {
       const now = performance.now();
@@ -760,6 +807,9 @@
       .value as ReplayPlaybackRate;
     playbackCursorMs = playbackTimeline
       ? replayElapsedMsAtStep(playbackTimeline, stepIndex)
+      : 0;
+    playbackCursorTokens = playbackTimeline
+      ? replayOutputTokensAtStep(playbackTimeline, stepIndex)
       : 0;
     if (playing) startPlaybackTimer();
   }
@@ -920,6 +970,12 @@
           <option value="steps:5">5 steps/s</option>
           <option value="steps:20">20 steps/s</option>
           <option value="steps:100">100 steps/s</option>
+        </optgroup>
+        <optgroup label="Token based">
+          <option value="tokens:20">20 tokens/s</option>
+          <option value="tokens:100">100 tokens/s</option>
+          <option value="tokens:1000">1,000 tokens/s</option>
+          <option value="tokens:10000">10,000 tokens/s</option>
         </optgroup>
       </select>
     </label>
