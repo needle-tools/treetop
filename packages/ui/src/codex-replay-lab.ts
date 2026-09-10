@@ -528,6 +528,8 @@ type ReplayTimeline = {
     at?: string;
     sourceLine?: number;
     sourceByteEnd?: number;
+    message?: Pick<CodexAppHistoryMessage, "tokensUsed" | "tokenUsage">;
+    event?: CodexAppEvent;
   }[];
 };
 export type ReplayPlaybackRate =
@@ -538,8 +540,17 @@ export type ReplayPlaybackRate =
   | "steps:2"
   | "steps:5"
   | "steps:20"
-  | "steps:100";
+  | "steps:100"
+  | "tokens:20"
+  | "tokens:100"
+  | "tokens:1000"
+  | "tokens:10000";
+export const DEFAULT_REPLAY_PLAYBACK_RATE: ReplayPlaybackRate = "steps:20";
 const replayStepTimeOffsetCache = new WeakMap<
+  ReplayTimeline,
+  { steps: ReplayTimeline["steps"]; offsets: number[] }
+>();
+const replayOutputTokenOffsetCache = new WeakMap<
   ReplayTimeline,
   { steps: ReplayTimeline["steps"]; offsets: number[] }
 >();
@@ -548,11 +559,16 @@ export function replayPlaybackTiming(
   rate: ReplayPlaybackRate,
 ):
   | { mode: "time"; multiplier: number; tickMs: 50 }
-  | { mode: "steps"; stepsPerSecond: number; tickMs: number } {
+  | { mode: "steps"; stepsPerSecond: number; tickMs: number }
+  | { mode: "tokens"; tokensPerSecond: number; tickMs: 50 } {
   const value = Number(rate.slice(rate.indexOf(":") + 1));
-  return rate.startsWith("time:")
-    ? { mode: "time", multiplier: value, tickMs: 50 }
-    : { mode: "steps", stepsPerSecond: value, tickMs: 1000 / value };
+  if (rate.startsWith("time:")) {
+    return { mode: "time", multiplier: value, tickMs: 50 };
+  }
+  if (rate.startsWith("tokens:")) {
+    return { mode: "tokens", tokensPerSecond: value, tickMs: 50 };
+  }
+  return { mode: "steps", stepsPerSecond: value, tickMs: 1000 / value };
 }
 
 export function replayStepAdvanceForElapsed(
@@ -579,6 +595,34 @@ export function replayElapsedMsAtStep(
 
 export function replayDurationMs(replay: ReplayTimeline): number {
   return replayElapsedMsAtStep(replay, replay.steps.length);
+}
+
+export function replayOutputTokensAtStep(
+  replay: ReplayTimeline,
+  stepIndex: number,
+): number {
+  const offsets = replayOutputTokenOffsets(replay);
+  const target = Math.max(
+    0,
+    Math.min(offsets.length, Math.trunc(stepIndex) || 0),
+  );
+  return target === 0 ? 0 : (offsets[target - 1] ?? 0);
+}
+
+export function replayStepIndexAtOutputTokens(
+  replay: ReplayTimeline,
+  outputTokens: number,
+): number {
+  const offsets = replayOutputTokenOffsets(replay);
+  const target = Math.max(0, outputTokens);
+  let low = 0;
+  let high = offsets.length;
+  while (low < high) {
+    const middle = Math.floor((low + high) / 2);
+    if ((offsets[middle] ?? 0) <= target) low = middle + 1;
+    else high = middle;
+  }
+  return low;
 }
 
 export function replayStepIndexAtElapsedMs(
@@ -665,6 +709,30 @@ function replayStepTimeOffsets(replay: ReplayTimeline): number[] {
     return previous;
   });
   replayStepTimeOffsetCache.set(replay, { steps: replay.steps, offsets });
+  return offsets;
+}
+
+function replayOutputTokenOffsets(replay: ReplayTimeline): number[] {
+  const cached = replayOutputTokenOffsetCache.get(replay);
+  if (cached?.steps === replay.steps) return cached.offsets;
+  const usageContext: CodexReplayUsageContext = {};
+  let total = 0;
+  const offsets = replay.steps.map((step) => {
+    const usage = step.message?.tokenUsage;
+    const output = usage
+      ? usage.output
+      : step.message?.tokensUsed ??
+        (step.event
+          ? codexReplayTokenUsageFromPayload(step.event.params, usageContext)
+              ?.output
+          : 0);
+    total += Math.max(
+      0,
+      typeof output === "number" && Number.isFinite(output) ? output : 0,
+    );
+    return total;
+  });
+  replayOutputTokenOffsetCache.set(replay, { steps: replay.steps, offsets });
   return offsets;
 }
 

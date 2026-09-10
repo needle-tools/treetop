@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { parseCodexJsonl } from "../../daemon/src/sessions";
 import {
   analyzeCodexReplayTurns,
+  DEFAULT_REPLAY_PLAYBACK_RATE,
   collectCodexReplayDirectoryFiles,
   codexReplayProjectLabel,
   codexReplayItemsUntil,
@@ -27,7 +28,9 @@ import {
   replayDurationMs,
   replayElapsedMsAtStep,
   replayPlaybackTiming,
+  replayOutputTokensAtStep,
   replayStepAdvanceForElapsed,
+  replayStepIndexAtOutputTokens,
   replaySourceProgressAtStep,
   replayStepIndexAtElapsedMs,
   replayLabHasDaemon,
@@ -1452,6 +1455,7 @@ Narrate this page live`,
   });
 
   test("defines realtime multipliers and fixed step rates independently", () => {
+    expect(DEFAULT_REPLAY_PLAYBACK_RATE).toBe("steps:20");
     expect(replayPlaybackTiming("time:10")).toEqual({
       mode: "time",
       multiplier: 10,
@@ -1472,6 +1476,43 @@ Narrate this page live`,
       stepsPerSecond: 100,
       tickMs: 10,
     });
+    expect(replayPlaybackTiming("tokens:1000")).toEqual({
+      mode: "tokens",
+      tokensPerSecond: 1000,
+      tickMs: 50,
+    });
+  });
+
+  test("maps output-token playback onto transcript steps without counting cached input", () => {
+    const replay = {
+      steps: [
+        { at: "2026-01-01T00:00:00Z" },
+        {
+          at: "2026-01-01T00:00:01Z",
+          message: {
+            tokensUsed: 40,
+            tokenUsage: {
+              input: 10_000,
+              cachedInput: 9_000,
+              cacheWriteInput: 0,
+              output: 40,
+              reasoningOutput: 10,
+              total: 10_040,
+            },
+          },
+        },
+        { at: "2026-01-01T00:00:02Z" },
+        { at: "2026-01-01T00:00:03Z", message: { tokensUsed: 60 } },
+      ],
+    };
+
+    expect(replayOutputTokensAtStep(replay, 0)).toBe(0);
+    expect(replayOutputTokensAtStep(replay, 2)).toBe(40);
+    expect(replayOutputTokensAtStep(replay, 4)).toBe(100);
+    expect(replayStepIndexAtOutputTokens(replay, 1)).toBe(1);
+    expect(replayStepIndexAtOutputTokens(replay, 39)).toBe(1);
+    expect(replayStepIndexAtOutputTokens(replay, 40)).toBe(3);
+    expect(replayStepIndexAtOutputTokens(replay, 100)).toBe(4);
   });
 
   test("batches high-rate step playback without losing fractional timing", () => {
