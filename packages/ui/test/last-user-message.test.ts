@@ -17,6 +17,7 @@ import {
   latestVisualPlan,
   mergeVisualSessionMessages,
   visualTranscriptTailKey,
+  visualMessageTurnIndexes,
   reuseStableVisualTranscriptItems,
   shouldShowLiveToolTimer,
   shouldShowLiveWorkTimer,
@@ -2566,6 +2567,21 @@ describe("visualTranscriptTailKey", () => {
 
     expect(() => visualTranscriptTailKey(messages)).not.toThrow();
     expect(visualTranscriptTailKey(messages)).toContain("10000");
+  });
+});
+
+describe("visualMessageTurnIndexes", () => {
+  it("maps every normalized message to its containing user turn", () => {
+    expect(
+      visualMessageTurnIndexes([
+        msg("system", "startup"),
+        msg("user", "first"),
+        msg("assistant", "working"),
+        msg("tool", "result"),
+        msg("user", "second"),
+        msg("assistant", "done"),
+      ]),
+    ).toEqual([0, 0, 0, 0, 1, 1]);
   });
 });
 

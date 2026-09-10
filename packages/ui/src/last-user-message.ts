@@ -1842,6 +1842,19 @@ export function visualTranscriptTailKey<
     .join("|")}`;
 }
 
+/** Absolute user-turn index for every normalized message. Messages before the
+ * first user request belong to the first turn so callers never need a sentinel
+ * row in synchronized transcript navigation. */
+export function visualMessageTurnIndexes<M extends Message>(
+  messages: readonly M[],
+): number[] {
+  let turnIndex = -1;
+  return messages.map((message) => {
+    if (message.role === "user") turnIndex += 1;
+    return Math.max(0, turnIndex);
+  });
+}
+
 function optimisticInsertionIndex<B extends MessageBlock, M extends Message<B>>(
   messages: readonly M[],
   overlay: M,

@@ -205,6 +205,7 @@
   export let daemonId: string | undefined = undefined;
   export let items: VisualTranscriptItem<NormalizedBlock, NormalizedMessage>[] =
     [];
+  export let messageTurnIndexes: readonly number[] = [];
   export let transcriptSurface: "read" | "terminal" = "read";
   export let ollamaStreamingIdx: number | null = null;
   export let active = false;
@@ -231,6 +232,20 @@
     remoteHost: string,
     path: string,
   ) => void | Promise<void> = () => {};
+
+  function itemTurnIndex(
+    item: VisualTranscriptItem<NormalizedBlock, NormalizedMessage>,
+  ): number | undefined {
+    const messageIndex =
+      item.kind === "message"
+        ? item.messageIndex
+        : item.kind === "marker"
+          ? item.entry.messageIndex
+          : item.entries[0]?.messageIndex;
+    return messageIndex === undefined
+      ? undefined
+      : messageTurnIndexes[messageIndex];
+  }
   export let expandedThinkingWorkKeys = new Set<string>();
   export let openWorkFoldoutKeys = new Set<string>();
   export let openWorkEntryKeys = new Set<string>();
@@ -3338,7 +3353,11 @@
         workSummary.steerings,
         workSummary.subagents,
       )}
-      <li class="work-row" data-visual-scroll-anchor={workKey}>
+      <li
+        class="work-row"
+        data-visual-scroll-anchor={workKey}
+        data-visual-turn-index={itemTurnIndex(item)}
+      >
         <details
           class="work-foldout"
           class:work-foldout-live={liveWorkOpen}
@@ -3581,6 +3600,7 @@
       <li
         class="marker-row"
         data-visual-scroll-anchor={getVisualTranscriptItemKey(item, itemIndex)}
+        data-visual-turn-index={itemTurnIndex(item)}
       >
         <div
           class="work-marker-pill transcript-marker-pill"
@@ -3620,6 +3640,7 @@
         class:user-message={m.role === "user"}
         class:assistant-response={m.role === "assistant"}
         data-visual-scroll-anchor={getVisualTranscriptItemKey(item, itemIndex)}
+        data-visual-turn-index={itemTurnIndex(item)}
         use:flyActualMessageFromComposer={{
           id: m.id,
           source: motionSourceForMessage(m),

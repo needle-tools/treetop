@@ -74,6 +74,7 @@
     latestVisualPlan,
     mergeVisualSessionMessages,
     updateVisualTranscriptItems,
+    visualMessageTurnIndexes,
     visualTranscriptMessageWindow,
     visualTranscriptTailKey,
     visualPlanFromPayload,
@@ -244,6 +245,9 @@
   export let onMessagesChange: (
     messages: readonly CodexAppHistoryMessage[],
   ) => void = () => {};
+  export let onTranscriptTurnChange:
+    | ((turnIndex: number) => void)
+    | undefined = undefined;
   /** Open a subagent transcript discovered inside this transcript/live
    *  stream. The parent owns column placement; this view never owns the
    *  child process lifecycle. */
@@ -545,6 +549,17 @@
   }
   function onMessagesScroll(): void {
     sessionScroll.onScroll();
+    publishTranscriptTurn();
+  }
+  function publishTranscriptTurn(): void {
+    if (
+      !onTranscriptTurnChange ||
+      transcriptTurnNavigationTarget !== undefined
+    ) {
+      return;
+    }
+    const turnIndex = sessionScroll.visibleTurnIndex();
+    if (turnIndex !== undefined) onTranscriptTurnChange(turnIndex);
   }
   function onLiveWorkBodyScroll(workKey: string, body: HTMLElement): void {
     sessionScroll.onLiveWorkBodyScroll(workKey, body);
@@ -1249,6 +1264,8 @@
     transcriptSessionOverride?.messages ?? session?.messages ?? [],
     codexOptimisticUserMessages,
   );
+  $: visualSessionMessageTurnIndexes =
+    visualMessageTurnIndexes(visualSessionMessages);
   $: visualRenderWindow = visualTranscriptMessageWindow(visualSessionMessages, {
     minMessages: visualHistoryMinMessages,
     minUserTurns: 2,
@@ -1286,6 +1303,7 @@
   >[] = [];
   let previousVisualSessionMessages: NormalizedMessage[] = [];
   let previousVisualTranscriptActive: boolean | undefined;
+  let transcriptTurnPublishSeq = 0;
   let modelsDevPricing: ModelsDevPricingSnapshot | undefined;
   let visualTranscriptChangeStartHint: number | undefined;
   $: if (renderReadBody) {
@@ -1315,6 +1333,15 @@
     previousVisualSessionMessages = [];
     previousVisualTranscriptActive = undefined;
     visualTranscriptChangeStartHint = undefined;
+  }
+  $: if (onTranscriptTurnChange && messagesEl && visualTranscriptItems) {
+    void visualSessionMessageTurnIndexes;
+    const publishSeq = ++transcriptTurnPublishSeq;
+    void tick().then(() => {
+      requestAnimationFrame(() => {
+        if (publishSeq === transcriptTurnPublishSeq) publishTranscriptTurn();
+      });
+    });
   }
   $: codexLatestPlan = renderReadBody
     ? latestVisualPlan(visualSessionMessages)
@@ -1790,6 +1817,27 @@
       visualTailFollowActive = active;
     },
   });
+  let transcriptTurnNavigationSeq = 0;
+  let transcriptTurnNavigationTarget: number | undefined;
+
+  export function scrollToTranscriptTurn(turnIndex: number): void {
+    const messageIndex = visualSessionMessageTurnIndexes.indexOf(turnIndex);
+    if (messageIndex < 0) return;
+    visualHistoryMinMessages = Math.max(
+      visualHistoryMinMessages,
+      visualSessionMessages.length - messageIndex,
+    );
+    transcriptTurnNavigationTarget = turnIndex;
+    const navigationSeq = ++transcriptTurnNavigationSeq;
+    void tick().then(() => {
+      requestAnimationFrame(() => {
+        if (navigationSeq !== transcriptTurnNavigationSeq) return;
+        sessionScroll.scrollToTurn(turnIndex);
+        transcriptTurnNavigationTarget = undefined;
+        publishTranscriptTurn();
+      });
+    });
+  }
 
   function openSessionFind(): void {
     sessionFindScope?.openFind();
@@ -5787,6 +5835,7 @@
       {modelsDevPricing}
       {daemonId}
       items={visualTranscriptItems}
+      messageTurnIndexes={visualSessionMessageTurnIndexes}
       sessionCwd={effectiveSessionCwd}
       {transcriptSurface}
       {ollamaStreamingIdx}
@@ -5808,6 +5857,19 @@
       {onOpenSubagent}
       {onOpenRemotePath}
     />
+  {/if}
+
+  {#if mode === "read" && session && session.messages.length > 0 && !showChatComposer}
+    <button
+      type="button"
+      class="session-tail-follow"
+      class:active={visualTailFollowActive}
+      on:click={forceVisualTailFollow}
+      title={visualTailFollowActive ? "Following latest" : "Jump to latest"}
+      aria-label={visualTailFollowActive
+        ? "Following latest transcript messages"
+        : "Jump to latest transcript message"}
+    ></button>
   {/if}
 
   {#if showChatComposer}
@@ -6188,6 +6250,16 @@
         class:wide-actions={agent === "codex" && codexRunning}
         class:tail-following={visualTranscriptActive && visualTailFollowActive}
       >
+        <button
+          type="button"
+          class="session-tail-follow composer-tail-follow"
+          class:active={visualTranscriptActive && visualTailFollowActive}
+          on:click={forceVisualTailFollow}
+          title={visualTailFollowActive ? "Following latest" : "Jump to latest"}
+          aria-label={visualTailFollowActive
+            ? "Following latest transcript messages"
+            : "Jump to latest transcript message"}
+        ></button>
         {#if (agent === "codex" || agent === "ollama") && (composerAttachments.length || composerUploadingImages || composerAttachmentError)}
           <div class="composer-attachments" aria-label="Message attachments">
             {#each composerAttachments as attachment, i (`${attachment.path}:${i}`)}
@@ -6778,23 +6850,56 @@
   .composer.wide-actions {
     padding-right: 8rem;
   }
-  .session.tail-following::before,
-  .composer.tail-following::before {
+  .session-tail-follow {
+    position: absolute;
+    z-index: 7;
+    left: 50%;
+    bottom: 0;
+    width: 2.75rem;
+    height: 1rem;
+    padding: 0;
+    border: 0;
+    background: transparent;
+    transform: translateX(-50%);
+    cursor: pointer;
+  }
+  .session-tail-follow::before {
     content: "";
     position: absolute;
     left: 50%;
+    bottom: 0;
     width: 1.65rem;
     height: 2px;
     border-radius: 999px;
     background: color-mix(in srgb, var(--text-muted) 62%, transparent);
     transform: translateX(-50%);
-    pointer-events: none;
+    opacity: 0;
+    transition:
+      opacity 120ms ease,
+      width 120ms ease,
+      background 120ms ease;
   }
-  .session.tail-following::before {
-    bottom: 0;
+  .session-tail-follow.active::before,
+  .session-tail-follow:hover::before,
+  .session-tail-follow:focus-visible::before {
+    opacity: 1;
   }
-  .composer.tail-following::before {
-    top: -1px;
+  .session-tail-follow:hover::before,
+  .session-tail-follow:focus-visible::before {
+    width: 2.1rem;
+    background: var(--text-muted);
+  }
+  .session-tail-follow:focus-visible {
+    outline: 1px solid var(--focus-ring, var(--accent));
+    outline-offset: -2px;
+  }
+  .composer-tail-follow {
+    top: -0.5rem;
+    bottom: auto;
+  }
+  .composer-tail-follow::before {
+    top: 0.5rem;
+    bottom: auto;
   }
   .session.empty-chat-composer:not(.has-composer-error) .composer-shell {
     margin-top: auto;

@@ -3,6 +3,7 @@ import {
   isVisualTailFollowActive,
   replacementVisualScrollTop,
   selectVisualScrollAnchor,
+  selectVisualScrollIndex,
   shouldFollowVisualTail,
   shouldPauseVisualTailAfterUserScroll,
   shouldRememberVisualScrollMemory,
@@ -120,6 +121,37 @@ export class SessionScrollController {
 
   get isPaused(): boolean {
     return this.paused;
+  }
+
+  visibleTurnIndex(): number | undefined {
+    if (!this.el) return undefined;
+    const viewport = this.el.getBoundingClientRect();
+    return selectVisualScrollIndex({
+      viewportTop: viewport.top,
+      viewportBottom: viewport.bottom,
+      candidates: Array.from(
+        this.el.querySelectorAll<HTMLElement>("[data-visual-turn-index]"),
+      ).flatMap((row) => {
+        const index = Number(row.dataset.visualTurnIndex);
+        if (!Number.isInteger(index) || index < 0) return [];
+        const box = row.getBoundingClientRect();
+        return [{ index, top: box.top, bottom: box.bottom }];
+      }),
+    });
+  }
+
+  scrollToTurn(turnIndex: number): void {
+    if (!this.el || !Number.isInteger(turnIndex) || turnIndex < 0) return;
+    const target = this.el.querySelector<HTMLElement>(
+      `[data-visual-turn-index="${turnIndex}"]`,
+    );
+    if (!target) return;
+    this.setPaused(true);
+    const viewport = this.el.getBoundingClientRect();
+    const box = target.getBoundingClientRect();
+    this.el.scrollTop +=
+      (box.top + box.bottom) / 2 - (viewport.top + viewport.bottom) / 2;
+    this.saveMemory();
   }
 
   setMemoryKey(key: string): void {

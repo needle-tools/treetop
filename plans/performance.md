@@ -1238,3 +1238,12 @@ offscreen. Tail updates now keep a short settling epoch; scroll events produced
 inside it cannot pause following, while explicit upward wheel input still does.
 The shared controller test models the clamp between scheduling and render, and
 the 100-steps/s browser repro remains at zero tail distance across turns.
+
+Replay Lab's transcript and turn analysis now synchronize through the shared
+`SessionView` scroll controller using absolute normalized-message turn indexes.
+The viewport's semantic center drives the analysis map; scrolling the map asks
+`SessionView` to widen its existing history window before centering that turn.
+The callback is opt-in, so ordinary sessions do not acquire analysis-map layout
+reads. The tail marker is also the real reattachment control: its hit target
+remains available while detached, reveals on hover or keyboard focus, and jumps
+the shared transcript scroller back to its live tail.

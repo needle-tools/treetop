@@ -244,4 +244,38 @@ describe("session scroll controller", () => {
     expect(controller.isPaused).toBe(false);
     expect(scroller.scrollTop).toBe(1_000_000_000);
   });
+
+  test("reports the visible transcript turn and can scroll to another turn", () => {
+    const turns = [
+      {
+        dataset: { visualTurnIndex: "3" },
+        getBoundingClientRect: () => rect(-200, 350),
+      },
+      {
+        dataset: { visualTurnIndex: "4" },
+        getBoundingClientRect: () => rect(150, 350),
+      },
+      {
+        dataset: { visualTurnIndex: "5" },
+        getBoundingClientRect: () => rect(500, 300),
+      },
+    ] as unknown as HTMLElement[];
+    const scroller = fakeScroller(() => 220);
+    scroller.querySelectorAll = ((selector: string) =>
+      selector === "[data-visual-turn-index]"
+        ? turns
+        : []) as typeof scroller.querySelectorAll;
+    scroller.querySelector = ((selector: string) =>
+      selector === '[data-visual-turn-index="5"]'
+        ? turns[2]
+        : null) as typeof scroller.querySelector;
+    const controller = createSessionScrollController();
+
+    controller.setElement(scroller);
+    expect(controller.visibleTurnIndex()).toBe(4);
+
+    controller.scrollToTurn(5);
+    expect(scroller.scrollTop).toBe(700);
+    expect(controller.isPaused).toBe(true);
+  });
 });
