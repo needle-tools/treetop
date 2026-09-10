@@ -429,6 +429,26 @@ export function cleanVisualToolResultText(
   };
 }
 
+export interface VisualToolContentPreview {
+  title: string;
+  body: string;
+}
+
+/** Content returned by a read-like tool call, stripped of transport metadata.
+ * The contract is provider-neutral so transcript summaries and live rows can
+ * share the same hover preview. */
+export function visualToolReadResultPreview(
+  toolUseBlock: MessageBlock | undefined,
+  toolResultBlock: MessageBlock | undefined,
+): VisualToolContentPreview | undefined {
+  if (toolResultBlock?.type !== "tool_result") return undefined;
+  const title = visualToolPreviewText(toolUseBlock);
+  const icon = visualToolIconNameForPreview(toolUseBlock, title)?.toLowerCase();
+  if (icon !== "read" && !/^read(?:\s|$)/i.test(title)) return undefined;
+  const body = cleanVisualToolResultText(toolResultBlock.text).body.trim();
+  return body ? { title: title || "Read output", body } : undefined;
+}
+
 export interface VisualObservedProcessOutput {
   title: string;
   preview: string;
