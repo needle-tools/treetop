@@ -30,6 +30,7 @@ import {
   replayStepAdvanceForElapsed,
   replaySourceProgressAtStep,
   replayStepIndexAtElapsedMs,
+  replayLabHasDaemon,
   searchCodexReplaySessions,
   sortCodexReplaySessions,
 } from "../src/codex-replay-lab";
@@ -55,6 +56,12 @@ test("documents loadable Codex and Claude session locations on macOS and Windows
       claude: ["%USERPROFILE%\\.claude\\projects\\"],
     },
   ]);
+});
+
+test("standalone Replay Lab never probes Treetop daemon routes", () => {
+  expect(replayLabHasDaemon("replay-lab-static")).toBe(false);
+  expect(replayLabHasDaemon("development")).toBe(true);
+  expect(replayLabHasDaemon("production")).toBe(true);
 });
 
 describe("Codex replay lab parser", () => {

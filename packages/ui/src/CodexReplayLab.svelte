@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onDestroy, onMount, tick } from "svelte";
   import SessionView from "./SessionView.svelte";
-  import { writeClipboard } from "./clipboard-write";
+  import { writeBrowserClipboard } from "./clipboard-write";
   import { formatByteSize } from "./context-tokens";
   import { codexAppSource } from "./storage";
   import { installIdleTracker } from "./ui-idle";
@@ -35,6 +35,7 @@
     replayStepAdvanceForElapsed,
     replaySourceProgressAtStep,
     replayStepIndexAtElapsedMs,
+    replayLabHasDaemon,
     searchCodexReplaySessions,
     summarizeCodexReplaySessions,
     summarizeCodexReplayPricingUsage,
@@ -54,6 +55,8 @@
     type CodexReplayViewModel,
     type ParsedCodexReplay,
   } from "./codex-replay-lab";
+
+  const daemonEnabled = replayLabHasDaemon(import.meta.env.MODE);
 
   let fixture: CodexReplaySessionFixture | null = null;
   let transport: CodexReplaySessionTransport | null = null;
@@ -771,7 +774,7 @@
   }
 
   function copyHelpPath(path: string): void {
-    writeClipboard(path, {
+    void writeBrowserClipboard(path, {
       syncCopy: (text) => {
         const textarea = document.createElement("textarea");
         textarea.value = text;
@@ -786,16 +789,13 @@
         } finally {
           textarea.remove();
         }
-        if (copied) markHelpPathCopied(path);
         return copied;
       },
       asyncWrite: navigator.clipboard?.writeText
-        ? async (text) => {
-            await navigator.clipboard.writeText(text);
-            markHelpPathCopied(path);
-          }
+        ? (text) => navigator.clipboard.writeText(text)
         : null,
-      warn: (message) => console.warn(message),
+    }).then((copied) => {
+      if (copied) markHelpPathCopied(path);
     });
   }
 
@@ -807,7 +807,7 @@
 
   onMount(() => {
     const uninstallIdleTracker = installIdleTracker();
-    void fetchRecordings();
+    if (daemonEnabled) void fetchRecordings();
     void loadModelsDevPricing().then((snapshot) => {
       modelsDevPricing = snapshot;
     });
@@ -1073,19 +1073,21 @@
           >{sessionListMode === "directory" ? directoryLabel : "Sessions"}
           <span>{sessionCounts.total}</span></strong
         >
-        <button
-          type="button"
-          on:click={fetchRecordings}
-          disabled={recordingsLoading}
-        >
-          {sessionListMode === "directory" ? "Server" : "Refresh"}
-        </button>
+        {#if daemonEnabled}
+          <button
+            type="button"
+            on:click={fetchRecordings}
+            disabled={recordingsLoading}
+          >
+            {sessionListMode === "directory" ? "Server" : "Refresh"}
+          </button>
+        {/if}
       </div>
       {#if sessionListMode === "directory"}
         <div class="replay-browser-counts" aria-label="Folder indexing status">
           <span>{directoryStatus}</span>
         </div>
-      {:else}
+      {:else if daemonEnabled}
         <div class="replay-browser-counts" aria-label="Replay coverage">
           <span>RPC {sessionCounts.rpc}</span>
           <span>Transcript {sessionCounts.transcript}</span>
@@ -1119,7 +1121,7 @@
           {/if}
         </select>
       </div>
-      {#if sessionListMode === "daemon"}
+      {#if daemonEnabled && sessionListMode === "daemon"}
         <div
           class="replay-browser-filters"
           role="tablist"
@@ -1168,7 +1170,11 @@
           >Drop a JSONL file to begin.</span
         >
       {:else if !sessions.length}
-        <span class="replay-browser-muted">No replay sessions found.</span>
+        <span class="replay-browser-muted"
+          >{daemonEnabled
+            ? "No replay sessions found."
+            : "Open a JSONL file or folder to begin."}</span
+        >
       {:else if !visibleSessions.length}
         <span class="replay-browser-muted">No sessions match this filter.</span>
       {:else}

@@ -171,6 +171,10 @@ export type CodexReplaySessionSelection =
   | CodexReplaySessionSort
   | `model:${string}`;
 
+export function replayLabHasDaemon(mode: string): boolean {
+  return mode !== "replay-lab-static";
+}
+
 export const REPLAY_SESSION_LOCATIONS = [
   {
     platform: "macOS / Linux",
