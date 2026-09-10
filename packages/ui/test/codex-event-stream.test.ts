@@ -828,6 +828,7 @@ describe("codex event stream hub", () => {
   });
 
   test("normalizes the recorded item/completed compaction shape exactly once", () => {
+    const context = {};
     const started: CodexAppEvent = {
       kind: "notification",
       method: "item/started",
@@ -855,18 +856,135 @@ describe("codex event stream hub", () => {
       seq: 547,
     };
 
-    expect(codexLiveMessagesFromEvent(started)).toEqual([]);
-    expect(codexLiveMessagesFromEvent(completed)).toEqual([
+    expect(codexLiveMessagesFromEvent(started, context)).toEqual([]);
+    expect(codexLiveMessagesFromEvent(completed, context)).toEqual([
       {
         id: "codex-marker-compact-1",
         role: "system",
         timestamp: "2026-08-27T21:16:51.869Z",
-        blocks: [{ type: "marker", text: "[Context compacted]" }],
+        blocks: [{
+          type: "marker",
+          text: "[Context compacted]",
+          compaction: { durationMs: 87_407 },
+        }],
       },
     ]);
     expect(
       codexLiveMessagesEndTurn(codexLiveMessagesFromEvent(completed)),
     ).toBe(false);
+  });
+
+  test("keeps measured compaction details when rebuilding app-server history", () => {
+    const messages = codexAppHistoryMessagesFromThread({
+      turns: [{ id: "turn-1", items: [
+        {
+          id: "usage-before",
+          type: "tokenUsage",
+          tokenUsage: { last: {
+            totalTokens: 230_202,
+            inputTokens: 229_998,
+            outputTokens: 204,
+          } },
+        },
+        {
+          id: "compact-1",
+          type: "contextCompaction",
+          startedAtMs: 1_787_865_324_462,
+          completedAtMs: 1_787_865_411_869,
+        },
+        {
+          id: "usage-after",
+          type: "tokenUsage",
+          tokenUsage: { last: {
+            totalTokens: 15_309,
+            inputTokens: 0,
+            cachedInputTokens: 0,
+            outputTokens: 0,
+            reasoningOutputTokens: 0,
+          } },
+        },
+      ] }],
+    });
+
+    expect(messages.find((message) => message.id === "codex-marker-compact-1")?.blocks)
+      .toEqual([{
+        type: "marker",
+        text: "[Context compacted]",
+        compaction: {
+          beforeTokens: 230_202,
+          afterTokens: 15_309,
+          durationMs: 87_407,
+        },
+      }]);
+  });
+
+  test("updates a live compaction marker with before and after context sizes", () => {
+    const context = {};
+    const tokenEvent = (seq: number, last: Record<string, number>): CodexAppEvent => ({
+      kind: "notification",
+      method: "thread/tokenUsage/updated",
+      params: {
+        threadId: "thread-1",
+        turnId: "turn-1",
+        tokenUsage: {
+          last,
+          total: {
+            totalTokens: 9_843_531,
+            inputTokens: 9_802_403,
+            outputTokens: 41_128,
+          },
+        },
+      },
+      threadId: "thread-1",
+      turnId: "turn-1",
+      receivedAt: `2026-08-27T21:16:${seq}.000Z`,
+      seq,
+    });
+    codexLiveMessagesFromEvent(tokenEvent(1, {
+      totalTokens: 230_202,
+      inputTokens: 229_998,
+      outputTokens: 204,
+    }), context);
+    codexLiveMessagesFromEvent({
+      kind: "notification",
+      method: "item/started",
+      params: {
+        item: { type: "contextCompaction", id: "compact-1" },
+        startedAtMs: 1_787_865_361_000,
+      },
+      receivedAt: "2026-08-27T21:16:01.000Z",
+      seq: 2,
+    }, context);
+    codexLiveMessagesFromEvent({
+      kind: "notification",
+      method: "item/completed",
+      params: {
+        item: { type: "contextCompaction", id: "compact-1" },
+        completedAtMs: 1_787_865_363_500,
+      },
+      receivedAt: "2026-08-27T21:16:03.500Z",
+      seq: 3,
+    }, context);
+    expect(codexLiveMessagesFromEvent(tokenEvent(4, {
+      totalTokens: 15_309,
+      inputTokens: 0,
+      cachedInputTokens: 0,
+      outputTokens: 0,
+      reasoningOutputTokens: 0,
+    }), context)).toEqual([{
+      id: "codex-marker-compact-1",
+      role: "system",
+      timestamp: "2026-08-27T21:16:03.500Z",
+      blocks: [{
+        type: "marker",
+        text: "[Context compacted]",
+        compaction: {
+          beforeTokens: 230_202,
+          afterTokens: 15_309,
+          durationMs: 2_500,
+        },
+      }],
+    }]);
   });
 
   test("keeps retrying errors and warnings visible without ending the turn", () => {

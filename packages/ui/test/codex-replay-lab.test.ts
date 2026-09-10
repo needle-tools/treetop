@@ -554,6 +554,84 @@ describe("Codex replay lab parser", () => {
     ]);
   });
 
+  test("keeps Claude compaction measurements in the shared transcript block", async () => {
+    const source = new Blob([
+      [
+        JSON.stringify({ type: "mode", mode: "normal", sessionId: "claude-session" }),
+        JSON.stringify({
+          type: "system",
+          subtype: "compact_boundary",
+          sessionId: "claude-session",
+          timestamp: "2026-09-09T10:00:02.000Z",
+          compactMetadata: {
+            preTokens: 999_820,
+            postTokens: 15_028,
+            durationMs: 127_824,
+          },
+        }),
+      ].join("\n"),
+    ]);
+
+    const replay = await parseCodexReplayBlobAsync(source);
+    expect(codexReplayMessagesUntil(replay, replay.steps.length)[0]?.blocks).toEqual([
+      {
+        type: "marker",
+        text: "Context compacted",
+        compaction: {
+          beforeTokens: 999_820,
+          afterTokens: 15_028,
+          durationMs: 127_824,
+        },
+      },
+    ]);
+  });
+
+  test("pairs dropped Codex compaction boundaries with their context snapshots", async () => {
+    const usage = (timestamp: string, last: Record<string, number>) => JSON.stringify({
+      timestamp,
+      type: "event_msg",
+      payload: {
+        type: "token_count",
+        info: {
+          last_token_usage: last,
+          total_token_usage: {
+            input_tokens: 1_000_000,
+            output_tokens: 10_000,
+            total_tokens: 1_010_000,
+          },
+        },
+      },
+    });
+    const source = new Blob([[
+      usage("2026-09-09T10:00:00.000Z", {
+        input_tokens: 234_221,
+        output_tokens: 2_050,
+        total_tokens: 236_271,
+      }),
+      JSON.stringify({
+        timestamp: "2026-09-09T10:00:01.000Z",
+        type: "compacted",
+        payload: {},
+      }),
+      usage("2026-09-09T10:00:01.010Z", {
+        input_tokens: 0,
+        cached_input_tokens: 0,
+        output_tokens: 0,
+        reasoning_output_tokens: 0,
+        total_tokens: 14_484,
+      }),
+    ].join("\n")]);
+
+    const replay = await parseCodexReplayBlobAsync(source);
+    const marker = codexReplayMessagesUntil(replay, replay.steps.length)
+      .find((message) => message.blocks[0]?.type === "marker");
+    expect(marker?.blocks).toEqual([{
+      type: "marker",
+      text: "Context compacted",
+      compaction: { beforeTokens: 236_271, afterTokens: 14_484 },
+    }]);
+  });
+
   test("streams a dropped Codex JSONL blob into a local transcript", async () => {
     const rows = [
       JSON.stringify({

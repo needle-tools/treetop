@@ -336,6 +336,39 @@ describe("parseClaudeJsonl", () => {
       },
     ]);
   });
+
+  test("renders Claude compact boundaries with their measured token reduction and duration", () => {
+    const text = JSON.stringify({
+      type: "system",
+      subtype: "compact_boundary",
+      timestamp: "2026-08-19T09:12:12.669Z",
+      compactMetadata: {
+        trigger: "auto",
+        preTokens: 999_820,
+        postTokens: 15_028,
+        cumulativeDroppedTokens: 984_792,
+        durationMs: 127_824,
+      },
+    });
+
+    expect(parseClaudeJsonl(text).messages).toEqual([
+      {
+        role: "system",
+        blocks: [
+          {
+            type: "marker",
+            text: "[Context compacted]",
+            compaction: {
+              beforeTokens: 999_820,
+              afterTokens: 15_028,
+              durationMs: 127_824,
+            },
+          },
+        ],
+        timestamp: "2026-08-19T09:12:12.669Z",
+      },
+    ]);
+  });
 });
 
 describe("getSessionFileStats", () => {
@@ -1619,7 +1652,11 @@ describe("parseCodexJsonl", () => {
       total: 236_271,
     });
     expect(s.messages[1]?.blocks).toEqual([
-      { type: "marker", text: "[Context compacted]" },
+      {
+        type: "marker",
+        text: "[Context compacted]",
+        compaction: { beforeTokens: 236_271, afterTokens: 14_484 },
+      },
     ]);
   });
 
