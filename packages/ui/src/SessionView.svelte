@@ -94,6 +94,7 @@
     canResumeVisualSurface,
     shouldHoldOffscreenAttachedTerminal,
     shouldMountTerminalView,
+    shouldRenderSessionReadBody,
   } from "./session-source-routing";
   import { apiWsUrl } from "./api";
   import { createTerminalHold, type HoldSocket } from "./terminal-hold";
@@ -104,6 +105,8 @@
     resolveTerminalWorking,
     canRequestOlderCodexAppThreadHistory,
     codexAppEventDeliveryMode,
+    codexEventLifecycleHandledStateOnly,
+    codexEventReplayKey,
     codexEventItemId,
     codexAppHistoryMessagesFromTurnPage,
     codexAppHistoryKey,
@@ -116,6 +119,8 @@
     codexLiveToolUseFromEvent,
     codexToolInputQuality,
     mergeCodexAppHistoryMessages,
+    reconcileCodexAppHistoryMessages,
+    replayCodexEventsFrom,
     shouldApplyCodexAppHistoryResponse,
     shouldApplyCodexAppMutation,
     shouldLoadCodexAppThreadHistory,
@@ -571,6 +576,7 @@
   let codexAppHistoryLoadingKey = "";
   let codexAppHistoryFailedKeys = new Set<string>();
   let codexAppHistoryNextCursor: string | null = null;
+  let codexDeferredVisualEventKey = "";
   let visualHistoryScrollAnchor: {
     el: HTMLElement;
     scrollHeight: number;
@@ -1288,8 +1294,13 @@
     visualSessionMessages,
     lastUserMessage,
   );
-  $: renderReadBody =
-    mode !== "read" || columnNearViewport || !!transcriptSessionOverride;
+  $: renderReadBody = shouldRenderSessionReadBody({
+    mode,
+    nearViewport: columnNearViewport,
+    transcriptOverride: !!transcriptSessionOverride,
+    liveAppHistorySource: codexAppHistorySourceActive,
+    hasDeferredVisualEvents: !!codexDeferredVisualEventKey,
+  });
   let previousRenderReadBody = renderReadBody;
   $: if (previousRenderReadBody !== renderReadBody) {
     if (previousRenderReadBody && !renderReadBody) {
@@ -2036,6 +2047,8 @@
       codexAppHistoryLoadedKey = "";
       codexAppHistoryLoadingKey = "";
       codexAppHistoryFailedKeys = new Set<string>();
+      codexDeferredVisualEventKey = "";
+      codexSeenEvents.clear();
       codexLiveDetectedModel = "";
       if (!codexAppHistorySourceActive) codexAppSessionKey = "";
       resetToCodexAppSession();
@@ -2115,6 +2128,7 @@
     const targetThreadId = threadId;
     const targetCwd = cwd;
     const targetHistoryKey = codexAppHistoryKey(threadId, cwd);
+    const messagesAtReadStart = session.messages;
     const targetStillOwned = () =>
       shouldApplyCodexAppHistoryResponse({
         sourceActive: codexAppHistoryFetchActive,
@@ -2164,9 +2178,14 @@
         body.thread,
         codexLiveNormalizeContext,
       ) as NormalizedMessage[];
-      const mergedMessages = mergeCodexAppHistoryMessages(
-        historyMessages,
-        session.messages,
+      const mergedMessages = (
+        cursor
+          ? mergeCodexAppHistoryMessages(historyMessages, session.messages)
+          : reconcileCodexAppHistoryMessages(
+              historyMessages,
+              session.messages,
+              messagesAtReadStart,
+            )
       ) as NormalizedMessage[];
       if (!sameMessageReferences(session.messages, mergedMessages)) {
         noteVisualTranscriptChangedFrom(0);
@@ -2176,6 +2195,7 @@
         };
       }
       codexAppHistoryLoadedKey = targetHistoryKey;
+      codexDeferredVisualEventKey = "";
       if (codexAppHistoryFailedKeys.has(targetHistoryKey)) {
         const nextFailed = new Set(codexAppHistoryFailedKeys);
         nextFailed.delete(targetHistoryKey);
@@ -2393,6 +2413,9 @@
   });
   $: codexAppHistoryFetchActive =
     codexAppHistorySourceActive && codexAppLiveSurfaceActive;
+  $: if (codexAppLiveSurfaceActive && codexDeferredVisualEventKey) {
+    catchUpDeferredCodexVisualEvents();
+  }
   $: sessionFileSource = liveCodexApp ? (transcriptSource ?? "") : source;
   $: sessionMessageSource = resolveSessionMessageSource({
     agent,
@@ -2848,13 +2871,6 @@
     ollamaAbort?.abort();
   }
 
-  function codexEventKey(event: CodexAppEvent): string {
-    const id = event.id ?? "";
-    const delta =
-      typeof event.params?.delta === "string" ? event.params.delta : "";
-    return `${event.kind}:${event.method}:${id}:${event.seq ?? event.receivedAt}:${delta}`;
-  }
-
   function codexStringParam(
     obj: Record<string, unknown> | undefined,
     key: string,
@@ -2995,7 +3011,7 @@
         codexEventStreamState = "live";
         if (deliveryMode === "state-only") {
           applyCodexEventStateOnly(event);
-          codexAppHistoryLoadedKey = "";
+          codexDeferredVisualEventKey ||= codexEventReplayKey(event);
           return;
         }
         const startedAt = performance.now();
@@ -3010,6 +3026,32 @@
     unsubscribeCodexEvents = codexAppTransport
       ? codexAppTransport.subscribe(threadId, subscriber)
       : subscribeCodexEvents(daemonId, threadId, subscriber);
+  }
+
+  function catchUpDeferredCodexVisualEvents(): void {
+    const firstEventKey = codexDeferredVisualEventKey;
+    const threadId = effectiveSessionId;
+    if (!firstEventKey || !threadId) return;
+    const replay = codexAppTransport
+      ? { complete: false, events: [] as CodexAppEvent[] }
+      : replayCodexEventsFrom(daemonId, threadId, firstEventKey);
+    if (!replay.complete) {
+      const historyKey = codexAppHistoryKey(threadId, effectiveSessionCwd);
+      codexAppHistoryLoadedKey = "";
+      if (codexAppHistoryFailedKeys.has(historyKey)) {
+        const nextFailed = new Set(codexAppHistoryFailedKeys);
+        nextFailed.delete(historyKey);
+        codexAppHistoryFailedKeys = nextFailed;
+      }
+      return;
+    }
+    time("codex-event.offscreen-catchup", () => {
+      for (const event of replay.events) applyCodexEvent(event, true);
+      flushCodexDeltaPatches();
+    });
+    if (codexDeferredVisualEventKey === firstEventKey) {
+      codexDeferredVisualEventKey = "";
+    }
   }
 
   function codexEventTimingName(method: string): string {
@@ -3239,10 +3281,13 @@
     }
   }
 
-  function applyCodexEvent(event: CodexAppEvent): void {
+  function applyCodexEvent(
+    event: CodexAppEvent,
+    lifecycleAlreadyApplied = false,
+  ): void {
     const delivery = codexEventVisualDelivery(event);
     if (delivery === "ignore") return;
-    const key = codexEventKey(event);
+    const key = codexEventReplayKey(event);
     if (codexSeenEvents.has(key)) return;
     codexSeenEvents.add(key);
     if (codexSeenEvents.size > 1000) {
@@ -3252,6 +3297,8 @@
     if (delivery !== "batched-delta") {
       flushCodexDeltaPatches();
     }
+    const skipLifecycle =
+      lifecycleAlreadyApplied && codexEventLifecycleHandledStateOnly(event);
     if (event.kind === "request") {
       flushCodexDeltaPatches();
       upsertCodexLiveMessages(
@@ -3260,11 +3307,13 @@
           codexLiveNormalizeContext,
         ) as NormalizedMessage[],
       );
-      codexRequests = [
-        ...codexRequests.filter((r) => r.id !== event.id),
-        event,
-      ];
-      awaitingInput = true;
+      if (!skipLifecycle) {
+        codexRequests = [
+          ...codexRequests.filter((r) => r.id !== event.id),
+          event,
+        ];
+        awaitingInput = true;
+      }
       return;
     }
     const liveMessages = codexLiveMessagesFromEvent(
@@ -3277,7 +3326,9 @@
     if (hasLiveMarker) {
       flushCodexDeltaPatches();
       upsertCodexLiveMessages(liveMessages);
-      if (codexLiveMessagesEndTurn(liveMessages)) {
+      if (skipLifecycle) {
+        return;
+      } else if (codexLiveMessagesEndTurn(liveMessages)) {
         codexActiveTurnId = null;
         sending = false;
         awaitingInput = false;
@@ -3313,6 +3364,7 @@
     }
 
     if (event.method === "turn/started") {
+      if (skipLifecycle) return;
       codexActiveTurnId = event.turnId ?? codexActiveTurnId;
       sending = true;
       sendError = "";
@@ -3320,6 +3372,7 @@
     }
     if (event.method === "turn/status") {
       flushCodexDeltaPatches();
+      if (skipLifecycle) return;
       const active = event.params?.active === true;
       codexActiveTurnId = active
         ? (event.turnId ??
@@ -3332,6 +3385,7 @@
     }
     if (event.method === "turn/completed") {
       flushCodexDeltaPatches();
+      if (skipLifecycle) return;
       codexActiveTurnId = null;
       sending = false;
       sessionStatsRefreshSeq += 1;
@@ -3345,6 +3399,7 @@
     }
     if (event.method === "serverRequest/resolved") {
       flushCodexDeltaPatches();
+      if (skipLifecycle) return;
       const id = (event.params?.requestId ?? event.params?.id) as
         | string
         | number
@@ -3454,6 +3509,7 @@
     }
     if (event.method === "error" || event.method === "warning") {
       flushCodexDeltaPatches();
+      if (skipLifecycle) return;
       const message =
         typeof event.params.message === "string"
           ? event.params.message
