@@ -1904,6 +1904,8 @@
 
   .replay-production-session :global(.session) {
     height: 100%;
+    min-height: 0;
+    max-height: none;
   }
 
   .replay-timeline {

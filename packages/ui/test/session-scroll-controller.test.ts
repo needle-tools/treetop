@@ -16,6 +16,11 @@ class ManualScheduler implements SessionScrollScheduler {
     this.frameTasks.push(task);
   }
 
+  flushNext(): void {
+    const task = this.renderTasks.shift() ?? this.frameTasks.shift();
+    task?.();
+  }
+
   flush(): void {
     while (this.renderTasks.length || this.frameTasks.length) {
       this.renderTasks.splice(0).forEach((task) => task());
@@ -243,6 +248,54 @@ describe("session scroll controller", () => {
 
     expect(controller.isPaused).toBe(false);
     expect(scroller.scrollTop).toBe(1_000_000_000);
+  });
+
+  test("does not mistake late content layout for reader scroll intent", () => {
+    const scheduler = new ManualScheduler();
+    const scroller = fakeScroller(() => 220);
+    const controller = createSessionScrollController({ scheduler });
+    controller.setElement(scroller);
+    controller.updateTail("initial");
+    scheduler.flush();
+
+    scroller.scrollTop = 679;
+    scroller.scrollHeight = 1_400;
+    controller.onScroll();
+    scheduler.flush();
+
+    expect(controller.isPaused).toBe(false);
+    expect(scroller.scrollTop).toBe(1_000_000_000);
+  });
+
+  test("settles content that grows after the final pending tail write", () => {
+    const scheduler = new ManualScheduler();
+    const scroller = fakeScroller(() => 220);
+    const controller = createSessionScrollController({ scheduler });
+    controller.setElement(scroller);
+    controller.updateTail("initial");
+
+    scheduler.flushNext();
+    scheduler.flushNext();
+    scheduler.flushNext();
+    scroller.scrollTop = 679;
+    scroller.scrollHeight = 1_400;
+    controller.onScroll();
+    scheduler.flush();
+
+    expect(controller.isPaused).toBe(false);
+    expect(scroller.scrollTop).toBe(1_000_000_000);
+  });
+
+  test("still detaches when a pointer gesture scrolls away from the tail", () => {
+    const scroller = fakeScroller(() => 220);
+    const controller = createSessionScrollController();
+    controller.setElement(scroller);
+    controller.onPointerDown();
+    scroller.scrollTop = 100;
+
+    controller.onScroll();
+
+    expect(controller.isPaused).toBe(true);
   });
 
   test("reports the visible transcript turn and can scroll to another turn", () => {
