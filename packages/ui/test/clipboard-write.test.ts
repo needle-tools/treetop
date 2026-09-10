@@ -1,5 +1,9 @@
 import { test, expect, describe } from "bun:test";
-import { writeClipboard, decodeOsc52 } from "../src/clipboard-write";
+import {
+  writeBrowserClipboard,
+  writeClipboard,
+  decodeOsc52,
+} from "../src/clipboard-write";
 
 /**
  * decodeOsc52 turns a TUI's OSC 52 clipboard-write payload into text.
@@ -136,5 +140,43 @@ describe("writeClipboard", () => {
       },
     });
     expect(touched).toBe(false);
+  });
+});
+
+describe("writeBrowserClipboard", () => {
+  test("confirms a modern browser clipboard write without trusting execCommand", async () => {
+    const calls: string[] = [];
+    const copied = await writeBrowserClipboard("path", {
+      asyncWrite: async (text) => {
+        calls.push(`async:${text}`);
+      },
+      syncCopy: (text) => {
+        calls.push(`sync:${text}`);
+        return true;
+      },
+    });
+
+    expect(copied).toBe(true);
+    expect(calls).toEqual(["async:path"]);
+  });
+
+  test("falls back when the modern clipboard API is unavailable", async () => {
+    const copied = await writeBrowserClipboard("path", {
+      asyncWrite: null,
+      syncCopy: (text) => text === "path",
+    });
+
+    expect(copied).toBe(true);
+  });
+
+  test("does not report copied when every browser path fails", async () => {
+    const copied = await writeBrowserClipboard("path", {
+      asyncWrite: async () => {
+        throw new Error("denied");
+      },
+      syncCopy: () => false,
+    });
+
+    expect(copied).toBe(false);
   });
 });

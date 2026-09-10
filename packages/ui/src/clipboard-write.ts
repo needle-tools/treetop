@@ -78,3 +78,34 @@ export function writeClipboard(text: string, deps: ClipboardWriteDeps): void {
     "supergit: clipboard write failed (execCommand denied, no async Clipboard API)",
   );
 }
+
+export interface BrowserClipboardWriteDeps {
+  asyncWrite: ((text: string) => Promise<void>) | null;
+  syncCopy: (text: string) => boolean;
+}
+
+/**
+ * Copy from an ordinary browser UI and only resolve true after a write path
+ * has completed successfully. Unlike terminal copy, this deliberately prefers
+ * the modern API: execCommand can claim success without changing the system
+ * clipboard in Chromium.
+ */
+export async function writeBrowserClipboard(
+  text: string,
+  deps: BrowserClipboardWriteDeps,
+): Promise<boolean> {
+  if (!text) return false;
+  if (deps.asyncWrite) {
+    try {
+      await deps.asyncWrite(text);
+      return true;
+    } catch {
+      // Older browsers may still support the synchronous fallback.
+    }
+  }
+  try {
+    return deps.syncCopy(text);
+  } catch {
+    return false;
+  }
+}
