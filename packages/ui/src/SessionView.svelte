@@ -93,6 +93,7 @@
   import {
     canResumeVisualSurface,
     shouldHoldOffscreenAttachedTerminal,
+    shouldApplyTranscriptSessionOverride,
     shouldMountTerminalView,
     shouldRenderSessionReadBody,
   } from "./session-source-routing";
@@ -2424,19 +2425,18 @@
       measuredPricingUsage = undefined;
     }
   }
-  let appliedTranscriptSessionOverrideKey = "";
+  let appliedTranscriptSessionOverride: NormalizedSession | undefined;
   $: {
-    const overrideKey = transcriptSessionOverride
-      ? `${visualHistorySourceKey}:${transcriptSessionOverride.startedAt ?? ""}:${transcriptSessionOverride.messages.length}`
-      : "";
     if (
-      transcriptSessionOverride &&
-      overrideKey !== appliedTranscriptSessionOverrideKey
+      shouldApplyTranscriptSessionOverride(
+        appliedTranscriptSessionOverride,
+        transcriptSessionOverride,
+      )
     ) {
-      appliedTranscriptSessionOverrideKey = overrideKey;
+      appliedTranscriptSessionOverride = transcriptSessionOverride;
       applyParsedSession(transcriptSessionOverride);
     } else if (!transcriptSessionOverride) {
-      appliedTranscriptSessionOverrideKey = "";
+      appliedTranscriptSessionOverride = undefined;
     }
   }
   $: effectiveSessionId = resumeSessionId ?? session?.sessionId;

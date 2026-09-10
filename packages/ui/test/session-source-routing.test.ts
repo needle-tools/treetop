@@ -29,6 +29,7 @@ import {
   shouldMountNewSessionTerminal,
   shouldMountTerminalView,
   shouldRenderSessionReadBody,
+  shouldApplyTranscriptSessionOverride,
   type AgentSession,
   type ShellRecord,
   type OpenSession,
@@ -100,6 +101,17 @@ describe("shouldRenderSessionReadBody", () => {
         hasDeferredVisualEvents: true,
       }),
     ).toBe(true);
+  });
+});
+
+describe("shouldApplyTranscriptSessionOverride", () => {
+  test("treats a new immutable transcript snapshot as an update even when its message count is unchanged", () => {
+    const previous = { messages: [{ id: "turn-1", text: "old tail" }] };
+    const next = { messages: [{ id: "turn-1", text: "new tail" }] };
+
+    expect(previous.messages.length).toBe(next.messages.length);
+    expect(shouldApplyTranscriptSessionOverride(previous, next)).toBe(true);
+    expect(shouldApplyTranscriptSessionOverride(next, next)).toBe(false);
   });
 });
 

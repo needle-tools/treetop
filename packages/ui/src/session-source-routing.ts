@@ -131,6 +131,16 @@ export function shouldRenderSessionReadBody(args: {
   return bodyIsNear && liveProjectionIsCurrent;
 }
 
+/** Transcript adapters publish immutable snapshots. Message count is not a
+ * revision: replay/live normalization can replace the current tail while the
+ * number of visible messages stays unchanged. */
+export function shouldApplyTranscriptSessionOverride<T>(
+  previous: T | undefined,
+  next: T | undefined,
+): next is T {
+  return next !== undefined && next !== previous;
+}
+
 export function shouldMountNewSessionTerminal(args: {
   hasCwd: boolean;
   nearViewport: boolean;
