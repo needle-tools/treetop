@@ -8,10 +8,13 @@
     createSessionArtifactEvolutionTracker,
     filterSessionArtifactEvolution,
     sessionArtifactTurnCounts,
+    sessionArtifactTurnWindow,
     type SessionArtifactFilter,
     type SessionArtifactEvolution,
   } from "./session-artifacts";
   import type { VisualTranscriptItem } from "./last-user-message";
+
+  const ARTIFACT_MAP_UPDATE_MS = 100;
 
   export let items: readonly VisualTranscriptItem[] = [];
   export let itemStore: Readable<readonly VisualTranscriptItem[]> | undefined =
@@ -37,8 +40,26 @@
   let subscribedStore: typeof itemStore;
   let unsubscribeStore: (() => void) | undefined;
   let storedItems: readonly VisualTranscriptItem[] = [];
+  let displayedItems: readonly VisualTranscriptItem[] = [];
+  let pendingItems: readonly VisualTranscriptItem[] = [];
+  let itemUpdateTimer: ReturnType<typeof setTimeout> | undefined;
   let expandedTurn = 0;
+  let evolutionOpen = false;
+  let visibleTurnLimit = 200;
   let artifactFilter: SessionArtifactFilter = "all";
+
+  function queueDisplayedItems(next: readonly VisualTranscriptItem[]): void {
+    pendingItems = next;
+    if (displayedItems.length === 0 || next.length === 0) {
+      displayedItems = next;
+      return;
+    }
+    if (itemUpdateTimer !== undefined) return;
+    itemUpdateTimer = setTimeout(() => {
+      itemUpdateTimer = undefined;
+      displayedItems = pendingItems;
+    }, ARTIFACT_MAP_UPDATE_MS);
+  }
 
   $: if (itemStore !== subscribedStore) {
     unsubscribeStore?.();
@@ -49,14 +70,14 @@
     });
   }
   $: effectiveItems = itemStore ? storedItems : items;
-  $: evolution = effectiveItems.length
-    ? tracker.update(effectiveItems)
+  $: queueDisplayedItems(effectiveItems);
+  $: evolution = displayedItems.length
+    ? tracker.update(displayedItems)
     : emptyEvolution;
   $: filteredEvolution = filterSessionArtifactEvolution(evolution, artifactFilter);
-  $: fileCount = buildSparseArtifactRows(
-    filteredEvolution.artifacts,
-    worktreePath,
-  ).filter((row) => row.kind === "file").length;
+  $: artifactRows = buildSparseArtifactRows(filteredEvolution.artifacts, worktreePath);
+  $: fileCount = artifactRows.filter((row) => row.kind === "file").length;
+  $: evolutionWindow = sessionArtifactTurnWindow(filteredEvolution.turns, visibleTurnLimit);
 
   function turnCounts(turn: (typeof evolution.turns)[number]): string {
     const { reads, writes } = sessionArtifactTurnCounts(turn);
@@ -74,7 +95,10 @@
       : "";
   }
 
-  onDestroy(() => unsubscribeStore?.());
+  onDestroy(() => {
+    unsubscribeStore?.();
+    if (itemUpdateTimer !== undefined) clearTimeout(itemUpdateTimer);
+  });
 </script>
 
 <section class="artifact-map-panel">
@@ -112,36 +136,45 @@
         <h3>Overall</h3>
         <SparseArtifactTree
           artifacts={filteredEvolution.artifacts}
+          rows={artifactRows}
+          lazyContent={true}
           {worktreePath}
           {daemonId}
         />
       </section>
 
-      <section class="artifact-map-timeline">
-        <h3>Evolution</h3>
-        {#each filteredEvolution.turns as turn (turn.turnNumber)}
-          <div class="artifact-map-turn">
-            <button
-              type="button"
-              class:expanded={expandedTurn === turn.turnNumber}
-              on:click={() => (expandedTurn = expandedTurn === turn.turnNumber ? 0 : turn.turnNumber)}
-            >
-              <strong>Turn {turn.turnNumber}</strong>
-              <span>{turnCounts(turn)}</span>
-              {#if turnTime(turn)}<time>{turnTime(turn)}</time>{/if}
+      <details class="artifact-map-timeline" bind:open={evolutionOpen}>
+        <summary>Evolution</summary>
+        {#if evolutionOpen}
+          {#if evolutionWindow.hiddenTurnCount > 0}
+            <button class="artifact-map-show-earlier" type="button" on:click={() => (visibleTurnLimit += 200)}>
+              Show {Math.min(200, evolutionWindow.hiddenTurnCount)} earlier turns
             </button>
-            {#if expandedTurn === turn.turnNumber}
-              <div class="artifact-map-turn-tree">
-                <SparseArtifactTree
-                  artifacts={turn.artifacts}
-                  {worktreePath}
-                  {daemonId}
-                />
-              </div>
-            {/if}
-          </div>
-        {/each}
-      </section>
+          {/if}
+          {#each evolutionWindow.turns as turn (turn.turnNumber)}
+            <div class="artifact-map-turn">
+              <button
+                type="button"
+                class:expanded={expandedTurn === turn.turnNumber}
+                on:click={() => (expandedTurn = expandedTurn === turn.turnNumber ? 0 : turn.turnNumber)}
+              >
+                <strong>Turn {turn.turnNumber}</strong>
+                <span>{turnCounts(turn)}</span>
+                {#if turnTime(turn)}<time>{turnTime(turn)}</time>{/if}
+              </button>
+              {#if expandedTurn === turn.turnNumber}
+                <div class="artifact-map-turn-tree">
+                  <SparseArtifactTree
+                    artifacts={turn.artifacts}
+                    {worktreePath}
+                    {daemonId}
+                  />
+                </div>
+              {/if}
+            </div>
+          {/each}
+        {/if}
+      </details>
     {/if}
   </div>
 </section>
@@ -203,7 +236,8 @@
     overflow: auto;
     padding: 0.65rem;
   }
-  .artifact-map-body h3 {
+  .artifact-map-body h3,
+  .artifact-map-timeline > summary {
     margin: 0 0 0.45rem;
     color: var(--text-muted);
     font-size: 0.72rem;
@@ -213,6 +247,21 @@
   }
   .artifact-map-timeline {
     margin-top: 1rem;
+  }
+  .artifact-map-timeline > summary {
+    cursor: pointer;
+  }
+  .artifact-map-show-earlier {
+    width: 100%;
+    margin: 0.4rem 0;
+    padding: 0.35rem;
+    border: 1px solid var(--surface-3);
+    border-radius: 0.35rem;
+    color: var(--text-muted);
+    background: transparent;
+    font: inherit;
+    font-size: 0.7rem;
+    cursor: pointer;
   }
   .artifact-map-turn {
     border-top: 1px solid color-mix(in srgb, var(--surface-3) 70%, transparent);

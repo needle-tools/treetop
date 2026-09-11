@@ -1,7 +1,9 @@
 import { describe, expect, test } from "bun:test";
 import {
   buildSparseArtifactRows,
+  sameSparseArtifactInputs,
   sparseArtifactRowActionSummary,
+  sparseArtifactRowChanges,
   sparseArtifactRowLifecycle,
   sparseArtifactRowPreviewChanges,
 } from "../src/sparse-artifact-tree";
@@ -22,6 +24,33 @@ function artifact(
 }
 
 describe("buildSparseArtifactRows", () => {
+  test("reuses rows from immutable artifact identities without reading payload text", () => {
+    const first = artifact("/repo/src/app.ts", { preview: "x".repeat(50_000) });
+    expect(sameSparseArtifactInputs([first], "/repo", [first], "/repo")).toBe(true);
+    expect(sameSparseArtifactInputs([first], "/repo", [{ ...first }], "/repo")).toBe(false);
+    expect(sameSparseArtifactInputs([first], "/repo", [first], "/other")).toBe(false);
+  });
+
+  test("reuses expanded row changes across summary and tooltip consumers", () => {
+    const row = buildSparseArtifactRows(
+      [artifact("/repo/src/app.ts", { preview: "source" })],
+      "/repo",
+    ).find((entry) => entry.kind === "file")!;
+    expect(sparseArtifactRowChanges(row)).toBe(sparseArtifactRowChanges(row));
+  });
+
+  test("scales with unique paths instead of repeated event count", () => {
+    const repeated = Array.from({ length: 5_000 }, (_, index) =>
+      artifact("/repo/src/app.ts", { id: `read-${index}` }),
+    );
+    const startedAt = performance.now();
+    const rows = buildSparseArtifactRows(repeated, "/repo");
+    const elapsedMs = performance.now() - startedAt;
+
+    expect(rows.filter((row) => row.kind === "file")).toHaveLength(1);
+    expect(elapsedMs).toBeLessThan(200);
+  });
+
   test("folds single-child folder chains in sparse artifact trees", () => {
     const rows = buildSparseArtifactRows(
       [

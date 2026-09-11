@@ -6,6 +6,7 @@ import {
   filterSessionArtifactEvolution,
   insertArtifactMapPanel,
   sessionArtifactTurnCounts,
+  sessionArtifactTurnWindow,
 } from "../src/session-artifacts";
 import { buildVisualTranscriptItems } from "../src/last-user-message";
 
@@ -85,6 +86,7 @@ describe("session artifact evolution", () => {
       additions: 0,
       deletions: 0,
     });
+    expect(filterSessionArtifactEvolution(evolution, "reads").artifacts[0]).toBe(reads.artifacts[0]);
 
     const writes = filterSessionArtifactEvolution(evolution, "writes");
     expect(writes.turns.map((turn) => turn.turnNumber)).toEqual([1]);
@@ -108,13 +110,62 @@ describe("session artifact evolution", () => {
     const before = tracker.update(first);
     const after = tracker.update([...first, { kind: "message", message: { role: "assistant", blocks: [{ type: "text", text: "Done" }] }, blocks: [{ type: "text", text: "Done" }], messageIndex: 3 }]);
 
-    expect(after.turns[0]?.artifacts).toBe(before.turns[0]?.artifacts);
+    expect(after).toBe(before);
+  });
+
+  test("updates only a replaced tail and restores truncated replay state", () => {
+    const first = buildVisualTranscriptItems([
+      { role: "user", blocks: [{ type: "text", text: "Read" }] },
+      { role: "assistant", blocks: [{ type: "tool_use", toolName: "exec_command", toolUseId: "r1", toolInput: { cmd: "cat src/a.ts" } }] },
+      { role: "tool", blocks: [{ type: "tool_result", toolUseId: "r1", text: "a" }] },
+    ]);
+    const replacement = buildVisualTranscriptItems([
+      { role: "user", blocks: [{ type: "text", text: "Read" }] },
+      { role: "assistant", blocks: [{ type: "tool_use", toolName: "exec_command", toolUseId: "r2", toolInput: { cmd: "cat src/b.ts" } }] },
+      { role: "tool", blocks: [{ type: "tool_result", toolUseId: "r2", text: "b" }] },
+    ]);
+    const tracker = createSessionArtifactEvolutionTracker();
+    expect(tracker.update(first).artifacts.map((artifact) => artifact.path)).toEqual(["src/a.ts"]);
+
+    const replaced = tracker.update([first[0]!, replacement[1]!]);
+    expect(replaced.artifacts.map((artifact) => artifact.path)).toEqual(["src/b.ts"]);
+    expect(tracker.update([first[0]!]).artifacts).toEqual([]);
+    expect(tracker.update(first).artifacts.map((artifact) => artifact.path)).toEqual(["src/a.ts"]);
+  });
+
+  test("detects a changed middle even when the visible tail keeps its identity", () => {
+    const work = (path: string, id: string) => buildVisualTranscriptItems([
+      { role: "user", blocks: [{ type: "text", text: "Read" }] },
+      { role: "assistant", blocks: [{ type: "tool_use", toolName: "exec_command", toolUseId: id, toolInput: { cmd: `cat ${path}` } }] },
+      { role: "tool", blocks: [{ type: "tool_result", toolUseId: id, text: path }] },
+    ]).find((item) => item.kind === "work")!;
+    const firstUser = buildVisualTranscriptItems([{ role: "user", blocks: [{ type: "text", text: "First" }] }])[0]!;
+    const firstWork = work("src/a.ts", "a");
+    const replacementWork = work("src/b.ts", "b");
+    const stableTail = work("src/c.ts", "c");
+    const tracker = createSessionArtifactEvolutionTracker();
+    tracker.update([firstUser, firstWork, stableTail]);
+
+    const replaced = tracker.update([firstUser, replacementWork, stableTail]);
+    expect(replaced.artifacts.map((artifact) => artifact.path)).toEqual(["src/b.ts", "src/c.ts"]);
+    expect(replaced.turns[0]?.artifacts.map((artifact) => artifact.path)).toEqual(["src/b.ts", "src/c.ts"]);
   });
 
   test("round-trips arbitrary session sources through artifact panel ids", () => {
     const owner = "/Users/me/.codex/sessions/a b.jsonl";
     expect(artifactMapOwnerSource(artifactMapPanelSource(owner))).toBe(owner);
     expect(artifactMapOwnerSource("__files__:x")).toBeUndefined();
+  });
+
+  test("windows a large evolution timeline from the recent end", () => {
+    const turns = Array.from({ length: 500 }, (_, index) => ({
+      turnNumber: index + 1,
+      artifacts: [],
+    }));
+    const window = sessionArtifactTurnWindow(turns, 200);
+    expect(window.turns).toHaveLength(200);
+    expect(window.turns[0]?.turnNumber).toBe(301);
+    expect(window.hiddenTurnCount).toBe(300);
   });
 
   test("opens one artifact panel immediately left of its owning session", () => {

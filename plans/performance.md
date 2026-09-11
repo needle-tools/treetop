@@ -1286,3 +1286,21 @@ open, completed work is cached by immutable item identity, and each session
 publishes into a dedicated store so artifact updates do not wake the app root.
 Closing the map releases that store and restores the normal bounded transcript
 work; the regular session renderer and its geometry remain mounted throughout.
+
+### Cumulative artifact-map scaling (2026-09-11)
+
+The first cumulative map implementation accidentally made sparse-tree folder
+detection quadratic in the number of artifact events. A synthetic 5,000-event
+session touching one file took about 755ms merely to build its tree. Folder
+detection now works from unique paths and their ancestors; the same regression
+case takes about 12–15ms. Immutable artifact identities replace signatures that
+previously reread every diff and preview string, expanded row changes are cached,
+and tooltip payloads are materialized only when opened.
+
+The session evolution tracker now reconciles append, tail replacement, rewind,
+and changed-middle inputs from their shared item prefix instead of rescanning
+all history. Fast input is coalesced to at most ten map refreshes per second.
+The Evolution list remains available but is unmounted while collapsed and
+windows its first render to the latest 200 matching turns, with explicit paging
+for older turns. These gates remove work without unmounting the panel or its
+subscription/geometry.
