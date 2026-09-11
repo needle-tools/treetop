@@ -264,6 +264,26 @@ export function codexAppHistoryKey(
 
 export const CODEX_APP_HISTORY_TURNS_PAGE_SIZE = 4;
 
+export function codexAppHistoryRetryDelayMs(
+  failureCount: number,
+  error: string,
+): number {
+  const attempt = Math.max(1, Math.floor(failureCount));
+  const baseMs = error.includes("already has an active writer") ? 15_000 : 1_000;
+  return Math.min(30_000, baseMs * 2 ** (attempt - 1));
+}
+
+export function codexAppHistoryFailureMessage(
+  error: string,
+  hasHistory = false,
+): string {
+  return error.includes("already has an active writer")
+    ? "This conversation is currently open elsewhere."
+    : hasHistory
+      ? "Couldn't load more of this conversation."
+      : "Couldn't load this conversation.";
+}
+
 export function shouldLoadCodexAppThreadHistory(opts: {
   visualAppSurface: boolean;
   threadId: string | undefined;

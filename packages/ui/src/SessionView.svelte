@@ -110,6 +110,8 @@
     codexEventItemId,
     codexAppHistoryMessagesFromTurnPage,
     codexAppHistoryKey,
+    codexAppHistoryFailureMessage,
+    codexAppHistoryRetryDelayMs,
     CODEX_LIVE_OUTPUT_LIMIT,
     codexEventThreadIdForSession,
     codexEventVisualDelivery,
@@ -595,6 +597,10 @@
   let codexAppHistoryLoadedKey = "";
   let codexAppHistoryLoadingKey = "";
   let codexAppHistoryFailedKeys = new Set<string>();
+  let codexAppHistoryFailureKey = "";
+  let codexAppHistoryFailureText = "";
+  let codexAppHistoryFailureCount = 0;
+  let codexAppHistoryRetryTimer: ReturnType<typeof setTimeout> | null = null;
   let codexAppHistoryNextCursor: string | null = null;
   let codexDeferredVisualEventKey = "";
   let visualHistoryScrollAnchor: {
@@ -2110,6 +2116,13 @@
       codexAppHistoryLoadedKey = "";
       codexAppHistoryLoadingKey = "";
       codexAppHistoryFailedKeys = new Set<string>();
+      codexAppHistoryFailureKey = "";
+      codexAppHistoryFailureText = "";
+      codexAppHistoryFailureCount = 0;
+      if (codexAppHistoryRetryTimer !== null) {
+        clearTimeout(codexAppHistoryRetryTimer);
+        codexAppHistoryRetryTimer = null;
+      }
       codexDeferredVisualEventKey = "";
       codexSeenEvents.clear();
       codexLiveDetectedModel = "";
@@ -2259,6 +2272,13 @@
       }
       codexAppHistoryLoadedKey = targetHistoryKey;
       codexDeferredVisualEventKey = "";
+      codexAppHistoryFailureKey = "";
+      codexAppHistoryFailureText = "";
+      codexAppHistoryFailureCount = 0;
+      if (codexAppHistoryRetryTimer !== null) {
+        clearTimeout(codexAppHistoryRetryTimer);
+        codexAppHistoryRetryTimer = null;
+      }
       if (codexAppHistoryFailedKeys.has(targetHistoryKey)) {
         const nextFailed = new Set(codexAppHistoryFailedKeys);
         nextFailed.delete(targetHistoryKey);
@@ -2271,12 +2291,63 @@
       preserveVisualHistoryScrollAnchor();
     } catch (e) {
       if (!targetStillOwned()) return;
+      const failure = e instanceof Error ? e.message : String(e);
+      codexAppHistoryFailureCount =
+        codexAppHistoryFailureKey === targetHistoryKey
+          ? codexAppHistoryFailureCount + 1
+          : 1;
+      codexAppHistoryFailureKey = targetHistoryKey;
+      codexAppHistoryFailureText = codexAppHistoryFailureMessage(
+        failure,
+        session.messages.length > 0,
+      );
       codexAppHistoryFailedKeys = new Set(codexAppHistoryFailedKeys).add(
         targetHistoryKey,
       );
-      sendError = e instanceof Error ? e.message : String(e);
+      if (codexAppHistoryRetryTimer !== null) {
+        clearTimeout(codexAppHistoryRetryTimer);
+      }
+      codexAppHistoryRetryTimer = setTimeout(() => {
+        codexAppHistoryRetryTimer = null;
+        if (
+          targetHistoryKey !==
+          codexAppHistoryKey(effectiveSessionId, effectiveSessionCwd)
+        ) {
+          return;
+        }
+        if (codexAppHistoryFetchActive) {
+          retryCodexAppThreadHistory();
+        } else {
+          const nextFailed = new Set(codexAppHistoryFailedKeys);
+          nextFailed.delete(targetHistoryKey);
+          codexAppHistoryFailedKeys = nextFailed;
+        }
+      }, codexAppHistoryRetryDelayMs(codexAppHistoryFailureCount, failure));
+      console.warn("Codex app-server conversation history load failed", {
+        threadId: targetThreadId,
+        error: failure,
+        retryAttempt: codexAppHistoryFailureCount,
+      });
       preserveVisualHistoryScrollAnchor();
     }
+  }
+
+  function retryCodexAppThreadHistory(): void {
+    const key = codexAppHistoryKey(effectiveSessionId, effectiveSessionCwd);
+    if (!key || codexAppHistoryLoadingKey === key) return;
+    if (codexAppHistoryRetryTimer !== null) {
+      clearTimeout(codexAppHistoryRetryTimer);
+      codexAppHistoryRetryTimer = null;
+    }
+    const nextFailed = new Set(codexAppHistoryFailedKeys);
+    nextFailed.delete(key);
+    codexAppHistoryFailedKeys = nextFailed;
+    codexAppHistoryLoadingKey = key;
+    visualHistoryRequestInFlight = true;
+    void loadCodexAppThreadHistory().finally(() => {
+      visualHistoryRequestInFlight = false;
+      if (codexAppHistoryLoadingKey === key) codexAppHistoryLoadingKey = "";
+    });
   }
 
   async function load() {
@@ -5393,6 +5464,10 @@
       clearTimeout(codexEventSettleTimer);
       codexEventSettleTimer = null;
     }
+    if (codexAppHistoryRetryTimer !== null) {
+      clearTimeout(codexAppHistoryRetryTimer);
+      codexAppHistoryRetryTimer = null;
+    }
     closeCodexEventStream();
     if (disposeGraceTimer) clearTimeout(disposeGraceTimer);
     if (tuiSummaryTimer) clearInterval(tuiSummaryTimer);
@@ -5864,6 +5939,11 @@
     <LoadingOverlay text="loading session…" />
   {:else if codexVisualAppSurface && codexAppHistoryLoadingKey && session && session.messages.length === 0}
     <LoadingOverlay text="loading conversation…" />
+  {:else if codexVisualAppSurface && codexAppHistoryFailureText && session && session.messages.length === 0}
+    <div class="history-load-error" role="alert">
+      <p>{codexAppHistoryFailureText}</p>
+      <button type="button" on:click={retryCodexAppThreadHistory}>Retry</button>
+    </div>
   {:else if session && session.messages.length === 0 && !showChatComposer}
     <p class="muted small">
       {liveCodexApp
@@ -5903,6 +5983,17 @@
       {onOpenSubagent}
       {onOpenRemotePath}
     />
+  {/if}
+
+  {#if codexVisualAppSurface && codexAppHistoryFailureText && session && session.messages.length > 0}
+    <div class="history-load-warning" role="status">
+      <span>{codexAppHistoryFailureText}</span>
+      <button
+        type="button"
+        disabled={codexAppHistoryLoadingKey !== ""}
+        on:click={retryCodexAppThreadHistory}
+      >{codexAppHistoryLoadingKey ? "Retrying…" : "Retry"}</button>
+    </div>
   {/if}
 
   {#if mode === "read" && session && session.messages.length > 0 && !showChatComposer}
@@ -6867,6 +6958,27 @@
     color: var(--error-text);
     padding: 0.5rem 0.75rem;
     margin: 0;
+  }
+  .history-load-error {
+    align-self: center;
+    margin: auto;
+    color: var(--muted);
+    text-align: center;
+  }
+  .history-load-error p {
+    margin: 0 0 0.75rem;
+  }
+  .history-load-warning {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.65rem;
+    flex: 0 0 auto;
+    padding: 0.35rem 0.65rem;
+    color: var(--muted);
+    background: var(--surface-2);
+    border-top: 1px solid var(--surface-3);
+    font-size: 0.78rem;
   }
   /* One rounded chat control: the textarea is the surface, and the send
      actions sit inside it rather than in a second footer panel. */

@@ -12,6 +12,8 @@ import {
   codexLiveToolResultFromEvent,
   codexLiveToolUseFromEvent,
   codexAppHistoryKey,
+  codexAppHistoryFailureMessage,
+  codexAppHistoryRetryDelayMs,
   codexToolInputQuality,
   codexEventThreadIdForSession,
   codexEventReplayKey,
@@ -541,6 +543,32 @@ describe("codex event stream hub", () => {
         loadingHistoryKey: "",
       }),
     ).toBe(false);
+  });
+
+  test("retries failed app-server history reads with bounded backoff", () => {
+    expect(codexAppHistoryRetryDelayMs(1, "socket hang up")).toBe(1_000);
+    expect(codexAppHistoryRetryDelayMs(2, "socket hang up")).toBe(2_000);
+    expect(codexAppHistoryRetryDelayMs(20, "socket hang up")).toBe(30_000);
+    expect(
+      codexAppHistoryRetryDelayMs(
+        1,
+        "thread thread-1 already has an active writer",
+      ),
+    ).toBe(15_000);
+  });
+
+  test("turns app-server history failures into user-facing recovery states", () => {
+    expect(
+      codexAppHistoryFailureMessage(
+        "thread thread-1 already has an active writer",
+      ),
+    ).toBe("This conversation is currently open elsewhere.");
+    expect(codexAppHistoryFailureMessage("socket hang up")).toBe(
+      "Couldn't load this conversation.",
+    );
+    expect(codexAppHistoryFailureMessage("socket hang up", true)).toBe(
+      "Couldn't load more of this conversation.",
+    );
   });
 
   test("pages older app-server history from the app-server cursor, not loaded message count", () => {

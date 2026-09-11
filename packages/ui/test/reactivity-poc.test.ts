@@ -7,8 +7,10 @@ import { shouldCancelBackgroundSummary } from "../src/tui-auto-summary";
 import {
   CODEX_LIVE_OUTPUT_LIMIT,
   codexAppEventDeliveryMode,
+  codexAppHistoryKey,
   codexEventVisualDelivery,
   codexOutputDeltaNeedsToolUse,
+  shouldLoadCodexAppThreadHistory,
   shouldUseCodexAppHistorySource,
 } from "../src/codex-event-stream";
 import { applyVisualTranscriptDeltaPatches } from "../src/last-user-message";
@@ -401,6 +403,55 @@ describe("svelte 5 runes — DOM-free reactivity", () => {
       expect({ lifecycleRuns, transcriptRuns }).toEqual({
         lifecycleRuns: 2,
         transcriptRuns: 2,
+      });
+    } finally {
+      destroy();
+    }
+  });
+
+  test("releasing a failed app-server history key wakes the existing load gate", () => {
+    const key = codexAppHistoryKey("thread-1", "/repo");
+    const failedKeys = $.state<ReadonlySet<string>>(new Set([key]));
+    const unrelatedMessages = $.state(0);
+    let gateRuns = 0;
+    let eligible = false;
+    let unrelatedRuns = 0;
+    const loadGate = $.derived(() => {
+      gateRuns += 1;
+      return shouldLoadCodexAppThreadHistory({
+        visualAppSurface: true,
+        threadId: "thread-1",
+        cwd: "/repo",
+        hasSession: true,
+        loadedHistoryKey: "",
+        loadingHistoryKey: "",
+        failedHistoryKeys: $.get(failedKeys),
+      });
+    });
+    const destroy = $.effect_root(() => {
+      $.effect(() => {
+        eligible = $.get(loadGate);
+      });
+      $.effect(() => {
+        $.get(unrelatedMessages);
+        unrelatedRuns += 1;
+      });
+    });
+
+    try {
+      $.flush();
+      expect(eligible).toBe(false);
+      expect({ gateRuns, unrelatedRuns }).toEqual({
+        gateRuns: 1,
+        unrelatedRuns: 1,
+      });
+
+      $.set(failedKeys, new Set());
+      $.flush();
+      expect(eligible).toBe(true);
+      expect({ gateRuns, unrelatedRuns }).toEqual({
+        gateRuns: 2,
+        unrelatedRuns: 1,
       });
     } finally {
       destroy();
