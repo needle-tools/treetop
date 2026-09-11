@@ -1268,3 +1268,14 @@ remains available while detached, reveals on hover or keyboard focus, and jumps
 the shared transcript scroller back to its live tail. Analysis rows navigate
 through that same controller; exact analysis-map edges map to exact transcript
 edges, while interior rows retain semantic turn-centered navigation.
+
+Live app-server history failures were a separate blank-pane path from the
+visibility/render lifecycle bugs. `SessionView` permanently remembered a
+failed history key, so a transient timeout or socket failure could leave an
+empty synthetic session with no further read attempt. History failures now
+retain any already-rendered messages, retry with capped exponential backoff
+while preserving app-server ownership, and show an explicit Retry state when
+the pane has no history to display. Failed older-page reads keep that history
+visible and add a compact Retry warning instead of failing silently. An
+active-writer conflict uses a slower retry cadence; it does not fall back to
+the transcript renderer.
