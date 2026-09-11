@@ -61,6 +61,8 @@ export interface SessionArtifactEvolution {
   totals: SessionArtifactTotals;
 }
 
+export type SessionArtifactFilter = "all" | "reads" | "writes";
+
 export function sessionArtifactTurnCounts(turn: SessionArtifactTurn): {
   reads: number;
   writes: number;
@@ -107,6 +109,42 @@ function addArtifactTotals(
     totals.deletions += change.deletions ?? 0;
     if (change.fileAction === "edited") totals.partialWrites += 1;
   }
+}
+
+function filterSessionArtifacts(
+  artifacts: readonly VisualWorkArtifact[],
+  filter: Exclude<SessionArtifactFilter, "all">,
+): VisualWorkArtifact[] {
+  const wantRead = filter === "reads";
+  return artifacts.flatMap((artifact) => {
+    const changes = visualWorkArtifactChanges(artifact).filter(
+      (change) => (change.action === "used") === wantRead,
+    );
+    if (changes.length === 0) return [];
+    return [{ ...artifact, action: changes[0]!.action, changes }];
+  });
+}
+
+export function filterSessionArtifactEvolution(
+  evolution: SessionArtifactEvolution,
+  filter: SessionArtifactFilter,
+): SessionArtifactEvolution {
+  if (filter === "all") return evolution;
+  const turns = evolution.turns.flatMap((turn) => {
+    const artifacts = filterSessionArtifacts(turn.artifacts, filter);
+    return artifacts.length > 0 ? [{ ...turn, artifacts }] : [];
+  });
+  const artifacts = turns.flatMap((turn) => turn.artifacts);
+  const totals: SessionArtifactTotals = {
+    reads: 0,
+    partialReads: 0,
+    writes: 0,
+    partialWrites: 0,
+    additions: 0,
+    deletions: 0,
+  };
+  for (const artifact of artifacts) addArtifactTotals(totals, artifact);
+  return { artifacts, turns, totals };
 }
 
 export function createSessionArtifactEvolutionTracker(): {

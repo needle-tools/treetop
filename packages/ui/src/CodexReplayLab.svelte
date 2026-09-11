@@ -2,6 +2,7 @@
   import { onDestroy, onMount, tick } from "svelte";
   import SessionView from "./SessionView.svelte";
   import SessionArtifactMap from "./SessionArtifactMap.svelte";
+  import InspectorPanelHeader from "./InspectorPanelHeader.svelte";
   import type { VisualTranscriptItem } from "./last-user-message";
   import { writeBrowserClipboard } from "./clipboard-write";
   import { formatByteSize } from "./context-tokens";
@@ -545,7 +546,7 @@
     await Promise.all(workers);
     flush();
     if (generation === directoryGeneration) {
-      directoryStatus = `${entries.length.toLocaleString()} sessions · sampled without full reads`;
+      directoryStatus = "";
     }
   }
 
@@ -1130,11 +1131,10 @@
 
   <div class="replay-workspace">
     <aside class="replay-browser" aria-label="Replay sessions">
-      <div class="replay-browser-title">
-        <strong
-          >{sessionListMode === "directory" ? directoryLabel : "Sessions"}
-          <span>{sessionCounts.total}</span></strong
-        >
+      <InspectorPanelHeader
+        title={sessionListMode === "directory" ? directoryLabel : "Sessions"}
+        subtitle={`${sessionCounts.total.toLocaleString()} ${sessionListMode === "directory" ? "files" : "sessions"}`}
+      >
         {#if daemonEnabled}
           <button
             type="button"
@@ -1144,8 +1144,8 @@
             {sessionListMode === "directory" ? "Server" : "Refresh"}
           </button>
         {/if}
-      </div>
-      {#if sessionListMode === "directory"}
+      </InspectorPanelHeader>
+      {#if sessionListMode === "directory" && directoryStatus}
         <div class="replay-browser-counts" aria-label="Folder indexing status">
           <span>{directoryStatus}</span>
         </div>
@@ -1392,28 +1392,29 @@
       </div>
       {#if fileName}
         <aside class="replay-analysis" aria-label="Turn analysis">
-          <button
-            type="button"
-            class="replay-analysis-toggle"
-            title={analysisCollapsed
-              ? "Expand turn analysis"
-              : "Collapse turn analysis"}
-            aria-label={analysisCollapsed
-              ? "Expand turn analysis"
-              : "Collapse turn analysis"}
-            on:click={() => (analysisCollapsed = !analysisCollapsed)}
-            >{analysisCollapsed ? "‹" : "›"}</button
-          >
-          {#if !analysisCollapsed}
+          {#if analysisCollapsed}
+            <button
+              type="button"
+              class="replay-analysis-toggle"
+              title="Expand turn analysis"
+              aria-label="Expand turn analysis"
+              on:click={() => (analysisCollapsed = false)}
+              >‹</button
+            >
+          {:else}
             <div class="replay-analysis-content">
-              <header class="replay-analysis-header">
-                <strong>Turns</strong>
-                <span>
-                  {turnAnalysis.issueTurnCount}/{turnAnalysis.turns.length} turns
-                  flagged ·
-                  {formatReplayCost(turnAnalysis.totalEstimatedCostUsd)} total
-                </span>
-              </header>
+              <InspectorPanelHeader
+                title="Turns"
+                subtitle={`${turnAnalysis.issueTurnCount}/${turnAnalysis.turns.length} turns flagged`}
+              >
+                <button
+                  type="button"
+                  class="icon-only"
+                  title="Collapse turn analysis"
+                  aria-label="Collapse turn analysis"
+                  on:click={() => (analysisCollapsed = true)}
+                >›</button>
+              </InspectorPanelHeader>
               {#if !turnAnalysis.turns.length}
                 <span class="replay-analysis-empty">No turn data</span>
               {:else}
@@ -1773,16 +1774,6 @@
     min-height: 0;
   }
 
-  .replay-analysis-header {
-    min-height: 42px;
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    padding: 0 40px 0 12px;
-    border-bottom: 1px solid var(--border, #303030);
-  }
-
-  .replay-analysis-header span,
   .replay-analysis-empty {
     color: var(--muted, #999);
     font-size: 12px;
@@ -1892,34 +1883,13 @@
   }
 
   .replay-browser {
-    display: grid;
-    grid-template-rows: auto auto auto auto 1fr;
+    display: flex;
+    flex-direction: column;
     border: 1px solid var(--border, #303030);
     border-radius: 12px;
     background: var(--panel-bg, #181818);
   }
 
-  .replay-browser-title {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 8px;
-    padding: 10px 12px;
-    border-bottom: 1px solid var(--border, #303030);
-  }
-
-  .replay-browser-title button {
-    min-height: 28px;
-    padding: 0 10px;
-    border: 1px solid var(--border, #3a3a3a);
-    border-radius: 999px;
-    color: inherit;
-    background: var(--button-bg, #252525);
-    font: inherit;
-    font-size: 12px;
-  }
-
-  .replay-browser-title strong span,
   .replay-browser-counts {
     color: var(--muted, #999);
     font-size: 12px;
@@ -1983,6 +1953,7 @@
   }
 
   .replay-recording-list {
+    flex: 1;
     min-height: 0;
     overflow: auto;
     padding: 8px;
