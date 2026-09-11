@@ -57,6 +57,31 @@ export function formatByteSize(bytes: number): string {
   return `${value.toFixed(digits).replace(/\.0+$/, "")} ${units[unit]}`;
 }
 
+export function formatSessionTranscriptStats(input: {
+  loadedMessageCount?: number;
+  totalMessageCount?: number;
+  lineCount?: number;
+  fileSizeBytes?: number;
+  fileStatsExact?: boolean;
+  messageCountFallback?: string;
+}): string {
+  const { loadedMessageCount, totalMessageCount, lineCount, fileSizeBytes, messageCountFallback } = input;
+  let messageText = messageCountFallback ?? "";
+  if (loadedMessageCount !== undefined) {
+    messageText = totalMessageCount !== undefined && totalMessageCount > loadedMessageCount
+      ? `${loadedMessageCount.toLocaleString()} of ${totalMessageCount.toLocaleString()} messages`
+      : `${loadedMessageCount.toLocaleString()} message${loadedMessageCount === 1 ? "" : "s"}`;
+  } else if (totalMessageCount !== undefined) {
+    messageText = `${totalMessageCount.toLocaleString()} message${totalMessageCount === 1 ? "" : "s"}`;
+  }
+
+  const fileParts: string[] = [];
+  if (lineCount !== undefined) fileParts.push(`${lineCount.toLocaleString()} ${lineCount === 1 ? "line" : "lines"}`);
+  if (fileSizeBytes !== undefined) fileParts.push(formatByteSize(fileSizeBytes));
+  const fileText = fileParts.length > 0 ? `${input.fileStatsExact === false ? "~" : ""}${fileParts.join(" · ")}` : "";
+  return [messageText, fileText].filter(Boolean).join(" · ");
+}
+
 /** Pick a context-window cap (in tokens) for the given model id. Returns
  *  undefined for unknown models so the chip can fall back to absolute-only.
  *
@@ -119,6 +144,28 @@ export function formatTokens(n: number): string {
   const m = n / 1_000_000;
   const s = m < 10 ? m.toFixed(2) : m.toFixed(1);
   return `${s.replace(/\.?0+$/, "")}M`;
+}
+
+/** Dense session-usage label with a stable three-significant-digit shape.
+ * Unlike `formatTokens`, this keeps trailing zeroes and labels values below
+ * 1,000 explicitly as tokens (`t`) so adjacent live counters do not jump in
+ * width as their magnitudes change. */
+export function formatSessionTokens(n: number): string {
+  const value = Number.isFinite(n) && n > 0 ? n : 0;
+  const units = [
+    { divisor: 1, suffix: "t" },
+    { divisor: 1_000, suffix: "k" },
+    { divisor: 1_000_000, suffix: "M" },
+    { divisor: 1_000_000_000, suffix: "B" },
+  ] as const;
+  let unitIndex = value >= 1_000_000_000 ? 3 : value >= 1_000_000 ? 2 : value >= 1_000 ? 1 : 0;
+  let scaled = value / units[unitIndex].divisor;
+  if (scaled >= 999.5 && unitIndex < units.length - 1) {
+    unitIndex += 1;
+    scaled = value / units[unitIndex].divisor;
+  }
+  const digits = scaled >= 100 ? 0 : scaled >= 10 ? 1 : 2;
+  return `${scaled.toFixed(digits)}${units[unitIndex].suffix}`;
 }
 
 /** Build the chip. The caller renders `.text` as-is and uses `.ratio`
