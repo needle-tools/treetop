@@ -835,6 +835,16 @@ but stale rows inside the refreshed range do not. Source changes clear both the
 cursor and event-deduplication state so one panel lifecycle cannot contaminate
 another thread.
 
+A later lane-return regression came from replacing that body gate's stored
+`IntersectionObserver` result with a synchronous `getBoundingClientRect()`
+read. During row/column class changes the observer callback could run before
+layout settled, leave the body on its geometry-preserving deferred placeholder,
+and receive no correction until another scroll. Body rendering again follows
+the observer's retained intersection signal plus the existing ancestor gates;
+the live geometry read remains only on transcript polling, where it was added
+to avoid polling from a stale callback. Tests pin both possible reveal-callback
+orders so either converges to a rendered body.
+
 Replay Lab had a separate unbounded path: its read route prepared a projected
 16 MiB transcript tail, then also called the legacy full-file parser to build
 the `SessionView` override. Opening a 1.39 GB transcript drove the debug daemon
