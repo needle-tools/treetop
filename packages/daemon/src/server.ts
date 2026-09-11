@@ -68,7 +68,12 @@ import {
   type FolderSuggestion,
 } from "./agents";
 import { computeAgentUsage, topClaudeSessionsByTokens } from "./agent-usage";
-import { startActivityTail, onActivity } from "./activity";
+import {
+  startActivityTail,
+  onActivity,
+  getCodexCliStates,
+  onCodexCliState,
+} from "./activity";
 import {
   getSessionResponseJson,
   getSessionsBatchResults,
@@ -8585,6 +8590,11 @@ const server = Bun.serve<TermWsData, never>({
             sseSubscribers.add(controller);
             orphanCleaner.onFrontendConnected();
             controller.enqueue(sseEncoder.encode(`: connected\n\n`));
+            controller.enqueue(
+              sseEncoder.encode(
+                `event: codex_cli_state\ndata: ${JSON.stringify(getCodexCliStates())}\n\n`,
+              ),
+            );
           },
           cancel() {
             orphanCleaner.onFrontendDisconnected();
@@ -10321,6 +10331,7 @@ const stopActivity = await startActivityTail({
   detectAgents: sharedDetectAgents,
 });
 onActivity((ev) => broadcast("activity", ev));
+onCodexCliState(() => broadcast("codex_cli_state", getCodexCliStates()));
 console.log("supergit daemon: agent activity tail started");
 
 await reconcileWorktreeWatchers();

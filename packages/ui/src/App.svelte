@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { replaceCodexCliStates } from "./codex-event-stream";
   import {
     resolveTermId,
     normalizeSessionForOpen,
@@ -6309,6 +6310,9 @@
       es.addEventListener("change", (e: MessageEvent) =>
         handleRemoteStreamChange(e?.data),
       );
+      es.addEventListener("codex_cli_state", (e: MessageEvent) => {
+        replaceCodexCliStates(JSON.parse(e.data), id);
+      });
       // No activity/error/sound wiring — those are local-machine concerns.
       remoteStreams.set(id, es);
     }
@@ -6328,6 +6332,9 @@
 
   function subscribeToStream(): () => void {
     const es = new EventSource(apiUrl("/api/stream"));
+    es.addEventListener("codex_cli_state", (e: MessageEvent) => {
+      replaceCodexCliStates(JSON.parse(e.data));
+    });
     es.addEventListener("change", (rawEvt: MessageEvent) => {
       time("sse-change", () => {
         // Parse first so we can gate the two expensive refetches on the
@@ -7074,6 +7081,7 @@
             // dim/filter it merely because it is displayed as chat.
             exited: !hasDockActivity,
             terminalActive:
+              s.agent !== "codex" &&
               isLiveTui &&
               isTerminalRecentlyActive(terminalIoStats, Date.now()),
             finishedAt: transientFinishedAt[s.source],

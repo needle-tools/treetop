@@ -1237,6 +1237,22 @@ describe("canResumeVisualSurface", () => {
 });
 
 describe("shouldMountTerminalView", () => {
+  test("preserves an opened CLI across zen switches but still releases read/dormant views", () => {
+    const args = {
+      mode: "terminal" as const,
+      hasSessionId: true,
+      hasCwd: true,
+      nearViewport: false,
+      spawnReady: true,
+      alreadyMounted: true,
+    };
+    expect(shouldMountTerminalView(args)).toBe(true);
+    expect(shouldMountTerminalView({ ...args, alreadyMounted: false })).toBe(false);
+    expect(shouldMountTerminalView({ ...args, mode: "read" })).toBe(false);
+    expect(shouldMountTerminalView({ ...args, dormant: true })).toBe(false);
+    expect(shouldMountTerminalView({ ...args, hasSessionId: false })).toBe(false);
+  });
+
   test("mounts live terminal UI only for complete terminal columns near the viewport", () => {
     expect(
       shouldMountTerminalView({
@@ -1296,6 +1312,15 @@ describe("shouldMountTerminalView", () => {
 });
 
 describe("shouldMountNewSessionTerminal", () => {
+  test("keeps a fresh CLI's scrollback when hidden after its first mount", () => {
+    expect(shouldMountNewSessionTerminal({
+      hasCwd: true, nearViewport: false, spawnReady: true, alreadyMounted: true,
+    })).toBe(true);
+    expect(shouldMountNewSessionTerminal({
+      hasCwd: true, nearViewport: false, spawnReady: true, alreadyMounted: false,
+    })).toBe(false);
+  });
+
   test("mounts transient terminal UI only near the viewport", () => {
     expect(
       shouldMountNewSessionTerminal({

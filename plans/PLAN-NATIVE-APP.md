@@ -147,6 +147,14 @@ Build script: `scripts/build-native.ts` (run via `bun run build:native`):
 4. Runs a smoke test: launches the binary on a temp port, curls the
    API + UI, asserts both respond.
 
+2026-09-10: the packaging smoke test now uses an empty temporary workspace
+with side-instance mode, and scrubs inherited `SUPERGIT_*` and `TREETOP_*`
+settings. Copying the personal workspace made startup depend on attachments:
+the Windows reproduction copied 9,036 files / 765 MB and responded after
+15 seconds, past the 10-second deadline. The same compiled binary responded
+in 0.6 seconds with an empty workspace. UI lookup still uses the packaged
+assets beside the executable. Workspace-copy dogfooding remains separate.
+
 Output layout:
 ```
 build/supergit-native/       (63MB total for darwin-arm64)

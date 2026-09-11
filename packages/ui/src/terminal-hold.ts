@@ -74,6 +74,7 @@ export interface TerminalHoldDeps {
    *  see node-pty-backend.ts). Fired only when the frame carries `working`,
    *  so an awaiting-only edge frame doesn't spuriously clear the spinner. */
   onWorking?: (working: boolean) => void;
+  onExit?: () => void;
   /** Should the daemon keep draining the PTY (i.e. keep the agent running)?
    *  Re-read on every send. Defaults to always-true: a held agent keeps
    *  working while off-screen. The host wires this to `!document.hidden` so a
@@ -197,6 +198,13 @@ export function createTerminalHold(deps: TerminalHoldDeps): TerminalHold {
           awaitingInput?: unknown;
           working?: unknown;
         };
+        if (parsed?.type === "exit") {
+          close();
+          deps.onExit?.();
+          deps.onWorking?.(false);
+          deps.onAwaiting?.(false);
+          return;
+        }
         if (parsed?.type !== "state") return;
         if (typeof parsed.awaitingInput === "boolean") {
           deps.onAwaiting?.(parsed.awaitingInput);

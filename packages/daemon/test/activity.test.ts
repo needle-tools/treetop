@@ -7,6 +7,9 @@ import {
   readTailChunk,
   onActivity,
   startActivityTail,
+  codexCliWorkingFromEntry,
+  getCodexCliStates,
+  onCodexCliState,
   type ActivityEvent,
 } from "../src/activity";
 import type { AgentSession } from "../src/agents";
@@ -14,6 +17,116 @@ import type { AgentSession } from "../src/agents";
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
+
+describe("Codex CLI turn state", () => {
+  test("discovers a fresh CLI even when its first turn precedes the watcher", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "supergit-codex-discovery-"));
+    const source = join(dir, "fresh.jsonl");
+    let sessions: AgentSession[] = [];
+    const events: ActivityEvent[] = [];
+    const unsubscribe = onActivity((ev) => events.push(ev));
+    const stop = await startActivityTail({
+      detectAgents: async () => sessions,
+      rediscoverIntervalMs: 20,
+    });
+    try {
+      await delay(30);
+      await writeFile(
+        source,
+        JSON.stringify({
+          type: "event_msg",
+          payload: { type: "task_started" },
+        }) + "\n",
+      );
+      sessions = [
+        {
+          agent: "codex",
+          cwd: dir,
+          source,
+          sessionId: "fresh",
+          lastActive: new Date().toISOString(),
+        },
+      ];
+      const deadline = Date.now() + 2000;
+      while (!events.length && Date.now() < deadline) await delay(10);
+      expect(events.map((e) => e.sessionId)).toEqual(["fresh"]);
+      expect(getCodexCliStates()).toEqual([
+        { source, sessionId: "fresh", working: true },
+      ]);
+    } finally {
+      stop();
+      unsubscribe();
+    }
+  });
+
+  test("only lifecycle events change working, not repaint or message traffic", () => {
+    const event = (type: string) => ({ type: "event_msg", payload: { type } });
+    expect(codexCliWorkingFromEntry(event("task_started"))).toBe(true);
+    expect(codexCliWorkingFromEntry(event("task_complete"))).toBe(false);
+    expect(codexCliWorkingFromEntry(event("turn_aborted"))).toBe(false);
+    expect(codexCliWorkingFromEntry(event("token_count"))).toBeUndefined();
+    expect(codexCliWorkingFromEntry({ type: "response_item" })).toBeUndefined();
+    expect(codexCliWorkingFromEntry("\x1b[31manimation")).toBeUndefined();
+  });
+
+  test("restores state at discovery and follows split lifecycle lines", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "supergit-codex-state-"));
+    const source = join(dir, "session.jsonl");
+    const line = (type: string) =>
+      JSON.stringify({ type: "event_msg", payload: { type } }) + "\n";
+    await writeFile(source, line("task_started"));
+    const snapshots: boolean[] = [];
+    const unsubscribe = onCodexCliState(() => {
+      const state = getCodexCliStates().find((s) => s.source === source);
+      if (state) snapshots.push(state.working);
+    });
+    const stop = await startActivityTail({
+      detectAgents: async () => [
+        {
+          agent: "codex",
+          cwd: dir,
+          source,
+          sessionId: "cli",
+          lastActive: new Date().toISOString(),
+        },
+      ],
+      rediscoverIntervalMs: 60_000,
+    });
+    const waitFor = async (working: boolean) => {
+      const deadline = Date.now() + 2000;
+      while (
+        getCodexCliStates().find((s) => s.source === source)?.working !==
+          working &&
+        Date.now() < deadline
+      )
+        await delay(10);
+      expect(
+        getCodexCliStates().find((s) => s.source === source)?.working,
+      ).toBe(working);
+    };
+    try {
+      await waitFor(true);
+      const complete = line("task_complete");
+      await appendFile(source, complete.slice(0, 23));
+      await delay(40);
+      expect(getCodexCliStates()[0]?.working).toBe(true);
+      await appendFile(source, complete.slice(23));
+      await waitFor(false);
+      await appendFile(source, line("token_count"));
+      await delay(40);
+      expect(getCodexCliStates()[0]?.working).toBe(false);
+      await appendFile(source, line("task_started"));
+      await waitFor(true);
+      await appendFile(source, line("turn_aborted"));
+      await waitFor(false);
+      expect(snapshots).toEqual([true, false, true, false]);
+    } finally {
+      stop();
+      unsubscribe();
+    }
+    expect(getCodexCliStates()).toEqual([]);
+  });
+});
 
 describe("summarize (claude)", () => {
   test("returns null for non-objects", () => {

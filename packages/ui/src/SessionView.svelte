@@ -107,6 +107,9 @@
   import { createTerminalHold, type HoldSocket } from "./terminal-hold";
   import {
     CODEX_APP_HISTORY_TURNS_PAGE_SIZE,
+    codexCliStates,
+    isCodexCliWorking,
+    resolveTerminalWorking,
     canRequestOlderCodexAppThreadHistory,
     codexEventItemId,
     codexAppHistoryMessagesFromTurnPage,
@@ -915,9 +918,13 @@
       awaitingInput = awaiting;
       onAwaitingChange(awaiting);
     },
-    onWorking: (w) => {
-      working = w;
-      onWorkingChange(w);
+    onWorking: reportTerminalWorking,
+    onExit: () => {
+      cliExited = true;
+      terminalId = null;
+      mode = "read";
+      onModeChange(mode);
+      void load();
     },
   });
 
@@ -940,18 +947,29 @@
     terminalHold.refresh();
   }
 
+  // A raw-byte replay is not a scrollback snapshot: idle Codex repaints can
+  // consume its entire window. Keep the opened xterm; TerminalView already
+  // gates hidden painting and releases its WebGL slot when offscreen.
+  let terminalMounted = false;
+  let mountedTerminalSource: string | undefined;
+  $: {
+    terminalMounted = shouldMountTerminalView({
+      mode,
+      hasSessionId: !!effectiveSessionId,
+      hasCwd: !!effectiveSessionCwd,
+      nearViewport: columnNearViewport,
+      spawnReady,
+      dormant,
+      alreadyMounted: agent === "codex" && mountedTerminalSource === source,
+    });
+    mountedTerminalSource = terminalMounted ? source : undefined;
+  }
+
   $: terminalHold.sync(
     mounted &&
       shouldHoldOffscreenAttachedTerminal({
         attachTermId,
-        terminalMounted: shouldMountTerminalView({
-          mode,
-          hasSessionId: !!effectiveSessionId,
-          hasCwd: !!effectiveSessionCwd,
-          nearViewport: columnNearViewport,
-          spawnReady,
-          dormant,
-        }),
+        terminalMounted,
       })
       ? attachTermId
       : undefined,
@@ -1059,9 +1077,18 @@
    *  output or the user types. */
   let awaitingInput = false;
   /** Live "agent is emitting output right now" flag — TerminalView
-   *  raises it on each PTY frame and lowers it after ~1.5s of silence.
+   *  uses JSONL turn lifecycle for Codex and recent PTY output otherwise.
    *  Drives the rotating-gradient border on the agent pill. */
   let working = false;
+  let cliExited = false;
+  $: cliWorking =
+    !cliExited &&
+    isCodexCliWorking($codexCliStates, source, effectiveSessionId, daemonId);
+  $: if (agent === "codex" && mode === "terminal") working = cliWorking;
+  function reportTerminalWorking(outputWorking: boolean): void {
+    working = resolveTerminalWorking(agent, outputWorking, cliWorking);
+    onWorkingChange(working);
+  }
 
   /** Hard ceiling on how long we wait for `DELETE /api/terminals/:id` to
    *  return before flipping the column back to read mode anyway. The
@@ -5324,7 +5351,7 @@
     </span>
   {/snippet}
 
-  {#if shouldMountTerminalView( { mode, hasSessionId: !!effectiveSessionId, hasCwd: !!effectiveSessionCwd, nearViewport: columnNearViewport, spawnReady, dormant }, )}
+  {#if terminalMounted}
     <TerminalView
       cmd={agent === "codex"
         ? [
@@ -5365,6 +5392,7 @@
       procName={`supergit-tui-${effectiveSessionId.slice(0, 8)}-${agent}`}
       {daemonId}
       onSpawn={(id) => {
+        cliExited = false;
         terminalId = id;
         onSpawn(id);
       }}
@@ -5372,11 +5400,9 @@
         awaitingInput = a;
         onAwaitingChange(a);
       }}
-      onWorkingChange={(w) => {
-        working = w;
-        onWorkingChange(w);
-      }}
+      onWorkingChange={reportTerminalWorking}
       onExit={() => {
+        cliExited = true;
         // PTY finished by itself (user typed `exit`, agent crashed, ...).
         // Same effect as Dispose: flip to read, scroll to the newest
         // messages on the next render.

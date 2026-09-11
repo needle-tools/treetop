@@ -21,7 +21,7 @@ import { resolve, join, relative } from "node:path";
 import { rm, mkdir, cp, readdir, writeFile, mkdtemp } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { createServer } from "node:net";
-import { homedir, tmpdir } from "node:os";
+import { tmpdir } from "node:os";
 import { installPayloadPathspec } from "../packages/daemon/src/provision";
 
 const ROOT = resolve(import.meta.dir, "..");
@@ -245,12 +245,6 @@ if (isWin) {
 // ── 6. Smoke test (headless, flat binary) ────────────────────────────
 const smokePort =
   process.env.SUPERGIT_NATIVE_SMOKE_PORT ?? (await findAvailablePort());
-const smokeWorkspaceSource = join(
-  homedir(),
-  "supergit",
-  "workspaces",
-  "default",
-);
 const smokeWorkspaceBase = await mkdtemp(
   join(tmpdir(), "treetop-native-smoke-"),
 );
@@ -258,13 +252,17 @@ console.log(`6/6  Smoke test on :${smokePort}…`);
 
 const cleanEnv: Record<string, string> = {};
 for (const [k, v] of Object.entries(process.env)) {
-  if (k.startsWith("SUPERGIT_")) continue;
+  if (k.startsWith("SUPERGIT_") || k.startsWith("TREETOP_")) continue;
   if (v != null) cleanEnv[k] = v;
 }
 cleanEnv.SUPERGIT_PORT = smokePort;
 cleanEnv.SUPERGIT_BIND = "127.0.0.1";
-cleanEnv.TREETOP_TEMP_WORKSPACE_FROM = smokeWorkspaceSource;
-cleanEnv.TREETOP_TEMP_WORKSPACE_DIR = smokeWorkspaceBase;
+// Test the packaged API/UI, independent of the user's workspace size (or
+// whether they have a workspace yet). Copying attachments can consume the
+// entire startup deadline before the daemon even opens its listening socket.
+cleanEnv.SUPERGIT_WORKSPACE = smokeWorkspaceBase;
+cleanEnv.TREETOP_SIDE_INSTANCE = "1";
+const smokeBaseUrl = `http://127.0.0.1:${smokePort}`;
 
 const daemon = Bun.spawn([binaryPath], {
   env: cleanEnv,
@@ -298,7 +296,7 @@ try {
       );
     }
     try {
-      const r = await fetch(`http://localhost:${smokePort}/api/debug/mem`, {
+      const r = await fetch(`${smokeBaseUrl}/api/debug/mem`, {
         signal: AbortSignal.timeout(2000),
       });
       if (r.ok) ready = true;
@@ -306,12 +304,12 @@ try {
   }
   if (!ready) throw new Error("Daemon didn't respond after 10s");
 
-  const mem = await fetch(`http://localhost:${smokePort}/api/debug/mem`, {
+  const mem = await fetch(`${smokeBaseUrl}/api/debug/mem`, {
     signal: AbortSignal.timeout(3000),
   });
   if (!mem.ok) throw new Error(`API returned ${mem.status}`);
 
-  const html = await fetch(`http://localhost:${smokePort}/`, {
+  const html = await fetch(`${smokeBaseUrl}/`, {
     signal: AbortSignal.timeout(3000),
   });
   if (!html.ok) throw new Error(`UI returned ${html.status}`);

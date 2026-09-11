@@ -465,6 +465,40 @@ Still-open follow-up:
   always lands inside the grace window — making this fix even more
   impactful than the resume path it falls back to.
 
+## Codex CLI working state (2026-09-10)
+
+Codex idle animations continuously emit PTY bytes, so byte-silence timers
+cannot identify an active agent turn. The existing activity tail now tracks
+`event_msg` lifecycle records: `task_started` raises working;
+`task_complete` and `turn_aborted` lower it. It restores the latest state
+when discovering a file, retains partial JSONL records across writes, and
+sends full state snapshots over the existing SSE connection on changes and
+reconnect. No additional dependency is needed.
+
+Both visible and deferred terminal columns use that state for Codex. The
+dock's separate recent-I/O spinner is disabled for Codex; rendering and byte
+counters still receive every repaint. Unknown sessions remain idle until
+linked to their JSONL. Fresh-file discovery also feeds the existing session
+linker when the first turn preceded watcher attachment. Discovery retains
+the existing 30-second cadence and 64-recent-session limit. Explicit terminal
+exit clears the indicator, including through an offscreen hold socket.
+
+Regression coverage lives in `activity.test.ts`, `codex-event-stream.test.ts`,
+and `terminal-hold.test.ts` (lifecycle, discovery, partial lines, reconnect
+snapshots, daemon isolation, output independence, and held-terminal exit).
+
+## Codex CLI scrollback across zen switches (2026-09-10)
+
+Once opened, Codex terminal views now stay mounted while hidden. Destroying
+xterm on each zen switch discarded its 5,000-line scrollback; reattachment
+could only replay the daemon's last 256 KB of raw PTY output, which idle
+animation can quickly replace. Retaining xterm preserves the parsed history
+and viewport. TerminalView's existing hidden-output buffering and WebGL
+release still apply. Never-opened offscreen terminals remain deferred, and
+read/dormant/closed sessions still release their renderer. This retains one
+xterm buffer per visited Codex CLI; it does not expand daemon replay storage
+or add a dependency. Regression tests cover both fresh and resumed columns.
+
 ## Open questions
 
 1. **node-pty under Bun:** does the prebuilt binary load cleanly on macOS

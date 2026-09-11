@@ -51,6 +51,27 @@ class FakeSocket implements HoldSocket {
   }
 }
 
+test("a held terminal exit clears working and stops reconnecting", () => {
+  const socket = new FakeSocket();
+  const working: boolean[] = [];
+  let exits = 0;
+  const hold = createTerminalHold({
+    connect: () => socket,
+    onWorking: (value) => working.push(value),
+    onExit: () => {
+      exits++;
+    },
+  });
+  hold.sync("cli");
+  socket.open();
+  socket.message(JSON.stringify({ type: "state", working: true }));
+  socket.message(JSON.stringify({ type: "exit", code: 0 }));
+  expect(working).toEqual([true, false]);
+  expect(exits).toBe(1);
+  expect(socket.closed).not.toBeNull();
+  hold.close();
+});
+
 interface FakeTimer {
   fn: () => void;
   ms: number;

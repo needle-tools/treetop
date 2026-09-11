@@ -21,6 +21,11 @@
    */
   import { createEventDispatcher, onDestroy, onMount } from "svelte";
   import TerminalView from "./TerminalView.svelte";
+  import {
+    codexCliStates,
+    isCodexCliWorking,
+    resolveTerminalWorking,
+  } from "./codex-event-stream";
   import { type SessionMenuItem } from "./SessionMenu.svelte";
   import SessionHeader from "./SessionHeader.svelte";
   import { saveSessionAsLink } from "./save-session-as-link";
@@ -89,7 +94,8 @@
    *  Lives in App.svelte (it's also read for poll-cadence tuning), so
    *  we read it as a prop and bubble changes via on:awaitingChange. */
   export let awaiting = false;
-  /** Live "PTY is emitting output" flag. Drives the rotating-gradient
+  /** Live agent working flag (Codex uses JSONL turn lifecycle).
+   *  Drives the rotating-gradient
    *  border on the agent pill (working) vs the slow pulsate (idle).
    *  Same shape as `awaiting`: held in App.svelte and bubbled up via
    *  on:workingChange. */
@@ -149,6 +155,16 @@
     sshBrowse: { user: string | undefined; host: string; port: number };
     sshCwd: { cwd: string };
   }>();
+
+  let cliExited = false;
+  $: cliWorking =
+    !cliExited && isCodexCliWorking($codexCliStates, source, ownerId, daemonId);
+  function reportTerminalWorking(outputWorking: boolean): void {
+    dispatch("workingChange", {
+      working: resolveTerminalWorking(agent, outputWorking, cliWorking),
+    });
+  }
+  $: if (agent === "codex") reportTerminalWorking(cliWorking);
 
   /** Mirrors the Stop Session UX from SessionView's resume-in-terminal
    *  mode (commit 290cef3): clicking End Session enters a 1-second
@@ -323,7 +339,11 @@
     // while off-screen — see SessionView's hold for the rationale.
     heartbeatMs: 25_000,
     onAwaiting: (awaiting) => dispatch("awaitingChange", { awaiting }),
-    onWorking: (working) => dispatch("workingChange", { working }),
+    onWorking: reportTerminalWorking,
+    onExit: () => {
+      cliExited = true;
+      dispatch("exit");
+    },
   });
 
   function holdConnect(termId: string): HoldSocket {
@@ -345,11 +365,17 @@
     terminalHold.refresh();
   }
 
-  $: terminalMounted = shouldMountNewSessionTerminal({
-    hasCwd: !!cwd,
-    nearViewport,
-    spawnReady,
-  });
+  let terminalMounted = false;
+  let mountedTerminalSource: string | undefined;
+  $: {
+    terminalMounted = shouldMountNewSessionTerminal({
+      hasCwd: !!cwd,
+      nearViewport,
+      spawnReady,
+      alreadyMounted: agent === "codex" && mountedTerminalSource === source,
+    });
+    mountedTerminalSource = terminalMounted ? source : undefined;
+  }
 
   $: terminalHold.sync(
     mounted &&
@@ -508,15 +534,19 @@
       {initialPrompt}
       {prefillCmd}
       {daemonId}
-      onSpawn={(id) => dispatch("spawn", { id })}
+      onSpawn={(id) => {
+        cliExited = false;
+        dispatch("spawn", { id });
+      }}
       onAwaitingChange={(next) =>
         dispatch("awaitingChange", { awaiting: next })}
-      onWorkingChange={(next) => dispatch("workingChange", { working: next })}
+      onWorkingChange={reportTerminalWorking}
       onSshChange={(ssh) => {
         sshSession = ssh;
         if (ssh?.cwd) dispatch("sshCwd", { cwd: ssh.cwd });
       }}
       onExit={() => {
+        cliExited = true;
         /* Deliberately NOT closing the column on PTY exit. Some agents
            (notably `codex`) restart themselves after an in-place update —
            they exit, then a fresh process spawns. If we auto-disposed

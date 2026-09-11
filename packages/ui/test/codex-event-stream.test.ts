@@ -16,9 +16,32 @@ import {
   mergeCodexAppHistoryMessages,
   shouldLoadCodexAppThreadHistory,
   subscribeCodexEvents,
+  resolveTerminalWorking,
+  replaceCodexCliStates,
+  codexCliStates,
+  isCodexCliWorking,
   type CodexAppEvent,
   type CodexEventStreamState,
 } from "../src/codex-event-stream";
+import { get } from "svelte/store";
+
+test("CLI state survives I/O animation and silence and is isolated by daemon/session", () => {
+  replaceCodexCliStates([{ source: "a.jsonl", sessionId: "a", working: true }]);
+  replaceCodexCliStates(
+    [{ source: "a.jsonl", sessionId: "a", working: false }],
+    "remote",
+  );
+  const states = get(codexCliStates);
+  expect(isCodexCliWorking(states, "a.jsonl")).toBe(true);
+  expect(isCodexCliWorking(states, "__new__:codex:x", "a")).toBe(true);
+  expect(isCodexCliWorking(states, "a.jsonl", "a", "remote")).toBe(false);
+  expect(isCodexCliWorking(states, "unknown")).toBe(false);
+  expect(resolveTerminalWorking("codex", true, false)).toBe(false);
+  expect(resolveTerminalWorking("codex", false, true)).toBe(true);
+  expect(resolveTerminalWorking("claude", true, false)).toBe(true);
+  replaceCodexCliStates([]);
+  expect(isCodexCliWorking(get(codexCliStates), "a.jsonl")).toBe(false);
+});
 import {
   buildVisualTranscriptItems,
   buildVisualWorkDisplayEntries,

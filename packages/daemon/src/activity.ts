@@ -11,7 +11,7 @@
  * Read-only. We never write to the session file.
  */
 
-import { watch, type FSWatcher } from "node:fs";
+import { createReadStream, watch, type FSWatcher } from "node:fs";
 import { open, stat } from "node:fs/promises";
 import { detectAgents, type AgentKind, type AgentSession } from "./agents";
 
@@ -25,6 +25,47 @@ export interface ActivityEvent {
 }
 
 export type ActivityListener = (e: ActivityEvent) => void;
+
+export interface CodexCliState {
+  source: string;
+  sessionId: string;
+  working: boolean;
+}
+
+/** CLI repaint bytes never reach this reducer. Only explicit turn boundaries
+ * change the state, so a quiet tool call remains working. */
+export function codexCliWorkingFromEntry(entry: unknown): boolean | undefined {
+  if (!entry || typeof entry !== "object") return;
+  const e = entry as { type?: unknown; payload?: { type?: unknown } };
+  if (e.type !== "event_msg") return;
+  switch (e.payload?.type) {
+    case "task_started":
+      return true;
+    case "task_complete":
+    case "turn_aborted":
+      return false;
+  }
+}
+
+const codexStateListeners = new Set<() => void>();
+export function onCodexCliState(listener: () => void): () => void {
+  codexStateListeners.add(listener);
+  return () => {
+    codexStateListeners.delete(listener);
+  };
+}
+export function getCodexCliStates(): CodexCliState[] {
+  return [...tracked.values()]
+    .filter((t) => t.agent === "codex")
+    .map((t) => ({
+      source: t.path,
+      sessionId: t.sessionId,
+      working: t.working ?? false,
+    }));
+}
+function notifyCodexCliState(): void {
+  for (const listener of codexStateListeners) listener();
+}
 
 /** Read new bytes from `path` starting at `offset`. Returns the text
  *  of the new chunk and the updated offset (= file size after read).
@@ -73,6 +114,10 @@ interface Tracked {
   sessionId: string;
   agent: AgentKind;
   watcher?: FSWatcher;
+  working?: boolean;
+  partial: string;
+  reading: boolean;
+  pending: boolean;
 }
 
 const tracked = new Map<string, Tracked>();
@@ -189,6 +234,7 @@ async function rediscover(
     if (!keepKeys.has(key)) {
       t.watcher?.close();
       tracked.delete(key);
+      if (t.agent === "codex") notifyCodexCliState();
     }
   }
 
@@ -204,6 +250,9 @@ async function rediscover(
       cwd: s.cwd,
       sessionId: s.sessionId ?? "",
       agent: s.agent,
+      partial: "",
+      reading: true,
+      pending: false,
     };
     try {
       if (isStopped()) return;
@@ -215,18 +264,80 @@ async function rediscover(
       continue;
     }
     tracked.set(s.source, t);
+    // Recover the last lifecycle event, including turns started before the
+    // watcher/browser connected. Stream the file without replaying old activity.
+    if (s.agent === "codex" && stats.size > 0) {
+      try {
+        for await (const chunk of createReadStream(s.source, {
+          encoding: "utf8",
+          end: stats.size - 1,
+        })) {
+          consumeLines(t, String(chunk), false);
+        }
+      } catch (err) {
+        console.warn(
+          "supergit daemon: Codex state recovery failed",
+          s.source,
+          err,
+        );
+      }
+    }
+    if (isStopped() || tracked.get(s.source) !== t) return;
+    t.reading = false;
+    if (s.agent === "codex") notifyCodexCliState();
+    // The first turn can be fully written before our next discovery pass.
+    // Let the existing activity-based session linker see newly created CLIs,
+    // but never replay old files into fresh columns on daemon startup.
+    if (s.agent === "codex" && stats.birthtimeMs >= tailStartedAt) {
+      emit({
+        agent: s.agent,
+        cwd: s.cwd,
+        sessionId: t.sessionId,
+        source: s.source,
+        summary: "session discovered",
+        timestamp: s.lastActive,
+      });
+    }
+    // Catch output appended while the initial state was being recovered.
+    await checkTail(s.source);
   }
 }
 
 async function checkTail(path: string): Promise<void> {
   const t = tracked.get(path);
   if (!t) return;
-  const result = await readTailChunk(path, t.offset);
-  if (!result) return;
-  t.offset = result.newOffset;
-  if (!result.text) return;
+  if (t.reading) {
+    t.pending = true;
+    return;
+  }
+  t.reading = true;
+  try {
+    do {
+      t.pending = false;
+      const result = await readTailChunk(path, t.offset);
+      if (!result || tracked.get(path) !== t) return;
+      if (result.newOffset < t.offset) {
+        t.partial = "";
+        t.working = false;
+        if (t.agent === "codex") notifyCodexCliState();
+        t.offset = 0;
+        t.pending = true;
+        continue;
+      }
+      t.offset = result.newOffset;
+      consumeLines(t, result.text, true);
+    } while (t.pending);
+  } catch (err) {
+    console.warn("supergit daemon: activity tail read failed", path, err);
+  } finally {
+    t.reading = false;
+  }
+}
 
-  for (const line of result.text.split("\n")) {
+function consumeLines(t: Tracked, text: string, live: boolean): void {
+  const lines = (t.partial + text).split("\n");
+  t.partial = lines.pop() ?? "";
+  for (const line of lines) {
     if (!line) continue;
     let obj: unknown;
     try {
@@ -234,6 +345,14 @@ async function checkTail(path: string): Promise<void> {
     } catch {
       continue;
     }
+    if (t.agent === "codex") {
+      const next = codexCliWorkingFromEntry(obj);
+      if (next !== undefined && t.working !== next) {
+        t.working = next;
+        if (live) notifyCodexCliState();
+      }
+    }
+    if (!live) continue;
     const summary = summarize(t.agent, obj);
     if (!summary) continue;
     emit({
@@ -248,6 +367,7 @@ async function checkTail(path: string): Promise<void> {
 }
 
 let started = false;
+let tailStartedAt = 0;
 let rediscoverTimer: ReturnType<typeof setInterval> | null = null;
 
 export async function startActivityTail(
@@ -255,14 +375,22 @@ export async function startActivityTail(
 ): Promise<() => void> {
   if (started) return () => {};
   started = true;
+  tailStartedAt = Date.now();
   const detect = options.detectAgents ?? detectAgents;
   let stopped = false;
+  let discovering = false;
   const rediscoverSafely = () => {
-    void rediscover(detect, () => stopped).catch((err) => {
-      if (!stopped) {
-        console.warn("supergit daemon: activity tail rediscover failed", err);
-      }
-    });
+    if (discovering) return;
+    discovering = true;
+    void rediscover(detect, () => stopped)
+      .catch((err) => {
+        if (!stopped) {
+          console.warn("supergit daemon: activity tail rediscover failed", err);
+        }
+      })
+      .finally(() => {
+        discovering = false;
+      });
   };
   rediscoverSafely();
   rediscoverTimer = setInterval(() => {
@@ -274,6 +402,7 @@ export async function startActivityTail(
     rediscoverTimer = null;
     for (const t of tracked.values()) t.watcher?.close();
     tracked.clear();
+    notifyCodexCliState();
     started = false;
   };
 }

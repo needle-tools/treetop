@@ -1,4 +1,42 @@
 import { apiUrl } from "./api";
+import { writable } from "svelte/store";
+
+export interface CodexCliState {
+  source: string;
+  sessionId: string;
+  working: boolean;
+}
+
+/** Full snapshots replace one daemon's state on every reconnect. */
+export const codexCliStates = writable<Record<string, CodexCliState[]>>({});
+export function replaceCodexCliStates(
+  states: CodexCliState[],
+  daemonId?: string,
+): void {
+  codexCliStates.update((current) => ({
+    ...current,
+    [daemonId ?? ""]: states,
+  }));
+}
+export function isCodexCliWorking(
+  states: Record<string, CodexCliState[]>,
+  source: string,
+  sessionId?: string,
+  daemonId?: string,
+): boolean {
+  return (states[daemonId ?? ""] ?? []).some(
+    (s) =>
+      (s.source === source || (!!sessionId && s.sessionId === sessionId)) &&
+      s.working,
+  );
+}
+export function resolveTerminalWorking(
+  agent: string,
+  outputWorking: boolean,
+  cliWorking: boolean,
+): boolean {
+  return agent === "codex" ? cliWorking : outputWorking;
+}
 
 export interface CodexAppEvent {
   kind: "notification" | "request";
