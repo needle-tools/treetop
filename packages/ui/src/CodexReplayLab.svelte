@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onDestroy, onMount, tick } from "svelte";
+  import { afterUpdate, onDestroy, onMount, tick } from "svelte";
   import SessionView from "./SessionView.svelte";
   import SessionArtifactMap from "./SessionArtifactMap.svelte";
   import InspectorPanelHeader from "./InspectorPanelHeader.svelte";
@@ -42,6 +42,7 @@
     replayStepIndexAtOutputTokens,
     replayStepIndexAtElapsedMs,
     replayLabHasDaemon,
+    replayJuiceTransition,
     searchCodexReplaySessions,
     summarizeCodexReplaySessions,
     summarizeCodexReplayPricingUsage,
@@ -60,6 +61,7 @@
     type CodexReplayTranscriptSession,
     type CodexReplayViewModel,
     type ParsedCodexReplay,
+    type ReplayJuiceState,
   } from "./codex-replay-lab";
 
   const daemonEnabled = replayLabHasDaemon(import.meta.env.MODE);
@@ -116,6 +118,20 @@
   let directoryStatus = "";
   let directoryGeneration = 0;
   let directoryFiles = new Map<string, CodexReplayDirectoryFile>();
+  let juiceEnabled = false;
+  let juiceImpactCount = 0;
+  let juiceMoneyImpactCount = 0;
+  const detectJuiceTransition = (() => {
+    let previous: ReplayJuiceState | undefined;
+    return (
+      next: ReplayJuiceState,
+      options: { enabled: boolean; playing: boolean },
+    ) => {
+      const transition = replayJuiceTransition(previous, next, options);
+      previous = next;
+      return transition;
+    };
+  })();
 
   $: stepCount = transport?.stepCount ?? localReplay?.steps.length ?? 0;
   $: playbackTimeline = localReplay
@@ -145,6 +161,9 @@
     defaultModel: replayModel,
     modelsDev: modelsDevPricing,
   });
+  $: replayHasCost = turnAnalysis.turns.some(
+    (turn) => turn.estimatedCostUsd !== undefined,
+  );
   $: sessionCounts = summarizeCodexReplaySessions(sessions);
   $: sessionModels = listCodexReplaySessionModels(sessions);
   $: selectedSessionModel = sessionSelection.startsWith("model:")
@@ -821,6 +840,18 @@
     if (playing) startPlaybackTimer();
   }
 
+  function setJuiceEnabled(event: Event): void {
+    juiceEnabled = (event.currentTarget as HTMLInputElement).checked;
+    detectJuiceTransition(
+      {
+        stepIndex,
+        turnCount: turnAnalysis.turns.length,
+        costUsd: turnAnalysis.totalEstimatedCostUsd,
+      },
+      { enabled: false, playing: false },
+    );
+  }
+
   function markHelpPathCopied(path: string): void {
     copiedHelpPath = path;
     if (copiedHelpPathTimer) clearTimeout(copiedHelpPathTimer);
@@ -860,6 +891,20 @@
     directoryGeneration += 1;
     stopPlayback();
     if (copiedHelpPathTimer) clearTimeout(copiedHelpPathTimer);
+  });
+
+  afterUpdate(() => {
+    const next: ReplayJuiceState = {
+      stepIndex,
+      turnCount: turnAnalysis.turns.length,
+      costUsd: turnAnalysis.totalEstimatedCostUsd,
+    };
+    const transition = detectJuiceTransition(next, {
+      enabled: juiceEnabled,
+      playing,
+    });
+    if (transition.roundImpact) juiceImpactCount += 1;
+    if (transition.moneyImpact) juiceMoneyImpactCount += 1;
   });
 
   onMount(() => {
@@ -1013,6 +1058,8 @@
 <div
   class="replay-lab"
   class:drag-active={dragActive}
+  class:juice-enabled={juiceEnabled}
+  class:juice-playing={juiceEnabled && playing}
   role="region"
   aria-label="Treetop Replay Lab"
   on:dragover={onDragOver}
@@ -1312,6 +1359,24 @@
         </aside>
       {/if}
       <div class="replay-session-area">
+        {#if juiceEnabled && replayHasCost}
+          <div
+            class="replay-juice-meter"
+            class:juice-money-a={juiceMoneyImpactCount > 0 && juiceMoneyImpactCount % 2 === 1}
+            class:juice-money-b={juiceMoneyImpactCount > 0 && juiceMoneyImpactCount % 2 === 0}
+            aria-label={`${formatReplayCost(turnAnalysis.totalEstimatedCostUsd)} estimated session cost`}
+          >
+            <span class="replay-juice-label">Burned</span>
+            <strong>{formatReplayCost(turnAnalysis.totalEstimatedCostUsd)}</strong>
+            <span class="replay-juice-rounds"
+              >{turnAnalysis.turns.length.toLocaleString()}
+              {turnAnalysis.turns.length === 1 ? "round" : "rounds"}</span
+            >
+            <span class="replay-juice-sparks" aria-hidden="true">
+              <i>$</i><i>$</i><i>$</i><i>$</i>
+            </span>
+          </div>
+        {/if}
         {#if loading}
           <div
             class="replay-drop replay-loading"
@@ -1327,7 +1392,11 @@
             class="replay-stage"
             class:replay-transcript-stage={!localReplay}
           >
-            <div class="replay-production-session">
+            <div
+              class="replay-production-session"
+              class:juice-impact-a={juiceEnabled && juiceImpactCount > 0 && juiceImpactCount % 2 === 1}
+              class:juice-impact-b={juiceEnabled && juiceImpactCount > 0 && juiceImpactCount % 2 === 0}
+            >
               {#key `${transcriptSession.threadId}:${replayGeneration}`}
                 <SessionView
                   bind:this={replaySessionView}
@@ -1367,7 +1436,11 @@
           </div>
         {:else}
           <div class="replay-stage">
-            <div class="replay-production-session">
+            <div
+              class="replay-production-session"
+              class:juice-impact-a={juiceEnabled && juiceImpactCount > 0 && juiceImpactCount % 2 === 1}
+              class:juice-impact-b={juiceEnabled && juiceImpactCount > 0 && juiceImpactCount % 2 === 0}
+            >
               {#key replayGeneration}
                 <SessionView
                   bind:this={replaySessionView}
@@ -1482,13 +1555,26 @@
       {/if}
     </main>
   </div>
+  <footer class="replay-lab-footer">
+    <label class="replay-juice-toggle">
+      <span aria-hidden="true">⚡</span>
+      <span>Juice</span>
+      <input
+        type="checkbox"
+        checked={juiceEnabled}
+        on:change={setJuiceEnabled}
+      />
+      <span class="replay-juice-switch" aria-hidden="true"></span>
+    </label>
+  </footer>
 </div>
 
 <style>
   .replay-lab {
+    position: relative;
     height: 100vh;
     display: grid;
-    grid-template-rows: auto 1fr;
+    grid-template-rows: auto 1fr auto;
     gap: 14px;
     padding: 18px;
     box-sizing: border-box;
@@ -1735,8 +1821,209 @@
   }
 
   .replay-session-area {
+    position: relative;
     min-width: 0;
     min-height: 0;
+  }
+
+  .replay-juice-toggle {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    min-height: 34px;
+    padding: 0 10px 0 12px;
+    border: 1px solid var(--border, #3a3a3a);
+    border-radius: 999px;
+    color: var(--muted, #aaa);
+    background: color-mix(in srgb, var(--panel-bg, #181818) 92%, transparent);
+    box-shadow: 0 5px 18px rgb(0 0 0 / 35%);
+    font-size: 12px;
+    font-weight: 700;
+    cursor: pointer;
+    backdrop-filter: blur(8px);
+  }
+
+  .replay-lab-footer {
+    display: flex;
+    justify-content: flex-end;
+  }
+
+  .replay-juice-toggle:has(input:checked) {
+    border-color: color-mix(in srgb, #ffb224 70%, transparent);
+    color: #ffd774;
+    background: color-mix(in srgb, #7b3211 38%, var(--panel-bg, #181818));
+  }
+
+  .replay-juice-toggle input {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    opacity: 0;
+  }
+
+  .replay-juice-switch {
+    position: relative;
+    width: 27px;
+    height: 16px;
+    border-radius: 999px;
+    background: color-mix(in srgb, var(--muted, #999) 30%, transparent);
+  }
+
+  .replay-juice-switch::after {
+    content: "";
+    position: absolute;
+    top: 2px;
+    left: 2px;
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    background: currentColor;
+    transition: transform 140ms ease;
+  }
+
+  .replay-juice-toggle input:checked + .replay-juice-switch::after {
+    transform: translateX(11px);
+  }
+
+  .replay-juice-toggle:focus-within {
+    outline: 2px solid var(--accent, #9ad45f);
+    outline-offset: 2px;
+  }
+
+  .replay-juice-meter {
+    position: absolute;
+    z-index: 20;
+    top: 70px;
+    right: 22px;
+    display: grid;
+    justify-items: end;
+    color: #ffd66b;
+    pointer-events: none;
+    filter: drop-shadow(0 3px 0 rgb(104 36 0 / 75%))
+      drop-shadow(0 10px 22px rgb(255 91 0 / 28%));
+    transform: rotate(1.5deg);
+    transform-origin: center;
+  }
+
+  .replay-juice-meter::before {
+    content: "";
+    position: absolute;
+    z-index: -1;
+    inset: -10px -14px -8px;
+    border: 2px solid rgb(255 185 45 / 55%);
+    clip-path: polygon(5% 0, 100% 8%, 96% 88%, 12% 100%, 0 22%);
+    background: rgb(64 22 7 / 72%);
+  }
+
+  .replay-juice-label,
+  .replay-juice-rounds {
+    color: #ff9e45;
+    font-size: 10px;
+    font-weight: 900;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+  }
+
+  .replay-juice-meter strong {
+    font-size: clamp(38px, 5.5cqw, 78px);
+    font-variant-numeric: tabular-nums;
+    font-weight: 950;
+    line-height: 0.9;
+    letter-spacing: -0.07em;
+  }
+
+  .replay-juice-sparks,
+  .replay-juice-sparks i {
+    position: absolute;
+    inset: 50% auto auto 50%;
+  }
+
+  .replay-juice-sparks i {
+    color: #ffe899;
+    font-size: 16px;
+    font-style: normal;
+    font-weight: 950;
+    opacity: 0;
+  }
+
+  .juice-enabled.juice-playing .replay-juice-sparks i {
+    animation: replay-juice-spark 1.7s ease-out infinite;
+  }
+
+  .replay-juice-sparks i:nth-child(2) {
+    animation-delay: 420ms;
+  }
+
+  .replay-juice-sparks i:nth-child(3) {
+    animation-delay: 840ms;
+  }
+
+  .replay-juice-sparks i:nth-child(4) {
+    animation-delay: 1260ms;
+  }
+
+  .juice-money-a {
+    animation: replay-juice-money-a 240ms cubic-bezier(0.2, 0.9, 0.3, 1.4);
+  }
+
+  .juice-money-b {
+    animation: replay-juice-money-b 240ms cubic-bezier(0.2, 0.9, 0.3, 1.4);
+  }
+
+  .juice-impact-a {
+    animation: replay-juice-camera-a 330ms ease-out;
+  }
+
+  .juice-impact-b {
+    animation: replay-juice-camera-b 330ms ease-out;
+  }
+
+  @keyframes replay-juice-camera-a {
+    0%, 100% { transform: translate3d(0, 0, 0) rotate(0); }
+    18% { transform: translate3d(-7px, 3px, 0) rotate(-0.18deg); }
+    38% { transform: translate3d(6px, -2px, 0) rotate(0.14deg); }
+    62% { transform: translate3d(-3px, 1px, 0) rotate(-0.08deg); }
+  }
+
+  @keyframes replay-juice-camera-b {
+    0%, 100% { transform: translate3d(0, 0, 0) rotate(0); }
+    18% { transform: translate3d(7px, -3px, 0) rotate(0.18deg); }
+    38% { transform: translate3d(-6px, 2px, 0) rotate(-0.14deg); }
+    62% { transform: translate3d(3px, -1px, 0) rotate(0.08deg); }
+  }
+
+  @keyframes replay-juice-money-a {
+    0% { transform: rotate(1.5deg) scale(1); }
+    45% { transform: rotate(-2deg) scale(1.16); }
+    100% { transform: rotate(1.5deg) scale(1); }
+  }
+
+  @keyframes replay-juice-money-b {
+    0% { transform: rotate(1.5deg) scale(1); }
+    45% { transform: rotate(4deg) scale(1.16); }
+    100% { transform: rotate(1.5deg) scale(1); }
+  }
+
+  @keyframes replay-juice-spark {
+    0% { opacity: 0; transform: translate3d(0, 0, 0) rotate(0) scale(0.7); }
+    15% { opacity: 0.9; }
+    100% { opacity: 0; transform: translate3d(var(--spark-x, -74px), -54px, 0) rotate(var(--spark-rotate, -24deg)) scale(1.1); }
+  }
+
+  .replay-juice-sparks i:nth-child(even) {
+    --spark-x: 70px;
+    --spark-rotate: 24deg;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .juice-impact-a,
+    .juice-impact-b,
+    .juice-money-a,
+    .juice-money-b,
+    .juice-enabled.juice-playing .replay-juice-sparks i {
+      animation: none;
+    }
   }
 
   .replay-analysis {
