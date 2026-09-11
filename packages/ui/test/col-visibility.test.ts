@@ -25,26 +25,14 @@ import {
 } from "../src/col-visibility";
 
 describe("sessionViewportNear", () => {
-  test("returns onscreen regardless of which observer reports the reveal first", () => {
-    let elementIntersecting = false;
-    let ancestorsNear = false;
-
-    elementIntersecting = true;
-    expect(sessionViewportNear(elementIntersecting, ancestorsNear)).toBe(false);
-    ancestorsNear = true;
-    expect(sessionViewportNear(elementIntersecting, ancestorsNear)).toBe(true);
-
-    elementIntersecting = false;
-    ancestorsNear = false;
-    ancestorsNear = true;
-    expect(sessionViewportNear(elementIntersecting, ancestorsNear)).toBe(false);
-    elementIntersecting = true;
-    expect(sessionViewportNear(elementIntersecting, ancestorsNear)).toBe(true);
+  test("uses the session observer as the sole body-visibility authority", () => {
+    expect(sessionViewportNear(false, true)).toBe(false);
+    expect(sessionViewportNear(false, false)).toBe(false);
+    expect(sessionViewportNear(true, true)).toBe(true);
   });
 
-  test("stays offscreen while either the element or an ancestor is hidden", () => {
-    expect(sessionViewportNear(false, true)).toBe(false);
-    expect(sessionViewportNear(true, false)).toBe(false);
+  test("does not leave a visible body deferred behind a stale animation class", () => {
+    expect(sessionViewportNear(true, false)).toBe(true);
   });
 });
 

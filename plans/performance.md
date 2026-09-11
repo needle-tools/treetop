@@ -835,15 +835,18 @@ but stale rows inside the refreshed range do not. Source changes clear both the
 cursor and event-deduplication state so one panel lifecycle cannot contaminate
 another thread.
 
-A later lane-return regression came from replacing that body gate's stored
-`IntersectionObserver` result with a synchronous `getBoundingClientRect()`
-read. During row/column class changes the observer callback could run before
-layout settled, leave the body on its geometry-preserving deferred placeholder,
-and receive no correction until another scroll. Body rendering again follows
-the observer's retained intersection signal plus the existing ancestor gates;
-the live geometry read remains only on transcript polling, where it was added
-to avoid polling from a stale callback. Tests pin both possible reveal-callback
-orders so either converges to a rendered body.
+A later lane-return regression had two independent causes. First, the session
+body combined its own retained `IntersectionObserver` result with
+`.row-offscreen` / `.col-offscreen` classes produced by two other observers.
+Those classes exist only to disable decorative animations; callback ordering
+could leave one stale and strand real content on its geometry-preserving
+placeholder. The session observer is now the sole body-mount authority.
+Second, a live app-server pane removed its entire last complete projection
+while deferred offscreen events were replayed or an authoritative
+`thread/read` was pending. A slow or failed reconciliation therefore appeared
+as a wholly blank pane despite already having messages. Catch-up now updates
+the retained projection in place; it never hides known content. Tests pin both
+the stale-animation-class case and the live-catch-up case.
 
 Replay Lab had a separate unbounded path: its read route prepared a projected
 16 MiB transcript tail, then also called the legacy full-file parser to build

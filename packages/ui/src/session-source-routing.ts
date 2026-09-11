@@ -145,11 +145,11 @@ export function shouldRenderSessionReadBody(args: {
   liveAppHistorySource: boolean;
   hasDeferredVisualEvents: boolean;
 }): boolean {
-  const bodyIsNear =
-    args.mode !== "read" || args.nearViewport || args.transcriptOverride;
-  const liveProjectionIsCurrent =
-    !args.liveAppHistorySource || !args.hasDeferredVisualEvents;
-  return bodyIsNear && liveProjectionIsCurrent;
+  // A live pane may be catching up, but its last complete projection remains
+  // valid content. Catch-up must update that projection, never remove it.
+  return (
+    args.mode !== "read" || args.nearViewport || args.transcriptOverride
+  );
 }
 
 /** Transcript adapters publish immutable snapshots. Message count is not a

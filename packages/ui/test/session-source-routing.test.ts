@@ -97,7 +97,7 @@ describe("commandTerminalForSource", () => {
 });
 
 describe("shouldRenderSessionReadBody", () => {
-  test("keeps a returning live panel deferred until its offscreen events catch up", () => {
+  test("keeps the last complete live projection visible while offscreen events catch up", () => {
     expect(
       shouldRenderSessionReadBody({
         mode: "read",
@@ -106,7 +106,7 @@ describe("shouldRenderSessionReadBody", () => {
         liveAppHistorySource: true,
         hasDeferredVisualEvents: true,
       }),
-    ).toBe(false);
+    ).toBe(true);
     expect(
       shouldRenderSessionReadBody({
         mode: "read",
@@ -128,6 +128,18 @@ describe("shouldRenderSessionReadBody", () => {
         hasDeferredVisualEvents: true,
       }),
     ).toBe(true);
+  });
+
+  test("still defers an ordinary read body while its panel is offscreen", () => {
+    expect(
+      shouldRenderSessionReadBody({
+        mode: "read",
+        nearViewport: false,
+        transcriptOverride: false,
+        liveAppHistorySource: false,
+        hasDeferredVisualEvents: false,
+      }),
+    ).toBe(false);
   });
 });
 

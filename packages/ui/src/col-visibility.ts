@@ -77,15 +77,15 @@ export function elementNearViewport(
   return rectNearViewport(node.getBoundingClientRect(), viewport);
 }
 
-/** A session body is safe to render only when both its own observer and the
- * containing row/column agree that it is near the viewport. Keeping these as
- * independent signals makes reveal order irrelevant: either observer may run
- * first while layout and offscreen classes settle. */
+/** The session observer is the sole authority for mounting its body. The
+ * row/column offscreen classes are deliberately only animation hints: they
+ * come from separate observers and can briefly be stale when a hidden lane is
+ * revealed, which must never strand real session content in a deferred state. */
 export function sessionViewportNear(
   elementIntersecting: boolean,
-  ancestorsNear: boolean,
+  _animationAncestorsNear = true,
 ): boolean {
-  return elementIntersecting && ancestorsNear;
+  return elementIntersecting;
 }
 
 export function colVisibility(node: HTMLElement) {

@@ -930,29 +930,14 @@
   let columnNearViewport = false;
   let sessionElementIntersecting = false;
   let sessionVisibilityObs: IntersectionObserver | null = null;
-  let sessionAncestorVisibilityObs: MutationObserver | null = null;
-
-  function sessionAncestorsNearViewport(): boolean {
-    if (!sessionEl) return true;
-    const col = sessionEl.closest(".session-col");
-    const row = sessionEl.closest(".row");
-    return (
-      !col?.classList.contains("col-offscreen") &&
-      !row?.classList.contains("row-offscreen")
-    );
-  }
 
   function sessionElementNearViewport(): boolean {
     if (!sessionEl) return true;
-    if (!sessionAncestorsNearViewport()) return false;
     return elementNearViewport(sessionEl);
   }
 
   function syncSessionViewportState(): void {
-    const near = sessionViewportNear(
-      sessionElementIntersecting,
-      sessionAncestorsNearViewport(),
-    );
+    const near = sessionViewportNear(sessionElementIntersecting);
     if (columnNearViewport === near) return;
     columnNearViewport = near;
     if (near) void requestSessionPollNow();
@@ -976,24 +961,6 @@
       { root: null, rootMargin: "300px", threshold: 0 },
     );
     sessionVisibilityObs.observe(sessionEl);
-    if (typeof MutationObserver !== "undefined") {
-      sessionAncestorVisibilityObs?.disconnect();
-      sessionAncestorVisibilityObs = new MutationObserver(() =>
-        syncSessionViewportState(),
-      );
-      const col = sessionEl.closest(".session-col");
-      const row = sessionEl.closest(".row");
-      col &&
-        sessionAncestorVisibilityObs.observe(col, {
-          attributes: true,
-          attributeFilter: ["class"],
-        });
-      row &&
-        sessionAncestorVisibilityObs.observe(row, {
-          attributes: true,
-          attributeFilter: ["class"],
-        });
-    }
   }
 
   // While an attached agent column is scrolled off-screen (or hidden behind
@@ -5501,8 +5468,6 @@
     mounted = false;
     sessionVisibilityObs?.disconnect();
     sessionVisibilityObs = null;
-    sessionAncestorVisibilityObs?.disconnect();
-    sessionAncestorVisibilityObs = null;
     if (pendingTimer) clearTimeout(pendingTimer);
     if (codexEventSettleTimer !== null) {
       clearTimeout(codexEventSettleTimer);
