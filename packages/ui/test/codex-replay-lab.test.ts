@@ -34,6 +34,7 @@ import {
   replaySourceProgressAtStep,
   replayStepIndexAtElapsedMs,
   replayLabHasDaemon,
+  replayJuiceTransition,
   searchCodexReplaySessions,
   sortCodexReplaySessions,
 } from "../src/codex-replay-lab";
@@ -65,6 +66,56 @@ test("standalone Replay Lab never probes Treetop daemon routes", () => {
   expect(replayLabHasDaemon("replay-lab-static")).toBe(false);
   expect(replayLabHasDaemon("development")).toBe(true);
   expect(replayLabHasDaemon("production")).toBe(true);
+});
+
+describe("Replay Lab juice effects", () => {
+  test("fires an impact only when active playback enters a later round", () => {
+    expect(
+      replayJuiceTransition(
+        { stepIndex: 40, turnCount: 3, costUsd: 1.2 },
+        { stepIndex: 41, turnCount: 4, costUsd: 1.5 },
+        { enabled: true, playing: true },
+      ),
+    ).toEqual({ roundImpact: true, moneyImpact: true });
+
+    expect(
+      replayJuiceTransition(
+        { stepIndex: 40, turnCount: 3, costUsd: 1.2 },
+        { stepIndex: 41, turnCount: 3, costUsd: 1.5 },
+        { enabled: true, playing: true },
+      ),
+    ).toEqual({ roundImpact: false, moneyImpact: true });
+  });
+
+  test("stays quiet while disabled, paused, initializing, or seeking backwards", () => {
+    const previous = { stepIndex: 40, turnCount: 3, costUsd: 1.2 };
+    const next = { stepIndex: 41, turnCount: 4, costUsd: 1.5 };
+
+    expect(
+      replayJuiceTransition(previous, next, {
+        enabled: false,
+        playing: true,
+      }),
+    ).toEqual({ roundImpact: false, moneyImpact: false });
+    expect(
+      replayJuiceTransition(previous, next, {
+        enabled: true,
+        playing: false,
+      }),
+    ).toEqual({ roundImpact: false, moneyImpact: false });
+    expect(
+      replayJuiceTransition(undefined, next, {
+        enabled: true,
+        playing: true,
+      }),
+    ).toEqual({ roundImpact: false, moneyImpact: false });
+    expect(
+      replayJuiceTransition(next, previous, {
+        enabled: true,
+        playing: true,
+      }),
+    ).toEqual({ roundImpact: false, moneyImpact: false });
+  });
 });
 
 describe("Codex replay lab parser", () => {

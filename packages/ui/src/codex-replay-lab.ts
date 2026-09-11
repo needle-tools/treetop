@@ -258,6 +258,25 @@ export interface CodexReplayAnalysis {
   unpricedCheckpoints: number;
 }
 
+export interface ReplayJuiceState {
+  stepIndex: number;
+  turnCount: number;
+  costUsd: number;
+}
+
+export function replayJuiceTransition(
+  previous: ReplayJuiceState | undefined,
+  next: ReplayJuiceState,
+  options: { enabled: boolean; playing: boolean },
+): { roundImpact: boolean; moneyImpact: boolean } {
+  const advancing = previous !== undefined && next.stepIndex > previous.stepIndex;
+  const active = options.enabled && options.playing && advancing;
+  return {
+    roundImpact: active && next.turnCount > previous.turnCount,
+    moneyImpact: active && next.costUsd > previous.costUsd,
+  };
+}
+
 export function analyzeCodexReplayTurns(
   messages: readonly CodexReplayMessage[],
   options: {
