@@ -75,8 +75,7 @@ function formatSessionRelativeTime(iso: string, now: number): string {
   if (s < 120) return "1 minute ago";
   if (s < 3600) return `${Math.floor(s / 60)} minutes ago`;
   if (s < 7200) return "1 hour ago";
-  if (s < 86400) return `${Math.floor(s / 3600)} hours ago`;
-  if (s < 172800) return "yesterday";
+  if (s <= 72 * 3600) return `${Math.floor(s / 3600)} hours ago`;
   return `${Math.floor(s / 86400)} days ago`;
 }
 

@@ -90,20 +90,31 @@ function subagentStringField(value: unknown): string | undefined {
 export function parseCodexToolScriptInvocation(
   source: string,
 ): CodexToolScriptInvocation | undefined {
-  const call = source.match(/tools\.([A-Za-z_$][\w$]*)\s*\(/);
-  if (!call?.[1] || call.index === undefined) return undefined;
-  const argsStart = source.indexOf("(", call.index);
-  const args = codexBalancedCallArgument(source, argsStart);
-  if (!args) return undefined;
-  const rawName = call[1].replace(/__/g, ".");
-  const toolName = canonicalCodexToolName(rawName);
-  const trimmedArgs = args.trim();
-  const variable = trimmedArgs.match(/^[A-Za-z_$][\w$]*$/)?.[0];
-  const toolInput =
-    variable !== undefined
-      ? codexStringVariableValue(source, variable)
-      : parseCodexToolScriptObject(trimmedArgs);
-  return { toolName, toolInput: toolInput ?? trimmedArgs };
+  return parseCodexToolScriptInvocations(source)[0];
+}
+
+export function parseCodexToolScriptInvocations(
+  source: string,
+): CodexToolScriptInvocation[] {
+  const invocations: CodexToolScriptInvocation[] = [];
+  const pattern = /tools\.([A-Za-z_$][\w$]*)\s*\(/g;
+  let call: RegExpExecArray | null;
+  while ((call = pattern.exec(source)) !== null) {
+    if (!call[1]) continue;
+    const argsStart = source.indexOf("(", call.index);
+    const args = codexBalancedCallArgument(source, argsStart);
+    if (!args) continue;
+    const toolName = canonicalCodexToolName(call[1].replace(/__/g, "."));
+    const trimmedArgs = args.trim();
+    const variable = trimmedArgs.match(/^[A-Za-z_$][\w$]*$/)?.[0];
+    const toolInput =
+      variable !== undefined
+        ? codexStringVariableValue(source, variable)
+        : parseCodexToolScriptObject(trimmedArgs);
+    invocations.push({ toolName, toolInput: toolInput ?? trimmedArgs });
+    pattern.lastIndex = argsStart + args.length + 2;
+  }
+  return invocations;
 }
 
 export function canonicalCodexToolName(name: string): string {
@@ -214,7 +225,15 @@ function parseCodexToolScriptObject(source: string): unknown {
   try {
     return JSON.parse(jsonish);
   } catch {
-    return undefined;
+    // Rewriting unquoted keys cannot distinguish wrapper syntax from object
+    // literals inside a quoted command. Recover the command field directly.
+    const command = /(?:^|[{,]\s*)(cmd|command)\s*:\s*("(?:\\.|[^"\\])*")/s.exec(source);
+    if (!command?.[1] || !command[2]) return undefined;
+    try {
+      return { [command[1]]: JSON.parse(command[2]) as string };
+    } catch {
+      return undefined;
+    }
   }
 }
 
@@ -7625,10 +7644,137 @@ function claudeEditSummary(
   return undefined;
 }
 
+function shellHeredocEditSummary(
+  block: MessageBlock,
+): VisualFileEditSummary | undefined {
+  const command = commandTextFromToolInput(block.toolInput, block.toolName);
+  if (!command) return undefined;
+  const opener = /\b(?:cat|tee)\b[^\n]*?(>>?)\s*(['"]?)([^\s'"]+)\2[^\n]*?<<-?\s*(['"]?)([A-Za-z_][A-Za-z0-9_]*)\4[^\n]*\n/.exec(command);
+  if (!opener?.[1] || !opener[3] || !opener[5] || opener.index === undefined) {
+    return undefined;
+  }
+  const rest = command.slice(opener.index + opener[0].length);
+  const markerMatch = new RegExp(`(?:^|\\n)${opener[5]}(?:\\n|$)`).exec(rest);
+  if (!markerMatch) return undefined;
+  const body = rest.slice(0, markerMatch.index).replace(/\n$/, "");
+  return summarizeFileEdits([
+    {
+      path: opener[3],
+      action: opener[1] === ">>" ? "edited" : "added",
+      additions: body ? body.split(/\r?\n/).length : 0,
+      deletions: 0,
+      raw: body,
+    },
+  ]);
+}
+
+function shellScriptEditSummary(
+  block: MessageBlock,
+): VisualFileEditSummary | undefined {
+  const command = commandTextFromToolInput(block.toolInput, block.toolName);
+  if (!command) return undefined;
+
+  const literalPaths = new Map<string, string>();
+  const assignmentPattern = /\b([A-Za-z_$][\w$]*)\s*=\s*(?:Path\s*\(\s*)?(['"])([^'"\n]+)\2\s*\)?/g;
+  for (const match of command.matchAll(assignmentPattern)) {
+    if (match[1] && match[3]) literalPaths.set(match[1], match[3]);
+  }
+
+  function resolvePath(expression: string | undefined): string | undefined {
+    if (!expression) return undefined;
+    const value = expression.trim();
+    const quoted = /^(['"])([^'"\n]+)\1$/.exec(value)?.[2];
+    if (quoted) return quoted;
+    const pathCall = /^Path\s*\(\s*(['"])([^'"\n]+)\1\s*\)$/.exec(value)?.[2];
+    if (pathCall) return pathCall;
+    return literalPaths.get(value);
+  }
+
+  const writes: Array<{ index: number; path: string }> = [];
+  const patterns = [
+    /\bopen\s*\(\s*([^,\n]+)\s*,\s*(['"])[wa][+b]?\2/g,
+    /\b(Path\s*\(\s*['"][^'"\n]+['"]\s*\)|[A-Za-z_$][\w$]*)\s*\.\s*write_(?:text|bytes)\s*\(/g,
+    /\b(?:writeFileSync|appendFileSync|writeFile|appendFile|Bun\.write)\s*\(\s*([^,\n]+)/g,
+  ];
+  for (const pattern of patterns) {
+    for (const match of command.matchAll(pattern)) {
+      const path = resolvePath(match[1]);
+      if (path && match.index !== undefined) writes.push({ index: match.index, path });
+    }
+  }
+  writes.sort((a, b) => a.index - b.index);
+  const seen = new Set<string>();
+  const files = writes.flatMap(({ path }) => {
+    if (seen.has(path)) return [];
+    seen.add(path);
+    return [{ path, action: "edited" as const }];
+  });
+  return files.length > 0 ? summarizeFileEdits(files) : undefined;
+}
+
+function shellFilesystemEditSummary(
+  block: MessageBlock,
+): VisualFileEditSummary | undefined {
+  const command = commandTextFromToolInput(block.toolInput, block.toolName);
+  if (!command) return undefined;
+  const writes: Array<{ index: number; file: VisualFileEdit }> = [];
+
+  for (const match of command.matchAll(/\bsed\s+-i(?:\s+(?:''|""))?\s+(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|\S+)\s+([^\s;&|]+)/g)) {
+    if (match[1] && match.index !== undefined) {
+      writes.push({ index: match.index, file: { path: match[1], action: "edited" } });
+    }
+  }
+  for (const match of command.matchAll(/\b(?:cp|mv)\s+(?:-[^\s]+\s+)*(?:['"]?)([^\s'";&|]+)(?:['"]?)\s+(?:['"]?)([^\s'";&|]+)(?:['"]?)/g)) {
+    if (match[2] && match.index !== undefined) {
+      writes.push({ index: match.index, file: { path: match[2], action: "edited" } });
+    }
+  }
+  writes.sort((a, b) => a.index - b.index);
+  const seen = new Set<string>();
+  const files = writes.flatMap(({ file }) => {
+    if (seen.has(file.path)) return [];
+    seen.add(file.path);
+    return [file];
+  });
+  return files.length > 0 ? summarizeFileEdits(files) : undefined;
+}
+
+function combinedShellEditSummary(block: MessageBlock): VisualFileEditSummary | undefined {
+  const summaries = [
+    shellHeredocEditSummary(block),
+    shellScriptEditSummary(block),
+    shellFilesystemEditSummary(block),
+  ];
+  const seen = new Set<string>();
+  const files = summaries.flatMap((summary) =>
+    (summary?.files ?? []).flatMap((file) => {
+      if (seen.has(file.path)) return [];
+      seen.add(file.path);
+      return [file];
+    }),
+  );
+  return files.length > 0 ? summarizeFileEdits(files) : undefined;
+}
+
 export function visualFileEditSummaryForBlock(
   block: MessageBlock | undefined,
 ): VisualFileEditSummary | undefined {
   if (!block || block.type !== "tool_use") return undefined;
+  if (block.observedFileEdits?.length) {
+    return summarizeFileEdits([...block.observedFileEdits]);
+  }
+  if (block.toolInvocations?.length) {
+    return summarizeFileEdits(
+      block.toolInvocations.flatMap(
+        (invocation) =>
+          visualFileEditSummaryForBlock({
+            type: "tool_use",
+            toolName: invocation.toolName,
+            toolInput: invocation.toolInput,
+          })?.files ?? [],
+      ),
+    );
+  }
   const toolName = block.toolName ?? "";
   const lowerName = toolName.toLowerCase();
   const input = block.toolInput;
@@ -7652,8 +7798,9 @@ export function visualFileEditSummaryForBlock(
   }
 
   if (input && typeof input === "object") {
-    return claudeEditSummary(toolName, input as Record<string, unknown>);
+    const edit = claudeEditSummary(toolName, input as Record<string, unknown>);
+    if (edit) return edit;
   }
 
-  return undefined;
+  return combinedShellEditSummary(block);
 }

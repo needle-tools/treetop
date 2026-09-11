@@ -22,9 +22,11 @@ import {
   contextTokenSnapshotFromUsageRecord,
   estimateModelTokenCost,
   parseCodexImageWrapper,
-  parseCodexToolScriptInvocation,
+  parseCodexToolScriptInvocations,
+  visualFileEditSummaryForBlock,
   type ModelsDevPricingSnapshot,
   type SessionTokenUsageSegment,
+  type VisualFileEdit,
 } from "@treetop/nicifier";
 
 export interface ReplayFrame {
@@ -236,11 +238,13 @@ export interface CodexReplayTurnIssue {
 export interface CodexReplayTurnAnalysis {
   index: number;
   label: string;
+  messageCount: number;
   startedAt?: string;
   endedAt?: string;
   durationMs?: number;
   toolCallCount: number;
   newInputTokens: number;
+  cachedInputTokens: number;
   outputTokens: number;
   reasoningTokens: number;
   tokensPerSecond?: number;
@@ -250,11 +254,23 @@ export interface CodexReplayTurnAnalysis {
   heat: number;
 }
 
+export function replayTurnCompletion(
+  current: Pick<CodexReplayTurnAnalysis, "messageCount">,
+  complete: Pick<CodexReplayTurnAnalysis, "messageCount"> | undefined,
+): number | undefined {
+  if (!complete || complete.messageCount <= 0) return undefined;
+  return clamp01(current.messageCount / complete.messageCount);
+}
+
 export interface CodexReplayAnalysis {
   turns: CodexReplayTurnAnalysis[];
   issueTurnCount: number;
   maxHeat: number;
   totalEstimatedCostUsd: number;
+  totalNewInputTokens: number;
+  totalCachedInputTokens: number;
+  totalOutputTokens: number;
+  totalReasoningTokens: number;
   unpricedCheckpoints: number;
 }
 
@@ -262,18 +278,28 @@ export interface ReplayJuiceState {
   stepIndex: number;
   turnCount: number;
   costUsd: number;
+  newInputTokens: number;
+  cachedInputTokens: number;
+  outputTokens: number;
+  reasoningTokens: number;
 }
 
 export function replayJuiceTransition(
   previous: ReplayJuiceState | undefined,
   next: ReplayJuiceState,
   options: { enabled: boolean; playing: boolean },
-): { roundImpact: boolean; moneyImpact: boolean } {
+): { roundImpact: boolean; moneyImpact: boolean; tokenImpact: boolean } {
   const advancing = previous !== undefined && next.stepIndex > previous.stepIndex;
   const active = options.enabled && options.playing && advancing;
   return {
     roundImpact: active && next.turnCount > previous.turnCount,
     moneyImpact: active && next.costUsd > previous.costUsd,
+    tokenImpact:
+      active &&
+      (next.newInputTokens > previous.newInputTokens ||
+        next.cachedInputTokens > previous.cachedInputTokens ||
+        next.outputTokens > previous.outputTokens ||
+        next.reasoningTokens > previous.reasoningTokens),
   };
 }
 
@@ -298,6 +324,22 @@ export function analyzeCodexReplayTurns(
     maxHeat: turns.reduce((max, turn) => Math.max(max, turn.heat), 0),
     totalEstimatedCostUsd: turns.reduce(
       (total, turn) => total + (turn.estimatedCostUsd ?? 0),
+      0,
+    ),
+    totalNewInputTokens: turns.reduce(
+      (total, turn) => total + turn.newInputTokens,
+      0,
+    ),
+    totalCachedInputTokens: turns.reduce(
+      (total, turn) => total + turn.cachedInputTokens,
+      0,
+    ),
+    totalOutputTokens: turns.reduce(
+      (total, turn) => total + turn.outputTokens,
+      0,
+    ),
+    totalReasoningTokens: turns.reduce(
+      (total, turn) => total + turn.reasoningTokens,
       0,
     ),
     unpricedCheckpoints: turns.reduce(
@@ -356,6 +398,7 @@ function analyzeCodexReplayTurn(
   const toolIds = new Set<string>();
   let anonymousToolCalls = 0;
   let newInputTokens = 0;
+  let cachedInputTokens = 0;
   let outputTokens = 0;
   let reasoningTokens = 0;
   let estimatedCostUsd = 0;
@@ -370,6 +413,7 @@ function analyzeCodexReplayTurn(
     const usage = message.tokenUsage;
     if (!usage) continue;
     newInputTokens += Math.max(0, usage.input - usage.cachedInput);
+    cachedInputTokens += Math.max(0, usage.cachedInput);
     outputTokens += Math.max(0, usage.output);
     reasoningTokens += Math.max(0, usage.reasoningOutput);
     const cost = estimateModelTokenCost(
@@ -451,11 +495,13 @@ function analyzeCodexReplayTurn(
   return {
     index,
     label: replayTurnLabel(messages, index),
+    messageCount: messages.length,
     ...(startedAt ? { startedAt: startedAt.timestamp } : {}),
     ...(endedAt ? { endedAt: endedAt.timestamp } : {}),
     ...(durationMs !== undefined ? { durationMs } : {}),
     toolCallCount,
     newInputTokens,
+    cachedInputTokens,
     outputTokens,
     reasoningTokens,
     ...(pricedCheckpoints > 0 ? { estimatedCostUsd } : {}),
@@ -1996,6 +2042,12 @@ function codexTranscriptStepFromRow(
           toolName: invocation.toolName,
           toolUseId,
           toolInput: invocation.toolInput,
+          ...(invocation.toolInvocations
+            ? { toolInvocations: invocation.toolInvocations }
+            : {}),
+          ...(invocation.observedFileEdits
+            ? { observedFileEdits: invocation.observedFileEdits }
+            : {}),
         },
       ],
     });
@@ -2087,14 +2139,44 @@ function transcriptToolInvocation(
   payload: Record<string, unknown>,
   warnings: string[],
   seq: number,
-): { toolName: string; toolInput: unknown } {
+): {
+  toolName: string;
+  toolInput: unknown;
+  toolInvocations?: readonly {
+    toolName: string;
+    toolInput: unknown;
+    observedFileEdits?: readonly VisualFileEdit[];
+  }[];
+  observedFileEdits?: readonly VisualFileEdit[];
+} {
   const canonicalToolName = canonicalCodexToolName(toolName);
-  const input = transcriptToolInput(payload, warnings, seq);
-  if (canonicalToolName !== "exec_command" || typeof input !== "string") {
-    return { toolName: canonicalToolName, toolInput: input };
-  }
-  const wrapped = parseCodexToolScriptInvocation(input);
-  return wrapped ?? { toolName: canonicalToolName, toolInput: input };
+  const parsed = transcriptToolInput(payload, warnings, seq);
+  const toolInvocations = canonicalToolName === "exec_command" && typeof parsed.input === "string"
+    ? parseCodexToolScriptInvocations(parsed.input)
+    : [];
+  const fullInvocations = toolInvocations.length
+    ? toolInvocations
+    : [{ toolName: canonicalToolName, toolInput: parsed.input }];
+  const clippedInvocations = fullInvocations.map((invocation) => ({
+    ...invocation,
+    toolInput: clipReplayToolInput(invocation.toolInput),
+    ...(parsed.clipped
+      ? {
+          observedFileEdits:
+            visualFileEditSummaryForBlock({ type: "tool_use", ...invocation })?.files
+              .map((file) => ({ ...file, raw: undefined })) ?? [],
+        }
+      : {}),
+  }));
+  const observedFileEdits = clippedInvocations.flatMap(
+    (invocation) => invocation.observedFileEdits ?? [],
+  );
+  const primary = clippedInvocations[0]!;
+  return {
+    ...primary,
+    ...(clippedInvocations.length > 1 ? { toolInvocations: clippedInvocations } : {}),
+    ...(observedFileEdits.length > 0 ? { observedFileEdits } : {}),
+  };
 }
 
 function transcriptMessageStep(
@@ -2110,18 +2192,27 @@ function transcriptToolInput(
   payload: Record<string, unknown>,
   _warnings: string[],
   _seq: number,
-): unknown {
+): { input: unknown; clipped: boolean } {
   const raw =
     objectString(payload, "arguments") ??
     objectString(payload, "input") ??
     objectString(payload, "content");
-  if (!raw) return {};
-  if (raw.length > REPLAY_TEXT_LIMIT) return clipReplayText(raw);
+  if (!raw) return { input: {}, clipped: false };
   try {
-    return JSON.parse(raw);
+    return { input: JSON.parse(raw), clipped: raw.length > REPLAY_TEXT_LIMIT };
   } catch {
-    return raw;
+    return { input: raw, clipped: raw.length > REPLAY_TEXT_LIMIT };
   }
+}
+
+function clipReplayToolInput(input: unknown): unknown {
+  if (typeof input === "string") return clipReplayText(input);
+  if (!input || typeof input !== "object" || Array.isArray(input)) return input;
+  const clipped = { ...(input as Record<string, unknown>) };
+  for (const key of ["cmd", "command", "patch", "input", "content"]) {
+    if (typeof clipped[key] === "string") clipped[key] = clipReplayText(clipped[key]);
+  }
+  return clipped;
 }
 
 function transcriptToolOutputBlocks(payload: Record<string, unknown>): {

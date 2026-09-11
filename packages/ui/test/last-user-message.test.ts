@@ -8318,4 +8318,75 @@ describe("visualFileEditSummaryForBlock", () => {
       ],
     });
   });
+
+  it("summarizes files mutated by inline Python and JavaScript scripts", () => {
+    expect(
+      visualFileEditSummaryForBlock({
+        type: "tool_use",
+        toolName: "exec_command",
+        toolInput: {
+          cmd: [
+            "python3 - <<'PY'",
+            "from pathlib import Path",
+            "p = 'src/App.svelte'",
+            "open(p, 'w').write('replacement')",
+            "Path('tests/app.test.ts').write_text('test')",
+            "PY",
+          ].join("\n"),
+        },
+      }),
+    ).toEqual({
+      title: "Edited 2 files",
+      files: [
+        { path: "src/App.svelte", action: "edited" },
+        { path: "tests/app.test.ts", action: "edited" },
+      ],
+    });
+
+    expect(
+      visualFileEditSummaryForBlock({
+        type: "tool_use",
+        toolName: "exec_command",
+        toolInput: {
+          cmd: "node -e \"const p = 'generated.json'; writeFileSync(p, body); appendFileSync('trace.log', line)\"",
+        },
+      }),
+    ).toEqual({
+      title: "Edited 2 files",
+      files: [
+        { path: "generated.json", action: "edited" },
+        { path: "trace.log", action: "edited" },
+      ],
+    });
+  });
+
+  it("combines shell heredocs, scripted edits, and direct filesystem mutations", () => {
+    expect(
+      visualFileEditSummaryForBlock({
+        type: "tool_use",
+        toolName: "exec_command",
+        toolInput: {
+          cmd: [
+            "cat > src/new.ts <<'EOF'",
+            "one",
+            "two",
+            "EOF",
+            "python3 - <<'PY'",
+            "p='src/other.ts'; open(p,'w').write('changed')",
+            "PY",
+            "sed -i '' 's/old/new/' src/existing.ts",
+            "cp /tmp/result.ts src/copied.ts",
+          ].join("\n"),
+        },
+      }),
+    ).toEqual({
+      title: "Edited 4 files",
+      files: [
+        { path: "src/new.ts", action: "added", additions: 2, deletions: 0, raw: "one\ntwo" },
+        { path: "src/other.ts", action: "edited" },
+        { path: "src/existing.ts", action: "edited" },
+        { path: "src/copied.ts", action: "edited" },
+      ],
+    });
+  });
 });

@@ -244,6 +244,19 @@ function toolUseBlock(
   );
 }
 
+function toolUseBlocks(entry: VisualWorkDisplayEntryLike): MessageBlock[] {
+  const block = toolUseBlock(entry);
+  if (!block) return [];
+  if (!block.toolInvocations?.length) return [block];
+  return block.toolInvocations.map((invocation) => ({
+    type: "tool_use",
+    toolName: invocation.toolName,
+    toolInput: invocation.toolInput,
+    observedFileEdits: invocation.observedFileEdits,
+    toolUseId: block.toolUseId,
+  }));
+}
+
 function toolResultBlock(
   entry: VisualWorkDisplayEntryLike,
 ): MessageBlock | undefined {
@@ -368,9 +381,10 @@ function actionCategoryCounts(
     counts.set("thinking", thinkingCount);
   }
   for (const entry of toolDisplayEntries(entries)) {
-    const toolBlock = toolUseBlock(entry);
-    const category = inferToolCategory(toolBlock);
-    counts.set(category, (counts.get(category) ?? 0) + 1);
+    for (const toolBlock of toolUseBlocks(entry)) {
+      const category = inferToolCategory(toolBlock);
+      counts.set(category, (counts.get(category) ?? 0) + 1);
+    }
   }
   return [...counts.entries()]
     .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
@@ -387,9 +401,10 @@ function toolCategoryCounts(
 ): VisualWorkCategoryCount[] {
   const counts = new Map<string, number>();
   for (const entry of toolDisplayEntries(entries)) {
-    const toolBlock = toolUseBlock(entry);
-    const category = inferToolCategory(toolBlock);
-    counts.set(category, (counts.get(category) ?? 0) + 1);
+    for (const toolBlock of toolUseBlocks(entry)) {
+      const category = inferToolCategory(toolBlock);
+      counts.set(category, (counts.get(category) ?? 0) + 1);
+    }
   }
   return [...counts.entries()]
     .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
@@ -406,9 +421,11 @@ function languageCounts(
 ): VisualWorkLanguageCount[] {
   const counts = new Map<string, number>();
   for (const entry of toolDisplayEntries(entries)) {
-    const label = visualToolInlineScriptLanguageLabel(toolUseBlock(entry));
-    if (!label) continue;
-    counts.set(label, (counts.get(label) ?? 0) + 1);
+    for (const toolBlock of toolUseBlocks(entry)) {
+      const label = visualToolInlineScriptLanguageLabel(toolBlock);
+      if (!label) continue;
+      counts.set(label, (counts.get(label) ?? 0) + 1);
+    }
   }
   return [...counts.entries()]
     .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
@@ -858,31 +875,30 @@ function artifactsForEntry(
     return [];
   }
   const artifacts: VisualWorkArtifact[] = [];
-  const toolBlock = toolUseBlock(entry);
+  const primaryToolBlock = toolUseBlock(entry);
   const resultBlock = toolResultBlock(entry);
-  const readPreview = visualToolReadResultPreview(toolBlock, resultBlock);
-  const editSummary = visualFileEditSummaryForBlock(toolBlock);
-  if (editSummary) {
-    for (const file of editSummary.files) {
-      addArtifact(artifacts, {
-        kind: "file",
-        action: "changed",
-        label: basename(file.path),
-        path: file.path,
-        additions: file.additions,
-        deletions: file.deletions,
-        diff: file.raw,
-        fileAction: file.action,
-      });
+  for (const toolBlock of toolUseBlocks(entry)) {
+    const readPreview = visualToolReadResultPreview(toolBlock, resultBlock);
+    const editSummary = visualFileEditSummaryForBlock(toolBlock);
+    const editedPaths = new Set(editSummary?.files.map((file) => file.path) ?? []);
+    if (editSummary) {
+      for (const file of editSummary.files) {
+        addArtifact(artifacts, {
+          kind: "file",
+          action: "changed",
+          label: basename(file.path),
+          path: file.path,
+          additions: file.additions,
+          deletions: file.deletions,
+          diff: file.raw,
+          fileAction: file.action,
+        });
+      }
     }
-  }
-  for (const media of visualToolMediaBlocks(toolBlock, resultBlock)) {
-    addArtifact(artifacts, mediaArtifact(media, toolBlock));
-  }
-  if (!editSummary) {
     for (const part of visualToolPreviewParts(toolBlock)) {
       if (part.kind !== "path") continue;
       if (!looksLikeArtifactPath(part.path, part.text)) continue;
+      if (editedPaths.has(part.path)) continue;
       addArtifact(artifacts, {
         kind: "file",
         action: "used",
@@ -892,6 +908,9 @@ function artifactsForEntry(
         previewTitle: readPreview?.title,
       });
     }
+  }
+  for (const media of visualToolMediaBlocks(primaryToolBlock, resultBlock)) {
+    addArtifact(artifacts, mediaArtifact(media, primaryToolBlock));
   }
   return artifacts;
 }
@@ -947,31 +966,29 @@ function changedFileSummary(
     }
   >();
   for (const entry of entries) {
-    const summary = visualFileEditSummaryForBlock(toolUseBlock(entry));
-    if (!summary) continue;
-    const totals = visualFileEditTotals(summary);
-    for (const file of summary.files) {
-      const existing = files.get(file.path) ?? {
-        path: file.path,
-        additions: 0,
-        deletions: 0,
-        sawAdd: false,
-        sawDel: false,
-        diffs: [],
-      };
-      if (file.additions !== undefined) {
-        existing.additions += file.additions;
-        existing.sawAdd = true;
+    for (const toolBlock of toolUseBlocks(entry)) {
+      const summary = visualFileEditSummaryForBlock(toolBlock);
+      if (!summary) continue;
+      for (const file of summary.files) {
+        const existing = files.get(file.path) ?? {
+          path: file.path,
+          additions: 0,
+          deletions: 0,
+          sawAdd: false,
+          sawDel: false,
+          diffs: [],
+        };
+        if (file.additions !== undefined) {
+          existing.additions += file.additions;
+          existing.sawAdd = true;
+        }
+        if (file.deletions !== undefined) {
+          existing.deletions += file.deletions;
+          existing.sawDel = true;
+        }
+        if (file.raw?.trim()) existing.diffs.push(file.raw.trim());
+        files.set(file.path, existing);
       }
-      if (file.deletions !== undefined) {
-        existing.deletions += file.deletions;
-        existing.sawDel = true;
-      }
-      if (file.raw?.trim()) existing.diffs.push(file.raw.trim());
-      files.set(file.path, existing);
-    }
-    if (summary.files.length === 0 && totals.additions === undefined) {
-      continue;
     }
   }
   const changed = [...files.values()];
@@ -1013,7 +1030,8 @@ function remoteHosts(
 ): string[] {
   return uniqueSorted(
     entries
-      .map((entry) => visualToolRemoteHostLabel(toolUseBlock(entry)))
+      .flatMap((entry) => toolUseBlocks(entry))
+      .map((block) => visualToolRemoteHostLabel(block))
       .filter((host): host is string => !!host),
   );
 }

@@ -7,6 +7,7 @@
   import {
     createSessionArtifactEvolutionTracker,
     filterSessionArtifactEvolution,
+    sessionArtifactJuiceTransition,
     sessionArtifactTurnCounts,
     sessionArtifactTurnWindow,
     type SessionArtifactFilter,
@@ -23,6 +24,7 @@
   export let daemonId: string | undefined = undefined;
   export let onClose: (() => void) | undefined = undefined;
   export let onDragStart: ((event: DragEvent) => void) | undefined = undefined;
+  export let juiceEnabled = false;
 
   const tracker = createSessionArtifactEvolutionTracker();
   const emptyEvolution: SessionArtifactEvolution = {
@@ -47,6 +49,16 @@
   let evolutionOpen = false;
   let visibleTurnLimit = 200;
   let artifactFilter: SessionArtifactFilter = "all";
+  let previousJuiceTotals: SessionArtifactEvolution["totals"] | undefined;
+  let readImpactCount = 0;
+  let writeImpactCount = 0;
+
+  function updateJuiceImpact(next: SessionArtifactEvolution["totals"]): void {
+    const impact = sessionArtifactJuiceTransition(previousJuiceTotals, next, juiceEnabled);
+    previousJuiceTotals = { ...next };
+    if (impact.readImpact) readImpactCount += 1;
+    if (impact.writeImpact) writeImpactCount += 1;
+  }
 
   function queueDisplayedItems(next: readonly VisualTranscriptItem[]): void {
     pendingItems = next;
@@ -74,6 +86,7 @@
   $: evolution = displayedItems.length
     ? tracker.update(displayedItems)
     : emptyEvolution;
+  $: updateJuiceImpact(evolution.totals);
   $: filteredEvolution = filterSessionArtifactEvolution(evolution, artifactFilter);
   $: artifactRows = buildSparseArtifactRows(filteredEvolution.artifacts, worktreePath);
   $: fileCount = artifactRows.filter((row) => row.kind === "file").length;
@@ -101,7 +114,14 @@
   });
 </script>
 
-<section class="artifact-map-panel">
+<section
+  class="artifact-map-panel"
+  class:artifact-juice={juiceEnabled}
+  class:artifact-read-impact-a={juiceEnabled && readImpactCount > 0 && readImpactCount % 2 === 1}
+  class:artifact-read-impact-b={juiceEnabled && readImpactCount > 0 && readImpactCount % 2 === 0}
+  class:artifact-write-impact-a={juiceEnabled && writeImpactCount > 0 && writeImpactCount % 2 === 1}
+  class:artifact-write-impact-b={juiceEnabled && writeImpactCount > 0 && writeImpactCount % 2 === 0}
+>
   <InspectorPanelHeader
     title="Artifact Map"
     subtitle={`${fileCount} files`}
@@ -118,10 +138,11 @@
       <button type="button" class:selected={artifactFilter === "all"} on:click={() => (artifactFilter = "all")}>All</button>
       <button type="button" class:selected={artifactFilter === "reads"} on:click={() => (artifactFilter = "reads")}>Reads {evolution.totals.reads}</button>
       <button type="button" class:selected={artifactFilter === "writes"} on:click={() => (artifactFilter = "writes")}>Writes {evolution.totals.writes}</button>
+      <button type="button" class:selected={artifactFilter === "partial-writes"} on:click={() => (artifactFilter = "partial-writes")}>Partial {evolution.totals.partialWrites}</button>
     </div>
     <div class="artifact-map-filter-details">
       {#if artifactFilter !== "writes"}<span>{filteredEvolution.totals.partialReads} ranged</span>{/if}
-      {#if artifactFilter !== "reads"}<span>{filteredEvolution.totals.partialWrites} partial writes</span>{/if}
+      {#if artifactFilter !== "reads" && artifactFilter !== "partial-writes"}<span>{filteredEvolution.totals.partialWrites} partial writes</span>{/if}
       {#if filteredEvolution.totals.additions || filteredEvolution.totals.deletions}
         <span class="artifact-map-lines">+{filteredEvolution.totals.additions} −{filteredEvolution.totals.deletions}</span>
       {/if}
@@ -130,7 +151,7 @@
 
   <div class="artifact-map-body">
     {#if filteredEvolution.artifacts.length === 0}
-      <p class="artifact-map-empty">No {artifactFilter === "all" ? "file activity" : artifactFilter} yet.</p>
+      <p class="artifact-map-empty">No {artifactFilter === "all" ? "file activity" : artifactFilter.replace("-", " ")} yet.</p>
     {:else}
       <section class="artifact-map-overall">
         <h3>Overall</h3>
@@ -181,6 +202,7 @@
 
 <style>
   .artifact-map-panel {
+    position: relative;
     display: grid;
     grid-template-rows: auto auto minmax(0, 1fr);
     width: 100%;
@@ -190,6 +212,36 @@
     overflow: hidden;
     color: var(--text-1);
     background: var(--surface-1);
+  }
+  .artifact-map-panel.artifact-juice {
+    box-shadow: inset 0 0 22px rgb(255 139 42 / 7%);
+  }
+  .artifact-map-panel.artifact-juice::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    border: 1px solid rgb(255 178 69 / 22%);
+    pointer-events: none;
+  }
+  .artifact-read-impact-a,
+  .artifact-read-impact-b {
+    animation: artifact-read-impact 260ms ease-out;
+  }
+  .artifact-write-impact-a,
+  .artifact-write-impact-b {
+    animation: artifact-write-impact 360ms cubic-bezier(0.2, 0.9, 0.3, 1.3);
+  }
+  @keyframes artifact-read-impact {
+    45% { box-shadow: inset 0 0 34px rgb(100 204 255 / 24%); }
+  }
+  @keyframes artifact-write-impact {
+    40% { transform: translateX(2px); box-shadow: inset 0 0 44px rgb(255 128 35 / 32%); }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .artifact-read-impact-a,
+    .artifact-read-impact-b,
+    .artifact-write-impact-a,
+    .artifact-write-impact-b { animation: none; }
   }
   .artifact-map-summary,
   .artifact-map-turn span,

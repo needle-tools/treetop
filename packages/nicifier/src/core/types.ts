@@ -5,6 +5,12 @@ export interface VisualToolBlock {
   toolUseId?: string;
   toolName?: string;
   toolInput?: unknown;
+  toolInvocations?: readonly {
+    toolName: string;
+    toolInput: unknown;
+    observedFileEdits?: readonly VisualFileEdit[];
+  }[];
+  observedFileEdits?: readonly VisualFileEdit[];
   approvalPolicy?: string;
   approvalDecision?: string;
   sandboxPolicy?: string;

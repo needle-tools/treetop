@@ -28,6 +28,8 @@ export interface ModelPriceDefinition {
   provider: "OpenAI" | "Anthropic";
   aliases: readonly string[];
   periods: readonly ModelPricePeriod[];
+  /** Source file used to reconstruct models.dev's Git-backed price history. */
+  historyPath?: string;
 }
 
 export interface ResolvedModelPricing {
@@ -100,6 +102,8 @@ export interface LoadModelsDevPricingOptions {
   cacheKey?: string;
   observedAt?: string;
   timeoutMs?: number;
+  includeHistory?: boolean;
+  historyModelIds?: readonly string[];
 }
 
 export interface ModelTokenCost {
@@ -424,7 +428,10 @@ export function modelsDevPricingSnapshotFrom(
     value && typeof value === "object"
       ? (value as Record<string, unknown>)
       : {};
-  const models: ModelPriceDefinition[] = [];
+  const models = new Map<
+    string,
+    { definition: ModelPriceDefinition; canonical: boolean }
+  >();
   for (const [providerKey, providerName] of [
     ["openai", "OpenAI"],
     ["anthropic", "Anthropic"],
@@ -441,10 +448,11 @@ export function modelsDevPricingSnapshotFrom(
       );
       const rates = modelsDevRates(rawModel?.cost);
       if (!id || !rates) continue;
-      models.push({
+      const definition: ModelPriceDefinition = {
         id,
         provider: providerName,
         aliases: [id],
+        historyPath: `providers/${providerKey}/models/${key}.toml`,
         periods: [
           {
             from:
@@ -455,13 +463,19 @@ export function modelsDevPricingSnapshotFrom(
             note: `models.dev snapshot observed ${timestampIso(observedAt)}`,
           },
         ],
-      });
+      };
+      const mapKey = `${providerKey}:${id}`;
+      const canonical = key === id;
+      const existing = models.get(mapKey);
+      if (!existing || (canonical && !existing.canonical)) {
+        models.set(mapKey, { definition, canonical });
+      }
     }
   }
   return {
     observedAt: timestampIso(observedAt),
     source: "https://models.dev/api.json",
-    models,
+    models: [...models.values()].map(({ definition }) => definition),
   };
 }
 
@@ -477,11 +491,182 @@ const modelsDevLoads = new Map<
   Promise<ModelsDevPricingSnapshot | undefined>
 >();
 
-/** Fetches models.dev once per cache key. Failure leaves bundled pricing active. */
+interface ModelsDevGitCommit {
+  sha?: unknown;
+  commit?: { committer?: { date?: unknown } };
+}
+
+function tomlNumber(value: string): number | undefined {
+  const normalized = value.trim().replace(/_/g, "");
+  if (!/^(?:\d+(?:\.\d+)?|\.\d+)$/.test(normalized)) return undefined;
+  return finiteRate(Number(normalized));
+}
+
+function modelsDevCostFromToml(value: string): ModelsDevCost | undefined {
+  const cost: ModelsDevCost = {};
+  const tiers: NonNullable<ModelsDevCost["tiers"]> = [];
+  let section: "cost" | "tier" | "other" = "other";
+  let tier: NonNullable<ModelsDevCost["tiers"]>[number] | undefined;
+  for (const rawLine of value.split(/\r?\n/)) {
+    const line = rawLine.replace(/\s+#.*$/, "").trim();
+    if (!line) continue;
+    if (line === "[cost]") {
+      section = "cost";
+      tier = undefined;
+      continue;
+    }
+    if (line === "[[cost.tiers]]") {
+      section = "tier";
+      tier = {};
+      tiers.push(tier);
+      continue;
+    }
+    if (line.startsWith("[")) {
+      section = "other";
+      tier = undefined;
+      continue;
+    }
+    if (section === "other") continue;
+    const assignment = line.match(/^([a-z_]+)\s*=\s*(.+)$/i);
+    if (!assignment) continue;
+    const [, key, rawValue] = assignment;
+    if (section === "tier" && key === "tier" && tier) {
+      const size = rawValue.match(/\bsize\s*=\s*([\d_]+(?:\.\d+)?)\b/i);
+      const parsedSize = size ? tomlNumber(size[1]) : undefined;
+      if (parsedSize !== undefined)
+        tier.tier = { type: "context", size: parsedSize };
+      continue;
+    }
+    if (!["input", "output", "cache_read", "cache_write"].includes(key))
+      continue;
+    const parsed = tomlNumber(rawValue);
+    if (parsed === undefined) continue;
+    const target = section === "tier" ? tier : cost;
+    if (target)
+      target[key as "input" | "output" | "cache_read" | "cache_write"] = parsed;
+  }
+  if (tiers.length) cost.tiers = tiers;
+  return modelsDevRates(cost) ? cost : undefined;
+}
+
+function sameRates(left: ModelTokenRates, right: ModelTokenRates): boolean {
+  return [
+    "input",
+    "cachedInput",
+    "cacheWriteInput",
+    "output",
+    "thresholdTokens",
+    "highInput",
+    "highCachedInput",
+    "highCacheWriteInput",
+    "highOutput",
+  ].every(
+    (key) =>
+      left[key as keyof ModelTokenRates] ===
+      right[key as keyof ModelTokenRates],
+  );
+}
+
+async function modelDefinitionWithGitHistory(
+  definition: ModelPriceDefinition,
+  fetcher: typeof fetch,
+  signal: AbortSignal,
+): Promise<ModelPriceDefinition> {
+  if (!definition.historyPath) return definition;
+  const query = new URLSearchParams({
+    path: definition.historyPath,
+    per_page: "100",
+  });
+  const commitsResponse = await fetcher(
+    `https://api.github.com/repos/anomalyco/models.dev/commits?${query}`,
+    { signal, headers: { accept: "application/vnd.github+json" } },
+  );
+  if (!commitsResponse.ok) return definition;
+  const commits = (await commitsResponse.json()) as ModelsDevGitCommit[];
+  if (!Array.isArray(commits) || !commits.length) return definition;
+  const encodedPath = definition.historyPath
+    .split("/")
+    .map(encodeURIComponent)
+    .join("/");
+  const revisions = await Promise.all(
+    commits.map(async (commit) => {
+      const sha = typeof commit.sha === "string" ? commit.sha : "";
+      const date = utcBoundary(commit.commit?.committer?.date);
+      if (!sha || !date) return undefined;
+      const response = await fetcher(
+        `https://raw.githubusercontent.com/anomalyco/models.dev/${encodeURIComponent(sha)}/${encodedPath}`,
+        { signal },
+      );
+      if (!response.ok) return undefined;
+      const rates = modelsDevRates(
+        modelsDevCostFromToml(await response.text()),
+      );
+      if (!rates) return undefined;
+      return { sha, date, rates };
+    }),
+  );
+  const chronological = revisions
+    .filter((revision): revision is NonNullable<typeof revision> =>
+      Boolean(revision),
+    )
+    .sort((a, b) => a.date.localeCompare(b.date));
+  const changes: typeof chronological = [];
+  for (const revision of chronological) {
+    if (changes.length && sameRates(changes.at(-1)!.rates, revision.rates))
+      continue;
+    changes.push(revision);
+  }
+  if (!changes.length) return definition;
+  return {
+    ...definition,
+    periods: changes.map((revision, index) => ({
+      from: revision.date,
+      ...(changes[index + 1] ? { before: changes[index + 1].date } : {}),
+      rates: revision.rates,
+      source: `https://github.com/anomalyco/models.dev/commit/${revision.sha}`,
+      note: `models.dev Git history recorded ${revision.date}`,
+    })),
+  };
+}
+
+async function modelsDevSnapshotWithGitHistory(
+  snapshot: ModelsDevPricingSnapshot,
+  options: LoadModelsDevPricingOptions,
+  signal: AbortSignal,
+): Promise<ModelsDevPricingSnapshot> {
+  const selected = new Set(
+    (
+      options.historyModelIds ??
+      MODEL_PRICE_CATALOG.map((definition) => definition.id)
+    ).map((id) => normalizePricedModelId(id)),
+  );
+  const fetcher = options.fetcher ?? fetch;
+  const models = await Promise.all(
+    snapshot.models.map(async (definition) => {
+      if (!selected.has(definition.id)) return definition;
+      try {
+        return await modelDefinitionWithGitHistory(definition, fetcher, signal);
+      } catch {
+        return definition;
+      }
+    }),
+  );
+  return { ...snapshot, models };
+}
+
+/** Fetches models.dev once per cache key. Git history is opt-in because it
+ * requires several additional GitHub requests for each selected model. */
 export function loadModelsDevPricing(
   options: LoadModelsDevPricingOptions = {},
 ): Promise<ModelsDevPricingSnapshot | undefined> {
-  const cacheKey = options.cacheKey ?? "default";
+  const includeHistory = options.includeHistory ?? false;
+  const historyIds = [...(options.historyModelIds ?? [])]
+    .map((id) => normalizePricedModelId(id))
+    .filter(Boolean)
+    .sort();
+  const cacheKey =
+    options.cacheKey ??
+    (includeHistory ? `history:${historyIds.join(",")}` : "current");
   const existing = modelsDevLoads.get(cacheKey);
   if (existing) return existing;
   const promise = (async () => {
@@ -496,9 +681,15 @@ export function loadModelsDevPricing(
         { signal: controller.signal },
       );
       if (!response.ok) return undefined;
-      return modelsDevPricingSnapshotFrom(
+      const snapshot = modelsDevPricingSnapshotFrom(
         await response.json(),
         options.observedAt ?? new Date(),
+      );
+      if (!includeHistory) return snapshot;
+      return await modelsDevSnapshotWithGitHistory(
+        snapshot,
+        options,
+        controller.signal,
       );
     } catch {
       return undefined;
@@ -544,28 +735,43 @@ export function modelPricingAt(
   const modelsDevDefinition = options.modelsDev
     ? findDefinition(options.modelsDev.models)
     : undefined;
-  const observedAtMs = options.modelsDev
-    ? Date.parse(options.modelsDev.observedAt)
-    : Infinity;
-  const definition =
-    modelsDevDefinition &&
-    (!bundledDefinition || atMs >= observedAtMs || at === undefined)
-      ? modelsDevDefinition
-      : (bundledDefinition ?? modelsDevDefinition);
-  if (!definition) return undefined;
-  const period = definition.periods.find((candidate) => {
-    const fromMs = candidate.from ? Date.parse(candidate.from) : -Infinity;
-    const beforeMs = candidate.before ? Date.parse(candidate.before) : Infinity;
-    return atMs >= fromMs && atMs < beforeMs;
+  const activePeriod = (definition: ModelPriceDefinition | undefined) =>
+    definition?.periods.find((candidate) => {
+      const fromMs = candidate.from ? Date.parse(candidate.from) : -Infinity;
+      const beforeMs = candidate.before
+        ? Date.parse(candidate.before)
+        : Infinity;
+      return atMs >= fromMs && atMs < beforeMs;
+    });
+  const bundledPeriod = activePeriod(bundledDefinition);
+  const modelsDevPeriod = activePeriod(modelsDevDefinition);
+  const candidates = [
+    ...(bundledPeriod && bundledDefinition
+      ? [{ definition: bundledDefinition, period: bundledPeriod, live: false }]
+      : []),
+    ...(modelsDevPeriod && modelsDevDefinition
+      ? [
+          {
+            definition: modelsDevDefinition,
+            period: modelsDevPeriod,
+            live: true,
+          },
+        ]
+      : []),
+  ].sort((left, right) => {
+    const leftFrom = left.period.from
+      ? Date.parse(left.period.from)
+      : -Infinity;
+    const rightFrom = right.period.from
+      ? Date.parse(right.period.from)
+      : -Infinity;
+    return rightFrom - leftFrom || Number(right.live) - Number(left.live);
   });
-  if (!period) return undefined;
-  const bundledPeriod = bundledDefinition?.periods.find((candidate) => {
-    const fromMs = candidate.from ? Date.parse(candidate.from) : -Infinity;
-    const beforeMs = candidate.before ? Date.parse(candidate.before) : Infinity;
-    return atMs >= fromMs && atMs < beforeMs;
-  });
+  const selected = candidates[0];
+  if (!selected) return undefined;
+  const { definition, period } = selected;
   const rates =
-    definition === modelsDevDefinition && bundledPeriod
+    selected.live && bundledPeriod
       ? {
           ...period.rates,
           cacheWriteInput1h:
