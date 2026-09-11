@@ -11,8 +11,9 @@
     buildSparseArtifactRows,
     sparseArtifactRowActionSummary,
     sparseArtifactRowChanges,
+    sparseArtifactRowHasContent,
     sparseArtifactRowLifecycle,
-    sparseArtifactSignature,
+    sameSparseArtifactInputs,
     type SparseArtifactTreeRow,
   } from "./sparse-artifact-tree";
 
@@ -21,19 +22,28 @@
   export let daemonId: string | undefined = undefined;
   export let sha: string | undefined = undefined;
   export let diffFallback: "none" | "git" = "none";
+  export let rows: readonly SparseArtifactTreeRow[] | undefined = undefined;
+  export let lazyContent = false;
   export let onOpenPath:
     | ((artifact: VisualWorkArtifact, event: MouseEvent) => void)
     | undefined = undefined;
 
-  let cachedSignature = "";
-  let cachedRows: SparseArtifactTreeRow[] = [];
+  let cachedArtifacts: readonly VisualWorkArtifact[] = [];
+  let cachedWorktreePath: string | undefined;
+  let cachedRows: readonly SparseArtifactTreeRow[] = [];
+  let revealedContentRows = new Set<string>();
+
+  function revealContent(rowId: string): void {
+    if (!lazyContent || revealedContentRows.has(rowId)) return;
+    revealedContentRows = new Set(revealedContentRows).add(rowId);
+  }
 
   function stableRows(
     values: readonly VisualWorkArtifact[],
-  ): SparseArtifactTreeRow[] {
-    const signature = sparseArtifactSignature(values, worktreePath);
-    if (signature === cachedSignature) return cachedRows;
-    cachedSignature = signature;
+  ): readonly SparseArtifactTreeRow[] {
+    if (sameSparseArtifactInputs(cachedArtifacts, cachedWorktreePath, values, worktreePath)) return cachedRows;
+    cachedArtifacts = values;
+    cachedWorktreePath = worktreePath;
     cachedRows = buildSparseArtifactRows(values, worktreePath);
     return cachedRows;
   }
@@ -61,12 +71,12 @@
     return parts.join(" · ");
   }
 
-  $: rows = stableRows(artifacts);
+  $: renderedRows = rows ?? stableRows(artifacts);
 </script>
 
-{#if rows.length > 0}
+{#if renderedRows.length > 0}
   <div class="sparse-artifact-tree">
-    {#each rows as row (row.id)}
+    {#each renderedRows as row (row.id)}
       <div
         class="sparse-artifact-row"
         class:folder={row.kind === "folder"}
@@ -80,11 +90,10 @@
         {#if row.artifacts[0]}
           {@const artifact = row.artifacts[0]}
           {@const lifecycle = sparseArtifactRowLifecycle(row)}
-          {@const contentChanges = sparseArtifactRowChanges(row)
-            .filter((change) => change.diff !== undefined || change.preview !== undefined)}
+          {@const hasContent = sparseArtifactRowHasContent(row)}
           {@const gitDiffKind = row.artifacts.find((item) => item.diffKind)?.diffKind}
-          {#if contentChanges.length > 0 || (row.kind === "file" && diffFallback === "git" && gitDiffKind && worktreePath)}
-            <Tooltip variant="wide" escapeClip>
+          {#if hasContent || (row.kind === "file" && diffFallback === "git" && gitDiffKind && worktreePath)}
+            <Tooltip variant="wide" escapeClip onShow={() => revealContent(row.id)}>
               <button
                 slot="trigger"
                 type="button"
@@ -99,42 +108,46 @@
                 {row.label}
               </button>
               <span slot="content" class="sparse-artifact-diff">
-                {#if contentChanges.length === 1}
-                  {@const change = contentChanges[0]}
-                  {#if change.previewTitle}
-                    <span class="sparse-artifact-change-label">
-                      {change.previewTitle}
-                    </span>
-                  {/if}
-                  <Diff
-                    text={change.diff ?? change.preview ?? ""}
-                    hideSingleFileHeader={change.diff !== undefined}
-                    compact={change.preview !== undefined}
-                  />
-                {:else if contentChanges.length > 1}
-                  <span class="sparse-artifact-change-chain">
-                    {#each contentChanges as change, index}
-                      <span class="sparse-artifact-change">
-                        <span class="sparse-artifact-change-label">
-                          {change.previewTitle ?? changeLabel(change, index)}
-                        </span>
-                        <Diff
-                          text={change.diff ?? change.preview ?? ""}
-                          hideSingleFileHeader={change.diff !== undefined}
-                          compact={change.preview !== undefined}
-                        />
+                {#if !lazyContent || revealedContentRows.has(row.id)}
+                  {@const contentChanges = sparseArtifactRowChanges(row)
+                    .filter((change) => change.diff !== undefined || change.preview !== undefined)}
+                  {#if contentChanges.length === 1}
+                    {@const change = contentChanges[0]}
+                    {#if change.previewTitle}
+                      <span class="sparse-artifact-change-label">
+                        {change.previewTitle}
                       </span>
-                    {/each}
-                  </span>
-                {:else if diffFallback === "git" && gitDiffKind && worktreePath}
-                  <DiffLoader
-                    {worktreePath}
-                    file={row.hrefPath}
-                    kind={gitDiffKind}
-                    {sha}
-                    {daemonId}
-                    hideSingleFileHeader
-                  />
+                    {/if}
+                    <Diff
+                      text={change.diff ?? change.preview ?? ""}
+                      hideSingleFileHeader={change.diff !== undefined}
+                      compact={change.preview !== undefined}
+                    />
+                  {:else if contentChanges.length > 1}
+                    <span class="sparse-artifact-change-chain">
+                      {#each contentChanges as change, index}
+                        <span class="sparse-artifact-change">
+                          <span class="sparse-artifact-change-label">
+                            {change.previewTitle ?? changeLabel(change, index)}
+                          </span>
+                          <Diff
+                            text={change.diff ?? change.preview ?? ""}
+                            hideSingleFileHeader={change.diff !== undefined}
+                            compact={change.preview !== undefined}
+                          />
+                        </span>
+                      {/each}
+                    </span>
+                  {:else if diffFallback === "git" && gitDiffKind && worktreePath}
+                    <DiffLoader
+                      {worktreePath}
+                      file={row.hrefPath}
+                      kind={gitDiffKind}
+                      {sha}
+                      {daemonId}
+                      hideSingleFileHeader
+                    />
+                  {/if}
                 {/if}
               </span>
             </Tooltip>
@@ -294,10 +307,5 @@
     font-family: var(--mono-font, monospace);
     font-size: 0.68rem;
     font-variant-numeric: tabular-nums;
-  }
-  .sparse-artifact-empty {
-    color: var(--text-muted);
-    font-size: 0.72rem;
-    font-style: italic;
   }
 </style>

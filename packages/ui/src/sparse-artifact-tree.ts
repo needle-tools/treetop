@@ -139,13 +139,18 @@ function folderArtifactPaths(
   artifacts: readonly VisualWorkArtifact[],
   worktreePath: string | undefined,
 ): Set<string> {
-  const paths = artifacts
-    .map((artifact) => artifactCanonicalPath(artifact, worktreePath))
-    .filter(Boolean);
+  const paths = new Set(
+    artifacts
+      .map((artifact) => artifactCanonicalPath(artifact, worktreePath))
+      .filter(Boolean),
+  );
   const folders = new Set<string>();
   for (const path of paths) {
-    if (paths.some((other) => other.startsWith(`${path}/`))) {
-      folders.add(path);
+    let separator = path.lastIndexOf("/");
+    while (separator > 0) {
+      const parent = path.slice(0, separator);
+      if (paths.has(parent)) folders.add(parent);
+      separator = parent.lastIndexOf("/");
     }
   }
   return folders;
@@ -218,41 +223,17 @@ function flattenRows(
   }
 }
 
-export function sparseArtifactSignature(
-  values: readonly VisualWorkArtifact[],
-  worktreePath: string | undefined,
-): string {
-  return [
-    normalizeArtifactPath(worktreePath),
-    ...values.map((artifact) =>
-      [
-        artifact.id,
-        artifact.action,
-        artifact.kind,
-        canonicalArtifactPath(artifact.path, worktreePath),
-        artifact.label,
-        artifact.additions ?? "",
-        artifact.deletions ?? "",
-        artifact.diff ?? "",
-        artifact.preview ?? "",
-        artifact.previewTitle ?? "",
-        artifact.fileAction ?? "",
-        ...(artifact.changes ?? []).map((change) =>
-          [
-            change.action,
-            canonicalArtifactPath(change.path, worktreePath),
-            change.label,
-            change.additions ?? "",
-            change.deletions ?? "",
-            change.diff ?? "",
-            change.preview ?? "",
-            change.previewTitle ?? "",
-            change.fileAction ?? "",
-          ].join("\u0003"),
-        ),
-      ].join("\u0001"),
-    ),
-  ].join("\u0002");
+export function sameSparseArtifactInputs(
+  previous: readonly VisualWorkArtifact[],
+  previousWorktreePath: string | undefined,
+  next: readonly VisualWorkArtifact[],
+  nextWorktreePath: string | undefined,
+): boolean {
+  if (previousWorktreePath !== nextWorktreePath || previous.length !== next.length) return false;
+  for (let index = 0; index < previous.length; index += 1) {
+    if (previous[index] !== next[index]) return false;
+  }
+  return true;
 }
 
 export function buildSparseArtifactRows(
@@ -338,10 +319,33 @@ export function visualWorkArtifactChanges(
       ];
 }
 
+const sparseArtifactChangesCache = new WeakMap<
+  object,
+  VisualWorkArtifactChange[]
+>();
+
 export function sparseArtifactRowChanges(
   row: Pick<SparseArtifactTreeRow, "artifacts">,
 ): VisualWorkArtifactChange[] {
-  return row.artifacts.flatMap(visualWorkArtifactChanges);
+  const key = row.artifacts as object;
+  const cached = sparseArtifactChangesCache.get(key);
+  if (cached) return cached;
+  const changes = row.artifacts.flatMap(visualWorkArtifactChanges);
+  sparseArtifactChangesCache.set(key, changes);
+  return changes;
+}
+
+export function sparseArtifactRowHasContent(
+  row: Pick<SparseArtifactTreeRow, "artifacts">,
+): boolean {
+  return row.artifacts.some(
+    (artifact) =>
+      artifact.diff !== undefined ||
+      artifact.preview !== undefined ||
+      artifact.changes?.some(
+        (change) => change.diff !== undefined || change.preview !== undefined,
+      ),
+  );
 }
 
 export function sparseArtifactRowDiffChanges(
