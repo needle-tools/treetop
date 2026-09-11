@@ -3,6 +3,7 @@ import {
   artifactMapOwnerSource,
   artifactMapPanelSource,
   createSessionArtifactEvolutionTracker,
+  filterSessionArtifactEvolution,
   insertArtifactMapPanel,
   sessionArtifactTurnCounts,
 } from "../src/session-artifacts";
@@ -72,6 +73,28 @@ describe("session artifact evolution", () => {
     expect(sessionArtifactTurnCounts(evolution.turns[1]!)).toEqual({
       reads: 1,
       writes: 0,
+    });
+
+    const reads = filterSessionArtifactEvolution(evolution, "reads");
+    expect(reads.turns.map((turn) => turn.turnNumber)).toEqual([1, 2]);
+    expect(reads.totals).toEqual({
+      reads: 2,
+      partialReads: 2,
+      writes: 0,
+      partialWrites: 0,
+      additions: 0,
+      deletions: 0,
+    });
+
+    const writes = filterSessionArtifactEvolution(evolution, "writes");
+    expect(writes.turns.map((turn) => turn.turnNumber)).toEqual([1]);
+    expect(writes.totals).toEqual({
+      reads: 0,
+      partialReads: 0,
+      writes: 1,
+      partialWrites: 1,
+      additions: 1,
+      deletions: 1,
     });
   });
 
