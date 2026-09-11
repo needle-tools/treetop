@@ -21,7 +21,7 @@ import {
   contextCompactionDetailsFromMetadata,
   contextTokenSnapshotFromUsageRecord,
   parseCodexImageWrapper,
-  parseCodexToolScriptInvocation,
+  parseCodexToolScriptInvocations,
   type ContextCompactionDetails,
 } from "@treetop/nicifier";
 
@@ -64,6 +64,7 @@ export interface NormalizedBlock {
   /** tool_use only. */
   toolName?: string;
   toolInput?: unknown;
+  toolInvocations?: readonly { toolName: string; toolInput: unknown }[];
   /** plan only. */
   explanation?: string;
   planItems?: NormalizedPlanItem[];
@@ -1041,6 +1042,7 @@ function codexOutputTokenUsageFromPayload(
 interface CodexToolInvocation {
   name: string;
   input: unknown;
+  invocations?: readonly { toolName: string; toolInput: unknown }[];
 }
 
 function codexWrappedToolInvocation(
@@ -1051,9 +1053,14 @@ function codexWrappedToolInvocation(
   if (typeof input !== "string" || canonicalName !== "exec_command") {
     return { name: canonicalName, input };
   }
-  const invocation = parseCodexToolScriptInvocation(input);
+  const invocations = parseCodexToolScriptInvocations(input);
+  const invocation = invocations[0];
   return invocation
-    ? { name: invocation.toolName, input: invocation.toolInput }
+    ? {
+        name: invocation.toolName,
+        input: invocation.toolInput,
+        ...(invocations.length > 1 ? { invocations } : {}),
+      }
     : { name: canonicalName, input };
 }
 
@@ -1592,6 +1599,9 @@ function parseCodexJsonlLine(
             type: "tool_use",
             toolName: name,
             toolInput: input,
+            ...(normalized.invocations
+              ? { toolInvocations: normalized.invocations }
+              : {}),
             toolUseId: typeof p.call_id === "string" ? p.call_id : undefined,
             ...codexSubagentBlockFromToolUse(name, input),
             ...codexToolApprovalFields(out, name),

@@ -61,7 +61,22 @@ export interface SessionArtifactEvolution {
   totals: SessionArtifactTotals;
 }
 
-export type SessionArtifactFilter = "all" | "reads" | "writes";
+export type SessionArtifactFilter = "all" | "reads" | "writes" | "partial-writes";
+
+export function sessionArtifactJuiceTransition(
+  previous: SessionArtifactTotals | undefined,
+  next: SessionArtifactTotals,
+  enabled: boolean,
+): { readImpact: boolean; writeImpact: boolean } {
+  if (!enabled || !previous) return { readImpact: false, writeImpact: false };
+  return {
+    readImpact: next.reads > previous.reads,
+    writeImpact:
+      next.writes > previous.writes ||
+      next.additions > previous.additions ||
+      next.deletions > previous.deletions,
+  };
+}
 
 export function sessionArtifactTurnWindow(
   turns: readonly SessionArtifactTurn[],
@@ -84,7 +99,7 @@ export function sessionArtifactTurnCounts(turn: SessionArtifactTurn): {
   for (const artifact of turn.artifacts) {
     for (const change of visualWorkArtifactChanges(artifact)) {
       if (change.action === "used") reads += 1;
-      else writes += 1;
+      else if (change.action === "changed") writes += 1;
     }
   }
   return { reads, writes };
@@ -116,6 +131,7 @@ function addArtifactTotals(
       }
       continue;
     }
+    if (change.action !== "changed") continue;
     totals.writes += 1;
     totals.additions += change.additions ?? 0;
     totals.deletions += change.deletions ?? 0;
@@ -125,7 +141,7 @@ function addArtifactTotals(
 
 const filteredSessionArtifactCache = new WeakMap<
   object,
-  Partial<Record<"reads" | "writes", VisualWorkArtifact | null>>
+  Partial<Record<Exclude<SessionArtifactFilter, "all">, VisualWorkArtifact | null>>
 >();
 
 function filterSessionArtifact(
@@ -138,9 +154,13 @@ function filterSessionArtifact(
     cached = {};
     filteredSessionArtifactCache.set(artifact as object, cached);
   }
-  const wantRead = filter === "reads";
   const changes = visualWorkArtifactChanges(artifact).filter(
-    (change) => (change.action === "used") === wantRead,
+    (change) =>
+      filter === "reads"
+        ? change.action === "used"
+        : filter === "partial-writes"
+          ? change.action === "changed" && change.fileAction === "edited"
+          : change.action === "changed",
   );
   const result = changes.length > 0
     ? { ...artifact, action: changes[0]!.action, changes }

@@ -139,8 +139,15 @@ Caching strategy:
   up into steps and rounds. The reusable catalog keeps immutable `from` /
   `before` price periods so later price changes do not rewrite old sessions.
   `@treetop/nicifier` also loads the current models.dev OpenAI/Anthropic
-  catalog once, without blocking rendering; current checkpoints use that
-  snapshot while bundled periods remain authoritative before it was observed.
+  catalog once without blocking rendering. The reusable loader can also
+  reconstruct dated pricing periods for explicitly selected models from the
+  corresponding files in models.dev's Git history; this is opt-in because it
+  requires several GitHub requests per model and must not become a startup
+  request storm.
+  Git commit time is treated as the honest observation boundary; a newer
+  explicitly effective bundled period may bridge the gap when models.dev
+  recorded a provider change after it took effect. Bundled periods remain the
+  offline fallback rather than the primary historical source.
   Anthropic's separate one-hour cache-write rate stays as a narrow bundled
   override because models.dev currently exposes only one cache-write price.
   A separate $/day menubar rollup remains deferred until this scanner lands.
@@ -181,7 +188,8 @@ Caching strategy:
   CodexBar credits for cost-usage tracking. It is useful prior art, especially
   for Claude, but CodexBar's newer Codex-specific scanner behavior is the closer
   comparison for native Codex session logs.
-- [models.dev](https://models.dev/) remains the live catalog input for the
-  reusable `@treetop/nicifier` pricing module. Historical bundled periods and
-  transcript-derived attribution remain ours so a current catalog snapshot
-  cannot rewrite old sessions.
+- [models.dev](https://models.dev/) remains the live catalog and Git-backed
+  historical input for the reusable `@treetop/nicifier` pricing module.
+  Bundled periods are retained for offline operation and explicit effective
+  dates that precede models.dev's recorded commit; transcript-derived
+  attribution remains ours.

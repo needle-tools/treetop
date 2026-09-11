@@ -5,7 +5,7 @@
   import InspectorPanelHeader from "./InspectorPanelHeader.svelte";
   import type { VisualTranscriptItem } from "./last-user-message";
   import { writeBrowserClipboard } from "./clipboard-write";
-  import { formatByteSize } from "./context-tokens";
+  import { formatByteSize, formatSessionTokens } from "./context-tokens";
   import { codexAppSource } from "./storage";
   import { installIdleTracker } from "./ui-idle";
   import { selectVisualScrollIndex } from "./visual-tail-follow";
@@ -37,6 +37,7 @@
     replayElapsedMsAtStep,
     replayPlaybackTiming,
     replayOutputTokensAtStep,
+    replayTurnCompletion,
     replayStepAdvanceForElapsed,
     replaySourceProgressAtStep,
     replayStepIndexAtOutputTokens,
@@ -95,6 +96,7 @@
   let transcriptSessionOverride: CodexReplayTranscriptSession | undefined;
   let analysisCollapsed = false;
   let analysisMessages: readonly CodexReplayMessage[] = [];
+  let completeAnalysisMessages: readonly CodexReplayMessage[] = [];
   let artifactItems: readonly VisualTranscriptItem[] = [];
   let replaySessionView: {
     scrollToTranscriptTurn(turnIndex: number): void;
@@ -121,6 +123,7 @@
   let juiceEnabled = false;
   let juiceImpactCount = 0;
   let juiceMoneyImpactCount = 0;
+  let juiceTokenImpactCount = 0;
   const detectJuiceTransition = (() => {
     let previous: ReplayJuiceState | undefined;
     return (
@@ -161,9 +164,18 @@
     defaultModel: replayModel,
     modelsDev: modelsDevPricing,
   });
+  $: completeTurnAnalysis = analyzeCodexReplayTurns(completeAnalysisMessages, {
+    defaultModel: replayModel,
+    modelsDev: modelsDevPricing,
+  });
   $: replayHasCost = turnAnalysis.turns.some(
     (turn) => turn.estimatedCostUsd !== undefined,
   );
+  $: replayHasJuiceMetrics =
+    replayHasCost ||
+    turnAnalysis.totalNewInputTokens > 0 ||
+    turnAnalysis.totalCachedInputTokens > 0 ||
+    turnAnalysis.totalOutputTokens > 0;
   $: sessionCounts = summarizeCodexReplaySessions(sessions);
   $: sessionModels = listCodexReplaySessionModels(sessions);
   $: selectedSessionModel = sessionSelection.startsWith("model:")
@@ -190,6 +202,7 @@
     visibleTranscriptTurnIndex = -1;
     localReplay = null;
     localPlayback = null;
+    completeAnalysisMessages = [];
     fixture = nextFixture;
     transport = createCodexReplaySessionTransport(nextFixture, initialStep);
     fileName = name;
@@ -230,6 +243,7 @@
       view.playback.stepIndex,
     );
     analysisMessages = view.playback.messages;
+    completeAnalysisMessages = view.session.messages;
     localFile = options.localFile;
     localWarnings = options.warnings ?? view.replay.warnings;
     replayGeneration += 1;
@@ -288,6 +302,7 @@
     transcriptSession = null;
     transcriptSessionOverride = undefined;
     analysisMessages = [];
+    completeAnalysisMessages = [];
     artifactItems = [];
     localFile = false;
     localWarnings = [];
@@ -350,6 +365,7 @@
     transcriptSession = null;
     transcriptSessionOverride = undefined;
     analysisMessages = [];
+    completeAnalysisMessages = [];
     artifactItems = [];
     selectedThreadId = options.entry?.threadId ?? "";
     stopPlayback();
@@ -597,6 +613,7 @@
     transcriptSession = null;
     transcriptSessionOverride = undefined;
     analysisMessages = [];
+    completeAnalysisMessages = [];
     artifactItems = [];
     visibleTranscriptTurnIndex = -1;
     fileName = "";
@@ -699,6 +716,11 @@
   function jumpToReplayTurn(turnIndex: number): void {
     visibleTranscriptTurnIndex = turnIndex;
     replaySessionView?.scrollToTranscriptTurn(turnIndex);
+  }
+
+  function turnCompletionPercent(turn: (typeof turnAnalysis.turns)[number]): number | undefined {
+    const completion = replayTurnCompletion(turn, completeTurnAnalysis.turns[turn.index]);
+    return completion === undefined ? undefined : Math.round(completion * 100);
   }
 
   function setReplayStep(nextStepIndex: number): void {
@@ -847,6 +869,10 @@
         stepIndex,
         turnCount: turnAnalysis.turns.length,
         costUsd: turnAnalysis.totalEstimatedCostUsd,
+        newInputTokens: turnAnalysis.totalNewInputTokens,
+        cachedInputTokens: turnAnalysis.totalCachedInputTokens,
+        outputTokens: turnAnalysis.totalOutputTokens,
+        reasoningTokens: turnAnalysis.totalReasoningTokens,
       },
       { enabled: false, playing: false },
     );
@@ -898,6 +924,10 @@
       stepIndex,
       turnCount: turnAnalysis.turns.length,
       costUsd: turnAnalysis.totalEstimatedCostUsd,
+      newInputTokens: turnAnalysis.totalNewInputTokens,
+      cachedInputTokens: turnAnalysis.totalCachedInputTokens,
+      outputTokens: turnAnalysis.totalOutputTokens,
+      reasoningTokens: turnAnalysis.totalReasoningTokens,
     };
     const transition = detectJuiceTransition(next, {
       enabled: juiceEnabled,
@@ -905,6 +935,7 @@
     });
     if (transition.roundImpact) juiceImpactCount += 1;
     if (transition.moneyImpact) juiceMoneyImpactCount += 1;
+    if (transition.tokenImpact) juiceTokenImpactCount += 1;
   });
 
   onMount(() => {
@@ -1355,25 +1386,56 @@
           <SessionArtifactMap
             items={artifactItems}
             worktreePath={transcriptSession?.transcript?.cwd ?? fixture?.cwd}
+            {juiceEnabled}
           />
         </aside>
       {/if}
       <div class="replay-session-area">
-        {#if juiceEnabled && replayHasCost}
+        {#if juiceEnabled && replayHasJuiceMetrics}
           <div
             class="replay-juice-meter"
             class:juice-money-a={juiceMoneyImpactCount > 0 && juiceMoneyImpactCount % 2 === 1}
             class:juice-money-b={juiceMoneyImpactCount > 0 && juiceMoneyImpactCount % 2 === 0}
-            aria-label={`${formatReplayCost(turnAnalysis.totalEstimatedCostUsd)} estimated session cost`}
+            style={`--juice-progress:${stepCount > 0 ? Math.min(100, (stepIndex / stepCount) * 100) : 0}%`}
+            aria-label={`${replayHasCost ? `${formatReplayCost(turnAnalysis.totalEstimatedCostUsd)} estimated cost, ` : ""}${formatSessionTokens(turnAnalysis.totalNewInputTokens)} fresh input, ${formatSessionTokens(turnAnalysis.totalCachedInputTokens)} cached input, ${formatSessionTokens(turnAnalysis.totalOutputTokens)} output, ${formatSessionTokens(turnAnalysis.totalReasoningTokens)} reasoning`}
           >
-            <span class="replay-juice-label">Burned</span>
-            <strong>{formatReplayCost(turnAnalysis.totalEstimatedCostUsd)}</strong>
-            <span class="replay-juice-rounds"
-              >{turnAnalysis.turns.length.toLocaleString()}
-              {turnAnalysis.turns.length === 1 ? "round" : "rounds"}</span
+            <div class="replay-juice-heading">
+              <span class="replay-juice-label">Session burn</span>
+              {#if replayHasCost}
+                <strong class="replay-juice-price">{formatReplayCost(turnAnalysis.totalEstimatedCostUsd)}</strong>
+              {:else}
+                <strong class="replay-juice-price replay-juice-price-unpriced">—</strong>
+              {/if}
+              <span class="replay-juice-rounds"
+                >{turnAnalysis.turns.length.toLocaleString()}
+                {turnAnalysis.turns.length === 1 ? "round" : "rounds"}</span
+              >
+            </div>
+            <div
+              class="replay-juice-tokens"
+              class:juice-tokens-a={juiceTokenImpactCount > 0 && juiceTokenImpactCount % 2 === 1}
+              class:juice-tokens-b={juiceTokenImpactCount > 0 && juiceTokenImpactCount % 2 === 0}
             >
+              <span class="replay-juice-token replay-juice-token-input">
+                <em>Input</em>
+                <strong>{formatSessionTokens(turnAnalysis.totalNewInputTokens)}</strong>
+              </span>
+              <span class="replay-juice-token replay-juice-token-cache">
+                <em>Cache</em>
+                <strong>{formatSessionTokens(turnAnalysis.totalCachedInputTokens)}</strong>
+              </span>
+              <span class="replay-juice-token replay-juice-token-output">
+                <em>Output</em>
+                <strong>{formatSessionTokens(turnAnalysis.totalOutputTokens)}</strong>
+              </span>
+              <span class="replay-juice-token replay-juice-token-reasoning">
+                <em>Think</em>
+                <strong>{formatSessionTokens(turnAnalysis.totalReasoningTokens)}</strong>
+              </span>
+            </div>
+            <span class="replay-juice-rail" aria-hidden="true"><i></i></span>
             <span class="replay-juice-sparks" aria-hidden="true">
-              <i>$</i><i>$</i><i>$</i><i>$</i>
+              <i>$</i><i>tok</i><i>↑</i><i>$$</i><i>out</i><i>⚡</i>
             </span>
           </div>
         {/if}
@@ -1514,10 +1576,17 @@
                         <span>{turn.index + 1}</span>
                         <strong>{turn.label}</strong>
                       </div>
-                      <div class="replay-turn-heat" aria-hidden="true">
-                        <span
-                          style={`--turn-heat:${Math.max(4, Math.round(turn.heat * 100))}%`}
-                        ></span>
+                      <div
+                        class="replay-turn-progress"
+                        role="progressbar"
+                        aria-label={`Turn ${turn.index + 1} replay progress`}
+                        aria-valuemin="0"
+                        aria-valuemax="100"
+                        aria-valuenow={turnCompletionPercent(turn)}
+                      >
+                        {#if turnCompletionPercent(turn) !== undefined}
+                          <span style={`--turn-progress:${turnCompletionPercent(turn)}%`}></span>
+                        {/if}
                       </div>
                       <div class="replay-turn-metrics">
                         {#if turn.durationMs !== undefined}
@@ -1896,24 +1965,51 @@
     z-index: 20;
     top: 70px;
     right: 22px;
+    width: min(310px, calc(100% - 44px));
     display: grid;
-    justify-items: end;
+    gap: 9px;
+    padding: 12px 14px 11px;
+    box-sizing: border-box;
     color: #ffd66b;
     pointer-events: none;
     filter: drop-shadow(0 3px 0 rgb(104 36 0 / 75%))
       drop-shadow(0 10px 22px rgb(255 91 0 / 28%));
-    transform: rotate(1.5deg);
+    transform: rotate(0.7deg);
     transform-origin: center;
+    isolation: isolate;
+    overflow: hidden;
   }
 
   .replay-juice-meter::before {
     content: "";
     position: absolute;
     z-index: -1;
-    inset: -10px -14px -8px;
+    inset: 0;
     border: 2px solid rgb(255 185 45 / 55%);
-    clip-path: polygon(5% 0, 100% 8%, 96% 88%, 12% 100%, 0 22%);
-    background: rgb(64 22 7 / 72%);
+    clip-path: polygon(2% 0, 100% 4%, 98% 94%, 5% 100%, 0 13%);
+    background:
+      linear-gradient(115deg, rgb(255 128 0 / 11%), transparent 42%),
+      rgb(43 18 8 / 91%);
+  }
+
+  .replay-juice-meter::after {
+    content: "";
+    position: absolute;
+    z-index: -1;
+    inset: -70% -30%;
+    background: linear-gradient(105deg, transparent 42%, rgb(255 222 116 / 16%) 49%, transparent 56%);
+    transform: translateX(-45%);
+  }
+
+  .juice-enabled.juice-playing .replay-juice-meter::after {
+    animation: replay-juice-scan 2.4s linear infinite;
+  }
+
+  .replay-juice-heading {
+    display: grid;
+    grid-template-columns: 1fr auto;
+    align-items: end;
+    column-gap: 10px;
   }
 
   .replay-juice-label,
@@ -1925,12 +2021,102 @@
     text-transform: uppercase;
   }
 
-  .replay-juice-meter strong {
-    font-size: clamp(38px, 5.5cqw, 78px);
+  .replay-juice-label {
+    align-self: center;
+  }
+
+  .replay-juice-rounds {
+    grid-column: 1;
+    opacity: 0.78;
+  }
+
+  .replay-juice-price {
+    grid-column: 2;
+    grid-row: 1 / span 2;
+    align-self: center;
+    font-size: clamp(31px, 3.6cqw, 48px);
     font-variant-numeric: tabular-nums;
     font-weight: 950;
-    line-height: 0.9;
-    letter-spacing: -0.07em;
+    line-height: 1;
+    letter-spacing: -0.055em;
+    text-shadow: 0 0 16px rgb(255 150 36 / 38%);
+  }
+
+  .replay-juice-price-unpriced {
+    color: #b98f5f;
+  }
+
+  .replay-juice-tokens {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 5px;
+  }
+
+  .replay-juice-token {
+    min-width: 0;
+    display: grid;
+    gap: 1px;
+    padding: 5px 6px 6px;
+    border: 1px solid color-mix(in srgb, currentColor 34%, transparent);
+    border-radius: 4px;
+    background: color-mix(in srgb, currentColor 8%, rgb(15 10 8 / 72%));
+    font-variant-numeric: tabular-nums;
+  }
+
+  .replay-juice-token em {
+    overflow: hidden;
+    color: currentColor;
+    font-size: 8px;
+    font-style: normal;
+    font-weight: 900;
+    letter-spacing: 0.08em;
+    line-height: 1;
+    text-overflow: clip;
+    text-transform: uppercase;
+  }
+
+  .replay-juice-token strong {
+    color: #fff3cf;
+    font-size: 13px;
+    font-weight: 850;
+    line-height: 1.15;
+    white-space: nowrap;
+  }
+
+  .replay-juice-token-input { color: #ffb44f; }
+  .replay-juice-token-cache { color: #d69bff; }
+  .replay-juice-token-output { color: #72e6a0; }
+  .replay-juice-token-reasoning { color: #70cfff; }
+
+  .replay-juice-rail {
+    position: relative;
+    height: 3px;
+    overflow: visible;
+    border-radius: 99px;
+    background: rgb(255 196 83 / 16%);
+  }
+
+  .replay-juice-rail i {
+    position: absolute;
+    inset: 0 auto 0 0;
+    width: var(--juice-progress);
+    border-radius: inherit;
+    background: linear-gradient(90deg, #ff713b, #ffd85e 70%, #fff4bd);
+    box-shadow: 0 0 10px rgb(255 158 46 / 78%);
+    transition: width 100ms linear;
+  }
+
+  .replay-juice-rail i::after {
+    content: "";
+    position: absolute;
+    top: 50%;
+    right: -3px;
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: #fff4bd;
+    box-shadow: 0 0 11px 3px rgb(255 150 45 / 78%);
+    transform: translateY(-50%);
   }
 
   .replay-juice-sparks,
@@ -1941,9 +2127,10 @@
 
   .replay-juice-sparks i {
     color: #ffe899;
-    font-size: 16px;
+    font-size: 11px;
     font-style: normal;
     font-weight: 950;
+    letter-spacing: -0.03em;
     opacity: 0;
   }
 
@@ -1963,12 +2150,28 @@
     animation-delay: 1260ms;
   }
 
+  .replay-juice-sparks i:nth-child(5) {
+    animation-delay: 210ms;
+  }
+
+  .replay-juice-sparks i:nth-child(6) {
+    animation-delay: 1050ms;
+  }
+
   .juice-money-a {
     animation: replay-juice-money-a 240ms cubic-bezier(0.2, 0.9, 0.3, 1.4);
   }
 
   .juice-money-b {
     animation: replay-juice-money-b 240ms cubic-bezier(0.2, 0.9, 0.3, 1.4);
+  }
+
+  .juice-tokens-a {
+    animation: replay-juice-tokens-a 260ms cubic-bezier(0.2, 0.9, 0.3, 1.25);
+  }
+
+  .juice-tokens-b {
+    animation: replay-juice-tokens-b 260ms cubic-bezier(0.2, 0.9, 0.3, 1.25);
   }
 
   .juice-impact-a {
@@ -1994,15 +2197,23 @@
   }
 
   @keyframes replay-juice-money-a {
-    0% { transform: rotate(1.5deg) scale(1); }
-    45% { transform: rotate(-2deg) scale(1.16); }
-    100% { transform: rotate(1.5deg) scale(1); }
+    0% { transform: rotate(0.7deg) scale(1); }
+    45% { transform: rotate(-1.2deg) scale(1.055); }
+    100% { transform: rotate(0.7deg) scale(1); }
   }
 
   @keyframes replay-juice-money-b {
-    0% { transform: rotate(1.5deg) scale(1); }
-    45% { transform: rotate(4deg) scale(1.16); }
-    100% { transform: rotate(1.5deg) scale(1); }
+    0% { transform: rotate(0.7deg) scale(1); }
+    45% { transform: rotate(2.1deg) scale(1.055); }
+    100% { transform: rotate(0.7deg) scale(1); }
+  }
+
+  @keyframes replay-juice-tokens-a {
+    45% { transform: translateY(-3px); filter: brightness(1.45); }
+  }
+
+  @keyframes replay-juice-tokens-b {
+    45% { transform: translateY(3px); filter: brightness(1.45); }
   }
 
   @keyframes replay-juice-spark {
@@ -2016,11 +2227,18 @@
     --spark-rotate: 24deg;
   }
 
+  @keyframes replay-juice-scan {
+    to { transform: translateX(45%); }
+  }
+
   @media (prefers-reduced-motion: reduce) {
     .juice-impact-a,
     .juice-impact-b,
     .juice-money-a,
     .juice-money-b,
+    .juice-tokens-a,
+    .juice-tokens-b,
+    .juice-enabled.juice-playing .replay-juice-meter::after,
     .juice-enabled.juice-playing .replay-juice-sparks i {
       animation: none;
     }
@@ -2140,15 +2358,15 @@
     font-size: 12px;
   }
 
-  .replay-turn-heat {
+  .replay-turn-progress {
     height: 5px;
     overflow: hidden;
     background: #292d27;
   }
 
-  .replay-turn-heat span {
+  .replay-turn-progress span {
     display: block;
-    width: var(--turn-heat);
+    width: var(--turn-progress);
     height: 100%;
     background: linear-gradient(90deg, #73b95b, #e6bd4a 62%, #ff675b);
   }

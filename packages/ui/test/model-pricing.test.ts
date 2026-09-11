@@ -101,6 +101,11 @@ describe("model pricing", () => {
         openai: {
           id: "openai",
           models: {
+            "gpt-test-20260801": {
+              id: "gpt-test-20260801",
+              release_date: "2026-08-01",
+              cost: { input: 99, output: 99 },
+            },
             "gpt-test": {
               id: "gpt-test",
               release_date: "2026-08-01",
@@ -128,6 +133,9 @@ describe("model pricing", () => {
     );
 
     expect(snapshot.models).toHaveLength(1);
+    expect(snapshot.models[0]?.historyPath).toBe(
+      "providers/openai/models/gpt-test.toml",
+    );
     expect(
       modelPricingAt("openai/gpt-test", "2026-09-06T10:00:01.000Z", {
         modelsDev: snapshot,
@@ -208,6 +216,130 @@ describe("model pricing", () => {
     expect(calls).toBe(1);
     expect(first).toBe(second);
     expect(first?.models[0]?.id).toBe("claude-test");
+  });
+
+  test("does not fan out into Git history requests unless explicitly enabled", async () => {
+    let calls = 0;
+    const snapshot = await loadModelsDevPricing({
+      cacheKey: "test-current-only",
+      fetcher: async () => {
+        calls += 1;
+        return new Response(JSON.stringify({ openai: { models: {} } }));
+      },
+    });
+
+    expect(snapshot).toBeDefined();
+    expect(calls).toBe(1);
+  });
+
+  test("builds dated pricing periods from models.dev Git history", async () => {
+    const oldSha = "1111111111111111111111111111111111111111";
+    const newSha = "2222222222222222222222222222222222222222";
+    const fetcher = async (input: string | URL | Request) => {
+      const url = String(input);
+      if (url === "https://models.dev/api.json") {
+        return new Response(
+          JSON.stringify({
+            openai: {
+              id: "openai",
+              models: {
+                "gpt-history-test": {
+                  id: "gpt-history-test",
+                  release_date: "2026-01-01",
+                  cost: { input: 2, output: 12, cache_read: 0.2 },
+                },
+              },
+            },
+          }),
+        );
+      }
+      if (
+        url.startsWith(
+          "https://api.github.com/repos/anomalyco/models.dev/commits?",
+        )
+      ) {
+        return new Response(
+          JSON.stringify([
+            {
+              sha: newSha,
+              commit: { committer: { date: "2026-09-01T00:00:00Z" } },
+            },
+            {
+              sha: oldSha,
+              commit: { committer: { date: "2026-01-01T00:00:00Z" } },
+            },
+          ]),
+        );
+      }
+      if (url.includes(newSha)) {
+        return new Response(`
+[cost]
+input = 2
+output = 12
+cache_read = 0.2
+cache_write = 2.5
+
+[[cost.tiers]]
+tier = { size = 272_000 }
+input = 4
+output = 18
+cache_read = 0.4
+cache_write = 5
+`);
+      }
+      if (url.includes(oldSha)) {
+        return new Response(`
+[cost]
+input = 3
+output = 15
+cache_read = 0.3
+cache_write = 3.75
+`);
+      }
+      return new Response("not found", { status: 404 });
+    };
+
+    const snapshot = await loadModelsDevPricing({
+      cacheKey: "test-git-history",
+      fetcher: fetcher as typeof fetch,
+      includeHistory: true,
+      historyModelIds: ["gpt-history-test"],
+      observedAt: "2026-09-06T10:00:00.000Z",
+    });
+
+    expect(
+      modelPricingAt("gpt-history-test", "2026-08-31T23:59:59Z", {
+        modelsDev: snapshot,
+      }),
+    ).toMatchObject({
+      rates: { input: 3, cachedInput: 0.3, output: 15 },
+      period: {
+        from: "2026-01-01T00:00:00.000Z",
+        before: "2026-09-01T00:00:00.000Z",
+        source: `https://github.com/anomalyco/models.dev/commit/${oldSha}`,
+      },
+    });
+    expect(
+      modelPricingAt("gpt-history-test", "2026-09-01T00:00:00Z", {
+        modelsDev: snapshot,
+      }),
+    ).toMatchObject({
+      rates: {
+        input: 2,
+        cachedInput: 0.2,
+        cacheWriteInput: 2.5,
+        output: 12,
+        thresholdTokens: 272_000,
+        highInput: 4,
+        highCachedInput: 0.4,
+        highCacheWriteInput: 5,
+        highOutput: 18,
+      },
+      period: {
+        from: "2026-09-01T00:00:00.000Z",
+        source: `https://github.com/anomalyco/models.dev/commit/${newSha}`,
+      },
+    });
   });
 
   test("keeps the active app-server model on live and history checkpoints", () => {

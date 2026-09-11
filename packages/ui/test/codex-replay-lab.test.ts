@@ -35,6 +35,7 @@ import {
   replayStepIndexAtElapsedMs,
   replayLabHasDaemon,
   replayJuiceTransition,
+  replayTurnCompletion,
   searchCodexReplaySessions,
   sortCodexReplaySessions,
 } from "../src/codex-replay-lab";
@@ -72,49 +73,106 @@ describe("Replay Lab juice effects", () => {
   test("fires an impact only when active playback enters a later round", () => {
     expect(
       replayJuiceTransition(
-        { stepIndex: 40, turnCount: 3, costUsd: 1.2 },
-        { stepIndex: 41, turnCount: 4, costUsd: 1.5 },
+        {
+          stepIndex: 40,
+          turnCount: 3,
+          costUsd: 1.2,
+          newInputTokens: 100,
+          cachedInputTokens: 1_000,
+          outputTokens: 50,
+          reasoningTokens: 10,
+        },
+        {
+          stepIndex: 41,
+          turnCount: 4,
+          costUsd: 1.5,
+          newInputTokens: 130,
+          cachedInputTokens: 1_400,
+          outputTokens: 70,
+          reasoningTokens: 15,
+        },
         { enabled: true, playing: true },
       ),
-    ).toEqual({ roundImpact: true, moneyImpact: true });
+    ).toEqual({ roundImpact: true, moneyImpact: true, tokenImpact: true });
 
     expect(
       replayJuiceTransition(
-        { stepIndex: 40, turnCount: 3, costUsd: 1.2 },
-        { stepIndex: 41, turnCount: 3, costUsd: 1.5 },
+        {
+          stepIndex: 40,
+          turnCount: 3,
+          costUsd: 1.2,
+          newInputTokens: 100,
+          cachedInputTokens: 1_000,
+          outputTokens: 50,
+          reasoningTokens: 10,
+        },
+        {
+          stepIndex: 41,
+          turnCount: 3,
+          costUsd: 1.5,
+          newInputTokens: 100,
+          cachedInputTokens: 1_000,
+          outputTokens: 50,
+          reasoningTokens: 10,
+        },
         { enabled: true, playing: true },
       ),
-    ).toEqual({ roundImpact: false, moneyImpact: true });
+    ).toEqual({ roundImpact: false, moneyImpact: true, tokenImpact: false });
   });
 
   test("stays quiet while disabled, paused, initializing, or seeking backwards", () => {
-    const previous = { stepIndex: 40, turnCount: 3, costUsd: 1.2 };
-    const next = { stepIndex: 41, turnCount: 4, costUsd: 1.5 };
+    const previous = {
+      stepIndex: 40,
+      turnCount: 3,
+      costUsd: 1.2,
+      newInputTokens: 100,
+      cachedInputTokens: 1_000,
+      outputTokens: 50,
+      reasoningTokens: 10,
+    };
+    const next = {
+      stepIndex: 41,
+      turnCount: 4,
+      costUsd: 1.5,
+      newInputTokens: 130,
+      cachedInputTokens: 1_400,
+      outputTokens: 70,
+      reasoningTokens: 15,
+    };
 
     expect(
       replayJuiceTransition(previous, next, {
         enabled: false,
         playing: true,
       }),
-    ).toEqual({ roundImpact: false, moneyImpact: false });
+    ).toEqual({ roundImpact: false, moneyImpact: false, tokenImpact: false });
     expect(
       replayJuiceTransition(previous, next, {
         enabled: true,
         playing: false,
       }),
-    ).toEqual({ roundImpact: false, moneyImpact: false });
+    ).toEqual({ roundImpact: false, moneyImpact: false, tokenImpact: false });
     expect(
       replayJuiceTransition(undefined, next, {
         enabled: true,
         playing: true,
       }),
-    ).toEqual({ roundImpact: false, moneyImpact: false });
+    ).toEqual({ roundImpact: false, moneyImpact: false, tokenImpact: false });
     expect(
       replayJuiceTransition(next, previous, {
         enabled: true,
         playing: true,
       }),
-    ).toEqual({ roundImpact: false, moneyImpact: false });
+    ).toEqual({ roundImpact: false, moneyImpact: false, tokenImpact: false });
+  });
+});
+
+describe("Replay Lab turn progress", () => {
+  test("reaches 100% only when the complete turn has arrived", () => {
+    expect(replayTurnCompletion({ messageCount: 4 }, { messageCount: 10 })).toBe(0.4);
+    expect(replayTurnCompletion({ messageCount: 10 }, { messageCount: 10 })).toBe(1);
+    expect(replayTurnCompletion({ messageCount: 14 }, { messageCount: 10 })).toBe(1);
+    expect(replayTurnCompletion({ messageCount: 4 }, undefined)).toBeUndefined();
   });
 });
 
@@ -771,6 +829,35 @@ describe("Codex replay lab parser", () => {
     expect(output).toEndWith("… [truncated by Treetop]");
   });
 
+  test("retains compact file-edit evidence from a clipped tool input", async () => {
+    const body = Array.from({ length: 4_000 }, (_, index) => `line ${index}`).join("\n");
+    const command = `cat > src/generated.ts <<'EOF'\n${body}\nEOF`;
+    const source = new Blob([
+      JSON.stringify({
+        type: "response_item",
+        payload: {
+          type: "custom_tool_call",
+          name: "exec",
+          call_id: "call-large-write",
+          input: `text(await tools.exec_command({cmd:${JSON.stringify(command)},max_output_tokens:1000}));`,
+        },
+      }),
+    ]);
+
+    const replay = await parseCodexReplayBlobAsync(source);
+    const block = codexReplayMessagesUntil(replay, replay.steps.length)[0]?.blocks[0];
+    expect((block?.toolInput as { cmd?: string })?.cmd?.length).toBeLessThan(20 * 1024);
+    expect(block?.observedFileEdits).toEqual([
+      {
+        path: "src/generated.ts",
+        action: "added",
+        additions: 4_000,
+        deletions: 0,
+        raw: undefined,
+      },
+    ]);
+  });
+
   test("attributes dropped transcript usage across turn-context model changes", async () => {
     const usage = (input: number) =>
       JSON.stringify({
@@ -909,7 +996,16 @@ describe("Codex replay lab parser", () => {
       expect.objectContaining({
         toolCallCount: 12,
         newInputTokens: 25_000,
+        cachedInputTokens: 5_000,
         outputTokens: 100,
+      }),
+    );
+    expect(analysis).toEqual(
+      expect.objectContaining({
+        totalNewInputTokens: 25_010,
+        totalCachedInputTokens: 5_090,
+        totalOutputTokens: 130,
+        totalReasoningTokens: 20,
       }),
     );
     expect(analysis.turns[0]?.issues.map((issue) => issue.kind)).toEqual([

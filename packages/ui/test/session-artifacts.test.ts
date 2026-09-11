@@ -5,6 +5,7 @@ import {
   createSessionArtifactEvolutionTracker,
   filterSessionArtifactEvolution,
   insertArtifactMapPanel,
+  sessionArtifactJuiceTransition,
   sessionArtifactTurnCounts,
   sessionArtifactTurnWindow,
 } from "../src/session-artifacts";
@@ -98,6 +99,82 @@ describe("session artifact evolution", () => {
       additions: 1,
       deletions: 1,
     });
+
+    const partialWrites = filterSessionArtifactEvolution(evolution, "partial-writes");
+    expect(partialWrites.totals).toEqual(writes.totals);
+  });
+
+  test("counts every nested patch and an appended heredoc as writes", () => {
+    const firstPatch = "*** Begin Patch\n*** Update File: src/a.ts\n@@\n-old\n+new\n*** End Patch";
+    const secondPatch = "*** Begin Patch\n*** Update File: src/b.ts\n@@\n-before\n+after\n+more\n*** End Patch";
+    const messages = [
+      { role: "user", blocks: [{ type: "text", text: "Change it" }] },
+      {
+        role: "assistant",
+        blocks: [{
+          type: "tool_use",
+          toolName: "exec_command",
+          toolUseId: "nested",
+          toolInput: { cmd: "cat >> tests/new.spec.js <<'EOF'\nfirst\nsecond\nEOF" },
+          toolInvocations: [
+            { toolName: "apply_patch", toolInput: firstPatch },
+            { toolName: "exec_command", toolInput: { cmd: "cat >> tests/new.spec.js <<'EOF'\nfirst\nsecond\nEOF" } },
+            { toolName: "apply_patch", toolInput: secondPatch },
+          ],
+        }],
+      },
+    ];
+    const evolution = createSessionArtifactEvolutionTracker().update(buildVisualTranscriptItems(messages));
+    expect(evolution.totals).toEqual({
+      reads: 0,
+      partialReads: 0,
+      writes: 3,
+      partialWrites: 3,
+      additions: 5,
+      deletions: 2,
+    });
+  });
+
+  test("keeps reads from a shell call that also mutates another file", () => {
+    const messages = [
+      { role: "user", blocks: [{ type: "text", text: "Inspect and copy" }] },
+      {
+        role: "assistant",
+        blocks: [{
+          type: "tool_use",
+          toolName: "exec_command",
+          toolInput: { cmd: "sed -n '1,20p' src/input.ts; cp /tmp/result.ts src/output.ts" },
+        }],
+      },
+    ];
+    const totals = createSessionArtifactEvolutionTracker()
+      .update(buildVisualTranscriptItems(messages)).totals;
+    expect(totals).toMatchObject({ reads: 2, partialReads: 1, writes: 1, partialWrites: 1 });
+  });
+
+  test("only fires artifact juice for forward read or write activity", () => {
+    const before = { reads: 4, partialReads: 2, writes: 1, partialWrites: 1, additions: 2, deletions: 1 };
+    expect(sessionArtifactJuiceTransition(before, { ...before, reads: 5 }, true)).toEqual({ readImpact: true, writeImpact: false });
+    expect(sessionArtifactJuiceTransition(before, { ...before, writes: 2 }, true)).toEqual({ readImpact: false, writeImpact: true });
+    expect(sessionArtifactJuiceTransition(before, { ...before, writes: 2 }, false)).toEqual({ readImpact: false, writeImpact: false });
+  });
+
+  test("does not count produced images as file writes", () => {
+    const produced = {
+      id: "image\0out.png",
+      kind: "image" as const,
+      action: "produced" as const,
+      label: "out.png",
+      path: "out.png",
+      changes: [{ action: "produced" as const, label: "out.png", path: "out.png" }],
+    };
+    const evolution = {
+      artifacts: [produced],
+      turns: [{ turnNumber: 1, artifacts: [produced] }],
+      totals: { reads: 0, partialReads: 0, writes: 0, partialWrites: 0, additions: 0, deletions: 0 },
+    };
+    expect(filterSessionArtifactEvolution(evolution, "writes").artifacts).toEqual([]);
+    expect(sessionArtifactTurnCounts(evolution.turns[0]!)).toEqual({ reads: 0, writes: 0 });
   });
 
   test("reuses cached completed work while only the live tail changes", () => {

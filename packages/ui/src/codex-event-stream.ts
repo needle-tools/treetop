@@ -3,7 +3,7 @@ import {
   canonicalCodexToolName,
   codexSubagentActivityFields,
   contextTokenSnapshotFromUsageRecord,
-  parseCodexToolScriptInvocation,
+  parseCodexToolScriptInvocations,
   type CodexSubagentActivityFields,
   type ContextCompactionDetails,
 } from "@treetop/nicifier";
@@ -102,6 +102,12 @@ export interface CodexAppHistoryBlock {
   tagName?: string;
   toolName?: string;
   toolInput?: unknown;
+  toolInvocations?: readonly {
+    toolName: string;
+    toolInput: unknown;
+    observedFileEdits?: readonly import("@treetop/nicifier").VisualFileEdit[];
+  }[];
+  observedFileEdits?: readonly import("@treetop/nicifier").VisualFileEdit[];
   toolUseId?: string;
   approvalPolicy?: string;
   approvalDecision?: string;
@@ -1118,7 +1124,12 @@ function codexAppMessagesFromThreadItem(
         toolName: tool,
         toolInput,
         toolUseId: callId,
-        extraFields: codexSubagentBlockFromToolUse(tool, toolInput),
+        extraFields: {
+          ...codexSubagentBlockFromToolUse(tool, toolInput),
+          ...(normalized.invocations
+            ? { toolInvocations: normalized.invocations }
+            : {}),
+        },
         extraBlocks: viewImageMedia ? [viewImageMedia] : [],
       }),
     ];
@@ -2024,6 +2035,7 @@ function codexToolArguments(input: unknown): unknown {
 interface CodexWrappedToolInvocation {
   name: string;
   input: unknown;
+  invocations?: readonly { toolName: string; toolInput: unknown }[];
 }
 
 function codexWrappedToolInvocation(
@@ -2034,9 +2046,14 @@ function codexWrappedToolInvocation(
   if (typeof input !== "string" || canonicalName !== "exec_command") {
     return { name: canonicalName, input };
   }
-  const invocation = parseCodexToolScriptInvocation(input);
+  const invocations = parseCodexToolScriptInvocations(input);
+  const invocation = invocations[0];
   return invocation
-    ? { name: invocation.toolName, input: invocation.toolInput }
+    ? {
+        name: invocation.toolName,
+        input: invocation.toolInput,
+        ...(invocations.length > 1 ? { invocations } : {}),
+      }
     : { name: canonicalName, input };
 }
 

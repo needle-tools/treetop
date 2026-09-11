@@ -735,6 +735,24 @@ describe("parseCodexJsonl", () => {
     });
   });
 
+  test("unwraps a command containing object-literal text without corrupting it", () => {
+    const command = `cat > src/ColorControl.svelte <<'EOF'\n<script>const color = { value: "#fff", opacity: 1 };</script>\nEOF`;
+    const text = JSON.stringify({
+      type: "response_item",
+      payload: {
+        type: "custom_tool_call",
+        name: "exec",
+        call_id: "call-js-command-content",
+        input: `text(await tools.exec_command({cmd:${JSON.stringify(command)},max_output_tokens:12000}));`,
+      },
+    });
+    expect(parseCodexJsonl(text).messages[0]?.blocks[0]).toMatchObject({
+      type: "tool_use",
+      toolName: "exec_command",
+      toolInput: { cmd: command },
+    });
+  });
+
   test("unwraps Codex Desktop apply_patch JavaScript invocations", () => {
     const patch =
       "*** Begin Patch\n*** Update File: src/App.svelte\n@@\n-old\n+new\n*** End Patch";
@@ -755,6 +773,26 @@ describe("parseCodexJsonl", () => {
       toolInput: patch,
       toolUseId: "call-apply-patch",
     });
+  });
+
+  test("retains every nested invocation in a Codex Desktop exec wrapper", () => {
+    const patch = "*** Begin Patch\n*** Update File: src/App.svelte\n@@\n-old\n+new\n*** End Patch";
+    const text = JSON.stringify({
+      timestamp: "2026-06-01T10:00:00.000Z",
+      type: "response_item",
+      payload: {
+        type: "custom_tool_call",
+        name: "exec",
+        call_id: "call-many",
+        input: `text(await tools.exec_command({cmd:"sed -n '1,10p' src/App.svelte"}));\ntext(await tools.apply_patch(${JSON.stringify(patch)}));`,
+      },
+    });
+    const block = parseCodexJsonl(text).messages[0]?.blocks[0];
+    expect(block?.toolName).toBe("exec_command");
+    expect(block?.toolInvocations).toEqual([
+      { toolName: "exec_command", toolInput: { cmd: "sed -n '1,10p' src/App.svelte" } },
+      { toolName: "apply_patch", toolInput: patch },
+    ]);
   });
 
   test("clamps unexpected roles to 'user'", () => {
