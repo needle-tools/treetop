@@ -49,7 +49,12 @@ export interface ShellRecord {
 }
 
 export interface OpenSession {
-  agent: AgentSession["agent"] | "shell" | "files" | "history";
+  agent:
+    | AgentSession["agent"]
+    | "shell"
+    | "files"
+    | "history"
+    | "artifacts";
   source: string;
   resumeSessionId?: string;
   transcriptSource?: string;

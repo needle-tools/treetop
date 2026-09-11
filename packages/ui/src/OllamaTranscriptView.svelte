@@ -22,6 +22,7 @@
    */
   import { createEventDispatcher } from "svelte";
   import SessionView from "./SessionView.svelte";
+  import type { VisualTranscriptItem } from "./last-user-message";
 
   export let termId: string;
   export let wt: string;
@@ -42,6 +43,11 @@
     | undefined = undefined;
   export let starred: boolean = false;
   export let onToggleStar: () => void = () => {};
+  export let artifactTrackingEnabled = false;
+  export let onArtifactItemsChange: (
+    items: readonly VisualTranscriptItem[],
+  ) => void = () => {};
+  export let onOpenArtifactMap: () => void = () => {};
 
   // termId is currently unused inside this shim; SessionView keys
   // off `source` (the JSONL path). Kept as a prop so callers don't
@@ -63,5 +69,8 @@
   {starred}
   {onToggleStar}
   {onContinueWith}
+  {artifactTrackingEnabled}
+  {onArtifactItemsChange}
+  {onOpenArtifactMap}
   onClose={() => dispatch("close")}
 />
