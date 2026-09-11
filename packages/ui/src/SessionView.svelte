@@ -42,6 +42,7 @@
   } from "./claude-session-menu";
   import {
     elementNearViewport,
+    sessionViewportNear,
     visibleSessionRequestKey,
   } from "./col-visibility";
   import { getDaemonKV } from "./daemon-kv";
@@ -917,6 +918,7 @@
   }
   let lastSummaryRequestSource: string | undefined = undefined;
   let columnNearViewport = false;
+  let sessionElementIntersecting = false;
   let sessionVisibilityObs: IntersectionObserver | null = null;
   let sessionAncestorVisibilityObs: MutationObserver | null = null;
 
@@ -937,7 +939,10 @@
   }
 
   function syncSessionViewportState(): void {
-    const near = sessionElementNearViewport();
+    const near = sessionViewportNear(
+      sessionElementIntersecting,
+      sessionAncestorsNearViewport(),
+    );
     if (columnNearViewport === near) return;
     columnNearViewport = near;
     if (near) void requestSessionPollNow();
@@ -949,9 +954,14 @@
       return;
     }
     sessionVisibilityObs?.disconnect();
+    sessionElementIntersecting = elementNearViewport(sessionEl);
+    syncSessionViewportState();
     sessionVisibilityObs = new IntersectionObserver(
       (entries) => {
-        if (entries.length > 0) syncSessionViewportState();
+        const entry = entries[entries.length - 1];
+        if (!entry) return;
+        sessionElementIntersecting = entry.isIntersecting;
+        syncSessionViewportState();
       },
       { root: null, rootMargin: "300px", threshold: 0 },
     );

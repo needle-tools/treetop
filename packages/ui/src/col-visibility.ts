@@ -77,6 +77,17 @@ export function elementNearViewport(
   return rectNearViewport(node.getBoundingClientRect(), viewport);
 }
 
+/** A session body is safe to render only when both its own observer and the
+ * containing row/column agree that it is near the viewport. Keeping these as
+ * independent signals makes reveal order irrelevant: either observer may run
+ * first while layout and offscreen classes settle. */
+export function sessionViewportNear(
+  elementIntersecting: boolean,
+  ancestorsNear: boolean,
+): boolean {
+  return elementIntersecting && ancestorsNear;
+}
+
 export function colVisibility(node: HTMLElement) {
   if (typeof IntersectionObserver === "undefined") return {};
   const io = new IntersectionObserver(
