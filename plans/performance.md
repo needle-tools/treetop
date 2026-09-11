@@ -1279,3 +1279,10 @@ the pane has no history to display. Failed older-page reads keep that history
 visible and add a compact Retry warning instead of failing silently. An
 active-writer conflict uses a slower retry cadence; it does not fall back to
 the transcript renderer.
+
+The cumulative artifact map consumes the same normalized visual-work entries
+as the per-turn artifact view. Full-history extraction is opt-in while a map is
+open, completed work is cached by immutable item identity, and each session
+publishes into a dedicated store so artifact updates do not wake the app root.
+Closing the map releases that store and restores the normal bounded transcript
+work; the regular session renderer and its geometry remain mounted throughout.

@@ -253,6 +253,27 @@ describe("OpenSessionsStore", () => {
     });
   });
 
+  test("round-trips an artifact-map utility panel", () => {
+    const m = new MemStore();
+    const s = new OpenSessionsStore(m, KEY);
+    s.save({
+      "/repo": [
+        {
+          agent: "artifacts",
+          source: "__artifacts__:%2Fsessions%2Fone.jsonl",
+        },
+      ],
+    });
+    expect(s.load()).toEqual({
+      "/repo": [
+        {
+          agent: "artifacts",
+          source: "__artifacts__:%2Fsessions%2Fone.jsonl",
+        },
+      ],
+    });
+  });
+
   test("save replaces previous data, not merges", () => {
     const m = new MemStore();
     const s = new OpenSessionsStore(m, KEY);
@@ -731,6 +752,7 @@ describe("filterToExistingSessions", () => {
     const persisted = [
       mkSess("__attached__:shell:t_1"),
       mkSess("/agents/claude.jsonl"),
+      mkSess("__artifacts__:%2Fagents%2Fclaude.jsonl"),
       mkSess("__transcript__:shell:t_2"),
       mkSess("/agents/missing.jsonl"),
     ];
@@ -738,6 +760,7 @@ describe("filterToExistingSessions", () => {
     expect(filterToExistingSessions(persisted, existing)).toEqual([
       mkSess("__attached__:shell:t_1"),
       mkSess("/agents/claude.jsonl"),
+      mkSess("__artifacts__:%2Fagents%2Fclaude.jsonl"),
       mkSess("__transcript__:shell:t_2"),
     ]);
   });

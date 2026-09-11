@@ -198,7 +198,8 @@ export type PersistedAgent =
   | "ollama"
   | "shell"
   | "files"
-  | "history";
+  | "history"
+  | "artifacts";
 
 /** Model tier aliases offered for Claude sessions. We deliberately stick
  *  to the CLI's stable aliases rather than pinned versions so the menu
@@ -597,6 +598,7 @@ const VALID_AGENTS: ReadonlySet<PersistedAgent> = new Set([
   "shell",
   "files",
   "history",
+  "artifacts",
 ]);
 
 function sanitizeSession(item: unknown): PersistedSession | null {
@@ -750,6 +752,8 @@ export const SYNTHETIC_SOURCE_PREFIXES = [
   "__restore__:",
   // Git history panel — commit list + diff viewer, entirely UI-owned.
   "__history__:",
+  // Cumulative read/write map for another session in the same lane.
+  "__artifacts__:",
   // Live Codex app-server thread — app-server/SSE owns the live transport;
   // the provider transcript path, when present, lives in `transcriptSource`.
   "__codex_app__:",

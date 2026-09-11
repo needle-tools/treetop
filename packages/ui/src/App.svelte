@@ -32,6 +32,7 @@
     sortReposByKeys,
   } from "./repo-fanout";
   import { onMount, onDestroy, tick } from "svelte";
+  import { writable, type Writable } from "svelte/store";
   import { flip } from "svelte/animate";
   import {
     DismissedSessionsStore,
@@ -76,6 +77,13 @@
     ProvisionFormPayload,
   } from "./remote-daemon-form";
   import SessionView from "./SessionView.svelte";
+  import SessionArtifactMap from "./SessionArtifactMap.svelte";
+  import {
+    artifactMapOwnerSource,
+    artifactMapPanelSource,
+    insertArtifactMapPanel,
+  } from "./session-artifacts";
+  import type { VisualTranscriptItem } from "./last-user-message";
   import ShellView from "./ShellView.svelte";
   import OllamaTranscriptView from "./OllamaTranscriptView.svelte";
   import Popover from "./Popover.svelte";
@@ -2326,6 +2334,56 @@
     scrollNewColIntoView(wtPath, synthetic);
   }
 
+  function artifactItemStoreKey(wtPath: string, ownerSource: string): string {
+    return `${wtPath}\0${ownerSource}`;
+  }
+
+  function artifactItemStoreFor(
+    wtPath: string,
+    ownerSource: string,
+  ): Writable<readonly VisualTranscriptItem[]> {
+    const key = artifactItemStoreKey(wtPath, ownerSource);
+    let store = artifactItemStores.get(key);
+    if (!store) {
+      store = writable<readonly VisualTranscriptItem[]>([]);
+      artifactItemStores.set(key, store);
+    }
+    return store;
+  }
+
+  function artifactMapIsOpen(wtPath: string, ownerSource: string): boolean {
+    const panelSource = artifactMapPanelSource(ownerSource);
+    return (openSessionsByWt[wtPath] ?? []).some(
+      (session) => session.source === panelSource,
+    );
+  }
+
+  function publishArtifactItems(
+    wtPath: string,
+    ownerSource: string,
+    items: readonly VisualTranscriptItem[],
+  ): void {
+    artifactItemStores
+      .get(artifactItemStoreKey(wtPath, ownerSource))
+      ?.set(items);
+  }
+
+  function openArtifactMap(wtPath: string, ownerSource: string): void {
+    const source = artifactMapPanelSource(ownerSource);
+    const existing = openSessionsByWt[wtPath] ?? [];
+    const result = insertArtifactMapPanel(existing, ownerSource);
+    if (!result.inserted) {
+      scrollNewColIntoView(wtPath, source);
+      return;
+    }
+    artifactItemStoreFor(wtPath, ownerSource);
+    openSessionsByWt = {
+      ...openSessionsByWt,
+      [wtPath]: [...result.sessions],
+    };
+    scrollNewColIntoView(wtPath, source);
+  }
+
   function openFileBrowser(wtPath: string) {
     const id = `fb_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
     const synthetic = `__files__:${id}`;
@@ -3456,7 +3514,12 @@
   interface OpenSession {
     /** Includes `"shell"` for plain-terminal columns (no JSONL transcript;
      *  the daemon spawns the user's $SHELL as a PTY). */
-    agent: AgentSession["agent"] | "shell" | "files" | "history";
+    agent:
+      | AgentSession["agent"]
+      | "shell"
+      | "files"
+      | "history"
+      | "artifacts";
     source: string;
     /** Optional. Stamped on `__new__:claude:` / `__new__:codex:` columns
      *  by the activity-SSE handler once the daemon surfaces a real
@@ -3506,6 +3569,10 @@
     shellCmd?: string[];
   }
   let openSessionsByWt: Record<string, OpenSession[]> = {};
+  const artifactItemStores = new Map<
+    string,
+    Writable<readonly VisualTranscriptItem[]>
+  >();
 
   /** The user's default login shell + args, fetched once on mount from
    *  /api/shell-default. The daemon resolves $SHELL / COMSPEC with
@@ -3610,6 +3677,10 @@
     // already-dead sessions.
     play(resolveTermId(s, newTermIds) ? "session-stop" : "session-close");
     dismissIfShell(s);
+    const artifactOwner = artifactMapOwnerSource(s.source);
+    if (artifactOwner) {
+      artifactItemStores.delete(artifactItemStoreKey(wtPath, artifactOwner));
+    }
     for (const [linkId, entry] of commandTermSources) {
       if (entry.source === s.source) {
         commandTermSources.delete(linkId);
@@ -7246,10 +7317,12 @@
           if (
             s.agent === "files" ||
             s.agent === "history" ||
+            s.agent === "artifacts" ||
             s.source.startsWith("__files__:") ||
             s.source.startsWith("__remote__:") ||
             s.source.startsWith("__restore__:") ||
-            s.source.startsWith("__history__:")
+            s.source.startsWith("__history__:") ||
+            s.source.startsWith("__artifacts__:")
           )
             continue;
           const hasDockActivity = openSessionHasDockActivity(s, {
@@ -12015,6 +12088,24 @@
                                 onDragStart={(e) =>
                                   handleSessionDragStart(e, wt.path, i)}
                               />
+                            {:else if s.source.startsWith("__artifacts__:")}
+                              {@const artifactOwner = artifactMapOwnerSource(
+                                s.source,
+                              ) ?? ""}
+                              <SessionArtifactMap
+                                itemStore={artifactItemStoreFor(
+                                  wt.path,
+                                  artifactOwner,
+                                )}
+                                worktreePath={wt.path}
+                                daemonId={daemonIdForWorktreePath(
+                                  repos,
+                                  wt.path,
+                                )}
+                                onClose={() => closeSessionInWt(wt.path, s)}
+                                onDragStart={(e) =>
+                                  handleSessionDragStart(e, wt.path, i)}
+                              />
                             {:else if s.source.startsWith("__files__:")}
                               <FileBrowser
                                 wtPath={wt.path}
@@ -12085,6 +12176,18 @@
                                       targetAgent,
                                       ollamaModel,
                                     )}
+                                  artifactTrackingEnabled={artifactMapIsOpen(
+                                    wt.path,
+                                    s.source,
+                                  )}
+                                  onArtifactItemsChange={(items) =>
+                                    publishArtifactItems(
+                                      wt.path,
+                                      s.source,
+                                      items,
+                                    )}
+                                  onOpenArtifactMap={() =>
+                                    openArtifactMap(wt.path, s.source)}
                                   on:close={() => closeSessionInWt(wt.path, s)}
                                 />
                               {:else}
@@ -12458,6 +12561,18 @@
                                     transcriptSource:
                                       s.transcriptSource ?? agentMeta?.source,
                                   })}
+                                  artifactTrackingEnabled={artifactMapIsOpen(
+                                    wt.path,
+                                    s.source,
+                                  )}
+                                  onArtifactItemsChange={(items) =>
+                                    publishArtifactItems(
+                                      wt.path,
+                                      s.source,
+                                      items,
+                                    )}
+                                  onOpenArtifactMap={() =>
+                                    openArtifactMap(wt.path, s.source)}
                                   wtPath={wt.path}
                                   daemonId={daemonIdForWorktreePath(
                                     repos,

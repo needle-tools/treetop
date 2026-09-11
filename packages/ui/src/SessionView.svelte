@@ -248,6 +248,13 @@
   export let onMessagesChange: (
     messages: readonly CodexAppHistoryMessage[],
   ) => void = () => {};
+  /** Opt-in cumulative artifact feed. It is disabled for ordinary session
+   * columns so full-history work is paid only while an Artifact Map is open. */
+  export let artifactTrackingEnabled = false;
+  export let onArtifactItemsChange: (
+    items: readonly VisualTranscriptItem[],
+  ) => void = () => {};
+  export let onOpenArtifactMap: () => void = () => {};
   export let onTranscriptTurnChange:
     | ((turnIndex: number) => void)
     | undefined = undefined;
@@ -1336,6 +1343,12 @@
   let transcriptTurnPublishSeq = 0;
   let modelsDevPricing: ModelsDevPricingSnapshot | undefined;
   let visualTranscriptChangeStartHint: number | undefined;
+  let artifactTranscriptItems: VisualTranscriptItem<
+    NormalizedBlock,
+    NormalizedMessage
+  >[] = [];
+  let previousArtifactMessages: NormalizedMessage[] = [];
+  let previousArtifactTranscriptActive: boolean | undefined;
   $: if (renderReadBody) {
     const pausedReaderAnchor = capturePausedVisualReaderAnchor();
     const changeStartHint = visualTranscriptChangeStartHint;
@@ -1363,6 +1376,24 @@
     previousVisualSessionMessages = [];
     previousVisualTranscriptActive = undefined;
     visualTranscriptChangeStartHint = undefined;
+  }
+  $: if (artifactTrackingEnabled) {
+    artifactTranscriptItems = updateVisualTranscriptItems({
+      previousMessages: previousArtifactMessages,
+      previousItems: artifactTranscriptItems,
+      previousActive: previousArtifactTranscriptActive,
+      messages: visualSessionMessages,
+      active: visualTranscriptActive,
+      changeStartHint: visualTranscriptChangeStartHint,
+      messageIndexOffset: 0,
+    });
+    previousArtifactMessages = visualSessionMessages;
+    previousArtifactTranscriptActive = visualTranscriptActive;
+    onArtifactItemsChange(artifactTranscriptItems);
+  } else if (artifactTranscriptItems.length > 0) {
+    artifactTranscriptItems = [];
+    previousArtifactMessages = [];
+    previousArtifactTranscriptActive = undefined;
   }
   $: if (onTranscriptTurnChange && messagesEl && visualTranscriptItems) {
     void visualSessionMessageTurnIndexes;
@@ -1595,6 +1626,19 @@
           ? "Open the folder containing this session's on-disk log file"
           : "No session file for this session yet",
         onSelect: () => void openSessionDirectory(),
+      },
+      {
+        kind: "action",
+        label: "Show Artifact Map",
+        iconSvg: [
+          "M3 6h7l2 2h9v10H3z",
+          "M7 12h2",
+          "M11 12h2",
+          "M15 12h2",
+        ],
+        disabled: !session,
+        title: "Show this session's cumulative file reads and writes",
+        onSelect: onOpenArtifactMap,
       },
       {
         kind: "action",

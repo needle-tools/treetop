@@ -316,7 +316,7 @@ function actionLabel(action: VisualWorkArtifact["action"]): string {
   return "read";
 }
 
-function artifactChanges(
+export function visualWorkArtifactChanges(
   artifact: VisualWorkArtifact,
 ): VisualWorkArtifactChange[] {
   return artifact.changes && artifact.changes.length > 0
@@ -341,7 +341,7 @@ function artifactChanges(
 export function sparseArtifactRowChanges(
   row: Pick<SparseArtifactTreeRow, "artifacts">,
 ): VisualWorkArtifactChange[] {
-  return row.artifacts.flatMap(artifactChanges);
+  return row.artifacts.flatMap(visualWorkArtifactChanges);
 }
 
 export function sparseArtifactRowDiffChanges(

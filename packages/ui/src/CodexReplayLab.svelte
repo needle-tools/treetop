@@ -1,6 +1,8 @@
 <script lang="ts">
   import { onDestroy, onMount, tick } from "svelte";
   import SessionView from "./SessionView.svelte";
+  import SessionArtifactMap from "./SessionArtifactMap.svelte";
+  import type { VisualTranscriptItem } from "./last-user-message";
   import { writeBrowserClipboard } from "./clipboard-write";
   import { formatByteSize } from "./context-tokens";
   import { codexAppSource } from "./storage";
@@ -90,6 +92,7 @@
   let transcriptSessionOverride: CodexReplayTranscriptSession | undefined;
   let analysisCollapsed = false;
   let analysisMessages: readonly CodexReplayMessage[] = [];
+  let artifactItems: readonly VisualTranscriptItem[] = [];
   let replaySessionView: {
     scrollToTranscriptTurn(turnIndex: number): void;
     scrollTranscriptToEdge(edge: "start" | "end"): void;
@@ -265,6 +268,7 @@
     transcriptSession = null;
     transcriptSessionOverride = undefined;
     analysisMessages = [];
+    artifactItems = [];
     localFile = false;
     localWarnings = [];
     stopPlayback();
@@ -326,6 +330,7 @@
     transcriptSession = null;
     transcriptSessionOverride = undefined;
     analysisMessages = [];
+    artifactItems = [];
     selectedThreadId = options.entry?.threadId ?? "";
     stopPlayback();
     localFile = true;
@@ -572,6 +577,7 @@
     transcriptSession = null;
     transcriptSessionOverride = undefined;
     analysisMessages = [];
+    artifactItems = [];
     visibleTranscriptTurnIndex = -1;
     fileName = "";
     stepIndex = 0;
@@ -1297,6 +1303,14 @@
       class:analysis-collapsed={analysisCollapsed}
       class:no-analysis={!fileName}
     >
+      {#if fileName}
+        <aside class="replay-artifacts" aria-label="Session artifact map">
+          <SessionArtifactMap
+            items={artifactItems}
+            worktreePath={transcriptSession?.transcript?.cwd ?? fixture?.cwd}
+          />
+        </aside>
+      {/if}
       <div class="replay-session-area">
         {#if loading}
           <div
@@ -1335,6 +1349,8 @@
                   spawnReady={false}
                   onClose={localFile ? clearReplay : () => {}}
                   onMessagesChange={receiveSessionMessages}
+                  artifactTrackingEnabled={true}
+                  onArtifactItemsChange={(items) => (artifactItems = items)}
                   {onTranscriptTurnChange}
                 />
               {/key}
@@ -1364,6 +1380,8 @@
                   codexAppTransport={transport}
                   spawnReady={false}
                   onMessagesChange={receiveSessionMessages}
+                  artifactTrackingEnabled={true}
+                  onArtifactItemsChange={(items) => (artifactItems = items)}
                   {onTranscriptTurnChange}
                 />
               {/key}
@@ -1690,7 +1708,7 @@
 
   .replay-main {
     display: grid;
-    grid-template-columns: minmax(0, 1fr) 310px;
+    grid-template-columns: 280px minmax(0, 1fr) 310px;
     gap: 10px;
     width: auto;
     max-width: none;
@@ -1699,11 +1717,20 @@
   }
 
   .replay-main.analysis-collapsed {
-    grid-template-columns: minmax(0, 1fr) 36px;
+    grid-template-columns: 280px minmax(0, 1fr) 36px;
   }
 
   .replay-main.no-analysis {
     grid-template-columns: minmax(0, 1fr);
+  }
+
+  .replay-artifacts {
+    min-width: 0;
+    min-height: 0;
+    overflow: hidden;
+    border: 1px solid var(--border, #303030);
+    border-radius: 8px;
+    background: var(--panel-bg, #181818);
   }
 
   .replay-session-area {
