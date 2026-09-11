@@ -5497,6 +5497,7 @@
       {contextWindow}
       {model}
       lastActivityIso={effectiveLastActivityIso}
+      startedAtIso={session?.startedAt}
       sessionCost={sessionTokenCost}
       lastUserMessage={lastUserMessageWithContext}
       {pollCount}

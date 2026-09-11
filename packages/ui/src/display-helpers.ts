@@ -69,6 +69,22 @@ export function formatRelativeTime(iso: string, now = Date.now()): string {
   return `${Math.round(mo / 12)}y ago`;
 }
 
+function formatSessionRelativeTime(iso: string, now: number): string {
+  const s = Math.floor((now - Date.parse(iso)) / 1000);
+  if (s < 60) return "just now";
+  if (s < 120) return "1 minute ago";
+  if (s < 3600) return `${Math.floor(s / 60)} minutes ago`;
+  if (s < 7200) return "1 hour ago";
+  if (s < 86400) return `${Math.floor(s / 3600)} hours ago`;
+  if (s < 172800) return "yesterday";
+  return `${Math.floor(s / 86400)} days ago`;
+}
+
+export function formatSessionActivity(lastActivityIso: string, startedAtIso?: string, now = Date.now()): string {
+  const lastActivity = `last activity ${formatSessionRelativeTime(lastActivityIso, now)}`;
+  return startedAtIso ? `${lastActivity} · started ${formatSessionRelativeTime(startedAtIso, now)}` : lastActivity;
+}
+
 const absoluteTimeTitleFormatter = new Intl.DateTimeFormat(undefined, {
   year: "numeric",
   month: "short",

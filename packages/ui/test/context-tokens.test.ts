@@ -2,6 +2,8 @@ import { describe, expect, test } from "bun:test";
 import {
   contextChip,
   formatByteSize,
+  formatSessionTranscriptStats,
+  formatSessionTokens,
   formatTokens,
   modelContextCap,
 } from "../src/context-tokens";
@@ -33,6 +35,31 @@ describe("formatTokens", () => {
   test("renders megatokens with a couple of decimals", () => {
     expect(formatTokens(1_050_000)).toBe("1.05M");
     expect(formatTokens(12_300_000)).toBe("12.3M");
+  });
+});
+
+describe("formatSessionTokens", () => {
+  test("shows exactly three significant digits across token units", () => {
+    expect(formatSessionTokens(320)).toBe("320t");
+    expect(formatSessionTokens(12)).toBe("12.0t");
+    expect(formatSessionTokens(2_530_000)).toBe("2.53M");
+    expect(formatSessionTokens(114_500_000)).toBe("115M");
+    expect(formatSessionTokens(1_234_000_000)).toBe("1.23B");
+  });
+
+  test("promotes rounded values to the next unit", () => {
+    expect(formatSessionTokens(999.9)).toBe("1.00k");
+    expect(formatSessionTokens(999_900)).toBe("1.00M");
+  });
+});
+
+describe("formatSessionTranscriptStats", () => {
+  test("keeps messages, lines, and file size on one line", () => {
+    expect(formatSessionTranscriptStats({ loadedMessageCount: 253, lineCount: 6_911, fileSizeBytes: 42_900_000 })).toBe("253 messages · 6,911 lines · 42.9 MB");
+  });
+
+  test("preserves partial-history and estimated-file-stat labels", () => {
+    expect(formatSessionTranscriptStats({ loadedMessageCount: 100, totalMessageCount: 1_000, lineCount: 250, fileSizeBytes: 1_000, fileStatsExact: false })).toBe("100 of 1,000 messages · ~250 lines · 1 KB");
   });
 });
 

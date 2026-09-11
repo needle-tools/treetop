@@ -29,7 +29,8 @@
   import Tooltip from "./Tooltip.svelte";
   import SleepIndicationAnimation from "./SleepIndicationAnimation.svelte";
   import { ICONS } from "./icons";
-  import { contextChip, formatByteSize, formatTokens } from "./context-tokens";
+  import { contextChip, formatSessionTokens, formatSessionTranscriptStats } from "./context-tokens";
+  import { formatSessionActivity } from "./display-helpers";
   import type { AgentSettingGroup } from "./claude-session-menu";
   import type { SessionTokenCost } from "@treetop/nicifier";
 
@@ -105,6 +106,7 @@
   export let contextWindow: number | undefined = undefined;
   export let model: string | undefined = undefined;
   export let lastActivityIso: string | undefined = undefined;
+  export let startedAtIso: string | undefined = undefined;
   export let sessionCost: SessionTokenCost | undefined = undefined;
   /** Text of the user's most recent message in this session, surfaced
    *  in the rich hover-tooltip on the "last activity" chip. Often the
@@ -174,6 +176,21 @@
     agent: agent === "shell" || agent === "ollama" ? undefined : agent,
     cap: contextWindow,
   });
+  $: transcriptStats = formatSessionTranscriptStats({ loadedMessageCount, totalMessageCount, lineCount, fileSizeBytes, fileStatsExact, messageCountFallback });
+  $: transcriptStatsTitle = [
+    loadedMessageCount !== undefined
+      ? totalMessageCount !== undefined && totalMessageCount > loadedMessageCount
+        ? `Showing the last ${loadedMessageCount.toLocaleString()} of ${totalMessageCount.toLocaleString()} messages.`
+        : `${loadedMessageCount.toLocaleString()} message${loadedMessageCount === 1 ? "" : "s"} in this session`
+      : totalMessageCount !== undefined
+        ? `${totalMessageCount.toLocaleString()} message${totalMessageCount === 1 ? "" : "s"} in this session`
+        : "",
+    lineCount !== undefined || fileSizeBytes !== undefined
+      ? fileStatsExact
+        ? "Exact JSONL lines and transcript bytes represented here"
+        : "Estimated JSONL lines and bytes reached at this replay step"
+      : "",
+  ].filter(Boolean).join(" · ");
 
   function relTimeFromNow(ts: number): string {
     const s = Math.floor((Date.now() - ts) / 1000);
@@ -181,17 +198,6 @@
     if (s < 60) return `${s}s ago`;
     return `${Math.floor(s / 60)}m ago`;
   }
-  function relTimeFromIso(iso: string): string {
-    const s = Math.floor((Date.now() - Date.parse(iso)) / 1000);
-    if (s < 60) return "just now";
-    if (s < 120) return "1 minute ago";
-    if (s < 3600) return `${Math.floor(s / 60)} minutes ago`;
-    if (s < 7200) return "1 hour ago";
-    if (s < 86400) return `${Math.floor(s / 3600)} hours ago`;
-    if (s < 172800) return "yesterday";
-    return `${Math.floor(s / 86400)} days ago`;
-  }
-
   /** Bound to the header element so the burger-menu "Toggle fullscreen"
    *  action can find its `.session` ancestor without an event target —
    *  the menu hands actions a bounding rect, not the clicked node. */
@@ -602,13 +608,13 @@
       {#if lastUserMessage && lastUserMessage.trim().length > 0}
         <Tooltip variant="wide" placement="bottom" escapeClip>
           <span slot="trigger" class="muted small last-activity"
-            >last activity {relTimeFromIso(lastActivityIso)}</span
+            >{formatSessionActivity(lastActivityIso, startedAtIso)}</span
           >
           <pre slot="content" class="la-tt-msg">{lastUserMessage}</pre>
         </Tooltip>
       {:else}
         <span class="muted small last-activity"
-          >last activity {relTimeFromIso(lastActivityIso)}</span
+          >{formatSessionActivity(lastActivityIso, startedAtIso)}</span
         >
       {/if}
     {:else if lastActivityFallback}
@@ -622,7 +628,7 @@
         title={`${sessionCost.pricedSegments > 0 ? `${sessionCost.unpricedSegments > 0 ? "Partial" : "Estimated"} session token cost · ${sessionCost.models.join(", ")} · pricing: ${sessionCost.sources.join(", ")}${sessionCost.unpricedSegments > 0 ? ` · ${sessionCost.unpricedSegments} usage segment${sessionCost.unpricedSegments === 1 ? "" : "s"} could not be priced` : ""} · ` : ""}${sessionCost.newInputTokens.toLocaleString()} new input tokens · ${sessionCost.outputTokens.toLocaleString()} output tokens · ${sessionCost.cachedInputTokens.toLocaleString()} cached input tokens`}
       >
         {#if sessionCost.pricedSegments > 0}
-          session {sessionCost.totalUsd === 0
+          {sessionCost.totalUsd === 0
             ? "$0.00"
             : sessionCost.totalUsd < 0.01
               ? `$${sessionCost.totalUsd.toFixed(4)}`
@@ -631,50 +637,13 @@
                 : `$${sessionCost.totalUsd.toLocaleString(undefined, { maximumFractionDigits: 0 })}`}{sessionCost.unpricedSegments > 0 ? "+" : ""}
           ·
         {/if}
-        {formatTokens(sessionCost.newInputTokens)} new in · {formatTokens(
+        {formatSessionTokens(sessionCost.newInputTokens)} in · {formatSessionTokens(
           sessionCost.outputTokens,
-        )} out · {formatTokens(sessionCost.cachedInputTokens)} cached
+        )} out · {formatSessionTokens(sessionCost.cachedInputTokens)} cache
       </span>
     {/if}
-    {#if loadedMessageCount !== undefined}
-      <span
-        class="muted small msg-count"
-        title={totalMessageCount !== undefined &&
-        totalMessageCount > loadedMessageCount
-          ? `Showing the last ${loadedMessageCount} of ${totalMessageCount.toLocaleString()} messages.`
-          : `${loadedMessageCount} message${loadedMessageCount === 1 ? "" : "s"} in this session`}
-      >
-        {#if totalMessageCount !== undefined && totalMessageCount > loadedMessageCount}
-          {loadedMessageCount} of {totalMessageCount.toLocaleString()} messages
-        {:else}
-          {loadedMessageCount} messages
-        {/if}
-      </span>
-    {:else if totalMessageCount !== undefined}
-      <span
-        class="muted small msg-count"
-        title={`${totalMessageCount.toLocaleString()} message${totalMessageCount === 1 ? "" : "s"} in this session`}
-        >{totalMessageCount.toLocaleString()} messages</span
-      >
-    {:else if messageCountFallback}
-      <span class="muted small msg-count placeholder"
-        >{messageCountFallback}</span
-      >
-    {/if}
-    {#if lineCount !== undefined || fileSizeBytes !== undefined}
-      <span
-        class="muted small file-stats"
-        title={fileStatsExact
-          ? "Exact JSONL lines and transcript bytes represented here"
-          : "Estimated JSONL lines and bytes reached at this replay step"}
-      >
-        {#if !fileStatsExact}~{/if}
-        {#if lineCount !== undefined}
-          {lineCount.toLocaleString()} {lineCount === 1 ? "line" : "lines"}
-        {/if}
-        {#if lineCount !== undefined && fileSizeBytes !== undefined} · {/if}
-        {#if fileSizeBytes !== undefined}{formatByteSize(fileSizeBytes)}{/if}
-      </span>
+    {#if transcriptStats}
+      <span class="muted small msg-count" class:placeholder={loadedMessageCount === undefined && totalMessageCount === undefined && !!messageCountFallback} title={transcriptStatsTitle}>{transcriptStats}</span>
     {/if}
   </div>
   <div class="hdr-col col-actions">
@@ -817,18 +786,19 @@
     max-width: 100%;
   }
   .col-meta {
-    /* Intrinsic size — col-meta never gets squeezed. col-name takes
-       the slack via flex: 1, so the title is what ellipsizes when
-       the column is tight. */
-    flex: 0 0 auto;
+    /* Metadata yields before the action cluster. Long costs / transcript
+       stats wrap inside this column instead of pushing the menu and close
+       buttons outside the header. */
+    flex: 0 1 auto;
+    min-width: 0;
     flex-direction: column;
     align-items: flex-start;
     gap: 0.15rem;
+    font-variant-numeric: tabular-nums;
   }
   .col-meta > * {
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
+    max-width: 100%;
+    white-space: normal;
     display: block;
   }
   .col-meta .placeholder {

@@ -21,6 +21,7 @@ import {
   notesListDisplay,
   sortBranches,
   formatRelativeTime,
+  formatSessionActivity,
   duplicateRepoNotice,
   relTime,
   clampSubject,
@@ -741,6 +742,18 @@ describe("formatRelativeTime", () => {
         now,
       ),
     ).toBe("1y ago");
+  });
+});
+
+describe("formatSessionActivity", () => {
+  test("shows last activity and session start with the same relative-time formatter", () => {
+    const now = Date.parse("2026-09-11T10:00:00.000Z");
+    expect(formatSessionActivity("2026-09-10T23:00:00.000Z", "2026-09-08T10:00:00.000Z", now)).toBe("last activity 11 hours ago · started 3 days ago");
+  });
+
+  test("omits start metadata when it is unavailable", () => {
+    const now = Date.parse("2026-09-11T10:00:00.000Z");
+    expect(formatSessionActivity("2026-09-10T23:00:00.000Z", undefined, now)).toBe("last activity 11 hours ago");
   });
 });
 
