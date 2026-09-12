@@ -46,6 +46,7 @@ import {
   visualToolInlineScript,
   visualToolInlineScriptLanguageLabel,
   visualToolInlineScriptPreviewText,
+  visualToolExecutionLayers,
   visualToolMediaBlocks,
   visualFileEditCountBadge,
   visualMediaPathTarget,
@@ -3033,6 +3034,78 @@ describe("visual tool payload display helpers", () => {
     );
   });
 
+  it("summarizes file discovery and repository setup commands from real sessions", () => {
+    const block = (cmd: string) => ({
+      type: "tool_use",
+      toolName: "exec_command",
+      toolInput: { cmd },
+    });
+
+    const commands = [
+      "rg --files -g AGENTS.md -g '*triflow*' -g pyproject.toml -g package.json",
+      "ls -d /Users/herbst/git/triflow /Users/herbst/git/AGENTS.md /Users/herbst/AGENTS.md 2>/dev/null",
+      "git clone --recursive https://github.com/DerKleineLi/triflow.git /Users/herbst/git/triflow",
+    ];
+
+    expect(visualToolPreviewText(block(commands[0]!))).toBe(
+      "Find AGENTS.md, *triflow*, pyproject.toml, package.json in .",
+    );
+    expect(visualToolPreviewText(block(commands[1]!))).toBe(
+      "Read triflow, git/AGENTS.md, herbst/AGENTS.md",
+    );
+    expect(visualToolPreviewText(block(commands[2]!))).toBe(
+      "Clone github.com/DerKleineLi/triflow.git to triflow",
+    );
+    for (const command of commands) {
+      expect(visualToolCommandNicifierCoverage(block(command))).toMatchObject({
+        fullyNicified: true,
+        unnicifiedParts: [],
+      });
+    }
+  });
+
+  it("summarizes Windows environment setup commands from nested SSH sessions", () => {
+    const block = (cmd: string) => ({
+      type: "tool_use",
+      toolName: "exec_command",
+      toolInput: { cmd },
+    });
+    const preview = (cmd: string) => visualToolPreviewText(block(cmd));
+
+    expect(
+      preview(
+        "Get-Command python,conda,docker,nvcc -ErrorAction SilentlyContinue | Select-Object Name,Source | ConvertTo-Json",
+      ),
+    ).toBe("Find commands python, conda, docker, nvcc");
+    expect(preview("wsl --list --quiet")).toBe("List WSL distributions");
+    expect(
+      preview(
+        "wsl --install -d Ubuntu-22.04 --no-launch --location E:\\TriFlow\\Ubuntu",
+      ),
+    ).toBe("Install WSL distribution Ubuntu-22.04 to Ubuntu");
+    expect(
+      preview(
+        "curl.exe -fL https://cdimage.ubuntu.com/ubuntu-base/releases/22.04/release/ubuntu-base-22.04.5-base-amd64.tar.gz -o E:\\TriFlow\\ubuntu-base.tar.gz",
+      ),
+    ).toBe(
+      "Fetch cdimage.ubuntu.com/ubuntu-base/releases/22.04/release/ubuntu-base-22.04.5-base-amd64.tar.gz to ubuntu-base.tar.gz",
+    );
+    expect(
+      preview(
+        "if ($LASTEXITCODE -eq 0) { wsl --import TriFlow E:\\TriFlow\\Ubuntu E:\\TriFlow\\ubuntu-base.tar.gz --version 2 }",
+      ),
+    ).toBe(
+      "Import WSL distribution TriFlow to Ubuntu from ubuntu-base.tar.gz",
+    );
+    expect(
+      visualToolCommandNicifierCoverage(
+        block(
+          "ssh felix-win 'powershell.exe -NoProfile -Command \"Get-Command git -ErrorAction SilentlyContinue | Select-Object Source | ConvertTo-Json; wsl --list --quiet\"'",
+        ),
+      ),
+    ).toMatchObject({ fullyNicified: true, unnicifiedParts: [] });
+  });
+
   it("reports recursive nicifier completeness for chains and nested launchers", () => {
     const coverage = (cmd: string) =>
       visualToolCommandNicifierCoverage({
@@ -5133,6 +5206,116 @@ describe("visual tool payload display helpers", () => {
     );
   });
 
+  it("summarizes namespaced agent-browser sessions and extension workflows", () => {
+    const inspectionChain = {
+      type: "tool_use",
+      toolName: "exec_command",
+      toolInput: {
+        cmd: "agent-browser --namespace needlecft --session apple-ext eval 'document.title'\nagent-browser --namespace needlecft --session apple-ext wait 30000\nagent-browser --namespace needlecft --session apple-ext screenshot --path /tmp/apple-resources.png",
+      },
+    };
+    expect(visualToolPreviewText(inspectionChain)).toBe(
+      "Run browser script · Wait for browser 30s · Capture browser screenshot apple-resources.png",
+    );
+    expect(visualToolInlineScriptLanguageLabel(inspectionChain)).toBe(
+      "JavaScript",
+    );
+    expect(visualToolCommandNicifierCoverage(inspectionChain)).toMatchObject({
+      fullyNicified: true,
+      kinds: ["browser", "browser", "browser"],
+    });
+
+    expect(
+      visualToolPreviewText({
+        type: "tool_use",
+        toolName: "exec_command",
+        toolInput: {
+          cmd: "agent-browser --namespace needlecft --session apple-ext --executable-path '/Applications/Chrome for Testing' --extension dist --headed open about:blank",
+        },
+      }),
+    ).toBe("Open browser about:blank");
+
+    expect(
+      visualToolPreviewText({
+        type: "tool_use",
+        toolName: "exec_command",
+        toolInput: {
+          cmd: "agent-browser --namespace needlecft --session apple-ext tab new\nagent-browser --namespace needlecft --session apple-ext tab list\nagent-browser --namespace needlecft --session apple-ext tab t1\nagent-browser --namespace needlecft --session apple-ext errors",
+        },
+      }),
+    ).toBe(
+      "Open browser tab · List browser tabs · Switch to browser tab t1 · Check browser errors",
+    );
+
+    expect(
+      visualToolPreviewText({
+        type: "tool_use",
+        toolName: "exec_command",
+        toolInput: {
+          cmd: "agent-browser session list\nagent-browser doctor\nagent-browser install\nagent-browser --namespace needlecft --session apple-ext get cdp-url",
+        },
+      }),
+    ).toBe(
+      "List browser sessions · Check browser setup · Install browser · Read browser CDP URL",
+    );
+    expect(
+      visualToolPreviewText({
+        type: "tool_use",
+        toolName: "exec_command",
+        toolInput: { cmd: "agent-browser --help" },
+      }),
+    ).toBe("Show agent-browser help");
+    expect(
+      visualToolPreviewText({
+        type: "tool_use",
+        toolName: "exec_command",
+        toolInput: {
+          cmd: 'agent-browser skills get core --full | rg -n "executable|extension|launch|browser" | head -80',
+        },
+      }),
+    ).toBe(
+      'Search agent-browser core skill for "executable|extension|launch|browser"',
+    );
+  });
+
+  it("summarizes agent-browser interaction, recording, and profiling commands", () => {
+    expect(
+      visualToolPreviewText({
+        type: "tool_use",
+        toolName: "exec_command",
+        toolInput: {
+          cmd: "agent-browser --session primitive-defaults find text Primitive Defaults Test click\nagent-browser --session particle-regression find role button click --name MeshBasicMaterial\nagent-browser --session type-resolution-audit hover '.property .label'",
+        },
+      }),
+    ).toBe(
+      'Click browser text "Primitive Defaults Test" · Click browser button "MeshBasicMaterial" · Hover browser element .property .label',
+    );
+
+    expect(
+      visualToolPreviewText({
+        type: "tool_use",
+        toolName: "exec_command",
+        toolInput: {
+          cmd: "agent-browser --session apple viewport 1440 900\nagent-browser --session apple scrollintoview '[aria-label=viewer]'\nagent-browser --session apple addinitscript tools/capture.js",
+        },
+      }),
+    ).toBe(
+      "Emulate 1440x900 · Scroll browser element [aria-label=viewer] into view · Load browser init script capture.js",
+    );
+
+    expect(
+      visualToolPreviewText({
+        type: "tool_use",
+        toolName: "exec_command",
+        toolInput: {
+          cmd: "agent-browser --session apple record start captures/repro.webm\nagent-browser --session apple record stop\nagent-browser --session apple trace start\nagent-browser --session apple trace stop captures/repro.zip\nagent-browser --session apple profiler start\nagent-browser --session apple profiler stop captures/repro.cpuprofile",
+        },
+      }),
+    ).toBe(
+      "Start browser recording to repro.webm · Stop browser recording · Start browser trace · Stop browser trace to repro.zip · Start browser profiler · Stop browser profiler to repro.cpuprofile",
+    );
+  });
+
   it("summarizes database shell commands after ssh and docker wrappers", () => {
     const postgres = {
       type: "tool_use",
@@ -5917,6 +6100,48 @@ describe("visual tool payload display helpers", () => {
         range: "",
       },
       { kind: "text", text: " --days 1 --limit 30" },
+    ]);
+  });
+
+  it("preserves recursive runtime, WSL, and shell execution layers", () => {
+    const block = {
+      type: "tool_use",
+      toolName: "exec_command",
+      toolInput: {
+        cmd: "scp tools/resume_linux.sh felix-win:E:/TriFlow/resume_linux.sh\npython3 tools/remote_ps.py <<'PS'\nwsl -d TriFlow -- bash -c 'bash /mnt/e/TriFlow/resume_linux.sh > /mnt/e/TriFlow/resume.log 2>&1'\nPS",
+      },
+    };
+
+    expect(visualToolInlineScript(block)).toBeUndefined();
+    expect(visualToolInlineScriptLanguageLabel(block)).toBe("Python");
+    expect(visualToolExecutionLayers(block)).toEqual([
+      { kind: "runtime", label: "Python" },
+      { kind: "container", label: "WSL · TriFlow" },
+      { kind: "shell", label: "Bash" },
+    ]);
+    expect(visualToolPreviewText(block)).toBe(
+      "Upload resume_linux.sh to felix-win:resume_linux.sh · Run Shell script resume_linux.sh",
+    );
+    expect(visualToolRemoteHostLabel(block)).toBe("felix-win");
+    expect(visualToolCommandNicifierCoverage(block)).toMatchObject({
+      executionLayers: [
+        { kind: "runtime", label: "Python" },
+        { kind: "container", label: "WSL · TriFlow" },
+        { kind: "shell", label: "Bash" },
+      ],
+      fullyNicified: true,
+    });
+
+    const setupBeforeWsl = {
+      type: "tool_use",
+      toolName: "exec_command",
+      toolInput: {
+        cmd: "python3 tools/remote_ps.py <<'PS'\n$ProgressPreference = 'SilentlyContinue'\nwsl -d TriFlow -- /usr/lib/wsl/lib/nvidia-smi\nPS",
+      },
+    };
+    expect(visualToolExecutionLayers(setupBeforeWsl)).toEqual([
+      { kind: "runtime", label: "Python" },
+      { kind: "container", label: "WSL · TriFlow" },
     ]);
   });
 

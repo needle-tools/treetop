@@ -48,9 +48,9 @@
     visualToolEnvAssignments,
     visualToolEnvSummaryLabel,
     visualToolEnvTooltipText,
+    visualToolExecutionLayers,
     visualToolFetchResultBadges,
     visualToolInlineScript,
-    visualToolInlineScriptLanguageLabel,
     visualToolMediaBlocks,
     visualToolCanStillRun,
     visualToolCommandResultBadges,
@@ -3037,10 +3037,8 @@
                                 {:else if toolBlock}
                                   {@const remoteHost =
                                     visualToolRemoteHostLabel(toolBlock)}
-                                  {@const scriptLanguage =
-                                    visualToolInlineScriptLanguageLabel(
-                                      toolBlock,
-                                    )}
+                                  {@const executionLayers =
+                                    visualToolExecutionLayers(toolBlock)}
                                   {#if editSummary}
                                     <span
                                       class="work-tool-chip icon-only file-edit"
@@ -3074,13 +3072,16 @@
                                       {/if}
                                     </span>
                                     {@render renderRemoteHostBadge(remoteHost)}
-                                    {#if scriptLanguage}
+                                    {#each executionLayers as layer}
                                       <span
                                         class="work-tool-chip work-code-language-badge"
+                                        title={layer.kind === "container"
+                                          ? `Container ${layer.label}`
+                                          : `Executed with ${layer.label}`}
                                       >
-                                        <span>{scriptLanguage}</span>
+                                        <span>{layer.label}</span>
                                       </span>
-                                    {/if}
+                                    {/each}
                                   {/if}
                                   {#if editSummary}
                                     <span
@@ -5398,9 +5399,13 @@
     flex: 0 0 auto;
   }
   .work-tool-summary-media-strip .media-image-open {
-    max-width: 10rem;
+    width: 7rem;
+    max-width: 100%;
     max-height: 8rem;
-    flex: 0 0 auto;
+    flex: 0 1 7rem;
+  }
+  .work-tool-summary-media-strip .media-photo-frame img {
+    max-height: 8rem;
   }
   .work-summary-media-strip .media-image-open {
     width: 5rem;
