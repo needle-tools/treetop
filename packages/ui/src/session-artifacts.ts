@@ -4,7 +4,7 @@ import {
   type VisualTranscriptItem,
   type VisualWorkArtifact,
 } from "./last-user-message";
-import { visualWorkArtifactChanges } from "./sparse-artifact-tree";
+import { normalizeArtifactPath, visualWorkArtifactChanges } from "./sparse-artifact-tree";
 
 export const ARTIFACT_MAP_SOURCE_PREFIX = "__artifacts__:";
 
@@ -61,7 +61,29 @@ export interface SessionArtifactEvolution {
   totals: SessionArtifactTotals;
 }
 
-export type SessionArtifactFilter = "all" | "reads" | "writes" | "partial-writes";
+export interface SessionArtifactRepeatedRange {
+  range: string;
+  reads: number;
+  repeatedReads: number;
+  turns: number[];
+}
+
+export interface SessionArtifactOverbookedFile {
+  path: string;
+  reads: number;
+  repeatedReads: number;
+  ranges: SessionArtifactRepeatedRange[];
+}
+
+export interface SessionArtifactOverbooking {
+  repeatedReads: number;
+  files: SessionArtifactOverbookedFile[];
+  repeatedArtifacts: ReadonlySet<VisualWorkArtifact>;
+  repeatedChanges: ReadonlyMap<VisualWorkArtifact, ReadonlySet<ReturnType<typeof visualWorkArtifactChanges>[number]>>;
+}
+
+export type SessionArtifactFilter = "all" | "reads" | "writes" | "partial-writes" | "repeated";
+type SessionArtifactChangeFilter = Exclude<SessionArtifactFilter, "all" | "repeated">;
 
 export function sessionArtifactJuiceTransition(
   previous: SessionArtifactTotals | undefined,
@@ -115,6 +137,85 @@ function hasLineRange(value: string | undefined): boolean {
   return !!value && /:\d+(?:-\d+)?\b/.test(value);
 }
 
+function artifactReadRange(
+  change: ReturnType<typeof visualWorkArtifactChanges>[number],
+): string {
+  for (const value of [change.path, change.label, change.title, change.previewTitle]) {
+    const match = value?.match(/:(\d+(?:-\d+)?)\b/);
+    if (match) return match[1]!;
+  }
+  return "whole file";
+}
+
+export function analyzeSessionArtifactOverbooking(
+  turns: readonly SessionArtifactTurn[],
+): SessionArtifactOverbooking {
+  const cached = sessionArtifactOverbookingCache.get(turns as object);
+  if (cached) return cached;
+  const files = new Map<string, {
+    path: string;
+    reads: number;
+    repeatedReads: number;
+    ranges: Map<string, { range: string; reads: number; repeatedReads: number; turns: number[]; lastTurn?: number }>;
+  }>();
+  const repeatedArtifacts = new Set<VisualWorkArtifact>();
+  const repeatedChanges = new Map<VisualWorkArtifact, Set<ReturnType<typeof visualWorkArtifactChanges>[number]>>();
+  let repeatedReads = 0;
+
+  for (const turn of turns) {
+    for (const artifact of turn.artifacts) {
+      for (const change of visualWorkArtifactChanges(artifact)) {
+        const path = normalizeArtifactPath(change.path ?? artifact.path);
+        if (!path) continue;
+        let file = files.get(path);
+        if (!file) {
+          file = { path, reads: 0, repeatedReads: 0, ranges: new Map() };
+          files.set(path, file);
+        }
+        if (change.action !== "used") continue;
+        const range = artifactReadRange(change);
+        let rangeState = file.ranges.get(range);
+        if (!rangeState) {
+          rangeState = { range, reads: 0, repeatedReads: 0, turns: [] };
+          file.ranges.set(range, rangeState);
+        }
+        file.reads += 1;
+        rangeState.reads += 1;
+        if (rangeState.turns.at(-1) !== turn.turnNumber) rangeState.turns.push(turn.turnNumber);
+        if (rangeState.lastTurn !== undefined && rangeState.lastTurn !== turn.turnNumber) {
+          repeatedReads += 1;
+          file.repeatedReads += 1;
+          rangeState.repeatedReads += 1;
+          repeatedArtifacts.add(artifact);
+          const artifactChanges = repeatedChanges.get(artifact) ?? new Set();
+          artifactChanges.add(change);
+          repeatedChanges.set(artifact, artifactChanges);
+        }
+        rangeState.lastTurn = turn.turnNumber;
+      }
+    }
+  }
+
+  const result: SessionArtifactOverbooking = {
+    repeatedReads,
+    repeatedArtifacts,
+    repeatedChanges,
+    files: [...files.values()]
+      .filter((file) => file.repeatedReads > 0)
+      .map((file) => ({
+        path: file.path,
+        reads: file.reads,
+        repeatedReads: file.repeatedReads,
+        ranges: [...file.ranges.values()].map(({ lastTurn: _turn, ...range }) => range),
+      }))
+      .sort((a, b) => b.repeatedReads - a.repeatedReads || a.path.localeCompare(b.path)),
+  };
+  sessionArtifactOverbookingCache.set(turns as object, result);
+  return result;
+}
+
+const sessionArtifactOverbookingCache = new WeakMap<object, SessionArtifactOverbooking>();
+
 function addArtifactTotals(
   totals: SessionArtifactTotals,
   artifact: VisualWorkArtifact,
@@ -141,12 +242,12 @@ function addArtifactTotals(
 
 const filteredSessionArtifactCache = new WeakMap<
   object,
-  Partial<Record<Exclude<SessionArtifactFilter, "all">, VisualWorkArtifact | null>>
+  Partial<Record<SessionArtifactChangeFilter, VisualWorkArtifact | null>>
 >();
 
 function filterSessionArtifact(
   artifact: VisualWorkArtifact,
-  filter: Exclude<SessionArtifactFilter, "all">,
+  filter: SessionArtifactChangeFilter,
 ): VisualWorkArtifact | null {
   let cached = filteredSessionArtifactCache.get(artifact as object);
   if (cached && filter in cached) return cached[filter] ?? null;
@@ -171,7 +272,7 @@ function filterSessionArtifact(
 
 function filterSessionArtifacts(
   artifacts: readonly VisualWorkArtifact[],
-  filter: Exclude<SessionArtifactFilter, "all">,
+  filter: SessionArtifactChangeFilter,
 ): VisualWorkArtifact[] {
   return artifacts
     .map((artifact) => filterSessionArtifact(artifact, filter))
@@ -183,8 +284,18 @@ export function filterSessionArtifactEvolution(
   filter: SessionArtifactFilter,
 ): SessionArtifactEvolution {
   if (filter === "all") return evolution;
+  const overbooking = filter === "repeated"
+    ? analyzeSessionArtifactOverbooking(evolution.turns)
+    : undefined;
   const turns = evolution.turns.flatMap((turn) => {
-    const artifacts = filterSessionArtifacts(turn.artifacts, filter);
+    const artifacts = filter === "repeated"
+      ? turn.artifacts.flatMap((artifact) => {
+          const changes = overbooking!.repeatedChanges.get(artifact);
+          return changes?.size
+            ? [{ ...artifact, action: "used" as const, changes: [...changes] }]
+            : [];
+        })
+      : filterSessionArtifacts(turn.artifacts, filter);
     return artifacts.length > 0 ? [{ ...turn, artifacts }] : [];
   });
   const artifacts = turns.flatMap((turn) => turn.artifacts);

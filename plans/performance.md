@@ -1307,3 +1307,16 @@ The Evolution list remains available but is unmounted while collapsed and
 windows its first render to the latest 200 matching turns, with explicit paging
 for older turns. These gates remove work without unmounting the panel or its
 subscription/geometry.
+
+Repeated-read analysis is derived from that same artifact evolution. It only
+flags an exact file/range read in a later turn when no intervening write to the
+file invalidated the earlier read. Results are cached by the immutable turns
+array, so the summary and the Repeated filter share one scan rather than adding
+work on every render.
+
+The context inspector is likewise opt-in. It streams JSONL into a compact
+timeline that retains request-bearing records but drops unrelated telemetry;
+closed panes do no parsing. Replay drives the inspector with the current source
+line, coalesced to ten visual updates per second. A live pane polls a byte-range
+endpoint and parses only appended bytes, while older context items stay
+collapsed/windowed until explicitly expanded.

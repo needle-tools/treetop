@@ -854,6 +854,7 @@ describe("Codex replay lab parser", () => {
         additions: 4_000,
         deletions: 0,
         raw: undefined,
+        writtenTokenCountEstimate: 9_723,
       },
     ]);
   });

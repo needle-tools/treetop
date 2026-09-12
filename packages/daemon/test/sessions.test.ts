@@ -23,6 +23,7 @@ import {
   clearParseCache,
   getSessionFileStats,
   readSessionInlineMedia,
+  sessionSourceOffset,
 } from "../src/sessions";
 
 async function getSessionResponseJson(
@@ -372,6 +373,13 @@ describe("parseClaudeJsonl", () => {
 });
 
 describe("getSessionFileStats", () => {
+  test("clamps context-stream offsets to the current file", () => {
+    expect(sessionSourceOffset(100, undefined)).toBe(0);
+    expect(sessionSourceOffset(100, "25")).toBe(25);
+    expect(sessionSourceOffset(100, "999")).toBe(100);
+    expect(sessionSourceOffset(100, "nope")).toBe(0);
+  });
+
   test("attributes exact Codex pricing across model changes and compaction resets", async () => {
     const dir = await mkdtemp(join(tmpdir(), "supergit-session-stats-"));
     const source = join(dir, "codex.jsonl");

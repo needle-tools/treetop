@@ -6,6 +6,7 @@
   import { buildSparseArtifactRows } from "./sparse-artifact-tree";
   import {
     createSessionArtifactEvolutionTracker,
+    analyzeSessionArtifactOverbooking,
     filterSessionArtifactEvolution,
     sessionArtifactJuiceTransition,
     sessionArtifactTurnCounts,
@@ -88,6 +89,7 @@
     : emptyEvolution;
   $: updateJuiceImpact(evolution.totals);
   $: filteredEvolution = filterSessionArtifactEvolution(evolution, artifactFilter);
+  $: overbooking = analyzeSessionArtifactOverbooking(evolution.turns);
   $: artifactRows = buildSparseArtifactRows(filteredEvolution.artifacts, worktreePath);
   $: fileCount = artifactRows.filter((row) => row.kind === "file").length;
   $: evolutionWindow = sessionArtifactTurnWindow(filteredEvolution.turns, visibleTurnLimit);
@@ -139,6 +141,7 @@
       <button type="button" class:selected={artifactFilter === "reads"} on:click={() => (artifactFilter = "reads")}>Reads {evolution.totals.reads}</button>
       <button type="button" class:selected={artifactFilter === "writes"} on:click={() => (artifactFilter = "writes")}>Writes {evolution.totals.writes}</button>
       <button type="button" class:selected={artifactFilter === "partial-writes"} on:click={() => (artifactFilter = "partial-writes")}>Partial {evolution.totals.partialWrites}</button>
+      <button type="button" class:selected={artifactFilter === "repeated"} on:click={() => (artifactFilter = "repeated")}>Repeated {overbooking.repeatedReads}</button>
     </div>
     <div class="artifact-map-filter-details">
       {#if artifactFilter !== "writes"}<span>{filteredEvolution.totals.partialReads} ranged</span>{/if}
@@ -147,11 +150,26 @@
         <span class="artifact-map-lines">+{filteredEvolution.totals.additions} −{filteredEvolution.totals.deletions}</span>
       {/if}
     </div>
+    {#if overbooking.repeatedReads > 0}
+      <details class="artifact-map-overbooking">
+        <summary>{overbooking.repeatedReads} potentially redundant {overbooking.repeatedReads === 1 ? "read" : "reads"}</summary>
+        <p>Same file range read again in a later turn without an intervening write.</p>
+        <ol>
+          {#each overbooking.files as file (file.path)}
+            <li>
+              <span title={file.path}>{file.path}</span>
+              <strong>{file.repeatedReads}× repeated</strong>
+              <small>{file.ranges.filter((range) => range.repeatedReads > 0).map((range) => `${range.range} (${range.repeatedReads}×)`).join(" · ")}</small>
+            </li>
+          {/each}
+        </ol>
+      </details>
+    {/if}
   </div>
 
   <div class="artifact-map-body">
     {#if filteredEvolution.artifacts.length === 0}
-      <p class="artifact-map-empty">No {artifactFilter === "all" ? "file activity" : artifactFilter.replace("-", " ")} yet.</p>
+      <p class="artifact-map-empty">No {artifactFilter === "all" ? "file activity" : artifactFilter === "repeated" ? "potentially redundant reads" : artifactFilter.replace("-", " ")} yet.</p>
     {:else}
       <section class="artifact-map-overall">
         <h3>Overall</h3>
@@ -279,6 +297,39 @@
   }
   .artifact-map-filter-details {
     gap: 0.65rem;
+  }
+  .artifact-map-overbooking {
+    color: var(--text-2);
+  }
+  .artifact-map-overbooking > summary {
+    color: var(--warning, #e7ad55);
+    cursor: pointer;
+  }
+  .artifact-map-overbooking p {
+    margin: 0.35rem 0;
+    line-height: 1.35;
+  }
+  .artifact-map-overbooking ol {
+    display: grid;
+    gap: 0.3rem;
+    max-height: 11rem;
+    margin: 0.4rem 0 0;
+    padding-left: 1.2rem;
+    overflow: auto;
+  }
+  .artifact-map-overbooking li {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 0.1rem 0.5rem;
+  }
+  .artifact-map-overbooking li > span {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .artifact-map-overbooking li > small {
+    grid-column: 1 / -1;
+    color: var(--text-muted);
   }
   .artifact-map-lines {
     color: var(--success, #58d68d);

@@ -82,11 +82,18 @@
   } from "./remote-daemon-form";
   import SessionView from "./SessionView.svelte";
   import SessionArtifactMap from "./SessionArtifactMap.svelte";
+  import SessionContextView from "./SessionContextView.svelte";
   import {
     artifactMapOwnerSource,
     artifactMapPanelSource,
     insertArtifactMapPanel,
   } from "./session-artifacts";
+  import {
+    contextViewOwnerSource,
+    contextViewPanelSource,
+    contextViewSessionSource,
+    insertContextViewPanel,
+  } from "./session-context-source";
   import type { VisualTranscriptItem } from "./last-user-message";
   import ShellView from "./ShellView.svelte";
   import OllamaTranscriptView from "./OllamaTranscriptView.svelte";
@@ -2388,6 +2395,25 @@
     scrollNewColIntoView(wtPath, source);
   }
 
+  function openContextView(
+    wtPath: string,
+    ownerSource: string,
+    contextSource: string,
+  ): void {
+    const source = contextViewPanelSource(ownerSource, contextSource);
+    const existing = openSessionsByWt[wtPath] ?? [];
+    const result = insertContextViewPanel(existing, ownerSource, contextSource);
+    if (!result.inserted) {
+      const existingPanel = existing.find(
+        (session) => contextViewOwnerSource(session.source) === ownerSource,
+      );
+      scrollNewColIntoView(wtPath, existingPanel?.source ?? source);
+      return;
+    }
+    openSessionsByWt = { ...openSessionsByWt, [wtPath]: [...result.sessions] };
+    scrollNewColIntoView(wtPath, source);
+  }
+
   function openFileBrowser(wtPath: string) {
     const id = `fb_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
     const synthetic = `__files__:${id}`;
@@ -3523,7 +3549,8 @@
       | "shell"
       | "files"
       | "history"
-      | "artifacts";
+      | "artifacts"
+      | "context";
     source: string;
     /** Optional. Stamped on `__new__:claude:` / `__new__:codex:` columns
      *  by the activity-SSE handler once the daemon surfaces a real
@@ -7349,11 +7376,13 @@
             s.agent === "files" ||
             s.agent === "history" ||
             s.agent === "artifacts" ||
+            s.agent === "context" ||
             s.source.startsWith("__files__:") ||
             s.source.startsWith("__remote__:") ||
             s.source.startsWith("__restore__:") ||
             s.source.startsWith("__history__:") ||
-            s.source.startsWith("__artifacts__:")
+            s.source.startsWith("__artifacts__:") ||
+            s.source.startsWith("__context_view__:")
           )
             continue;
           const hasDockActivity = openSessionHasDockActivity(s, {
@@ -12139,6 +12168,17 @@
                                 onDragStart={(e) =>
                                   handleSessionDragStart(e, wt.path, i)}
                               />
+                            {:else if s.source.startsWith("__context_view__:")}
+                              <SessionContextView
+                                source={contextViewSessionSource(s.source) ?? ""}
+                                daemonId={daemonIdForWorktreePath(
+                                  repos,
+                                  wt.path,
+                                )}
+                                onClose={() => closeSessionInWt(wt.path, s)}
+                                onDragStart={(e) =>
+                                  handleSessionDragStart(e, wt.path, i)}
+                              />
                             {:else if s.source.startsWith("__files__:")}
                               <FileBrowser
                                 wtPath={wt.path}
@@ -12606,6 +12646,12 @@
                                     )}
                                   onOpenArtifactMap={() =>
                                     openArtifactMap(wt.path, s.source)}
+                                  onOpenContextView={(contextSource) =>
+                                    openContextView(
+                                      wt.path,
+                                      s.source,
+                                      contextSource,
+                                    )}
                                   wtPath={wt.path}
                                   daemonId={daemonIdForWorktreePath(
                                     repos,

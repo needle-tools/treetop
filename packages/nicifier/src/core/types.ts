@@ -28,10 +28,12 @@ export interface VisualMediaBlock extends VisualToolBlock {
 
 export interface VisualFileEdit {
   path: string;
-  action: "added" | "edited" | "deleted";
+  action: "added" | "edited" | "written" | "deleted";
   additions?: number;
   deletions?: number;
   raw?: string;
+  /** chars/4 estimate of literal content written by this edit payload. */
+  writtenTokenCountEstimate?: number;
 }
 
 export interface VisualFileEditSummary {
