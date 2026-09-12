@@ -89,6 +89,8 @@ export interface MessageBlock {
   goalTimeUsedSeconds?: number;
   goalUpdatedAt?: number;
   goalThreadId?: string;
+  contextCategory?: string;
+  contextCharacters?: number;
   compaction?: ContextCompactionDetails;
   subagentId?: string;
   subagentNickname?: string;
@@ -2253,7 +2255,17 @@ export function buildVisualTranscriptItems<
   function nextDisplayMessageRole(startIndex: number): string | undefined {
     for (let i = startIndex; i < messages.length; i += 1) {
       const next = messages[i];
-      if (!next || displayBlocks(next).length === 0) continue;
+      if (!next) continue;
+      const nextBlocks = displayBlocks(next);
+      if (nextBlocks.length === 0) continue;
+      if (
+        next.role === "system" &&
+        nextBlocks.every(
+          (block) => block.type === "context_update",
+        )
+      ) {
+        continue;
+      }
       return next.role;
     }
     return undefined;

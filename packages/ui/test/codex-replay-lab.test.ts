@@ -257,6 +257,7 @@ describe("Codex replay lab parser", () => {
     expect(userBlocks.filter((block) => block.type === "media")).toHaveLength(
       1,
     );
+    expect(userBlocks.find((block) => block.type === "media")?.url).toBe(dataUrl);
     expect(userBlocks.filter((block) => block.type === "text")).toEqual([
       { type: "text", text: "Match these greys" },
     ]);
@@ -287,6 +288,18 @@ describe("Codex replay lab parser", () => {
     ]);
 
     const productionMessages = parseCodexJsonl(text).messages;
+    const semanticMessages = (values: typeof messages) => values.map(
+      ({ id: _id, ...message }) => ({
+        ...message,
+        blocks: message.blocks.map(({ inlineDataHash: _hash, ...block }) => ({
+          ...block,
+          ...(block.url?.startsWith("data:") ? { url: undefined } : {}),
+        })),
+      }),
+    );
+    expect(semanticMessages(messages)).toEqual(
+      semanticMessages(productionMessages),
+    );
     const productionWork = buildVisualTranscriptItems(productionMessages, {
       active: false,
     }).find((item) => item.kind === "work");
@@ -728,7 +741,6 @@ describe("Codex replay lab parser", () => {
       JSON.stringify({
         timestamp: "2026-09-09T10:00:01.000Z",
         type: "compacted",
-        payload: {},
       }),
       usage("2026-09-09T10:00:01.010Z", {
         input_tokens: 0,
@@ -744,7 +756,7 @@ describe("Codex replay lab parser", () => {
       .find((message) => message.blocks[0]?.type === "marker");
     expect(marker?.blocks).toEqual([{
       type: "marker",
-      text: "Context compacted",
+      text: "[Context compacted]",
       compaction: { beforeTokens: 236_271, afterTokens: 14_484 },
     }]);
   });
@@ -940,6 +952,32 @@ describe("Codex replay lab parser", () => {
         blocks: [{ type: "text", text: "Still parsed" }],
       }),
     );
+  });
+
+  test("routes an oversized compaction prefix through the shared normalizer", async () => {
+    const source = new Blob([
+      JSON.stringify({
+        type: "event_msg",
+        payload: {
+          type: "token_count",
+          info: {
+            last_token_usage: { input_tokens: 4_000, total_tokens: 4_000 },
+          },
+        },
+      }),
+      "\n",
+      `{"timestamp":"2026-09-13T01:02:03Z","type":"compacted","padding":"${"x".repeat(17 << 20)}"}`,
+    ]);
+
+    const replay = await parseCodexReplayBlobAsync(source);
+    const marker = codexReplayMessagesUntil(replay, replay.steps.length)
+      .find((message) => message.blocks[0]?.type === "marker");
+    expect(marker?.blocks).toEqual([{
+      type: "marker",
+      text: "[Context compacted]",
+      compaction: { beforeTokens: 4_000 },
+    }]);
+    expect(marker?.timestamp).toBe("2026-09-13T01:02:03Z");
   });
 
   test("scores suspicious turn activity without blaming tool time on model throughput", () => {
@@ -1984,7 +2022,6 @@ Narrate this page live`,
     const messages = codexReplayMessagesUntil(replay, replay.steps.length);
     expect(messages.map((message) => message.role)).toEqual([
       "system",
-      "system",
       "user",
       "assistant",
     ]);
@@ -1992,26 +2029,56 @@ Narrate this page live`,
       role: "system",
       blocks: [
         {
-          type: "system_reminder",
-          tagName: "Developer context",
+          type: "context_update",
+          contextRole: "developer",
+          contextPhase: "set",
+          contextCategory: "Developer instructions",
+          contextCharacters: 22,
           text: "giant developer prompt",
         },
       ],
     });
-    expect(messages[1]).toMatchObject({
-      role: "system",
-      blocks: [
-        {
-          type: "system_reminder",
-          tagName: "Injected user context",
-          text: "# AGENTS.md instructions for /repo\n\n<environment_context>hidden</environment_context>",
-        },
-      ],
-    });
-    expect(messages.slice(2).flatMap((message) => message.blocks)).toEqual([
+    expect(messages.slice(1).flatMap((message) => message.blocks)).toEqual([
       { type: "text", text: "Render this actual turn." },
       { type: "text", text: "Actual assistant row." },
     ]);
+  });
+
+  test("uses exactly the same context-update blocks as the daemon transcript parser", () => {
+    const rows = [
+      {
+        timestamp: "2026-08-27T10:00:00.000Z",
+        type: "response_item",
+        payload: {
+          type: "message",
+          role: "developer",
+          content: [{ type: "input_text", text: "<skills_instructions>old</skills_instructions>" }],
+        },
+      },
+      {
+        timestamp: "2026-08-27T10:00:01.000Z",
+        type: "response_item",
+        payload: {
+          type: "message",
+          role: "developer",
+          content: [{ type: "input_text", text: "<skills_instructions>new and larger</skills_instructions>" }],
+        },
+      },
+    ];
+    const text = rows.map((row) => JSON.stringify(row)).join("\n");
+    const daemonBlocks = parseCodexJsonl(text).messages.flatMap((message) => message.blocks);
+    const replayBlocks = codexReplayMessagesUntil(
+      parseCodexReplayText(text),
+      rows.length,
+    ).flatMap((message) => message.blocks);
+
+    expect(replayBlocks).toEqual(daemonBlocks);
+    expect(replayBlocks[1]).toMatchObject({
+      type: "context_update",
+      contextPhase: "changed",
+      contextPreviousCharacters: 46,
+      contextDeltaCharacters: 11,
+    });
   });
 
   test("reports progress while parsing JSONL drops", async () => {

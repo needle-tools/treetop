@@ -15,14 +15,9 @@ import { basename, join } from "node:path";
 import type { AgentKind } from "./agents";
 import { createLimiter } from "./concurrency";
 import {
-  canonicalCodexToolName,
-  codexSubagentActivityFields,
-  codexPatchApplyResultText,
+  createCodexTranscriptNormalizer,
   contextCompactionDetailsFromMetadata,
-  contextTokenSnapshotFromUsageRecord,
-  parseCodexImageWrapper,
-  parseCodexToolScriptInvocations,
-  type ContextCompactionDetails,
+  type AgentTranscriptBlock,
 } from "@treetop/nicifier";
 
 export type NormalizedRole = "user" | "assistant" | "system" | "tool";
@@ -41,6 +36,8 @@ export type NormalizedBlockKind =
   | "ide_context"
   /** `<system-reminder>` … `</system-reminder>` wrappers. */
   | "system_reminder"
+  /** A recorded model-visible developer/system context replacement. */
+  | "context_update"
   /** `<command-name>` / `<command-message>` slash-command markers. */
   | "command"
   /** Standalone bracketed markers like "[Request interrupted by user]". */
@@ -57,55 +54,7 @@ export function isMarker(text: string): boolean {
   );
 }
 
-export interface NormalizedBlock {
-  type: NormalizedBlockKind;
-  /** Free-form text. For tool_result this is the rendered output. */
-  text?: string;
-  /** tool_use only. */
-  toolName?: string;
-  toolInput?: unknown;
-  toolInvocations?: readonly { toolName: string; toolInput: unknown }[];
-  /** plan only. */
-  explanation?: string;
-  planItems?: NormalizedPlanItem[];
-  /** goal only. */
-  goalObjective?: string;
-  goalStatus?: string;
-  goalTokensUsed?: number;
-  goalTimeUsedSeconds?: number;
-  goalUpdatedAt?: number;
-  goalThreadId?: string;
-  /** Links a tool_result back to the tool_use that produced it. */
-  toolUseId?: string;
-  /** Command/file approval metadata captured for the turn that launched this tool. */
-  approvalPolicy?: string;
-  approvalDecision?: string;
-  sandboxPolicy?: string;
-  /** For ide_context / system_reminder / command: the tag name, e.g. "ide_opened_file". */
-  tagName?: string;
-  /** media only. */
-  mediaKind?: "image" | "file" | "artifact";
-  mimeType?: string;
-  path?: string;
-  url?: string;
-  inlineDataHash?: string;
-  title?: string;
-  alt?: string;
-  hasAlpha?: boolean;
-  /** Context-compaction measurements reported by the agent runtime. */
-  compaction?: ContextCompactionDetails;
-  /** subagent only, and mirrored onto related subagent tool rows. */
-  subagentId?: string;
-  subagentNickname?: string;
-  subagentAction?: "spawn" | "wait" | "notification";
-  subagentStatus?: "running" | "completed" | "failed" | "unknown";
-  subagentType?: string;
-  subagentModel?: string;
-  subagentEffort?: string;
-  subagentMessage?: string;
-  subagentResult?: string;
-}
-
+export interface NormalizedBlock extends AgentTranscriptBlock {}
 export type NormalizedPlanStatus =
   | "pending"
   | "in_progress"
@@ -200,10 +149,15 @@ export interface NormalizedSession {
 
 interface CodexParseContext {
   sourcePath?: string;
-  previousTotalTokenUsage?: NormalizedTokenUsage;
-  latestContextTokens?: number;
-  pendingCompactionBlock?: NormalizedBlock;
-  pendingWebSearchIds?: string[];
+  normalizeTranscript?: ReturnType<typeof createCodexTranscriptNormalizer>;
+}
+
+function codexTranscriptNormalizer(context: CodexParseContext) {
+  context.normalizeTranscript ??= createCodexTranscriptNormalizer({
+    resolveInlineData: (dataUrl) => ({ inlineDataHash: inlineDataHash(dataUrl) }),
+    generatedImagePath: (record) => codexGeneratedImagePath(record, context),
+  });
+  return context.normalizeTranscript;
 }
 
 function emptySession(agent: AgentKind): NormalizedSession {
@@ -344,52 +298,6 @@ function codexGeneratedImagePath(
   return join(codexHome, "generated_images", sessionId, `${callId}.png`);
 }
 
-function imageGenerationMediaBlock(
-  raw: Record<string, unknown>,
-  context: CodexParseContext = {},
-): NormalizedBlock | null {
-  const type = stringProp(raw, "type");
-  if (!type || !/image.*(?:call|generation|end)/i.test(type)) return null;
-  const path = codexGeneratedImagePath(raw, context);
-  const mimeType =
-    stringProp(raw, "mime_type") ??
-    stringProp(raw, "mimeType") ??
-    "image/png";
-  const toolUseId = imageGenerationToolUseId(raw);
-  const block: NormalizedBlock = {
-    type: "media",
-    mediaKind: "image",
-    mimeType,
-    title: "Generated image",
-    alt: "Generated image",
-    toolName: type,
-    ...(toolUseId ? { toolUseId } : {}),
-  };
-  if (path) {
-    const title = mediaTitleFromPath(path);
-    return { ...block, path, title, alt: title };
-  }
-  const dataUrl = rawBase64ImageDataUrl(
-    stringProp(raw, "result") ?? stringProp(raw, "b64_json"),
-    mimeType,
-  );
-  if (!dataUrl) return null;
-  return {
-    ...block,
-    text: `[${mimeType} data stored in source transcript]`,
-    inlineDataHash: inlineDataHash(dataUrl),
-  };
-}
-
-function imageGenerationToolInput(raw: Record<string, unknown>): unknown {
-  const input: Record<string, unknown> = {};
-  for (const [key, value] of Object.entries(raw)) {
-    if (key === "result" || key === "b64_json" || key === "output") continue;
-    input[key] = value;
-  }
-  return clipToolInput(input);
-}
-
 function mediaBlockFromContent(
   raw: Record<string, unknown>,
 ): NormalizedBlock | null {
@@ -466,65 +374,6 @@ function mediaBlockFromContent(
     }
   }
   return block;
-}
-
-function codexToolOutputBlocksFromPayload(output: unknown): {
-  text: string;
-  mediaBlocks: NormalizedBlock[];
-} {
-  if (typeof output === "string") return { text: output, mediaBlocks: [] };
-  if (!Array.isArray(output)) return { text: "", mediaBlocks: [] };
-  const textParts: string[] = [];
-  const mediaBlocks: NormalizedBlock[] = [];
-  for (const raw of output) {
-    if (typeof raw === "string") {
-      if (raw.trim()) textParts.push(raw);
-      continue;
-    }
-    if (!raw || typeof raw !== "object") continue;
-    const item = raw as Record<string, unknown>;
-    const media = mediaBlockFromContent(item);
-    if (media) {
-      mediaBlocks.push(media);
-      continue;
-    }
-    const text = stringProp(item, "text") ?? stringProp(item, "content");
-    if (!text) continue;
-    const type = stringProp(item, "type");
-    if (
-      type === undefined ||
-      type === "text" ||
-      type === "input_text" ||
-      type === "output_text" ||
-      type === "inputText" ||
-      type === "outputText"
-    ) {
-      textParts.push(text);
-    }
-  }
-  return { text: textParts.join("\n"), mediaBlocks };
-}
-
-function mediaTitleFromPath(path: string): string {
-  return path.split(/[\\/]/).filter(Boolean).at(-1) ?? path;
-}
-
-function viewImageMediaBlockFromInput(input: unknown): NormalizedBlock | null {
-  if (!input || typeof input !== "object") return null;
-  const record = input as Record<string, unknown>;
-  const path = stringProp(record, "path");
-  if (!path) return null;
-  const title =
-    stringProp(record, "title") ??
-    stringProp(record, "name") ??
-    mediaTitleFromPath(path);
-  return {
-    type: "media",
-    mediaKind: "image",
-    path,
-    title,
-    alt: title,
-  };
 }
 
 function attachSessionInlineMediaUrls(
@@ -883,10 +732,6 @@ export function createStreamingSessionParser(
   };
 }
 
-function codexTimestamp(obj: Record<string, unknown>): string | undefined {
-  return typeof obj.timestamp === "string" ? obj.timestamp : undefined;
-}
-
 function pushSessionMessage(
   out: NormalizedSession,
   role: NormalizedRole,
@@ -909,15 +754,6 @@ function pushSessionMessage(
   out.messages.push({ role, blocks, timestamp, ...options });
 }
 
-function codexToolInput(input: unknown): unknown {
-  if (typeof input !== "string") return clipToolInput(input);
-  try {
-    return clipToolInput(JSON.parse(input));
-  } catch {
-    return clipToolInput(input);
-  }
-}
-
 function finiteNonNegativeNumber(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value)
     ? Math.max(0, value)
@@ -928,297 +764,6 @@ function objectField(value: unknown): Record<string, unknown> | undefined {
   return value && typeof value === "object"
     ? (value as Record<string, unknown>)
     : undefined;
-}
-
-function codexTokenUsageFromObject(
-  usage: Record<string, unknown> | undefined,
-): NormalizedTokenUsage | undefined {
-  if (!usage) return undefined;
-  const input =
-    finiteNonNegativeNumber(usage.input_tokens ?? usage.inputTokens) ?? 0;
-  const cachedInput =
-    finiteNonNegativeNumber(
-      usage.cached_input_tokens ?? usage.cachedInputTokens,
-    ) ?? 0;
-  const cacheWriteInput =
-    finiteNonNegativeNumber(
-      usage.cache_write_input_tokens ??
-        usage.cacheWriteInputTokens ??
-        usage.cache_creation_input_tokens ??
-        usage.cacheCreationInputTokens,
-    ) ?? 0;
-  const output =
-    finiteNonNegativeNumber(usage.output_tokens ?? usage.outputTokens) ?? 0;
-  const reasoning =
-    finiteNonNegativeNumber(
-      usage.reasoning_output_tokens ?? usage.reasoningOutputTokens,
-    ) ?? 0;
-  const total =
-    finiteNonNegativeNumber(usage.total_tokens ?? usage.totalTokens) ??
-    input + output;
-  if (input + cachedInput + cacheWriteInput + output + reasoning <= 0) {
-    return undefined;
-  }
-  return {
-    input,
-    cachedInput,
-    cacheWriteInput,
-    output,
-    reasoningOutput: reasoning,
-    total,
-  };
-}
-
-function codexTokenUsageHasContent(
-  usage: NormalizedTokenUsage | undefined,
-): usage is NormalizedTokenUsage {
-  return (
-    usage !== undefined &&
-    (usage.total > 0 ||
-      usage.input > 0 ||
-      usage.output > 0 ||
-      usage.reasoningOutput > 0)
-  );
-}
-
-function codexTokenUsageDelta(
-  current: NormalizedTokenUsage,
-  previous: NormalizedTokenUsage | undefined,
-): NormalizedTokenUsage {
-  if (!previous || current.total < previous.total) return current;
-  return {
-    input: Math.max(0, current.input - previous.input),
-    cachedInput: Math.max(0, current.cachedInput - previous.cachedInput),
-    cacheWriteInput: Math.max(
-      0,
-      current.cacheWriteInput - previous.cacheWriteInput,
-    ),
-    output: Math.max(0, current.output - previous.output),
-    reasoningOutput: Math.max(
-      0,
-      current.reasoningOutput - previous.reasoningOutput,
-    ),
-    total: Math.max(0, current.total - previous.total),
-  };
-}
-
-function codexOutputTokenUsageFromPayload(
-  payload: Record<string, unknown>,
-  context?: CodexParseContext,
-): NormalizedTokenUsage | undefined {
-  const info = objectField(payload.info) ?? payload;
-  const lastUsageRecord = objectField(info.last_token_usage) ??
-    objectField(payload.lastTokenUsage) ?? objectField(payload.usage);
-  const lastUsage = codexTokenUsageFromObject(lastUsageRecord);
-  const totalUsage = codexTokenUsageFromObject(
-    objectField(info.total_token_usage) ?? objectField(payload.totalTokenUsage),
-  );
-  if (lastUsageRecord && context) {
-    const snapshot = contextTokenSnapshotFromUsageRecord(lastUsageRecord);
-    if (context.pendingCompactionBlock?.compaction &&
-      snapshot && snapshot.attributedTokens === 0) {
-      context.pendingCompactionBlock.compaction.afterTokens = snapshot.totalTokens;
-      context.pendingCompactionBlock = undefined;
-    }
-    if (snapshot) context.latestContextTokens = snapshot.totalTokens;
-  }
-  if (lastUsage) {
-    if (totalUsage && context) {
-      context.previousTotalTokenUsage = totalUsage;
-    }
-    return lastUsage;
-  }
-  if (!totalUsage) return undefined;
-  const delta = codexTokenUsageDelta(
-    totalUsage,
-    context?.previousTotalTokenUsage,
-  );
-  if (context) {
-    context.previousTotalTokenUsage = totalUsage;
-  }
-  return codexTokenUsageHasContent(delta) ? delta : undefined;
-}
-
-interface CodexToolInvocation {
-  name: string;
-  input: unknown;
-  invocations?: readonly { toolName: string; toolInput: unknown }[];
-}
-
-function codexWrappedToolInvocation(
-  name: string,
-  input: unknown,
-): CodexToolInvocation {
-  const canonicalName = canonicalCodexToolName(name);
-  if (typeof input !== "string" || canonicalName !== "exec_command") {
-    return { name: canonicalName, input };
-  }
-  const invocations = parseCodexToolScriptInvocations(input);
-  const invocation = invocations[0];
-  return invocation
-    ? {
-        name: invocation.toolName,
-        input: invocation.toolInput,
-        ...(invocations.length > 1 ? { invocations } : {}),
-      }
-    : { name: canonicalName, input };
-}
-
-function codexSubagentBlockFromToolUse(
-  name: string,
-  input: unknown,
-): Partial<NormalizedBlock> {
-  if (name !== "spawn_agent" && name !== "wait_agent") return {};
-  const record =
-    input && typeof input === "object" ? (input as Record<string, unknown>) : {};
-  const targets = Array.isArray(record.targets)
-    ? record.targets.filter((target): target is string => typeof target === "string")
-    : [];
-  return {
-    subagentAction: name === "spawn_agent" ? "spawn" : "wait",
-    subagentStatus: name === "spawn_agent" ? "running" : "unknown",
-    subagentId:
-      typeof record.agent_id === "string"
-        ? record.agent_id
-        : targets.length === 1
-          ? targets[0]
-          : undefined,
-    subagentType:
-      typeof record.agent_type === "string" ? record.agent_type : undefined,
-    subagentModel: typeof record.model === "string" ? record.model : undefined,
-    subagentEffort:
-      typeof record.reasoning_effort === "string"
-        ? record.reasoning_effort
-        : undefined,
-    subagentMessage:
-      typeof record.message === "string" ? clipText(record.message) : undefined,
-  };
-}
-
-function codexSubagentBlockFromToolOutput(
-  name: string | undefined,
-  output: string,
-): Partial<NormalizedBlock> {
-  if (name !== "spawn_agent" && name !== "wait_agent") return {};
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(output);
-  } catch {
-    return {};
-  }
-  if (!parsed || typeof parsed !== "object") return {};
-  const record = parsed as Record<string, unknown>;
-  if (name === "spawn_agent") {
-    return {
-      subagentAction: "spawn",
-      subagentStatus: "running",
-      subagentId:
-        typeof record.agent_id === "string" ? record.agent_id : undefined,
-      subagentNickname:
-        typeof record.nickname === "string" ? record.nickname : undefined,
-    };
-  }
-  const status = record.status;
-  if (!status || typeof status !== "object") return { subagentAction: "wait" };
-  const entries = Object.entries(status as Record<string, unknown>);
-  if (entries.length !== 1) return { subagentAction: "wait" };
-  const [subagentId, rawState] = entries[0]!;
-  const state =
-    rawState && typeof rawState === "object"
-      ? (rawState as Record<string, unknown>)
-      : {};
-  const completed =
-    typeof state.completed === "string" ? state.completed : undefined;
-  const failed =
-    typeof state.failed === "string"
-      ? state.failed
-      : typeof state.error === "string"
-        ? state.error
-        : undefined;
-  return {
-    subagentAction: "wait",
-    subagentId,
-    subagentStatus: completed ? "completed" : failed ? "failed" : "unknown",
-    subagentResult: clipText(completed ?? failed ?? output),
-  };
-}
-
-function codexSubagentNotificationBlock(text: string): NormalizedBlock | null {
-  const match = text
-    .trim()
-    .match(/^<subagent_notification>\s*([\s\S]*?)\s*<\/subagent_notification>$/);
-  if (!match) return null;
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(match[1]!);
-  } catch {
-    return {
-      type: "subagent",
-      text: clipText(text),
-      subagentAction: "notification",
-      subagentStatus: "unknown",
-    };
-  }
-  if (!parsed || typeof parsed !== "object") return null;
-  const record = parsed as Record<string, unknown>;
-  const status =
-    record.status && typeof record.status === "object"
-      ? (record.status as Record<string, unknown>)
-      : {};
-  const completed =
-    typeof status.completed === "string" ? status.completed : undefined;
-  const failed =
-    typeof status.failed === "string"
-      ? status.failed
-      : typeof status.error === "string"
-        ? status.error
-        : undefined;
-  const running =
-    typeof status.running === "string" ? status.running : undefined;
-  const result = completed ?? failed ?? running;
-  return {
-    type: "subagent",
-    text: result ? clipText(result) : undefined,
-    subagentAction: "notification",
-    subagentStatus: completed
-      ? "completed"
-      : failed
-        ? "failed"
-        : running
-          ? "running"
-          : "unknown",
-    subagentId:
-      typeof record.agent_path === "string" ? record.agent_path : undefined,
-    subagentResult: result ? clipText(result) : undefined,
-  };
-}
-
-function normalizePlanFromUnknown(
-  input: unknown,
-): { explanation?: string; planItems: NormalizedPlanItem[] } | null {
-  if (!input || typeof input !== "object") return null;
-  const record = input as Record<string, unknown>;
-  const rawPlan = record.plan;
-  if (!Array.isArray(rawPlan)) return null;
-  const planItems = rawPlan
-    .map((item): NormalizedPlanItem | null => {
-      if (!item || typeof item !== "object") return null;
-      const row = item as Record<string, unknown>;
-      const step = typeof row.step === "string" ? row.step.trim() : "";
-      if (!step) return null;
-      const status =
-        typeof row.status === "string" && row.status.trim()
-          ? row.status.trim()
-          : "pending";
-      return { step: clipText(step), status };
-    })
-    .filter((item): item is NormalizedPlanItem => item !== null);
-  if (planItems.length === 0) return null;
-  const explanation =
-    typeof record.explanation === "string" && record.explanation.trim()
-      ? clipText(record.explanation.trim())
-      : undefined;
-  return { explanation, planItems };
 }
 
 function codexProtocolMarkerText(name: string, rawAttrs: string): string {
@@ -1266,240 +811,6 @@ function codexTextBlocks(text: string): NormalizedBlock[] {
   return blocks;
 }
 
-function codexVisibleUserText(text: string): string {
-  let visible = text;
-  visible = visible.replace(
-    /<goal_context\b[^>]*>[\s\S]*?<\/goal_context>/g,
-    "",
-  );
-  visible = visible.replace(
-    /<environment_context>[\s\S]*?<\/environment_context>/g,
-    "",
-  );
-  visible = visible.replace(/<filesystem>[\s\S]*?<\/filesystem>/g, "");
-  visible = visible.replace(
-    /<codex_internal_context\b[^>]*>[\s\S]*?<\/codex_internal_context>/g,
-    "",
-  );
-  const trimmed = decodeNumericHtmlEntities(visible).trim();
-  if (/^#\s+(AGENTS|CLAUDE)\.md instructions\b/i.test(trimmed)) return "";
-  if (/^#\s+(Instructions|Context|System)\b/i.test(trimmed)) return "";
-  return trimmed;
-}
-
-function decodeNumericHtmlEntities(text: string): string {
-  return text.replace(
-    /&#(?:x([0-9a-f]+)|(\d+));/gi,
-    (entity, hex: string | undefined, decimal: string | undefined) => {
-      const codePoint = Number.parseInt(hex ?? decimal ?? "", hex ? 16 : 10);
-      if (
-        !Number.isInteger(codePoint) ||
-        codePoint < 0 ||
-        codePoint > 0x10ffff ||
-        (codePoint >= 0xd800 && codePoint <= 0xdfff)
-      ) {
-        return entity;
-      }
-      return String.fromCodePoint(codePoint);
-    },
-  );
-}
-
-interface CodexMentionedFile {
-  title: string;
-  path: string;
-}
-
-function codexAttachmentEnvelope(text: string): {
-  text: string;
-  files: CodexMentionedFile[];
-} | null {
-  const match = text.match(
-    /^\s*# Files mentioned by the user:\s*\n([\s\S]*?)\n## My request(?: for Codex)?:\s*\n?([\s\S]*)$/i,
-  );
-  if (!match) return null;
-  const files: CodexMentionedFile[] = [];
-  for (const line of match[1]!.split("\n")) {
-    const file = line.match(/^##\s+(.+?):\s+(\/.*)$/);
-    if (file) files.push({ title: file[1]!.trim(), path: file[2]!.trim() });
-  }
-  return { text: codexVisibleUserText(match[2]!), files };
-}
-
-function codexMentionedFileBlock(file: CodexMentionedFile): NormalizedBlock {
-  const mediaKind = mediaKindFrom(undefined, undefined, file.path);
-  return {
-    type: "media",
-    mediaKind,
-    path: file.path,
-    title: file.title,
-    alt: file.title,
-  };
-}
-
-function codexGoalBlockFromToolOutput(output: string): NormalizedBlock | null {
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(output);
-  } catch {
-    return null;
-  }
-  if (!parsed || typeof parsed !== "object") return null;
-  const goal = (parsed as Record<string, unknown>).goal;
-  if (!goal || typeof goal !== "object") return null;
-  const record = goal as Record<string, unknown>;
-  const objective =
-    typeof record.objective === "string" && record.objective.trim()
-      ? record.objective.trim()
-      : undefined;
-  const status =
-    typeof record.status === "string" && record.status.trim()
-      ? record.status.trim()
-      : undefined;
-  if (!objective && !status) return null;
-  return {
-    type: "goal",
-    goalObjective: objective,
-    goalStatus: status,
-    goalTokensUsed:
-      typeof record.tokensUsed === "number" ? record.tokensUsed : undefined,
-    goalTimeUsedSeconds:
-      typeof record.timeUsedSeconds === "number"
-        ? record.timeUsedSeconds
-        : undefined,
-    goalUpdatedAt:
-      typeof record.updatedAt === "number" ? record.updatedAt : undefined,
-    goalThreadId:
-      typeof record.threadId === "string" ? record.threadId : undefined,
-  };
-}
-
-function codexEventMarker(payload: Record<string, unknown>): string | null {
-  switch (payload.type) {
-    case "task_started":
-      return "[Task started]";
-    case "task_complete": {
-      const error = payload.error;
-      if (error && typeof error === "object") {
-        const message = (error as Record<string, unknown>).message;
-        const label =
-          typeof message === "string" && message.trim()
-            ? clipText(message.trim())
-            : "Unretryable error";
-        return `[Turn failed: ${label}]`;
-      }
-      return "[Task complete]";
-    }
-    case "context_compacted":
-      return "[Context compacted]";
-    case "turn_aborted": {
-      const reason =
-        typeof payload.reason === "string" && payload.reason.trim()
-          ? `: ${payload.reason.trim()}`
-          : "";
-      return `[Turn aborted${reason}]`;
-    }
-    default:
-      return null;
-  }
-}
-
-function codexWebSearchText(payload: Record<string, unknown>): string {
-  const query = typeof payload.query === "string" ? payload.query : "";
-  const action =
-    payload.action && typeof payload.action === "object"
-      ? JSON.stringify(payload.action)
-      : "";
-  const text = [query, action].filter(Boolean).join("\n");
-  return text || "Web search completed";
-}
-
-const codexToolNamesBySession = new WeakMap<
-  NormalizedSession,
-  Map<string, string>
->();
-
-interface CodexTurnContext {
-  approvalPolicy?: string;
-  sandboxPolicy?: string;
-  model?: string;
-}
-
-const codexTurnContextsBySession = new WeakMap<
-  NormalizedSession,
-  CodexTurnContext
->();
-
-function codexToolNames(out: NormalizedSession): Map<string, string> {
-  let names = codexToolNamesBySession.get(out);
-  if (!names) {
-    names = new Map();
-    codexToolNamesBySession.set(out, names);
-  }
-  return names;
-}
-
-function rememberCodexToolName(
-  out: NormalizedSession,
-  id: unknown,
-  name: string | undefined,
-): void {
-  if (typeof id !== "string" || !id || !name) return;
-  codexToolNames(out).set(id, name);
-}
-
-function codexToolNameForResult(
-  out: NormalizedSession,
-  id: unknown,
-): string | undefined {
-  if (typeof id !== "string" || !id) return undefined;
-  return codexToolNames(out).get(id);
-}
-
-function rememberCodexTurnContext(
-  out: NormalizedSession,
-  payload: unknown,
-): void {
-  if (!payload || typeof payload !== "object") return;
-  const record = payload as Record<string, unknown>;
-  const approvalPolicy =
-    typeof record.approval_policy === "string"
-      ? record.approval_policy
-      : undefined;
-  const sandboxPolicy = codexSandboxPolicyLabel(record.sandbox_policy);
-  const model = typeof record.model === "string" ? record.model : undefined;
-  if (!approvalPolicy && !sandboxPolicy && !model) return;
-  const previous = codexTurnContextsBySession.get(out);
-  codexTurnContextsBySession.set(out, {
-    approvalPolicy: approvalPolicy ?? previous?.approvalPolicy,
-    sandboxPolicy: sandboxPolicy ?? previous?.sandboxPolicy,
-    model: model ?? previous?.model,
-  });
-}
-
-function codexToolApprovalFields(
-  out: NormalizedSession,
-  toolName: string | undefined,
-): Partial<NormalizedBlock> {
-  if (toolName !== "exec_command" && toolName !== "apply_patch") return {};
-  const context = codexTurnContextsBySession.get(out);
-  if (!context) return {};
-  return {
-    ...(context.approvalPolicy
-      ? { approvalPolicy: context.approvalPolicy }
-      : {}),
-    ...(context.sandboxPolicy ? { sandboxPolicy: context.sandboxPolicy } : {}),
-  };
-}
-
-function codexSandboxPolicyLabel(value: unknown): string | undefined {
-  if (typeof value === "string" && value.trim()) return value.trim();
-  if (!value || typeof value !== "object") return undefined;
-  const type = (value as Record<string, unknown>).type;
-  return typeof type === "string" && type.trim() ? type.trim() : undefined;
-}
-
-/** Per-line Codex parser, used by the batch + tail variants. */
 function parseCodexJsonlLine(
   line: string,
   out: NormalizedSession,
@@ -1513,473 +824,25 @@ function parseCodexJsonlLine(
     return;
   }
 
-  // codex 0.130+ wraps metadata in a top-level `session_meta` event
-  // and actual chat turns in `response_item` events. Handle those
-  // first; non-matching shapes fall through to the older flat
-  // format below for backwards compat with the pre-0.130 layout
-  // and our own test fixtures.
-  if (
-    obj.type === "session_meta" &&
-    obj.payload &&
-    typeof obj.payload === "object"
-  ) {
-    const p = obj.payload as Record<string, unknown>;
-    if (typeof p.cwd === "string" && !out.cwd) out.cwd = p.cwd;
-    if (typeof p.id === "string" && !out.sessionId) out.sessionId = p.id;
-    const ts =
-      typeof p.timestamp === "string"
-        ? p.timestamp
-        : typeof obj.timestamp === "string"
-          ? obj.timestamp
-          : undefined;
-    if (ts && !out.startedAt) out.startedAt = ts;
-    if (ts) out.endedAt = ts;
-    return;
-  }
-  if (
-    obj.type === "response_item" &&
-    obj.payload &&
-    typeof obj.payload === "object"
-  ) {
-    const p = obj.payload as Record<string, unknown>;
-    const ts = codexTimestamp(obj);
-    if (p.type === "function_call" || p.type === "custom_tool_call") {
-      const rawName =
-        typeof p.name === "string"
-          ? canonicalCodexToolName(p.name)
-          : p.type === "custom_tool_call"
-            ? "custom_tool"
-            : "function_call";
-      const rawInput =
-        p.type === "function_call"
-          ? codexToolInput(p.arguments)
-          : clipToolInput(p.input);
-      const normalized =
-        p.type === "custom_tool_call"
-          ? codexWrappedToolInvocation(rawName, rawInput)
-          : { name: rawName, input: rawInput };
-      const { name, input } = normalized;
-      rememberCodexToolName(out, p.call_id, name);
-      if (
-        name === "get_goal" ||
-        name === "create_goal" ||
-        name === "update_goal"
-      ) {
-        return;
-      }
-      if (name === "update_plan") {
-        const plan = normalizePlanFromUnknown(input);
-        if (plan) {
-          pushSessionMessage(
-            out,
-            "assistant",
-            [
-              {
-                type: "plan",
-                explanation: plan.explanation,
-                planItems: plan.planItems,
-                toolName: name,
-                toolInput: input,
-                toolUseId:
-                  typeof p.call_id === "string" ? p.call_id : undefined,
-              },
-            ],
-            ts,
-          );
-          return;
-        }
-      }
-      const viewImageMedia =
-        name === "view_image" ? viewImageMediaBlockFromInput(input) : null;
+  const normalized = codexTranscriptNormalizer(context).ingest(obj);
+  if (normalized.recognized) {
+    if (normalized.metadata?.cwd && !out.cwd) out.cwd = normalized.metadata.cwd;
+    if (normalized.metadata?.sessionId && !out.sessionId) out.sessionId = normalized.metadata.sessionId;
+    for (const message of normalized.messages) {
       pushSessionMessage(
         out,
-        "assistant",
-        [
-          {
-            type: "tool_use",
-            toolName: name,
-            toolInput: input,
-            ...(normalized.invocations
-              ? { toolInvocations: normalized.invocations }
-              : {}),
-            toolUseId: typeof p.call_id === "string" ? p.call_id : undefined,
-            ...codexSubagentBlockFromToolUse(name, input),
-            ...codexToolApprovalFields(out, name),
-          },
-          ...(viewImageMedia ? [viewImageMedia] : []),
-        ],
-        ts,
+        message.role,
+        message.blocks,
+        message.timestamp,
+        {
+          ...(message.tokensUsed !== undefined ? { tokensUsed: message.tokensUsed } : {}),
+          ...(message.tokenUsage ? { tokenUsage: message.tokenUsage } : {}),
+          ...(message.model ? { model: message.model } : {}),
+        },
       );
-      return;
     }
-    if (
-      p.type === "function_call_output" ||
-      p.type === "custom_tool_call_output"
-    ) {
-      const { text, mediaBlocks } = codexToolOutputBlocksFromPayload(p.output);
-      const toolName = codexToolNameForResult(out, p.call_id);
-      const toolUseId =
-        typeof p.call_id === "string" ? p.call_id : undefined;
-      if (
-        toolName === "get_goal" ||
-        toolName === "create_goal" ||
-        toolName === "update_goal"
-      ) {
-        const goal = codexGoalBlockFromToolOutput(text);
-        if (goal) {
-          pushSessionMessage(out, "system", [goal], ts);
-        }
-        return;
-      }
-      pushSessionMessage(
-        out,
-        "tool",
-        [
-          {
-            type: "tool_result",
-            text: clipText(text),
-            toolName,
-            toolUseId,
-            ...codexSubagentBlockFromToolOutput(toolName, text),
-          },
-          ...mediaBlocks.map((block) => ({
-            ...block,
-            ...(toolName ? { toolName } : {}),
-            ...(toolUseId ? { toolUseId } : {}),
-          })),
-        ],
-        ts,
-      );
-      return;
-    }
-    if (p.type === "web_search_call") {
-      const explicitId =
-        typeof p.call_id === "string" ? p.call_id : undefined;
-      const pendingIds = context?.pendingWebSearchIds;
-      const toolUseId = explicitId ?? pendingIds?.shift();
-      if (explicitId && pendingIds?.[0] === explicitId) pendingIds.shift();
-      rememberCodexToolName(out, toolUseId, "web_search");
-      pushSessionMessage(
-        out,
-        "assistant",
-        [
-          {
-            type: "tool_use",
-            toolName: "web_search",
-            toolInput: clipToolInput({
-              status: p.status,
-              action: p.action,
-            }),
-            toolUseId,
-          },
-        ],
-        ts,
-      );
-      return;
-    }
-    if (
-      typeof p.type === "string" &&
-      /image.*(?:call|generation)/i.test(p.type)
-    ) {
-      const toolName = p.type;
-      const toolUseId = imageGenerationToolUseId(p);
-      rememberCodexToolName(out, toolUseId, toolName);
-      pushSessionMessage(
-        out,
-        "assistant",
-        [
-          {
-            type: "tool_use",
-            toolName,
-            toolInput: imageGenerationToolInput(p),
-            toolUseId,
-          },
-        ],
-        ts,
-      );
-      const media =
-        imageGenerationMediaBlock(p, context) ?? mediaBlockFromContent(p);
-      if (media && (media.path || media.url || media.mimeType)) {
-        pushSessionMessage(
-          out,
-          "tool",
-          [
-            {
-              type: "tool_result",
-              text: "Generated image",
-              toolName,
-              toolUseId,
-            },
-          ],
-          ts,
-        );
-        pushSessionMessage(out, "assistant", [media], ts);
-      }
-      return;
-    }
-    {
-      const media = mediaBlockFromContent(p);
-      if (media && (media.path || media.url || media.mimeType)) {
-        pushSessionMessage(out, "assistant", [media], ts);
-        return;
-      }
-    }
-    if (p.type !== "message") return;
-    const role: NormalizedRole = (() => {
-      if (typeof p.role !== "string") return "user";
-      if (p.role === "assistant") return "assistant";
-      if (p.role === "system" || p.role === "developer") return "system";
-      return "user";
-    })();
-    if (role === "system") return;
-    const blocks: NormalizedBlock[] = [];
-    const mentionedFiles: CodexMentionedFile[] = [];
-    const representedFiles = new Set<string>();
-    let pendingImagePath: string | undefined;
-    if (Array.isArray(p.content)) {
-      for (const raw of p.content) {
-        if (typeof raw !== "object" || raw === null) continue;
-        const b = raw as Record<string, unknown>;
-        if (typeof b.text === "string") {
-          if (role === "user") {
-            const envelope = codexAttachmentEnvelope(b.text);
-            if (envelope) {
-              mentionedFiles.push(...envelope.files);
-              if (envelope.text) blocks.push(...codexTextBlocks(envelope.text));
-              continue;
-            }
-            const wrapperPath = parseCodexImageWrapper(b.text)?.path;
-            if (wrapperPath) {
-              pendingImagePath = wrapperPath;
-              continue;
-            }
-            if (b.text.trim() === "</image>") {
-              pendingImagePath = undefined;
-              continue;
-            }
-          }
-          const subagent = codexSubagentNotificationBlock(b.text);
-          if (subagent) {
-            blocks.push(subagent);
-          } else {
-            const text = role === "user" ? codexVisibleUserText(b.text) : b.text;
-            if (text) blocks.push(...codexTextBlocks(text));
-          }
-        } else {
-          const media = mediaBlockFromContent(b);
-          if (media) {
-            if (role === "user" && pendingImagePath) {
-              const title = mediaTitleFromPath(pendingImagePath);
-              media.path = pendingImagePath;
-              media.title = title;
-              media.alt = title;
-              representedFiles.add(pendingImagePath);
-              pendingImagePath = undefined;
-            }
-            blocks.push(media);
-          }
-        }
-      }
-    } else if (typeof p.content === "string") {
-      const subagent = codexSubagentNotificationBlock(p.content);
-      if (subagent) {
-        blocks.push(subagent);
-      } else {
-        const text =
-          role === "user" ? codexVisibleUserText(p.content) : p.content;
-        if (text) blocks.push(...codexTextBlocks(text));
-      }
-    }
-    for (const file of mentionedFiles) {
-      if (!representedFiles.has(file.path)) {
-        blocks.push(codexMentionedFileBlock(file));
-      }
-    }
-    pushSessionMessage(
-      out,
-      role === "user" && blocks.every((block) => block.type === "subagent")
-        ? "assistant"
-        : role,
-      blocks,
-      ts,
-    );
-    return;
-  }
-  if (obj.type === "compacted") {
-    const block: NormalizedBlock = {
-      type: "marker",
-      text: "[Context compacted]",
-      ...(context.latestContextTokens !== undefined
-        ? { compaction: { beforeTokens: context.latestContextTokens } }
-        : {}),
-    };
-    context.pendingCompactionBlock = block;
-    pushSessionMessage(
-      out,
-      "system",
-      [block],
-      codexTimestamp(obj),
-    );
-    return;
-  }
-  if (
-    obj.type === "event_msg" &&
-    obj.payload &&
-    typeof obj.payload === "object"
-  ) {
-    const p = obj.payload as Record<string, unknown>;
-    const ts = codexTimestamp(obj);
-    if (p.type === "item_completed") {
-      const activity = codexSubagentActivityFields(p.item);
-      if (activity) {
-        pushSessionMessage(
-          out,
-          "assistant",
-          [{ type: "subagent", ...activity }],
-          ts,
-        );
-        return;
-      }
-    }
-    if (p.type === "thread_settings_applied") {
-      rememberCodexTurnContext(out, p.thread_settings);
-      return;
-    }
-    const tokenUsage = codexOutputTokenUsageFromPayload(p, context);
-    if (tokenUsage !== undefined) {
-      pushSessionMessage(out, "assistant", [], ts, {
-        model: codexTurnContextsBySession.get(out)?.model,
-        tokensUsed: tokenUsage.output,
-        tokenUsage,
-      });
-      return;
-    }
-    const marker = codexEventMarker(p);
-    if (marker) {
-      const block: NormalizedBlock = {
-        type: "marker",
-        text: marker,
-        ...(marker === "[Context compacted]" && context.latestContextTokens !== undefined
-          ? { compaction: { beforeTokens: context.latestContextTokens } }
-          : {}),
-      };
-      if (block.compaction) context.pendingCompactionBlock = block;
-      pushSessionMessage(out, "system", [block], ts);
-      return;
-    }
-    if (p.type === "patch_apply_end") {
-      const toolUseId =
-        typeof p.call_id === "string" ? p.call_id : undefined;
-      if (p.changes && typeof p.changes === "object") {
-        pushSessionMessage(
-          out,
-          "assistant",
-          [
-            {
-              type: "tool_use",
-              toolName: "file change",
-              toolInput: { changes: p.changes },
-              toolUseId,
-            },
-          ],
-          ts,
-        );
-      }
-      pushSessionMessage(
-        out,
-        "tool",
-        [
-          {
-            type: "tool_result",
-            text: clipText(codexPatchApplyResultText(p)),
-            toolName: codexToolNameForResult(out, p.call_id) ?? "apply_patch",
-            toolUseId,
-          },
-        ],
-        ts,
-      );
-      return;
-    }
-    if (p.type === "web_search_end") {
-      const toolUseId =
-        typeof p.call_id === "string" ? p.call_id : undefined;
-      const nestedExecution = toolUseId?.startsWith("exec-") === true;
-      if (toolUseId && nestedExecution) {
-        rememberCodexToolName(out, toolUseId, "web_search");
-        pushSessionMessage(
-          out,
-          "assistant",
-          [
-            {
-              type: "tool_use",
-              toolName: "web_search",
-              toolInput: clipToolInput({ action: p.action, query: p.query }),
-              toolUseId,
-            },
-          ],
-          ts,
-        );
-      } else if (toolUseId && context) {
-        (context.pendingWebSearchIds ??= []).push(toolUseId);
-      }
-      pushSessionMessage(
-        out,
-        "tool",
-        [
-          {
-            type: "tool_result",
-            text: clipText(codexWebSearchText(p)),
-            toolName: codexToolNameForResult(out, p.call_id) ?? "web_search",
-            toolUseId,
-          },
-        ],
-        ts,
-      );
-      return;
-    }
-    if (p.type === "image_generation_end") {
-      const toolUseId = imageGenerationToolUseId(p);
-      const toolName =
-        codexToolNameForResult(out, toolUseId) ?? "image_generation_call";
-      pushSessionMessage(
-        out,
-        "tool",
-        [
-          {
-            type: "tool_result",
-            text: "Generated image",
-            toolName,
-            toolUseId,
-          },
-        ],
-        ts,
-      );
-      const media =
-        imageGenerationMediaBlock(p, context) ?? mediaBlockFromContent(p);
-      if (media && (media.path || media.url || media.mimeType)) {
-        pushSessionMessage(
-          out,
-          "assistant",
-          [
-            {
-              ...media,
-              toolName,
-              toolUseId,
-            },
-          ],
-          ts,
-        );
-      }
-      return;
-    }
-    return;
-  }
-  if (obj.type === "turn_context") {
-    rememberCodexTurnContext(out, obj.payload);
-    return;
-  }
-  if (obj.type === "event_msg") {
-    // Non-message metadata events — skip rendering.
+    if (normalized.metadata?.timestamp && !out.startedAt) out.startedAt = normalized.metadata.timestamp;
+    if (normalized.metadata?.timestamp) out.endedAt = normalized.metadata.timestamp;
     return;
   }
 
@@ -2229,6 +1092,9 @@ interface SessionCacheEntry {
   /** Number of bytes from the file we have already parsed into `parsed`. */
   size: number;
   parsed: NormalizedSession;
+  /** Stateful parser data retained so appended rows normalize relative to
+   * the already-parsed transcript instead of starting a second timeline. */
+  parseContext: CodexParseContext;
   /** Message window this cache entry was trimmed to. Scroll-back requests can
    *  widen one entry without changing the default window for every column. */
   maxMessages: number;
@@ -2824,7 +1690,11 @@ async function readSessionHeadMeta(
   fh: Awaited<ReturnType<typeof open>>,
   fileSize: number,
   headBytes: number,
-): Promise<{ cwd?: string; sessionId?: string; startedAt?: string }> {
+): Promise<{
+  cwd?: string;
+  sessionId?: string;
+  startedAt?: string;
+}> {
   if (fileSize === 0) return {};
   const size = Math.min(headBytes, fileSize);
   const buf = Buffer.alloc(size);
@@ -2862,11 +1732,62 @@ async function readSessionHeadMeta(
   return { cwd, sessionId, startedAt };
 }
 
+async function primeCodexNormalizerBeforeTail(
+  fh: Awaited<ReturnType<typeof open>>,
+  tailStart: number,
+  maxBytes: number,
+  context: CodexParseContext,
+): Promise<Buffer | null | undefined> {
+  if (tailStart <= 0 || maxBytes <= 0) return undefined;
+  const start = Math.max(0, tailStart - maxBytes);
+  const buffer = Buffer.alloc(tailStart - start);
+  await fh.read(buffer, 0, buffer.length, start);
+  let completeStart = 0;
+  if (start > 0) {
+    const firstNewline = buffer.indexOf(0x0a);
+    if (firstNewline === -1) return undefined;
+    completeStart = firstNewline + 1;
+  }
+  const boundaryAligned = buffer.at(-1) === 0x0a;
+  const lastNewline = buffer.lastIndexOf(0x0a);
+  const completeEnd = boundaryAligned
+    ? buffer.length
+    : Math.max(completeStart, lastNewline + 1);
+  const seamPrefix = boundaryAligned
+    ? null
+    : Buffer.from(buffer.subarray(completeEnd));
+  const lines = buffer.subarray(completeStart, completeEnd).toString("utf-8").split("\n");
+  const normalize = codexTranscriptNormalizer(context);
+  for (const line of lines) {
+    if (!line) continue;
+    try {
+      normalize.ingest(JSON.parse(line));
+    } catch {
+      // The bounded warmup can begin between UTF-8 characters or records.
+    }
+  }
+  return seamPrefix;
+}
+
+function primeCodexNormalizerWithSeam(
+  seamPrefix: Buffer,
+  tailPrefix: Buffer,
+  context: CodexParseContext,
+): void {
+  try {
+    const line = Buffer.concat([seamPrefix, tailPrefix]).toString("utf-8");
+    codexTranscriptNormalizer(context).ingest(JSON.parse(line));
+  } catch {
+    // An oversized record can begin before the bounded warmup window.
+  }
+}
+
 export async function tailParseSessionFile(
   agent: AgentKind,
   path: string,
   tailBytes: number = TAIL_BYTES,
   headBytes: number = HEAD_META_BYTES,
+  context: CodexParseContext = { sourcePath: path },
 ): Promise<NormalizedSession> {
   if (agent !== "claude" && agent !== "codex") return emptySession(agent);
   const fh = await open(path, "r").catch(() => null);
@@ -2880,25 +1801,41 @@ export async function tailParseSessionFile(
     const headMeta = await readSessionHeadMeta(fh, st.size, headBytes);
     const readSize = Math.min(tailBytes, st.size);
     const startPos = st.size - readSize;
+    const codexSeam = agent === "codex"
+      ? await primeCodexNormalizerBeforeTail(fh, startPos, headBytes, context)
+      : undefined;
     const buf = Buffer.alloc(readSize);
     await fh.read(buf, 0, readSize, startPos);
-    let text = buf.toString("utf-8");
+    let text: string;
     // Drop the first (potentially partial) line if we didn't start at offset 0.
     if (startPos > 0) {
-      const firstNewline = text.indexOf("\n");
-      if (firstNewline === -1) {
-        const empty = emptySession(agent);
-        if (headMeta.cwd) empty.cwd = headMeta.cwd;
-        if (headMeta.sessionId) empty.sessionId = headMeta.sessionId;
-        if (headMeta.startedAt) empty.startedAt = headMeta.startedAt;
-        return empty;
+      if (agent !== "codex" || codexSeam !== null) {
+        const firstNewline = buf.indexOf(0x0a);
+        if (firstNewline === -1) {
+          const empty = emptySession(agent);
+          if (headMeta.cwd) empty.cwd = headMeta.cwd;
+          if (headMeta.sessionId) empty.sessionId = headMeta.sessionId;
+          if (headMeta.startedAt) empty.startedAt = headMeta.startedAt;
+          return empty;
+        }
+        if (agent === "codex" && codexSeam !== undefined) {
+          primeCodexNormalizerWithSeam(
+            codexSeam,
+            buf.subarray(0, firstNewline),
+            context,
+          );
+        }
+        text = buf.subarray(firstNewline + 1).toString("utf-8");
+      } else {
+        text = buf.toString("utf-8");
       }
-      text = text.slice(firstNewline + 1);
+    } else {
+      text = buf.toString("utf-8");
     }
     const parsed =
       agent === "claude"
         ? parseClaudeJsonl(text)
-        : parseCodexJsonl(text, { sourcePath: path });
+        : parseCodexJsonl(text, context);
     // Overlay head meta — the head wins for identity fields. The tail
     // keeps the messages (those are the recent ones the UI wants).
     if (headMeta.cwd) parsed.cwd = headMeta.cwd;
@@ -2915,12 +1852,21 @@ async function tailParseSessionFileForCache(
   path: string,
   fileSize: number,
   maxMessages: number = MAX_CACHED_MESSAGES,
-): Promise<NormalizedSession> {
+): Promise<{ parsed: NormalizedSession; context: CodexParseContext }> {
   let tailBytes = Math.min(TAIL_BYTES, fileSize);
   while (true) {
-    const parsed = await tailParseSessionFile(agent, path, tailBytes);
-    if (!tailNeedsMoreHistory(parsed, maxMessages)) return parsed;
-    if (tailBytes >= fileSize || tailBytes >= MAX_TAIL_BYTES) return parsed;
+    const context: CodexParseContext = { sourcePath: path };
+    const parsed = await tailParseSessionFile(
+      agent,
+      path,
+      tailBytes,
+      HEAD_META_BYTES,
+      context,
+    );
+    if (!tailNeedsMoreHistory(parsed, maxMessages)) return { parsed, context };
+    if (tailBytes >= fileSize || tailBytes >= MAX_TAIL_BYTES) {
+      return { parsed, context };
+    }
     tailBytes = Math.min(tailBytes * 2, fileSize, MAX_TAIL_BYTES);
   }
 }
@@ -3005,9 +1951,12 @@ async function getSessionResponseData(
         const buf = Buffer.alloc(length);
         await fh.read(buf, 0, length, cached.size);
         const chunk = cached.partialLine + buf.toString("utf-8");
-        const newPartial = appendChunk(agent, chunk, cached.parsed, {
-          sourcePath: path,
-        });
+        const newPartial = appendChunk(
+          agent,
+          chunk,
+          cached.parsed,
+          cached.parseContext,
+        );
         cached.partialLine = newPartial;
         cached.size = st.size;
         cached.mtimeMs = st.mtimeMs;
@@ -3028,7 +1977,7 @@ async function getSessionResponseData(
 
   // Cache miss, or file shrank/got rewritten: tail-read only the last
   // TAIL_BYTES and parse those lines.
-  const parsed = await tailParseSessionFileForCache(
+  const { parsed, context: parseContext } = await tailParseSessionFileForCache(
     agent,
     path,
     st.size,
@@ -3041,6 +1990,7 @@ async function getSessionResponseData(
     mtimeMs: st.mtimeMs,
     size: st.size,
     parsed,
+    parseContext,
     maxMessages,
     partialLine: "",
     jsonNoTitle,

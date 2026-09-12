@@ -4,8 +4,8 @@ import {
   codexSubagentActivityFields,
   contextTokenSnapshotFromUsageRecord,
   parseCodexToolScriptInvocations,
+  type AgentTranscriptBlock,
   type CodexSubagentActivityFields,
-  type ContextCompactionDetails,
 } from "@treetop/nicifier";
 
 export interface CodexAppEvent {
@@ -379,48 +379,9 @@ function codexLiveToolInputMap(
   return context.toolInputs;
 }
 
-export interface CodexAppHistoryBlock {
-  type:
-    | "text"
-    | "thinking"
-    | "tool_use"
-    | "tool_result"
-    | "media"
-    | "marker"
-    | "system_reminder"
-    | "subagent";
-  text?: string;
-  tagName?: string;
-  toolName?: string;
-  toolInput?: unknown;
-  toolInvocations?: readonly {
-    toolName: string;
-    toolInput: unknown;
-    observedFileEdits?: readonly import("@treetop/nicifier").VisualFileEdit[];
-  }[];
-  observedFileEdits?: readonly import("@treetop/nicifier").VisualFileEdit[];
-  toolUseId?: string;
-  approvalPolicy?: string;
-  approvalDecision?: string;
-  sandboxPolicy?: string;
-  mediaKind?: "image" | "file" | "artifact";
-  mimeType?: string;
-  path?: string;
-  url?: string;
-  title?: string;
-  alt?: string;
-  compaction?: ContextCompactionDetails;
-  subagentId?: string;
-  subagentNickname?: string;
-  subagentAction?: "spawn" | "wait" | "notification";
-  subagentStatus?: "running" | "completed" | "failed" | "unknown";
-  subagentType?: string;
-  subagentModel?: string;
-  subagentEffort?: string;
-  subagentMessage?: string;
-  subagentResult?: string;
+export interface CodexAppHistoryBlock extends AgentTranscriptBlock {
+  streaming?: boolean;
 }
-
 export interface CodexAppHistoryMessage {
   role: "user" | "assistant" | "system" | "tool";
   blocks: CodexAppHistoryBlock[];

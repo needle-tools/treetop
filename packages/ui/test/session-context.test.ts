@@ -1,10 +1,251 @@
 import { describe, expect, test } from "bun:test";
 import {
+  createCodexTranscriptNormalizer,
+  createCodexContextUpdateNormalizer,
   createSessionContextTimeline,
   sessionContextStateAtLine,
 } from "@treetop/nicifier";
 
 describe("recorded session context", () => {
+  test("normalizes Codex transcript records through one stateful shared stream", () => {
+    const normalize = createCodexTranscriptNormalizer();
+    expect(normalize.ingest({
+      type: "session_meta",
+      timestamp: "2026-09-13T00:00:00Z",
+      payload: { id: "thread-1", cwd: "/repo" },
+    })).toEqual({
+      recognized: true,
+      messages: [],
+      metadata: {
+        cwd: "/repo",
+        sessionId: "thread-1",
+        timestamp: "2026-09-13T00:00:00Z",
+      },
+    });
+    normalize.ingest({
+      type: "response_item",
+      payload: {
+        type: "function_call",
+        name: "exec_command",
+        call_id: "call-1",
+        arguments: JSON.stringify({ cmd: "pwd" }),
+      },
+    });
+    expect(normalize.ingest({
+      type: "response_item",
+      payload: {
+        type: "function_call_output",
+        call_id: "call-1",
+        output: "/repo",
+      },
+    }).messages).toEqual([{
+      role: "tool",
+      blocks: [{
+        type: "tool_result",
+        text: "/repo",
+        toolName: "exec_command",
+        toolUseId: "call-1",
+      }],
+      timestamp: undefined,
+    }]);
+  });
+
+  test("applies one recursive retention policy to nested Codex tool input", () => {
+    const normalize = createCodexTranscriptNormalizer();
+    const content = "x".repeat(20_000);
+    const result = normalize.ingest({
+      type: "response_item",
+      payload: {
+        type: "function_call",
+        name: "custom_tool",
+        call_id: "call-nested",
+        arguments: JSON.stringify({ nested: { content } }),
+      },
+    });
+    const input = result.messages[0]?.blocks[0]?.toolInput as {
+      nested?: { content?: string };
+    };
+    expect(input.nested?.content?.length).toBeLessThan(content.length);
+    expect(input.nested?.content).toEndWith("… [truncated by Treetop]");
+  });
+
+  test("normalizes context updates into canonical messages and tracks changes", () => {
+    const normalize = createCodexContextUpdateNormalizer();
+    const firstText = "<skills_instructions>\nold tools\n</skills_instructions>";
+    const changedText = "<skills_instructions>\nnew tools and rules\n</skills_instructions>";
+    const item = (text: string) => ({
+        type: "message",
+        role: "developer",
+        content: [{ type: "input_text", text }],
+    });
+
+    expect(normalize(item(firstText))).toEqual({
+      role: "system",
+      title: "Developer context set",
+      blocks: [{
+        type: "context_update",
+        text: firstText,
+        contextRole: "developer",
+        contextPhase: "set",
+        contextCategory: "Skills instructions",
+        contextCharacters: firstText.length,
+      }],
+    });
+    expect(normalize(item(changedText))).toEqual({
+      role: "system",
+      title: "Developer context changed",
+      blocks: [{
+        type: "context_update",
+        text: changedText,
+        contextRole: "developer",
+        contextPhase: "changed",
+        contextCategory: "Skills instructions",
+        contextCharacters: changedText.length,
+        contextPreviousCharacters: firstText.length,
+        contextDeltaCharacters: changedText.length - firstText.length,
+        contextDiff: [
+          "@@ Skills instructions changed @@",
+          " <skills_instructions>",
+          "-old tools",
+          "+new tools and rules",
+          " </skills_instructions>",
+        ].join("\n"),
+      }],
+    });
+    expect(normalize(item(changedText))).toEqual({
+      role: "system",
+      title: "Developer context reapplied",
+      blocks: [{
+        type: "context_update",
+        text: changedText,
+        contextRole: "developer",
+        contextPhase: "reapplied",
+        contextCategory: "Skills instructions",
+        contextCharacters: changedText.length,
+        contextPreviousCharacters: changedText.length,
+        contextDeltaCharacters: 0,
+      }],
+    });
+  });
+
+  test("diffs a model switch against the recorded base instructions", () => {
+    const normalize = createCodexTranscriptNormalizer();
+    normalize.ingest({
+      type: "session_meta",
+      payload: {
+        base_instructions: {
+          text: "You are Codex 5.\nKeep replies concise.",
+          limit: 20_000,
+        },
+      },
+    });
+
+    const result = normalize.ingest({
+      type: "response_item",
+      payload: {
+        type: "message",
+        role: "developer",
+        content: [{
+          type: "input_text",
+          text: [
+            "<model_switch>",
+            "The user was previously using a different model.",
+            "Please continue with these instructions:",
+            "",
+            "You are Codex 6.",
+            "Keep replies concise.",
+            "",
+            "</model_switch>",
+          ].join("\n"),
+        }],
+      },
+    });
+
+    expect(result.messages[0]?.blocks[0]).toMatchObject({
+      type: "context_update",
+      contextCategory: "Model instructions",
+      contextPhase: "changed",
+      contextPreviousCharacters: 38,
+    });
+    expect(result.messages[0]?.blocks[0]?.contextDiff).toContain("-You are Codex 5.");
+    expect(result.messages[0]?.blocks[0]?.contextDiff).toContain("+You are Codex 6.");
+    expect(result.messages[0]?.blocks[0]?.contextDiff).not.toContain("previously using a different model");
+  });
+
+  test("tracks independent developer context categories without inventing replacements", () => {
+    const normalize = createCodexContextUpdateNormalizer();
+    const originalCollaboration = "<collaboration_mode>Default</collaboration_mode>";
+    const item = (value: string) => ({
+      type: "message",
+      role: "developer",
+      content: [{ type: "input_text", text: value }],
+    });
+
+    const collaboration = normalize(item(
+      originalCollaboration,
+    ));
+    const model = normalize(item(
+      "<model_switch>\n<skills_instructions>large nested block</skills_instructions>\n</model_switch>",
+    ));
+    const changedCollaboration = normalize(item(
+      "<collaboration_mode>Plan</collaboration_mode>",
+    ));
+
+    expect(collaboration?.blocks[0]).toMatchObject({
+      contextCategory: "Collaboration instructions",
+      contextPhase: "set",
+    });
+    expect(model?.blocks[0]).toMatchObject({
+      contextCategory: "Model instructions",
+      contextPhase: "set",
+    });
+    expect(changedCollaboration?.blocks[0]).toMatchObject({
+      contextCategory: "Collaboration instructions",
+      contextPhase: "changed",
+      contextPreviousCharacters: originalCollaboration.length,
+    });
+    expect(changedCollaboration?.blocks[0].contextDiff).toContain(
+      "-<collaboration_mode>Default</collaboration_mode>",
+    );
+    expect(changedCollaboration?.blocks[0].contextDiff).toContain(
+      "+<collaboration_mode>Plan</collaboration_mode>",
+    );
+  });
+
+  test("bounds large context diffs while preserving both sides of the change", () => {
+    const normalize = createCodexContextUpdateNormalizer();
+    const item = (lines: string[]) => ({
+      type: "message",
+      role: "developer",
+      content: [{
+        type: "input_text",
+        text: ["<skills_instructions>", ...lines, "</skills_instructions>"].join("\n"),
+      }],
+    });
+    normalize(item(Array.from({ length: 400 }, (_, index) => `old ${index}`)));
+
+    const changed = normalize(item(
+      Array.from({ length: 400 }, (_, index) => `new ${index}`),
+    ));
+    const diff = changed?.blocks[0].contextDiff ?? "";
+
+    expect(diff).toContain("-old 0");
+    expect(diff).toContain("-old 399");
+    expect(diff).toContain("+new 0");
+    expect(diff).toContain("+new 399");
+    expect(diff).toContain("removed lines omitted");
+    expect(diff).toContain("added lines omitted");
+    expect(diff.split("\n").length).toBeLessThan(350);
+
+    const alternating = createCodexContextUpdateNormalizer();
+    alternating(item(Array.from({ length: 400 }, (_, index) => `line ${index}`)));
+    const scattered = alternating(item(
+      Array.from({ length: 400 }, (_, index) => index % 2 ? `changed ${index}` : `line ${index}`),
+    ))?.blocks[0].contextDiff ?? "";
+    expect(scattered).toContain("diff lines omitted");
+    expect(scattered.split("\n").length).toBeLessThanOrEqual(402);
+  });
+
   test("reconstructs Codex input and replaces history at compaction boundaries", () => {
     const timeline = createSessionContextTimeline([
       { type: "session_meta", payload: { id: "s1", base_instructions: { text: "base" } } },

@@ -45,6 +45,35 @@ export interface SessionContextState {
   limitations: string[];
 }
 
+export type CodexContextRole = "developer" | "system";
+export type CodexContextUpdatePhase = "set" | "changed" | "reapplied";
+
+export interface CodexContextUpdateBlock {
+  type: "context_update";
+  text: string;
+  contextRole: CodexContextRole;
+  contextPhase: CodexContextUpdatePhase;
+  contextCategory: string;
+  contextCharacters: number;
+  contextPreviousCharacters?: number;
+  contextDeltaCharacters?: number;
+  contextDiff?: string;
+}
+
+/** Canonical transcript message produced for recorded model-context changes.
+ * Consumers add only source-specific identity/timestamps; they must not
+ * reinterpret the block. */
+export interface CodexContextUpdateMessage {
+  role: "system";
+  title: string;
+  blocks: [CodexContextUpdateBlock];
+}
+
+export interface CodexContextUpdateNormalizer {
+  (value: unknown): CodexContextUpdateMessage | undefined;
+  primeBaseInstructions(value: unknown): void;
+}
+
 function record(value: unknown): Record<string, unknown> | undefined {
   return value && typeof value === "object" && !Array.isArray(value)
     ? value as Record<string, unknown>
@@ -53,6 +82,196 @@ function record(value: unknown): Record<string, unknown> | undefined {
 
 function text(value: unknown): string | undefined {
   return typeof value === "string" && value ? value : undefined;
+}
+
+function codexContextCategory(value: string, role: CodexContextRole): string {
+  const outerTag = value.match(/^\s*<([a-z_][\w-]*)\b/i)?.[1]?.toLowerCase();
+  if (outerTag === "skills_instructions") return "Skills instructions";
+  if (outerTag === "permissions") return "Permissions instructions";
+  if (outerTag === "multi_agent_role" || outerTag === "multi_agent_mode") {
+    return "Multi-agent instructions";
+  }
+  if (outerTag === "collaboration_mode") return "Collaboration instructions";
+  if (outerTag === "model_switch") return "Model instructions";
+  return role === "developer" ? "Developer instructions" : "System instructions";
+}
+
+type ContextDiffOperation = { kind: "same" | "add" | "remove"; line: string };
+
+function contextLineOperations(previous: string, current: string): ContextDiffOperation[] {
+  const before = previous.split("\n");
+  const after = current.split("\n");
+  let prefix = 0;
+  while (prefix < before.length && prefix < after.length && before[prefix] === after[prefix]) prefix++;
+  let suffix = 0;
+  while (
+    suffix < before.length - prefix &&
+    suffix < after.length - prefix &&
+    before[before.length - 1 - suffix] === after[after.length - 1 - suffix]
+  ) suffix++;
+
+  const beforeMiddle = before.slice(prefix, before.length - suffix);
+  const afterMiddle = after.slice(prefix, after.length - suffix);
+  const operations: ContextDiffOperation[] = before
+    .slice(0, prefix)
+    .map((line) => ({ kind: "same", line }));
+
+  if (beforeMiddle.length * afterMiddle.length <= 1_000_000) {
+    const width = afterMiddle.length + 1;
+    const lengths = new Uint32Array((beforeMiddle.length + 1) * width);
+    for (let beforeIndex = beforeMiddle.length - 1; beforeIndex >= 0; beforeIndex--) {
+      for (let afterIndex = afterMiddle.length - 1; afterIndex >= 0; afterIndex--) {
+        const index = beforeIndex * width + afterIndex;
+        lengths[index] = beforeMiddle[beforeIndex] === afterMiddle[afterIndex]
+          ? lengths[(beforeIndex + 1) * width + afterIndex + 1]! + 1
+          : Math.max(
+              lengths[(beforeIndex + 1) * width + afterIndex]!,
+              lengths[beforeIndex * width + afterIndex + 1]!,
+            );
+      }
+    }
+    let beforeIndex = 0;
+    let afterIndex = 0;
+    while (beforeIndex < beforeMiddle.length && afterIndex < afterMiddle.length) {
+      if (beforeMiddle[beforeIndex] === afterMiddle[afterIndex]) {
+        operations.push({ kind: "same", line: beforeMiddle[beforeIndex]! });
+        beforeIndex++;
+        afterIndex++;
+      } else if (
+        lengths[(beforeIndex + 1) * width + afterIndex]! >=
+        lengths[beforeIndex * width + afterIndex + 1]!
+      ) {
+        operations.push({ kind: "remove", line: beforeMiddle[beforeIndex++]! });
+      } else {
+        operations.push({ kind: "add", line: afterMiddle[afterIndex++]! });
+      }
+    }
+    while (beforeIndex < beforeMiddle.length) {
+      operations.push({ kind: "remove", line: beforeMiddle[beforeIndex++]! });
+    }
+    while (afterIndex < afterMiddle.length) {
+      operations.push({ kind: "add", line: afterMiddle[afterIndex++]! });
+    }
+  } else {
+    operations.push(...beforeMiddle.map((line) => ({ kind: "remove" as const, line })));
+    operations.push(...afterMiddle.map((line) => ({ kind: "add" as const, line })));
+  }
+
+  operations.push(...before.slice(before.length - suffix).map((line) => ({ kind: "same" as const, line })));
+  return operations;
+}
+
+function compactContextDiffOperations(operations: ContextDiffOperation[]): string[] {
+  const rendered: string[] = [];
+  for (let index = 0; index < operations.length;) {
+    const kind = operations[index]!.kind;
+    let end = index + 1;
+    while (end < operations.length && operations[end]!.kind === kind) end++;
+    const run = operations.slice(index, end);
+    const keep = kind === "same" ? 3 : 80;
+    if (run.length > keep * 2) {
+      rendered.push(...run.slice(0, keep).map((operation) => `${kind === "same" ? " " : kind === "add" ? "+" : "-"}${operation.line}`));
+      rendered.push(`@@ ${run.length - keep * 2} ${kind === "same" ? "unchanged" : kind === "add" ? "added" : "removed"} lines omitted @@`);
+      rendered.push(...run.slice(-keep).map((operation) => `${kind === "same" ? " " : kind === "add" ? "+" : "-"}${operation.line}`));
+    } else {
+      rendered.push(...run.map((operation) => `${kind === "same" ? " " : kind === "add" ? "+" : "-"}${operation.line}`));
+    }
+    index = end;
+  }
+  if (rendered.length <= 400) return rendered;
+  return [
+    ...rendered.slice(0, 200),
+    `@@ ${rendered.length - 400} diff lines omitted @@`,
+    ...rendered.slice(-200),
+  ];
+}
+
+function codexContextDiff(previous: string, current: string, category: string): string {
+  return [
+    `@@ ${category} changed @@`,
+    ...compactContextDiffOperations(contextLineOperations(previous, current)),
+  ].join("\n");
+}
+
+function codexContextUpdateParts(value: unknown): {
+  role: CodexContextRole;
+  category: string;
+  text: string;
+} | undefined {
+  const item = record(value);
+  if (text(item?.type) !== "message") return undefined;
+  const role = text(item?.role);
+  if (role !== "developer" && role !== "system") return undefined;
+  const content = Array.isArray(item?.content) ? item.content : [];
+  const body = content
+    .map((part) => text(record(part)?.text))
+    .filter((part): part is string => !!part)
+    .join("\n\n")
+    .trim();
+  if (!body) return undefined;
+  return { role, category: codexContextCategory(body, role), text: body };
+}
+
+function contextComparisonText(value: string, category: string): string {
+  if (category !== "Model instructions") return value;
+  const inner = value
+    .replace(/^\s*<model_switch\b[^>]*>\s*/i, "")
+    .replace(/\s*<\/model_switch>\s*$/i, "");
+  const instructionsStart = inner.indexOf("\n\n");
+  return (instructionsStart >= 0 ? inner.slice(instructionsStart + 2) : inner).trim();
+}
+
+/** Stateful canonical conversion for model-visible Codex context messages. */
+export function createCodexContextUpdateNormalizer(): CodexContextUpdateNormalizer {
+  const previousByCategory = new Map<string, { text: string; characters: number }>();
+  const normalize = ((value: unknown) => {
+    const update = codexContextUpdateParts(value);
+    if (!update) return undefined;
+    const contextKey = `${update.role}:${update.category}`;
+    const previous = previousByCategory.get(contextKey);
+    const comparisonText = contextComparisonText(update.text, update.category);
+    const phase: CodexContextUpdatePhase = previous === undefined
+      ? "set"
+      : previous.text === comparisonText
+        ? "reapplied"
+        : "changed";
+    previousByCategory.set(contextKey, {
+      text: comparisonText,
+      characters: update.text.length,
+    });
+    const roleLabel = update.role === "developer" ? "Developer" : "System";
+    const block: CodexContextUpdateBlock = {
+      type: "context_update",
+      text: update.text,
+      contextRole: update.role,
+      contextPhase: phase,
+      contextCategory: update.category,
+      contextCharacters: update.text.length,
+      ...(previous !== undefined
+        ? {
+            contextPreviousCharacters: previous.characters,
+            contextDeltaCharacters: update.text.length - previous.characters,
+            ...(phase === "changed"
+              ? { contextDiff: codexContextDiff(previous.text, comparisonText, update.category) }
+              : {}),
+          }
+        : {}),
+    };
+    return {
+      role: "system",
+      title: `${roleLabel} context ${phase}`,
+      blocks: [block],
+    };
+  }) as CodexContextUpdateNormalizer;
+  normalize.primeBaseInstructions = (value: unknown) => {
+    const base = typeof value === "string" ? value : text(record(value)?.text);
+    if (!base) return;
+    previousByCategory.set("developer:Model instructions", {
+      text: base,
+      characters: base.length,
+    });
+  };
+  return normalize;
 }
 
 function codexItem(value: unknown, sourceLine: number, suffix = ""): SessionContextItem {

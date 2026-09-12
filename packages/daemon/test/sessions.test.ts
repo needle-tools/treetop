@@ -779,6 +779,14 @@ describe("parseCodexJsonl", () => {
       type: "tool_use",
       toolName: "apply_patch",
       toolInput: patch,
+      observedFileEdits: [{
+        path: "src/App.svelte",
+        action: "edited",
+        additions: 1,
+        deletions: 1,
+        raw: "*** Update File: src/App.svelte\n@@\n-old\n+new",
+        writtenTokenCountEstimate: 1,
+      }],
       toolUseId: "call-apply-patch",
     });
   });
@@ -1908,7 +1916,8 @@ describe("parseCodexJsonl with a real sanitized fixture", () => {
     const s = parseCodexJsonl(text);
     expect(s.cwd).toBe("/Users/sanitized/proj");
     expect(s.sessionId).toBe("019e1bc1-9658-7a70-8529-42744e0c08ed");
-    // Should find only the visible user prompt + the assistant reply.
+    // Visible conversation remains clean while recorded developer context is
+    // retained as its own expandable system event.
     const userMsgs = s.messages.filter((m) => m.role === "user");
     const assistantMsgs = s.messages.filter((m) => m.role === "assistant");
     expect(userMsgs).toHaveLength(1);
@@ -1917,9 +1926,25 @@ describe("parseCodexJsonl with a real sanitized fixture", () => {
     expect(
       assistantMsgs.some((m) => m.blocks[0]?.text === "Test received."),
     ).toBe(true);
-    expect(s.messages.some((m) => m.blocks[0]?.text?.includes("<"))).toBe(
-      false,
-    );
+    expect(s.messages.filter((m) =>
+      m.blocks.some((block) => block.type === "context_update"),
+    )).toMatchObject([
+      {
+        blocks: [
+          {
+            type: "context_update",
+            contextRole: "developer",
+            contextPhase: "set",
+            contextCategory: "Permissions instructions",
+          },
+        ],
+      },
+    ]);
+    expect(
+      [...userMsgs, ...assistantMsgs].some((m) =>
+        m.blocks[0]?.text?.includes("<"),
+      ),
+    ).toBe(false);
     // event_msg / turn_context lines aren't messages.
     const everyHasContent = s.messages.every(
       (m) => m.blocks.length > 0 && m.blocks[0]?.text,
@@ -1972,6 +1997,35 @@ describe("getSessionResponseJson cache", () => {
     const second = JSON.parse(await getSessionResponseJson("claude", path));
     expect(second.messages).toHaveLength(2);
     expect(second.messages[1]?.blocks[0]?.text).toBe("second");
+  });
+
+  test("retains canonical context-update state across cached file appends", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "treetop-context-cache-"));
+    const path = join(dir, "session.jsonl");
+    const contextLine = (body: string, timestamp: string) => JSON.stringify({
+      timestamp,
+      type: "response_item",
+      payload: {
+        type: "message",
+        role: "developer",
+        content: [{ type: "input_text", text: body }],
+      },
+    });
+    const original = "<skills_instructions>old</skills_instructions>";
+    const changed = "<skills_instructions>new and larger</skills_instructions>";
+    await writeFile(path, contextLine(original, "2026-05-12T01:00:00Z") + "\n");
+
+    const first = JSON.parse(await getSessionResponseJson("codex", path));
+    expect(first.messages[0]?.blocks[0]?.contextPhase).toBe("set");
+
+    await appendFile(path, contextLine(changed, "2026-05-12T01:00:01Z") + "\n");
+    const second = JSON.parse(await getSessionResponseJson("codex", path));
+    expect(second.messages[1]?.blocks[0]).toMatchObject({
+      type: "context_update",
+      contextPhase: "changed",
+      contextPreviousCharacters: original.length,
+      contextDeltaCharacters: changed.length - original.length,
+    });
   });
 
   test("returns cached response when mtime+size are unchanged", async () => {
@@ -2254,6 +2308,112 @@ describe("getSessionResponseJson cache", () => {
     // The tail still contributes its messages (the latest ones the UI
     // shows in the chat).
     expect(result.messages.length).toBeGreaterThan(0);
+  });
+
+  test("primes Codex tail normalization from the immediately preceding records", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "treetop-codex-tail-state-"));
+    const path = join(dir, "session.jsonl");
+    const developer = {
+      type: "response_item",
+      payload: {
+        type: "message",
+        role: "developer",
+        content: [{ type: "input_text", text: "<skills_instructions>same</skills_instructions>" }],
+      },
+    };
+    const rows = [
+      { type: "session_meta", timestamp: "2026-09-13T10:00:00Z", payload: { id: "tail-state", cwd: "/repo" } },
+      { type: "turn_context", payload: { model: "gpt-head" } },
+      developer,
+      { type: "ignored", padding: "x".repeat(6_000) },
+      { type: "turn_context", payload: { model: "gpt-current" } },
+      developer,
+      { type: "ignored", padding: "x".repeat(2_000) },
+      developer,
+      {
+        type: "event_msg",
+        payload: {
+          type: "token_count",
+          info: { last_token_usage: { input_tokens: 10, output_tokens: 2, total_tokens: 12 } },
+        },
+      },
+    ];
+    await writeFile(path, rows.map((row) => JSON.stringify(row)).join("\n"));
+
+    const result = await tailParseSessionFile("codex", path, 1_000, 4_096);
+    expect(result.messages.find((message) => message.blocks[0]?.type === "context_update")?.blocks[0]).toMatchObject({
+      type: "context_update",
+      contextPhase: "reapplied",
+    });
+    expect(result.messages.find((message) => message.tokenUsage)?.model).toBe("gpt-current");
+  });
+
+  test("normalizes the Codex record crossing the tail boundary exactly once", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "treetop-codex-tail-seam-"));
+    const path = join(dir, "session.jsonl");
+    const developerContext = JSON.stringify({
+      type: "response_item",
+      payload: {
+        type: "message",
+        role: "developer",
+        content: [{ type: "input_text", text: "prüfen" }],
+      },
+    });
+    const lines = [
+      JSON.stringify({ type: "turn_context", payload: { model: "gpt-old" } }),
+      JSON.stringify({ type: "ignored", padding: "x".repeat(2_000) }),
+      JSON.stringify({ type: "turn_context", payload: { model: "gpt-current" } }),
+      developerContext,
+      developerContext,
+      JSON.stringify({
+        type: "event_msg",
+        payload: {
+          type: "token_count",
+          info: { last_token_usage: { input_tokens: 10, output_tokens: 2, total_tokens: 12 } },
+        },
+      }),
+    ];
+    const text = lines.join("\n");
+    await writeFile(path, text);
+    const umlautOffset = text.indexOf("ü");
+    const seam = Buffer.byteLength(text.slice(0, umlautOffset)) + 1;
+
+    const result = await tailParseSessionFile(
+      "codex",
+      path,
+      Buffer.byteLength(text) - seam,
+      4_096,
+    );
+    expect(result.messages.find((message) => message.tokenUsage)?.model).toBe("gpt-current");
+    expect(result.messages.find((message) => message.blocks[0]?.type === "context_update")?.blocks[0]).toMatchObject({
+      type: "context_update",
+      contextPhase: "reapplied",
+      text: "prüfen",
+    });
+  });
+
+  test("keeps the first Codex row when the tail begins on a line boundary", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "treetop-codex-tail-aligned-"));
+    const path = join(dir, "session.jsonl");
+    const first = JSON.stringify({ type: "ignored", padding: "x".repeat(2_000) });
+    const visible = JSON.stringify({
+      type: "response_item",
+      payload: {
+        type: "message",
+        role: "assistant",
+        content: [{ type: "output_text", text: "boundary row" }],
+      },
+    });
+    const text = `${first}\n${visible}`;
+    await writeFile(path, text);
+
+    const result = await tailParseSessionFile(
+      "codex",
+      path,
+      Buffer.byteLength(visible),
+      4_096,
+    );
+    expect(result.messages[0]?.blocks[0]?.text).toBe("boundary row");
   });
 
   test("defers a partial last line until its trailing newline arrives", async () => {
