@@ -8,11 +8,13 @@
     createSessionArtifactEvolutionTracker,
     analyzeSessionArtifactOverbooking,
     filterSessionArtifactEvolution,
+    scopeSessionArtifactEvolution,
     sessionArtifactJuiceTransition,
     sessionArtifactTurnCounts,
     sessionArtifactTurnWindow,
     type SessionArtifactFilter,
     type SessionArtifactEvolution,
+    type SessionArtifactScope,
   } from "./session-artifacts";
   import type { VisualTranscriptItem } from "./last-user-message";
 
@@ -33,6 +35,7 @@
     turns: [],
     totals: {
       reads: 0,
+      references: 0,
       partialReads: 0,
       writes: 0,
       partialWrites: 0,
@@ -50,6 +53,7 @@
   let evolutionOpen = false;
   let visibleTurnLimit = 200;
   let artifactFilter: SessionArtifactFilter = "all";
+  let artifactScope: SessionArtifactScope = "consolidated";
   let previousJuiceTotals: SessionArtifactEvolution["totals"] | undefined;
   let readImpactCount = 0;
   let writeImpactCount = 0;
@@ -88,15 +92,16 @@
     ? tracker.update(displayedItems)
     : emptyEvolution;
   $: updateJuiceImpact(evolution.totals);
-  $: filteredEvolution = filterSessionArtifactEvolution(evolution, artifactFilter);
-  $: overbooking = analyzeSessionArtifactOverbooking(evolution.turns);
+  $: scopedEvolution = scopeSessionArtifactEvolution(evolution, artifactScope);
+  $: filteredEvolution = filterSessionArtifactEvolution(scopedEvolution, artifactFilter);
+  $: overbooking = analyzeSessionArtifactOverbooking(scopedEvolution.turns);
   $: artifactRows = buildSparseArtifactRows(filteredEvolution.artifacts, worktreePath);
   $: fileCount = artifactRows.filter((row) => row.kind === "file").length;
   $: evolutionWindow = sessionArtifactTurnWindow(filteredEvolution.turns, visibleTurnLimit);
 
   function turnCounts(turn: (typeof evolution.turns)[number]): string {
-    const { reads, writes } = sessionArtifactTurnCounts(turn);
-    return [reads ? `${reads} read${reads === 1 ? "" : "s"}` : "", writes ? `${writes} write${writes === 1 ? "" : "s"}` : ""]
+    const { reads, references, writes } = sessionArtifactTurnCounts(turn);
+    return [reads ? `${reads} read${reads === 1 ? "" : "s"}` : "", references ? `${references} ref${references === 1 ? "" : "s"}` : "", writes ? `${writes} write${writes === 1 ? "" : "s"}` : ""]
       .filter(Boolean)
       .join(" · ");
   }
@@ -130,6 +135,18 @@
     draggable={!!onDragStart}
     {onDragStart}
   >
+    <button
+      type="button"
+      class="artifact-scope"
+      class:selected={artifactScope === "consolidated"}
+      on:click={() => (artifactScope = "consolidated")}
+    >Consolidated</button>
+    <button
+      type="button"
+      class="artifact-scope"
+      class:selected={artifactScope === "current"}
+      on:click={() => (artifactScope = "current")}
+    >Current turn</button>
     {#if onClose}
       <button type="button" class="icon-only" on:click={onClose} aria-label="Close artifact map">×</button>
     {/if}
@@ -138,9 +155,10 @@
   <div class="artifact-map-summary">
     <div class="artifact-map-filters" role="group" aria-label="Filter artifact activity">
       <button type="button" class:selected={artifactFilter === "all"} on:click={() => (artifactFilter = "all")}>All</button>
-      <button type="button" class:selected={artifactFilter === "reads"} on:click={() => (artifactFilter = "reads")}>Reads {evolution.totals.reads}</button>
-      <button type="button" class:selected={artifactFilter === "writes"} on:click={() => (artifactFilter = "writes")}>Writes {evolution.totals.writes}</button>
-      <button type="button" class:selected={artifactFilter === "partial-writes"} on:click={() => (artifactFilter = "partial-writes")}>Partial {evolution.totals.partialWrites}</button>
+      <button type="button" class:selected={artifactFilter === "reads"} on:click={() => (artifactFilter = "reads")}>Reads {scopedEvolution.totals.reads}</button>
+      <button type="button" class:selected={artifactFilter === "references"} on:click={() => (artifactFilter = "references")}>References {scopedEvolution.totals.references}</button>
+      <button type="button" class:selected={artifactFilter === "writes"} on:click={() => (artifactFilter = "writes")}>Writes {scopedEvolution.totals.writes}</button>
+      <button type="button" class:selected={artifactFilter === "partial-writes"} on:click={() => (artifactFilter = "partial-writes")}>Partial {scopedEvolution.totals.partialWrites}</button>
       <button type="button" class:selected={artifactFilter === "repeated"} on:click={() => (artifactFilter = "repeated")}>Repeated {overbooking.repeatedReads}</button>
     </div>
     <div class="artifact-map-filter-details">
@@ -172,7 +190,7 @@
       <p class="artifact-map-empty">No {artifactFilter === "all" ? "file activity" : artifactFilter === "repeated" ? "potentially redundant reads" : artifactFilter.replace("-", " ")} yet.</p>
     {:else}
       <section class="artifact-map-overall">
-        <h3>Overall</h3>
+        <h3>{artifactScope === "consolidated" ? "Consolidated" : "Current turn"}</h3>
         <SparseArtifactTree
           artifacts={filteredEvolution.artifacts}
           rows={artifactRows}
@@ -182,38 +200,40 @@
         />
       </section>
 
-      <details class="artifact-map-timeline" bind:open={evolutionOpen}>
-        <summary>Evolution</summary>
-        {#if evolutionOpen}
-          {#if evolutionWindow.hiddenTurnCount > 0}
-            <button class="artifact-map-show-earlier" type="button" on:click={() => (visibleTurnLimit += 200)}>
-              Show {Math.min(200, evolutionWindow.hiddenTurnCount)} earlier turns
-            </button>
-          {/if}
-          {#each evolutionWindow.turns as turn (turn.turnNumber)}
-            <div class="artifact-map-turn">
-              <button
-                type="button"
-                class:expanded={expandedTurn === turn.turnNumber}
-                on:click={() => (expandedTurn = expandedTurn === turn.turnNumber ? 0 : turn.turnNumber)}
-              >
-                <strong>Turn {turn.turnNumber}</strong>
-                <span>{turnCounts(turn)}</span>
-                {#if turnTime(turn)}<time>{turnTime(turn)}</time>{/if}
+      {#if artifactScope === "consolidated"}
+        <details class="artifact-map-timeline" bind:open={evolutionOpen}>
+          <summary>Evolution</summary>
+          {#if evolutionOpen}
+            {#if evolutionWindow.hiddenTurnCount > 0}
+              <button class="artifact-map-show-earlier" type="button" on:click={() => (visibleTurnLimit += 200)}>
+                Show {Math.min(200, evolutionWindow.hiddenTurnCount)} earlier turns
               </button>
-              {#if expandedTurn === turn.turnNumber}
-                <div class="artifact-map-turn-tree">
-                  <SparseArtifactTree
-                    artifacts={turn.artifacts}
-                    {worktreePath}
-                    {daemonId}
-                  />
-                </div>
-              {/if}
-            </div>
-          {/each}
-        {/if}
-      </details>
+            {/if}
+            {#each evolutionWindow.turns as turn (turn.turnNumber)}
+              <div class="artifact-map-turn">
+                <button
+                  type="button"
+                  class:expanded={expandedTurn === turn.turnNumber}
+                  on:click={() => (expandedTurn = expandedTurn === turn.turnNumber ? 0 : turn.turnNumber)}
+                >
+                  <strong>Turn {turn.turnNumber}</strong>
+                  <span>{turnCounts(turn)}</span>
+                  {#if turnTime(turn)}<time>{turnTime(turn)}</time>{/if}
+                </button>
+                {#if expandedTurn === turn.turnNumber}
+                  <div class="artifact-map-turn-tree">
+                    <SparseArtifactTree
+                      artifacts={turn.artifacts}
+                      {worktreePath}
+                      {daemonId}
+                    />
+                  </div>
+                {/if}
+              </div>
+            {/each}
+          {/if}
+        </details>
+      {/if}
     {/if}
   </div>
 </section>
@@ -240,6 +260,11 @@
     inset: 0;
     border: 1px solid rgb(255 178 69 / 22%);
     pointer-events: none;
+  }
+  :global(.artifact-scope.selected) {
+    border-color: var(--accent, #6aa9ff);
+    color: var(--text-1);
+    background: color-mix(in srgb, var(--accent, #6aa9ff) 18%, var(--surface-2));
   }
   .artifact-read-impact-a,
   .artifact-read-impact-b {

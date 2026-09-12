@@ -1556,6 +1556,11 @@ body.platform-windows .sessions-strip::-webkit-scrollbar-thumb:active {
   outline: 2px solid transparent;
   outline-offset: 2px;
 }
+.session-col-inspector {
+  min-height: calc(var(--session-body-min-height) + var(--session-head-height));
+  max-height: calc(var(--session-body-max-height) + var(--session-head-height));
+  overflow: hidden;
+}
 /* Drag-drop insertion preview: a brand-coloured dashed vertical line
    in the inter-column gap on the side the cursor is on. Anchored via
    ::before (left) / ::after (right) pseudos on the hovered column, so

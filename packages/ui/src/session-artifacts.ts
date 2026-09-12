@@ -48,6 +48,7 @@ export interface SessionArtifactTurn {
 
 export interface SessionArtifactTotals {
   reads: number;
+  references: number;
   partialReads: number;
   writes: number;
   partialWrites: number;
@@ -82,7 +83,8 @@ export interface SessionArtifactOverbooking {
   repeatedChanges: ReadonlyMap<VisualWorkArtifact, ReadonlySet<ReturnType<typeof visualWorkArtifactChanges>[number]>>;
 }
 
-export type SessionArtifactFilter = "all" | "reads" | "writes" | "partial-writes" | "repeated";
+export type SessionArtifactFilter = "all" | "reads" | "references" | "writes" | "partial-writes" | "repeated";
+export type SessionArtifactScope = "consolidated" | "current";
 type SessionArtifactChangeFilter = Exclude<SessionArtifactFilter, "all" | "repeated">;
 
 export function sessionArtifactJuiceTransition(
@@ -114,17 +116,20 @@ export function sessionArtifactTurnWindow(
 
 export function sessionArtifactTurnCounts(turn: SessionArtifactTurn): {
   reads: number;
+  references: number;
   writes: number;
 } {
   let reads = 0;
+  let references = 0;
   let writes = 0;
   for (const artifact of turn.artifacts) {
     for (const change of visualWorkArtifactChanges(artifact)) {
       if (change.action === "used") reads += 1;
+      else if (change.action === "referenced") references += 1;
       else if (change.action === "changed") writes += 1;
     }
   }
-  return { reads, writes };
+  return { reads, references, writes };
 }
 
 interface CachedWorkArtifacts {
@@ -221,6 +226,10 @@ function addArtifactTotals(
   artifact: VisualWorkArtifact,
 ): void {
   for (const change of visualWorkArtifactChanges(artifact)) {
+    if (change.action === "referenced") {
+      totals.references += 1;
+      continue;
+    }
     if (change.action === "used") {
       totals.reads += 1;
       if (
@@ -238,6 +247,26 @@ function addArtifactTotals(
     totals.deletions += change.deletions ?? 0;
     if (change.fileAction === "edited") totals.partialWrites += 1;
   }
+}
+
+export function scopeSessionArtifactEvolution(
+  evolution: SessionArtifactEvolution,
+  scope: SessionArtifactScope,
+): SessionArtifactEvolution {
+  if (scope === "consolidated") return evolution;
+  const turn = evolution.turns.at(-1);
+  const totals: SessionArtifactTotals = {
+    reads: 0,
+    references: 0,
+    partialReads: 0,
+    writes: 0,
+    partialWrites: 0,
+    additions: 0,
+    deletions: 0,
+  };
+  if (!turn) return { artifacts: [], turns: [], totals };
+  for (const artifact of turn.artifacts) addArtifactTotals(totals, artifact);
+  return { artifacts: turn.artifacts, turns: [turn], totals };
 }
 
 const filteredSessionArtifactCache = new WeakMap<
@@ -259,12 +288,29 @@ function filterSessionArtifact(
     (change) =>
       filter === "reads"
         ? change.action === "used"
+        : filter === "references"
+          ? change.action === "referenced"
         : filter === "partial-writes"
           ? change.action === "changed" && change.fileAction === "edited"
           : change.action === "changed",
   );
   const result = changes.length > 0
-    ? { ...artifact, action: changes[0]!.action, changes }
+    ? {
+        ...artifact,
+        action: changes[0]!.action,
+        additions: undefined,
+        deletions: undefined,
+        diff: undefined,
+        preview: undefined,
+        previewTitle: undefined,
+        diffKind: undefined,
+        fileAction: undefined,
+        contentTokenCount: undefined,
+        contentTokenCountEstimated: undefined,
+        contentLineCount: undefined,
+        contentLineCountEstimated: undefined,
+        changes,
+      }
     : null;
   cached[filter] = result;
   return result;
@@ -301,6 +347,7 @@ export function filterSessionArtifactEvolution(
   const artifacts = turns.flatMap((turn) => turn.artifacts);
   const totals: SessionArtifactTotals = {
     reads: 0,
+    references: 0,
     partialReads: 0,
     writes: 0,
     partialWrites: 0,
@@ -336,6 +383,7 @@ export function createSessionArtifactEvolutionTracker(): {
   }> = [];
   const totals: SessionArtifactTotals = {
     reads: 0,
+    references: 0,
     partialReads: 0,
     writes: 0,
     partialWrites: 0,
@@ -399,6 +447,7 @@ export function createSessionArtifactEvolutionTracker(): {
       turns.length = 0;
       Object.assign(totals, {
         reads: 0,
+        references: 0,
         partialReads: 0,
         writes: 0,
         partialWrites: 0,

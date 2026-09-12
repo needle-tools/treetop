@@ -6,6 +6,7 @@
     shellToSession,
     shellSourceToDismiss,
     commandTerminalForSource,
+    isInspectorSessionSource,
     moveSessionStateKey,
     openSessionHasLiveTerminal,
     openSessionHasDockActivity,
@@ -12053,6 +12054,9 @@
                         {#each visibleSessions as s, i (openSessionRenderKey(s))}
                           <div
                             class="session-col"
+                            class:session-col-inspector={isInspectorSessionSource(
+                              s.source,
+                            )}
                             class:session-col-working={s.agent !== "shell" &&
                               !transientExited[s.source] &&
                               !!transientWorking[s.source]}

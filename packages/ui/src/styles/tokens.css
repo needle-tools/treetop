@@ -124,6 +124,10 @@
   --radius-sm: 4px;
   --radius-md: 6px;
   --radius-lg: 8px;
+  /* Shared vertical contract for SessionView and session inspector panes. */
+  --session-head-height: 3.25rem;
+  --session-body-min-height: 28rem;
+  --session-body-max-height: 60vh;
   /* Leading inset shared by all per-worktree row strips
      (sessions-strip, repo-summary). Single source of truth so the
      summary's text and the first session column line up visually. */

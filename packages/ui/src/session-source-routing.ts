@@ -48,6 +48,13 @@ export interface ShellRecord {
   manualTitle?: string;
 }
 
+export function isInspectorSessionSource(source: string): boolean {
+  return (
+    source.startsWith("__artifacts__:") ||
+    source.startsWith("__context_view__:")
+  );
+}
+
 export interface OpenSession {
   agent:
     | AgentSession["agent"]

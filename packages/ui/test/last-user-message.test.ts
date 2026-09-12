@@ -1,5 +1,8 @@
 import { describe, it, expect } from "bun:test";
-import { nicifyCommand } from "@treetop/nicifier";
+import {
+  nicifyCommand,
+  visualToolArtifactContentPreview,
+} from "@treetop/nicifier";
 import {
   applyVisualTranscriptDeltaPatches,
   buildVisualWorkDisplayEntries,
@@ -2847,7 +2850,11 @@ describe("visualToolReadResultPreview", () => {
         },
         result,
       ),
-    ).toEqual({ title: "Read app.ts:1-2", body: "first line\nsecond line" });
+    ).toEqual({
+      title: "Read app.ts:1-2",
+      body: "first line\nsecond line",
+      lineCount: 2,
+    });
     expect(
       visualToolReadResultPreview(
         {
@@ -2857,7 +2864,11 @@ describe("visualToolReadResultPreview", () => {
         },
         result,
       ),
-    ).toEqual({ title: "Read directory .", body: "first line\nsecond line" });
+    ).toEqual({
+      title: "Read directory .",
+      body: "first line\nsecond line",
+      lineCount: 2,
+    });
     expect(
       visualToolReadResultPreview(
         {
@@ -2870,6 +2881,7 @@ describe("visualToolReadResultPreview", () => {
     ).toEqual({
       title: "Read logs treetop.log last 80",
       body: "first line\nsecond line",
+      lineCount: 2,
     });
     expect(
       visualToolReadResultPreview(
@@ -2881,6 +2893,27 @@ describe("visualToolReadResultPreview", () => {
         result,
       ),
     ).toBeUndefined();
+  });
+
+  it("measures single-file search output for artifact accounting", () => {
+    expect(
+      visualToolArtifactContentPreview(
+        {
+          type: "tool_use",
+          toolName: "exec_command",
+          toolInput: { cmd: "rg -n render src/app.ts" },
+        },
+        {
+          type: "tool_result",
+          text: "Chunk ID: search\nWall time: 0.1 seconds\nProcess exited with code 0\nOriginal token count: 8\nOutput:\n10:render();\n24:render();",
+        },
+      ),
+    ).toEqual({
+      title: 'Search app.ts for "render"',
+      body: "10:render();\n24:render();",
+      lineCount: 2,
+      tokenCount: 8,
+    });
   });
 });
 
@@ -7681,7 +7714,7 @@ describe("visualWorkOverview", () => {
             {
               type: "tool_result",
               toolUseId: "read",
-              text: "Chunk ID: read Wall time: 2.0000 seconds Process exited with code 0 Original token count: 10 Output: ok",
+              text: "Exit code: 0\nWall time: 2.0000 seconds\nOutput:\nfirst line\nsecond line",
             },
           ],
         },
@@ -7689,7 +7722,7 @@ describe("visualWorkOverview", () => {
           {
             type: "tool_result",
             toolUseId: "read",
-            text: "Chunk ID: read Wall time: 2.0000 seconds Process exited with code 0 Original token count: 10 Output: ok",
+            text: "Exit code: 0\nWall time: 2.0000 seconds\nOutput:\nfirst line\nsecond line",
           },
         ],
         messageIndex: 2,
@@ -7714,14 +7747,16 @@ describe("visualWorkOverview", () => {
       {
         path: "packages/ui/src/VisualTranscript.svelte",
         previewTitle: "Read VisualTranscript.svelte:1-40",
-        preview: "ok",
-        contentTokenCount: 10,
+        preview: "first line\nsecond line",
+        contentLineCount: 2,
+        contentTokenCount: 6,
         contentTokenCountEstimated: true,
         changes: [
           {
             previewTitle: "Read VisualTranscript.svelte:1-40",
-            preview: "ok",
-            contentTokenCount: 10,
+            preview: "first line\nsecond line",
+            contentLineCount: 2,
+            contentTokenCount: 6,
             contentTokenCountEstimated: true,
           },
         ],
@@ -7729,7 +7764,7 @@ describe("visualWorkOverview", () => {
     ]);
   });
 
-  it("does not attribute a compound read result to every mentioned file", () => {
+  it("allocates compound read output across mentioned files without multiplying it", () => {
     const entries = buildVisualWorkDisplayEntries([
       {
         message: {
@@ -7760,7 +7795,7 @@ describe("visualWorkOverview", () => {
             {
               type: "tool_result",
               toolUseId: "read-two",
-              text: "Chunk ID: read-two Wall time: 0.1 seconds Process exited with code 0 Original token count: 50 Output: one two",
+              text: "Chunk ID: read-two Wall time: 0.1 seconds Process exited with code 0 Original token count: 50 Output: one\ntwo\nthree\nfour",
             },
           ],
         },
@@ -7768,7 +7803,7 @@ describe("visualWorkOverview", () => {
           {
             type: "tool_result",
             toolUseId: "read-two",
-            text: "Chunk ID: read-two Wall time: 0.1 seconds Process exited with code 0 Original token count: 50 Output: one two",
+            text: "Chunk ID: read-two Wall time: 0.1 seconds Process exited with code 0 Original token count: 50 Output: one\ntwo\nthree\nfour",
           },
         ],
         messageIndex: 2,
@@ -7777,11 +7812,55 @@ describe("visualWorkOverview", () => {
 
     const overview = visualWorkOverview({ kind: "work", entries: [] }, entries);
     expect(overview.artifacts).toHaveLength(2);
+    expect(overview.artifacts.map((artifact) => ({
+      lines: artifact.contentLineCount,
+      linesEstimated: artifact.contentLineCountEstimated,
+      tokens: artifact.contentTokenCount,
+    }))).toEqual([
+      { lines: 2, linesEstimated: true, tokens: 25 },
+      { lines: 2, linesEstimated: true, tokens: 25 },
+    ]);
+  });
+
+  it("keeps paths mentioned by non-read commands as references, not reads", () => {
+    const entries = buildVisualWorkDisplayEntries([
+      {
+        message: {
+          role: "assistant",
+          blocks: [
+            {
+              type: "tool_use",
+              toolName: "exec_command",
+              toolUseId: "clone",
+              toolInput: {
+                cmd: "git clone https://example.test/project.git /tmp/project",
+              },
+            },
+          ],
+        },
+        blocks: [
+          {
+            type: "tool_use",
+            toolName: "exec_command",
+            toolUseId: "clone",
+            toolInput: {
+              cmd: "git clone https://example.test/project.git /tmp/project",
+            },
+          },
+        ],
+        messageIndex: 1,
+      },
+    ]);
+
     expect(
-      overview.artifacts.every(
-        (artifact) => artifact.contentTokenCount === undefined,
-      ),
-    ).toBe(true);
+      visualWorkOverview({ kind: "work", entries: [] }, entries).artifacts,
+    ).toMatchObject([
+      {
+        action: "referenced",
+        path: "/tmp/project",
+        changes: [{ action: "referenced", path: "/tmp/project" }],
+      },
+    ]);
   });
 
   it("summarizes fresh token work without using cached context as the headline", () => {

@@ -10,9 +10,10 @@ import {
   visualFileEditTotals,
   visualToolInlineScriptLanguageLabel,
   visualToolMediaBlocks,
+  visualToolArtifactContentPreview,
+  visualToolIconNameForPreview,
   visualToolPreviewParts,
   visualToolPreviewText,
-  visualToolReadResultPreview,
   visualToolRemoteHostLabel,
 } from "./tool-preview.js";
 import {
@@ -57,7 +58,7 @@ export interface VisualWorkTimeOverview {
 export interface VisualWorkArtifact {
   id: string;
   kind: "file" | "image" | "remote" | "container" | "other";
-  action: "used" | "changed" | "produced";
+  action: "referenced" | "used" | "changed" | "produced";
   label: string;
   path?: string;
   title?: string;
@@ -70,6 +71,8 @@ export interface VisualWorkArtifact {
   fileAction?: VisualFileEdit["action"];
   contentTokenCount?: number;
   contentTokenCountEstimated?: boolean;
+  contentLineCount?: number;
+  contentLineCountEstimated?: boolean;
   changes?: VisualWorkArtifactChange[];
 }
 
@@ -87,6 +90,8 @@ export interface VisualWorkArtifactChange {
   fileAction?: VisualFileEdit["action"];
   contentTokenCount?: number;
   contentTokenCountEstimated?: boolean;
+  contentLineCount?: number;
+  contentLineCountEstimated?: boolean;
 }
 
 export interface VisualWorkCategoryCount {
@@ -771,6 +776,8 @@ function addArtifact(
     fileAction: artifact.fileAction,
     contentTokenCount: artifact.contentTokenCount,
     contentTokenCountEstimated: artifact.contentTokenCountEstimated,
+    contentLineCount: artifact.contentLineCount,
+    contentLineCountEstimated: artifact.contentLineCountEstimated,
   };
   artifacts.push({ ...artifact, id, changes: [change] });
 }
@@ -780,9 +787,10 @@ function preferredArtifactAction(
   b: VisualWorkArtifact["action"],
 ): VisualWorkArtifact["action"] {
   const rank: Record<VisualWorkArtifact["action"], number> = {
-    used: 0,
-    changed: 1,
-    produced: 2,
+    referenced: 0,
+    used: 1,
+    changed: 2,
+    produced: 3,
   };
   return rank[b] > rank[a] ? b : a;
 }
@@ -841,6 +849,15 @@ function mergeArtifact(
     contentTokenCountEstimated:
       current.contentTokenCountEstimated === true ||
       next.contentTokenCountEstimated === true,
+    contentLineCount:
+      current.contentLineCount === undefined
+        ? next.contentLineCount
+        : next.contentLineCount === undefined
+          ? current.contentLineCount
+          : current.contentLineCount + next.contentLineCount,
+    contentLineCountEstimated:
+      current.contentLineCountEstimated === true ||
+      next.contentLineCountEstimated === true,
     changes: [...(current.changes ?? []), ...(next.changes ?? [])],
   };
 }
@@ -892,10 +909,28 @@ function artifactsForEntry(
   const artifacts: VisualWorkArtifact[] = [];
   const primaryToolBlock = toolUseBlock(entry);
   const resultBlock = toolResultBlock(entry);
-  for (const toolBlock of toolUseBlocks(entry)) {
-    const readPreview = visualToolReadResultPreview(toolBlock, resultBlock);
+  const artifactInputs = toolUseBlocks(entry).map((toolBlock) => {
+    const previewText = visualToolPreviewText(toolBlock);
+    const icon = visualToolIconNameForPreview(toolBlock, previewText);
+    const readsArtifacts = icon === "read" || icon === "search";
+    const readPreview = visualToolArtifactContentPreview(toolBlock, resultBlock);
     const editSummary = visualFileEditSummaryForBlock(toolBlock);
     const editedPaths = new Set(editSummary?.files.map((file) => file.path) ?? []);
+    const pathParts = visualToolPreviewParts(toolBlock).filter(
+      (part) =>
+        part.kind === "path" &&
+        looksLikeArtifactPath(part.path, part.text) &&
+        !editedPaths.has(part.path),
+    );
+    return { readsArtifacts, readPreview, editSummary, editedPaths, pathParts };
+  });
+  const contentTargetCount = artifactInputs.reduce(
+    (sum, input) => sum + (input.readPreview ? input.pathParts.length : 0),
+    0,
+  );
+  let contentTargetIndex = 0;
+
+  for (const { readsArtifacts, readPreview, editSummary, editedPaths, pathParts } of artifactInputs) {
     if (editSummary) {
       for (const file of editSummary.files) {
         const contentTokenCount =
@@ -917,27 +952,37 @@ function artifactsForEntry(
         });
       }
     }
-    const pathParts = visualToolPreviewParts(toolBlock).filter(
-      (part) =>
-        part.kind === "path" && looksLikeArtifactPath(part.path, part.text),
-    );
-    const attributableReadTokenCount =
-      pathParts.length === 1 && readPreview
-        ? (readPreview.tokenCount ?? Math.ceil(readPreview.body.length / 4))
-        : undefined;
     for (const part of pathParts) {
       if (part.kind !== "path") continue;
       if (editedPaths.has(part.path)) continue;
+      const targetIndex = readPreview ? contentTargetIndex++ : -1;
+      const contentTokenCount = readPreview
+        ? allocateCapturedContent(
+            readPreview.tokenCount ?? Math.ceil(readPreview.body.length / 4),
+            targetIndex,
+            contentTargetCount,
+          )
+        : undefined;
+      const contentLineCount = readPreview
+        ? allocateCapturedContent(
+            readPreview.lineCount,
+            targetIndex,
+            contentTargetCount,
+          )
+        : undefined;
       addArtifact(artifacts, {
         kind: "file",
-        action: "used",
+        action: readsArtifacts ? "used" : "referenced",
         label: part.text,
         path: part.path,
         preview: readPreview?.body,
         previewTitle: readPreview?.title,
-        contentTokenCount: attributableReadTokenCount,
+        contentTokenCount,
         contentTokenCountEstimated:
-          attributableReadTokenCount === undefined ? undefined : true,
+          contentTokenCount === undefined ? undefined : true,
+        contentLineCount,
+        contentLineCountEstimated:
+          contentLineCount === undefined ? undefined : contentTargetCount > 1,
       });
     }
   }
@@ -945,6 +990,16 @@ function artifactsForEntry(
     addArtifact(artifacts, mediaArtifact(media, primaryToolBlock));
   }
   return artifacts;
+}
+
+function allocateCapturedContent(
+  total: number,
+  index: number,
+  count: number,
+): number {
+  if (count <= 1) return total;
+  const base = Math.floor(total / count);
+  return base + (index < total % count ? 1 : 0);
 }
 
 function mediaArtifact(

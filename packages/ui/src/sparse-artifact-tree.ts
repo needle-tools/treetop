@@ -18,6 +18,7 @@ export type SparseArtifactFileLifecycle = "added" | "edited" | "deleted";
 export type SparseArtifactRowActionSummary =
   | {
       kind: "changed";
+      activityLabels: string[];
       additions?: number;
       deletions?: number;
       rangeLabel?: string;
@@ -25,18 +26,25 @@ export type SparseArtifactRowActionSummary =
       fileLifecycle?: SparseArtifactFileLifecycle;
       contentTokenCount?: number;
       contentTokenCountEstimated?: boolean;
+      contentLineCount?: number;
+      contentLineCountEstimated?: boolean;
     }
   | {
       kind: "range";
+      activityLabels: string[];
       label: string;
       contentTokenCount?: number;
       contentTokenCountEstimated?: boolean;
+      contentLineCount?: number;
+      contentLineCountEstimated?: boolean;
     }
   | {
       kind: "action";
       labels: string[];
       contentTokenCount?: number;
       contentTokenCountEstimated?: boolean;
+      contentLineCount?: number;
+      contentLineCountEstimated?: boolean;
     };
 
 interface MutableTreeNode {
@@ -303,9 +311,15 @@ export function buildSparseArtifactRows(
   return rows;
 }
 
-function actionLabel(action: VisualWorkArtifact["action"]): string {
-  if (action === "changed") return "write";
-  if (action === "produced") return "created";
+function actionLabel(
+  change: VisualWorkArtifact | VisualWorkArtifactChange,
+): string {
+  if (change.action === "changed") return "write";
+  if (change.action === "produced") return "created";
+  if (change.action === "referenced") return "referenced";
+  if (/^search(?:\s|$)/i.test(change.previewTitle ?? change.title ?? "")) {
+    return "search";
+  }
   return "read";
 }
 
@@ -329,6 +343,8 @@ export function visualWorkArtifactChanges(
           fileAction: artifact.fileAction,
           contentTokenCount: artifact.contentTokenCount,
           contentTokenCountEstimated: artifact.contentTokenCountEstimated,
+          contentLineCount: artifact.contentLineCount,
+          contentLineCountEstimated: artifact.contentLineCountEstimated,
         },
       ];
 }
@@ -352,13 +368,8 @@ export function sparseArtifactRowChanges(
 export function sparseArtifactRowHasContent(
   row: Pick<SparseArtifactTreeRow, "artifacts">,
 ): boolean {
-  return row.artifacts.some(
-    (artifact) =>
-      artifact.diff !== undefined ||
-      artifact.preview !== undefined ||
-      artifact.changes?.some(
-        (change) => change.diff !== undefined || change.preview !== undefined,
-      ),
+  return sparseArtifactRowChanges(row).some(
+    (change) => change.diff !== undefined || change.preview !== undefined,
   );
 }
 
@@ -413,6 +424,7 @@ export function sparseArtifactRowActionSummary(
   row: Pick<SparseArtifactTreeRow, "artifacts">,
 ): SparseArtifactRowActionSummary {
   const changes = sparseArtifactRowChanges(row);
+  const activityLabels = uniqueStrings(changes.map(actionLabel));
   const contentTokenChanges = changes.filter(
     (change) => change.contentTokenCount !== undefined,
   );
@@ -425,6 +437,18 @@ export function sparseArtifactRowActionSummary(
   const contentTokenCountEstimated = contentTokenChanges.some(
     (change) => change.contentTokenCountEstimated === true,
   );
+  const contentLineChanges = changes.filter(
+    (change) => change.contentLineCount !== undefined,
+  );
+  const contentLineCount = contentLineChanges.length
+    ? contentLineChanges.reduce(
+        (sum, change) => sum + (change.contentLineCount ?? 0),
+        0,
+      )
+    : undefined;
+  const contentLineCountEstimated = contentLineChanges.some(
+    (change) => change.contentLineCountEstimated === true,
+  ) || undefined;
   const ranges = uniqueStrings(changes.map(artifactRange));
   const rangeLabel =
     ranges.length === 0
@@ -445,6 +469,7 @@ export function sparseArtifactRowActionSummary(
     const fileLifecycle = sparseArtifactRowLifecycle(row);
     return {
       kind: "changed",
+      activityLabels,
       additions: changed.some((change) => change.additions !== undefined)
         ? additions
         : undefined,
@@ -461,20 +486,27 @@ export function sparseArtifactRowActionSummary(
       fileLifecycle,
       contentTokenCount,
       contentTokenCountEstimated,
+      contentLineCount,
+      contentLineCountEstimated,
     };
   }
   if (rangeLabel) {
     return {
       kind: "range",
+      activityLabels,
       label: rangeLabel,
       contentTokenCount,
       contentTokenCountEstimated,
+      contentLineCount,
+      contentLineCountEstimated,
     };
   }
   return {
     kind: "action",
-    labels: uniqueStrings(changes.map((change) => actionLabel(change.action))),
+    labels: uniqueStrings(changes.map(actionLabel)),
     contentTokenCount,
     contentTokenCountEstimated,
+    contentLineCount,
+    contentLineCountEstimated,
   };
 }
