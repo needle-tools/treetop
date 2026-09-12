@@ -29,6 +29,7 @@ describe("GlobalVoiceController", () => {
     let realtimeEvent: ((event: VoiceRealtimeEvent) => void) | undefined;
     let realtimeClosed = false;
     const posted: Array<{ path: string; body: unknown }> = [];
+    const handledTools: string[] = [];
     const states: string[] = [];
     const dataChannel = { close() {} };
     const peer = {
@@ -85,7 +86,10 @@ describe("GlobalVoiceController", () => {
         };
       },
       onState: (state) => states.push(state.phase),
-      handleTool: async (tool, args) => ({ tool, args, ok: true }),
+      handleTool: async (tool, args) => {
+        handledTools.push(tool);
+        return { tool, args, ok: true };
+      },
     });
 
     await controller.start({
@@ -129,17 +133,29 @@ describe("GlobalVoiceController", () => {
       kind: "notification",
       method: "thread/realtime/transcript/done",
       params: { threadId: "thr_voice", role: "assistant", text: "Ready." },
+      seq: 3,
     });
-    realtimeEvent?.({
+    const toolCall: VoiceRealtimeEvent = {
       kind: "request",
       id: 42,
       method: "item/tool/call",
       params: {
         threadId: "thr_voice",
-        tool: "get_treetop_context",
+        tool: "get_context",
         arguments: {},
       },
+      seq: 4,
+    };
+    realtimeEvent?.(toolCall);
+    // The daemon replays its bounded event history after an SSE reconnect.
+    // A replay is the same delivery identity, not another model action.
+    realtimeEvent?.({
+      kind: "notification",
+      method: "thread/realtime/transcript/done",
+      params: { threadId: "thr_voice", role: "assistant", text: "Ready." },
+      seq: 3,
     });
+    realtimeEvent?.(toolCall);
     await new Promise((resolve) => setTimeout(resolve, 0));
 
     expect(controller.snapshot).toMatchObject({
@@ -151,6 +167,10 @@ describe("GlobalVoiceController", () => {
         }),
       ],
     });
+    expect(handledTools).toEqual(["get_context"]);
+    expect(
+      posted.filter((entry) => entry.path.includes("/respond")),
+    ).toHaveLength(1);
     expect(posted[1]).toEqual({
       path: "/api/codex-app/requests/42/respond",
       body: {
@@ -159,7 +179,7 @@ describe("GlobalVoiceController", () => {
             {
               type: "inputText",
               text: JSON.stringify({
-                tool: "get_treetop_context",
+                tool: "get_context",
                 args: {},
                 ok: true,
               }),
@@ -178,6 +198,68 @@ describe("GlobalVoiceController", () => {
     expect(stoppedTracks).toEqual(["mic"]);
     expect(realtimeClosed).toBe(true);
     expect(controller.snapshot.phase).toBe("off");
+  });
+
+  test("does not answer an in-flight tool call after its voice lifecycle stops", async () => {
+    const toolResult = deferred<unknown>();
+    let realtimeEvent: ((event: VoiceRealtimeEvent) => void) | undefined;
+    const posted: Array<{ path: string; body: unknown }> = [];
+    const controller = new GlobalVoiceController({
+      getUserMedia: async () =>
+        ({ getTracks: () => [{ stop() {} }] }) as unknown as MediaStream,
+      createPeerConnection: () =>
+        ({
+          addTrack() {},
+          createDataChannel: () => ({ close() {} }),
+          createOffer: async () => ({ type: "offer", sdp: "offer" }),
+          setLocalDescription: async () => {},
+          localDescription: { type: "offer", sdp: "offer" },
+          iceGatheringState: "complete",
+          addEventListener() {},
+          removeEventListener() {},
+          setRemoteDescription: async () => {},
+          close() {},
+        }) as unknown as RTCPeerConnection,
+      createAudioElement: () =>
+        ({
+          autoplay: false,
+          play: async () => {},
+          pause() {},
+        }) as unknown as HTMLAudioElement,
+      request: async (path, body) => {
+        posted.push({ path, body });
+        return path === "/api/voice/start"
+          ? { threadId: "thr_voice", sdp: "answer" }
+          : { ok: true };
+      },
+      subscribe: (_threadId, handlers) => {
+        realtimeEvent = handlers.onEvent;
+        return () => {};
+      },
+      handleTool: () => toolResult.promise,
+    });
+
+    await controller.start({
+      product: "Treetop",
+      cwd: "/repo",
+      zenMode: { active: false },
+      projects: [],
+      sessions: [],
+    });
+    realtimeEvent?.({
+      kind: "request",
+      id: 7,
+      method: "item/tool/call",
+      params: { threadId: "thr_voice", tool: "get_context", arguments: {} },
+      seq: 8,
+    });
+    await controller.stop();
+    toolResult.resolve({ ok: true });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(posted.some((entry) => entry.path.endsWith("/7/respond"))).toBe(
+      false,
+    );
   });
 
   test("surfaces unsupported realtime availability without leaking the microphone", async () => {

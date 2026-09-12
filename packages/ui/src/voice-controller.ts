@@ -141,6 +141,7 @@ export class GlobalVoiceController {
   private audio: HTMLAudioElement | null = null;
   private unsubscribe: (() => void) | null = null;
   private generation = 0;
+  private readonly handledDeliveries = new Set<string>();
 
   constructor(deps: Partial<VoiceDependencies> = {}) {
     this.deps = { ...defaultDependencies(), ...deps };
@@ -159,6 +160,7 @@ export class GlobalVoiceController {
       return;
     }
     const generation = ++this.generation;
+    this.handledDeliveries.clear();
     this.setState({ phase: "connecting" });
     try {
       const stream = await this.deps.getUserMedia({
@@ -270,6 +272,7 @@ export class GlobalVoiceController {
       return;
     }
     if (event.method === "thread/realtime/transcript/done") {
+      if (!this.markDeliveryHandled(event)) return;
       const role: GlobalVoiceMessage["role"] =
         event.params.role === "assistant" || event.params.role === "user"
           ? event.params.role
@@ -314,11 +317,32 @@ export class GlobalVoiceController {
       event.method === "item/tool/call" &&
       event.id !== undefined
     ) {
-      void this.answerToolCall(event);
+      if (!this.markDeliveryHandled(event)) return;
+      void this.answerToolCall(event, this.generation);
     }
   }
 
-  private async answerToolCall(event: VoiceRealtimeEvent): Promise<void> {
+  private markDeliveryHandled(event: VoiceRealtimeEvent): boolean {
+    const identity =
+      event.kind === "request" && event.id !== undefined
+        ? `request:${String(event.id)}`
+        : event.seq !== undefined
+          ? `event:${event.seq}`
+          : null;
+    if (!identity) return true;
+    if (this.handledDeliveries.has(identity)) return false;
+    this.handledDeliveries.add(identity);
+    if (this.handledDeliveries.size > 2_000) {
+      const oldest = this.handledDeliveries.values().next().value;
+      if (oldest !== undefined) this.handledDeliveries.delete(oldest);
+    }
+    return true;
+  }
+
+  private async answerToolCall(
+    event: VoiceRealtimeEvent,
+    generation: number,
+  ): Promise<void> {
     const tool = typeof event.params.tool === "string" ? event.params.tool : "";
     if (!tool || event.id === undefined) return;
     let result: Record<string, unknown>;
@@ -346,6 +370,12 @@ export class GlobalVoiceController {
         ],
         success: false,
       };
+    }
+    if (
+      generation !== this.generation ||
+      this.threadId !== event.params.threadId
+    ) {
+      return;
     }
     try {
       await this.deps.request(
