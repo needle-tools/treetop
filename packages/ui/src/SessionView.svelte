@@ -391,6 +391,7 @@
       | "media"
       | "ide_context"
       | "system_reminder"
+      | "context_update"
       | "command"
       | "goal"
       | "marker"
@@ -406,6 +407,13 @@
     goalStatus?: string;
     goalTokensUsed?: number;
     goalTimeUsedSeconds?: number;
+    contextCategory?: string;
+    contextCharacters?: number;
+    contextRole?: "developer" | "system";
+    contextPhase?: "set" | "changed" | "reapplied";
+    contextPreviousCharacters?: number;
+    contextDeltaCharacters?: number;
+    contextDiff?: string;
     goalUpdatedAt?: number;
     goalThreadId?: string;
     tagName?: string;

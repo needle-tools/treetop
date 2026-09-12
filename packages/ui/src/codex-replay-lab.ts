@@ -15,16 +15,13 @@ import {
   type VisualTranscriptItem,
 } from "./last-user-message";
 import {
-  canonicalCodexToolName,
-  codexSubagentActivityFields,
-  codexPatchApplyResultText,
+  createCodexTranscriptNormalizer,
   contextCompactionDetailsFromMetadata,
   contextTokenSnapshotFromUsageRecord,
   estimateModelTokenCost,
-  parseCodexImageWrapper,
-  parseCodexToolScriptInvocations,
-  visualFileEditSummaryForBlock,
+  isCodexTranscriptRecord,
   type ModelsDevPricingSnapshot,
+  type CodexTranscriptRecordResult,
   type SessionTokenUsageSegment,
   type VisualFileEdit,
 } from "@treetop/nicifier";
@@ -1077,7 +1074,6 @@ export async function parseCodexReplayBlobAsync(
 ): Promise<ParsedCodexReplay> {
   const warnings: string[] = [];
   const steps: ReplayStep[] = [];
-  const toolNames = new Map<string, string>();
   const usageContext: CodexReplayUsageContext = {};
   const decoder = new TextDecoder();
   const reader = blob.stream().getReader();
@@ -1157,7 +1153,6 @@ export async function parseCodexReplayBlobAsync(
     if (!mode) return;
     if (mode === "transcript") {
       const row = objectRecord(record);
-      const payload = objectRecord(row?.payload);
       if (agent === "claude") {
         id ??= objectString(row, "sessionId");
         cwd ??= objectString(row, "cwd");
@@ -1166,21 +1161,14 @@ export async function parseCodexReplayBlobAsync(
         if (step) retainStep(step);
         return;
       }
-      if (objectString(row, "type") === "session_meta") {
-        id ??= objectString(payload, "id");
-        cwd ??= objectString(payload, "cwd");
-        startedAt ??=
-          objectString(payload, "timestamp") ?? objectString(row, "timestamp");
-        return;
-      }
-      const parsedSteps = codexTranscriptStepFromRow(
+      const parsedSteps = codexReplayStepsFromNormalizedRecord(
         row,
-        payload,
         lineCount,
-        toolNames,
         usageContext,
-        warnings,
       );
+      id ??= usageContext.sessionId;
+      cwd ??= usageContext.cwd;
+      startedAt ??= usageContext.startedAt;
       for (const step of replaySteps(parsedSteps)) retainStep(step);
       return;
     }
@@ -1213,16 +1201,15 @@ export async function parseCodexReplayBlobAsync(
       lineCount += 1;
       warnings.push(`Skipped line ${lineCount}: exceeds 16 MiB safety limit`);
       if (
-        mode === "transcript" &&
-        /"type"\s*:\s*"(?:compacted|compact_context)"/.test(oversizedLinePrefix)
+        mode === "transcript" && agent === "codex"
       ) {
-        retainStep(
-          transcriptMessageStep(lineCount, undefined, "Context compacted", {
-            id: `codex-transcript-marker-${lineCount}`,
-            role: "system",
-            blocks: [{ type: "marker", text: "Context compacted" }],
-          }),
-        );
+        const normalized = codexReplayNormalizer(usageContext)
+          .ingestTruncatedPrefix(oversizedLinePrefix);
+        for (const step of codexReplayStepsFromNormalizedResult(
+          normalized,
+          lineCount,
+          usageContext,
+        )) retainStep(step);
       }
     } else {
       ingestLine(pendingLineParts.join(""));
@@ -1851,246 +1838,83 @@ function codexTranscriptFromRecords(
 ): ParsedCodexReplay | null {
   if (!records.some(isCodexTranscriptRecord)) return null;
   const steps: ReplayStep[] = [];
-  const toolNames = new Map<string, string>();
   const usageContext: CodexReplayUsageContext = {};
   let id: string | undefined;
+  let cwd: string | undefined;
   let startedAt: string | undefined;
   for (const [index, record] of records.entries()) {
     const row = objectRecord(record);
-    const payload = objectRecord(row?.payload);
-    const type = objectString(row, "type");
-    if (type === "session_meta") {
-      id ??= objectString(payload, "id");
-      startedAt ??=
-        objectString(payload, "timestamp") ?? objectString(row, "timestamp");
-      continue;
-    }
-    const parsedSteps = codexTranscriptStepFromRow(
+    const parsedSteps = codexReplayStepsFromNormalizedRecord(
       row,
-      payload,
       index + 1,
-      toolNames,
       usageContext,
-      warnings,
     );
+    id ??= usageContext.sessionId;
+    cwd ??= usageContext.cwd;
+    startedAt ??= usageContext.startedAt;
     steps.push(...replaySteps(parsedSteps));
   }
-  return { agent: "codex", mode: "transcript", id, startedAt, steps, warnings };
+  return { agent: "codex", mode: "transcript", id, cwd, startedAt, steps, warnings };
 }
 
-function codexTranscriptStepFromRow(
+function codexReplayStepsFromNormalizedRecord(
   row: Record<string, unknown> | undefined,
-  payload: Record<string, unknown> | undefined,
   seq: number,
-  toolNames: Map<string, string>,
   usageContext: CodexReplayUsageContext,
-  warnings: string[],
 ): ReplayStep | ReplayStep[] | undefined {
-  if (!row || !payload) return undefined;
-  const rowType = objectString(row, "type");
-  const payloadType = objectString(payload, "type");
-  const timestamp =
-    objectString(row, "timestamp") ?? objectString(payload, "timestamp");
+  if (!row) return undefined;
+  const normalized = codexReplayNormalizer(usageContext).ingest(row);
+  return codexReplayStepsFromNormalizedResult(normalized, seq, usageContext);
+}
 
-  if (rowType === "turn_context") {
-    usageContext.model = objectString(payload, "model") ?? usageContext.model;
-    return undefined;
-  }
+function codexReplayNormalizer(usageContext: CodexReplayUsageContext) {
+  usageContext.normalizeTranscript ??= createCodexTranscriptNormalizer({
+    resolveInlineData: (dataUrl) => dataUrl.length <= REPLAY_INLINE_MEDIA_LIMIT
+      ? { url: dataUrl }
+      : undefined,
+  });
+  return usageContext.normalizeTranscript;
+}
 
-  if (rowType === "compacted" || payloadType === "compact_context") {
-    const block: CodexAppHistoryBlock = {
-      type: "marker",
-      text: "Context compacted",
-      ...(usageContext.latestContextTokens !== undefined
-        ? { compaction: { beforeTokens: usageContext.latestContextTokens } }
-        : {}),
-    };
-    usageContext.pendingCompactionBlock = block;
-    return transcriptMessageStep(seq, timestamp, "Context compacted", {
-      id: `codex-transcript-marker-${seq}`,
-      role: "system",
-      timestamp,
-      blocks: [block],
+function codexReplayStepsFromNormalizedResult(
+  normalized: CodexTranscriptRecordResult,
+  seq: number,
+  usageContext: CodexReplayUsageContext,
+): ReplayStep[] {
+  if (normalized.recognized) {
+    usageContext.sessionId ??= normalized.metadata?.sessionId;
+    usageContext.cwd ??= normalized.metadata?.cwd;
+    usageContext.startedAt ??= normalized.metadata?.timestamp;
+    return normalized.messages.map((message, messageIndex) => {
+      const first = message.blocks[0];
+      const label = first?.type === "tool_use"
+        ? first.toolName ?? "Tool call"
+        : first?.type === "tool_result"
+          ? `${first.toolName ?? "Tool"} result`
+          : first?.type === "marker"
+            ? first.text ?? "Marker"
+            : first?.type === "context_update"
+              ? `${first.contextRole === "system" ? "System" : "Developer"} context ${first.contextPhase ?? "changed"}`
+              : `${message.role[0]?.toUpperCase()}${message.role.slice(1)} message`;
+      const idKind = first?.type === "tool_use"
+        ? "tool"
+        : first?.type === "tool_result"
+          ? "result"
+          : first?.type === "marker"
+            ? "marker"
+            : first?.type === "context_update"
+              ? "context"
+              : first?.type === "subagent"
+                ? "subagent"
+                : "message";
+      return transcriptMessageStep(seq, message.timestamp, label, {
+        ...message,
+        id: `codex-transcript-${idKind}-${seq}${messageIndex ? `-${messageIndex + 1}` : ""}`,
+        blocks: message.blocks,
+      });
     });
   }
-
-  if (rowType === "event_msg") {
-    if (payloadType === "item_completed") {
-      const activity = codexSubagentActivityFields(payload.item);
-      if (activity) {
-        return transcriptMessageStep(seq, timestamp, "Subagent activity", {
-          id: `codex-transcript-subagent-${seq}`,
-          role: "assistant",
-          timestamp,
-          blocks: [{ type: "subagent", ...activity }],
-        });
-      }
-    }
-    if (payloadType === "patch_apply_end") {
-      const toolUseId = objectString(payload, "call_id");
-      const patchSteps: ReplayStep[] = [];
-      if (payload.changes && typeof payload.changes === "object") {
-        patchSteps.push(
-          transcriptMessageStep(seq, timestamp, "file change", {
-            id: `codex-transcript-patch-${seq}`,
-            role: "assistant",
-            timestamp,
-            blocks: [
-              {
-                type: "tool_use",
-                toolName: "file change",
-                toolUseId,
-                toolInput: { changes: payload.changes },
-              },
-            ],
-          }),
-        );
-      }
-      patchSteps.push(
-        transcriptMessageStep(seq, timestamp, "Patch result", {
-          id: `codex-transcript-patch-result-${seq}`,
-          role: "tool",
-          timestamp,
-          blocks: [
-            {
-              type: "tool_result",
-              toolName: toolNames.get(toolUseId ?? "") ?? "apply_patch",
-              toolUseId,
-              text: codexPatchApplyResultText(payload),
-            },
-          ],
-        }),
-      );
-      return patchSteps;
-    }
-    const tokenUsage = codexReplayTokenUsageFromPayload(payload, usageContext);
-    if (tokenUsage) {
-      return transcriptMessageStep(seq, timestamp, "Token usage", {
-        id: `codex-transcript-token-usage-${seq}`,
-        role: "assistant",
-        timestamp,
-        model: usageContext.model,
-        tokensUsed: tokenUsage.output,
-        tokenUsage,
-        blocks: [],
-      });
-    }
-    const marker = codexTranscriptEventMarker(payload);
-    if (marker) {
-      return transcriptMessageStep(seq, timestamp, marker, {
-        id: `codex-transcript-marker-${seq}`,
-        role: "system",
-        timestamp,
-        blocks: [{ type: "marker", text: marker }],
-      });
-    }
-    return undefined;
-  }
-
-  if (rowType !== "response_item") return undefined;
-  if (payloadType === "message") {
-    const rawRole = objectString(payload, "role");
-    const role = transcriptRole(rawRole);
-    let blocks = transcriptContentBlocks(payload.content);
-    if (!role) {
-      return transcriptContextStep(seq, timestamp, rawRole, blocks);
-    }
-    if (role === "user") {
-      const originalBlocks = blocks;
-      blocks = transcriptVisibleUserBlocks(blocks);
-      if (!blocks.length) {
-        return transcriptContextStep(seq, timestamp, "user", originalBlocks);
-      }
-    }
-    if (!blocks.length) return undefined;
-    return transcriptMessageStep(
-      seq,
-      timestamp,
-      `${capitalize(role)} message`,
-      {
-        id: `codex-transcript-message-${seq}`,
-        role,
-        timestamp,
-        blocks,
-      },
-    );
-  }
-
-  if (payloadType === "function_call" || payloadType === "custom_tool_call") {
-    const toolUseId =
-      objectString(payload, "call_id") ??
-      objectString(payload, "id") ??
-      `tool-${seq}`;
-    const toolName =
-      objectString(payload, "name") ??
-      objectString(payload, "tool_name") ??
-      payloadType;
-    const invocation = transcriptToolInvocation(
-      toolName,
-      payload,
-      warnings,
-      seq,
-    );
-    toolNames.set(toolUseId, invocation.toolName);
-    return transcriptMessageStep(seq, timestamp, invocation.toolName, {
-      id: `codex-transcript-tool-${seq}`,
-      role: "assistant",
-      timestamp,
-      blocks: [
-        {
-          type: "tool_use",
-          toolName: invocation.toolName,
-          toolUseId,
-          toolInput: invocation.toolInput,
-          ...(invocation.toolInvocations
-            ? { toolInvocations: invocation.toolInvocations }
-            : {}),
-          ...(invocation.observedFileEdits
-            ? { observedFileEdits: invocation.observedFileEdits }
-            : {}),
-        },
-      ],
-    });
-  }
-
-  if (
-    payloadType === "function_call_output" ||
-    payloadType === "custom_tool_call_output"
-  ) {
-    const toolUseId =
-      objectString(payload, "call_id") ??
-      objectString(payload, "id") ??
-      `tool-${seq}`;
-    const toolName = toolNames.get(toolUseId) ?? objectString(payload, "name");
-    const result = transcriptToolOutputBlocks(payload);
-    return transcriptMessageStep(
-      seq,
-      timestamp,
-      `${toolName ?? "Tool"} result`,
-      {
-        id: `codex-transcript-result-${seq}`,
-        role: "tool",
-        timestamp,
-        blocks: [
-          {
-            type: "tool_result",
-            toolName,
-            toolUseId,
-            text: result.text,
-          },
-          ...result.mediaBlocks,
-        ],
-      },
-    );
-  }
-
-  if (payloadType === "reasoning") {
-    // The production transcript parser intentionally omits encrypted/summary
-    // reasoning records. Replay must not reinterpret them into extra steps.
-    return undefined;
-  }
-
-  return undefined;
+  return [];
 }
 
 function replaySteps(
@@ -2098,85 +1922,6 @@ function replaySteps(
 ): ReplayStep[] {
   if (!value) return [];
   return Array.isArray(value) ? value : [value];
-}
-
-function transcriptContextStep(
-  seq: number,
-  timestamp: string | undefined,
-  role: string | undefined,
-  blocks: CodexAppHistoryBlock[],
-): ReplayStep | undefined {
-  const text = blocks
-    .map((block) => (block.type === "text" ? block.text?.trim() : undefined))
-    .filter((part): part is string => !!part)
-    .join("\n\n")
-    .trim();
-  if (!text) return undefined;
-  const label = transcriptContextLabel(role);
-  return transcriptMessageStep(seq, timestamp, label, {
-    id: `codex-transcript-context-${seq}`,
-    role: "system",
-    timestamp,
-    blocks: [
-      {
-        type: "system_reminder",
-        tagName: label,
-        text,
-      },
-    ],
-  });
-}
-
-function transcriptContextLabel(role: string | undefined): string {
-  if (role === "developer") return "Developer context";
-  if (role === "system") return "System context";
-  if (role === "user") return "Injected user context";
-  return role ? `${capitalize(role)} context` : "Injected context";
-}
-
-function transcriptToolInvocation(
-  toolName: string,
-  payload: Record<string, unknown>,
-  warnings: string[],
-  seq: number,
-): {
-  toolName: string;
-  toolInput: unknown;
-  toolInvocations?: readonly {
-    toolName: string;
-    toolInput: unknown;
-    observedFileEdits?: readonly VisualFileEdit[];
-  }[];
-  observedFileEdits?: readonly VisualFileEdit[];
-} {
-  const canonicalToolName = canonicalCodexToolName(toolName);
-  const parsed = transcriptToolInput(payload, warnings, seq);
-  const toolInvocations = canonicalToolName === "exec_command" && typeof parsed.input === "string"
-    ? parseCodexToolScriptInvocations(parsed.input)
-    : [];
-  const fullInvocations = toolInvocations.length
-    ? toolInvocations
-    : [{ toolName: canonicalToolName, toolInput: parsed.input }];
-  const clippedInvocations = fullInvocations.map((invocation) => ({
-    ...invocation,
-    toolInput: clipReplayToolInput(invocation.toolInput),
-    ...(parsed.clipped
-      ? {
-          observedFileEdits:
-            visualFileEditSummaryForBlock({ type: "tool_use", ...invocation })?.files
-              .map((file) => ({ ...file, raw: undefined })) ?? [],
-        }
-      : {}),
-  }));
-  const observedFileEdits = clippedInvocations.flatMap(
-    (invocation) => invocation.observedFileEdits ?? [],
-  );
-  const primary = clippedInvocations[0]!;
-  return {
-    ...primary,
-    ...(clippedInvocations.length > 1 ? { toolInvocations: clippedInvocations } : {}),
-    ...(observedFileEdits.length > 0 ? { observedFileEdits } : {}),
-  };
 }
 
 function transcriptMessageStep(
@@ -2188,221 +1933,9 @@ function transcriptMessageStep(
   return { kind: "message", seq, at, label, message };
 }
 
-function transcriptToolInput(
-  payload: Record<string, unknown>,
-  _warnings: string[],
-  _seq: number,
-): { input: unknown; clipped: boolean } {
-  const raw =
-    objectString(payload, "arguments") ??
-    objectString(payload, "input") ??
-    objectString(payload, "content");
-  if (!raw) return { input: {}, clipped: false };
-  try {
-    return { input: JSON.parse(raw), clipped: raw.length > REPLAY_TEXT_LIMIT };
-  } catch {
-    return { input: raw, clipped: raw.length > REPLAY_TEXT_LIMIT };
-  }
-}
-
-function clipReplayToolInput(input: unknown): unknown {
-  if (typeof input === "string") return clipReplayText(input);
-  if (!input || typeof input !== "object" || Array.isArray(input)) return input;
-  const clipped = { ...(input as Record<string, unknown>) };
-  for (const key of ["cmd", "command", "patch", "input", "content"]) {
-    if (typeof clipped[key] === "string") clipped[key] = clipReplayText(clipped[key]);
-  }
-  return clipped;
-}
-
-function transcriptToolOutputBlocks(payload: Record<string, unknown>): {
-  text: string;
-  mediaBlocks: CodexAppHistoryBlock[];
-} {
-  for (const key of ["output", "content", "text", "result"]) {
-    const value = payload[key];
-    if (typeof value === "string") {
-      return { text: clipReplayText(value), mediaBlocks: [] };
-    }
-    if (Array.isArray(value)) return transcriptOutputArrayBlocks(value);
-  }
-  return { text: JSON.stringify(payload), mediaBlocks: [] };
-}
-
-function transcriptOutputArrayBlocks(items: unknown[]): {
-  text: string;
-  mediaBlocks: CodexAppHistoryBlock[];
-} {
-  const textParts: string[] = [];
-  const mediaBlocks: CodexAppHistoryBlock[] = [];
-  for (const item of items) {
-    if (typeof item === "string") {
-      if (item.trim()) textParts.push(item);
-      continue;
-    }
-    const record = objectRecord(item);
-    if (!record) continue;
-    const media = transcriptMediaBlock(record);
-    if (media) {
-      mediaBlocks.push(media);
-      continue;
-    }
-    const text =
-      objectString(record, "text") ?? objectString(record, "content");
-    if (text) textParts.push(text);
-  }
-  return { text: clipReplayText(textParts.join("\n")), mediaBlocks };
-}
-
-function transcriptContentBlocks(content: unknown): CodexAppHistoryBlock[] {
-  const items = Array.isArray(content) ? content : [content];
-  const blocks: CodexAppHistoryBlock[] = [];
-  let pendingImageWrapper:
-    | ReturnType<typeof parseCodexImageWrapper>
-    | undefined;
-  for (const item of items) {
-    if (typeof item === "string" && item.trim()) {
-      blocks.push({ type: "text", text: clipReplayText(item) });
-      continue;
-    }
-    const record = objectRecord(item);
-    if (!record) continue;
-    const type = objectString(record, "type");
-    const text =
-      objectString(record, "text") ??
-      objectString(record, "input_text") ??
-      objectString(record, "output_text");
-    if (text) {
-      const wrapper = parseCodexImageWrapper(text);
-      if (wrapper) {
-        pendingImageWrapper = wrapper;
-        continue;
-      }
-      if (text.trim() === "</image>") {
-        pendingImageWrapper = undefined;
-        continue;
-      }
-      blocks.push(
-        type === "reasoning_text"
-          ? { type: "thinking", text: clipReplayText(text) }
-          : { type: "text", text: clipReplayText(text) },
-      );
-    }
-    const media = transcriptMediaBlock(record);
-    if (media) {
-      if (pendingImageWrapper) {
-        media.path = pendingImageWrapper.path;
-        media.title = pendingImageWrapper.label;
-        media.alt = pendingImageWrapper.label;
-        pendingImageWrapper = undefined;
-      }
-      blocks.push(media);
-    }
-  }
-  return blocks;
-}
-
-function transcriptMediaBlock(
-  record: Record<string, unknown>,
-): CodexAppHistoryBlock | undefined {
-  const path =
-    objectString(record, "path") ??
-    objectString(record, "filePath") ??
-    objectString(record, "imagePath");
-  const imageUrlValue = record.image_url ?? record.imageUrl;
-  const imageUrl =
-    typeof imageUrlValue === "string"
-      ? imageUrlValue
-      : objectString(objectRecord(imageUrlValue), "url");
-  const url = objectString(record, "url") ?? imageUrl;
-  if (
-    !path &&
-    url?.startsWith("data:") &&
-    url.length > REPLAY_INLINE_MEDIA_LIMIT
-  ) {
-    return undefined;
-  }
-  if (!path && !url) return undefined;
-  return {
-    type: "media",
-    mediaKind: "image",
-    path,
-    url,
-    title: objectString(record, "name") ?? objectString(record, "title"),
-    mimeType:
-      objectString(record, "mimeType") ?? objectString(record, "mime_type"),
-  };
-}
-
-function transcriptVisibleUserBlocks(
-  blocks: CodexAppHistoryBlock[],
-): CodexAppHistoryBlock[] {
-  const visible: CodexAppHistoryBlock[] = [];
-  for (const block of blocks) {
-    if (block.type !== "text" || !block.text) {
-      visible.push(block);
-      continue;
-    }
-    const text = codexVisibleUserText(block.text);
-    if (text) visible.push({ ...block, text });
-  }
-  return visible;
-}
-
 function clipReplayText(text: string): string {
   if (text.length <= REPLAY_TEXT_LIMIT) return text;
   return `${text.slice(0, REPLAY_TEXT_LIMIT)}${REPLAY_TEXT_CLIP_SUFFIX}`;
-}
-
-function transcriptRole(
-  role: string | undefined,
-): CodexAppHistoryMessage["role"] | undefined {
-  if (role === "user" || role === "assistant" || role === "tool") {
-    return role;
-  }
-  return undefined;
-}
-
-function codexVisibleUserText(text: string): string {
-  let visible = text;
-  visible = visible.replace(
-    /<goal_context\b[^>]*>[\s\S]*?<\/goal_context>/g,
-    "",
-  );
-  visible = visible.replace(
-    /<environment_context>[\s\S]*?<\/environment_context>/g,
-    "",
-  );
-  visible = visible.replace(/<filesystem>[\s\S]*?<\/filesystem>/g, "");
-  visible = visible.replace(
-    /<codex_internal_context\b[^>]*>[\s\S]*?<\/codex_internal_context>/g,
-    "",
-  );
-  const trimmed = visible.trim();
-  if (/^#\s+(AGENTS|CLAUDE)\.md instructions\b/i.test(trimmed)) return "";
-  if (/^#\s+(Instructions|Context|System)\b/i.test(trimmed)) return "";
-  if (/^<skills_instructions>/i.test(trimmed)) return "";
-  if (/^<permissions instructions>/i.test(trimmed)) return "";
-  return trimmed;
-}
-
-function codexTranscriptEventMarker(
-  payload: Record<string, unknown>,
-): string | undefined {
-  switch (payload.type) {
-    case "task_started":
-      return "[Task started]";
-    case "task_complete":
-      return "[Task complete]";
-    case "context_compacted":
-      return "[Context compacted]";
-    case "turn_aborted": {
-      const reason = objectString(payload, "reason");
-      return reason ? `[Turn aborted: ${reason}]` : "[Turn aborted]";
-    }
-    default:
-      return undefined;
-  }
 }
 
 interface CodexReplayUsage {
@@ -2419,6 +1952,10 @@ interface CodexReplayUsageContext {
   latestContextTokens?: number;
   pendingCompactionBlock?: CodexAppHistoryBlock;
   model?: string;
+  normalizeTranscript?: ReturnType<typeof createCodexTranscriptNormalizer>;
+  sessionId?: string;
+  cwd?: string;
+  startedAt?: string;
 }
 
 function codexReplayTokenUsageFromPayload(
@@ -2528,19 +2065,6 @@ function finiteNonNegativeNumber(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value)
     ? Math.max(0, value)
     : undefined;
-}
-
-function isCodexTranscriptRecord(value: unknown): boolean {
-  const record = objectRecord(value);
-  if (!record) return false;
-  const type = objectString(record, "type");
-  return (
-    type === "session_meta" ||
-    type === "response_item" ||
-    type === "event_msg" ||
-    type === "turn_context" ||
-    type === "compacted"
-  );
 }
 
 function isClaudeTranscriptRecord(value: unknown): boolean {

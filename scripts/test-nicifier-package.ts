@@ -59,7 +59,7 @@ try {
     }),
   );
   const runtimeFixture = `
-import { estimateSessionTokenCost, modelPricingAt, modelsDevPricingSnapshotFrom, nicifyCommand } from "@treetop/nicifier";
+import { createCodexTranscriptNormalizer, estimateSessionTokenCost, isCodexTranscriptRecord, modelPricingAt, modelsDevPricingSnapshotFrom, nicifyCommand } from "@treetop/nicifier";
 const nested = nicifyCommand(\`ssh host 'docker exec app sh -lc "npm view pkg version && cargo check"'\`);
 if (nested.text !== "Inspect npm package pkg · Run Cargo check" || !nested.fullyNicified) throw new Error("nested nicification failed");
 const partial = nicifyCommand("git status --short && frobnicate --all");
@@ -69,12 +69,16 @@ const pricing = modelPricingAt("gpt-package-test", "2026-09-06T10:00:01.000Z", {
 if (pricing?.rates.output !== 12) throw new Error("packed models.dev pricing failed");
 const sessionCost = estimateSessionTokenCost([{ model: "gpt-package-test", at: "2026-09-06T10:00:01.000Z", usage: { input: 1_000_000, cachedInput: 0, cacheWriteInput: 0, output: 1_000_000, reasoningOutput: 0, total: 2_000_000 } }], undefined, { modelsDev });
 if (sessionCost.totalUsd !== 14) throw new Error("packed session pricing failed");
-console.log(JSON.stringify({ nested: nested.text, partial: partial.unnicifiedParts, pricing: pricing.rates, sessionCost: sessionCost.totalUsd }));
+const transcriptRecord = { type: "response_item", payload: { type: "message", role: "assistant", content: [{ type: "output_text", text: "packed transcript" }] } };
+if (!isCodexTranscriptRecord(transcriptRecord)) throw new Error("packed transcript detection failed");
+const transcript = createCodexTranscriptNormalizer().ingest(transcriptRecord);
+if (transcript.messages[0]?.blocks[0]?.text !== "packed transcript") throw new Error("packed transcript normalization failed");
+console.log(JSON.stringify({ nested: nested.text, partial: partial.unnicifiedParts, pricing: pricing.rates, sessionCost: sessionCost.totalUsd, transcript: transcript.messages[0].blocks[0].text }));
 `.trim();
   await Bun.write(join(consumerDir, "consumer.mjs"), runtimeFixture);
   await Bun.write(
     join(consumerDir, "consumer.ts"),
-    `import { estimateSessionTokenCost, nicifyCommand, type ModelsDevPricingSnapshot, type NicifiedCommand, type SessionTokenUsageSegment } from "@treetop/nicifier";\nconst result: NicifiedCommand = nicifyCommand("python3 -m pytest tests");\nconst snapshot: ModelsDevPricingSnapshot | undefined = undefined;\nconst segment: SessionTokenUsageSegment | undefined = undefined;\nconst complete: boolean = result.fullyNicified;\nconsole.log(result.text, complete, snapshot, segment, estimateSessionTokenCost([]));\n`,
+    `import { createCodexTranscriptNormalizer, estimateSessionTokenCost, nicifyCommand, type CodexTranscriptRecordResult, type ModelsDevPricingSnapshot, type NicifiedCommand, type SessionTokenUsageSegment } from "@treetop/nicifier";\nconst result: NicifiedCommand = nicifyCommand("python3 -m pytest tests");\nconst snapshot: ModelsDevPricingSnapshot | undefined = undefined;\nconst segment: SessionTokenUsageSegment | undefined = undefined;\nconst transcript: CodexTranscriptRecordResult = createCodexTranscriptNormalizer().ingest({ type: "compacted" });\nconst complete: boolean = result.fullyNicified;\nconsole.log(result.text, complete, snapshot, segment, transcript, estimateSessionTokenCost([]));\n`,
   );
   await Bun.write(
     join(consumerDir, "tsconfig.json"),

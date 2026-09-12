@@ -131,6 +131,7 @@
       | "media"
       | "ide_context"
       | "system_reminder"
+      | "context_update"
       | "command"
       | "goal"
       | "marker"
@@ -146,6 +147,13 @@
     explanation?: string;
     planItems?: VisualPlanItem[];
     tagName?: string;
+    contextCategory?: string;
+    contextCharacters?: number;
+    contextRole?: "developer" | "system";
+    contextPhase?: "set" | "changed" | "reapplied";
+    contextPreviousCharacters?: number;
+    contextDeltaCharacters?: number;
+    contextDiff?: string;
     mediaKind?: "image" | "file" | "artifact";
     mimeType?: string;
     path?: string;
@@ -1059,10 +1067,33 @@
     }
     if (first.type === "media") return mediaLabel(first);
     if (first.type === "ide_context") return first.tagName ?? "IDE context";
-    if (first.type === "system_reminder") return "System reminder";
+    if (first.type === "context_update") return contextUpdateLabel(first);
+    if (first.type === "system_reminder") return first.tagName ?? "System reminder";
     if (first.type === "command") return first.tagName ?? "Command";
     const preview = workEntryBlocksText(entry.blocks);
     return preview || roleLabel(entry.message.role, entry.message.author);
+  }
+
+  function contextUpdateLabel(block: NormalizedBlock): string {
+    const role = block.contextRole === "system" ? "System" : "Developer";
+    return `${role} context ${block.contextPhase ?? "changed"}`;
+  }
+
+  function contextUpdateMeta(block: NormalizedBlock): string {
+    const current = block.contextCharacters;
+    const previous = block.contextPreviousCharacters;
+    const delta = block.contextDeltaCharacters;
+    const size = typeof current !== "number"
+      ? undefined
+      : typeof previous === "number" && block.contextPhase === "changed"
+        ? `${previous.toLocaleString()} → ${current.toLocaleString()} chars${typeof delta === "number" ? ` (${delta >= 0 ? "+" : ""}${delta.toLocaleString()})` : ""}`
+        : `${current.toLocaleString()} chars`;
+    return [
+      block.contextCategory,
+      size,
+    ]
+      .filter(Boolean)
+      .join(" · ");
   }
 
   function thinkingDisplay(text: string | undefined): {
@@ -2380,6 +2411,40 @@
   {/if}
 {/snippet}
 
+{#snippet renderContextUpdate(
+  block: NormalizedBlock,
+  placement: "message" | "work",
+)}
+  <details
+    class="context-update"
+    class:block={placement === "message"}
+    class:sys-reminder={placement === "message"}
+    class:work-step-detail={placement === "work"}
+  >
+    <summary>
+      <span class="context-update-heading">
+        <span class="tag-label">{contextUpdateLabel(block)}</span>
+        <span class="context-update-meta">{contextUpdateMeta(block)}</span>
+      </span>
+    </summary>
+    {#if block.contextPhase === "changed" && block.contextDiff}
+      <div class="context-update-diff">
+        <Diff
+          text={block.contextDiff}
+          label={block.contextCategory ?? "Context change"}
+          copyText={block.contextDiff}
+          copyable
+          compact
+        />
+      </div>
+    {:else if block.contextPhase === "reapplied"}
+      <div class="context-update-unchanged">Content unchanged.</div>
+    {:else}
+      <pre>{block.text}</pre>
+    {/if}
+  </details>
+{/snippet}
+
 {#snippet renderMessageBlocks(
   blocks: NormalizedBlock[],
   m: NormalizedMessage,
@@ -2543,6 +2608,8 @@
         <span class="tag-label">IDE · {b.tagName ?? "context"}</span>
         <span class="tag-body">{b.text}</span>
       </div>
+    {:else if b.type === "context_update"}
+      {@render renderContextUpdate(b, "message")}
     {:else if b.type === "system_reminder"}
       <div class="block sys-reminder" title={b.tagName}>
         <span class="tag-label">system reminder</span>
@@ -2721,6 +2788,8 @@
         <span class="tag-label">IDE · {b.tagName ?? "context"}</span>
         <span class="tag-body">{b.text}</span>
       </div>
+    {:else if b.type === "context_update"}
+      {@render renderContextUpdate(b, "work")}
     {:else if b.type === "system_reminder"}
       <div class="work-step-detail">
         <span class="tag-label">system reminder</span>
@@ -5505,6 +5574,64 @@
   }
   .block.sys-reminder .tag-label {
     color: var(--chip-orange-text);
+  }
+  .context-update {
+    display: block;
+    min-width: 0;
+  }
+  .context-update > summary {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.35rem;
+    min-width: 0;
+    cursor: pointer;
+    list-style: none;
+  }
+  .context-update > summary::-webkit-details-marker {
+    display: none;
+  }
+  .context-update > summary::before {
+    content: "▸";
+    flex: 0 0 auto;
+    width: 0.7rem;
+    color: var(--text-faint);
+  }
+  .context-update[open] > summary::before {
+    content: "▾";
+  }
+  .context-update-heading {
+    display: flex;
+    flex: 1 1 auto;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 0.2rem 0.5rem;
+    min-width: 0;
+  }
+  .context-update-meta {
+    color: var(--text-faint);
+    font-variant-numeric: tabular-nums;
+    overflow-wrap: anywhere;
+  }
+  .context-update > pre {
+    max-height: 22rem;
+    margin: 0.45rem 0 0;
+    padding: 0.5rem;
+    overflow: auto;
+    border-radius: var(--radius-sm);
+    background: var(--bg-hover, #222);
+    color: var(--text-muted);
+    font: inherit;
+    font-family: ui-monospace, monospace;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+  }
+  .context-update-diff,
+  .context-update-unchanged {
+    min-width: 0;
+    margin-top: 0.45rem;
+  }
+  .context-update-unchanged {
+    color: var(--text-faint);
   }
   .block.command {
     background: rgba(22, 163, 74, 0.08);

@@ -585,7 +585,7 @@ describe("visual transcript provider flow", () => {
     });
   });
 
-  test("skips Codex protocol context when shaping visual transcript turns", () => {
+  test("shows Codex developer-context updates but keeps injected user wrappers out of turns", () => {
     const session = parseCodexJsonl(
       jsonl([
         {
@@ -673,13 +673,25 @@ describe("visual transcript provider flow", () => {
 
     const items = buildVisualTranscriptItems(session.messages);
 
-    expect(session.messages).toHaveLength(3);
-    expect(items).toHaveLength(2);
+    expect(session.messages).toHaveLength(4);
+    expect(items).toHaveLength(3);
     expect(items[0]).toMatchObject({
+      kind: "message",
+      blocks: [
+        {
+          type: "context_update",
+          contextRole: "developer",
+          contextPhase: "set",
+          contextCategory: "Permissions instructions",
+          contextCharacters: 84,
+        },
+      ],
+    });
+    expect(items[1]).toMatchObject({
       kind: "message",
       blocks: [{ type: "text", text: "Audit the print feature PR." }],
     });
-    expect(items[1]).toMatchObject({
+    expect(items[2]).toMatchObject({
       kind: "message",
       blocks: [{ type: "text", text: "I’ll inspect the local diff first." }],
     });
