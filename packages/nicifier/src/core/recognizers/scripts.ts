@@ -23,14 +23,20 @@ export function summarizeDirectScriptCommand(
     }
     if (token.startsWith("-")) continue;
     if (!looksLikeScriptPath(token)) continue;
+    const remaining = tokens.slice(index + 1);
+    const boundary = remaining.findIndex(isShellBoundaryToken);
     return {
       kind: "script-file",
       language: scriptLanguage(runtime),
       script: token,
-      args: tokens.slice(index + 1),
+      args: boundary < 0 ? [...remaining] : remaining.slice(0, boundary),
     };
   }
   return undefined;
+}
+
+function isShellBoundaryToken(token: string): boolean {
+  return /^(?:\d*(?:>|<)|[|;&])/.test(token);
 }
 
 export function scriptLanguage(runtime: string): string {

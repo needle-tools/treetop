@@ -51,6 +51,17 @@ export function summarizeSystemProbe(
       return { kind: "system-probe", action: "find-command", targets };
     }
   }
+  if (command === "get-command") {
+    const pipeIndex = tokens.indexOf("|");
+    const commandTokens = tokens.slice(1, pipeIndex >= 0 ? pipeIndex : undefined);
+    const targets = positionalTokens(
+      commandTokens,
+      new Set(["-ErrorAction", "-WarningAction"]),
+    ).flatMap((target) => target.split(",").filter(Boolean));
+    if (targets.length) {
+      return { kind: "system-probe", action: "find-command", targets };
+    }
+  }
   if (command === "command" && tokens[1] === "-v" && tokens[2]) {
     return {
       kind: "system-probe",
@@ -82,6 +93,8 @@ export function systemProbeLabel(
   }
   if (summary.action === "file-type") return `Identify file ${target}`;
   if (summary.action === "resolve-link") return `Resolve link ${target}`;
-  if (summary.action === "find-command") return `Find command ${target}`;
+  if (summary.action === "find-command") {
+    return `Find command${summary.targets.length === 1 ? "" : "s"} ${target}`;
+  }
   return `Checksum ${target}`;
 }

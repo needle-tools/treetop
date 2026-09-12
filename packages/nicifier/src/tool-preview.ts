@@ -742,10 +742,16 @@ export interface VisualToolPreviewContext {
   snapshotUidLabels?: ReadonlyMap<string, string>;
 }
 
+export interface VisualToolExecutionLayer {
+  kind: "runtime" | "container" | "shell";
+  label: string;
+}
+
 export interface NicifiedCommand {
   command: string;
   text: string;
   parts: VisualToolPreviewPart[];
+  executionLayers: VisualToolExecutionLayer[];
   launcher?: string;
   remoteHost?: string;
   env: VisualToolEnvAssignment[];
@@ -2034,6 +2040,73 @@ export function visualToolLauncherLabel(
   return normalizeLaunchedCommand(command).launcher;
 }
 
+const visualToolExecutionLayersCache = new WeakMap<
+  MessageBlock,
+  VisualToolExecutionLayer[]
+>();
+
+export function visualToolExecutionLayers(
+  block: MessageBlock | undefined,
+): VisualToolExecutionLayer[] {
+  if (!block || block.type !== "tool_use") return [];
+  const cached = visualToolExecutionLayersCache.get(block);
+  if (cached) return cached;
+  const command = commandTextFromToolInput(block.toolInput, block.toolName);
+  if (!command) return [];
+  const layers = commandExecutionLayers(command);
+  visualToolExecutionLayersCache.set(block, layers);
+  return layers;
+}
+
+function commandExecutionLayers(command: string): VisualToolExecutionLayer[] {
+  let best: VisualToolExecutionLayer[] = [];
+  const parts = splitShellCommandChain(command);
+  for (const part of parts.length > 0 ? parts : [command]) {
+    const layers = executionLayersForCommandPart(part, 0);
+    if (layers.length > best.length) best = layers;
+  }
+  return best;
+}
+
+function executionLayersForCommandPart(
+  command: string,
+  depth: number,
+): VisualToolExecutionLayer[] {
+  const normalized = normalizeLaunchedCommand(command);
+  const layers = [...normalized.layers];
+  if (depth < 8) {
+    const children = splitShellCommandChain(normalized.command);
+    if (children.length > 1) {
+      let nested: VisualToolExecutionLayer[] = [];
+      for (const child of children) {
+        const childLayers = executionLayersForCommandPart(child, depth + 1);
+        if (childLayers.length > nested.length) nested = childLayers;
+      }
+      layers.push(...nested);
+    }
+  }
+  const script = directScriptCommand(normalized.command);
+  const inline = inlineScriptFromCommand(normalized.command);
+  const finalLabel = script?.language ??
+    (inline ? inlineScriptLanguageLabel(inline.language) : undefined);
+  if (
+    finalLabel &&
+    !layers.some(
+      (layer) => layer.label === finalLabel ||
+        (finalLabel === "Shell" && layer.kind === "shell"),
+    )
+  ) {
+    layers.push({ kind: runtimeLayerKind(finalLabel), label: finalLabel });
+  }
+  return layers;
+}
+
+function runtimeLayerKind(label: string): VisualToolExecutionLayer["kind"] {
+  return label === "Shell" || /^(?:Bash|Dash|Fish|Ksh|Sh|Zsh)$/.test(label)
+    ? "shell"
+    : "runtime";
+}
+
 const visualToolRemoteHostCache = new WeakMap<MessageBlock, string | null>();
 
 export function visualToolRemoteHostLabel(
@@ -3181,6 +3254,7 @@ export function nicifyCommand(
     command,
     text,
     parts: displayedInlineScript ? textPreviewParts(text) : preview.parts,
+    executionLayers: commandExecutionLayers(command),
     launcher: preview.launcher,
     remoteHost: preview.remoteHost,
     env: preview.env,
@@ -3304,11 +3378,13 @@ function normalizeLaunchedCommand(command: string): {
   launcher?: string;
   remoteHost?: string;
   env: VisualToolEnvAssignment[];
+  layers: VisualToolExecutionLayer[];
 } {
   let current = command.trim();
   let launcher: string | undefined;
   let remoteHost: string | undefined;
   const env: VisualToolEnvAssignment[] = [];
+  const layers: VisualToolExecutionLayer[] = [];
   for (let i = 0; i < 8; i += 1) {
     current = stripOuterShellGroup(current);
     const setup = stripInlineEnvAssignments(current);
@@ -3318,19 +3394,35 @@ function normalizeLaunchedCommand(command: string): {
     }
     const tokens = shellTokens(current);
     if (tokens.length < 2)
-      return { command: current, launcher, remoteHost, env };
+      return { command: current, launcher, remoteHost, env, layers };
     const shell = shellLauncherName(tokens[0]!);
     const next = unwrappedShellPayload(tokens, shell);
     const unwrapped:
-      | { command: string; launcher?: string; remoteHost?: string }
+      | {
+          command: string;
+          launcher?: string;
+          remoteHost?: string;
+          layer?: VisualToolExecutionLayer;
+        }
       | undefined =
+      unwrappedRuntimeStdinPayload(current) ??
       next ??
       unwrappedSudoPayload(tokens) ??
       unwrappedSshPayload(tokens) ??
-      unwrappedDockerPayload(tokens);
-    if (!unwrapped) return { command: current, launcher, remoteHost, env };
+      unwrappedDockerPayload(tokens) ??
+      unwrappedWslPayload(tokens);
+    if (!unwrapped) {
+      return { command: current, launcher, remoteHost, env, layers };
+    }
     if (unwrapped.launcher) launcher = unwrapped.launcher;
     if (unwrapped.remoteHost) remoteHost = unwrapped.remoteHost;
+    if (unwrapped.layer) layers.push(unwrapped.layer);
+    else if (unwrapped.launcher) {
+      layers.push({
+        kind: "shell",
+        label: launcherDisplayLabel(unwrapped.launcher),
+      });
+    }
     current = unwrapped.command.trim();
   }
   const setup = stripInlineEnvAssignments(current);
@@ -3338,7 +3430,12 @@ function normalizeLaunchedCommand(command: string): {
     env.push(...setup.env);
     current = setup.command.trim();
   }
-  return { command: current, launcher, remoteHost, env };
+  return { command: current, launcher, remoteHost, env, layers };
+}
+
+function launcherDisplayLabel(launcher: string): string {
+  if (launcher === "pwsh" || launcher === "powershell") return "PowerShell";
+  return `${launcher[0]?.toUpperCase() ?? ""}${launcher.slice(1)}`;
 }
 
 function stripOuterShellGroup(command: string): string {
@@ -3399,6 +3496,22 @@ function unwrappedSudoPayload(
   }
   const command = tokens.slice(index).join(" ").trim();
   return command ? { command } : undefined;
+}
+
+function unwrappedRuntimeStdinPayload(command: string):
+  | { command: string; layer: VisualToolExecutionLayer }
+  | undefined {
+  const heredoc = command.match(
+    /^\s*((?:\S*[\\/])?(?:python3?|node|bun|deno|swift|ruby|perl))\b([^\r\n]*?)<<-?\s*['"]?([A-Za-z_][A-Za-z0-9_]*)['"]?[ \t]*\r?\n([\s\S]*?)\r?\n\3\s*$/,
+  );
+  if (!heredoc) return undefined;
+  const invocation = `${heredoc[1]} ${heredoc[2] ?? ""}`.trim();
+  const script = directScriptCommand(invocation);
+  if (!script) return undefined;
+  return {
+    command: heredoc[4]!.trim(),
+    layer: { kind: runtimeLayerKind(script.language), label: script.language },
+  };
 }
 
 function stripInlineEnvAssignments(command: string): {
@@ -3774,6 +3887,24 @@ function unwrappedDockerPayload(
   };
 }
 
+function unwrappedWslPayload(tokens: string[]):
+  | { command: string; layer: VisualToolExecutionLayer }
+  | undefined {
+  if (shellLauncherName(tokens[0] ?? "") !== "wsl") return undefined;
+  const separator = tokens.indexOf("--");
+  if (separator < 0 || separator >= tokens.length - 1) return undefined;
+  const distribution =
+    valueAfterFlag(tokens.slice(0, separator), "-d") ??
+    valueAfterFlag(tokens.slice(0, separator), "--distribution");
+  return {
+    command: tokens.slice(separator + 1).join(" "),
+    layer: {
+      kind: "container",
+      label: distribution ? `WSL · ${distribution}` : "WSL",
+    },
+  };
+}
+
 function dockerExecIndex(tokens: string[], command: string): number {
   if (command === "docker-compose") {
     return tokens.findIndex((token, index) => index > 0 && token === "exec");
@@ -4107,7 +4238,12 @@ function joinRemotePath(cwd: string, path: string): string {
 function lsRequestsDetails(tokens: string[]): boolean {
   return tokens
     .slice(1)
-    .some((token) => /^-[^-]*l/.test(token) || token === "--long");
+    .some(
+      (token) =>
+        /^-[^-]*[dl]/.test(token) ||
+        token === "--long" ||
+        token === "--directory",
+    );
 }
 
 function shellTokens(command: string): string[] {
@@ -4200,6 +4336,8 @@ function summarizeHeredocWrite(
 function summarizeShellCommand(
   command: string,
 ): VisualCommandSummary | undefined {
+  const conditionalBody = powerShellConditionalBody(command);
+  if (conditionalBody) return summarizeShellCommand(conditionalBody);
   const heredocWrite = summarizeHeredocWrite(command);
   if (heredocWrite) return heredocWrite;
   const portCheck = summarizePortCheck(command);
@@ -4218,7 +4356,7 @@ function summarizeShellCommand(
   if (tokens.length === 0) return undefined;
   const name =
     cleanPowerShellBoundaryToken(tokens[0]!).split("/").pop() ?? tokens[0]!;
-  const lowerName = name.toLowerCase();
+  const lowerName = shellLauncherName(name);
   const sshTunnel = summarizeSshTunnel(tokens);
   if (sshTunnel) return sshTunnel;
   const scpTransfer = summarizeScp(tokens);
@@ -4291,6 +4429,7 @@ function summarizeShellCommand(
     return summarizeLs(tokens) ?? summarizeGetChildItem(tokens);
   }
   if (lowerName === "get-psdrive") return summarizeGetPsDrive(tokens);
+  if (lowerName === "wsl") return summarizeWsl(tokens);
   if (lowerName === "get-childitem" || lowerName === "gci")
     return summarizeGetChildItem(tokens);
   if (lowerName === "get-content" || lowerName === "gc") {
@@ -4300,10 +4439,14 @@ function summarizeShellCommand(
     return summarizeCatRead(tokens);
   }
   if (name === "rg" || name === "ripgrep" || name === "grep") {
-    return summarizeSearch(tokens);
+    return summarizeFileSearch(tokens) ?? summarizeSearch(tokens);
   }
   if (name === "find") return summarizeFind(tokens);
   return undefined;
+}
+
+function powerShellConditionalBody(command: string): string | undefined {
+  return command.match(/^if\s*\([^)]*\)\s*\{\s*([\s\S]+?)\s*\}\s*$/i)?.[1];
 }
 
 function summarizeWaitFetchLoop(
@@ -4542,6 +4685,13 @@ function summarizeGit(tokens: string[]): VisualCommandSummary | undefined {
   if (subcommand === "commit") {
     return { kind: "git", action: "commit", targets: [] };
   }
+  if (subcommand === "clone") {
+    return {
+      kind: "git",
+      action: "clone",
+      targets: gitCloneArgs(tokens.slice(subcommandIndex + 1)),
+    };
+  }
   if (
     subcommand === "restore" ||
     subcommand === "checkout" ||
@@ -4580,6 +4730,29 @@ function summarizeGit(tokens: string[]): VisualCommandSummary | undefined {
     };
   }
   return undefined;
+}
+
+function gitCloneArgs(tokens: string[]): string[] {
+  const optionsWithValue = new Set([
+    "-b",
+    "--branch",
+    "-c",
+    "--config",
+    "--depth",
+    "--filter",
+    "-j",
+    "--jobs",
+    "-o",
+    "--origin",
+    "--reference",
+    "--reference-if-able",
+    "--separate-git-dir",
+    "--server-option",
+    "--template",
+    "-u",
+    "--upload-pack",
+  ]);
+  return positionalPathTokens(tokens, optionsWithValue);
 }
 
 function positionalArgs(tokens: string[], start: number): string[] {
@@ -5484,6 +5657,7 @@ function summarizeAgentBrowser(
     };
   }
   if (command === "close") return { kind: "browser", action: "close" };
+  if (command === "find") return summarizeAgentBrowserFind(args);
   if (command === "snapshot")
     return {
       kind: "browser",
@@ -5508,6 +5682,13 @@ function summarizeAgentBrowser(
       action: "click",
       target: firstPositionalArg(args),
       detail: command === "click" ? undefined : "double",
+    };
+  }
+  if (command === "hover") {
+    return {
+      kind: "browser",
+      action: "hover",
+      target: firstPositionalArg(args),
     };
   }
   if (command === "upload") {
@@ -5568,6 +5749,14 @@ function summarizeAgentBrowser(
       target: browserScrollTarget(args),
     };
   }
+  if (command === "scrollintoview") {
+    return {
+      kind: "browser",
+      action: "scroll",
+      target: firstPositionalArg(args),
+      detail: "into-view",
+    };
+  }
   if (command === "mouse" || command === "drag") {
     const subcommand = command === "mouse" ? args[0]?.toLowerCase() : "drag";
     const mouseArgs = command === "mouse" ? args.slice(1) : args;
@@ -5596,6 +5785,45 @@ function summarizeAgentBrowser(
   }
   if (command === "pages") return { kind: "browser", action: "pages" };
   if (command === "reload") return { kind: "browser", action: "reload" };
+  if (command === "tab") {
+    const detail = firstPositionalArg(args)?.toLowerCase();
+    return {
+      kind: "browser",
+      action: "tabs",
+      target: detail && detail !== "new" && detail !== "list" ? detail : undefined,
+      detail,
+    };
+  }
+  if (command === "session" && firstPositionalArg(args)?.toLowerCase() === "list") {
+    return { kind: "browser", action: "sessions" };
+  }
+  if (command === "errors") return { kind: "browser", action: "errors" };
+  if (command === "doctor") return { kind: "browser", action: "doctor" };
+  if (command === "install") return { kind: "browser", action: "install" };
+  if (command === "help") return { kind: "browser", action: "help" };
+  if (command === "viewport") {
+    return {
+      kind: "browser",
+      action: "emulate",
+      target: args.slice(0, 2).filter(Boolean).join("x"),
+    };
+  }
+  if (command === "addinitscript") {
+    return {
+      kind: "browser",
+      action: "init-script",
+      target: firstPositionalArg(args),
+    };
+  }
+  if (command === "record" || command === "trace" || command === "profiler") {
+    const detail = firstPositionalArg(args)?.toLowerCase();
+    return {
+      kind: "browser",
+      action: command === "profiler" ? "profile" : command,
+      detail,
+      target: firstPositionalArg(args.slice(1)),
+    };
+  }
   if (
     command === "eval" ||
     command === "evaluate" ||
@@ -5617,6 +5845,29 @@ function summarizeAgentBrowser(
     }
   }
   return undefined;
+}
+
+function summarizeAgentBrowserFind(
+  args: string[],
+): Extract<VisualCommandSummary, { kind: "browser" }> {
+  const locator = args[0]?.toLowerCase() ?? "element";
+  const actionIndex = args.findIndex(
+    (arg, index) => index > 0 && /^(?:click|dblclick|doubleclick)$/.test(arg),
+  );
+  const locatorArgs = args.slice(1, actionIndex < 0 ? undefined : actionIndex);
+  const name = valueAfterFlag(args, "--name");
+  const value = locator === "role"
+    ? `${locatorArgs[0] ?? "element"}${name ? ` "${name}"` : ""}`
+    : `${locator} "${locatorArgs.filter((arg) => !arg.startsWith("-")).join(" ")}"`;
+  if (actionIndex >= 0) {
+    return {
+      kind: "browser",
+      action: "click",
+      targetLabel: value,
+      detail: args[actionIndex] === "click" ? undefined : "double",
+    };
+  }
+  return { kind: "browser", action: "find", targetLabel: value };
 }
 
 function agentBrowserUploadArgs(args: string[]): {
@@ -5641,6 +5892,7 @@ function agentBrowserUploadArgs(args: string[]): {
 }
 
 const AGENT_BROWSER_OPTIONS_WITH_VALUE = new Set([
+  "--namespace",
   "--session",
   "--session-name",
   "--profile",
@@ -5655,6 +5907,10 @@ const AGENT_BROWSER_OPTIONS_WITH_VALUE = new Set([
   "--user-data-dir",
   "--cdp",
   "--cdp-url",
+  "--executable-path",
+  "--extension",
+  "--args",
+  "--init-script",
 ]);
 
 function agentBrowserTokenIndex(tokens: readonly string[]): number {
@@ -5670,6 +5926,9 @@ function agentBrowserCommand(
 ): { command: string; args: string[] } | undefined {
   const browserIndex = agentBrowserTokenIndex(tokens);
   if (browserIndex < 0) return undefined;
+  if (tokens.slice(browserIndex + 1).some((token) => token === "--help")) {
+    return { command: "help", args: [] };
+  }
   let i = browserIndex + 1;
   for (; i < tokens.length; i += 1) {
     const token = tokens[i]!;
@@ -5734,6 +5993,7 @@ function browserGetTarget(args: readonly string[]): string | undefined {
       ? firstPositionalArg(args.slice(subjectIndex + 1))
       : undefined;
   if (subject === "text" && target === "body") return "body text";
+  if (subject === "cdp-url") return "CDP URL";
   if (target) return `${target} ${subject}`;
   return subject;
 }
@@ -6003,6 +6263,12 @@ function summarizePipeSearch(
 
 function agentBrowserHelpSource(tokens: string[]): string | undefined {
   if (agentBrowserTokenIndex(tokens) < 0) return undefined;
+  const browserCommand = agentBrowserCommand(tokens);
+  if (browserCommand?.command === "skills") {
+    const getIndex = browserCommand.args.indexOf("get");
+    const skill = getIndex >= 0 ? browserCommand.args[getIndex + 1] : undefined;
+    return skill ? `agent-browser ${skill} skill` : "agent-browser skills";
+  }
   if (
     tokens.some(
       (token) =>
@@ -6258,6 +6524,47 @@ function summarizeSearch(tokens: string[]): VisualCommandSummary | undefined {
   return { kind: "search", pattern, paths };
 }
 
+function summarizeFileSearch(tokens: string[]): VisualCommandSummary | undefined {
+  if (!tokens.slice(1).includes("--files")) return undefined;
+  const patterns: string[] = [];
+  const roots: string[] = [];
+  const optionsWithValue = new Set([
+    "-g",
+    "--glob",
+    "-t",
+    "--type",
+    "-T",
+    "--type-not",
+    "--iglob",
+    "--ignore-file",
+    "--sort",
+    "--sortr",
+  ]);
+  for (let index = 1; index < tokens.length; index += 1) {
+    const token = tokens[index]!;
+    if (token === "--files" || token === "--") continue;
+    if (token === "-g" || token === "--glob") {
+      if (tokens[index + 1]) patterns.push(tokens[index + 1]!);
+      index += 1;
+      continue;
+    }
+    if (token.startsWith("--glob=")) {
+      patterns.push(token.slice("--glob=".length));
+      continue;
+    }
+    if (token.startsWith("-g") && token.length > 2) {
+      patterns.push(token.slice(2));
+      continue;
+    }
+    if (token.startsWith("-")) {
+      if (!token.includes("=") && optionsWithValue.has(token)) index += 1;
+      continue;
+    }
+    roots.push(token);
+  }
+  return { kind: "find", root: roots[0] ?? ".", patterns };
+}
+
 function summarizeFind(tokens: string[]): VisualCommandSummary | undefined {
   const root = tokens.slice(1).find((token) => !token.startsWith("-"));
   if (!root) return undefined;
@@ -6274,7 +6581,12 @@ function summarizeFind(tokens: string[]): VisualCommandSummary | undefined {
 
 function summarizeLs(tokens: string[]): VisualCommandSummary | undefined {
   if (!lsRequestsDetails(tokens)) return undefined;
-  const targets = positionalPathTokens(tokens.slice(1), new Set());
+  const targets = positionalPathTokens(tokens.slice(1), new Set()).filter(
+    (target) =>
+      !/[<>]/.test(target) &&
+      target !== "/dev/null" &&
+      target.toUpperCase() !== "NUL",
+  );
   if (targets.length === 0) {
     return { kind: "find", root: ".", patterns: [] };
   }
@@ -6290,6 +6602,34 @@ function summarizeGetPsDrive(
   const provider = powershellOptionValue(tokens, "-psprovider")?.toLowerCase();
   if (provider && provider !== "filesystem") return undefined;
   return { kind: "drive-check" };
+}
+
+function summarizeWsl(
+  tokens: string[],
+): Extract<VisualCommandSummary, { kind: "wsl" }> | undefined {
+  if (tokens.some((token) => token === "--list" || token === "-l")) {
+    return { kind: "wsl", action: "list" };
+  }
+  const installIndex = tokens.indexOf("--install");
+  if (installIndex >= 0) {
+    return {
+      kind: "wsl",
+      action: "install",
+      distribution: valueAfterFlag(tokens, "-d") ?? valueAfterFlag(tokens, "--distribution"),
+      installLocation: valueAfterFlag(tokens, "--location"),
+    };
+  }
+  const importIndex = tokens.indexOf("--import");
+  if (importIndex >= 0) {
+    return {
+      kind: "wsl",
+      action: "import",
+      distribution: tokens[importIndex + 1],
+      installLocation: tokens[importIndex + 2],
+      archive: tokens[importIndex + 3],
+    };
+  }
+  return undefined;
 }
 
 function summarizeGetChildItem(
@@ -6559,6 +6899,30 @@ function commandSummaryParts(
   }
   if (summary.kind === "drive-check") {
     return [{ kind: "text", text: "Check Windows drives" }];
+  }
+  if (summary.kind === "wsl") {
+    if (summary.action === "list") {
+      return [{ kind: "text", text: "List WSL distributions" }];
+    }
+    const action = summary.action === "install" ? "Install" : "Import";
+    return [
+      {
+        kind: "text",
+        text: `${action} WSL distribution${summary.distribution ? ` ${summary.distribution}` : ""}`,
+      },
+      ...(summary.installLocation
+        ? [
+            { kind: "text" as const, text: " to " },
+            ...interspersePathParts([summary.installLocation]),
+          ]
+        : []),
+      ...(summary.archive
+        ? [
+            { kind: "text" as const, text: " from " },
+            ...interspersePathParts([summary.archive]),
+          ]
+        : []),
+    ];
   }
   if (summary.kind === "port-check") {
     const label = summary.ports.length === 1 ? "Check port" : "Check ports";
@@ -7008,6 +7372,21 @@ function gitSummaryParts(
   if (summary.action === "commit") {
     return [{ kind: "text", text: "Commit changes" }];
   }
+  if (summary.action === "clone") {
+    const [source, destination] = summary.targets;
+    return [
+      { kind: "text", text: "Clone" },
+      ...(source
+        ? [{ kind: "text" as const, text: ` ${readableUrl(source)}` }]
+        : []),
+      ...(destination
+        ? [
+            { kind: "text" as const, text: " to " },
+            ...interspersePathParts([destination]),
+          ]
+        : []),
+    ];
+  }
   if (summary.action === "grep") {
     return [
       { kind: "text", text: "Search git files" },
@@ -7116,10 +7495,23 @@ function browserSummaryParts(
   }
   if (summary.action === "click") {
     const target = browserTargetLabel(summary, context);
+    const targetKind = summary.targetLabel ? "" : " element";
     return textPreviewParts(
-      `${summary.detail === "double" ? "Double-click" : "Click"} browser element${
+      `${summary.detail === "double" ? "Double-click" : "Click"} browser${targetKind}${
         target ? ` ${target}` : ""
       }`,
+    );
+  }
+  if (summary.action === "hover") {
+    const target = browserTargetLabel(summary, context);
+    return textPreviewParts(
+      target ? `Hover browser element ${target}` : "Hover browser element",
+    );
+  }
+  if (summary.action === "find") {
+    const target = browserTargetLabel(summary, context);
+    return textPreviewParts(
+      target ? `Find browser ${target}` : "Find browser element",
     );
   }
   if (summary.action === "upload") {
@@ -7180,7 +7572,11 @@ function browserSummaryParts(
   }
   if (summary.action === "scroll") {
     return textPreviewParts(
-      summary.target ? `Scroll browser ${summary.target}` : "Scroll browser",
+      summary.detail === "into-view" && summary.target
+        ? `Scroll browser element ${summary.target} into view`
+        : summary.target
+          ? `Scroll browser ${summary.target}`
+          : "Scroll browser",
     );
   }
   if (summary.action === "mouse") {
@@ -7220,6 +7616,53 @@ function browserSummaryParts(
   }
   if (summary.action === "pages") return textPreviewParts("List browser pages");
   if (summary.action === "reload") return textPreviewParts("Reload page");
+  if (summary.action === "tabs") {
+    if (summary.detail === "new") return textPreviewParts("Open browser tab");
+    if (summary.detail === "list") return textPreviewParts("List browser tabs");
+    return textPreviewParts(
+      summary.target
+        ? `Switch to browser tab ${summary.target}`
+        : "Switch browser tab",
+    );
+  }
+  if (summary.action === "sessions") {
+    return textPreviewParts("List browser sessions");
+  }
+  if (summary.action === "errors") {
+    return textPreviewParts("Check browser errors");
+  }
+  if (summary.action === "doctor") {
+    return textPreviewParts("Check browser setup");
+  }
+  if (summary.action === "install") return textPreviewParts("Install browser");
+  if (summary.action === "help") return textPreviewParts("Show agent-browser help");
+  if (summary.action === "init-script") {
+    return [
+      { kind: "text", text: "Load browser init script" },
+      ...(summary.target
+        ? [{ kind: "text" as const, text: " " }, ...interspersePathParts([summary.target])]
+        : []),
+    ];
+  }
+  if (
+    summary.action === "record" ||
+    summary.action === "trace" ||
+    summary.action === "profile"
+  ) {
+    const noun =
+      summary.action === "record"
+        ? "recording"
+        : summary.action === "profile"
+          ? "profiler"
+          : "trace";
+    const verb = summary.detail === "stop" ? "Stop" : "Start";
+    return [
+      { kind: "text", text: `${verb} browser ${noun}` },
+      ...(summary.target
+        ? [{ kind: "text" as const, text: " to " }, ...interspersePathParts([summary.target])]
+        : []),
+    ];
+  }
   if (summary.action === "emulate") {
     return textPreviewParts(
       summary.target ? `Emulate ${summary.target}` : "Emulate browser",
@@ -7284,6 +7727,7 @@ function prefixedPathList(
 function readableUrl(url: string): string {
   try {
     const parsed = new URL(url);
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return url;
     return `${parsed.host}${parsed.pathname}${parsed.search}`;
   } catch {
     return url;
@@ -7350,10 +7794,12 @@ function inlineScriptFromCommand(
   command: string,
 ): VisualToolInlineScript | undefined {
   const heredoc = command.match(
-    /(?:^|\s)(?:\S*[\\/])?(python3?|node|bun|deno|swift|ruby|perl)\b[\s\S]*?<<-?\s*['"]?([A-Za-z_][A-Za-z0-9_]*)['"]?(?:[ \t]*\r?\n|[ \t]+)([\s\S]*?)\r?\n\2\b/,
+    /(?:^|\s)((?:\S*[\\/])?(python3?|node|bun|deno|swift|ruby|perl))\b([^\r\n]*?)<<-?\s*['"]?([A-Za-z_][A-Za-z0-9_]*)['"]?(?:[ \t]*\r?\n|[ \t]+)([\s\S]*?)\r?\n\4\b/,
   );
   if (heredoc) {
-    return inlineScriptDisplay(heredoc[1]!, heredoc[3]!);
+    const invocation = `${heredoc[1]} ${heredoc[3] ?? ""}`.trim();
+    if (directScriptCommand(invocation)) return undefined;
+    return inlineScriptDisplay(heredoc[2]!, heredoc[5]!);
   }
 
   const tokens = shellTokens(command);

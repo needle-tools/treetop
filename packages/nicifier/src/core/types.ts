@@ -97,6 +97,7 @@ export type VisualCommandSummary =
         | "check-ignore"
         | "add"
         | "commit"
+        | "clone"
         | "restore"
         | "checkout"
         | "switch"
@@ -151,6 +152,13 @@ export type VisualCommandSummary =
       targets: string[];
     }
   | { kind: "drive-check" }
+  | {
+      kind: "wsl";
+      action: "list" | "install" | "import";
+      distribution?: string;
+      installLocation?: string;
+      archive?: string;
+    }
   | { kind: "port-check"; ports: string[] }
   | {
       kind: "ssh-tunnel";
@@ -222,7 +230,19 @@ export type VisualCommandSummary =
         | "reload"
         | "emulate"
         | "mouse"
-        | "script";
+        | "script"
+        | "tabs"
+        | "sessions"
+        | "errors"
+        | "doctor"
+        | "install"
+        | "help"
+        | "hover"
+        | "find"
+        | "init-script"
+        | "record"
+        | "trace"
+        | "profile";
       target?: string;
       targetLabel?: string;
       detail?: string;
