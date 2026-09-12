@@ -25,6 +25,7 @@
   export let diffFallback: "none" | "git" = "none";
   export let rows: readonly SparseArtifactTreeRow[] | undefined = undefined;
   export let lazyContent = false;
+  export let showActions = true;
   export let onOpenPath:
     | ((artifact: VisualWorkArtifact, event: MouseEvent) => void)
     | undefined = undefined;
@@ -66,7 +67,9 @@
               ? "write"
               : change.action === "produced"
                 ? "created"
-                : "read",
+                : change.action === "referenced"
+                  ? "referenced"
+                  : "read",
       );
     }
     return parts.join(" · ");
@@ -166,9 +169,15 @@
               {row.label}
             </button>
           {/if}
-          {@const actionSummary = sparseArtifactRowActionSummary(row)}
-          <span class="sparse-artifact-actions">
+          {#if showActions}
+            {@const actionSummary = sparseArtifactRowActionSummary(row)}
+            <span class="sparse-artifact-actions">
             {#if actionSummary.kind === "changed"}
+              {#if actionSummary.activityLabels.length > 1}
+                {#each actionSummary.activityLabels as label}
+                  <span class="sparse-artifact-action">{label}</span>
+                {/each}
+              {/if}
               {#if actionSummary.additions !== undefined}
                 <span class="sparse-artifact-action changed">
                   +{actionSummary.additions}
@@ -179,7 +188,7 @@
                   −{actionSummary.deletions}
                 </span>
               {/if}
-              {#if actionSummary.additions === undefined && actionSummary.deletions === undefined}
+              {#if actionSummary.additions === undefined && actionSummary.deletions === undefined && actionSummary.activityLabels.length <= 1}
                 <span
                   class="sparse-artifact-action"
                   class:changed={actionSummary.fallbackLabel === "+" ||
@@ -195,11 +204,22 @@
                 </span>
               {/if}
             {:else if actionSummary.kind === "range"}
+              {#if actionSummary.activityLabels.length > 1}
+                {#each actionSummary.activityLabels as label}
+                  <span class="sparse-artifact-action">{label}</span>
+                {/each}
+              {/if}
               <span class="sparse-artifact-action">{actionSummary.label}</span>
             {:else}
               {#each actionSummary.labels as label}
                 <span class="sparse-artifact-action">{label}</span>
               {/each}
+            {/if}
+            {#if actionSummary.contentLineCount !== undefined}
+              <span class="sparse-artifact-action-separator" aria-hidden="true">·</span>
+              <span class="sparse-artifact-action content-lines">
+                {actionSummary.contentLineCountEstimated ? "~" : ""}{actionSummary.contentLineCount} {actionSummary.contentLineCount === 1 ? "line" : "lines"}
+              </span>
             {/if}
             {#if actionSummary.contentTokenCount !== undefined}
               <span class="sparse-artifact-action-separator" aria-hidden="true">·</span>
@@ -214,7 +234,8 @@
                 )} tok
               </span>
             {/if}
-          </span>
+            </span>
+          {/if}
         {:else}
           <span class="sparse-artifact-name muted">{row.label}</span>
         {/if}

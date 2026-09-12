@@ -210,10 +210,12 @@ describe("buildSparseArtifactRows", () => {
     const rows = buildSparseArtifactRows(
       [
         artifact("/repo/src/app.ts:1-20", {
+          contentLineCount: 20,
           contentTokenCount: 120,
           contentTokenCountEstimated: false,
         }),
         artifact("/repo/src/app.ts:40-60", {
+          contentLineCount: 21,
           contentTokenCount: 35,
           contentTokenCountEstimated: true,
         }),
@@ -225,8 +227,35 @@ describe("buildSparseArtifactRows", () => {
     expect(file).toBeDefined();
     expect(sparseArtifactRowActionSummary(file!)).toEqual({
       kind: "range",
+      activityLabels: ["read"],
       label: "2 ranges",
+      contentLineCount: 41,
+      contentLineCountEstimated: undefined,
       contentTokenCount: 155,
+      contentTokenCountEstimated: true,
+    });
+  });
+
+  test("labels searched file content as search and keeps its measured size", () => {
+    const rows = buildSparseArtifactRows(
+      [
+        artifact("/repo/src/app.ts", {
+          previewTitle: 'Search app.ts for "render"',
+          preview: "10:render();\n24:render();",
+          contentLineCount: 2,
+          contentTokenCount: 8,
+          contentTokenCountEstimated: true,
+        }),
+      ],
+      "/repo",
+    );
+
+    const file = rows.find((row) => row.kind === "file");
+    expect(sparseArtifactRowActionSummary(file!)).toEqual({
+      kind: "action",
+      labels: ["search"],
+      contentLineCount: 2,
+      contentTokenCount: 8,
       contentTokenCountEstimated: true,
     });
   });
@@ -252,6 +281,32 @@ describe("buildSparseArtifactRows", () => {
       deletions: undefined,
       fallbackLabel: "+",
       fileLifecycle: "added",
+    });
+  });
+
+  test("keeps read, reference, and write provenance beside write statistics", () => {
+    const rows = buildSparseArtifactRows(
+      [
+        artifact("/repo/src/app.ts", {
+          action: "changed",
+          additions: 3,
+          deletions: 1,
+          changes: [
+            { action: "used", label: "app.ts", path: "/repo/src/app.ts", preview: "before", contentLineCount: 1 },
+            { action: "referenced", label: "app.ts", path: "/repo/src/app.ts" },
+            { action: "changed", label: "app.ts", path: "/repo/src/app.ts", additions: 3, deletions: 1 },
+          ],
+        }),
+      ],
+      "/repo",
+    );
+
+    expect(sparseArtifactRowActionSummary(rows.find((row) => row.kind === "file")!)).toMatchObject({
+      kind: "changed",
+      activityLabels: ["read", "referenced", "write"],
+      additions: 3,
+      deletions: 1,
+      contentLineCount: 1,
     });
   });
 

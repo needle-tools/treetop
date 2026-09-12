@@ -6740,9 +6740,6 @@
 
 <style>
   .session {
-    --session-head-height: 3.25rem;
-    --session-body-min-height: 28rem;
-    --session-body-max-height: 60vh;
     --composer-tray-max-height: min(13rem, 34vh);
     /* Relative so the LoadingOverlay (and any other absolutely
        positioned in-column callout) anchors against the column box. */

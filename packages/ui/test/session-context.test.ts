@@ -5,8 +5,47 @@ import {
   createSessionContextTimeline,
   sessionContextStateAtLine,
 } from "@treetop/nicifier";
+import { sessionContextTreeArtifacts } from "../src/session-context-source";
 
 describe("recorded session context", () => {
+  test("adapts the current context to the shared sparse tree hierarchy", () => {
+    const state = {
+      agent: "codex" as const,
+      completeness: "recorded" as const,
+      baseInstructions: "base rules",
+      turnContext: { model: "gpt-6-astra" },
+      items: [
+        {
+          id: "u1",
+          sourceLine: 12,
+          value: {
+            type: "message",
+            role: "user",
+            content: [{ type: "input_text", text: "Fix the renderer" }],
+          },
+        },
+        {
+          id: "call1",
+          sourceLine: 13,
+          value: { type: "function_call", name: "exec_command" },
+        },
+      ],
+      compactionCount: 0,
+      opaqueItemCount: 0,
+      limitations: [],
+    };
+
+    expect(sessionContextTreeArtifacts(state).map((artifact) => ({
+      path: artifact.path,
+      title: artifact.previewTitle,
+      preview: artifact.preview,
+    }))).toEqual([
+      { path: "Instructions/Base instructions", title: "Base instructions", preview: '"base rules"' },
+      { path: "Settings/Current turn", title: "Current turn settings", preview: '{\n  "model": "gpt-6-astra"\n}' },
+      { path: "Messages/User/0001 · Fix the renderer", title: "Fix the renderer · transcript line 12", preview: expect.stringContaining('"role": "user"') },
+      { path: "Tools/Calls/0002 · exec_command", title: "exec_command · transcript line 13", preview: expect.stringContaining('"function_call"') },
+    ]);
+  });
   test("normalizes Codex transcript records through one stateful shared stream", () => {
     const normalize = createCodexTranscriptNormalizer();
     expect(normalize.ingest({

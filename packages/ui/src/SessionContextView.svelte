@@ -1,8 +1,12 @@
 <script lang="ts">
   import { onDestroy } from "svelte";
   import InspectorPanelHeader from "./InspectorPanelHeader.svelte";
+  import SparseArtifactTree from "./SparseArtifactTree.svelte";
   import { apiUrl } from "./api";
-  import { parseSessionContextBlob } from "./session-context-source";
+  import {
+    parseSessionContextBlob,
+    sessionContextTreeArtifacts,
+  } from "./session-context-source";
   import {
     estimateSessionContextTokens,
     mergeSessionContextTimelines,
@@ -33,7 +37,6 @@
   let refreshTimer: ReturnType<typeof setTimeout> | undefined;
   let query = "";
   let visibleLimit = 300;
-  let expandedItem = "";
   let displayedSourceLine = sourceLine;
   let pendingSourceLine = sourceLine;
   let sourceLineTimer: ReturnType<typeof setTimeout> | undefined;
@@ -130,14 +133,6 @@
     }
   }
 
-  function pretty(value: unknown): string {
-    try {
-      return JSON.stringify(value, null, 2);
-    } catch {
-      return String(value);
-    }
-  }
-
   function pinContextLine(event: Event): void {
     pinnedLine = Number((event.currentTarget as HTMLInputElement).value);
   }
@@ -155,6 +150,9 @@
     : [];
   $: hiddenItemCount = Math.max(0, matchingItems.length - visibleLimit);
   $: visibleItems = hiddenItemCount > 0 ? matchingItems.slice(hiddenItemCount) : matchingItems;
+  $: treeArtifacts = state
+    ? sessionContextTreeArtifacts(state, visibleItems, hiddenItemCount)
+    : [];
   $: estimatedTokens = state ? estimateSessionContextTokens(state) : 0;
 
   onDestroy(() => {
@@ -190,28 +188,13 @@
         {state.completeness === "recorded" ? "Recorded request input" : "Reconstructable conversation context"}
         {#if state.compactionCount} · after {state.compactionCount} {state.compactionCount === 1 ? "compaction" : "compactions"}{/if}
       </p>
-      {#if state.baseInstructions !== undefined}
-        <details class="context-metadata"><summary>Base instructions</summary><pre>{pretty(state.baseInstructions)}</pre></details>
-      {/if}
-      {#if state.turnContext !== undefined}
-        <details class="context-metadata"><summary>Current turn settings</summary><pre>{pretty(state.turnContext)}</pre></details>
-      {/if}
       {#if state.limitations.length}
         <details class="context-limitations"><summary>What the log cannot show</summary><ul>{#each state.limitations as limitation}<li>{limitation}</li>{/each}</ul></details>
       {/if}
       {#if hiddenItemCount > 0}
         <button type="button" class="show-earlier" on:click={() => (visibleLimit += 300)}>Show {Math.min(300, hiddenItemCount)} earlier items</button>
       {/if}
-      <ol class="context-items" start={hiddenItemCount + 1}>
-        {#each visibleItems as item (`${item.sourceLine}:${item.id}`)}
-          <li>
-            <button type="button" on:click={() => (expandedItem = expandedItem === `${item.sourceLine}:${item.id}` ? "" : `${item.sourceLine}:${item.id}`)}>
-              <span>{sessionContextItemLabel(item)}</span><small>line {item.sourceLine.toLocaleString()}</small>
-            </button>
-            {#if expandedItem === `${item.sourceLine}:${item.id}`}<pre>{pretty(item.value)}</pre>{/if}
-          </li>
-        {/each}
-      </ol>
+      <SparseArtifactTree artifacts={treeArtifacts} showActions={false} lazyContent={true} />
     </div>
   {:else}
     <div class="context-state">No transcript source is available for this replay.</div>
@@ -233,11 +216,5 @@
   summary { padding: 0.45rem 0; color: var(--text-2); font-size: 0.75rem; cursor: pointer; }
   .context-limitations { color: var(--text-muted); font-size: 0.68rem; }
   .context-limitations ul { margin: 0 0 0.55rem; padding-left: 1.15rem; }
-  pre { max-height: 28rem; margin: 0.3rem 0 0.65rem; padding: 0.55rem; overflow: auto; border-radius: 0.35rem; color: var(--text-2); background: var(--surface-2); font: 0.68rem/1.45 var(--font-mono, monospace); white-space: pre-wrap; overflow-wrap: anywhere; }
   .show-earlier { width: 100%; margin: 0.45rem 0; padding: 0.4rem; border: 1px solid var(--surface-3); border-radius: 0.35rem; color: var(--text-muted); background: transparent; cursor: pointer; }
-  .context-items { margin: 0; padding-left: 2rem; }
-  .context-items li { border-bottom: 1px solid color-mix(in srgb, var(--surface-3) 70%, transparent); }
-  .context-items li > button { display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; width: 100%; padding: 0.5rem 0; border: 0; color: inherit; background: transparent; font: inherit; text-align: left; cursor: pointer; }
-  .context-items li > button span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .context-items small { color: var(--text-muted); font-size: 0.65rem; font-variant-numeric: tabular-nums; white-space: nowrap; }
 </style>

@@ -15,6 +15,7 @@ import { test, expect, describe } from "bun:test";
 import {
   resolveTermId,
   isOpenInWt,
+  isInspectorSessionSource,
   normalizeSessionForOpen,
   shellToSession,
   shellSourceToDismiss,
@@ -68,6 +69,14 @@ describe("sidebarDockRows", () => {
     expect(
       sidebarDockRows(rows, { "repo-a|wt-2": true }).map((row) => row.key),
     ).toEqual(["repo-a|wt-1", "repo-c|wt-3"]);
+  });
+});
+
+describe("isInspectorSessionSource", () => {
+  test("uses one bounded lane contract for artifact and context inspectors", () => {
+    expect(isInspectorSessionSource("__artifacts__:session")).toBe(true);
+    expect(isInspectorSessionSource("__context_view__:session|source")).toBe(true);
+    expect(isInspectorSessionSource("__history__:repo")).toBe(false);
   });
 });
 

@@ -431,7 +431,21 @@ export function sessionContextItemLabel(item: SessionContextItem): string {
   const role = text(value?.role);
   const type = text(value?.type);
   const name = text(value?.name) ?? text(value?.tool_name);
-  return [role, type, name].filter(Boolean).join(" · ") || "Context item";
+  const content = Array.isArray(value?.content) ? value.content : [];
+  const messageText = content
+    .map((part) => {
+      const entry = record(part);
+      return text(entry?.text) ?? text(entry?.input_text) ?? text(entry?.output_text);
+    })
+    .filter((part): part is string => !!part)
+    .join(" ")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (messageText) {
+    return messageText.length > 80 ? `${messageText.slice(0, 79)}…` : messageText;
+  }
+  if (name) return name;
+  return [role, type].filter(Boolean).join(" · ") || "Context item";
 }
 
 export function estimateSessionContextTokens(state: SessionContextState): number {

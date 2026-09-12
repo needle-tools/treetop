@@ -1,6 +1,10 @@
 import {
   createSessionContextTimelineBuilder,
+  sessionContextItemLabel,
+  type SessionContextItem,
+  type SessionContextState,
   type SessionContextTimeline,
+  type VisualWorkArtifact,
 } from "@treetop/nicifier";
 
 export const CONTEXT_VIEW_SOURCE_PREFIX = "__context_view__:";
@@ -46,6 +50,85 @@ export interface ParsedSessionContextSource {
   timeline: SessionContextTimeline;
   lineCount: number;
   invalidLineCount: number;
+}
+
+const contextPreviewCache = new WeakMap<object, string>();
+
+function contextPreview(value: unknown): string {
+  if (value && typeof value === "object") {
+    const cached = contextPreviewCache.get(value as object);
+    if (cached !== undefined) return cached;
+    const preview = JSON.stringify(value, null, 2);
+    contextPreviewCache.set(value as object, preview);
+    return preview;
+  }
+  return JSON.stringify(value, null, 2) ?? String(value);
+}
+
+function contextItemGroup(item: SessionContextItem): string {
+  const value = item.value && typeof item.value === "object"
+    ? item.value as Record<string, unknown>
+    : {};
+  const role = typeof value.role === "string" ? value.role : "";
+  const type = typeof value.type === "string" ? value.type : "";
+  if (type === "function_call" || type === "custom_tool_call") return "Tools/Calls";
+  if (type === "function_call_output" || type === "custom_tool_call_output") return "Tools/Results";
+  if (type.includes("reasoning")) return "Reasoning";
+  if (role) return `Messages/${role[0]!.toUpperCase()}${role.slice(1)}`;
+  return "Other";
+}
+
+function contextTreeArtifact(
+  id: string,
+  path: string,
+  title: string,
+  value: unknown,
+): VisualWorkArtifact {
+  const preview = contextPreview(value);
+  return {
+    id,
+    kind: "other",
+    action: "referenced",
+    label: path.split("/").at(-1) ?? title,
+    path,
+    previewTitle: title,
+    preview,
+  };
+}
+
+export function sessionContextTreeArtifacts(
+  state: SessionContextState,
+  items: readonly SessionContextItem[] = state.items,
+  startIndex = 0,
+): VisualWorkArtifact[] {
+  const artifacts: VisualWorkArtifact[] = [];
+  if (state.baseInstructions !== undefined) {
+    artifacts.push(contextTreeArtifact(
+      "context-base-instructions",
+      "Instructions/Base instructions",
+      "Base instructions",
+      state.baseInstructions,
+    ));
+  }
+  if (state.turnContext !== undefined) {
+    artifacts.push(contextTreeArtifact(
+      "context-turn-settings",
+      "Settings/Current turn",
+      "Current turn settings",
+      state.turnContext,
+    ));
+  }
+  items.forEach((item, index) => {
+    const label = sessionContextItemLabel(item);
+    const safeLabel = label.replaceAll("/", "∕");
+    artifacts.push(contextTreeArtifact(
+      `context-${item.sourceLine}-${item.id}`,
+      `${contextItemGroup(item)}/${String(startIndex + index + 1).padStart(4, "0")} · ${safeLabel}`,
+      `${label} · transcript line ${item.sourceLine.toLocaleString()}`,
+      item.value,
+    ));
+  });
+  return artifacts;
 }
 
 export async function parseSessionContextBlob(

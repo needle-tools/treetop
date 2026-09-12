@@ -451,8 +451,36 @@ export function cleanVisualToolResultText(
 export interface VisualToolContentPreview {
   title: string;
   body: string;
+  /** Number of captured content lines after transport metadata is removed. */
+  lineCount: number;
   /** Token count reported by the tool transport for this returned content. */
   tokenCount?: number;
+}
+
+function visualToolFileContentResultPreview(
+  toolUseBlock: MessageBlock | undefined,
+  toolResultBlock: MessageBlock | undefined,
+  acceptedIcons: ReadonlySet<string>,
+  acceptedTitle: RegExp,
+): VisualToolContentPreview | undefined {
+  if (toolResultBlock?.type !== "tool_result") return undefined;
+  const title = visualToolPreviewText(toolUseBlock);
+  const icon = visualToolIconNameForPreview(toolUseBlock, title)?.toLowerCase();
+  if (!acceptedIcons.has(icon ?? "") && !acceptedTitle.test(title)) {
+    return undefined;
+  }
+  const result = cleanVisualToolResultText(toolResultBlock.text);
+  const body = result.body.trim();
+  return body
+    ? {
+        title: title || "File content",
+        body,
+        lineCount: body.split(/\r?\n/).length,
+        ...(result.originalTokenCount === undefined
+          ? {}
+          : { tokenCount: result.originalTokenCount }),
+      }
+    : undefined;
 }
 
 /** Content returned by a read-like tool call, stripped of transport metadata.
@@ -462,20 +490,30 @@ export function visualToolReadResultPreview(
   toolUseBlock: MessageBlock | undefined,
   toolResultBlock: MessageBlock | undefined,
 ): VisualToolContentPreview | undefined {
-  if (toolResultBlock?.type !== "tool_result") return undefined;
-  const title = visualToolPreviewText(toolUseBlock);
-  const icon = visualToolIconNameForPreview(toolUseBlock, title)?.toLowerCase();
-  if (icon !== "read" && !/^read(?:\s|$)/i.test(title)) return undefined;
-  const result = cleanVisualToolResultText(toolResultBlock.text);
-  const body = result.body.trim();
-  return body
-    ? {
-        title: title || "Read output",
-        body,
-        tokenCount: result.originalTokenCount,
-      }
-    : undefined;
+  return visualToolFileContentResultPreview(
+    toolUseBlock,
+    toolResultBlock,
+    READ_CONTENT_ICONS,
+    /^read(?:\s|$)/i,
+  );
 }
+
+/** Captured file content returned by reads or searches. Unlike the read-only
+ * preview used by transcript rows, this is suitable for artifact accounting. */
+export function visualToolArtifactContentPreview(
+  toolUseBlock: MessageBlock | undefined,
+  toolResultBlock: MessageBlock | undefined,
+): VisualToolContentPreview | undefined {
+  return visualToolFileContentResultPreview(
+    toolUseBlock,
+    toolResultBlock,
+    ARTIFACT_CONTENT_ICONS,
+    /^(?:read|search)(?:\s|$)/i,
+  );
+}
+
+const READ_CONTENT_ICONS = new Set(["read"]);
+const ARTIFACT_CONTENT_ICONS = new Set(["read", "search"]);
 
 export interface VisualObservedProcessOutput {
   title: string;

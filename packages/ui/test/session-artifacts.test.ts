@@ -9,6 +9,7 @@ import {
   sessionArtifactJuiceTransition,
   sessionArtifactTurnCounts,
   sessionArtifactTurnWindow,
+  scopeSessionArtifactEvolution,
 } from "../src/session-artifacts";
 import { buildVisualTranscriptItems } from "../src/last-user-message";
 
@@ -63,6 +64,7 @@ describe("session artifact evolution", () => {
     ]);
     expect(evolution.totals).toEqual({
       reads: 2,
+      references: 0,
       partialReads: 2,
       writes: 1,
       partialWrites: 1,
@@ -71,10 +73,12 @@ describe("session artifact evolution", () => {
     });
     expect(sessionArtifactTurnCounts(evolution.turns[0]!)).toEqual({
       reads: 1,
+      references: 0,
       writes: 1,
     });
     expect(sessionArtifactTurnCounts(evolution.turns[1]!)).toEqual({
       reads: 1,
+      references: 0,
       writes: 0,
     });
 
@@ -82,6 +86,7 @@ describe("session artifact evolution", () => {
     expect(reads.turns.map((turn) => turn.turnNumber)).toEqual([1, 2]);
     expect(reads.totals).toEqual({
       reads: 2,
+      references: 0,
       partialReads: 2,
       writes: 0,
       partialWrites: 0,
@@ -94,6 +99,7 @@ describe("session artifact evolution", () => {
     expect(writes.turns.map((turn) => turn.turnNumber)).toEqual([1]);
     expect(writes.totals).toEqual({
       reads: 0,
+      references: 0,
       partialReads: 0,
       writes: 1,
       partialWrites: 1,
@@ -128,11 +134,88 @@ describe("session artifact evolution", () => {
     const evolution = createSessionArtifactEvolutionTracker().update(buildVisualTranscriptItems(messages));
     expect(evolution.totals).toEqual({
       reads: 0,
+      references: 0,
       partialReads: 0,
       writes: 3,
       partialWrites: 3,
       additions: 5,
       deletions: 2,
+    });
+  });
+
+  test("can project the current turn without rebuilding consolidated history", () => {
+    const first = { id: "first", kind: "file" as const, action: "used" as const, label: "a.ts", path: "a.ts" };
+    const second = { id: "second", kind: "file" as const, action: "changed" as const, label: "b.ts", path: "b.ts", additions: 2 };
+    const evolution = {
+      artifacts: [first, second],
+      turns: [
+        { turnNumber: 1, artifacts: [first] },
+        { turnNumber: 2, artifacts: [second] },
+      ],
+      totals: { reads: 1, references: 0, partialReads: 0, writes: 1, partialWrites: 0, additions: 2, deletions: 0 },
+    };
+
+    expect(scopeSessionArtifactEvolution(evolution, "consolidated")).toBe(evolution);
+    expect(scopeSessionArtifactEvolution(evolution, "current")).toEqual({
+      artifacts: [second],
+      turns: [evolution.turns[1]],
+      totals: { reads: 0, references: 0, partialReads: 0, writes: 1, partialWrites: 0, additions: 2, deletions: 0 },
+    });
+  });
+
+  test("filters references separately without inflating read totals", () => {
+    const messages = [
+      { role: "user", blocks: [{ type: "text", text: "Clone it" }] },
+      {
+        role: "assistant",
+        blocks: [{
+          type: "tool_use",
+          toolName: "exec_command",
+          toolInput: {
+            cmd: "git clone https://example.test/project.git /tmp/project",
+          },
+        }],
+      },
+    ];
+    const evolution = createSessionArtifactEvolutionTracker().update(
+      buildVisualTranscriptItems(messages),
+    );
+
+    expect(evolution.totals).toMatchObject({ reads: 0, references: 1 });
+    expect(filterSessionArtifactEvolution(evolution, "reads").artifacts).toEqual([]);
+    expect(filterSessionArtifactEvolution(evolution, "references").artifacts).toMatchObject([
+      { action: "referenced", path: "/tmp/project" },
+    ]);
+  });
+
+  test("does not leak read previews into the references-only projection", () => {
+    const artifact = {
+      id: "file\0src/app.ts",
+      kind: "file" as const,
+      action: "used" as const,
+      label: "app.ts",
+      path: "src/app.ts",
+      preview: "captured source",
+      previewTitle: "Read app.ts",
+      contentLineCount: 1,
+      contentTokenCount: 3,
+      changes: [
+        { action: "referenced" as const, label: "app.ts", path: "src/app.ts" },
+        { action: "used" as const, label: "app.ts", path: "src/app.ts", preview: "captured source", previewTitle: "Read app.ts", contentLineCount: 1, contentTokenCount: 3 },
+      ],
+    };
+    const evolution = {
+      artifacts: [artifact],
+      turns: [{ turnNumber: 1, artifacts: [artifact] }],
+      totals: { reads: 1, references: 1, partialReads: 0, writes: 0, partialWrites: 0, additions: 0, deletions: 0 },
+    };
+
+    expect(filterSessionArtifactEvolution(evolution, "references").artifacts[0]).toMatchObject({
+      action: "referenced",
+      preview: undefined,
+      previewTitle: undefined,
+      contentLineCount: undefined,
+      contentTokenCount: undefined,
     });
   });
 
@@ -211,7 +294,7 @@ describe("session artifact evolution", () => {
   });
 
   test("only fires artifact juice for forward read or write activity", () => {
-    const before = { reads: 4, partialReads: 2, writes: 1, partialWrites: 1, additions: 2, deletions: 1 };
+    const before = { reads: 4, references: 0, partialReads: 2, writes: 1, partialWrites: 1, additions: 2, deletions: 1 };
     expect(sessionArtifactJuiceTransition(before, { ...before, reads: 5 }, true)).toEqual({ readImpact: true, writeImpact: false });
     expect(sessionArtifactJuiceTransition(before, { ...before, writes: 2 }, true)).toEqual({ readImpact: false, writeImpact: true });
     expect(sessionArtifactJuiceTransition(before, { ...before, writes: 2 }, false)).toEqual({ readImpact: false, writeImpact: false });
@@ -229,10 +312,10 @@ describe("session artifact evolution", () => {
     const evolution = {
       artifacts: [produced],
       turns: [{ turnNumber: 1, artifacts: [produced] }],
-      totals: { reads: 0, partialReads: 0, writes: 0, partialWrites: 0, additions: 0, deletions: 0 },
+      totals: { reads: 0, references: 0, partialReads: 0, writes: 0, partialWrites: 0, additions: 0, deletions: 0 },
     };
     expect(filterSessionArtifactEvolution(evolution, "writes").artifacts).toEqual([]);
-    expect(sessionArtifactTurnCounts(evolution.turns[0]!)).toEqual({ reads: 0, writes: 0 });
+    expect(sessionArtifactTurnCounts(evolution.turns[0]!)).toEqual({ reads: 0, references: 0, writes: 0 });
   });
 
   test("reuses cached completed work while only the live tail changes", () => {
