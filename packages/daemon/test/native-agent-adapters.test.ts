@@ -18,6 +18,7 @@ import {
   codexAppServerCommand,
   realtimeVoiceStartParams,
   resolveCodexBinary,
+  voiceContextPrompt,
   type CodexAppServerProcess,
 } from "../src/codex-app-server";
 import {
@@ -171,6 +172,14 @@ describe("CodexAppServerAdapter", () => {
     });
   });
 
+  test("names the registered context tool in the initial voice prompt", () => {
+    const prompt = voiceContextPrompt({ product: "Treetop", cwd: "/repo" });
+
+    expect(prompt).toContain("Use get_context for fresh state before acting");
+    expect(prompt).not.toContain("get_treetop_context");
+    expect(prompt).toContain('"cwd":"/repo"');
+  });
+
   test("starts a Codex app-server thread and returns the session source", async () => {
     const fake = fakeCodexProcess();
     const adapter = new CodexAppServerAdapter({ spawn: () => fake.proc });
@@ -299,6 +308,14 @@ describe("CodexAppServerAdapter", () => {
       "move_note",
       "move_sticker",
     ]);
+    expect(
+      (voiceStart.params as { developerInstructions?: string })
+        .developerInstructions,
+    ).toContain("Use get_context whenever");
+    expect(
+      (voiceStart.params as { developerInstructions?: string })
+        .developerInstructions,
+    ).not.toContain("get_treetop_context");
     fake.enqueue({ id: 1, result: { thread: { id: "thr_voice" } } });
 
     await waitFor(() => fake.writes[3], "realtime start request");

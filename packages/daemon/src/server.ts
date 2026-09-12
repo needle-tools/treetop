@@ -242,6 +242,7 @@ import {
   CodexAppServerAdapter,
   classifyRealtimeVoiceError,
   resolveCodexBinary,
+  voiceContextPrompt,
 } from "./codex-app-server";
 import { createNativeAgentRegistry } from "./native-agent-adapters";
 
@@ -4465,9 +4466,7 @@ const server = Bun.serve<TermWsData, never>({
           body?.context && typeof body.context === "object"
             ? body.context
             : { product: "Treetop" };
-        const prompt =
-          "This is the initial Treetop UI snapshot. Use get_treetop_context " +
-          `for fresh state before acting:\n${JSON.stringify(context).slice(0, 30_000)}`;
+        const prompt = voiceContextPrompt(context);
         try {
           const started = await codexAgent.startRealtimeVoice({
             cwd,

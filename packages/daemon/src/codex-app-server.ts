@@ -451,6 +451,13 @@ export function realtimeVoiceStartParams(req: {
   });
 }
 
+export function voiceContextPrompt(context: unknown): string {
+  return (
+    "This is the initial Treetop UI snapshot. Use get_context for fresh state " +
+    `before acting:\n${JSON.stringify(context).slice(0, 30_000)}`
+  );
+}
+
 export class CodexAppServerAdapter implements NativeAgentAdapter {
   readonly agent = "codex" as const;
 
