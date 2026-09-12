@@ -19,6 +19,297 @@ export interface CodexAppEvent {
   seq?: number;
 }
 
+export type CodexRequestAction =
+  | "accept"
+  | "acceptForSession"
+  | "acceptAlways"
+  | "acceptWithExecpolicyAmendment"
+  | "applyNetworkPolicyAmendment"
+  | "decline"
+  | "cancel";
+
+export interface CodexRequestPresentation {
+  title: string;
+  preview: string;
+  structured: boolean;
+  riskLevel?: string;
+  description?: string;
+  details: Array<{ label: string; value: string }>;
+}
+
+const CODEX_USER_INTERACTION_REQUESTS = new Set([
+  "item/commandExecution/requestApproval",
+  "item/fileChange/requestApproval",
+  "item/tool/requestUserInput",
+  "mcpServer/elicitation/request",
+  "item/permissions/requestApproval",
+  "applyPatchApproval",
+  "execCommandApproval",
+]);
+
+export function codexRequestNeedsUserInteraction(method: string): boolean {
+  return CODEX_USER_INTERACTION_REQUESTS.has(method);
+}
+
+export function codexRequestPresentation(
+  request: CodexAppEvent,
+): CodexRequestPresentation {
+  const params = request.params ?? {};
+  if (request.method === "mcpServer/elicitation/request") {
+    const meta = codexObjectField(params, "_meta") ?? {};
+    const connector =
+      stringField(meta, "connector_name") ??
+      stringField(params, "serverName") ??
+      "MCP server";
+    const details = Array.isArray(meta.tool_params_display)
+      ? meta.tool_params_display.flatMap((value) => {
+          if (!value || typeof value !== "object") return [];
+          const item = value as Record<string, unknown>;
+          const label =
+            stringField(item, "display_name") ?? stringField(item, "name");
+          const displayValue = stringField(item, "value");
+          return label && displayValue ? [{ label, value: displayValue }] : [];
+        })
+      : [];
+    const url = stringField(params, "url");
+    if (url && !details.some((detail) => detail.value === url)) {
+      details.push({ label: "URL", value: url });
+    }
+    return {
+      title: `${connector} request`,
+      preview:
+        stringField(params, "message") ??
+        stringField(params, "title") ??
+        `${connector} is requesting permission.`,
+      structured: true,
+      ...(stringField(meta, "riskLevel")
+        ? { riskLevel: stringField(meta, "riskLevel") }
+        : {}),
+      ...(stringField(meta, "subtitle")
+        ? { description: stringField(meta, "subtitle") }
+        : stringField(params, "description")
+          ? { description: stringField(params, "description") }
+          : {}),
+      details,
+    };
+  }
+
+  const direct =
+    params.command ??
+    params.reason ??
+    params.cwd ??
+    params.grantRoot ??
+    params.itemId ??
+    params.permission;
+  let preview: string;
+  if (Array.isArray(params.commandActions) && params.commandActions.length) {
+    preview = codexRequestInputPreview(params.commandActions);
+  } else if (typeof direct === "string") {
+    preview = direct;
+  } else if (Array.isArray(direct)) {
+    preview = direct.join(" ");
+  } else {
+    try {
+      preview = JSON.stringify(params);
+    } catch {
+      preview = request.method;
+    }
+  }
+  return {
+    title: request.method.includes("commandExecution")
+      ? "Command approval"
+      : request.method.includes("fileChange")
+        ? "File-change approval"
+        : request.method.includes("permissions")
+          ? "Permission request"
+          : request.method.includes("requestUserInput")
+            ? "Input requested"
+            : "Codex request",
+    preview,
+    structured: false,
+    details: [],
+  };
+}
+
+function codexRequestInputPreview(input: unknown): string {
+  let preview: string;
+  try {
+    preview = typeof input === "string" ? input : JSON.stringify(input);
+  } catch {
+    preview = String(input);
+  }
+  preview = preview.replace(/\s+/g, " ").trim();
+  return preview.length > 200 ? `${preview.slice(0, 200)}…` : preview;
+}
+
+export function codexRequestResponseResult(
+  request: CodexAppEvent,
+  action: CodexRequestAction,
+  answers: Record<string, unknown> = {},
+): Record<string, unknown> {
+  if (request.method === "mcpServer/elicitation/request") {
+    const elicitationAction =
+      action === "acceptForSession" || action === "acceptAlways"
+        ? "accept"
+        : action;
+    const persistence =
+      action === "acceptForSession"
+        ? "session"
+        : action === "acceptAlways"
+          ? "always"
+          : undefined;
+    return {
+      action: elicitationAction,
+      content:
+        elicitationAction === "accept"
+          ? codexMcpRequestHasFormFields(request)
+            ? answers
+            : null
+          : null,
+      _meta: persistence ? { persist: persistence } : null,
+    };
+  }
+  if (
+    request.method === "execCommandApproval" ||
+    request.method === "applyPatchApproval"
+  ) {
+    return {
+      decision:
+        action === "accept"
+          ? "approved"
+          : action === "acceptForSession"
+            ? "approved_for_session"
+            : action === "decline"
+              ? { denied: { rejection: "User declined" } }
+              : "abort",
+    };
+  }
+  if (request.method === "item/permissions/requestApproval") {
+    return action === "accept" || action === "acceptForSession"
+      ? {
+          permissions: request.params.permissions ?? {},
+          scope: action === "acceptForSession" ? "session" : "turn",
+        }
+      : { permissions: {}, scope: "turn" };
+  }
+  if (request.method === "item/tool/requestUserInput") return { answers };
+  if (
+    request.method === "item/commandExecution/requestApproval" ||
+    request.method === "item/fileChange/requestApproval"
+  ) {
+    if (action === "acceptWithExecpolicyAmendment") {
+      if (request.method !== "item/commandExecution/requestApproval") {
+        throw new Error(`${request.method} does not support command policy amendments`);
+      }
+      return {
+        decision: {
+          acceptWithExecpolicyAmendment: {
+            execpolicy_amendment: codexProposedExecpolicyAmendment(request),
+          },
+        },
+      };
+    }
+    if (action === "applyNetworkPolicyAmendment") {
+      if (request.method !== "item/commandExecution/requestApproval") {
+        throw new Error(`${request.method} does not support network policy amendments`);
+      }
+      return {
+        decision: {
+          applyNetworkPolicyAmendment: codexOfferedDecisionValue(
+            request,
+            "applyNetworkPolicyAmendment",
+          ),
+        },
+      };
+    }
+    if (action === "acceptAlways") {
+      throw new Error(`${request.method} does not support permanent approval`);
+    }
+    return { decision: action };
+  }
+  throw new Error(`${request.method} is not a user-interaction request`);
+}
+
+function codexProposedExecpolicyAmendment(request: CodexAppEvent): unknown {
+  const offered = codexOfferedDecisionValue(
+    request,
+    "acceptWithExecpolicyAmendment",
+  );
+  if (offered?.proposed_execpolicy_amendment !== undefined) {
+    return offered.proposed_execpolicy_amendment;
+  }
+  return request.params.proposedExecpolicyAmendment ?? [];
+}
+
+function codexOfferedDecisionValue(
+  request: CodexAppEvent,
+  key: string,
+): Record<string, unknown> | null {
+  const available = request.params.availableDecisions;
+  if (Array.isArray(available)) {
+    for (const decision of available) {
+      if (!decision || typeof decision !== "object") continue;
+      const value = codexObjectField(decision as Record<string, unknown>, key);
+      if (value) return value;
+    }
+  }
+  return null;
+}
+
+export function codexRequestAllowsAction(
+  request: CodexAppEvent,
+  action: CodexRequestAction,
+): boolean {
+  if (request.method !== "item/commandExecution/requestApproval") {
+    return (
+      action !== "acceptWithExecpolicyAmendment" &&
+      action !== "applyNetworkPolicyAmendment"
+    );
+  }
+  const available = request.params.availableDecisions;
+  if (!Array.isArray(available) || available.length === 0) return true;
+  if (action === "acceptWithExecpolicyAmendment") {
+    return available.some(
+      (decision) =>
+        !!decision &&
+        typeof decision === "object" &&
+        "acceptWithExecpolicyAmendment" in decision,
+    );
+  }
+  if (action === "applyNetworkPolicyAmendment") {
+    return !!codexOfferedDecisionValue(request, action);
+  }
+  if (action === "acceptAlways") return false;
+  return available.includes(action);
+}
+
+function codexMcpRequestHasFormFields(request: CodexAppEvent): boolean {
+  const schema = codexObjectField(request.params, "requestedSchema");
+  const properties = schema ? codexObjectField(schema, "properties") : null;
+  return !!properties && Object.keys(properties).length > 0;
+}
+
+export function codexRequestSupportsPersistence(
+  request: CodexAppEvent,
+  persistence: "session" | "always",
+): boolean {
+  if (request.method === "mcpServer/elicitation/request") {
+    const meta = codexObjectField(request.params, "_meta");
+    const advertised = meta?.persist;
+    return Array.isArray(advertised)
+      ? advertised.includes(persistence)
+      : advertised === persistence;
+  }
+  if (persistence === "always") return false;
+  return (
+    request.method === "item/commandExecution/requestApproval" ||
+    request.method === "item/fileChange/requestApproval" ||
+    request.method === "item/permissions/requestApproval" ||
+    request.method === "execCommandApproval" ||
+    request.method === "applyPatchApproval"
+  );
+}
+
 export interface CodexLiveToolUse {
   id: string;
   toolName: string;

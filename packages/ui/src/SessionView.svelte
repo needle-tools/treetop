@@ -119,6 +119,11 @@
     codexLiveMessagesFromEvent,
     codexLiveMessagesEndTurn,
     codexLiveToolUseFromEvent,
+    codexRequestAllowsAction,
+    codexRequestPresentation,
+    codexRequestNeedsUserInteraction,
+    codexRequestResponseResult,
+    codexRequestSupportsPersistence,
     codexToolInputQuality,
     mergeCodexAppHistoryMessages,
     reconcileCodexAppHistoryMessages,
@@ -3365,11 +3370,13 @@
 
   function applyCodexEventStateOnly(event: CodexAppEvent): void {
     if (event.kind === "request") {
-      codexRequests = [
-        ...codexRequests.filter((request) => request.id !== event.id),
-        event,
-      ];
-      awaitingInput = true;
+      if (codexRequestNeedsUserInteraction(event.method)) {
+        codexRequests = [
+          ...codexRequests.filter((request) => request.id !== event.id),
+          event,
+        ];
+        awaitingInput = true;
+      }
       return;
     }
     if (event.method === "turn/started") {
@@ -3451,7 +3458,7 @@
           codexLiveNormalizeContext,
         ) as NormalizedMessage[],
       );
-      if (!skipLifecycle) {
+      if (!skipLifecycle && codexRequestNeedsUserInteraction(event.method)) {
         codexRequests = [
           ...codexRequests.filter((r) => r.id !== event.id),
           event,
@@ -4934,36 +4941,6 @@
     onStopVisualApp?.();
   }
 
-  function codexRequestTitle(req: CodexAppEvent): string {
-    if (req.method.includes("commandExecution")) return "Command approval";
-    if (req.method.includes("fileChange")) return "File-change approval";
-    if (req.method.includes("permissions")) return "Permission request";
-    if (req.method.includes("requestUserInput")) return "Input requested";
-    return "Codex request";
-  }
-
-  function codexRequestPreview(req: CodexAppEvent): string {
-    const p = req.params ?? {};
-    const direct =
-      p.command ??
-      p.reason ??
-      p.cwd ??
-      p.grantRoot ??
-      p.itemId ??
-      p.permission ??
-      undefined;
-    if (Array.isArray(p.commandActions) && p.commandActions.length) {
-      return inputPreview(p.commandActions);
-    }
-    if (typeof direct === "string") return direct;
-    if (Array.isArray(direct)) return direct.join(" ");
-    try {
-      return JSON.stringify(p);
-    } catch {
-      return req.method;
-    }
-  }
-
   function codexRequestKey(req: CodexAppEvent): string {
     return String(req.id ?? `${req.method}:${req.receivedAt}`);
   }
@@ -5022,29 +4999,15 @@
     };
   }
 
-  function codexApprovalDecision(
-    req: CodexAppEvent,
-    action: "accept" | "acceptForSession" | "decline" | "cancel",
-  ): string {
-    if (
-      req.method === "execCommandApproval" ||
-      req.method === "applyPatchApproval"
-    ) {
-      if (action === "accept") return "approved";
-      if (action === "acceptForSession") return "approved_for_session";
-      if (action === "decline") return "denied";
-      return "abort";
-    }
-    return action;
-  }
-
   function codexCanAcceptForSession(req: CodexAppEvent): boolean {
     return (
-      req.method.includes("commandExecution") ||
-      req.method.includes("fileChange") ||
-      req.method === "execCommandApproval" ||
-      req.method === "applyPatchApproval"
+      codexRequestSupportsPersistence(req, "session") &&
+      codexRequestAllowsAction(req, "acceptForSession")
     );
+  }
+
+  function codexCanAcceptAlways(req: CodexAppEvent): boolean {
+    return codexRequestSupportsPersistence(req, "always");
   }
 
   function codexIsUserInputRequest(req: CodexAppEvent): boolean {
@@ -5053,33 +5016,24 @@
 
   async function answerCodexRequest(
     req: CodexAppEvent,
-    action: "accept" | "acceptForSession" | "decline" | "cancel",
+    action:
+      | "accept"
+      | "acceptForSession"
+      | "acceptAlways"
+      | "acceptWithExecpolicyAmendment"
+      | "applyNetworkPolicyAmendment"
+      | "decline"
+      | "cancel",
   ): Promise<void> {
     if (req.id === undefined) return;
-    let result: Record<string, unknown>;
-    if (
-      req.method === "execCommandApproval" ||
-      req.method === "applyPatchApproval"
-    ) {
-      result = { decision: codexApprovalDecision(req, action) };
-    } else if (req.method.includes("permissions")) {
-      result =
-        action === "accept"
-          ? {
-              permissions: req.params.permissions ?? {},
-              scope: "turn",
-            }
-          : { permissions: {}, scope: "turn" };
-    } else if (codexIsUserInputRequest(req)) {
-      const answers: Record<string, { answers: string[] }> = {};
+    const answers: Record<string, { answers: string[] }> = {};
+    if (codexIsUserInputRequest(req)) {
       for (const q of codexRequestQuestions(req)) {
         const value = codexQuestionDraft(req, q).trim();
         if (value) answers[q.id] = { answers: [value] };
       }
-      result = { answers };
-    } else {
-      result = { decision: codexApprovalDecision(req, action) };
     }
+    const result = codexRequestResponseResult(req, action, answers);
     try {
       const res = await fetch(
         apiUrl(
@@ -5316,22 +5270,6 @@
     if (s < 2) return "just now";
     if (s < 60) return `${s}s ago`;
     return `${Math.floor(s / 60)}m ago`;
-  }
-
-  function inputPreview(input: unknown): string {
-    if (input === undefined) return "";
-    let s: string;
-    if (typeof input === "string") s = input;
-    else {
-      try {
-        s = JSON.stringify(input);
-      } catch {
-        s = String(input);
-      }
-    }
-    // Collapse all whitespace so multiline Bash heredocs fit on one line.
-    s = s.replace(/\s+/g, " ").trim();
-    return s.length > 200 ? s.slice(0, 200) + "…" : s;
   }
 
   $: {
@@ -6026,16 +5964,38 @@
         <div class="composer-tray">
           <div class="codex-requests">
             {#each codexRequests as req (req.id)}
+              {@const presentation = codexRequestPresentation(req)}
               <div class="codex-request">
                 <div class="codex-request-main">
-                  <span class="codex-request-title"
-                    >{codexRequestTitle(req)}</span
-                  >
-                  <code
-                    class="codex-request-preview"
-                    title={codexRequestPreview(req)}
-                    >{codexRequestPreview(req)}</code
-                  >
+                  <div class="codex-request-heading">
+                    <span class="codex-request-title">{presentation.title}</span>
+                    {#if presentation.riskLevel}
+                      <span class="codex-request-risk {presentation.riskLevel.toLowerCase()}"
+                        >{presentation.riskLevel} risk</span
+                      >
+                    {/if}
+                  </div>
+                  {#if presentation.structured}
+                    <div class="codex-request-message">{presentation.preview}</div>
+                    {#if presentation.details.length}
+                      <dl class="codex-request-details">
+                        {#each presentation.details as detail (`${detail.label}:${detail.value}`)}
+                          <div>
+                            <dt>{detail.label}</dt>
+                            <dd>{detail.value}</dd>
+                          </div>
+                        {/each}
+                      </dl>
+                    {/if}
+                    {#if presentation.description}
+                      <p class="codex-request-description">{presentation.description}</p>
+                    {/if}
+                  {:else}
+                    <code
+                      class="codex-request-preview"
+                      title={presentation.preview}>{presentation.preview}</code
+                    >
+                  {/if}
                   {#if codexIsUserInputRequest(req)}
                     <div class="codex-request-questions">
                       {#each codexRequestQuestions(req) as q (q.id)}
@@ -6093,11 +6053,13 @@
                       title="Cancel this input request">Cancel</button
                     >
                   {:else}
-                    <button
-                      type="button"
-                      on:click={() => void answerCodexRequest(req, "accept")}
-                      title="Approve this Codex request">Accept</button
-                    >
+                    {#if codexRequestAllowsAction(req, "accept")}
+                      <button
+                        type="button"
+                        on:click={() => void answerCodexRequest(req, "accept")}
+                        title="Approve this Codex request">Accept</button
+                      >
+                    {/if}
                     {#if codexCanAcceptForSession(req)}
                       <button
                         type="button"
@@ -6107,16 +6069,51 @@
                         >Session</button
                       >
                     {/if}
-                    <button
-                      type="button"
-                      on:click={() => void answerCodexRequest(req, "decline")}
-                      title="Decline this Codex request">Decline</button
-                    >
-                    <button
-                      type="button"
-                      on:click={() => void answerCodexRequest(req, "cancel")}
-                      title="Cancel this Codex request">Cancel</button
-                    >
+                    {#if codexCanAcceptAlways(req)}
+                      <button
+                        type="button"
+                        on:click={() => void answerCodexRequest(req, "acceptAlways")}
+                        title="Approve similar Codex requests permanently"
+                        >Always</button
+                      >
+                    {/if}
+                    {#if codexRequestAllowsAction(req, "acceptWithExecpolicyAmendment")}
+                      <button
+                        type="button"
+                        on:click={() =>
+                          void answerCodexRequest(
+                            req,
+                            "acceptWithExecpolicyAmendment",
+                          )}
+                        title="Approve and allow matching commands">Allow similar</button
+                      >
+                    {/if}
+                    {#if codexRequestAllowsAction(req, "applyNetworkPolicyAmendment")}
+                      <button
+                        type="button"
+                        on:click={() =>
+                          void answerCodexRequest(
+                            req,
+                            "applyNetworkPolicyAmendment",
+                          )}
+                        title="Approve and remember this network rule"
+                        >Allow network rule</button
+                      >
+                    {/if}
+                    {#if codexRequestAllowsAction(req, "decline")}
+                      <button
+                        type="button"
+                        on:click={() => void answerCodexRequest(req, "decline")}
+                        title="Decline this Codex request">Decline</button
+                      >
+                    {/if}
+                    {#if codexRequestAllowsAction(req, "cancel")}
+                      <button
+                        type="button"
+                        on:click={() => void answerCodexRequest(req, "cancel")}
+                        title="Cancel this Codex request">Cancel</button
+                      >
+                    {/if}
                   {/if}
                 </div>
               </div>
@@ -7266,6 +7263,58 @@
     color: var(--text-1);
     font-size: 0.75rem;
     font-weight: 650;
+  }
+  .codex-request-heading {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+  }
+  .codex-request-risk {
+    border: 1px solid var(--surface-3);
+    border-radius: 999px;
+    color: var(--text-muted);
+    font-size: 0.62rem;
+    font-weight: 650;
+    line-height: 1;
+    padding: 0.18rem 0.32rem;
+    text-transform: uppercase;
+  }
+  .codex-request-risk.high {
+    border-color: color-mix(in srgb, var(--warning, #e0a34b) 45%, var(--surface-3));
+    color: var(--warning, #e0a34b);
+  }
+  .codex-request-message {
+    color: var(--text-1);
+    font-size: 0.78rem;
+    line-height: 1.35;
+  }
+  .codex-request-details {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.3rem 0.7rem;
+    margin: 0.1rem 0 0;
+  }
+  .codex-request-details div {
+    display: flex;
+    gap: 0.3rem;
+    min-width: 0;
+  }
+  .codex-request-details dt {
+    color: var(--text-faint);
+    font-size: 0.68rem;
+  }
+  .codex-request-details dd {
+    color: var(--text-muted);
+    font-size: 0.68rem;
+    margin: 0;
+    overflow-wrap: anywhere;
+  }
+  .codex-request-description {
+    color: var(--text-faint);
+    font-size: 0.67rem;
+    line-height: 1.35;
+    margin: 0.05rem 0 0;
+    max-width: 90ch;
   }
   .codex-request-preview {
     min-width: 0;

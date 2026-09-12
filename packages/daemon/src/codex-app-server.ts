@@ -850,13 +850,21 @@ export class CodexAppServerAdapter implements NativeAgentAdapter {
             : null,
       }) as CodexThreadReadResult;
     }
-    const turnsResult = await rpc.request("thread/turns/list", {
-      threadId: req.threadId,
-      cursor: req.turnsCursor ?? null,
-      limit: req.turnsLimit,
-      sortDirection: "desc",
-      itemsView: "full",
-    });
+    let turnsResult: JsonObject;
+    try {
+      turnsResult = await rpc.request("thread/turns/list", {
+        threadId: req.threadId,
+        cursor: req.turnsCursor ?? null,
+        limit: req.turnsLimit,
+        sortDirection: "desc",
+        itemsView: "full",
+      });
+    } catch (error) {
+      if (!req.turnsCursor && isUnmaterializedThreadTurnsError(error)) {
+        return cleanObject({ thread, model, turns: [] }) as CodexThreadReadResult;
+      }
+      throw error;
+    }
     const turns = Array.isArray(turnsResult.data)
       ? (turnsResult.data.filter(
           (turn): turn is JsonObject => !!turn && typeof turn === "object",
@@ -1267,6 +1275,16 @@ function cleanString(value: unknown): string | undefined {
   return typeof value === "string" && value.trim() ? value : undefined;
 }
 
+function isUnmaterializedThreadTurnsError(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+  return (
+    error.message.includes("is not materialized yet") &&
+    error.message.includes(
+      "thread/turns/list is unavailable before first user message",
+    )
+  );
+}
+
 function cleanObject(obj: JsonObject): JsonObject {
   const out: JsonObject = {};
   for (const [key, value] of Object.entries(obj)) {
@@ -1484,6 +1502,12 @@ export class CodexAppServerRpc {
     const id = msg.id;
     const method = typeof msg.method === "string" ? msg.method : undefined;
     if ((typeof id === "number" || typeof id === "string") && method) {
+      if (method === "currentTime/read") {
+        this.respond(id, {
+          result: { currentTimeAt: Math.floor(Date.now() / 1000) },
+        });
+        return;
+      }
       this.emit({
         kind: "request",
         id,

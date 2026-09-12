@@ -11,6 +11,11 @@ import {
   codexLiveMarkerFromEvent,
   codexLiveToolResultFromEvent,
   codexLiveToolUseFromEvent,
+  codexRequestPresentation,
+  codexRequestAllowsAction,
+  codexRequestNeedsUserInteraction,
+  codexRequestResponseResult,
+  codexRequestSupportsPersistence,
   codexAppHistoryKey,
   codexAppHistoryFailureMessage,
   codexAppHistoryRetryDelayMs,
@@ -83,6 +88,241 @@ function event(threadId: string, seq: number): CodexAppEvent {
 }
 
 describe("codex event stream hub", () => {
+  test("presents Computer Use elicitations without exposing the protocol envelope", () => {
+    const request: CodexAppEvent = {
+      kind: "request",
+      id: 2,
+      method: "mcpServer/elicitation/request",
+      params: {
+        threadId: "thread-1",
+        turnId: "turn-1",
+        serverName: "cua_repl",
+        mode: "form",
+        message: 'Allow Computer Use to use "Google Chrome"?',
+        requestedSchema: { type: "object", properties: {} },
+        _meta: {
+          connector_name: "Computer Use",
+          riskLevel: "high",
+          subtitle: "Carefully monitor Codex while it uses this app.",
+          tool_params_display: [
+            { display_name: "App", name: "app", value: "Google Chrome" },
+          ],
+        },
+      },
+      threadId: "thread-1",
+      turnId: "turn-1",
+      receivedAt: "2026-09-12T19:18:03.176Z",
+    };
+
+    expect(codexRequestPresentation(request)).toEqual({
+      title: "Computer Use request",
+      preview: 'Allow Computer Use to use "Google Chrome"?',
+      structured: true,
+      riskLevel: "high",
+      description: "Carefully monitor Codex while it uses this app.",
+      details: [{ label: "App", value: "Google Chrome" }],
+    });
+  });
+
+  test("answers MCP elicitations with the app-server response contract", () => {
+    const request: CodexAppEvent = {
+      kind: "request",
+      id: 2,
+      method: "mcpServer/elicitation/request",
+      params: {
+        mode: "form",
+        requestedSchema: { type: "object", properties: {} },
+        _meta: { persist: ["session", "always"] },
+      },
+      receivedAt: "2026-09-12T19:18:03.176Z",
+    };
+
+    expect(codexRequestResponseResult(request, "accept")).toEqual({
+      action: "accept",
+      content: null,
+      _meta: null,
+    });
+    expect(codexRequestResponseResult(request, "acceptForSession")).toEqual({
+      action: "accept",
+      content: null,
+      _meta: { persist: "session" },
+    });
+    expect(codexRequestResponseResult(request, "acceptAlways")).toEqual({
+      action: "accept",
+      content: null,
+      _meta: { persist: "always" },
+    });
+    expect(codexRequestResponseResult(request, "decline")).toEqual({
+      action: "decline",
+      content: null,
+      _meta: null,
+    });
+    expect(codexRequestResponseResult(request, "cancel")).toEqual({
+      action: "cancel",
+      content: null,
+      _meta: null,
+    });
+    expect(codexRequestSupportsPersistence(request, "session")).toBe(true);
+    expect(codexRequestSupportsPersistence(request, "always")).toBe(true);
+  });
+
+  test("returns structured MCP form answers as elicitation content", () => {
+    const request: CodexAppEvent = {
+      kind: "request",
+      id: 4,
+      method: "mcpServer/elicitation/request",
+      params: {
+        mode: "form",
+        requestedSchema: {
+          type: "object",
+          properties: { account: { type: "string" } },
+        },
+      },
+      receivedAt: "2026-09-12T19:18:03.176Z",
+    };
+
+    expect(
+      codexRequestResponseResult(request, "accept", { account: "Needle" }),
+    ).toEqual({
+      action: "accept",
+      content: { account: "Needle" },
+      _meta: null,
+    });
+  });
+
+  test("preserves existing Codex approval and user-input response shapes", () => {
+    const request = (method: string, params: Record<string, unknown> = {}) => ({
+      kind: "request" as const,
+      id: 3,
+      method,
+      params,
+      receivedAt: "2026-09-12T19:18:03.176Z",
+    });
+
+    expect(
+      codexRequestResponseResult(request("execCommandApproval"), "accept"),
+    ).toEqual({ decision: "approved" });
+    expect(
+      codexRequestResponseResult(request("execCommandApproval"), "decline"),
+    ).toEqual({ decision: { denied: { rejection: "User declined" } } });
+    expect(
+      codexRequestResponseResult(
+        request("item/commandExecution/requestApproval"),
+        "acceptForSession",
+      ),
+    ).toEqual({ decision: "acceptForSession" });
+    const commandWithPolicy = request(
+      "item/commandExecution/requestApproval",
+      {
+        availableDecisions: [
+          "accept",
+          {
+            acceptWithExecpolicyAmendment: {
+              proposed_execpolicy_amendment: ["git", "status"],
+            },
+          },
+          {
+            applyNetworkPolicyAmendment: {
+              network_policy_amendment: { host: "example.com", action: "allow" },
+            },
+          },
+          "cancel",
+        ],
+      },
+    );
+    expect(codexRequestAllowsAction(commandWithPolicy, "accept")).toBe(true);
+    expect(codexRequestAllowsAction(commandWithPolicy, "acceptForSession")).toBe(
+      false,
+    );
+    expect(codexRequestAllowsAction(commandWithPolicy, "decline")).toBe(false);
+    expect(
+      codexRequestAllowsAction(commandWithPolicy, "acceptWithExecpolicyAmendment"),
+    ).toBe(true);
+    expect(
+      codexRequestAllowsAction(commandWithPolicy, "applyNetworkPolicyAmendment"),
+    ).toBe(true);
+    expect(
+      codexRequestResponseResult(
+        commandWithPolicy,
+        "acceptWithExecpolicyAmendment",
+      ),
+    ).toEqual({
+      decision: {
+        acceptWithExecpolicyAmendment: {
+          execpolicy_amendment: ["git", "status"],
+        },
+      },
+    });
+    expect(
+      codexRequestResponseResult(
+        commandWithPolicy,
+        "applyNetworkPolicyAmendment",
+      ),
+    ).toEqual({
+      decision: {
+        applyNetworkPolicyAmendment: {
+          network_policy_amendment: { host: "example.com", action: "allow" },
+        },
+      },
+    });
+    expect(
+      codexRequestResponseResult(
+        request("item/fileChange/requestApproval"),
+        "cancel",
+      ),
+    ).toEqual({ decision: "cancel" });
+    expect(
+      codexRequestResponseResult(
+        request("item/permissions/requestApproval", {
+          permissions: { network: true },
+        }),
+        "accept",
+      ),
+    ).toEqual({ permissions: { network: true }, scope: "turn" });
+    expect(
+      codexRequestResponseResult(
+        request("item/permissions/requestApproval", {
+          permissions: { network: { enabled: true } },
+        }),
+        "acceptForSession",
+      ),
+    ).toEqual({
+      permissions: { network: { enabled: true } },
+      scope: "session",
+    });
+    expect(
+      codexRequestResponseResult(request("item/tool/requestUserInput"), "accept", {
+        choice: { answers: ["Yes"] },
+      }),
+    ).toEqual({ answers: { choice: { answers: ["Yes"] } } });
+    expect(() =>
+      codexRequestResponseResult(request("currentTime/read"), "accept"),
+    ).toThrow("is not a user-interaction request");
+  });
+
+  test("separates every generated app-server request from host callbacks", () => {
+    const interactive = [
+      "item/commandExecution/requestApproval",
+      "item/fileChange/requestApproval",
+      "item/tool/requestUserInput",
+      "mcpServer/elicitation/request",
+      "item/permissions/requestApproval",
+      "applyPatchApproval",
+      "execCommandApproval",
+    ];
+    const hostCallbacks = [
+      "item/tool/call",
+      "account/chatgptAuthTokens/refresh",
+      "attestation/generate",
+      "currentTime/read",
+    ];
+
+    expect(interactive.every(codexRequestNeedsUserInteraction)).toBe(true);
+    expect(hostCallbacks.every((method) => !codexRequestNeedsUserInteraction(method))).toBe(
+      true,
+    );
+  });
+
   beforeEach(() => {
     FakeEventSource.instances = [];
     __resetCodexEventStreamsForTests();

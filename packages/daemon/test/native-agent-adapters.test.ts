@@ -1108,6 +1108,71 @@ describe("CodexAppServerAdapter", () => {
     expect(fake.writes).toHaveLength(3);
   });
 
+  test("treats an unmaterialized new Codex thread as empty history", async () => {
+    const fake = fakeCodexProcess();
+    const adapter = new CodexAppServerAdapter({ spawn: () => fake.proc });
+
+    const started = adapter.startSession({ agent: "codex", cwd: "/repo" });
+    await waitFor(() => fake.writes[0], "initialize request");
+    fake.enqueue({ id: 0, result: {} });
+    await waitFor(() => fake.writes[2], "thread start request");
+    fake.enqueue({
+      id: 1,
+      result: {
+        thread: { id: "thr_new", cwd: "/repo", turns: [] },
+        model: "gpt-5.5",
+      },
+    });
+    await started;
+
+    const read = adapter.readThread({
+      threadId: "thr_new",
+      cwd: "/repo",
+      turnsLimit: 4,
+    });
+    await waitFor(() => fake.writes[3], "thread read request");
+    fake.enqueue({
+      id: 2,
+      result: { thread: { id: "thr_new", cwd: "/repo", turns: [] } },
+    });
+    await waitFor(() => fake.writes[4], "turns list request");
+    fake.enqueue({
+      id: 3,
+      error: {
+        code: -32600,
+        message:
+          "thread thr_new is not materialized yet; thread/turns/list is unavailable before first user message",
+      },
+    });
+
+    await expect(read).resolves.toEqual({
+      thread: { id: "thr_new", cwd: "/repo", turns: [] },
+      turns: [],
+    });
+
+    const olderPage = adapter.readThread({
+      threadId: "thr_new",
+      cwd: "/repo",
+      turnsLimit: 4,
+      turnsCursor: "cursor-older",
+    });
+    await waitFor(() => fake.writes[5], "older-page thread read request");
+    fake.enqueue({
+      id: 4,
+      result: { thread: { id: "thr_new", cwd: "/repo", turns: [] } },
+    });
+    await waitFor(() => fake.writes[6], "older-page turns list request");
+    fake.enqueue({
+      id: 5,
+      error: {
+        code: -32600,
+        message:
+          "thread thr_new is not materialized yet; thread/turns/list is unavailable before first user message",
+      },
+    });
+    await expect(olderPage).rejects.toThrow("is not materialized yet");
+  });
+
   test("pages older Codex app-server turns from the loaded thread cursor", async () => {
     const fake = fakeCodexProcess();
     const adapter = new CodexAppServerAdapter({ spawn: () => fake.proc });
@@ -1323,6 +1388,32 @@ describe("CodexAppServerAdapter", () => {
 });
 
 describe("CodexAppServerRpc", () => {
+  test("answers current-time callbacks without presenting them as approvals", async () => {
+    const fake = fakeCodexProcess();
+    const rpc = new CodexAppServerRpc(fake.proc);
+    const events: unknown[] = [];
+    rpc.onEvent((event) => events.push(event));
+    const before = Math.floor(Date.now() / 1000);
+
+    fake.enqueue({
+      id: 21,
+      method: "currentTime/read",
+      params: { threadId: "thr_time" },
+    });
+    await waitFor(() => fake.writes[0], "current-time response");
+    const after = Math.floor(Date.now() / 1000);
+
+    const response = parseWrite(fake.writes, 0) as {
+      id: number;
+      result: { currentTimeAt: number };
+    };
+    expect(response.id).toBe(21);
+    expect(response.result.currentTimeAt).toBeGreaterThanOrEqual(before);
+    expect(response.result.currentTimeAt).toBeLessThanOrEqual(after);
+    expect(events).toEqual([]);
+    rpc.close();
+  });
+
   test("times out unanswered requests without poisoning later responses", async () => {
     const fake = fakeCodexProcess();
     const rpc = new CodexAppServerRpc(fake.proc, undefined, 5);
