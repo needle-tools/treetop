@@ -199,7 +199,8 @@ export type PersistedAgent =
   | "shell"
   | "files"
   | "history"
-  | "artifacts";
+  | "artifacts"
+  | "context";
 
 /** Model tier aliases offered for Claude sessions. We deliberately stick
  *  to the CLI's stable aliases rather than pinned versions so the menu
@@ -599,6 +600,7 @@ const VALID_AGENTS: ReadonlySet<PersistedAgent> = new Set([
   "files",
   "history",
   "artifacts",
+  "context",
 ]);
 
 function sanitizeSession(item: unknown): PersistedSession | null {
@@ -754,6 +756,8 @@ export const SYNTHETIC_SOURCE_PREFIXES = [
   "__history__:",
   // Cumulative read/write map for another session in the same lane.
   "__artifacts__:",
+  // Reconstructable request context for another session in the same lane.
+  "__context_view__:",
   // Live Codex app-server thread — app-server/SSE owns the live transport;
   // the provider transcript path, when present, lives in `transcriptSource`.
   "__codex_app__:",

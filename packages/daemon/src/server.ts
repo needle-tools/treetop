@@ -83,6 +83,7 @@ import {
   sessionCacheStats,
   parseSessionFile,
   readSessionInlineMedia,
+  sessionSourceOffset,
   type BatchSessionCursor,
 } from "./sessions";
 import { diagnoseClaudeSession, repairClaudeSession } from "./session-repair";
@@ -3470,6 +3471,12 @@ const server = Bun.serve<TermWsData, never>({
                 "?source=<file>: sampled conversation text for handing off to another agent. Returns { context, agent, sessionId, cwd, totalMessages, includedMessages, estimatedTokens }.",
             },
             {
+              method: "GET",
+              path: "/api/session/source",
+              description:
+                "?source=<file>: streams the original JSONL for the opt-in context inspector. Uses the same agent-root allowlist as /api/session.",
+            },
+            {
               method: "POST",
               path: "/api/session/start",
               body: {
@@ -4298,6 +4305,35 @@ const server = Bun.serve<TermWsData, never>({
             { status: 404 },
           );
         }
+      }
+
+      if (url.pathname === "/api/session/source" && req.method === "GET") {
+        const source = url.searchParams.get("source");
+        if (!source) {
+          return json({ error: "?source=<session-file> required" }, { status: 400 });
+        }
+        const resolved = resolveSessionAgent(source);
+        if (!resolved) {
+          return json({ error: "source is outside any known agent root" }, { status: 403 });
+        }
+        const file = Bun.file(resolved.normalised);
+        if (!(await file.exists())) {
+          return json({ error: "session file not found" }, { status: 404 });
+        }
+        const offset = sessionSourceOffset(
+          file.size,
+          url.searchParams.get("offset") ?? undefined,
+        );
+        const body = offset > 0 ? file.slice(offset) : file;
+        return new Response(body, {
+          headers: {
+            "Content-Type": "application/x-ndjson; charset=utf-8",
+            "Content-Length": String(file.size - offset),
+            "X-Session-Size": String(file.size),
+            "Cache-Control": "no-store",
+            ...CORS,
+          },
+        });
       }
 
       if (url.pathname === "/api/session/resolve" && req.method === "GET") {

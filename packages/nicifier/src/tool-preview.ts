@@ -451,6 +451,8 @@ export function cleanVisualToolResultText(
 export interface VisualToolContentPreview {
   title: string;
   body: string;
+  /** Token count reported by the tool transport for this returned content. */
+  tokenCount?: number;
 }
 
 /** Content returned by a read-like tool call, stripped of transport metadata.
@@ -464,8 +466,15 @@ export function visualToolReadResultPreview(
   const title = visualToolPreviewText(toolUseBlock);
   const icon = visualToolIconNameForPreview(toolUseBlock, title)?.toLowerCase();
   if (icon !== "read" && !/^read(?:\s|$)/i.test(title)) return undefined;
-  const body = cleanVisualToolResultText(toolResultBlock.text).body.trim();
-  return body ? { title: title || "Read output", body } : undefined;
+  const result = cleanVisualToolResultText(toolResultBlock.text);
+  const body = result.body.trim();
+  return body
+    ? {
+        title: title || "Read output",
+        body,
+        tokenCount: result.originalTokenCount,
+      }
+    : undefined;
 }
 
 export interface VisualObservedProcessOutput {
@@ -7872,6 +7881,7 @@ export function visualToolIsTestCommand(
 
 function editActionLabel(action: VisualFileEdit["action"]): string {
   if (action === "added") return "Added";
+  if (action === "written") return "Written";
   if (action === "deleted") return "Deleted";
   return "Edited";
 }
@@ -7885,6 +7895,10 @@ function summarizeFileEdits(
       ? `${editActionLabel(files[0]!.action)} ${files[0]!.path.split("/").pop()}`
       : `Edited ${files.length} files`;
   return { title, files };
+}
+
+function estimateTextTokenCount(text: string): number {
+  return Math.ceil(text.length / 4);
 }
 
 function parseApplyPatchEdits(
@@ -7926,6 +7940,14 @@ function parseApplyPatchEdits(
   }
   for (const file of byPath.values()) {
     file.raw = rawByPath.get(file.path)?.join("\n").trim();
+    const writtenText = rawByPath
+      .get(file.path)
+      ?.filter((line) => line.startsWith("+") && !line.startsWith("+++"))
+      .map((line) => line.slice(1))
+      .join("\n");
+    file.writtenTokenCountEstimate = writtenText
+      ? estimateTextTokenCount(writtenText)
+      : undefined;
   }
   return summarizeFileEdits([...byPath.values()]);
 }
@@ -7984,14 +8006,30 @@ function actionFromChangeKind(kind: string): VisualFileEdit["action"] {
 function lineCountsFromChange(
   item: Record<string, unknown>,
   action: VisualFileEdit["action"],
-): Pick<VisualFileEdit, "additions" | "deletions" | "raw"> {
+): Pick<VisualFileEdit, "additions" | "deletions" | "raw" | "writtenTokenCountEstimate"> {
   const raw = rawDiffFromChange(item);
   const diffCounts = countUnifiedDiffLines(raw);
   if (diffCounts) {
-    return { ...diffCounts, raw };
+    return {
+      ...diffCounts,
+      raw,
+      writtenTokenCountEstimate: raw
+        ? estimateTextTokenCount(
+            raw
+              .split(/\r?\n/)
+              .filter((line) => line.startsWith("+") && !line.startsWith("+++"))
+              .map((line) => line.slice(1))
+              .join("\n"),
+          )
+        : undefined,
+    };
   }
   if (typeof item.content === "string" && action === "added") {
-    return { additions: changedLineCount(item.content), deletions: 0 };
+    return {
+      additions: changedLineCount(item.content),
+      deletions: 0,
+      writtenTokenCountEstimate: estimateTextTokenCount(item.content),
+    };
   }
   return {
     additions: numberField(item, "additions") ?? numberField(item, "added"),
@@ -8046,11 +8084,13 @@ function claudeEditSummary(
     if (!path) return undefined;
     let additions = 0;
     let deletions = 0;
+    const writtenParts: string[] = [];
     for (const edit of input.edits) {
       if (!edit || typeof edit !== "object") continue;
       const obj = edit as Record<string, unknown>;
       additions += changedLineCount(obj.new_string) ?? 0;
       deletions += changedLineCount(obj.old_string) ?? 0;
+      if (typeof obj.new_string === "string") writtenParts.push(obj.new_string);
     }
     return summarizeFileEdits([
       {
@@ -8058,6 +8098,10 @@ function claudeEditSummary(
         action: "edited",
         additions: additions > 0 ? additions : undefined,
         deletions: deletions > 0 ? deletions : undefined,
+        writtenTokenCountEstimate:
+          writtenParts.length > 0
+            ? estimateTextTokenCount(writtenParts.join("\n"))
+            : undefined,
       },
     ]);
   }
@@ -8071,6 +8115,10 @@ function claudeEditSummary(
         action: "edited",
         additions: changedLineCount(input.new_string),
         deletions: changedLineCount(input.old_string),
+        writtenTokenCountEstimate:
+          typeof input.new_string === "string"
+            ? estimateTextTokenCount(input.new_string)
+            : undefined,
       },
     ]);
   }
@@ -8083,6 +8131,10 @@ function claudeEditSummary(
         path,
         action: "added",
         additions: changedLineCount(input.content),
+        writtenTokenCountEstimate:
+          typeof input.content === "string"
+            ? estimateTextTokenCount(input.content)
+            : undefined,
       },
     ]);
   }
@@ -8110,6 +8162,7 @@ function shellHeredocEditSummary(
       additions: body ? body.split(/\r?\n/).length : 0,
       deletions: 0,
       raw: body,
+      writtenTokenCountEstimate: estimateTextTokenCount(body),
     },
   ]);
 }
@@ -8165,6 +8218,13 @@ function shellFilesystemEditSummary(
   if (!command) return undefined;
   const writes: Array<{ index: number; file: VisualFileEdit }> = [];
 
+  for (const output of shellOutputPaths(command)) {
+    writes.push({
+      index: output.index,
+      file: { path: output.path, action: output.action },
+    });
+  }
+
   for (const match of command.matchAll(/\bsed\s+-i(?:\s+(?:''|""))?\s+(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|\S+)\s+([^\s;&|]+)/g)) {
     if (match[1] && match.index !== undefined) {
       writes.push({ index: match.index, file: { path: match[1], action: "edited" } });
@@ -8183,6 +8243,134 @@ function shellFilesystemEditSummary(
     return [file];
   });
   return files.length > 0 ? summarizeFileEdits(files) : undefined;
+}
+
+function shellOutputPaths(
+  command: string,
+): Array<{ index: number; path: string; action: "edited" | "written" }> {
+  const outputs: Array<{
+    index: number;
+    path: string;
+    action: "edited" | "written";
+  }> = [];
+  let quote: "'" | '"' | null = null;
+  let escaped = false;
+  for (let index = 0; index < command.length; index += 1) {
+    const ch = command[index]!;
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (ch === "\\" && quote !== "'") {
+      escaped = true;
+      continue;
+    }
+    if (quote) {
+      if (ch === quote) quote = null;
+      continue;
+    }
+    if (ch === "'" || ch === '"') {
+      quote = ch;
+      continue;
+    }
+    if (ch !== ">" || command[index - 1] === ">") continue;
+    const append = command[index + 1] === ">";
+    let targetStart = index + (append ? 2 : 1);
+    if (command[targetStart] === "|") targetStart += 1;
+    while (/\s/.test(command[targetStart] ?? "")) targetStart += 1;
+    if (command[targetStart] === "&") continue;
+    const target = shellWordAt(command, targetStart);
+    if (target && isConcreteShellOutputPath(target)) {
+      outputs.push({
+        index,
+        path: target,
+        action: append ? "edited" : "written",
+      });
+    }
+  }
+
+  for (const commandPart of splitShellCommandChain(command)) {
+    for (const pipelinePart of splitShellPipeline(commandPart)) {
+      const tokens = shellTokens(pipelinePart);
+      if (shellLauncherName(tokens[0] ?? "") !== "tee") continue;
+      const append = tokens.includes("-a") || tokens.includes("--append");
+      let positional = false;
+      for (const token of tokens.slice(1)) {
+        if (!positional && token === "--") {
+          positional = true;
+          continue;
+        }
+        if (!positional && token.startsWith("-")) continue;
+        if (isConcreteShellOutputPath(token)) {
+          outputs.push({
+            index: command.indexOf(pipelinePart),
+            path: token,
+            action: append ? "edited" : "written",
+          });
+        }
+      }
+    }
+  }
+  return outputs;
+}
+
+function shellWordAt(
+  command: string,
+  start: number,
+): string | undefined {
+  let value = "";
+  let quote: "'" | '"' | null = null;
+  let escaped = false;
+  let index = start;
+  for (; index < command.length; index += 1) {
+    const ch = command[index]!;
+    if (escaped) {
+      value += ch;
+      escaped = false;
+      continue;
+    }
+    if (ch === "\\" && quote !== "'") {
+      escaped = true;
+      continue;
+    }
+    if (quote) {
+      if (ch === quote) quote = null;
+      else value += ch;
+      continue;
+    }
+    if (ch === "'" || ch === '"') {
+      quote = ch;
+      continue;
+    }
+    if (/\s/.test(ch) || /[;&|<>]/.test(ch)) break;
+    value += ch;
+  }
+  return value || undefined;
+}
+
+function isConcreteShellOutputPath(path: string): boolean {
+  const normalized = path.replace(/\\/g, "/");
+  if (
+    !normalized ||
+    normalized === "-" ||
+    /^\d+$/.test(normalized) ||
+    /[$`]/.test(normalized) ||
+    normalized.startsWith("(") ||
+    ["/dev/null", "/dev/stdout", "/dev/stderr", "/dev/fd"].some(
+      (sink) => normalized === sink || normalized.startsWith(`${sink}/`),
+    )
+  ) {
+    return false;
+  }
+  return (
+    normalized.startsWith("/") ||
+    normalized.startsWith("./") ||
+    normalized.startsWith("../") ||
+    normalized.startsWith("~/") ||
+    /^[A-Za-z]:\//.test(normalized) ||
+    normalized.includes("/") ||
+    /\.[A-Za-z0-9][A-Za-z0-9_-]{0,12}$/.test(normalized)
+  );
 }
 
 function combinedShellEditSummary(block: MessageBlock): VisualFileEditSummary | undefined {

@@ -23,9 +23,21 @@ export type SparseArtifactRowActionSummary =
       rangeLabel?: string;
       fallbackLabel: "+" | "-" | "write";
       fileLifecycle?: SparseArtifactFileLifecycle;
+      contentTokenCount?: number;
+      contentTokenCountEstimated?: boolean;
     }
-  | { kind: "range"; label: string }
-  | { kind: "action"; labels: string[] };
+  | {
+      kind: "range";
+      label: string;
+      contentTokenCount?: number;
+      contentTokenCountEstimated?: boolean;
+    }
+  | {
+      kind: "action";
+      labels: string[];
+      contentTokenCount?: number;
+      contentTokenCountEstimated?: boolean;
+    };
 
 interface MutableTreeNode {
   id: string;
@@ -315,6 +327,8 @@ export function visualWorkArtifactChanges(
           previewTitle: artifact.previewTitle,
           diffKind: artifact.diffKind,
           fileAction: artifact.fileAction,
+          contentTokenCount: artifact.contentTokenCount,
+          contentTokenCountEstimated: artifact.contentTokenCountEstimated,
         },
       ];
 }
@@ -399,6 +413,18 @@ export function sparseArtifactRowActionSummary(
   row: Pick<SparseArtifactTreeRow, "artifacts">,
 ): SparseArtifactRowActionSummary {
   const changes = sparseArtifactRowChanges(row);
+  const contentTokenChanges = changes.filter(
+    (change) => change.contentTokenCount !== undefined,
+  );
+  const contentTokenCount = contentTokenChanges.length
+    ? contentTokenChanges.reduce(
+        (sum, change) => sum + (change.contentTokenCount ?? 0),
+        0,
+      )
+    : undefined;
+  const contentTokenCountEstimated = contentTokenChanges.some(
+    (change) => change.contentTokenCountEstimated === true,
+  );
   const ranges = uniqueStrings(changes.map(artifactRange));
   const rangeLabel =
     ranges.length === 0
@@ -433,16 +459,22 @@ export function sparseArtifactRowActionSummary(
             ? "-"
             : "write",
       fileLifecycle,
+      contentTokenCount,
+      contentTokenCountEstimated,
     };
   }
   if (rangeLabel) {
     return {
       kind: "range",
       label: rangeLabel,
+      contentTokenCount,
+      contentTokenCountEstimated,
     };
   }
   return {
     kind: "action",
     labels: uniqueStrings(changes.map((change) => actionLabel(change.action))),
+    contentTokenCount,
+    contentTokenCountEstimated,
   };
 }

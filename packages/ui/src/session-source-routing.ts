@@ -54,7 +54,8 @@ export interface OpenSession {
     | "shell"
     | "files"
     | "history"
-    | "artifacts";
+    | "artifacts"
+    | "context";
   source: string;
   resumeSessionId?: string;
   transcriptSource?: string;

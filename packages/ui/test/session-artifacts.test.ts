@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import {
   artifactMapOwnerSource,
   artifactMapPanelSource,
+  analyzeSessionArtifactOverbooking,
   createSessionArtifactEvolutionTracker,
   filterSessionArtifactEvolution,
   insertArtifactMapPanel,
@@ -133,6 +134,63 @@ describe("session artifact evolution", () => {
       additions: 5,
       deletions: 2,
     });
+  });
+
+  test("includes command log outputs without calling full redirections partial writes", () => {
+    const messages = [
+      { role: "user", blocks: [{ type: "text", text: "Run checks" }] },
+      {
+        role: "assistant",
+        blocks: [{
+          type: "tool_use",
+          toolName: "exec_command",
+          toolInput: {
+            cmd: "npx vitest run > /tmp/unit.log 2>&1; npm test >> /tmp/history.log 2>&1",
+          },
+        }],
+      },
+    ];
+
+    const evolution = createSessionArtifactEvolutionTracker().update(
+      buildVisualTranscriptItems(messages),
+    );
+    expect(evolution.artifacts.map((artifact) => artifact.path)).toEqual([
+      "/tmp/unit.log",
+      "/tmp/history.log",
+    ]);
+    expect(evolution.totals).toMatchObject({ writes: 2, partialWrites: 1 });
+  });
+
+  test("keeps agent-authored writes in memory when flagging repeated reads", () => {
+    const messages = [
+      { role: "user", blocks: [{ type: "text", text: "First pass" }] },
+      { role: "assistant", blocks: [{ type: "tool_use", toolUseId: "r1", toolName: "exec_command", toolInput: { cmd: "sed -n '1,40p' src/app.ts" } }] },
+      { role: "tool", blocks: [{ type: "tool_result", toolUseId: "r1", text: "first" }] },
+      { role: "user", blocks: [{ type: "text", text: "Second pass" }] },
+      { role: "assistant", blocks: [{ type: "tool_use", toolUseId: "r2", toolName: "exec_command", toolInput: { cmd: "sed -n '1,40p' src/app.ts; sed -n '80,120p' src/app.ts" } }] },
+      { role: "tool", blocks: [{ type: "tool_result", toolUseId: "r2", text: "second" }] },
+      { role: "assistant", blocks: [{ type: "tool_use", toolUseId: "w1", toolName: "file change", toolInput: { "src/app.ts": { type: "update", unified_diff: "@@ -1 +1 @@\n-old\n+new" } } }] },
+      { role: "user", blocks: [{ type: "text", text: "Verify after change" }] },
+      { role: "assistant", blocks: [{ type: "tool_use", toolUseId: "r3", toolName: "exec_command", toolInput: { cmd: "sed -n '1,40p' src/app.ts" } }] },
+      { role: "tool", blocks: [{ type: "tool_result", toolUseId: "r3", text: "third" }] },
+    ];
+    const evolution = createSessionArtifactEvolutionTracker().update(buildVisualTranscriptItems(messages));
+    const overbooking = analyzeSessionArtifactOverbooking(evolution.turns);
+    expect(analyzeSessionArtifactOverbooking(evolution.turns)).toBe(overbooking);
+
+    expect(overbooking.repeatedReads).toBe(2);
+    expect(overbooking.files).toEqual([
+      {
+        path: "src/app.ts",
+        reads: 4,
+        repeatedReads: 2,
+        ranges: [
+          { range: "1-40", reads: 3, repeatedReads: 2, turns: [1, 2, 3] },
+          { range: "80-120", reads: 1, repeatedReads: 0, turns: [2] },
+        ],
+      },
+    ]);
+    expect(filterSessionArtifactEvolution(evolution, "repeated").totals.reads).toBe(2);
   });
 
   test("keeps reads from a shell call that also mutates another file", () => {

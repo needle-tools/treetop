@@ -3,6 +3,7 @@
   import DiffLoader from "./DiffLoader.svelte";
   import FileSystemIcon from "./FileSystemIcon.svelte";
   import Tooltip from "./Tooltip.svelte";
+  import { formatTokens } from "./context-tokens";
   import type {
     VisualWorkArtifact,
     VisualWorkArtifactChange,
@@ -199,6 +200,19 @@
               {#each actionSummary.labels as label}
                 <span class="sparse-artifact-action">{label}</span>
               {/each}
+            {/if}
+            {#if actionSummary.contentTokenCount !== undefined}
+              <span class="sparse-artifact-action-separator" aria-hidden="true">·</span>
+              <span
+                class="sparse-artifact-action content-tokens"
+                title={actionSummary.contentTokenCountEstimated
+                  ? "Estimated tokens in captured file content"
+                  : "Tokens reported for captured file content"}
+              >
+                {actionSummary.contentTokenCountEstimated ? "~" : ""}{formatTokens(
+                  actionSummary.contentTokenCount,
+                )} tok
+              </span>
             {/if}
           </span>
         {:else}

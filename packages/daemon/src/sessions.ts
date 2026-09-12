@@ -2588,6 +2588,13 @@ export async function getSessionFileStats(
   return task;
 }
 
+export function sessionSourceOffset(fileSize: number, value: string | undefined): number {
+  const requested = Number(value ?? 0);
+  return Number.isFinite(requested)
+    ? Math.max(0, Math.min(fileSize, Math.trunc(requested)))
+    : 0;
+}
+
 export function clearParseCache(): void {
   sessionCache.clear();
 }

@@ -7543,6 +7543,8 @@ describe("visualWorkOverview", () => {
         action: "changed",
         additions: 2,
         deletions: 1,
+        contentTokenCount: 127,
+        contentTokenCountEstimated: true,
       },
     ]);
   });
@@ -7713,14 +7715,73 @@ describe("visualWorkOverview", () => {
         path: "packages/ui/src/VisualTranscript.svelte",
         previewTitle: "Read VisualTranscript.svelte:1-40",
         preview: "ok",
+        contentTokenCount: 10,
+        contentTokenCountEstimated: true,
         changes: [
           {
             previewTitle: "Read VisualTranscript.svelte:1-40",
             preview: "ok",
+            contentTokenCount: 10,
+            contentTokenCountEstimated: true,
           },
         ],
       },
     ]);
+  });
+
+  it("does not attribute a compound read result to every mentioned file", () => {
+    const entries = buildVisualWorkDisplayEntries([
+      {
+        message: {
+          role: "assistant",
+          blocks: [
+            {
+              type: "tool_use",
+              toolName: "exec_command",
+              toolUseId: "read-two",
+              toolInput: { cmd: "cat src/one.ts src/two.ts" },
+            },
+          ],
+        },
+        blocks: [
+          {
+            type: "tool_use",
+            toolName: "exec_command",
+            toolUseId: "read-two",
+            toolInput: { cmd: "cat src/one.ts src/two.ts" },
+          },
+        ],
+        messageIndex: 1,
+      },
+      {
+        message: {
+          role: "tool",
+          blocks: [
+            {
+              type: "tool_result",
+              toolUseId: "read-two",
+              text: "Chunk ID: read-two Wall time: 0.1 seconds Process exited with code 0 Original token count: 50 Output: one two",
+            },
+          ],
+        },
+        blocks: [
+          {
+            type: "tool_result",
+            toolUseId: "read-two",
+            text: "Chunk ID: read-two Wall time: 0.1 seconds Process exited with code 0 Original token count: 50 Output: one two",
+          },
+        ],
+        messageIndex: 2,
+      },
+    ]);
+
+    const overview = visualWorkOverview({ kind: "work", entries: [] }, entries);
+    expect(overview.artifacts).toHaveLength(2);
+    expect(
+      overview.artifacts.every(
+        (artifact) => artifact.contentTokenCount === undefined,
+      ),
+    ).toBe(true);
   });
 
   it("summarizes fresh token work without using cached context as the headline", () => {
@@ -8360,6 +8421,7 @@ describe("visualFileEditSummaryForBlock", () => {
             "+  new line",
             "+  another line",
           ].join("\n"),
+          writtenTokenCountEstimate: 7,
         },
         {
           path: "packages/ui/src/codex-event-stream.ts",
@@ -8371,6 +8433,7 @@ describe("visualFileEditSummaryForBlock", () => {
             "@@",
             "+export function reconnect() {}",
           ].join("\n"),
+          writtenTokenCountEstimate: 8,
         },
       ],
     });
@@ -8419,6 +8482,7 @@ describe("visualFileEditSummaryForBlock", () => {
           additions: 2,
           deletions: 1,
           raw: "@@\n-old\n+new\n+extra\n",
+          writtenTokenCountEstimate: 3,
         },
       ],
     });
@@ -8449,6 +8513,7 @@ describe("visualFileEditSummaryForBlock", () => {
           action: "added",
           additions: 2,
           deletions: 0,
+          writtenTokenCountEstimate: 22,
         },
       ],
     });
@@ -8482,6 +8547,7 @@ describe("visualFileEditSummaryForBlock", () => {
           additions: 1,
           deletions: 0,
           raw: "@@ -11 +11,2 @@\n MEDIKIT_LOGTO_BOOTSTRAP_IMAGE=latest\n+MEDIKIT_DOCKER_FLAVOR=remote\n",
+          writtenTokenCountEstimate: 7,
         },
       ],
     });
@@ -8515,6 +8581,7 @@ describe("visualFileEditSummaryForBlock", () => {
           additions: 2,
           deletions: 1,
           raw: "@@ -1,2 +1,3 @@\n one\n-two\n+three\n+four\n",
+          writtenTokenCountEstimate: 3,
         },
       ],
     });
@@ -8539,6 +8606,7 @@ describe("visualFileEditSummaryForBlock", () => {
           action: "edited",
           additions: 3,
           deletions: 2,
+          writtenTokenCountEstimate: 4,
         },
       ],
     });
@@ -8607,11 +8675,53 @@ describe("visualFileEditSummaryForBlock", () => {
     ).toEqual({
       title: "Edited 4 files",
       files: [
-        { path: "src/new.ts", action: "added", additions: 2, deletions: 0, raw: "one\ntwo" },
+        {
+          path: "src/new.ts",
+          action: "added",
+          additions: 2,
+          deletions: 0,
+          raw: "one\ntwo",
+          writtenTokenCountEstimate: 2,
+        },
         { path: "src/other.ts", action: "edited" },
         { path: "src/existing.ts", action: "edited" },
         { path: "src/copied.ts", action: "edited" },
       ],
     });
+  });
+
+  it("tracks shell redirection and tee destinations as written artifacts", () => {
+    expect(
+      visualFileEditSummaryForBlock({
+        type: "tool_use",
+        toolName: "exec_command",
+        toolInput: {
+          cmd: [
+            "npx vitest run src/lib/projectTimelineEdit.test.js > /tmp/fastvid-unit.log 2>&1",
+            "npm run build >> '/tmp/fastvid build.log' 2>&1",
+            "npx playwright test 2>/dev/null | tee -a /tmp/fastvid-browser.log",
+          ].join("\n"),
+        },
+      }),
+    ).toEqual({
+      title: "Edited 3 files",
+      files: [
+        { path: "/tmp/fastvid-unit.log", action: "written" },
+        { path: "/tmp/fastvid build.log", action: "edited" },
+        { path: "/tmp/fastvid-browser.log", action: "edited" },
+      ],
+    });
+  });
+
+  it("does not mistake descriptor plumbing, sinks, or comparisons for files", () => {
+    expect(
+      visualFileEditSummaryForBlock({
+        type: "tool_use",
+        toolName: "exec_command",
+        toolInput: {
+          cmd: "node -e 'console.log(2 > 1)' 2>&1; rg needle src 2>/dev/null",
+        },
+      }),
+    ).toBeUndefined();
   });
 });

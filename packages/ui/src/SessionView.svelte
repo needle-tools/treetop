@@ -260,6 +260,7 @@
     items: readonly VisualTranscriptItem[],
   ) => void = () => {};
   export let onOpenArtifactMap: () => void = () => {};
+  export let onOpenContextView: (source: string) => void = () => {};
   export let onTranscriptTurnChange:
     | ((turnIndex: number) => void)
     | undefined = undefined;
@@ -1611,6 +1612,20 @@
         disabled: !session,
         title: "Show this session's cumulative file reads and writes",
         onSelect: onOpenArtifactMap,
+      },
+      {
+        kind: "action",
+        label: "Show Context",
+        iconSvg: [
+          "M4 5h16v14H4z",
+          "M8 9h8",
+          "M8 13h5",
+        ],
+        disabled: !sessionFileSource,
+        title: sessionFileSource
+          ? "Inspect the request context reconstructable from this session log"
+          : "No session log is available yet",
+        onSelect: () => onOpenContextView(sessionFileSource),
       },
       {
         kind: "action",

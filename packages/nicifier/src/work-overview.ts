@@ -68,6 +68,8 @@ export interface VisualWorkArtifact {
   previewTitle?: string;
   diffKind?: "workdir" | "staged" | "untracked";
   fileAction?: VisualFileEdit["action"];
+  contentTokenCount?: number;
+  contentTokenCountEstimated?: boolean;
   changes?: VisualWorkArtifactChange[];
 }
 
@@ -83,6 +85,8 @@ export interface VisualWorkArtifactChange {
   previewTitle?: string;
   diffKind?: "workdir" | "staged" | "untracked";
   fileAction?: VisualFileEdit["action"];
+  contentTokenCount?: number;
+  contentTokenCountEstimated?: boolean;
 }
 
 export interface VisualWorkCategoryCount {
@@ -765,6 +769,8 @@ function addArtifact(
     previewTitle: artifact.previewTitle,
     diffKind: artifact.diffKind,
     fileAction: artifact.fileAction,
+    contentTokenCount: artifact.contentTokenCount,
+    contentTokenCountEstimated: artifact.contentTokenCountEstimated,
   };
   artifacts.push({ ...artifact, id, changes: [change] });
 }
@@ -826,6 +832,15 @@ function mergeArtifact(
     previewTitle: next.previewTitle ?? current.previewTitle,
     diffKind: next.diffKind ?? current.diffKind,
     fileAction: next.fileAction ?? current.fileAction,
+    contentTokenCount:
+      current.contentTokenCount === undefined
+        ? next.contentTokenCount
+        : next.contentTokenCount === undefined
+          ? current.contentTokenCount
+          : current.contentTokenCount + next.contentTokenCount,
+    contentTokenCountEstimated:
+      current.contentTokenCountEstimated === true ||
+      next.contentTokenCountEstimated === true,
     changes: [...(current.changes ?? []), ...(next.changes ?? [])],
   };
 }
@@ -883,6 +898,10 @@ function artifactsForEntry(
     const editedPaths = new Set(editSummary?.files.map((file) => file.path) ?? []);
     if (editSummary) {
       for (const file of editSummary.files) {
+        const contentTokenCount =
+          file.writtenTokenCountEstimate && file.writtenTokenCountEstimate > 0
+            ? file.writtenTokenCountEstimate
+            : undefined;
         addArtifact(artifacts, {
           kind: "file",
           action: "changed",
@@ -892,12 +911,22 @@ function artifactsForEntry(
           deletions: file.deletions,
           diff: file.raw,
           fileAction: file.action,
+          contentTokenCount,
+          contentTokenCountEstimated:
+            contentTokenCount === undefined ? undefined : true,
         });
       }
     }
-    for (const part of visualToolPreviewParts(toolBlock)) {
+    const pathParts = visualToolPreviewParts(toolBlock).filter(
+      (part) =>
+        part.kind === "path" && looksLikeArtifactPath(part.path, part.text),
+    );
+    const attributableReadTokenCount =
+      pathParts.length === 1 && readPreview
+        ? (readPreview.tokenCount ?? Math.ceil(readPreview.body.length / 4))
+        : undefined;
+    for (const part of pathParts) {
       if (part.kind !== "path") continue;
-      if (!looksLikeArtifactPath(part.path, part.text)) continue;
       if (editedPaths.has(part.path)) continue;
       addArtifact(artifacts, {
         kind: "file",
@@ -906,6 +935,9 @@ function artifactsForEntry(
         path: part.path,
         preview: readPreview?.body,
         previewTitle: readPreview?.title,
+        contentTokenCount: attributableReadTokenCount,
+        contentTokenCountEstimated:
+          attributableReadTokenCount === undefined ? undefined : true,
       });
     }
   }

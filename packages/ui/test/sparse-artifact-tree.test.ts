@@ -206,6 +206,31 @@ describe("buildSparseArtifactRows", () => {
     ]);
   });
 
+  test("sums attributable content tokens and preserves whether they are estimated", () => {
+    const rows = buildSparseArtifactRows(
+      [
+        artifact("/repo/src/app.ts:1-20", {
+          contentTokenCount: 120,
+          contentTokenCountEstimated: false,
+        }),
+        artifact("/repo/src/app.ts:40-60", {
+          contentTokenCount: 35,
+          contentTokenCountEstimated: true,
+        }),
+      ],
+      "/repo",
+    );
+
+    const file = rows.find((row) => row.kind === "file");
+    expect(file).toBeDefined();
+    expect(sparseArtifactRowActionSummary(file!)).toEqual({
+      kind: "range",
+      label: "2 ranges",
+      contentTokenCount: 155,
+      contentTokenCountEstimated: true,
+    });
+  });
+
   test("summarizes created files with line counts when the session provided them", () => {
     const rows = buildSparseArtifactRows(
       [

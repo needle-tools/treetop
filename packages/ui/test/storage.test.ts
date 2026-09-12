@@ -274,6 +274,27 @@ describe("OpenSessionsStore", () => {
     });
   });
 
+  test("round-trips a context-view utility panel", () => {
+    const m = new MemStore();
+    const s = new OpenSessionsStore(m, KEY);
+    s.save({
+      "/repo": [
+        {
+          agent: "context",
+          source: "__context_view__:owner|transcript",
+        },
+      ],
+    });
+    expect(s.load()).toEqual({
+      "/repo": [
+        {
+          agent: "context",
+          source: "__context_view__:owner|transcript",
+        },
+      ],
+    });
+  });
+
   test("save replaces previous data, not merges", () => {
     const m = new MemStore();
     const s = new OpenSessionsStore(m, KEY);

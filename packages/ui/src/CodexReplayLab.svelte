@@ -2,6 +2,7 @@
   import { afterUpdate, onDestroy, onMount, tick } from "svelte";
   import SessionView from "./SessionView.svelte";
   import SessionArtifactMap from "./SessionArtifactMap.svelte";
+  import SessionContextView from "./SessionContextView.svelte";
   import InspectorPanelHeader from "./InspectorPanelHeader.svelte";
   import type { VisualTranscriptItem } from "./last-user-message";
   import { writeBrowserClipboard } from "./clipboard-write";
@@ -71,6 +72,8 @@
   let transport: CodexReplaySessionTransport | null = null;
   let localReplay: ParsedCodexReplay | null = null;
   let localPlayback: CodexReplayPlaybackState | null = null;
+  let localContextBlob: File | undefined;
+  let inspectorView: "artifacts" | "context" = "artifacts";
   let fileName = "";
   let stepIndex = 0;
   let scrubStepIndex = 0;
@@ -202,6 +205,7 @@
     visibleTranscriptTurnIndex = -1;
     localReplay = null;
     localPlayback = null;
+    localContextBlob = undefined;
     completeAnalysisMessages = [];
     fixture = nextFixture;
     transport = createCodexReplaySessionTransport(nextFixture, initialStep);
@@ -245,6 +249,7 @@
     analysisMessages = view.playback.messages;
     completeAnalysisMessages = view.session.messages;
     localFile = options.localFile;
+    if (!options.localFile) localContextBlob = undefined;
     localWarnings = options.warnings ?? view.replay.warnings;
     replayGeneration += 1;
   }
@@ -299,6 +304,7 @@
     transport = null;
     localReplay = null;
     localPlayback = null;
+    localContextBlob = undefined;
     transcriptSession = null;
     transcriptSessionOverride = undefined;
     analysisMessages = [];
@@ -362,6 +368,7 @@
     transport = null;
     localReplay = null;
     localPlayback = null;
+    localContextBlob = file;
     transcriptSession = null;
     transcriptSessionOverride = undefined;
     analysisMessages = [];
@@ -610,6 +617,7 @@
     transport = null;
     localReplay = null;
     localPlayback = null;
+    localContextBlob = undefined;
     transcriptSession = null;
     transcriptSessionOverride = undefined;
     analysisMessages = [];
@@ -1383,11 +1391,25 @@
     >
       {#if fileName}
         <aside class="replay-artifacts" aria-label="Session artifact map">
-          <SessionArtifactMap
-            items={artifactItems}
-            worktreePath={transcriptSession?.transcript?.cwd ?? fixture?.cwd}
-            {juiceEnabled}
-          />
+          <div class="replay-inspector-tabs" role="tablist" aria-label="Session inspector">
+            <button type="button" role="tab" aria-selected={inspectorView === "artifacts"} class:selected={inspectorView === "artifacts"} on:click={() => (inspectorView = "artifacts")}>Artifacts</button>
+            <button type="button" role="tab" aria-selected={inspectorView === "context"} class:selected={inspectorView === "context"} on:click={() => (inspectorView = "context")}>Context</button>
+          </div>
+          <div class="replay-inspector-content">
+            {#if inspectorView === "artifacts"}
+              <SessionArtifactMap
+                items={artifactItems}
+                worktreePath={transcriptSession?.transcript?.cwd ?? fixture?.cwd}
+                {juiceEnabled}
+              />
+            {:else}
+              <SessionContextView
+                source={localContextBlob ? "" : transcriptSession?.transcript?.path ?? ""}
+                sourceBlob={localContextBlob}
+                sourceLine={replaySourceProgress.lineCount ?? Number.POSITIVE_INFINITY}
+              />
+            {/if}
+          </div>
         </aside>
       {/if}
       <div class="replay-session-area">
@@ -1881,12 +1903,44 @@
   }
 
   .replay-artifacts {
+    display: grid;
+    grid-template-rows: auto minmax(0, 1fr);
     min-width: 0;
     min-height: 0;
     overflow: hidden;
     border: 1px solid var(--border, #303030);
     border-radius: 8px;
     background: var(--panel-bg, #181818);
+  }
+
+  .replay-inspector-tabs {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    padding: 0.3rem;
+    border-bottom: 1px solid var(--border, #303030);
+    background: var(--surface-2, #202020);
+  }
+
+  .replay-inspector-tabs button {
+    padding: 0.3rem 0.45rem;
+    border: 0;
+    border-radius: 0.3rem;
+    color: var(--muted, #999);
+    background: transparent;
+    font: inherit;
+    font-size: 0.72rem;
+    cursor: pointer;
+  }
+
+  .replay-inspector-tabs button.selected {
+    color: var(--text, #f0f0f0);
+    background: var(--button-bg, #2a2a2a);
+  }
+
+  .replay-inspector-content {
+    min-width: 0;
+    min-height: 0;
+    overflow: hidden;
   }
 
   .replay-session-area {

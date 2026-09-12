@@ -307,7 +307,7 @@ function boundedVisualDeltaText(text: string, maxChars: number): string {
 
 export interface VisualFileEdit {
   path: string;
-  action: "added" | "edited" | "deleted";
+  action: "added" | "edited" | "written" | "deleted";
   additions?: number;
   deletions?: number;
   raw?: string;
