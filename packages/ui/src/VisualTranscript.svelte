@@ -10,6 +10,7 @@
   import Diff from "./Diff.svelte";
   import DiffLoader from "./DiffLoader.svelte";
   import LoadingSpinner from "./LoadingSpinner.svelte";
+  import AsyncQuestionCard from "./AsyncQuestionCard.svelte";
   import SparseArtifactTree from "./SparseArtifactTree.svelte";
   import Tooltip from "./Tooltip.svelte";
   import ToolIcon from "./ToolIcon.svelte";
@@ -133,10 +134,13 @@
       | "system_reminder"
       | "context_update"
       | "command"
+      | "question"
       | "goal"
       | "marker"
       | "subagent";
     text?: string;
+    questionId?: string;
+    questionOptions?: readonly { label: string; description?: string }[];
     streaming?: boolean;
     toolName?: string;
     toolInput?: unknown;
@@ -234,6 +238,10 @@
   export let showLiveThinkingLine = false;
   export let messageMotionSources: Map<string, ComposerMotionRect> = new Map();
   export let onMessageMotionDone: (id: string) => void = () => {};
+  export let onAnswerQuestion:
+    | ((block: NormalizedBlock, answer: string) => void | Promise<void>)
+    | undefined = undefined;
+  export let answeredAsyncQuestionIds: ReadonlySet<string> = new Set();
   export let onOpenSubagent: (
     subagentId: string,
     surface: "read" | "terminal",
@@ -1946,6 +1954,7 @@
     return [
       index,
       block.type,
+      block.questionId ?? "",
       block.toolUseId ?? "",
       block.toolName ?? "",
       block.path ?? block.url ?? "",
@@ -2445,6 +2454,19 @@
   </details>
 {/snippet}
 
+{#snippet renderAsyncQuestion(block: NormalizedBlock)}
+  {@const answered = !!block.questionId && answeredAsyncQuestionIds.has(block.questionId)}
+  <AsyncQuestionCard
+    questionId={block.questionId}
+    text={block.text}
+    options={block.questionOptions ?? []}
+    {answered}
+    onAnswer={onAnswerQuestion
+      ? (_questionId, answer) => onAnswerQuestion?.(block, answer)
+      : undefined}
+  />
+{/snippet}
+
 {#snippet renderMessageBlocks(
   blocks: NormalizedBlock[],
   m: NormalizedMessage,
@@ -2488,6 +2510,8 @@
       </div>
     {:else if b.type === "plan"}
       {@render renderPlanCard(b)}
+    {:else if b.type === "question"}
+      {@render renderAsyncQuestion(b)}
     {:else if b.type === "subagent"}
       {@const subagent = visualSubagentMetaFromBlock(b)}
       {#if subagent}
@@ -2668,6 +2692,8 @@
         </div>
         {@html markdownCodeBlockHtml(planRawPayloadText(b), "json")}
       </div>
+    {:else if b.type === "question"}
+      {@render renderAsyncQuestion(b)}
     {:else if b.type === "subagent"}
       {@const subagent = visualSubagentMetaFromBlock(b)}
       {#if subagent}

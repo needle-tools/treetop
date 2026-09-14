@@ -37,9 +37,12 @@ export interface AgentTranscriptBlock {
     | "system_reminder"
     | "context_update"
     | "command"
+    | "question"
     | "marker"
     | "subagent";
   text?: string;
+  questionId?: string;
+  questionOptions?: readonly { label: string; description?: string }[];
   toolName?: string;
   toolInput?: unknown;
   toolInvocations?: readonly {
@@ -89,6 +92,50 @@ export interface AgentTranscriptBlock {
 }
 
 export type CodexTranscriptBlock = AgentTranscriptBlock;
+
+/** Normalize Codex's non-blocking question payload into the same visual block
+ * shape for JSONL transcripts and app-server item snapshots. */
+export function asyncQuestionBlocksFromPayload(
+  value: unknown,
+  groupId?: string,
+): AgentTranscriptBlock[] {
+  const payload = object(value);
+  if (!payload || !Array.isArray(payload.questions)) return [];
+  return payload.questions.flatMap((entry, index) => {
+    const question = object(entry);
+    if (!question) return [];
+    const text =
+      string(question, "question") ??
+      string(question, "title") ??
+      string(question, "header");
+    if (!text?.trim()) return [];
+    const questionId =
+      string(question, "id") ?? (groupId ? `${groupId}:${index}` : undefined);
+    const questionOptions = Array.isArray(question.options)
+      ? question.options.flatMap((option) => {
+          if (typeof option === "string" && option.trim()) {
+            return [{ label: option }];
+          }
+          const row = object(option);
+          const label = string(row, "label");
+          return label?.trim()
+            ? [{
+                label,
+                ...(string(row, "description")
+                  ? { description: string(row, "description") }
+                  : {}),
+              }]
+            : [];
+        })
+      : [];
+    return [{
+      type: "question" as const,
+      text,
+      ...(questionId ? { questionId } : {}),
+      ...(questionOptions.length ? { questionOptions } : {}),
+    }];
+  });
+}
 
 export interface CodexTranscriptMessage {
   role: CodexTranscriptRole;
@@ -785,6 +832,13 @@ export function createCodexTranscriptNormalizer(options: CodexTranscriptNormaliz
         const fullInput = primary?.toolInput ?? input;
         input = clipInput(fullInput);
         rememberTool(id, name);
+        if (name === "request_user_input_async") {
+          const blocks = asyncQuestionBlocksFromPayload(fullInput, id);
+          return {
+            recognized: true,
+            messages: blocks.length ? [message("assistant", blocks, timestamp)] : [],
+          };
+        }
         if (["get_goal", "create_goal", "update_goal"].includes(name)) return { recognized: true, messages: [] };
         const plan = name === "update_plan" ? object(input) : undefined;
         if (plan && Array.isArray(plan.plan)) {
@@ -846,6 +900,9 @@ export function createCodexTranscriptNormalizer(options: CodexTranscriptNormaliz
       if (payloadType === "function_call_output" || payloadType === "custom_tool_call_output") {
         const id = string(payload, "call_id") ?? string(payload, "id");
         const name = resultTool(id) ?? string(payload, "name");
+        if (name === "request_user_input_async") {
+          return { recognized: true, messages: [] };
+        }
         const output = toolOutput(payload.output, options.resolveInlineData);
         if (["get_goal", "create_goal", "update_goal"].includes(name ?? "")) {
           const goal = goalBlock(output.text);

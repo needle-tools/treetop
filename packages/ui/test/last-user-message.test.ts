@@ -1950,6 +1950,47 @@ describe("reuseStableVisualTranscriptItems", () => {
     expect(next[1].entries[1]).not.toBe(previous[1].entries[1]);
   });
 
+  it("does not reuse stale message accounting when a live turn completes", () => {
+    const liveUsage: Message = {
+      id: "usage-turn-1",
+      role: "assistant",
+      timestamp: "2026-09-10T10:00:02.000Z",
+      tokensUsed: 100,
+      tokenUsage: {
+        input: 1_000,
+        cachedInput: 900,
+        cacheWriteInput: 0,
+        output: 100,
+        reasoningOutput: 10,
+        total: 1_100,
+      },
+      model: "gpt-5.5",
+      blocks: [{ type: "thinking", text: "working" }],
+    };
+    const completedUsage: Message = {
+      ...liveUsage,
+      tokensUsed: 320,
+      tokenUsage: {
+        input: 120_000,
+        cachedInput: 110_000,
+        cacheWriteInput: 0,
+        output: 320,
+        reasoningOutput: 80,
+        total: 120_320,
+      },
+      model: "gpt-6-astra",
+    };
+    const previous = buildVisualTranscriptItems([liveUsage], { active: true });
+    const nextRaw = buildVisualTranscriptItems([completedUsage], {
+      active: false,
+    });
+    const next = reuseStableVisualTranscriptItems(previous, nextRaw);
+
+    expect(next[0]).not.toBe(previous[0]);
+    if (next[0]?.kind !== "message") throw new Error("expected message item");
+    expect(next[0].message).toBe(completedUsage);
+  });
+
   it("skips expensive signatures for unchanged message object references", () => {
     const user = msg("user", "profile this", "2026-06-19T10:00:00.000Z");
     const toolUse: Message = {

@@ -108,10 +108,12 @@
     resolveTerminalWorking,
     canRequestOlderCodexAppThreadHistory,
     codexAppEventDeliveryMode,
+    codexAsyncQuestionAnswerText,
     codexEventLifecycleHandledStateOnly,
     codexEventReplayKey,
     codexEventItemId,
     codexAppHistoryMessagesFromTurnPage,
+    codexAppHistoryTurnIds,
     codexAppHistoryKey,
     codexAppHistoryFailureMessage,
     codexAppHistoryRetryDelayMs,
@@ -393,10 +395,13 @@
       | "system_reminder"
       | "context_update"
       | "command"
+      | "question"
       | "goal"
       | "marker"
       | "subagent";
     text?: string;
+    questionId?: string;
+    questionOptions?: readonly { label: string; description?: string }[];
     streaming?: boolean;
     toolName?: string;
     toolInput?: unknown;
@@ -488,6 +493,7 @@
   let codexAppHistorySourceActive = false;
   let codexAppHistoryFetchActive = false;
   let codexAppSessionKey = "";
+  let answeredAsyncQuestionIds = new Set<string>();
   let sessionFileSource = "";
   let sessionMessageSource: SessionMessageSource = {
     kind: "unavailable",
@@ -626,6 +632,7 @@
   let codexAppHistoryFailureCount = 0;
   let codexAppHistoryRetryTimer: ReturnType<typeof setTimeout> | null = null;
   let codexAppHistoryNextCursor: string | null = null;
+  let codexAppLiveTurnIds = new Set<string>();
   let codexDeferredVisualEventKey = "";
   let visualHistoryScrollAnchor: {
     el: HTMLElement;
@@ -2005,6 +2012,7 @@
     if (!codexAppHistorySourceActive || !effectiveSessionId) return;
     const key = codexAppHistoryKey(effectiveSessionId, effectiveSessionCwd);
     if (key && key === codexAppSessionKey) return;
+    answeredAsyncQuestionIds = new Set();
     const previous = session;
     session = {
       agent,
@@ -2185,6 +2193,7 @@
       }
       codexDeferredVisualEventKey = "";
       codexSeenEvents.clear();
+      codexAppLiveTurnIds = new Set();
       codexLiveDetectedModel = "";
       if (!codexAppHistorySourceActive) codexAppSessionKey = "";
       resetToCodexAppSession();
@@ -2265,6 +2274,8 @@
     const targetCwd = cwd;
     const targetHistoryKey = codexAppHistoryKey(threadId, cwd);
     const messagesAtReadStart = session.messages;
+    const historySnapshotCapturedDuringActiveTurn =
+      sending || codexActiveTurnId !== null;
     const targetStillOwned = () =>
       shouldApplyCodexAppHistoryResponse({
         sourceActive: codexAppHistoryFetchActive,
@@ -2314,6 +2325,26 @@
         body.thread,
         codexLiveNormalizeContext,
       ) as NormalizedMessage[];
+      const historyTurnIds = codexAppHistoryTurnIds(body.thread);
+      // A turns page is not a superset of app-server notifications: it may be
+      // stale just after completion and it omits notification-only rows such
+      // as token checkpoints. Once this mounted surface has observed a turn
+      // live, history may enrich that projection but must not delete from it.
+      const preserveLiveProjection = codexAppLiveTurnIds.size > 0;
+      const latestLiveTurnId = [...codexAppLiveTurnIds].at(-1);
+      const historyMissingLiveTurn =
+        !cursor &&
+        !!latestLiveTurnId &&
+        !historyTurnIds.has(latestLiveTurnId);
+      if (historyMissingLiveTurn) {
+        console.warn(
+          "Codex app-server history omitted a live-observed turn; preserving the live projection",
+          {
+            threadId: targetThreadId,
+            missingTurnId: latestLiveTurnId,
+          },
+        );
+      }
       const mergedMessages = (
         cursor
           ? mergeCodexAppHistoryMessages(historyMessages, session.messages)
@@ -2321,6 +2352,10 @@
               historyMessages,
               session.messages,
               messagesAtReadStart,
+              {
+                historySnapshotCapturedDuringActiveTurn,
+                preserveLiveProjection,
+              },
             )
       ) as NormalizedMessage[];
       if (!sameMessageReferences(session.messages, mergedMessages)) {
@@ -2710,6 +2745,7 @@
       (codexAppHistorySourceActive &&
         codexAppSessionKey !== codexAppHistoryKey(resumeSessionId, wtPath)))
   ) {
+    answeredAsyncQuestionIds = new Set();
     session = {
       agent,
       cwd: wtPath,
@@ -3424,6 +3460,9 @@
       return;
     }
     if (event.method === "turn/started") {
+      if (event.turnId) {
+        codexAppLiveTurnIds = new Set(codexAppLiveTurnIds).add(event.turnId);
+      }
       codexActiveTurnId = event.turnId ?? codexActiveTurnId;
       sending = true;
       sendError = "";
@@ -3441,6 +3480,9 @@
       return;
     }
     if (event.method === "turn/completed") {
+      if (event.turnId) {
+        codexAppLiveTurnIds = new Set(codexAppLiveTurnIds).add(event.turnId);
+      }
       codexActiveTurnId = null;
       sending = false;
       sessionStatsRefreshSeq += 1;
@@ -3491,6 +3533,13 @@
     }
     if (delivery !== "batched-delta") {
       flushCodexDeltaPatches();
+    }
+    if (
+      (event.method === "turn/started" ||
+        event.method === "turn/completed") &&
+      event.turnId
+    ) {
+      codexAppLiveTurnIds = new Set(codexAppLiveTurnIds).add(event.turnId);
     }
     const skipLifecycle =
       lifecycleAlreadyApplied && codexEventLifecycleHandledStateOnly(event);
@@ -4802,6 +4851,32 @@
     await sendPromise;
   }
 
+  async function answerCodexAsyncQuestion(
+    block: NormalizedBlock,
+    answer: string,
+  ): Promise<void> {
+    const questionId = block.questionId;
+    if (!questionId || answeredAsyncQuestionIds.has(questionId)) return;
+    answeredAsyncQuestionIds = new Set(answeredAsyncQuestionIds).add(questionId);
+    const payload = {
+      text: codexAsyncQuestionAnswerText(block.text, answer),
+      attachments: [] as ImageInlineAttachment[],
+    };
+    let accepted = true;
+    if (codexRunning && codexActiveTurnId) {
+      accepted = await startCodexTurn(payload, { steer: true });
+    } else if (codexRunning) {
+      enqueueCodexPayload(payload);
+    } else {
+      accepted = await startCodexTurn(payload, { steer: false });
+    }
+    if (!accepted) {
+      const next = new Set(answeredAsyncQuestionIds);
+      next.delete(questionId);
+      answeredAsyncQuestionIds = next;
+    }
+  }
+
   async function steerCodexMessage(): Promise<void> {
     const payload = currentCodexPayload();
     if (!payload || !codexActiveTurnId) return;
@@ -5969,6 +6044,10 @@
       showLiveThinkingLine={codexVisualAppSurface && codexRunning}
       messageMotionSources={composerMessageMotionSources}
       onMessageMotionDone={clearComposerMessageMotion}
+      onAnswerQuestion={codexVisualAppSurface
+        ? answerCodexAsyncQuestion
+        : undefined}
+      {answeredAsyncQuestionIds}
       {onOpenSubagent}
       {onOpenRemotePath}
     />
