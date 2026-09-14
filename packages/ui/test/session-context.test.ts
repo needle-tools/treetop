@@ -89,6 +89,51 @@ describe("recorded session context", () => {
     }]);
   });
 
+  test("normalizes asynchronous questions and hides their host acknowledgement", () => {
+    const normalize = createCodexTranscriptNormalizer();
+    const call = normalize.ingest({
+      type: "response_item",
+      timestamp: "2026-09-12T17:04:00Z",
+      payload: {
+        type: "function_call",
+        name: "request_user_input_async",
+        call_id: "call-question",
+        arguments: JSON.stringify({
+          questions: [{
+            title: "Should exports include OTIO?",
+            options: [
+              "Rendered media only",
+              { label: "Include OTIO", description: "Trim project exports too" },
+            ],
+          }],
+        }),
+      },
+    });
+
+    expect(call.messages).toEqual([{
+      role: "assistant",
+      timestamp: "2026-09-12T17:04:00Z",
+      blocks: [{
+        type: "question",
+        text: "Should exports include OTIO?",
+        questionId: "call-question:0",
+        questionOptions: [
+          { label: "Rendered media only" },
+          { label: "Include OTIO", description: "Trim project exports too" },
+        ],
+      }],
+    }]);
+
+    expect(normalize.ingest({
+      type: "response_item",
+      payload: {
+        type: "function_call_output",
+        call_id: "call-question",
+        output: JSON.stringify({ accepted: true }),
+      },
+    }).messages).toEqual([]);
+  });
+
   test("applies one recursive retention policy to nested Codex tool input", () => {
     const normalize = createCodexTranscriptNormalizer();
     const content = "x".repeat(20_000);

@@ -6,6 +6,7 @@ import {
   canRequestOlderCodexAppThreadHistory,
   codexAppHistoryMessagesFromThread,
   codexAppHistoryMessagesFromTurnPage,
+  codexAppHistoryTurnIds,
   codexLiveMessagesFromEvent,
   codexLiveMessagesEndTurn,
   codexLiveMarkerFromEvent,
@@ -25,6 +26,7 @@ import {
   codexEventLifecycleHandledStateOnly,
   codexEventVisualDelivery,
   codexAppEventDeliveryMode,
+  codexAsyncQuestionAnswerText,
   CODEX_LIVE_OUTPUT_LIMIT,
   codexOutputDeltaNeedsToolUse,
   mergeCodexAppHistoryMessages,
@@ -121,6 +123,40 @@ describe("codex event stream hub", () => {
       riskLevel: "high",
       description: "Carefully monitor Codex while it uses this app.",
       details: [{ label: "App", value: "Google Chrome" }],
+    });
+  });
+
+  test("presents parsed command approvals through the shared command nicifier", () => {
+    const request: CodexAppEvent = {
+      kind: "request",
+      id: 17,
+      method: "item/commandExecution/requestApproval",
+      params: {
+        threadId: "thread-1",
+        turnId: "turn-1",
+        itemId: "command-1",
+        cwd: "/repo",
+        commandActions: [
+          {
+            type: "unknown",
+            command: "git restore js/package~/src/engine/example.ts",
+          },
+        ],
+      },
+      receivedAt: "2026-09-14T08:46:16.000Z",
+    };
+
+    expect(codexRequestPresentation(request)).toEqual({
+      title: "Command approval",
+      preview: "Restore example.ts",
+      structured: true,
+      details: [
+        {
+          label: "Command",
+          value: "git restore js/package~/src/engine/example.ts",
+        },
+        { label: "Folder", value: "/repo" },
+      ],
     });
   });
 
@@ -3168,6 +3204,88 @@ describe("codex event stream hub", () => {
     ]);
   });
 
+  test("normalizes async app-server questions identically in history and live events", () => {
+    const question = {
+      id: "call-question",
+      type: "agentMessage",
+      delivery: "async",
+      text: "Should exports include OTIO?\n\n1. Rendered media only\n2. Include OTIO",
+      questions: [{
+        title: "Should exports include OTIO?",
+        options: ["Rendered media only", "Include OTIO"],
+      }],
+    };
+    const history = codexAppHistoryMessagesFromThread({
+      turns: [{ id: "turn-1", items: [question] }],
+    });
+    const live = codexLiveMessagesFromEvent({
+      kind: "notification",
+      method: "item/completed",
+      params: { item: question, completedAtMs: 1_757_696_640_000 },
+      threadId: "thread-1",
+      turnId: "turn-1",
+      receivedAt: "2026-09-12T17:04:01.000Z",
+    });
+
+    expect(history).toEqual([{
+      id: "codex-agent-call-question",
+      role: "assistant",
+      timestamp: undefined,
+      blocks: [{
+        type: "question",
+        text: "Should exports include OTIO?",
+        questionId: "call-question:0",
+        questionOptions: [
+          { label: "Rendered media only" },
+          { label: "Include OTIO" },
+        ],
+      }],
+    }]);
+    expect(live).toEqual([{
+      ...history[0],
+      timestamp: "2025-09-12T17:04:00.000Z",
+    }]);
+
+    const context = {};
+    const liveCall = codexLiveMessagesFromEvent({
+      kind: "notification",
+      method: "item/completed",
+      params: {
+        item: {
+          type: "function_call",
+          name: "request_user_input_async",
+          call_id: "call-question",
+          arguments: JSON.stringify({ questions: question.questions }),
+        },
+      },
+      threadId: "thread-1",
+      turnId: "turn-1",
+      receivedAt: "2026-09-12T17:04:01.000Z",
+    }, context);
+    expect(liveCall[0]?.blocks).toEqual(history[0]?.blocks);
+    expect(codexLiveMessagesFromEvent({
+      kind: "notification",
+      method: "item/completed",
+      params: {
+        item: {
+          type: "function_call_output",
+          call_id: "call-question",
+          output: JSON.stringify({ accepted: true }),
+        },
+      },
+      threadId: "thread-1",
+      turnId: "turn-1",
+      receivedAt: "2026-09-12T17:04:02.000Z",
+    }, context)).toEqual([]);
+  });
+
+  test("keeps an async question attached to the selected answer", () => {
+    expect(codexAsyncQuestionAnswerText(
+      "Should exports include OTIO?",
+      "Rendered media only",
+    )).toBe("Regarding “Should exports include OTIO?”: Rendered media only");
+  });
+
   test("merges app-server history before live events without duplicating item ids", () => {
     const history = codexAppHistoryMessagesFromThread({
       turns: [
@@ -3246,6 +3364,112 @@ describe("codex event stream hub", () => {
         [older, partial, stale],
       ),
     ).toEqual([older, authoritative, latest, arrivedDuringRead]);
+  });
+
+  test("does not let a history snapshot captured during an active turn replace live output", () => {
+    const user = {
+      id: "codex-user-user-1",
+      role: "user" as const,
+      timestamp: "2026-09-10T10:00:00.000Z",
+      blocks: [{ type: "text", text: "do the work" }],
+    };
+    const historyPartial = {
+      id: "codex-agent-agent-1",
+      role: "assistant" as const,
+      timestamp: "2026-09-10T10:00:01.000Z",
+      blocks: [{ type: "text", text: "starting" }],
+    };
+    const liveComplete = {
+      ...historyPartial,
+      blocks: [{ type: "text", text: "starting and now complete" }],
+    };
+    const earlyUsage = {
+      id: "codex-usage-turn-1-10",
+      role: "assistant" as const,
+      timestamp: "2026-09-10T10:00:02.000Z",
+      tokenUsage: {
+        input: 100_000,
+        cachedInput: 90_000,
+        cacheWriteInput: 0,
+        output: 1_000,
+        reasoningOutput: 100,
+        total: 101_000,
+      },
+      blocks: [],
+    };
+    const finalUsage = {
+      id: "codex-usage-turn-1-20",
+      role: "assistant" as const,
+      timestamp: "2026-09-10T10:00:03.000Z",
+      tokenUsage: {
+        input: 120_000,
+        cachedInput: 110_000,
+        cacheWriteInput: 0,
+        output: 2_000,
+        reasoningOutput: 200,
+        total: 122_000,
+      },
+      blocks: [],
+    };
+    const finalReply = {
+      id: "codex-agent-agent-2",
+      role: "assistant" as const,
+      timestamp: "2026-09-10T10:00:04.000Z",
+      blocks: [{ type: "text", text: "done" }],
+    };
+
+    expect(
+      reconcileCodexAppHistoryMessages(
+        [user, historyPartial, finalReply],
+        [user, liveComplete, earlyUsage, finalUsage, finalReply],
+        [user, liveComplete, earlyUsage],
+        { historySnapshotCapturedDuringActiveTurn: true },
+      ),
+    ).toEqual([user, liveComplete, earlyUsage, finalUsage, finalReply]);
+  });
+
+  test("does not let a stale post-completion history snapshot erase the live-completed turn", () => {
+    const previousUser = {
+      id: "previous-user",
+      role: "user" as const,
+      timestamp: "2026-09-10T09:00:00.000Z",
+      blocks: [{ type: "text", text: "previous turn" }],
+    };
+    const completedUser = {
+      id: "completed-user",
+      role: "user" as const,
+      timestamp: "2026-09-10T10:00:00.000Z",
+      blocks: [{ type: "text", text: "latest turn" }],
+    };
+    const completedReply = {
+      id: "completed-reply",
+      role: "assistant" as const,
+      timestamp: "2026-09-10T10:00:08.000Z",
+      blocks: [{ type: "text", text: "latest answer" }],
+    };
+
+    expect(
+      reconcileCodexAppHistoryMessages(
+        [previousUser],
+        [previousUser, completedUser, completedReply],
+        [previousUser, completedUser, completedReply],
+        { preserveLiveProjection: true },
+      ),
+    ).toEqual([previousUser, completedUser, completedReply]);
+  });
+
+  test("reads turn identities from an app-server history page", () => {
+    expect(
+      codexAppHistoryTurnIds({
+        turns: [
+          { id: "turn-completed", status: "completed" },
+          { id: "turn-active", status: "inProgress" },
+          null,
+          { status: "completed" },
+        ],
+      }),
+    ).toEqual(new Set(["turn-completed", "turn-active"]));
+    expect(codexAppHistoryTurnIds({ turns: "invalid" })).toEqual(new Set());
   });
 
   test("keeps older loaded turns before a non-overlapping latest refresh", () => {

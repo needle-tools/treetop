@@ -68,6 +68,8 @@ export {
 export interface MessageBlock {
   type: string;
   text?: string;
+  questionId?: string;
+  questionOptions?: readonly { label: string; description?: string }[];
   streaming?: boolean;
   toolUseId?: string;
   toolName?: string;
@@ -1994,7 +1996,23 @@ function blockSignature(block: MessageBlock): string {
     block.toolName ?? "",
     stableJson(block.toolInput),
     block.explanation ?? "",
+    block.questionId ?? "",
+    stableJson(block.questionOptions),
     planKey,
+  ].join("\u0000");
+}
+
+function messageMetadataSignature<
+  B extends MessageBlock,
+  M extends Message<B>,
+>(message: M): string {
+  return [
+    message.tokensUsed ?? "",
+    stableJson(message.tokenUsage),
+    message.model ?? "",
+    message.intent ?? "",
+    message.optimisticAfterMessageId ?? "",
+    message.optimisticAfterMessageIndex ?? "",
   ].join("\u0000");
 }
 
@@ -2003,6 +2021,7 @@ function entrySignature<B extends MessageBlock, M extends Message<B>>(
 ): string {
   return [
     getVisualWorkEntryKey(entry),
+    messageMetadataSignature(entry.message),
     entry.blocks.map(blockSignature).join("\u0001"),
   ].join("\u0002");
 }
@@ -2013,6 +2032,7 @@ function itemSignature<B extends MessageBlock, M extends Message<B>>(
   if (item.kind === "message") {
     return [
       getVisualTranscriptItemKey(item, item.messageIndex),
+      messageMetadataSignature(item.message),
       item.blocks.map(blockSignature).join("\u0001"),
     ].join("\u0002");
   }

@@ -1,8 +1,10 @@
 import { apiUrl } from "./api";
 import {
   canonicalCodexToolName,
+  asyncQuestionBlocksFromPayload,
   codexSubagentActivityFields,
   contextTokenSnapshotFromUsageRecord,
+  nicifyCommand,
   parseCodexToolScriptInvocations,
   type AgentTranscriptBlock,
   type CodexSubagentActivityFields,
@@ -51,6 +53,14 @@ export function codexRequestNeedsUserInteraction(method: string): boolean {
   return CODEX_USER_INTERACTION_REQUESTS.has(method);
 }
 
+export function codexAsyncQuestionAnswerText(
+  question: string | undefined,
+  answer: string,
+): string {
+  const prompt = question?.trim();
+  return prompt ? `Regarding “${prompt}”: ${answer}` : answer;
+}
+
 export function codexRequestPresentation(
   request: CodexAppEvent,
 ): CodexRequestPresentation {
@@ -94,6 +104,29 @@ export function codexRequestPresentation(
     };
   }
 
+  if (
+    request.method === "item/commandExecution/requestApproval" ||
+    request.method === "execCommandApproval"
+  ) {
+    const command = codexApprovalCommand(params);
+    if (command) {
+      const nicified = nicifyCommand(command);
+      const cwd = stringField(params, "cwd");
+      return {
+        title: "Command approval",
+        preview: nicified.text || command,
+        structured: true,
+        ...(stringField(params, "reason")
+          ? { description: stringField(params, "reason") }
+          : {}),
+        details: [
+          { label: "Command", value: command },
+          ...(cwd ? [{ label: "Folder", value: cwd }] : []),
+        ],
+      };
+    }
+  }
+
   const direct =
     params.command ??
     params.reason ??
@@ -129,6 +162,26 @@ export function codexRequestPresentation(
     structured: false,
     details: [],
   };
+}
+
+function codexApprovalCommand(params: Record<string, unknown>): string | undefined {
+  const direct = params.command;
+  if (typeof direct === "string" && direct.trim()) return direct.trim();
+  if (Array.isArray(direct)) {
+    const argv = direct.filter((part): part is string => typeof part === "string");
+    const shellCommandIndex = argv.findIndex(
+      (part, index) => (part === "-c" || part === "-lc") && index + 1 < argv.length,
+    );
+    if (shellCommandIndex >= 0) return argv[shellCommandIndex + 1]!.trim();
+    if (argv.length) return argv.join(" ").trim();
+  }
+  if (!Array.isArray(params.commandActions)) return undefined;
+  const commands = params.commandActions.flatMap((value) => {
+    if (!value || typeof value !== "object") return [];
+    const command = stringField(value as Record<string, unknown>, "command");
+    return command ? [command] : [];
+  });
+  return [...new Set(commands)].join(" ; ") || undefined;
 }
 
 function codexRequestInputPreview(input: unknown): string {
@@ -1011,28 +1064,60 @@ export function codexLiveMessagesFromEvent(
   if (activity) {
     messages.push(codexSubagentActivityMessage(activity, timestamp));
   }
+  const liveItem = codexEventItem(event.params);
+  if (
+    (event.method === "item/started" || event.method === "item/completed") &&
+    liveItem?.type === "agentMessage" &&
+    stringField(liveItem, "delivery") === "async"
+  ) {
+    const itemId = codexEventItemId(event) ?? "question";
+    const blocks = asyncQuestionBlocksFromPayload(liveItem, itemId);
+    if (blocks.length) {
+      messages.push({
+        id: `codex-agent-${itemId}`,
+        role: "assistant",
+        timestamp,
+        blocks,
+      });
+    }
+  }
   const liveToolUse = codexLiveToolUseFromEvent(event, context);
   if (liveToolUse && !event.method.endsWith("/outputDelta")) {
-    messages.push(
-      codexToolUseMessage({
-        id: liveToolUse.id,
-        timestamp,
-        toolName: liveToolUse.toolName,
-        toolInput: liveToolUse.toolInput,
-        toolUseId: liveToolUse.toolUseId,
-        approvalPolicy: liveToolUse.approvalPolicy,
-        approvalDecision: liveToolUse.approvalDecision,
-        sandboxPolicy: liveToolUse.sandboxPolicy,
-        extraFields: codexSubagentBlockFromToolUse(
-          liveToolUse.toolName,
-          liveToolUse.toolInput,
-        ),
-        extraBlocks: liveToolUse.mediaBlock ? [liveToolUse.mediaBlock] : [],
-      }),
-    );
+    if (liveToolUse.toolName === "request_user_input_async") {
+      const blocks = asyncQuestionBlocksFromPayload(
+        liveToolUse.toolInput,
+        liveToolUse.toolUseId,
+      );
+      if (blocks.length) {
+        messages.push({
+          id: `codex-agent-${liveToolUse.toolUseId}`,
+          role: "assistant",
+          timestamp,
+          blocks,
+        });
+      }
+    } else {
+      messages.push(
+        codexToolUseMessage({
+          id: liveToolUse.id,
+          timestamp,
+          toolName: liveToolUse.toolName,
+          toolInput: liveToolUse.toolInput,
+          toolUseId: liveToolUse.toolUseId,
+          approvalPolicy: liveToolUse.approvalPolicy,
+          approvalDecision: liveToolUse.approvalDecision,
+          sandboxPolicy: liveToolUse.sandboxPolicy,
+          extraFields: codexSubagentBlockFromToolUse(
+            liveToolUse.toolName,
+            liveToolUse.toolInput,
+          ),
+          extraBlocks: liveToolUse.mediaBlock ? [liveToolUse.mediaBlock] : [],
+        }),
+      );
+    }
   }
   const liveToolResult = codexLiveToolResultFromEvent(event, context);
-  if (liveToolResult) {
+  if (liveToolResult && liveToolResult.toolName !== "request_user_input_async") {
     messages.push(
       codexToolResultMessage({
         id: liveToolResult.id,
@@ -1128,6 +1213,19 @@ export function codexAppHistoryMessagesFromTurnPage(
   );
 }
 
+export function codexAppHistoryTurnIds(thread: unknown): Set<string> {
+  if (!thread || typeof thread !== "object") return new Set();
+  const turns = (thread as Record<string, unknown>).turns;
+  if (!Array.isArray(turns)) return new Set();
+  return new Set(
+    turns.flatMap((turn) => {
+      if (!turn || typeof turn !== "object") return [];
+      const id = stringField(turn as Record<string, unknown>, "id");
+      return id ? [id] : [];
+    }),
+  );
+}
+
 export function mergeCodexAppHistoryMessages<
   M extends { id?: string; blocks: unknown[] },
 >(history: readonly M[], current: readonly M[]): M[] {
@@ -1169,9 +1267,23 @@ export function reconcileCodexAppHistoryMessages<
   history: readonly M[],
   current: readonly M[],
   currentAtReadStart: readonly M[] = current,
+  options: {
+    historySnapshotCapturedDuringActiveTurn?: boolean;
+    preserveLiveProjection?: boolean;
+  } = {},
 ): M[] {
   if (history.length === 0) return [...current];
   if (current.length === 0) return [...history];
+  // A thread page is a point-in-time snapshot and is not a superset of live
+  // app-server notifications. It can arrive behind SSE output and excludes
+  // notification-only rows such as usage checkpoints. Keep a live projection's
+  // ordering and only enrich matching rows / append history-only rows.
+  if (
+    options.historySnapshotCapturedDuringActiveTurn ||
+    options.preserveLiveProjection
+  ) {
+    return mergeCodexAppHistoryMessages(current, history);
+  }
 
   const historyIds = new Set(
     history.flatMap((message) => (message.id ? [message.id] : [])),
@@ -1295,6 +1407,18 @@ function codexAppMessagesFromThreadItem(
       : [];
   }
   if (itemType === "agentMessage") {
+    const questionBlocks =
+      stringField(item, "delivery") === "async"
+        ? asyncQuestionBlocksFromPayload(item, itemId)
+        : [];
+    if (questionBlocks.length) {
+      return [{
+        id: `codex-agent-${itemId}`,
+        role: "assistant",
+        timestamp,
+        blocks: questionBlocks,
+      }];
+    }
     const text = stringField(item, "text");
     return text
       ? [
@@ -1367,6 +1491,17 @@ function codexAppMessagesFromThreadItem(
     const tool = normalized.name;
     const toolInput = normalized.input;
     toolNames.set(callId, tool);
+    if (tool === "request_user_input_async") {
+      const blocks = asyncQuestionBlocksFromPayload(toolInput, callId);
+      return blocks.length
+        ? [{
+            id: `codex-agent-${callId}`,
+            role: "assistant",
+            timestamp,
+            blocks,
+          }]
+        : [];
+    }
     const viewImageMedia =
       tool === "view_image" ? codexViewImageMediaBlock(toolInput) : null;
     return [
@@ -1392,6 +1527,7 @@ function codexAppMessagesFromThreadItem(
   ) {
     const callId = stringField(item, "call_id") ?? itemId;
     const tool = toolNames.get(callId) ?? stringField(item, "name") ?? itemType;
+    if (tool === "request_user_input_async") return [];
     const { text: output, mediaBlocks } = codexToolOutputBlocksFromPayload(
       item.output ?? item.result ?? "",
     );
