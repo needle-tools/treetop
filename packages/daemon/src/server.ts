@@ -189,6 +189,7 @@ import {
   rewriteTempWorkspaceAttachmentRefs,
   invalidateReposCacheRuntime,
   worktreeDetailsChanged,
+  internalCommandTerminalArgs,
 } from "./server-helpers";
 import {
   normalizeRemote,
@@ -8106,7 +8107,12 @@ const server = Bun.serve<TermWsData, never>({
         if (runMode === "internal") {
           try {
             const routeStarted = performance.now();
-            const spawnCmd = shellExec(cmdLink.cmd);
+            const spawnCmd = internalCommandTerminalArgs(
+              cmdLink.cmd,
+              process.platform,
+              process.env.SHELL || "/bin/sh",
+              process.env.COMSPEC ?? "cmd.exe",
+            );
             const spawnStarted = performance.now();
             const handle = await terminalBackend.spawn({
               cmd: spawnCmd,

@@ -144,7 +144,7 @@
     spawn: { id: string };
     awaitingChange: { awaiting: boolean };
     workingChange: { working: boolean };
-    exit: void;
+    exit: { code: number; signal?: string };
     titleSave: { title: string };
     titleEditingChange: { editing: boolean };
     sshBrowse: { user: string | undefined; host: string; port: number };
@@ -325,7 +325,7 @@
     heartbeatMs: 25_000,
     onAwaiting: (awaiting) => dispatch("awaitingChange", { awaiting }),
     onWorking: (working) => dispatch("workingChange", { working }),
-    onExit: () => dispatch("exit"),
+    onExit: (info) => dispatch("exit", info),
   });
 
   function holdConnect(termId: string): HoldSocket {
@@ -519,7 +519,7 @@
         sshSession = ssh;
         if (ssh?.cwd) dispatch("sshCwd", { cwd: ssh.cwd });
       }}
-      onExit={() => {
+      onExit={(info) => {
         /* Deliberately NOT closing the column on PTY exit. Some agents
            (notably `codex`) restart themselves after an in-place update —
            they exit, then a fresh process spawns. If we auto-disposed
@@ -528,7 +528,7 @@
            output; the user dismisses via the × in the header. We do
            bubble an exit event up so the side dock can shrink the
            row's dot to mark the session as ended. */
-        dispatch("exit");
+        dispatch("exit", info);
       }}
     />
   {:else}
