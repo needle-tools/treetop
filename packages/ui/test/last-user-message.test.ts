@@ -3138,6 +3138,85 @@ describe("visual tool payload display helpers", () => {
     }
   });
 
+  it("does not mistake rg file-search option values for the search root", () => {
+    const block = (cmd: string) => ({
+      type: "tool_use",
+      toolName: "exec_command",
+      toolInput: { cmd },
+    });
+
+    expect(
+      visualToolPreviewText(
+        block(
+          "/bin/zsh -lc \"rg --files --max-depth 1 /Users/herbst/Downloads -g '*fastvid*' -g '*.jsonl'\"",
+        ),
+      ),
+    ).toBe("Find *fastvid*, *.jsonl in Downloads");
+    expect(
+      visualToolPreviewText(
+        block(
+          "rg --files --max-depth=1 /Users/herbst/Downloads -g '*.jsonl'",
+        ),
+      ),
+    ).toBe("Find *.jsonl in Downloads");
+  });
+
+  it("does not present option values as positional command targets", () => {
+    const preview = (cmd: string) =>
+      visualToolPreviewText({
+        type: "tool_use",
+        toolName: "exec_command",
+        toolInput: { cmd },
+      });
+    const cases: Array<[command: string, expected: string]> = [
+      ["rg --files --max-filesize 10M /tmp -g '*.ts'", "Find *.ts in tmp"],
+      ["rg --max-count 2 needle src", 'Search src for "needle"'],
+      ["rg --color always needle src", 'Search src for "needle"'],
+      ["grep -r needle src", 'Search src for "needle"'],
+      ["grep --color needle src", 'Search src for "needle"'],
+      ["git grep --max-count 2 needle src", 'Search git files for "needle" in src'],
+      ["git ls-files --exclude '*.gen.ts' src", "List tracked files in src"],
+      ["git diff --unified 3 -- src/a.ts", "Review diff a.ts"],
+      ["git show --format full abc123", "Show abc123"],
+      ["git show --format '%H:%s' abc123", "Show abc123"],
+      ["ls -l --block-size K /tmp/project", "Read project"],
+      ["ls -l /tmp/project --block-size K", "Read project"],
+      ["mkdir --mode 755 build", "Create folder build"],
+      ["touch --date yesterday marker.txt", "Create file marker.txt"],
+      ["cp --suffix .bak source.txt dest.txt", "Copy source.txt -> dest.txt"],
+      ["cp --target-directory dest source.txt", "Copy source.txt -> dest"],
+      ["mv --suffix .old source.txt dest.txt", "Move source.txt -> dest.txt"],
+      ["tail --bytes 200 app.log", "Read logs app.log"],
+      ["tail --pid 123 -f app.log", "Read logs app.log"],
+      ["npm install --prefix /tmp/app lodash", "Install npm package lodash"],
+      ["npm view --registry https://registry.example pkg version", "Inspect npm package pkg"],
+      ["npm --prefix /tmp/app install lodash", "Install npm package lodash"],
+      ["cargo --color always test --jobs 4 crate_name", "Run Cargo test crate_name"],
+      ["npx playwright test --workers 4 test/a.spec.ts", "Run Playwright tests a.spec.ts"],
+      ["python -m pytest --maxfail 1 tests/test_a.py", "Run Pytest tests test_a.py"],
+      ["docker --context remote ps", "Run Docker ps"],
+      ["docker ps --format table", "Check containers"],
+      ["docker logs --tail 100 app", "Run Docker logs app"],
+      ["docker compose up --timeout 30 web", "Run Docker Compose up web"],
+      [
+        "docker run --name demo --env NODE_ENV=production alpine echo ok",
+        "Run Docker run alpine echo ok",
+      ],
+      ["pgrep -u root node", 'Check processes for "node"'],
+      ["ps aux | rg --max-count 2 node", 'Check processes for "node"'],
+      ["docker ps | rg --max-count 2 api", 'Check containers for "api"'],
+      ["git rev-list --count --max-count 3 main", "Count commits main"],
+      [
+        "ls -l --block-size K . && sed -n '1,20p' README.md",
+        "Read README.md:1-20",
+      ],
+    ];
+
+    for (const [command, expected] of cases) {
+      expect(preview(command)).toBe(expected);
+    }
+  });
+
   it("summarizes Windows environment setup commands from nested SSH sessions", () => {
     const block = (cmd: string) => ({
       type: "tool_use",

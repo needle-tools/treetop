@@ -4091,7 +4091,7 @@ function isShellContextCommand(command: string): boolean {
   }
   if (name === "ls") {
     if (!lsRequestsDetails(tokens)) return true;
-    const targets = positionalPathTokens(tokens.slice(1), new Set());
+    const targets = positionalPathTokens(tokens.slice(1), lsOptionsWithValue());
     return (
       targets.length === 0 ||
       (targets.length === 1 && (targets[0] === "." || targets[0] === "./"))
@@ -4674,9 +4674,8 @@ function summarizeGit(tokens: string[]): VisualCommandSummary | undefined {
     return { kind: "git", action: "diff", targets, staged };
   }
   if (subcommand === "show") {
-    const fileSpec = tokens
-      .slice(subcommandIndex + 1)
-      .find((token) => !token.startsWith("-") && /^[^:\s]+:.+/.test(token));
+    const showArgs = gitPathArgs(tokens.slice(subcommandIndex + 1));
+    const fileSpec = showArgs.find((token) => /^[^:\s]+:.+/.test(token));
     if (fileSpec) {
       const [rev, ...pathParts] = fileSpec.split(":");
       return {
@@ -4686,9 +4685,7 @@ function summarizeGit(tokens: string[]): VisualCommandSummary | undefined {
         rev,
       };
     }
-    const ref = tokens
-      .slice(subcommandIndex + 1)
-      .find((token) => !token.startsWith("-"));
+    const ref = showArgs[0];
     return { kind: "git", action: "show", targets: ref ? [ref] : [] };
   }
   if (subcommand === "ls-files") {
@@ -4706,9 +4703,10 @@ function summarizeGit(tokens: string[]): VisualCommandSummary | undefined {
     return { kind: "git", action: "rev-parse", targets: [] };
   }
   if (subcommand === "rev-list" && tokens.includes("--count")) {
-    const range = tokens
-      .slice(subcommandIndex + 1)
-      .find((token) => !token.startsWith("-"));
+    const range = positionalPathTokens(
+      tokens.slice(subcommandIndex + 1),
+      new Set(["--max-count", "--since", "--until"]),
+    )[0];
     return {
       kind: "git",
       action: "rev-list-count",
@@ -4802,10 +4800,46 @@ function gitCloneArgs(tokens: string[]): string[] {
   return positionalPathTokens(tokens, optionsWithValue);
 }
 
-function positionalArgs(tokens: string[], start: number): string[] {
-  return tokens
-    .slice(start)
-    .filter((token) => !token.startsWith("-") && !token.includes("="));
+function positionalArgs(
+  tokens: string[],
+  start: number,
+  optionsWithValue: Set<string> = new Set(),
+): string[] {
+  return positionalPathTokens(tokens.slice(start), optionsWithValue).filter(
+    (token) => !token.includes("="),
+  );
+}
+
+function commandIndexAfterOptions(
+  tokens: string[],
+  start: number,
+  optionsWithValue: Set<string>,
+): number {
+  for (let index = start; index < tokens.length; index += 1) {
+    const token = tokens[index]!;
+    if (token === "--") return index + 1;
+    if (!token.startsWith("-")) return index;
+    const option = token.split("=")[0]!.toLowerCase();
+    if (!token.includes("=") && optionsWithValue.has(option)) index += 1;
+  }
+  return tokens.length;
+}
+
+function npmOptionsWithValue(): Set<string> {
+  return new Set([
+    "--cache",
+    "--include",
+    "--install-strategy",
+    "--loglevel",
+    "--omit",
+    "--prefix",
+    "--registry",
+    "--save-prefix",
+    "--tag",
+    "--userconfig",
+    "--workspace",
+    "-w",
+  ]);
 }
 
 function summarizePackageCommand(
@@ -4816,8 +4850,20 @@ function summarizePackageCommand(
   if (tokens[1] === "-v" || tokens[1] === "--version") {
     return { kind: "package", manager, action: "version", targets: [] };
   }
-  if (manager === "npm" && (tokens[1] === "view" || tokens[1] === "info")) {
-    const target = positionalArgs(tokens, 2)[0];
+  const optionsWithValue = npmOptionsWithValue();
+  const npmCommandIndex =
+    manager === "npm"
+      ? commandIndexAfterOptions(tokens, 1, optionsWithValue)
+      : 1;
+  if (
+    manager === "npm" &&
+    (tokens[npmCommandIndex] === "view" || tokens[npmCommandIndex] === "info")
+  ) {
+    const target = positionalArgs(
+      tokens,
+      npmCommandIndex + 1,
+      optionsWithValue,
+    )[0];
     return {
       kind: "package",
       manager,
@@ -4827,23 +4873,33 @@ function summarizePackageCommand(
   }
   if (
     manager === "npm" &&
-    (tokens[1] === "install" || tokens[1] === "i" || tokens[1] === "ci")
+    (tokens[npmCommandIndex] === "install" ||
+      tokens[npmCommandIndex] === "i" ||
+      tokens[npmCommandIndex] === "ci")
   ) {
     return {
       kind: "package",
       manager,
       action: "install",
-      targets: positionalArgs(tokens, 2),
+      targets: positionalArgs(
+        tokens,
+        npmCommandIndex + 1,
+        optionsWithValue,
+      ),
     };
   }
-  const commandIndex = manager === "npx" ? skipNpxOptions(tokens, 1) : 1;
+  const commandIndex =
+    manager === "npx" ? skipNpxOptions(tokens, 1) : npmCommandIndex;
   const command = tokens[commandIndex];
   if (!command) return undefined;
   return {
     kind: "package",
     manager,
     action: "run",
-    targets: [command, ...positionalArgs(tokens, commandIndex + 1)],
+    targets: [
+      command,
+      ...positionalArgs(tokens, commandIndex + 1, optionsWithValue),
+    ],
   };
 }
 
@@ -4891,8 +4947,51 @@ function summarizeDockerCommand(
   tokens: string[],
 ): Extract<VisualCommandSummary, { kind: "docker" }> | undefined {
   const command = shellLauncherName(tokens[0] ?? "");
-  const compose = command === "docker-compose" || tokens[1] === "compose";
-  let index = command === "docker-compose" ? 1 : compose ? 2 : 1;
+  const optionsWithValue = new Set([
+    "--config",
+    "--context",
+    "--env",
+    "--env-file",
+    "--entrypoint",
+    "--file",
+    "--filter",
+    "--format",
+    "--host",
+    "--label",
+    "--log-driver",
+    "--log-level",
+    "--name",
+    "--network",
+    "--parallel",
+    "--platform",
+    "--profile",
+    "--progress",
+    "--project-directory",
+    "--project-name",
+    "--publish",
+    "--scale",
+    "--timeout",
+    "--tail",
+    "--tag",
+    "--user",
+    "--volume",
+    "--workdir",
+    "-e",
+    "-H",
+    "-l",
+    "-p",
+    "-u",
+    "-v",
+    "-w",
+  ].map((option) => option.toLowerCase()));
+  const commandIndex =
+    command === "docker-compose"
+      ? 1
+      : commandIndexAfterOptions(tokens, 1, optionsWithValue);
+  const compose =
+    command === "docker-compose" || tokens[commandIndex] === "compose";
+  let index =
+    compose && command !== "docker-compose" ? commandIndex + 1 : commandIndex;
   let composeFile: string | undefined;
   while (index < tokens.length && tokens[index]!.startsWith("-")) {
     const option = tokens[index]!;
@@ -4916,7 +5015,7 @@ function summarizeDockerCommand(
   return {
     kind: "docker",
     action: compose ? `compose:${action}` : action,
-    targets: positionalArgs(tokens, index + 1),
+    targets: positionalArgs(tokens, index + 1, optionsWithValue),
     composeFile,
   };
 }
@@ -4924,12 +5023,31 @@ function summarizeDockerCommand(
 function summarizeCargoCommand(
   tokens: string[],
 ): Extract<VisualCommandSummary, { kind: "cargo" }> | undefined {
-  const action = tokens[1];
+  const optionsWithValue = new Set([
+    "--color",
+    "--config",
+    "--exclude",
+    "--features",
+    "--jobs",
+    "--manifest-path",
+    "--message-format",
+    "--package",
+    "--profile",
+    "--target",
+    "--target-dir",
+    "--timings",
+    "--version",
+    "-j",
+    "-p",
+    "-Z",
+  ].map((option) => option.toLowerCase()));
+  const actionIndex = commandIndexAfterOptions(tokens, 1, optionsWithValue);
+  const action = tokens[actionIndex];
   if (!action) return undefined;
   return {
     kind: "cargo",
     action,
-    targets: positionalArgs(tokens, 2),
+    targets: positionalArgs(tokens, actionIndex + 1, optionsWithValue),
   };
 }
 
@@ -4960,18 +5078,41 @@ function gitSubcommandIndex(tokens: string[]): number {
 
 function gitPathArgs(tokens: string[]): string[] {
   const optionsWithValue = new Set([
+    "-b",
+    "-B",
     "-C",
-    "--git-dir",
-    "--work-tree",
-    "--diff-filter",
     "-G",
     "-S",
+    "-U",
+    "-X",
     "--author",
+    "--branch",
+    "--conflict",
+    "--diff-filter",
+    "--dst-prefix",
+    "--exclude",
+    "--exclude-from",
+    "--exclude-per-directory",
+    "--format",
+    "--git-dir",
     "--grep",
-    "--since",
-    "--until",
-    "-m",
+    "--line-prefix",
+    "--max-count",
     "--message",
+    "--onto",
+    "--orphan",
+    "--output",
+    "--pretty",
+    "--since",
+    "--src-prefix",
+    "--stat-width",
+    "--strategy",
+    "--strategy-option",
+    "--until",
+    "--unified",
+    "--word-diff-regex",
+    "--work-tree",
+    "-m",
   ]);
   const targets: string[] = [];
   let afterSeparator = false;
@@ -5112,15 +5253,34 @@ function skipNpxOptions(tokens: string[], start: number): number {
 
 function testPathArgs(tokens: string[]): string[] {
   const optionsWithValue = new Set([
+    "--basetemp",
+    "--confcutdir",
+    "--environment",
+    "--grep-invert",
     "--grep",
+    "--import-mode",
+    "--max-concurrency",
+    "--max-workers",
+    "--maxWorkers",
+    "--maxfail",
+    "--min-workers",
+    "--minWorkers",
+    "--pool",
     "--test-name-pattern",
     "--project",
     "--reporter",
+    "--repeat-each",
+    "--retries",
+    "--rootdir",
+    "--shard",
+    "--tb",
     "--config",
     "--timeout",
     "--testTimeout",
+    "--workers",
     "-t",
     "-c",
+    "-j",
     "-k",
     "-m",
   ]);
@@ -5194,9 +5354,8 @@ function lsofListenerTerms(command: string): string[] {
   const right = shellTokens(parts[1]!);
   const filter = right[0]?.split("/").pop()?.toLowerCase();
   if (filter !== "rg" && filter !== "grep") return [];
-  const pattern = right
-    .slice(1)
-    .find((token) => token && !token.startsWith("-"));
+  const search = summarizeSearch(right);
+  const pattern = search?.kind === "search" ? search.pattern : undefined;
   if (!pattern) return [];
   const terms: string[] = [];
   return pattern
@@ -5214,6 +5373,14 @@ function lsofListenerTerms(command: string): string[] {
 function summarizeTailRead(tokens: string[]): VisualCommandSummary | undefined {
   const targets: string[] = [];
   let tailLines: number | undefined;
+  const optionsWithValue = new Set([
+    "-c",
+    "--bytes",
+    "--max-unchanged-stats",
+    "--pid",
+    "-s",
+    "--sleep-interval",
+  ]);
   for (let index = 1; index < tokens.length; index += 1) {
     const token = tokens[index]!;
     if (token === "-n" || token === "--lines") {
@@ -5232,7 +5399,10 @@ function summarizeTailRead(tokens: string[]): VisualCommandSummary | undefined {
       if (/^-?\d+$/.test(value)) tailLines = Math.abs(Number(value));
       continue;
     }
-    if (token.startsWith("-")) continue;
+    if (token.startsWith("-")) {
+      if (!token.includes("=") && optionsWithValue.has(token)) index += 1;
+      continue;
+    }
     if (token.includes("|") || token.includes(">")) break;
     targets.push(token);
   }
@@ -6143,7 +6313,7 @@ function summarizeRemove(tokens: string[]): VisualCommandSummary | undefined {
   const command = tokens[0]?.split("/").pop()?.toLowerCase();
   const targets = positionalPathTokens(
     tokens.slice(1),
-    powershellOptionsWithValue(),
+    filesystemOptionsWithValue(command),
   );
   if (targets.length === 0) return undefined;
   const recursive = tokens.some((token) =>
@@ -6168,7 +6338,7 @@ function summarizeCreate(tokens: string[]): VisualCommandSummary | undefined {
         : "path";
   const targets = positionalPathTokens(
     tokens.slice(1),
-    powershellOptionsWithValue(),
+    filesystemOptionsWithValue(command),
   );
   if (targets.length === 0) return undefined;
   return {
@@ -6187,8 +6357,15 @@ function summarizeCopyMove(tokens: string[]): VisualCommandSummary | undefined {
       : "copy";
   const targets = positionalPathTokens(
     tokens.slice(1),
-    powershellOptionsWithValue(),
+    filesystemOptionsWithValue(command),
   );
+  const targetDirectory =
+    valueAfterFlag(tokens, "-t") ??
+    valueAfterFlag(tokens, "--target-directory") ??
+    tokens
+      .find((token) => token.startsWith("--target-directory="))
+      ?.slice("--target-directory=".length);
+  if (targetDirectory) targets.push(targetDirectory);
   if (targets.length < 2) return undefined;
   return {
     kind: "filesystem",
@@ -6196,6 +6373,38 @@ function summarizeCopyMove(tokens: string[]): VisualCommandSummary | undefined {
     targetKind: "file",
     targets,
   };
+}
+
+function filesystemOptionsWithValue(command: string | undefined): Set<string> {
+  const options = powershellOptionsWithValue();
+  if (command === "mkdir" || command === "md") {
+    options.add("-m");
+    options.add("--mode");
+  }
+  if (command === "touch") {
+    for (const option of [
+      "-d",
+      "--date",
+      "-r",
+      "--reference",
+      "-t",
+      "--time",
+    ]) {
+      options.add(option);
+    }
+  }
+  if (
+    command === "cp" ||
+    command === "copy" ||
+    command === "mv" ||
+    command === "move"
+  ) {
+    options.add("-S");
+    options.add("--suffix");
+    options.add("-t");
+    options.add("--target-directory");
+  }
+  return options;
 }
 
 function powershellOptionsWithValue(): Set<string> {
@@ -6245,7 +6454,12 @@ function positionalPathTokens(
         index += 1;
         continue;
       }
-      if (!token.includes("=") && optionsWithValue.has(lower)) index += 1;
+      if (
+        !token.includes("=") &&
+        (optionsWithValue.has(token) || optionsWithValue.has(lower))
+      ) {
+        index += 1;
+      }
       continue;
     }
     targets.push(token);
@@ -6531,24 +6745,76 @@ function summarizeGetContentRead(
 function summarizeSearch(tokens: string[]): VisualCommandSummary | undefined {
   let pattern: string | undefined;
   const paths: string[] = [];
-  const optionsWithValue = new Set([
-    "-e",
-    "-f",
-    "-g",
-    "-t",
-    "-T",
-    "-C",
-    "-A",
-    "-B",
-    "--regexp",
-    "--file",
-    "--glob",
-    "--type",
-    "--type-not",
-    "--context",
-    "--after-context",
-    "--before-context",
-  ]);
+  const command = shellLauncherName(tokens[0] ?? "");
+  const optionsWithValue =
+    command === "grep"
+      ? new Set([
+          "-A",
+          "-B",
+          "-C",
+          "-D",
+          "-d",
+          "-e",
+          "-f",
+          "-m",
+          "--after-context",
+          "--before-context",
+          "--context",
+          "--devices",
+          "--directories",
+          "--exclude",
+          "--exclude-dir",
+          "--exclude-from",
+          "--file",
+          "--include",
+          "--label",
+          "--max-count",
+          "--regexp",
+        ])
+      : new Set([
+          "-A",
+          "-B",
+          "-C",
+          "-e",
+          "-f",
+          "-g",
+          "-j",
+          "-m",
+          "-r",
+          "-t",
+          "-T",
+          "--after-context",
+          "--before-context",
+          "--color",
+          "--colors",
+          "--context",
+          "--context-separator",
+          "--dfa-size-limit",
+          "--encoding",
+          "--engine",
+          "--file",
+          "--glob",
+          "--hostname-bin",
+          "--iglob",
+          "--ignore-file",
+          "--max-columns",
+          "--max-count",
+          "--max-depth",
+          "--max-filesize",
+          "--path-separator",
+          "--pre",
+          "--pre-glob",
+          "--regex-size-limit",
+          "--regexp",
+          "--replace",
+          "--sort",
+          "--sortr",
+          "--threads",
+          "--type",
+          "--type-add",
+          "--type-clear",
+          "--type-not",
+        ]);
   for (let i = 1; i < tokens.length; i += 1) {
     const token = tokens[i]!;
     if (token === "--") continue;
@@ -6584,8 +6850,13 @@ function summarizeFileSearch(tokens: string[]): VisualCommandSummary | undefined
     "--type-not",
     "--iglob",
     "--ignore-file",
+    "--max-depth",
+    "--max-filesize",
+    "--path-separator",
+    "--threads",
     "--sort",
     "--sortr",
+    "-j",
   ]);
   for (let index = 1; index < tokens.length; index += 1) {
     const token = tokens[index]!;
@@ -6628,7 +6899,10 @@ function summarizeFind(tokens: string[]): VisualCommandSummary | undefined {
 
 function summarizeLs(tokens: string[]): VisualCommandSummary | undefined {
   if (!lsRequestsDetails(tokens)) return undefined;
-  const targets = positionalPathTokens(tokens.slice(1), new Set()).filter(
+  const targets = positionalPathTokens(
+    tokens.slice(1),
+    lsOptionsWithValue(),
+  ).filter(
     (target) =>
       !/[<>]/.test(target) &&
       target !== "/dev/null" &&
@@ -6641,6 +6915,24 @@ function summarizeLs(tokens: string[]): VisualCommandSummary | undefined {
     return { kind: "find", root: ".", patterns: [] };
   }
   return { kind: "read", targets };
+}
+
+function lsOptionsWithValue(): Set<string> {
+  return new Set([
+    "-D",
+    "-w",
+    "--block-size",
+    "--format",
+    "--hide",
+    "--ignore",
+    "--indicator-style",
+    "--quoting-style",
+    "--sort",
+    "--tabsize",
+    "--time",
+    "--time-style",
+    "--width",
+  ]);
 }
 
 function summarizeGetPsDrive(
@@ -6736,9 +7028,28 @@ function summarizeProcessCheck(
   const tokens = shellTokens(command);
   const name = tokens[0]?.split("/").pop()?.toLowerCase();
   if (name === "pgrep") {
-    const pattern = tokens
-      .slice(1)
-      .find((token) => token && !token.startsWith("-") && token !== "||");
+    const pattern = positionalPathTokens(
+      tokens.slice(1),
+      new Set([
+        "-d",
+        "--delimiter",
+        "-g",
+        "--pgroup",
+        "-G",
+        "--group",
+        "-P",
+        "--parent",
+        "-s",
+        "--session",
+        "--signal",
+        "-t",
+        "--terminal",
+        "-u",
+        "--euid",
+        "-U",
+        "--uid",
+      ]),
+    ).find((token) => token !== "||");
     return { kind: "process-check", pattern };
   }
   if (name !== "ps") return undefined;
@@ -6746,9 +7057,8 @@ function summarizeProcessCheck(
   if (pipeIndex < 0) return { kind: "process-check" };
   const filter = tokens[pipeIndex + 1]?.split("/").pop()?.toLowerCase();
   if (filter !== "rg" && filter !== "grep") return { kind: "process-check" };
-  const pattern = tokens
-    .slice(pipeIndex + 2)
-    .find((token) => token && !token.startsWith("-"));
+  const search = summarizeSearch(tokens.slice(pipeIndex + 1));
+  const pattern = search?.kind === "search" ? search.pattern : undefined;
   return { kind: "process-check", pattern };
 }
 
@@ -6827,9 +7137,8 @@ function summarizeContainerCheck(
   if (filterName !== "rg" && filterName !== "grep") {
     return { kind: "container-check" };
   }
-  const pattern = filter
-    .slice(1)
-    .find((token) => token && !token.startsWith("-"));
+  const search = summarizeSearch(filter);
+  const pattern = search?.kind === "search" ? search.pattern : undefined;
   return { kind: "container-check", pattern };
 }
 
