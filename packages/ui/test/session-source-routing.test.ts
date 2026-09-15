@@ -22,6 +22,7 @@ import {
   moveSessionStateKey,
   canResumeVisualSurface,
   commandTerminalForSource,
+  shouldForgetCommandTerminalOnExit,
   openSessionHasDockActivity,
   openSessionHasLiveTerminal,
   sidebarDockRows,
@@ -102,6 +103,19 @@ describe("commandTerminalForSource", () => {
     expect(
       commandTerminalForSource(commands, "__attached__:shell:t_shell"),
     ).toBeUndefined();
+  });
+});
+
+describe("shouldForgetCommandTerminalOnExit", () => {
+  test("auto-closes only successful internal commands", () => {
+    const command = {
+      linkId: "test-fastvid",
+      entry: { wtPath: "/repo/fastvid", source: "__attached__:shell:t_test" },
+    };
+    expect(shouldForgetCommandTerminalOnExit(command, { code: 0 })).toBe(true);
+    expect(shouldForgetCommandTerminalOnExit(command, { code: 1 })).toBe(false);
+    expect(shouldForgetCommandTerminalOnExit(command, { code: 130 })).toBe(false);
+    expect(shouldForgetCommandTerminalOnExit(undefined, { code: 0 })).toBe(false);
   });
 });
 

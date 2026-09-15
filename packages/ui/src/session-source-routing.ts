@@ -124,6 +124,13 @@ export function commandTerminalForSource<T extends { source: string }>(
   return undefined;
 }
 
+export function shouldForgetCommandTerminalOnExit(
+  command: { linkId: string } | undefined,
+  exit: { code: number },
+): boolean {
+  return command !== undefined && exit.code === 0;
+}
+
 export function shouldMountTerminalView(args: {
   mode: "read" | "terminal";
   hasSessionId: boolean;

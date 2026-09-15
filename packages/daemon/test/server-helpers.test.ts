@@ -31,7 +31,78 @@ import {
   invalidateReposCacheRuntime,
   worktreeDetailsChanged,
   serverTimingHeaders,
+  internalCommandTerminalArgs,
 } from "../src/server-helpers";
+
+describe("internalCommandTerminalArgs", () => {
+  test("closes a successful command terminal normally", async () => {
+    const proc = Bun.spawn(
+      internalCommandTerminalArgs(
+        "printf command-ok",
+        "linux",
+        "/bin/sh",
+      ),
+      { stdout: "pipe", stderr: "pipe" },
+    );
+
+    expect(await new Response(proc.stdout).text()).toBe("command-ok");
+    expect(await proc.exited).toBe(0);
+  });
+
+  test("keeps a failed command readable and returns to an interactive shell", async () => {
+    const proc = Bun.spawn(
+      internalCommandTerminalArgs(
+        "printf command-error >&2; exit 7",
+        "linux",
+        "/bin/sh",
+      ),
+      { stdin: "pipe", stdout: "pipe", stderr: "pipe" },
+    );
+    proc.stdin.write("printf shell-ready\\n\nfalse\nexit\n");
+    proc.stdin.end();
+    const [stdout, stderr, code] = await Promise.all([
+      new Response(proc.stdout).text(),
+      new Response(proc.stderr).text(),
+      proc.exited,
+    ]);
+
+    expect(stderr).toContain("command-error");
+    expect(stderr).toContain("Command failed with exit code 7");
+    expect(stdout).toContain("shell-ready");
+    expect(code).toBe(0);
+  });
+
+  test("keeps failed Windows commands in cmd instead of closing the pane", () => {
+    expect(
+      internalCommandTerminalArgs("npm test", "win32", undefined, "cmd.exe"),
+    ).toEqual([
+      "cmd.exe",
+      "/d",
+      "/v:on",
+      "/s",
+      "/c",
+      expect.stringContaining('"%COMSPEC%" /d /k'),
+    ]);
+  });
+
+  test("preserves a non-zero exit if the fallback shell cannot start", async () => {
+    const proc = Bun.spawn(
+      internalCommandTerminalArgs(
+        "exit 4",
+        "linux",
+        "/definitely/missing/treetop-shell",
+      ),
+      { stdout: "pipe", stderr: "pipe" },
+    );
+    const [stderr, code] = await Promise.all([
+      new Response(proc.stderr).text(),
+      proc.exited,
+    ]);
+
+    expect(stderr).toContain("Interactive shell");
+    expect(code).toBe(127);
+  });
+});
 
 // ---------------------------------------------------------------------------
 // stripThinkingArtifacts

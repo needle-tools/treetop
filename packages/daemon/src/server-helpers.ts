@@ -493,6 +493,34 @@ export function decodeHtmlEntities(s: string): string {
     .replace(/&apos;/g, "'");
 }
 
+/** Run a dashboard command in a PTY that closes on success, but keeps its
+ * output visible and becomes an interactive shell after failure. */
+export function internalCommandTerminalArgs(
+  command: string,
+  platform: "win32" | "linux" | "darwin" | string,
+  interactiveShell = "/bin/sh",
+  commandShell = "cmd.exe",
+): string[] {
+  if (platform === "win32") {
+    return [
+      commandShell,
+      "/d",
+      "/v:on",
+      "/s",
+      "/c",
+      `${command}\r\nset "_TREETOP_EXIT=!errorlevel!"\r\nif not "!_TREETOP_EXIT!"=="0" (echo. & echo Treetop: Command failed with exit code !_TREETOP_EXIT!. Shell remains open. & "%COMSPEC%" /d /k & exit /b 0)`,
+    ];
+  }
+  return [
+    "sh",
+    "-c",
+    'sh -c "$1"\n_treetop_exit=$?\nif [ "$_treetop_exit" -ne 0 ]; then\n  printf "\\nTreetop: Command failed with exit code %s. Shell remains open.\\n" "$_treetop_exit" >&2\n  if [ ! -x "$2" ]; then\n    printf "Treetop: Interactive shell %s is unavailable.\\n" "$2" >&2\n    exit 127\n  fi\n  "$2" -i\nfi\nexit 0',
+    "treetop-command",
+    command,
+    interactiveShell,
+  ];
+}
+
 /**
  * Patch one worktree's freshly-recomputed git details into a cached
  * `/api/repos` payload array, IN PLACE. Returns true if a matching

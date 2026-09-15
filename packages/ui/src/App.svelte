@@ -6,6 +6,7 @@
     shellToSession,
     shellSourceToDismiss,
     commandTerminalForSource,
+    shouldForgetCommandTerminalOnExit,
     isInspectorSessionSource,
     moveSessionStateKey,
     openSessionHasLiveTerminal,
@@ -12524,12 +12525,18 @@
                                       clearFinishedFor(s.source);
                                     }
                                   }}
-                                  on:exit={() => {
+                                  on:exit={(event) => {
                                     const command = commandTerminalForSource(
                                       commandTermSources,
                                       s.source,
                                     );
-                                    if (command) {
+                                    if (
+                                      command &&
+                                      shouldForgetCommandTerminalOnExit(
+                                        command,
+                                        event.detail,
+                                      )
+                                    ) {
                                       forgetCommandTerm(
                                         command.linkId,
                                         command.entry,
