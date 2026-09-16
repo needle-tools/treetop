@@ -560,6 +560,9 @@ export function createCodexTranscriptNormalizer(options: CodexTranscriptNormaliz
   let model: string | undefined;
   let approvalPolicy: string | undefined;
   let sandboxPolicy: string | undefined;
+  let sessionId: string | undefined;
+  let agentPath: string | undefined;
+  let suppressForkedParent = false;
   const pendingWebSearchIds: string[] = [];
 
   const message = (
@@ -617,10 +620,25 @@ export function createCodexTranscriptNormalizer(options: CodexTranscriptNormaliz
       const payloadType = string(payload, "type");
       const timestamp = string(row, "timestamp") ?? string(payload, "timestamp");
       if (rowType === "session_meta" && payload) {
+        const nextSessionId = string(payload, "id");
+        if (!sessionId) {
+          sessionId = nextSessionId;
+          agentPath = string(payload, "agent_path");
+          suppressForkedParent = !!string(payload, "forked_from_id");
+        } else if (suppressForkedParent && nextSessionId !== sessionId) {
+          return { recognized: true, messages: [] };
+        }
         normalizeContext.primeBaseInstructions(payload.base_instructions);
         return {
           recognized: true, messages: [], metadata: { cwd: string(payload, "cwd"), sessionId: string(payload, "id"), timestamp },
         };
+      }
+      if (suppressForkedParent) {
+        const recordThreadId = string(payload, "thread_id") ?? string(row, "thread_id");
+        if (recordThreadId !== sessionId) {
+          return { recognized: true, messages: [] };
+        }
+        suppressForkedParent = false;
       }
       if (rowType === "turn_context" && payload) {
         model = string(payload, "model") ?? model;
@@ -736,6 +754,30 @@ export function createCodexTranscriptNormalizer(options: CodexTranscriptNormaliz
         return { recognized: true, messages: [] };
       }
       if (rowType !== "response_item" || !payload) return { recognized: false, messages: [] };
+      if (payloadType === "agent_message") {
+        const contents = Array.isArray(payload.content) ? payload.content : [payload.content];
+        const visible = contents.flatMap((raw) => {
+          if (typeof raw === "string") return [raw];
+          const part = object(raw);
+          if (!part || string(part, "type") === "encrypted_content") return [];
+          const text = string(part, "text") ?? string(part, "input_text") ?? string(part, "output_text");
+          return text ? [text] : [];
+        }).join("\n");
+        const body = visible
+          .split("\n")
+          .filter((line) => !/^(?:Message Type|Task name|Sender):\s*/i.test(line) && !/^Payload:\s*$/i.test(line))
+          .join("\n")
+          .trim();
+        const author = string(payload, "author");
+        const heading = author ? `Message from ${author}` : "Inter-agent message";
+        return {
+          recognized: true,
+          messages: [message(author && author === agentPath ? "assistant" : "user", [{
+            type: "text",
+            text: clip(body ? `${heading}\n${body}` : heading),
+          }], timestamp)],
+        };
+      }
       if (payloadType === "message") {
         const contextUpdate = normalizeContext(payload);
         if (contextUpdate) return { recognized: true, messages: [{ role: contextUpdate.role, blocks: contextUpdate.blocks, timestamp }] };

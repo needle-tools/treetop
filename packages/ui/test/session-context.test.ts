@@ -89,6 +89,85 @@ describe("recorded session context", () => {
     }]);
   });
 
+  test("projects forked subagent transcripts onto the child thread", () => {
+    const normalize = createCodexTranscriptNormalizer();
+    const childId = "01a0a95c-2d5c-7ac3-8f1a-72d96ab77a4c";
+    const parentId = "01a0a939-9a9c-7982-a736-62a7592901f1";
+
+    expect(normalize.ingest({
+      type: "session_meta",
+      payload: {
+        id: childId,
+        forked_from_id: parentId,
+        parent_thread_id: parentId,
+        cwd: "/repo",
+      },
+    }).metadata).toMatchObject({ sessionId: childId, cwd: "/repo" });
+
+    normalize.ingest({
+      type: "session_meta",
+      payload: { id: parentId, cwd: "/repo" },
+    });
+    expect(normalize.ingest({
+      type: "response_item",
+      payload: {
+        type: "message",
+        role: "assistant",
+        content: [{ type: "output_text", text: "Inherited parent answer" }],
+      },
+    }).messages).toEqual([]);
+
+    normalize.ingest({
+      type: "event_msg",
+      payload: {
+        type: "thread_settings_applied",
+        thread_id: childId,
+        thread_settings: { model: "gpt-5.6-luna" },
+      },
+    });
+    expect(normalize.ingest({
+      type: "event_msg",
+      payload: { type: "task_started", thread_id: childId },
+    }).messages[0]?.blocks[0]?.text).toBe("[Task started]");
+    expect(normalize.ingest({
+      type: "response_item",
+      payload: {
+        type: "message",
+        role: "assistant",
+        content: [{ type: "output_text", text: "Child is inspecting the viewport" }],
+      },
+    }).messages[0]?.blocks[0]?.text).toBe("Child is inspecting the viewport");
+  });
+
+  test("surfaces visible inter-agent messages in a child transcript", () => {
+    const normalize = createCodexTranscriptNormalizer();
+    const result = normalize.ingest({
+      type: "response_item",
+      timestamp: "2026-09-16T08:36:27.024Z",
+      payload: {
+        type: "agent_message",
+        author: "/root",
+        recipient: "/root/viewport_adversary",
+        content: [
+          {
+            type: "input_text",
+            text: "Message Type: MESSAGE\nSender: /root\nPayload:\nCheck resize handling.",
+          },
+          { type: "encrypted_content", encrypted_content: "opaque" },
+        ],
+      },
+    });
+
+    expect(result.messages).toEqual([{
+      role: "user",
+      timestamp: "2026-09-16T08:36:27.024Z",
+      blocks: [{
+        type: "text",
+        text: "Message from /root\nCheck resize handling.",
+      }],
+    }]);
+  });
+
   test("normalizes asynchronous questions and hides their host acknowledgement", () => {
     const normalize = createCodexTranscriptNormalizer();
     const call = normalize.ingest({
