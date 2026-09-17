@@ -4,6 +4,7 @@
   import FileSystemIcon from "./FileSystemIcon.svelte";
   import Tooltip from "./Tooltip.svelte";
   import { formatTokens } from "./context-tokens";
+  import { isPositiveDiffCount } from "./diff";
   import type {
     VisualWorkArtifact,
     VisualWorkArtifactChange,
@@ -55,8 +56,11 @@
     index: number,
   ): string {
     const parts = [`Change ${index + 1}`];
-    if (change.additions !== undefined || change.deletions !== undefined) {
-      parts.push(`+${change.additions ?? 0} −${change.deletions ?? 0}`);
+    if (isPositiveDiffCount(change.additions) || isPositiveDiffCount(change.deletions)) {
+      parts.push([
+        isPositiveDiffCount(change.additions) ? `+${change.additions}` : "",
+        isPositiveDiffCount(change.deletions) ? `−${change.deletions}` : "",
+      ].filter(Boolean).join(" "));
     } else {
       parts.push(
         change.fileAction === "added"
@@ -178,17 +182,17 @@
                   <span class="sparse-artifact-action">{label}</span>
                 {/each}
               {/if}
-              {#if actionSummary.additions !== undefined}
+              {#if isPositiveDiffCount(actionSummary.additions)}
                 <span class="sparse-artifact-action changed">
                   +{actionSummary.additions}
                 </span>
               {/if}
-              {#if actionSummary.deletions !== undefined}
+              {#if isPositiveDiffCount(actionSummary.deletions)}
                 <span class="sparse-artifact-action removed">
                   −{actionSummary.deletions}
                 </span>
               {/if}
-              {#if actionSummary.additions === undefined && actionSummary.deletions === undefined && actionSummary.activityLabels.length <= 1}
+              {#if !isPositiveDiffCount(actionSummary.additions) && !isPositiveDiffCount(actionSummary.deletions) && actionSummary.activityLabels.length <= 1}
                 <span
                   class="sparse-artifact-action"
                   class:changed={actionSummary.fallbackLabel === "+" ||

@@ -3,6 +3,7 @@
   import type { Readable } from "svelte/store";
   import SparseArtifactTree from "./SparseArtifactTree.svelte";
   import InspectorPanelHeader from "./InspectorPanelHeader.svelte";
+  import { isPositiveDiffCount } from "./diff";
   import { buildSparseArtifactRows } from "./sparse-artifact-tree";
   import {
     createSessionArtifactEvolutionTracker,
@@ -165,7 +166,10 @@
       {#if artifactFilter !== "writes"}<span>{filteredEvolution.totals.partialReads} ranged</span>{/if}
       {#if artifactFilter !== "reads" && artifactFilter !== "partial-writes"}<span>{filteredEvolution.totals.partialWrites} partial writes</span>{/if}
       {#if filteredEvolution.totals.additions || filteredEvolution.totals.deletions}
-        <span class="artifact-map-lines">+{filteredEvolution.totals.additions} −{filteredEvolution.totals.deletions}</span>
+        <span class="artifact-map-lines">
+          {#if isPositiveDiffCount(filteredEvolution.totals.additions)}<span class="artifact-map-lines-added">+{filteredEvolution.totals.additions}</span>{/if}
+          {#if isPositiveDiffCount(filteredEvolution.totals.deletions)}<span class="artifact-map-lines-removed">−{filteredEvolution.totals.deletions}</span>{/if}
+        </span>
       {/if}
     </div>
     {#if overbooking.repeatedReads > 0}
@@ -357,7 +361,15 @@
     color: var(--text-muted);
   }
   .artifact-map-lines {
+    display: inline-flex;
+    gap: 0.34rem;
+    font-variant-numeric: tabular-nums;
+  }
+  .artifact-map-lines-added {
     color: var(--success, #58d68d);
+  }
+  .artifact-map-lines-removed {
+    color: var(--danger, #ff6b6b);
   }
   .artifact-map-body {
     min-height: 0;

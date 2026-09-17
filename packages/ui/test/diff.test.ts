@@ -2,10 +2,24 @@ import { test, expect, describe } from "bun:test";
 import {
   parseDiff,
   classifyLine,
+  isPositiveDiffCount,
   parseDiffStructured,
   extractCommitHeader,
   withoutSingleFileDiffHeader,
 } from "../src/diff";
+
+describe("isPositiveDiffCount", () => {
+  test("shows positive line changes", () => {
+    expect(isPositiveDiffCount(15)).toBe(true);
+  });
+
+  test("hides zero, missing, negative, and invalid line changes", () => {
+    expect(isPositiveDiffCount(0)).toBe(false);
+    expect(isPositiveDiffCount(undefined)).toBe(false);
+    expect(isPositiveDiffCount(-1)).toBe(false);
+    expect(isPositiveDiffCount(Number.NaN)).toBe(false);
+  });
+});
 
 describe("classifyLine", () => {
   test("classifies file headers", () => {

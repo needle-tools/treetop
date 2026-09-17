@@ -61,6 +61,7 @@ import {
   visualWorkDetailGroups,
   visualWorkOverview,
   visualWorkImageBlocks,
+  visualWorkCountLines,
   visualWorkSummary,
   visualUserImageAttachments,
   visualFileEditTotals,
@@ -244,6 +245,35 @@ describe("formatVisualWorkDuration", () => {
         "2026-06-22T10:00:04.200Z",
       ),
     ).toBeUndefined();
+  });
+});
+
+describe("visualWorkCountLines", () => {
+  it("leads a completed work summary with its step count", () => {
+    expect(
+      visualWorkCountLines({
+        steps: 21,
+        compactions: 0,
+        warnings: 0,
+        steerings: 0,
+        subagents: 0,
+      }),
+    ).toEqual({ primary: "21 steps", secondary: undefined });
+  });
+
+  it("keeps exceptional counts after the primary step count", () => {
+    expect(
+      visualWorkCountLines({
+        steps: 1,
+        compactions: 1,
+        warnings: 2,
+        steerings: 0,
+        subagents: 0,
+      }),
+    ).toEqual({
+      primary: "1 step",
+      secondary: "1 compaction, 2 warnings",
+    });
   });
 });
 

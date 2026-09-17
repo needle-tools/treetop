@@ -2674,9 +2674,9 @@
       {@render missingObjectPreview(attachment.path, "attachment", mode)}
     {:else}
       <span
-        class="sticky-photo-frame"
-        class:sticky-photo-frame-media={mode === "media"}
-        class:sticky-photo-frame-transparent={attachment.hasAlpha}
+        class="image-frame"
+        class:image-frame-media={mode === "media"}
+        class:image-frame-alpha={attachment.hasAlpha === true}
       >
         <img
           src={`/api/image?path=${encodeURIComponent(attachment.path)}${mode === "media" ? "" : "&max=320"}`}

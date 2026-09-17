@@ -9,6 +9,7 @@
   import ChangedFilesTooltipBody from "./ChangedFilesTooltipBody.svelte";
   import Diff from "./Diff.svelte";
   import DiffLoader from "./DiffLoader.svelte";
+  import { isPositiveDiffCount } from "./diff";
   import LoadingSpinner from "./LoadingSpinner.svelte";
   import AsyncQuestionCard from "./AsyncQuestionCard.svelte";
   import SparseArtifactTree from "./SparseArtifactTree.svelte";
@@ -67,6 +68,7 @@
     visualWorkDetailGroups,
     visualWorkOverview,
     visualWorkImageBlocks,
+    visualWorkCountLines,
     visualSubagentLabel,
     visualSubagentMetaFromBlock,
     visualSubagentMetaFromBlocks,
@@ -810,74 +812,6 @@
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ path, app: "files" }),
     }).catch(() => {});
-  }
-
-  function workDurationParts(
-    item: Extract<
-      VisualTranscriptItem<NormalizedBlock, NormalizedMessage>,
-      { kind: "work" }
-    >,
-    nowIso: string,
-  ): { label: string; duration: string | undefined } {
-    const running = shouldShowLiveWorkTimer({
-      active,
-      open: item.open === true,
-      endedAt: item.endedAt,
-    });
-    const duration = formatVisualWorkDuration(
-      item.startedAt,
-      running ? nowIso : item.endedAt,
-    );
-    const prefix = running ? "Working" : "Worked";
-    return { label: `${prefix} for`, duration };
-  }
-
-  function workCountLines(
-    steps: number,
-    compactions: number,
-    warnings: number,
-    steerings: number,
-    subagents: number,
-  ): { primary: string; secondary: string | undefined } {
-    let primary: string | undefined;
-    const secondaryParts: string[] = [];
-    if (
-      steps > 0 ||
-      (steerings === 0 &&
-        compactions === 0 &&
-        warnings === 0 &&
-        subagents === 0)
-    ) {
-      primary = `${steps} ${steps === 1 ? "step" : "steps"}`;
-    }
-    if (subagents > 0) {
-      secondaryParts.push(
-        `${subagents} ${subagents === 1 ? "subagent" : "subagents"}`,
-      );
-    }
-    if (steerings > 0) {
-      secondaryParts.push(
-        `${steerings} ${steerings === 1 ? "steering" : "steerings"}`,
-      );
-    }
-    if (compactions > 0) {
-      secondaryParts.push(
-        `${compactions} ${compactions === 1 ? "compaction" : "compactions"}`,
-      );
-    }
-    if (warnings > 0) {
-      secondaryParts.push(
-        `${warnings} ${warnings === 1 ? "warning" : "warnings"}`,
-      );
-    }
-    if (!primary) {
-      primary = secondaryParts.shift() ?? "";
-    }
-    return {
-      primary,
-      secondary:
-        secondaryParts.length > 0 ? secondaryParts.join(", ") : undefined,
-    };
   }
 
   function formatToolWallTime(seconds: number | undefined): string | undefined {
@@ -2305,8 +2239,8 @@
           class="work-summary-diff-meta"
           title={`${diffTotals.additions} added · ${diffTotals.deletions} removed`}
         >
-          <span class="work-file-add">+{diffTotals.additions}</span>
-          <span class="work-file-del">−{diffTotals.deletions}</span>
+          {#if isPositiveDiffCount(diffTotals.additions)}<span class="work-file-add">+{diffTotals.additions}</span>{/if}
+          {#if isPositiveDiffCount(diffTotals.deletions)}<span class="work-file-del">−{diffTotals.deletions}</span>{/if}
         </span>
       {/if}
       {#if overview.tokens.total > 0}
@@ -2369,13 +2303,13 @@
 {#snippet renderImageAttachmentFrame(
   src: string,
   label: string,
-  hasAlpha: boolean,
   extraClass: string,
+  hasAlpha = false,
   onError: (() => void) | undefined = undefined,
 )}
   <span
-    class={`sticky-photo-frame ${extraClass}`.trim()}
-    class:sticky-photo-frame-transparent={hasAlpha}
+    class={`image-frame ${extraClass}`.trim()}
+    class:image-frame-alpha={hasAlpha}
     title={label}
   >
     <img
@@ -2410,8 +2344,8 @@
             {@render renderImageAttachmentFrame(
               src,
               imageBlock.alt ?? mediaLabel(imageBlock),
-              !!imageBlock.hasAlpha,
               "chat-photo-frame media-photo-frame",
+              imageBlock.hasAlpha === true,
             )}
           </button>
         {/if}
@@ -2595,10 +2529,10 @@
             {@render renderImageAttachmentFrame(
               src,
               b.alt ?? mediaLabel(b),
-              !!b.hasAlpha,
               m.role === "user"
                 ? "chat-photo-frame media-photo-frame"
                 : "media-photo-frame",
+              b.hasAlpha === true,
             )}
           </button>
           {#if pathTarget}
@@ -2791,8 +2725,8 @@
             {@render renderImageAttachmentFrame(
               src,
               b.alt ?? mediaLabel(b),
-              !!b.hasAlpha,
               "media-photo-frame",
+              b.hasAlpha === true,
             )}
           </button>
           {#if pathTarget}
@@ -3184,12 +3118,12 @@
                                     >
                                       {editSummary.title}
                                     </span>
-                                    {#if editTotals.additions !== undefined}
+                                    {#if isPositiveDiffCount(editTotals.additions)}
                                       <span class="work-file-add"
                                         >+{editTotals.additions}</span
                                       >
                                     {/if}
-                                    {#if editTotals.deletions !== undefined}
+                                    {#if isPositiveDiffCount(editTotals.deletions)}
                                       <span class="work-file-del"
                                         >−{editTotals.deletions}</span
                                       >
@@ -3446,14 +3380,7 @@
       })}
       {@const workImageBlocks = visualWorkImageBlocks(item.entries)}
       {@const summarySubagents = workSummarySubagents(visibleWorkEntries)}
-      {@const durationParts = workDurationParts(item, liveNowIso)}
-      {@const countLines = workCountLines(
-        workSummary.steps,
-        workSummary.compactions,
-        workSummary.warnings,
-        workSummary.steerings,
-        workSummary.subagents,
-      )}
+      {@const countLines = visualWorkCountLines(workSummary)}
       <li
         class="work-row"
         data-visual-scroll-anchor={workKey}
@@ -3482,16 +3409,10 @@
               <span class="work-duration-label single">
                 {item.terminalMarkerLabel}
               </span>
-            {:else}
-              <span class="work-duration-label">
-                <span>{durationParts.label}</span>
-                {#if durationParts.duration}
-                  <span>{durationParts.duration}</span>
-                {/if}
-              </span>
-            {/if}
-            {#if liveWorkOpen && !item.terminalMarkerKind}
+            {:else if liveWorkOpen}
               {@render renderLiveDots()}
+            {:else}
+              <span class="work-complete-icon" aria-label="Completed">✓</span>
             {/if}
             <span class="work-count">
               <span>{countLines.primary}</span>
@@ -3508,13 +3429,15 @@
             {/if}
             {@render renderWorkOverviewPills(workOverview)}
             {@render renderWorkOverviewRightMeta(workOverview)}
-            {#if workImageBlocks.length > 0}
+          </summary>
+          {#if workImageBlocks.length > 0}
+            <div class="work-summary-media-row">
               {@render renderInlineMediaStrip(
                 workImageBlocks,
                 "work-summary-media-strip",
               )}
-            {/if}
-          </summary>
+            </div>
+          {/if}
           {#if workFoldoutOpen}
             <div
               class="work-foldout-body"
@@ -3873,8 +3796,8 @@
       <div class="attachment-media-shell attachment-media-shell-image">
         <div class="attachment-media-body">
           <span
-            class="sticky-photo-frame sticky-photo-frame-media"
-            class:sticky-photo-frame-transparent={openMediaBlock.hasAlpha}
+            class="image-frame image-frame-media"
+            class:image-frame-alpha={openMediaBlock.hasAlpha === true}
           >
             <img
               src={openMediaSrc}
@@ -4181,6 +4104,19 @@
   }
   .work-duration-label.single {
     display: inline;
+  }
+  .work-complete-icon {
+    display: inline-grid;
+    place-items: center;
+    flex: 0 0 auto;
+    width: 1rem;
+    height: 1rem;
+    border-radius: 999px;
+    background: color-mix(in srgb, var(--success, #7fd88f) 16%, transparent);
+    color: var(--success, #7fd88f);
+    font-size: 0.7rem;
+    font-weight: 700;
+    line-height: 1;
   }
   .work-foldout > summary:hover {
     color: var(--text-1);
@@ -5457,12 +5393,17 @@
     max-width: min(100%, 34rem);
     overflow-x: auto;
     overflow-y: hidden;
-    scrollbar-width: thin;
   }
   .work-summary-media-strip {
-    flex: 1 1 16rem;
+    flex: 0 1 34rem;
     min-width: 8rem;
     margin: 0;
+  }
+  .work-summary-media-row {
+    display: flex;
+    min-width: 0;
+    max-width: 100%;
+    margin: 0.35rem 0 0 0.5rem;
   }
   .work-tool-summary-media-strip {
     flex: 0 0 auto;
@@ -5513,12 +5454,6 @@
   .media-block a:hover,
   .media-image-open:hover {
     text-decoration: underline;
-  }
-  .media-image-open:hover .sticky-photo-frame {
-    transform: translateY(-1px);
-    box-shadow:
-      0 2px 4px rgba(0, 0, 0, 0.22),
-      0 9px 18px rgba(0, 0, 0, 0.18);
   }
   .media-photo-frame {
     box-sizing: border-box;

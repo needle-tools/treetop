@@ -1157,6 +1157,7 @@ button.branch-button:hover {
   display: flex;
   align-items: center;
   gap: 0.5rem;
+  min-width: 0;
   margin-top: 0.5rem;
   padding: 0 0.5rem 0 calc(22px + 0.4rem);
 }
@@ -1370,7 +1371,21 @@ button.branch-button:hover {
 .row-actions {
   margin-left: auto;
   display: flex;
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 100%;
   gap: 0.3rem;
+  overflow-x: auto;
+  overflow-y: hidden;
+  overscroll-behavior-inline: contain;
+  scrollbar-width: thin;
+}
+
+/* Popovers are anchored to buttons inside this strip. Temporarily let an
+ * open overlay escape the scrollport; the normal closed state remains
+ * width-bounded and horizontally scrollable. */
+.row-actions.overlay-open {
+  overflow: visible;
 }
 
 /* ------------------------------------------------------------------

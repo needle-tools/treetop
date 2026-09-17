@@ -278,6 +278,44 @@ export interface VisualWorkSummary {
   subagents: number;
 }
 
+export function visualWorkCountLines(summary: VisualWorkSummary): { primary: string; secondary: string | undefined } {
+  const { steps, compactions, warnings, steerings, subagents } = summary;
+  let primary: string | undefined;
+  const secondaryParts: string[] = [];
+  if (
+    steps > 0 ||
+    (steerings === 0 && compactions === 0 && warnings === 0 && subagents === 0)
+  ) {
+    primary = `${steps} ${steps === 1 ? "step" : "steps"}`;
+  }
+  if (subagents > 0) {
+    secondaryParts.push(
+      `${subagents} ${subagents === 1 ? "subagent" : "subagents"}`,
+    );
+  }
+  if (steerings > 0) {
+    secondaryParts.push(
+      `${steerings} ${steerings === 1 ? "steering" : "steerings"}`,
+    );
+  }
+  if (compactions > 0) {
+    secondaryParts.push(
+      `${compactions} ${compactions === 1 ? "compaction" : "compactions"}`,
+    );
+  }
+  if (warnings > 0) {
+    secondaryParts.push(
+      `${warnings} ${warnings === 1 ? "warning" : "warnings"}`,
+    );
+  }
+  if (!primary) primary = secondaryParts.shift() ?? "";
+  return {
+    primary,
+    secondary:
+      secondaryParts.length > 0 ? secondaryParts.join(", ") : undefined,
+  };
+}
+
 export interface VisualTranscriptDeltaPatch<
   B extends MessageBlock = MessageBlock,
 > {

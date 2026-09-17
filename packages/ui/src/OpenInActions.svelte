@@ -970,6 +970,7 @@
 <div
   class="row-actions"
   class:icon-only={iconOnly}
+  class:overlay-open={addOpen || editingLinkId !== null || cmdUrlHover}
   on:dragover={onDragOverStrip}
 >
   {#if onAddCustomLink}

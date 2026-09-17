@@ -26,6 +26,7 @@
   import { TOOLTIP_HOVER_CTX, type TooltipHoverCtx } from "./Tooltip.svelte";
   import Diff from "./Diff.svelte";
   import DiffLoader from "./DiffLoader.svelte";
+  import { isPositiveDiffCount } from "./diff";
   import SparseArtifactTree from "./SparseArtifactTree.svelte";
   import type { VisualWorkArtifact } from "./last-user-message";
 
@@ -418,11 +419,13 @@
                 >{row.stat
                   ? row.stat.binary
                     ? "bin"
-                    : `+${row.stat.added}`
+                    : isPositiveDiffCount(row.stat.added)
+                      ? `+${row.stat.added}`
+                      : ""
                   : ""}</span
               >
               <span class="wt-tt-removed"
-                >{row.stat && !row.stat.binary
+                >{row.stat && !row.stat.binary && isPositiveDiffCount(row.stat.removed)
                   ? `−${row.stat.removed}`
                   : ""}</span
               >
@@ -455,8 +458,8 @@
         {#if hovered.stat.binary}
           <span class="file-diff-head-bin">bin</span>
         {:else}
-          <span class="file-diff-head-added">+{hovered.stat.added}</span>
-          <span class="file-diff-head-removed">−{hovered.stat.removed}</span>
+          {#if isPositiveDiffCount(hovered.stat.added)}<span class="file-diff-head-added">+{hovered.stat.added}</span>{/if}
+          {#if isPositiveDiffCount(hovered.stat.removed)}<span class="file-diff-head-removed">−{hovered.stat.removed}</span>{/if}
         {/if}
       {/if}
     </div>
