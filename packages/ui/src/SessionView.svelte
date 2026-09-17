@@ -5923,12 +5923,12 @@
   {#snippet renderImageAttachmentFrame(
     src: string,
     label: string,
-    hasAlpha: boolean,
     extraClass: string,
+    hasAlpha = false,
   )}
     <span
-      class={`sticky-photo-frame ${extraClass}`.trim()}
-      class:sticky-photo-frame-transparent={hasAlpha}
+      class={`image-frame ${extraClass}`.trim()}
+      class:image-frame-alpha={hasAlpha}
       title={label}
     >
       <img
@@ -6441,8 +6441,8 @@
                           {@render renderImageAttachmentFrame(
                             composerImageUrl(attachment),
                             inlineAttachmentLabel(attachment),
-                            !!attachment.hasAlpha,
                             "composer-photo-frame codex-queue-photo",
+                            attachment.hasAlpha === true,
                           )}
                         </div>
                       {/each}
@@ -6538,8 +6538,8 @@
                   {@render renderImageAttachmentFrame(
                     composerImageUrl(attachment),
                     inlineAttachmentLabel(attachment),
-                    !!attachment.hasAlpha,
                     "composer-photo-frame",
+                    attachment.hasAlpha === true,
                   )}
                 </button>
                 <button
@@ -6561,7 +6561,7 @@
                   title="Attaching image"
                 >
                   <span
-                    class="sticky-photo-frame composer-photo-frame composer-photo-frame-uploading"
+                    class="image-frame composer-photo-frame composer-photo-frame-uploading"
                   >
                     <span
                       class="composer-photo-frame-uploading-mark"
@@ -6819,8 +6819,8 @@
         <div class="attachment-media-shell attachment-media-shell-image">
           <div class="attachment-media-body">
             <span
-              class="sticky-photo-frame sticky-photo-frame-media"
-              class:sticky-photo-frame-transparent={openComposerAttachment.hasAlpha}
+              class="image-frame image-frame-media"
+              class:image-frame-alpha={openComposerAttachment.hasAlpha === true}
             >
               <img
                 src={composerImageUrl(openComposerAttachment)}
@@ -7744,9 +7744,6 @@
     font: inherit;
     text-align: left;
     cursor: pointer;
-  }
-  .composer-attachment-open:hover .composer-photo-frame {
-    border-color: rgba(42, 37, 22, 0.3);
   }
   .composer-photo-frame {
     box-sizing: border-box;

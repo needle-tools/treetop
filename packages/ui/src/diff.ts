@@ -24,6 +24,12 @@ export interface DiffLine {
   text: string;
 }
 
+/** Diff counters are visual evidence, not placeholders: zero carries no
+ * information and should not render as a coloured `+0` / `−0` badge. */
+export function isPositiveDiffCount(value: number | null | undefined): value is number {
+  return typeof value === "number" && Number.isFinite(value) && value > 0;
+}
+
 const META_RE =
   /^(index|new file|deleted file|old mode|new mode|similarity index|rename from|rename to|copy from|copy to|Binary files) /;
 const COMMIT_META_RE = /^(Author|AuthorDate|Commit|CommitDate|Date|Merge):/;

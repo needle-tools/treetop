@@ -1817,59 +1817,11 @@
   flex-basis: 8.8rem;
   max-width: 8.8rem;
 }
-.sticky-photo-frame {
-  display: block;
-  width: 100%;
-  background: #fffaf0;
-  border: 1px solid rgba(42, 37, 22, 0.16);
-  box-shadow:
-    0 1px 1px rgba(0, 0, 0, 0.12),
-    0 5px 13px -8px rgba(0, 0, 0, 0.45);
-}
-.sticky-photo-frame img {
-  display: block;
-  width: 100%;
-  max-height: 130px;
-  object-fit: contain;
-  background: rgba(42, 37, 22, 0.04);
-  pointer-events: none;
-  user-select: none;
-  -webkit-user-drag: none;
-}
-.sticky-detached-image .sticky-photo-frame {
+.sticky-detached-image .image-frame {
   padding: 0;
 }
-.sticky-detached-image .sticky-photo-frame img {
+.sticky-detached-image .image-frame img {
   max-height: none;
-}
-.sticky-photo-frame-transparent,
-.sticky-detached-image .sticky-photo-frame-transparent {
-  padding: 0;
-  background: transparent;
-  border: 0;
-  box-shadow: none;
-}
-.sticky-photo-frame-transparent img {
-  background: transparent;
-}
-.sticky-photo-frame-media {
-  width: fit-content;
-  max-width: min(88vw, 68rem);
-  padding: 0;
-  border: 0;
-  background: transparent;
-  box-shadow: none;
-}
-.sticky-photo-frame-media img {
-  width: auto;
-  max-width: min(88vw, 68rem);
-  max-height: min(76vh, 680px);
-  aspect-ratio: auto;
-  background: transparent;
-  object-fit: contain;
-  pointer-events: auto;
-  user-select: auto;
-  -webkit-user-drag: auto;
 }
 .sticky-snippet-card {
   display: grid;

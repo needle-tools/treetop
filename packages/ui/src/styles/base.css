@@ -26,6 +26,53 @@ body {
   color: var(--text-1);
 }
 
+/* One frame treatment for every user/session image surface. Components may
+   add sizing/layout classes, but border, paper, and shadow stay owned here. */
+.image-frame {
+  display: block;
+  box-sizing: border-box;
+  width: 100%;
+  padding: 0;
+  overflow: hidden;
+  background: #fffaf0;
+  border: 1px solid rgba(42, 37, 22, 0.16);
+  box-shadow:
+    0 1px 1px rgba(0, 0, 0, 0.12),
+    0 5px 13px -8px rgba(0, 0, 0, 0.45);
+}
+.image-frame img {
+  display: block;
+  width: 100%;
+  max-height: 130px;
+  object-fit: contain;
+  background: rgba(42, 37, 22, 0.04);
+  pointer-events: none;
+  user-select: none;
+  -webkit-user-drag: none;
+}
+.image-frame-alpha {
+  background: transparent;
+  border-color: transparent;
+  box-shadow: none;
+}
+.image-frame-alpha img {
+  background: transparent;
+}
+.image-frame-media {
+  width: fit-content;
+  max-width: min(88vw, 68rem);
+}
+.image-frame-media img {
+  width: auto;
+  max-width: min(88vw, 68rem);
+  max-height: min(76vh, 680px);
+  aspect-ratio: auto;
+  object-fit: contain;
+  pointer-events: auto;
+  user-select: auto;
+  -webkit-user-drag: auto;
+}
+
 main {
   /* Use almost the full window — supergit is a dashboard, not a
    * reading column. Cap at 1200px only on phones where 100% - 100px
