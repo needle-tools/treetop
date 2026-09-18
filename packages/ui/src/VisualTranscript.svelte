@@ -3430,14 +3430,6 @@
             {@render renderWorkOverviewPills(workOverview)}
             {@render renderWorkOverviewRightMeta(workOverview)}
           </summary>
-          {#if workImageBlocks.length > 0}
-            <div class="work-summary-media-row">
-              {@render renderInlineMediaStrip(
-                workImageBlocks,
-                "work-summary-media-strip",
-              )}
-            </div>
-          {/if}
           {#if workFoldoutOpen}
             <div
               class="work-foldout-body"
@@ -3618,6 +3610,14 @@
             </div>
           {/if}
         </details>
+        {#if workImageBlocks.length > 0}
+          <div class="work-summary-media-row">
+            {@render renderInlineMediaStrip(
+              workImageBlocks,
+              "work-summary-media-strip",
+            )}
+          </div>
+        {/if}
       </li>
     {:else if item.kind === "marker"}
       {@const compactionDetails = visualCompactionDetails(item.markerBlock)}
