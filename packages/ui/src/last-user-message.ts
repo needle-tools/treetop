@@ -179,6 +179,7 @@ export interface Message<B extends MessageBlock = MessageBlock> {
   tokensUsed?: number;
   tokenUsage?: TokenUsage;
   model?: string;
+  turnId?: string;
   intent?: "steer";
   optimisticAfterMessageId?: string;
   optimisticAfterMessageIndex?: number;
@@ -325,6 +326,7 @@ export interface VisualTranscriptDeltaPatch<
   delta: string;
   blockFields?: Partial<B>;
   timestamp?: string;
+  turnId?: string;
   maxTextChars?: number;
 }
 
@@ -1920,6 +1922,12 @@ function optimisticInsertionIndex<B extends MessageBlock, M extends Message<B>>(
   messages: readonly M[],
   overlay: M,
 ): number {
+  if (overlay.turnId && overlay.intent !== "steer") {
+    const firstMessageInTurn = messages.findIndex(
+      (message) => message.turnId === overlay.turnId,
+    );
+    if (firstMessageInTurn >= 0) return firstMessageInTurn - 1;
+  }
   if (typeof overlay.optimisticAfterMessageId === "string") {
     const byId = messages.findIndex(
       (message) => message.id === overlay.optimisticAfterMessageId,
@@ -1973,6 +1981,7 @@ export function applyVisualTranscriptDeltaPatches<
         id: patch.id,
         role: patch.role,
         timestamp: patch.timestamp,
+        turnId: patch.turnId,
         blocks: [block],
       } as M;
       indexById.set(patch.id, out.length);
@@ -2001,7 +2010,11 @@ export function applyVisualTranscriptDeltaPatches<
           ? appendedText
           : boundedVisualDeltaText(appendedText, patch.maxTextChars),
     } as B;
-    out[existingIndex] = { ...message, blocks: [block] } as M;
+    out[existingIndex] = {
+      ...message,
+      ...(!message.turnId && patch.turnId ? { turnId: patch.turnId } : {}),
+      blocks: [block],
+    } as M;
   }
 
   return out;
@@ -2059,6 +2072,7 @@ function messageMetadataSignature<
     message.tokensUsed ?? "",
     stableJson(message.tokenUsage),
     message.model ?? "",
+    message.turnId ?? "",
     message.intent ?? "",
     message.optimisticAfterMessageId ?? "",
     message.optimisticAfterMessageIndex ?? "",

@@ -1321,6 +1321,17 @@ app-server history remains the source for later remounts. The emergency byte
 eviction uses an advancing queue cursor so a large stream cannot turn the
 memory guard into repeated O(n) array shifts.
 
+Queued user rows exposed one more offscreen reconciliation ordering bug. Their
+optimistic send-time anchor could precede a prior turn's final reply when that
+reply arrived later through authoritative app-server history, producing
+queued user -> prior reply -> new-turn reply after remount. The explicit anchor
+is only a pre-acceptance fallback. Once `turn/start` returns, its authoritative
+turn ID is attached to the local row, and normalized live rows retain the turn
+ID from their app-server event. The overlay is placed immediately before the
+first canonical item in its own turn, without comparing timestamps, sorting
+history, or consulting transcript data. It still disappears when the matching
+canonical app-server `userMessage` arrives through thread history.
+
 The cumulative artifact map consumes the same normalized visual-work entries
 as the per-turn artifact view. Full-history extraction is opt-in while a map is
 open, completed work is cached by immutable item identity, and each session

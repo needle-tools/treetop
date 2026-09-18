@@ -449,6 +449,7 @@
     tokensUsed?: number;
     tokenUsage?: CodexAppHistoryMessage["tokenUsage"];
     model?: string;
+    turnId?: string;
     intent?: "steer";
     /** Optional per-turn assistant label override. Set by the
      *  daemon's Ollama parser to the model that produced the turn
@@ -3437,6 +3438,7 @@
     type: NormalizedBlock["type"],
     delta: string,
     blockFields: Partial<NormalizedBlock> = {},
+    turnId?: string,
   ): void {
     if (!delta || !session) return;
     const previous = codexPendingDeltaPatches.at(-1);
@@ -3448,6 +3450,7 @@
       previous.delta += delta;
       previous.blockFields = { ...previous.blockFields, ...blockFields };
       previous.timestamp = new Date().toISOString();
+      previous.turnId ??= turnId;
       scheduleCodexDeltaFlush();
       return;
     }
@@ -3458,6 +3461,7 @@
       delta,
       blockFields,
       timestamp: new Date().toISOString(),
+      turnId,
       ...(type === "tool_result"
         ? { maxTextChars: CODEX_LIVE_OUTPUT_LIMIT }
         : {}),
@@ -3578,12 +3582,19 @@
     }
     const skipLifecycle =
       lifecycleAlreadyApplied && codexEventLifecycleHandledStateOnly(event);
+    const eventTurnId =
+      event.turnId ??
+      (typeof event.params.turnId === "string"
+        ? event.params.turnId
+        : undefined);
     if (event.kind === "request") {
       flushCodexDeltaPatches();
       upsertCodexLiveMessages(
         codexLiveMessagesFromEvent(
           event,
           codexLiveNormalizeContext,
+        ).map((message) =>
+          eventTurnId ? { ...message, turnId: eventTurnId } : message,
         ) as NormalizedMessage[],
       );
       if (!skipLifecycle && codexRequestNeedsUserInteraction(event.method)) {
@@ -3598,6 +3609,8 @@
     const normalizedLiveMessages = codexLiveMessagesFromEvent(
       event,
       codexLiveNormalizeContext,
+    ).map((message) =>
+      eventTurnId ? { ...message, turnId: eventTurnId } : message,
     ) as NormalizedMessage[];
     const liveMessages = codexUsageEventBelongsToObservedTurn(
       event,
@@ -3707,6 +3720,8 @@
         "assistant",
         "text",
         String(event.params.delta ?? ""),
+        {},
+        eventTurnId,
       );
       return;
     }
@@ -3720,6 +3735,8 @@
         "assistant",
         "thinking",
         String(event.params.delta ?? ""),
+        {},
+        eventTurnId,
       );
       return;
     }
@@ -3759,6 +3776,7 @@
             subagentMessage: liveToolUse.subagentMessage,
             subagentResult: liveToolUse.subagentResult,
           },
+          eventTurnId,
         );
       }
       queueCodexBlockDelta(
@@ -3774,6 +3792,7 @@
           toolUseId: itemId,
           streaming: true,
         },
+        eventTurnId,
       );
       return;
     }
@@ -3785,6 +3804,7 @@
       upsertCodexPlan(
         `codex-turn-plan-${event.turnId ?? "plan"}`,
         event.params,
+        eventTurnId,
       );
       return;
     }
@@ -3940,6 +3960,7 @@
       | "subagentMessage"
       | "subagentResult"
     > = {},
+    turnId?: string,
   ): void {
     if (!session) return;
     const messages = [...session.messages];
@@ -3994,6 +4015,7 @@
       noteVisualTranscriptChangedFrom(existingIndex);
       messages[existingIndex] = {
         ...messages[existingIndex]!,
+        ...(!messages[existingIndex]?.turnId && turnId ? { turnId } : {}),
         blocks,
       };
     } else {
@@ -4002,6 +4024,7 @@
         id,
         role: "assistant",
         timestamp: new Date().toISOString(),
+        turnId,
         blocks,
       });
     }
@@ -4217,7 +4240,11 @@
     return visualPlanFromPayload(params);
   }
 
-  function upsertCodexPlan(id: string, params: unknown): void {
+  function upsertCodexPlan(
+    id: string,
+    params: unknown,
+    turnId?: string,
+  ): void {
     if (!session) return;
     const plan = codexPlanFromParams(params);
     if (!plan) {
@@ -4239,6 +4266,7 @@
     if (existingIndex >= 0) {
       messages[existingIndex] = {
         ...messages[existingIndex]!,
+        ...(!messages[existingIndex]?.turnId && turnId ? { turnId } : {}),
         blocks: [block],
       };
     } else {
@@ -4246,6 +4274,7 @@
         id,
         role: "assistant",
         timestamp: new Date().toISOString(),
+        turnId,
         blocks: [block],
       });
     }
@@ -4866,7 +4895,15 @@
         },
       );
       if (!res.ok) throw new Error(body?.error ?? `HTTP ${res.status}`);
-      if (typeof body?.turnId === "string") codexActiveTurnId = body.turnId;
+      if (typeof body?.turnId === "string") {
+        codexActiveTurnId = body.turnId;
+        codexOptimisticUserMessages = codexOptimisticUserMessages.map(
+          (message) =>
+            message.id === optimisticId
+              ? { ...message, turnId: body.turnId }
+              : message,
+        );
+      }
       return true;
     } catch (e) {
       removeOptimisticCodexUser(optimisticId);
