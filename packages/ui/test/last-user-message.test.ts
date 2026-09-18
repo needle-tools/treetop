@@ -1130,6 +1130,47 @@ describe("buildVisualTranscriptItems", () => {
     ).toEqual(["Task started", "user"]);
   });
 
+  it("does not count token accounting checkpoints as work steps", () => {
+    const items = buildVisualTranscriptItems([
+      {
+        role: "system",
+        timestamp: "2026-09-18T09:46:53.900Z",
+        blocks: [{ type: "marker", text: "[Task started]" }],
+      },
+      msg("user", "do the work", "2026-09-18T09:46:54.000Z"),
+      {
+        role: "assistant",
+        timestamp: "2026-09-18T09:47:08.000Z",
+        blocks: [],
+        tokenUsage: {
+          input: 216_578,
+          cachedInput: 8_576,
+          cacheWriteInput: 0,
+          output: 152,
+          reasoningOutput: 0,
+          total: 216_730,
+        },
+      },
+      msg("assistant", "Done.", "2026-09-18T09:58:22.000Z"),
+      {
+        role: "system",
+        timestamp: "2026-09-18T09:58:22.100Z",
+        blocks: [{ type: "marker", text: "[Task complete]" }],
+      },
+    ]);
+
+    const work = items.find((item) => item.kind === "work");
+    if (!work || work.kind !== "work") throw new Error("expected work item");
+    expect(work.entries.some((entry) => entry.message.tokenUsage)).toBe(true);
+    expect(visualWorkSummary(work.entries)).toEqual({
+      steps: 0,
+      compactions: 0,
+      warnings: 0,
+      steerings: 0,
+      subagents: 0,
+    });
+  });
+
   it("keeps a live steering continuation from inheriting an earlier abort headline", () => {
     const items = buildVisualTranscriptItems(
       [

@@ -1283,6 +1283,44 @@ visible and add a compact Retry warning instead of failing silently. An
 active-writer conflict uses a slower retry cadence; it does not fall back to
 the transcript renderer.
 
+A 2026-09-18 FastVid trace exposed a distinct live-projection loss at turn
+completion. The app-server had recorded the complete final `agentMessage` and
+returned it from thread history, while the visible lane ended at an earlier
+commentary item. Ordinary completed `agentMessage` snapshots were ignored, so
+the lane depended on receiving every preceding text delta. Completed snapshots
+now pass through the same canonical item normalizer as app-server history, and
+the lane invalidates and reloads authoritative app-server history after every
+completed turn and after an SSE reconnect. An invalidation generation prevents
+an older in-flight history response from marking that reconciliation complete.
+This remains entirely inside the app-server source path; transcript data is not
+used to repair a live lane.
+
+The same FastVid-style offscreen gate exposed a second loss mode in a 2026-09-18
+FHIR deployment turn: the shared replay ring retained 1,000 events, while one
+turn produced thousands. State-only delivery had kept lifecycle flags but
+discarded completed item snapshots and all 39 per-request usage checkpoints;
+returning to the lane could therefore show only the final request's `$0.07`
+instead of the round's `$4.52`. Offscreen panes now retain canonical
+`item/started`, `item/completed`, warning/error, and token-usage state while
+still deferring high-frequency deltas. Completed item IDs suppress only replayed
+deltas for that same item, so parallel tools cannot advance one another's
+cursor. Resume-only last-request usage is not priced unless this surface saw
+the owning turn start. Paged app-server history also assigns the turn's real
+completion timestamp to its final normalized row, restoring the same elapsed
+round layout after reload; accounting-only checkpoints no longer inflate the
+visible step count. These repairs remain app-server-owned and do not consult
+the JSONL transcript.
+
+The 1,000-event ring was itself the wrong memory boundary. It mixed every
+thread on a daemon, so traffic in one lane could evict another lane's pending
+interval, and event count bore little relation to retained size. Transient SSE
+replay is now isolated per thread and covers the active turn up to a 128 MiB
+serialized-data safety budget. A completed turn is pruned only after its
+canonical completion has been delivered to every subscriber; durable/paged
+app-server history remains the source for later remounts. The emergency byte
+eviction uses an advancing queue cursor so a large stream cannot turn the
+memory guard into repeated O(n) array shifts.
+
 The cumulative artifact map consumes the same normalized visual-work entries
 as the per-turn artifact view. Full-history extraction is opt-in while a map is
 open, completed work is cached by immutable item identity, and each session

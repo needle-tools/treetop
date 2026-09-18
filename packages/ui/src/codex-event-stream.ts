@@ -681,6 +681,81 @@ export function codexEventLifecycleHandledStateOnly(
   );
 }
 
+export type CodexOffscreenProjectionAction =
+  | "defer"
+  | "project";
+
+/** Preserve canonical, bounded state while an app-server pane is offscreen.
+ * Streaming deltas can wait for the shared replay buffer, but completed item
+ * snapshots and usage checkpoints cannot: a busy turn can overflow that
+ * buffer before the pane returns. */
+export function codexOffscreenProjectionAction(
+  event: Pick<CodexAppEvent, "kind" | "method"> & {
+    params?: Record<string, unknown>;
+  },
+): CodexOffscreenProjectionAction {
+  if (event.kind === "request") return "project";
+  if (
+    event.method === "item/completed" ||
+    event.method === "item/started" ||
+    event.method === "thread/tokenUsage/updated" ||
+    event.method === "token_count" ||
+    event.params?.type === "token_count" ||
+    event.method === "warning" ||
+    event.method === "error"
+  ) {
+    return "project";
+  }
+  return "defer";
+}
+
+/** Completed item snapshots supersede only deltas for that same item. This is
+ * deliberately item-scoped because parallel tools can interleave their
+ * streams; completing one must not advance past another tool's output. */
+export function codexEventDeltaSupersededByCompletedItem(
+  event: Pick<CodexAppEvent, "kind" | "method" | "params">,
+  completedItemIds: ReadonlySet<string>,
+): boolean {
+  if (codexEventVisualDelivery(event) !== "batched-delta") return false;
+  const itemId = codexEventItemId(event);
+  return !!itemId && completedItemIds.has(itemId);
+}
+
+/** A token snapshot emitted while resuming an old thread is only the last
+ * request, not the owning turn's total. Price it only after this live surface
+ * has observed that turn start. */
+export function codexUsageEventBelongsToObservedTurn(
+  event: Pick<CodexAppEvent, "method" | "params" | "turnId">,
+  observedTurnIds: ReadonlySet<string>,
+): boolean {
+  if (
+    event.method !== "thread/tokenUsage/updated" &&
+    event.method !== "token_count" &&
+    event.params.type !== "token_count"
+  ) {
+    return true;
+  }
+  const turnId =
+    event.turnId ??
+    (typeof event.params.turnId === "string"
+      ? event.params.turnId
+      : undefined);
+  return !turnId || observedTurnIds.has(turnId);
+}
+
+export function codexEventRequiresHistoryReconciliation(
+  event: Pick<CodexAppEvent, "kind" | "method">,
+): boolean {
+  return event.kind === "notification" && event.method === "turn/completed";
+}
+
+export function codexEventStreamRequiresHistoryReconciliation(
+  previous: CodexEventStreamState | "closed",
+  next: CodexEventStreamState,
+): boolean {
+  return previous === "reconnecting" && next === "live";
+}
+
 export function codexAppEventDeliveryMode(opts: {
   liveStateActive: boolean;
   liveSurfaceActive: boolean;
@@ -714,11 +789,23 @@ interface Hub {
   es: EventSourceLike;
   state: CodexEventStreamState;
   subscribers: Set<HubSubscriber>;
-  history: CodexAppEvent[];
+  replayByThread: Map<string, CodexReplayBucket>;
+}
+
+interface CodexReplayEntry {
+  event: CodexAppEvent;
+  bytes: number;
+}
+
+interface CodexReplayBucket {
+  entries: CodexReplayEntry[];
+  head: number;
+  bytes: number;
 }
 
 const hubs = new Map<string, Hub>();
-const HISTORY_LIMIT = 1_000;
+const DEFAULT_REPLAY_BYTES_PER_THREAD = 128 * 1024 * 1024;
+let replayBytesPerThread = DEFAULT_REPLAY_BYTES_PER_THREAD;
 let eventSourceCtorForTests: EventSourceConstructor | null = null;
 
 function daemonKey(daemonId: string | undefined): string {
@@ -749,6 +836,17 @@ function eventThreadId(event: CodexAppEvent): string | undefined {
   );
 }
 
+function eventTurnId(event: CodexAppEvent): string | undefined {
+  return (
+    event.turnId ??
+    (typeof event.params.turnId === "string" ? event.params.turnId : undefined)
+  );
+}
+
+function replayThreadKey(threadId: string | undefined): string {
+  return threadId ?? "";
+}
+
 export function codexEventReplayKey(event: CodexAppEvent): string {
   const id = event.id ?? "";
   const delta =
@@ -763,15 +861,19 @@ export function replayCodexEventsFrom(
 ): { complete: boolean; events: CodexAppEvent[] } {
   const hub = hubs.get(daemonKey(daemonId));
   if (!hub || !firstEventKey) return { complete: false, events: [] };
-  const firstIndex = hub.history.findIndex(
-    (event) => codexEventReplayKey(event) === firstEventKey,
-  );
+  const bucket = hub.replayByThread.get(replayThreadKey(threadId));
+  if (!bucket) return { complete: false, events: [] };
+  let firstIndex = -1;
+  for (let index = bucket.head; index < bucket.entries.length; index += 1) {
+    if (codexEventReplayKey(bucket.entries[index]!.event) === firstEventKey) {
+      firstIndex = index;
+      break;
+    }
+  }
   if (firstIndex < 0) return { complete: false, events: [] };
   return {
     complete: true,
-    events: hub.history
-      .slice(firstIndex)
-      .filter((event) => eventThreadId(event) === threadId),
+    events: bucket.entries.slice(firstIndex).map(({ event }) => event),
   };
 }
 
@@ -783,15 +885,60 @@ function subscriberWantsEvent(
   return eventThreadId(event) === subscriber.threadId;
 }
 
-function pushEvent(hub: Hub, event: CodexAppEvent): void {
-  if (codexEventVisualDelivery(event) === "ignore") return;
-  hub.history.push(event);
-  if (hub.history.length > HISTORY_LIMIT) {
-    hub.history.splice(0, hub.history.length - HISTORY_LIMIT);
+function recordReplayEvent(
+  hub: Hub,
+  event: CodexAppEvent,
+  serializedBytes: number,
+): void {
+  const key = replayThreadKey(eventThreadId(event));
+  let bucket = hub.replayByThread.get(key);
+  if (!bucket) {
+    bucket = { entries: [], head: 0, bytes: 0 };
+    hub.replayByThread.set(key, bucket);
   }
+  bucket.entries.push({ event, bytes: serializedBytes });
+  bucket.bytes += serializedBytes;
+  if (bucket.bytes <= replayBytesPerThread) return;
+
+  while (
+    bucket.head < bucket.entries.length &&
+    bucket.bytes > replayBytesPerThread
+  ) {
+    bucket.bytes -= bucket.entries[bucket.head]!.bytes;
+    bucket.head += 1;
+  }
+  if (bucket.head >= 1_024 && bucket.head * 2 >= bucket.entries.length) {
+    bucket.entries = bucket.entries.slice(bucket.head);
+    bucket.head = 0;
+  }
+}
+
+function pruneCompletedTurnReplay(hub: Hub, event: CodexAppEvent): void {
+  if (event.method !== "turn/completed") return;
+  const turnId = eventTurnId(event);
+  if (!turnId) return;
+  const key = replayThreadKey(eventThreadId(event));
+  const bucket = hub.replayByThread.get(key);
+  if (!bucket) return;
+  bucket.entries = bucket.entries.slice(bucket.head).filter(
+    ({ event: entry }) => eventTurnId(entry) !== turnId,
+  );
+  bucket.head = 0;
+  bucket.bytes = bucket.entries.reduce((total, entry) => total + entry.bytes, 0);
+  if (!bucket.entries.length) hub.replayByThread.delete(key);
+}
+
+function pushEvent(
+  hub: Hub,
+  event: CodexAppEvent,
+  serializedBytes: number,
+): void {
+  if (codexEventVisualDelivery(event) === "ignore") return;
+  recordReplayEvent(hub, event, serializedBytes);
   for (const subscriber of hub.subscribers) {
     if (subscriberWantsEvent(subscriber, event)) subscriber.onEvent?.(event);
   }
+  pruneCompletedTurnReplay(hub, event);
 }
 
 function parseEvent(data: unknown): CodexAppEvent | null {
@@ -1067,18 +1214,29 @@ export function codexLiveMessagesFromEvent(
   const liveItem = codexEventItem(event.params);
   if (
     (event.method === "item/started" || event.method === "item/completed") &&
-    liveItem?.type === "agentMessage" &&
-    stringField(liveItem, "delivery") === "async"
+    liveItem?.type === "agentMessage"
   ) {
     const itemId = codexEventItemId(event) ?? "question";
-    const blocks = asyncQuestionBlocksFromPayload(liveItem, itemId);
-    if (blocks.length) {
-      messages.push({
-        id: `codex-agent-${itemId}`,
-        role: "assistant",
-        timestamp,
-        blocks,
-      });
+    if (stringField(liveItem, "delivery") === "async") {
+      const blocks = asyncQuestionBlocksFromPayload(liveItem, itemId);
+      if (blocks.length) {
+        messages.push({
+          id: `codex-agent-${itemId}`,
+          role: "assistant",
+          timestamp,
+          blocks,
+        });
+      }
+    } else if (event.method === "item/completed") {
+      messages.push(
+        ...codexAppMessagesFromThreadItem(
+          liveItem,
+          event.turnId,
+          timestamp,
+          codexLiveToolNameMap(context),
+          context,
+        ),
+      );
     }
   }
   const liveToolUse = codexLiveToolUseFromEvent(event, context);
@@ -1182,7 +1340,9 @@ export function codexAppHistoryMessagesFromThread(
     const turnRecord = turn as Record<string, unknown>;
     const turnId = stringField(turnRecord, "id");
     const timestamp = codexUnixSecondsToIso(turnRecord.startedAt);
+    const completedTimestamp = codexUnixSecondsToIso(turnRecord.completedAt);
     const items = Array.isArray(turnRecord.items) ? turnRecord.items : [];
+    const turnMessages: CodexAppHistoryMessage[] = [];
     for (const rawItem of items) {
       const itemMessages = codexAppMessagesFromThreadItem(
         rawItem,
@@ -1191,8 +1351,16 @@ export function codexAppHistoryMessagesFromThread(
         toolNames,
         usageContext,
       );
-      messages.push(...itemMessages);
+      turnMessages.push(...itemMessages);
     }
+    if (completedTimestamp && turnMessages.length > 0) {
+      const finalIndex = turnMessages.length - 1;
+      turnMessages[finalIndex] = {
+        ...turnMessages[finalIndex]!,
+        timestamp: completedTimestamp,
+      };
+    }
+    messages.push(...turnMessages);
   }
   return messages;
 }
@@ -2725,13 +2893,13 @@ function createHub(daemonId: string | undefined): Hub {
     es,
     state: "connecting",
     subscribers: new Set(),
-    history: [],
+    replayByThread: new Map(),
   };
   es.onopen = () => setState(hub, "live");
   es.onerror = () => setState(hub, "reconnecting");
   es.addEventListener("codex", (msg) => {
     const event = parseEvent(msg.data);
-    if (event) pushEvent(hub, event);
+    if (event) pushEvent(hub, event, msg.data.length);
   });
   return hub;
 }
@@ -2750,10 +2918,20 @@ export function subscribeCodexEvents(
   const hubSubscriber: HubSubscriber = { ...subscriber, threadId };
   hub.subscribers.add(hubSubscriber);
   hubSubscriber.onState?.(hub.state);
-  for (const event of hub.history) {
-    if (subscriberWantsEvent(hubSubscriber, event)) {
-      hubSubscriber.onEvent?.(event);
-    }
+  const replayEntries = threadId
+    ? (() => {
+        const bucket = hub.replayByThread.get(replayThreadKey(threadId));
+        return bucket ? bucket.entries.slice(bucket.head) : [];
+      })()
+    : [...hub.replayByThread.values()]
+        .flatMap((bucket) => bucket.entries.slice(bucket.head))
+        .sort((a, b) =>
+          (a.event.seq ?? 0) !== (b.event.seq ?? 0)
+            ? (a.event.seq ?? 0) - (b.event.seq ?? 0)
+            : a.event.receivedAt.localeCompare(b.event.receivedAt),
+        );
+  for (const { event } of replayEntries) {
+    hubSubscriber.onEvent?.(event);
   }
   return () => {
     const current = hubs.get(key);
@@ -2771,8 +2949,15 @@ export function __setCodexEventSourceCtorForTests(
   eventSourceCtorForTests = ctor;
 }
 
+export function __setCodexEventReplayByteLimitForTests(
+  bytes: number | null,
+): void {
+  replayBytesPerThread = bytes ?? DEFAULT_REPLAY_BYTES_PER_THREAD;
+}
+
 export function __resetCodexEventStreamsForTests(): void {
   for (const hub of hubs.values()) hub.es.close();
   hubs.clear();
   eventSourceCtorForTests = null;
+  replayBytesPerThread = DEFAULT_REPLAY_BYTES_PER_THREAD;
 }

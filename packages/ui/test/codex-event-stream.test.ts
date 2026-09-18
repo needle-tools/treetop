@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, test } from "bun:test";
 import {
   CODEX_APP_HISTORY_TURNS_PAGE_SIZE,
   __resetCodexEventStreamsForTests,
+  __setCodexEventReplayByteLimitForTests,
   __setCodexEventSourceCtorForTests,
   canRequestOlderCodexAppThreadHistory,
   codexAppHistoryMessagesFromThread,
@@ -23,6 +24,11 @@ import {
   codexToolInputQuality,
   codexEventThreadIdForSession,
   codexEventReplayKey,
+  codexEventRequiresHistoryReconciliation,
+  codexEventStreamRequiresHistoryReconciliation,
+  codexEventDeltaSupersededByCompletedItem,
+  codexOffscreenProjectionAction,
+  codexUsageEventBelongsToObservedTurn,
   codexEventLifecycleHandledStateOnly,
   codexEventVisualDelivery,
   codexAppEventDeliveryMode,
@@ -47,6 +53,7 @@ import {
   buildVisualWorkDisplayEntries,
   visualSubagentMetaFromBlocks,
   visualWorkImageBlocks,
+  visualWorkOverview,
   visualWorkSummary,
 } from "../src/last-user-message";
 
@@ -452,11 +459,29 @@ describe("codex event stream hub", () => {
     expect(replay.events.map((entry) => entry.seq)).toEqual([11, 13]);
   });
 
-  test("requires authoritative history when the first offscreen event was evicted", () => {
+  test("does not let a noisy thread evict another thread's replay interval", () => {
     subscribeCodexEvents(undefined, "t1", { onEvent: () => {} });
     const firstMissed = event("t1", 1);
     FakeEventSource.instances[0]?.emit("codex", firstMissed);
-    for (let seq = 2; seq <= 1_002; seq += 1) {
+    for (let seq = 2; seq <= 2_002; seq += 1) {
+      FakeEventSource.instances[0]?.emit("codex", event("t2", seq));
+    }
+
+    const replay = replayCodexEventsFrom(
+      undefined,
+      "t1",
+      codexEventReplayKey(firstMissed),
+    );
+
+    expect(replay.complete).toBe(true);
+    expect(replay.events.map((entry) => entry.seq)).toEqual([1]);
+  });
+
+  test("does not evict a long active turn merely because it has many events", () => {
+    subscribeCodexEvents(undefined, "t1", { onEvent: () => {} });
+    const firstMissed = event("t1", 1);
+    FakeEventSource.instances[0]?.emit("codex", firstMissed);
+    for (let seq = 2; seq <= 2_002; seq += 1) {
       FakeEventSource.instances[0]?.emit("codex", event("t1", seq));
     }
 
@@ -466,7 +491,54 @@ describe("codex event stream hub", () => {
       codexEventReplayKey(firstMissed),
     );
 
-    expect(replay).toEqual({ complete: false, events: [] });
+    expect(replay.complete).toBe(true);
+    expect(replay.events).toHaveLength(2_002);
+  });
+
+  test("requires authoritative history only after one thread exceeds its byte budget", () => {
+    __setCodexEventReplayByteLimitForTests(500);
+    subscribeCodexEvents(undefined, "t1", { onEvent: () => {} });
+    const firstMissed = event("t1", 1);
+    FakeEventSource.instances[0]?.emit("codex", firstMissed);
+    FakeEventSource.instances[0]?.emit("codex", {
+      ...event("t1", 2),
+      params: { delta: "x".repeat(500) },
+    });
+
+    expect(
+      replayCodexEventsFrom(
+        undefined,
+        "t1",
+        codexEventReplayKey(firstMissed),
+      ),
+    ).toEqual({ complete: false, events: [] });
+  });
+
+  test("delivers turn completion before pruning its transient replay events", () => {
+    const received: CodexAppEvent[] = [];
+    subscribeCodexEvents(undefined, "t1", {
+      onEvent: (entry) => received.push(entry),
+    });
+    const firstMissed = { ...event("t1", 1), turnId: "turn-1" };
+    FakeEventSource.instances[0]?.emit("codex", firstMissed);
+    FakeEventSource.instances[0]?.emit("codex", {
+      ...event("t1", 2),
+      method: "turn/completed",
+      turnId: "turn-1",
+      params: { threadId: "t1", turnId: "turn-1" },
+    });
+
+    expect(received.map((entry) => entry.method)).toEqual([
+      "turn/status",
+      "turn/completed",
+    ]);
+    expect(
+      replayCodexEventsFrom(
+        undefined,
+        "t1",
+        codexEventReplayKey(firstMissed),
+      ),
+    ).toEqual({ complete: false, events: [] });
   });
 
   test("reports connection state to each subscriber", () => {
@@ -477,6 +549,185 @@ describe("codex event stream hub", () => {
     FakeEventSource.instances[0]?.onerror?.();
 
     expect(states).toEqual(["connecting", "live", "reconnecting"]);
+  });
+
+  test("reconciles authoritative history after a stream reconnect", () => {
+    expect(
+      codexEventStreamRequiresHistoryReconciliation("reconnecting", "live"),
+    ).toBe(true);
+    expect(
+      codexEventStreamRequiresHistoryReconciliation("connecting", "live"),
+    ).toBe(false);
+    expect(
+      codexEventStreamRequiresHistoryReconciliation("live", "reconnecting"),
+    ).toBe(false);
+  });
+
+  test("reconciles authoritative history after every completed turn", () => {
+    expect(
+      codexEventRequiresHistoryReconciliation({
+        kind: "notification",
+        method: "turn/completed",
+      }),
+    ).toBe(true);
+    expect(
+      codexEventRequiresHistoryReconciliation({
+        kind: "notification",
+        method: "item/agentMessage/delta",
+      }),
+    ).toBe(false);
+  });
+
+  test("retains canonical item snapshots and usage while a pane is offscreen", () => {
+    expect(
+      codexOffscreenProjectionAction({
+        kind: "notification",
+        method: "item/completed",
+        params: {},
+      }),
+    ).toBe("project");
+    expect(
+      codexOffscreenProjectionAction({
+        kind: "notification",
+        method: "thread/tokenUsage/updated",
+        params: {},
+      }),
+    ).toBe("project");
+    expect(
+      codexOffscreenProjectionAction({
+        kind: "notification",
+        method: "item/agentMessage/delta",
+        params: { delta: "partial" },
+      }),
+    ).toBe("defer");
+  });
+
+  test("suppresses replayed deltas only for their completed parallel item", () => {
+    const completed = new Set(["item-complete"]);
+    const delta = (itemId: string) => ({
+      kind: "notification" as const,
+      method: "item/agentMessage/delta",
+      params: { itemId, delta: "partial" },
+    });
+
+    expect(
+      codexEventDeltaSupersededByCompletedItem(
+        delta("item-complete"),
+        completed,
+      ),
+    ).toBe(true);
+    expect(
+      codexEventDeltaSupersededByCompletedItem(
+        delta("item-still-running"),
+        completed,
+      ),
+    ).toBe(false);
+  });
+
+  test("does not attribute a resume-only usage snapshot to an unobserved turn", () => {
+    const event = {
+      kind: "notification" as const,
+      method: "thread/tokenUsage/updated",
+      params: { turnId: "turn-old" },
+      turnId: "turn-old",
+    };
+    expect(
+      codexUsageEventBelongsToObservedTurn(event, new Set(["turn-live"])),
+    ).toBe(false);
+    expect(
+      codexUsageEventBelongsToObservedTurn(event, new Set(["turn-old"])),
+    ).toBe(true);
+  });
+
+  test("retains every priced checkpoint from the reported 39-request round", () => {
+    const checkpoints = [
+      [216578, 8576, 152, 0], [26519, 12160, 134, 0],
+      [26941, 26368, 121, 10], [27801, 26752, 163, 26],
+      [29581, 27648, 457, 0], [30096, 29440, 134, 10],
+      [31608, 29952, 214, 23], [31967, 31488, 91, 0],
+      [32279, 31744, 129, 0], [32609, 32128, 237, 18],
+      [33683, 32384, 179, 23], [35600, 33536, 230, 37],
+      [39209, 35456, 127, 17], [39585, 39040, 301, 15],
+      [40395, 39424, 124, 50], [43556, 40192, 34, 13],
+      [43613, 43392, 127, 0], [44038, 43392, 129, 36],
+      [45693, 43904, 261, 16], [47923, 45568, 359, 28],
+      [48306, 47744, 19, 0], [48348, 48128, 127, 0],
+      [49703, 48128, 37, 16], [49763, 49536, 173, 0],
+      [50136, 49536, 73, 12], [50267, 49920, 32, 11],
+      [50322, 50048, 156, 0], [50686, 50176, 34, 13],
+      [50743, 50560, 180, 0], [51058, 50560, 111, 90],
+      [51192, 50816, 127, 0], [51541, 51072, 30, 9],
+      [51594, 51328, 205, 0], [52133, 51456, 401, 0],
+      [52755, 51968, 279, 11], [53529, 52608, 173, 68],
+      [54193, 53376, 511, 27], [54824, 54016, 84, 14],
+      [55299, 54656, 98, 0],
+    ] as const;
+    const context = { model: "gpt-6-astra" };
+    const usageMessages = checkpoints.flatMap(
+      ([input, cachedInput, output, reasoningOutput], index) =>
+        codexLiveMessagesFromEvent(
+          {
+            kind: "notification",
+            method: "thread/tokenUsage/updated",
+            params: {
+              threadId: "01a0af36-f879-77b3-8fd9-ac0ac95fa001",
+              turnId: "01a0b3e9-6e8f-7891-bf91-dd605ca157e8",
+              tokenUsage: {
+                last: {
+                  inputTokens: input,
+                  cachedInputTokens: cachedInput,
+                  outputTokens: output,
+                  reasoningOutputTokens: reasoningOutput,
+                  totalTokens: input + output,
+                },
+              },
+            },
+            threadId: "01a0af36-f879-77b3-8fd9-ac0ac95fa001",
+            turnId: "01a0b3e9-6e8f-7891-bf91-dd605ca157e8",
+            receivedAt: new Date(
+              Date.parse("2026-09-18T09:47:08.000Z") + index * 1_000,
+            ).toISOString(),
+            seq: index + 1,
+          },
+          context,
+        ),
+    );
+    const items = buildVisualTranscriptItems([
+      {
+        role: "system",
+        timestamp: "2026-09-18T09:46:54.000Z",
+        blocks: [{ type: "marker", text: "[Task started]" }],
+      },
+      {
+        role: "user",
+        timestamp: "2026-09-18T09:46:55.000Z",
+        blocks: [{ type: "text", text: "deploy it" }],
+      },
+      ...usageMessages,
+      {
+        role: "assistant",
+        timestamp: "2026-09-18T09:58:22.590Z",
+        blocks: [{ type: "text", text: "Deployed." }],
+      },
+      {
+        role: "system",
+        timestamp: "2026-09-18T09:58:22.636Z",
+        blocks: [{ type: "marker", text: "[Task complete]" }],
+      },
+    ]);
+    const work = items.find((item) => item.kind === "work");
+    if (!work || work.kind !== "work") throw new Error("expected work item");
+    const overview = visualWorkOverview(
+      work,
+      buildVisualWorkDisplayEntries(work.entries),
+      { model: "gpt-6-astra", now: "2026-09-18T09:58:22.636Z" },
+    );
+
+    expect(usageMessages).toHaveLength(39);
+    expect(overview.cost.pricedCheckpoints).toBe(39);
+    expect(overview.cost.totalUsd).toBeCloseTo(4.520726, 6);
+    expect(overview.tokens.input).toBe(1_875_666);
+    expect(overview.tokens.cachedInput).toBe(1_618_176);
   });
 
   test("opens app-server events only for live Codex app read sessions", () => {
@@ -1919,6 +2170,44 @@ describe("codex event stream hub", () => {
     );
   });
 
+  test("recovers a completed agent message from its authoritative item snapshot", () => {
+    const timestamp = "2026-09-18T09:52:49.693Z";
+    const agentItem = {
+      type: "agentMessage",
+      id: "msg_0a80c9a532d980e1016aad09ebe9e887d2b86bfb79f9b68362",
+      text: "Committed as `d9ee944` on `main`. Working tree clean.",
+      phase: "final_answer",
+      delivery: null,
+      questions: null,
+    };
+    const history = codexAppHistoryMessagesFromThread({
+      turns: [{ id: "turn-1", items: [agentItem] }],
+    });
+    const live = codexLiveMessagesFromEvent({
+      kind: "notification",
+      method: "item/completed",
+      params: {
+        item: agentItem,
+        threadId: "thread-1",
+        turnId: "turn-1",
+        completedAtMs: 1_789_725_169_692,
+      },
+      threadId: "thread-1",
+      turnId: "turn-1",
+      receivedAt: timestamp,
+    });
+
+    expect(stripTimestamps(live)).toEqual(stripTimestamps(history));
+    expect(live).toEqual([
+      {
+        id: `codex-agent-${agentItem.id}`,
+        role: "assistant",
+        timestamp: "2026-09-18T09:52:49.692Z",
+        blocks: [{ type: "text", text: agentItem.text }],
+      },
+    ]);
+  });
+
   test("normalizes app-server token_count rows as assistant token usage", () => {
     const live = codexLiveMessagesFromEvent({
       kind: "notification",
@@ -1998,6 +2287,35 @@ describe("codex event stream hub", () => {
         },
         blocks: [],
       },
+    ]);
+  });
+
+  test("uses the turn completion time for the final app-server history item", () => {
+    const history = codexAppHistoryMessagesFromThread({
+      turns: [
+        {
+          id: "turn-timed",
+          startedAt: 1_789_724_814,
+          completedAt: 1_789_725_502,
+          items: [
+            {
+              id: "user-timed",
+              type: "userMessage",
+              content: [{ type: "text", text: "deploy it" }],
+            },
+            {
+              id: "agent-timed",
+              type: "agentMessage",
+              text: "Deployment complete.",
+            },
+          ],
+        },
+      ],
+    });
+
+    expect(history.map((message) => message.timestamp)).toEqual([
+      "2026-09-18T09:46:54.000Z",
+      "2026-09-18T09:58:22.000Z",
     ]);
   });
 
