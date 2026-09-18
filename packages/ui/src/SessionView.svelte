@@ -111,6 +111,11 @@
     codexAsyncQuestionAnswerText,
     codexEventLifecycleHandledStateOnly,
     codexEventReplayKey,
+    codexEventRequiresHistoryReconciliation,
+    codexEventStreamRequiresHistoryReconciliation,
+    codexEventDeltaSupersededByCompletedItem,
+    codexOffscreenProjectionAction,
+    codexUsageEventBelongsToObservedTurn,
     codexEventItemId,
     codexAppHistoryMessagesFromTurnPage,
     codexAppHistoryTurnIds,
@@ -630,9 +635,12 @@
   let codexAppHistoryFailureKey = "";
   let codexAppHistoryFailureText = "";
   let codexAppHistoryFailureCount = 0;
+  let codexAppHistoryInvalidationSeq = 0;
   let codexAppHistoryRetryTimer: ReturnType<typeof setTimeout> | null = null;
   let codexAppHistoryNextCursor: string | null = null;
   let codexAppLiveTurnIds = new Set<string>();
+  let codexAppStartedTurnIds = new Set<string>();
+  let codexCompletedLiveItemIds = new Set<string>();
   let codexDeferredVisualEventKey = "";
   let visualHistoryScrollAnchor: {
     el: HTMLElement;
@@ -2194,6 +2202,8 @@
       codexDeferredVisualEventKey = "";
       codexSeenEvents.clear();
       codexAppLiveTurnIds = new Set();
+      codexAppStartedTurnIds = new Set();
+      codexCompletedLiveItemIds = new Set();
       codexLiveDetectedModel = "";
       if (!codexAppHistorySourceActive) codexAppSessionKey = "";
       resetToCodexAppSession();
@@ -2273,6 +2283,7 @@
     const targetThreadId = threadId;
     const targetCwd = cwd;
     const targetHistoryKey = codexAppHistoryKey(threadId, cwd);
+    const invalidationSeqAtReadStart = codexAppHistoryInvalidationSeq;
     const messagesAtReadStart = session.messages;
     const historySnapshotCapturedDuringActiveTurn =
       sending || codexActiveTurnId !== null;
@@ -2365,7 +2376,10 @@
           messages: mergedMessages,
         };
       }
-      codexAppHistoryLoadedKey = targetHistoryKey;
+      codexAppHistoryLoadedKey =
+        invalidationSeqAtReadStart === codexAppHistoryInvalidationSeq
+          ? targetHistoryKey
+          : "";
       codexDeferredVisualEventKey = "";
       codexAppHistoryFailureKey = "";
       codexAppHistoryFailureText = "";
@@ -2443,6 +2457,18 @@
       visualHistoryRequestInFlight = false;
       if (codexAppHistoryLoadingKey === key) codexAppHistoryLoadingKey = "";
     });
+  }
+
+  function invalidateCodexAppHistoryForReconciliation(): void {
+    const key = codexAppHistoryKey(effectiveSessionId, effectiveSessionCwd);
+    if (!key) return;
+    codexAppHistoryInvalidationSeq += 1;
+    codexAppHistoryLoadedKey = "";
+    if (codexAppHistoryFailedKeys.has(key)) {
+      const nextFailed = new Set(codexAppHistoryFailedKeys);
+      nextFailed.delete(key);
+      codexAppHistoryFailedKeys = nextFailed;
+    }
   }
 
   async function load() {
@@ -3226,7 +3252,14 @@
     codexEventStreamState = "connecting";
     const subscriber = {
       onState: (state) => {
+        const previousState = codexEventStreamState;
         codexEventStreamState = state;
+        if (
+          codexEventStreamRequiresHistoryReconciliation(previousState, state)
+        ) {
+          codexDeferredVisualEventKey = "";
+          invalidateCodexAppHistoryForReconciliation();
+        }
       },
       onEvent: (event) => {
         const deliveryMode = codexAppEventDeliveryMode({
@@ -3240,7 +3273,12 @@
         codexEventStreamState = "live";
         if (deliveryMode === "state-only") {
           applyCodexEventStateOnly(event);
-          codexDeferredVisualEventKey ||= codexEventReplayKey(event);
+          const projectionAction = codexOffscreenProjectionAction(event);
+          if (projectionAction === "defer") {
+            codexDeferredVisualEventKey ||= codexEventReplayKey(event);
+          } else {
+            applyCodexEvent(event, true);
+          }
           return;
         }
         const startedAt = performance.now();
@@ -3462,6 +3500,7 @@
     if (event.method === "turn/started") {
       if (event.turnId) {
         codexAppLiveTurnIds = new Set(codexAppLiveTurnIds).add(event.turnId);
+        codexAppStartedTurnIds.add(event.turnId);
       }
       codexActiveTurnId = event.turnId ?? codexActiveTurnId;
       sending = true;
@@ -3482,7 +3521,9 @@
     if (event.method === "turn/completed") {
       if (event.turnId) {
         codexAppLiveTurnIds = new Set(codexAppLiveTurnIds).add(event.turnId);
+        codexAppStartedTurnIds.delete(event.turnId);
       }
+      invalidateCodexAppHistoryForReconciliation();
       codexActiveTurnId = null;
       sending = false;
       sessionStatsRefreshSeq += 1;
@@ -3531,6 +3572,18 @@
       const first = codexSeenEvents.values().next().value;
       if (first) codexSeenEvents.delete(first);
     }
+    const eventItemId = codexEventItemId(event);
+    if (
+      codexEventDeltaSupersededByCompletedItem(
+        event,
+        codexCompletedLiveItemIds,
+      )
+    ) {
+      return;
+    }
+    if (event.method === "item/completed" && eventItemId) {
+      codexCompletedLiveItemIds.add(eventItemId);
+    }
     if (delivery !== "batched-delta") {
       flushCodexDeltaPatches();
     }
@@ -3540,6 +3593,9 @@
       event.turnId
     ) {
       codexAppLiveTurnIds = new Set(codexAppLiveTurnIds).add(event.turnId);
+    }
+    if (event.method === "turn/started" && event.turnId) {
+      codexAppStartedTurnIds.add(event.turnId);
     }
     const skipLifecycle =
       lifecycleAlreadyApplied && codexEventLifecycleHandledStateOnly(event);
@@ -3560,10 +3616,16 @@
       }
       return;
     }
-    const liveMessages = codexLiveMessagesFromEvent(
+    const normalizedLiveMessages = codexLiveMessagesFromEvent(
       event,
       codexLiveNormalizeContext,
     ) as NormalizedMessage[];
+    const liveMessages = codexUsageEventBelongsToObservedTurn(
+      event,
+      codexAppStartedTurnIds,
+    )
+      ? normalizedLiveMessages
+      : normalizedLiveMessages.filter((message) => !message.tokenUsage);
     const hasLiveMarker = liveMessages.some((message) =>
       message.blocks.some((block) => block.type === "marker"),
     );
@@ -3629,7 +3691,13 @@
     }
     if (event.method === "turn/completed") {
       flushCodexDeltaPatches();
+      if (codexEventRequiresHistoryReconciliation(event)) {
+        invalidateCodexAppHistoryForReconciliation();
+      }
       if (skipLifecycle) return;
+      if (event.turnId) {
+        codexAppStartedTurnIds.delete(event.turnId);
+      }
       codexActiveTurnId = null;
       sending = false;
       sessionStatsRefreshSeq += 1;

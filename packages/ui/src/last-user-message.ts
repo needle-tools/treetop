@@ -1508,6 +1508,7 @@ export function visualWorkSummary<B extends MessageBlock, M extends Message<B>>(
   }
   const subagents = new Set<string>();
   let boundaryMarkers = 0;
+  let accountingCheckpoints = 0;
   for (const entry of entries) {
     if (userMessageIntent(entry.message) === "steer") {
       steerings += 1;
@@ -1530,6 +1531,15 @@ export function visualWorkSummary<B extends MessageBlock, M extends Message<B>>(
     if (markerKind === "warning") {
       warnings += 1;
     }
+    if (
+      entry.blocks.length === 0 &&
+      entry.message.tokenUsage &&
+      Number.isFinite(entry.message.tokenUsage.total) &&
+      entry.message.tokenUsage.total > 0
+    ) {
+      accountingCheckpoints += 1;
+      continue;
+    }
     for (const block of entry.blocks) {
       const meta = visualSubagentMetaFromBlock(block);
       if (!meta) continue;
@@ -1548,6 +1558,7 @@ export function visualWorkSummary<B extends MessageBlock, M extends Message<B>>(
       warnings -
       steerings -
       boundaryMarkers -
+      accountingCheckpoints -
       subagents.size,
     compactions,
     warnings,
