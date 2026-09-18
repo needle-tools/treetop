@@ -2588,6 +2588,60 @@ describe("mergeVisualSessionMessages", () => {
     ).toEqual(["before", "queued follow-up", "working"]);
   });
 
+  it("keeps a dequeued user row after a late-reconciled prior-turn reply", () => {
+    const anchor = msg("assistant", "prior progress");
+    anchor.id = "prior-progress";
+    anchor.turnId = "prior-turn";
+    const priorFinal = msg("assistant", "prior turn done");
+    priorFinal.turnId = "prior-turn";
+    const newTurnAssistant = msg("assistant", "starting queued work");
+    newTurnAssistant.turnId = "new-turn";
+    const dequeued: Message = {
+      id: "codex-optimistic-user-dequeued",
+      role: "user",
+      turnId: "new-turn",
+      optimisticAfterMessageId: "prior-progress",
+      optimisticAfterMessageIndex: 0,
+      blocks: [{ type: "text", text: "queued follow-up" }],
+    };
+
+    expect(
+      mergeVisualSessionMessages(
+        [anchor, priorFinal, newTurnAssistant],
+        [dequeued],
+      ).map((message) => message.blocks[0]?.text),
+    ).toEqual([
+      "prior progress",
+      "prior turn done",
+      "queued follow-up",
+      "starting queued work",
+    ]);
+  });
+
+  it("keeps steering at its explicit position inside the active turn", () => {
+    const first = msg("assistant", "initial work");
+    first.id = "initial-work";
+    first.turnId = "active-turn";
+    const anchor = msg("assistant", "latest progress");
+    anchor.id = "latest-progress";
+    anchor.turnId = "active-turn";
+    const steering: Message = {
+      id: "codex-optimistic-user-steer",
+      role: "user",
+      turnId: "active-turn",
+      intent: "steer",
+      optimisticAfterMessageId: "latest-progress",
+      optimisticAfterMessageIndex: 1,
+      blocks: [{ type: "text", text: "steer this" }],
+    };
+
+    expect(
+      mergeVisualSessionMessages([first, anchor], [steering]).map(
+        (message) => message.blocks[0]?.text,
+      ),
+    ).toEqual(["initial work", "latest progress", "steer this"]);
+  });
+
   it("does not timestamp-sort new optimistic user rows above older app-server rows", () => {
     const priorUser = msg("user", "older request", "2026-06-19T09:59:00.000Z");
     priorUser.id = "prior-user";
@@ -2714,6 +2768,7 @@ describe("applyVisualTranscriptDeltaPatches", () => {
         type: "text",
         delta: "First",
         timestamp: "2026-06-21T20:00:01.000Z",
+        turnId: "turn-1",
       },
       {
         id: "codex-agent-item-1",
@@ -2721,6 +2776,7 @@ describe("applyVisualTranscriptDeltaPatches", () => {
         type: "text",
         delta: " second",
         timestamp: "2026-06-21T20:00:02.000Z",
+        turnId: "turn-1",
       },
       {
         id: "codex-output-call-1",
@@ -2752,6 +2808,7 @@ describe("applyVisualTranscriptDeltaPatches", () => {
     expect(next[1]).toMatchObject({
       id: "codex-agent-item-1",
       role: "assistant",
+      turnId: "turn-1",
       blocks: [{ type: "text", text: "First second" }],
     });
     expect(next[2]).toMatchObject({
