@@ -93,7 +93,7 @@
     type BatchSessionPatch,
   } from "./session-poll";
   import {
-    canResumeVisualSurface,
+    resumeTargetForSessionSurface,
     shouldHoldOffscreenAttachedTerminal,
     shouldApplyTranscriptSessionOverride,
     shouldMountTerminalView,
@@ -1448,31 +1448,28 @@
     }
   }
 
-  function canResumeInTerminalSurface(): boolean {
-    return (
-      !!onCustomResume ||
-      (!!effectiveSessionId && (agent === "claude" || agent === "codex"))
-    );
-  }
-
-  function canResumeInVisualSurface(): boolean {
-    return canResumeVisualSurface({
-      agent,
-      liveAppSurface: codexVisualAppSurface,
-      sessionId: effectiveSessionId,
-      hasVisualResume: !!onVisualResume,
-    });
-  }
-
   function canResumeCurrentSurface(): boolean {
     if (renderOnly) return false;
-    return transcriptSurface === "terminal"
-      ? canResumeInTerminalSurface()
-      : canResumeInVisualSurface();
+    return resumeTargetForSessionSurface({
+      agent,
+      transcriptSurface,
+      sessionId: effectiveSessionId,
+      hasCustomResume: !!onCustomResume,
+      liveAppSurface: codexVisualAppSurface,
+      hasVisualResume: !!onVisualResume,
+    }) !== null;
   }
 
   function resumeTitleForAgent(): string {
-    if (transcriptSurface !== "terminal") {
+    const target = resumeTargetForSessionSurface({
+      agent,
+      transcriptSurface,
+      sessionId: effectiveSessionId,
+      hasCustomResume: !!onCustomResume,
+      liveAppSurface: codexVisualAppSurface,
+      hasVisualResume: !!onVisualResume,
+    });
+    if (target === "visual") {
       return agent === "codex"
         ? "Resume this Codex session in the visual chat surface"
         : "Resume this session in the visual chat surface";
@@ -1510,8 +1507,16 @@
   }
 
   function resumeCurrentSurface(): void {
-    if (transcriptSurface === "terminal") resumeInTerminalSurface();
-    else resumeInVisualSurface();
+    const target = resumeTargetForSessionSurface({
+      agent,
+      transcriptSurface,
+      sessionId: effectiveSessionId,
+      hasCustomResume: !!onCustomResume,
+      liveAppSurface: codexVisualAppSurface,
+      hasVisualResume: !!onVisualResume,
+    });
+    if (target === "terminal") resumeInTerminalSurface();
+    else if (target === "visual") resumeInVisualSurface();
   }
 
   /** Open the on-disk directory that holds this session's transcript

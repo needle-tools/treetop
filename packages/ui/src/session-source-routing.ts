@@ -324,6 +324,30 @@ export function canResumeVisualSurface(options: {
   return !!options.sessionId && options.hasVisualResume;
 }
 
+/** Pick the actual surface the shared Resume button will open. Claude has
+ * no visual app-server surface, so a stopped Claude transcript always resumes
+ * in its terminal even while the transcript itself is displayed in read mode. */
+export function resumeTargetForSessionSurface(options: {
+  agent: string;
+  transcriptSurface: "read" | "terminal";
+  sessionId: string | undefined | null;
+  hasCustomResume: boolean;
+  liveAppSurface: boolean;
+  hasVisualResume: boolean;
+}): "terminal" | "visual" | null {
+  const terminalResume =
+    options.hasCustomResume ||
+    (!!options.sessionId &&
+      (options.agent === "claude" || options.agent === "codex"));
+  if (
+    options.transcriptSurface === "terminal" ||
+    options.agent === "claude"
+  ) {
+    return terminalResume ? "terminal" : null;
+  }
+  return canResumeVisualSurface(options) ? "visual" : null;
+}
+
 export function reconcileLiveAgentTerminals(
   byWt: Record<string, OpenSession[]>,
   repos: readonly Repo[],

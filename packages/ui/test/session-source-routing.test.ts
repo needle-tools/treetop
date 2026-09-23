@@ -21,6 +21,7 @@ import {
   shellSourceToDismiss,
   moveSessionStateKey,
   canResumeVisualSurface,
+  resumeTargetForSessionSurface,
   commandTerminalForSource,
   shouldForgetCommandTerminalOnExit,
   openSessionHasDockActivity,
@@ -1342,6 +1343,47 @@ describe("canResumeVisualSurface", () => {
         hasVisualResume: true,
       }),
     ).toBe(false);
+  });
+});
+
+describe("resumeTargetForSessionSurface", () => {
+  test("resumes a stopped Claude read surface in its terminal", () => {
+    expect(
+      resumeTargetForSessionSurface({
+        agent: "claude",
+        transcriptSurface: "read",
+        sessionId: "38f728e5-8f73-4ac2-a4f1-1ea27064b179",
+        hasCustomResume: false,
+        liveAppSurface: false,
+        hasVisualResume: false,
+      }),
+    ).toBe("terminal");
+  });
+
+  test("keeps stopped Codex read surfaces on the visual resume path", () => {
+    expect(
+      resumeTargetForSessionSurface({
+        agent: "codex",
+        transcriptSurface: "read",
+        sessionId: "thread-1",
+        hasCustomResume: false,
+        liveAppSurface: false,
+        hasVisualResume: true,
+      }),
+    ).toBe("visual");
+  });
+
+  test("does not offer resume without a supported target", () => {
+    expect(
+      resumeTargetForSessionSurface({
+        agent: "claude",
+        transcriptSurface: "read",
+        sessionId: undefined,
+        hasCustomResume: false,
+        liveAppSurface: false,
+        hasVisualResume: false,
+      }),
+    ).toBeNull();
   });
 });
 
