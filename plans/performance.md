@@ -1261,6 +1261,15 @@ intent and stayed detached. Reader detachment now requires an input signal
 the armed follow intent, including an extra settling write when geometry changes
 between the final tail write and pending-state cleanup.
 
+A later app-server streaming regression came from queued tail corrections, not
+lost follow state. Every delta scheduled the normal post-render plus settling
+write, but a newer delta did not invalidate the older callbacks. A burst could
+therefore keep applying stale correction passes across later frames while the
+live work body changed underneath them. Tail scheduling now treats the newest
+tail key as the sole owner of both correction phases; superseded callbacks are
+no-ops. This keeps the existing two-phase late-layout protection while reducing
+a three-delta burst from six scroll writes to two.
+
 Replay Lab's transcript and turn analysis now synchronize through the shared
 `SessionView` scroll controller using absolute normalized-message turn indexes.
 The viewport's semantic center drives the analysis map; scrolling the map asks
