@@ -1984,6 +1984,33 @@ describe("codex event stream hub", () => {
     ]);
   });
 
+  test("normalizes live app-server user items before the response arrives", () => {
+    const messages = codexLiveMessagesFromEvent({
+      kind: "notification",
+      method: "item/started",
+      params: {
+        threadId: "thread-1",
+        turnId: "turn-1",
+        item: {
+          id: "user-1",
+          type: "userMessage",
+          content: [{ type: "text", text: "just answer" }],
+        },
+      },
+      turnId: "turn-1",
+      receivedAt: "2026-09-23T07:56:52.190Z",
+    });
+
+    expect(messages).toEqual([
+      {
+        id: "codex-user-user-1",
+        role: "user",
+        timestamp: "2026-09-23T07:56:52.190Z",
+        blocks: [{ type: "text", text: "just answer" }],
+      },
+    ]);
+  });
+
   test("normalizes structured app-server reasoning summaries into thinking text", () => {
     const messages = codexAppHistoryMessagesFromThread({
       id: "thread-1",
@@ -3774,6 +3801,44 @@ describe("codex event stream hub", () => {
         { preserveLiveProjection: true },
       ),
     ).toEqual([previousUser, completedUser, completedReply]);
+  });
+
+  test("inserts a canonical user row before its live response while preserving live-only usage", () => {
+    const canonicalUser = {
+      id: "codex-user-user-1",
+      role: "user" as const,
+      timestamp: "2026-09-23T07:56:52.190Z",
+      blocks: [{ type: "text", text: "just answer" }],
+    };
+    const response = {
+      id: "codex-agent-agent-1",
+      role: "assistant" as const,
+      timestamp: "2026-09-23T07:56:57.156Z",
+      blocks: [{ type: "text", text: "the answer" }],
+    };
+    const usage = {
+      id: "codex-usage-turn-1-134",
+      role: "assistant" as const,
+      timestamp: "2026-09-23T07:56:57.158Z",
+      tokenUsage: {
+        input: 100,
+        cachedInput: 90,
+        cacheWriteInput: 0,
+        output: 10,
+        reasoningOutput: 0,
+        total: 110,
+      },
+      blocks: [],
+    };
+
+    expect(
+      reconcileCodexAppHistoryMessages(
+        [canonicalUser, response],
+        [response, usage],
+        [response, usage],
+        { preserveLiveProjection: true },
+      ),
+    ).toEqual([canonicalUser, response, usage]);
   });
 
   test("reads turn identities from an app-server history page", () => {

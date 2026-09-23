@@ -1332,6 +1332,16 @@ first canonical item in its own turn, without comparing timestamps, sorting
 history, or consulting transcript data. It still disappears when the matching
 canonical app-server `userMessage` arrives through thread history.
 
+A 2026-09-23 FHIR session exposed the complementary failure after acceptance:
+the live normalizer handled `agentMessage` item snapshots but discarded the
+app-server's canonical `userMessage` snapshots. When the optimistic row was
+removed, reconciliation preserved the response-first live projection and
+appended the newly visible history user row after it. Live user items now pass
+through the same canonical item normalizer as history, and reconciliation uses
+history only for canonical app-server item order while retaining live-only
+usage and warning rows at their neighboring item boundary. This is still one
+app-server projection; transcript data is neither merged nor consulted.
+
 The cumulative artifact map consumes the same normalized visual-work entries
 as the per-turn artifact view. Full-history extraction is opt-in while a map is
 open, completed work is cached by immutable item identity, and each session

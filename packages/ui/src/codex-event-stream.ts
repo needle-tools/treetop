@@ -1214,6 +1214,20 @@ export function codexLiveMessagesFromEvent(
   const liveItem = codexEventItem(event.params);
   if (
     (event.method === "item/started" || event.method === "item/completed") &&
+    liveItem?.type === "userMessage"
+  ) {
+    messages.push(
+      ...codexAppMessagesFromThreadItem(
+        liveItem,
+        event.turnId,
+        timestamp,
+        codexLiveToolNameMap(context),
+        context,
+      ),
+    );
+  }
+  if (
+    (event.method === "item/started" || event.method === "item/completed") &&
     liveItem?.type === "agentMessage"
   ) {
     const itemId = codexEventItemId(event) ?? "question";
@@ -1397,30 +1411,63 @@ export function codexAppHistoryTurnIds(thread: unknown): Set<string> {
 export function mergeCodexAppHistoryMessages<
   M extends { id?: string; blocks: unknown[] },
 >(history: readonly M[], current: readonly M[]): M[] {
+  const historyIndexById = new Map<string, number>();
+  history.forEach((message, index) => {
+    if (message.id) historyIndexById.set(message.id, index);
+  });
   const currentById = new Map<string, M>();
-  for (const message of current) {
+  current.forEach((message) => {
     if (message.id) currentById.set(message.id, message);
+  });
+
+  // App-server history owns canonical item order. Keep a richer live payload
+  // for matching IDs, then restore live-only notifications at the boundary
+  // where they occurred relative to the nearest canonical item.
+  const canonical = history.map((historyMessage) => {
+    const currentMessage = historyMessage.id
+      ? currentById.get(historyMessage.id)
+      : undefined;
+    return currentMessage &&
+      messagePayloadWeight(currentMessage) >= messagePayloadWeight(historyMessage)
+      ? currentMessage
+      : historyMessage;
+  });
+  const nextCanonicalBoundary = new Array<number | undefined>(current.length);
+  let nextBoundary: number | undefined;
+  for (let index = current.length - 1; index >= 0; index -= 1) {
+    nextCanonicalBoundary[index] = nextBoundary;
+    const id = current[index]?.id;
+    if (id && historyIndexById.has(id)) {
+      nextBoundary = historyIndexById.get(id);
+    }
   }
-  const seen = new Set<string>();
+  const previousCanonicalBoundary = new Array<number | undefined>(
+    current.length,
+  );
+  let previousBoundary: number | undefined;
+  for (let index = 0; index < current.length; index += 1) {
+    previousCanonicalBoundary[index] = previousBoundary;
+    const id = current[index]?.id;
+    if (id && historyIndexById.has(id)) {
+      previousBoundary = historyIndexById.get(id)! + 1;
+    }
+  }
+  const extrasByBoundary = new Map<number, M[]>();
+  current.forEach((message, currentIndex) => {
+    if (message.id && historyIndexById.has(message.id)) return;
+    const boundary =
+      nextCanonicalBoundary[currentIndex] ??
+      previousCanonicalBoundary[currentIndex] ??
+      canonical.length;
+    const extras = extrasByBoundary.get(boundary) ?? [];
+    extras.push(message);
+    extrasByBoundary.set(boundary, extras);
+  });
+
   const merged: M[] = [];
-  for (const historyMessage of history) {
-    const id = historyMessage.id;
-    if (!id) {
-      merged.push(historyMessage);
-      continue;
-    }
-    seen.add(id);
-    const currentMessage = currentById.get(id);
-    const keepCurrent =
-      currentMessage &&
-      messagePayloadWeight(currentMessage) >=
-        messagePayloadWeight(historyMessage);
-    merged.push(keepCurrent ? currentMessage : historyMessage);
-  }
-  for (const currentMessage of current) {
-    if (!currentMessage.id || !seen.has(currentMessage.id)) {
-      merged.push(currentMessage);
-    }
+  for (let boundary = 0; boundary <= canonical.length; boundary += 1) {
+    merged.push(...(extrasByBoundary.get(boundary) ?? []));
+    if (boundary < canonical.length) merged.push(canonical[boundary]!);
   }
   return merged;
 }
@@ -1444,13 +1491,13 @@ export function reconcileCodexAppHistoryMessages<
   if (current.length === 0) return [...history];
   // A thread page is a point-in-time snapshot and is not a superset of live
   // app-server notifications. It can arrive behind SSE output and excludes
-  // notification-only rows such as usage checkpoints. Keep a live projection's
-  // ordering and only enrich matching rows / append history-only rows.
+  // notification-only rows such as usage checkpoints. Keep those live-only
+  // rows while restoring the authoritative order of canonical history items.
   if (
     options.historySnapshotCapturedDuringActiveTurn ||
     options.preserveLiveProjection
   ) {
-    return mergeCodexAppHistoryMessages(current, history);
+    return mergeCodexAppHistoryMessages(history, current);
   }
 
   const historyIds = new Set(
@@ -1504,9 +1551,9 @@ export function reconcileCodexAppHistoryMessages<
         !message.timestamp ||
         message.timestamp > historyEnd),
   );
-  const refreshed = mergeCodexAppHistoryMessages(history, current).slice(
-    0,
-    history.length,
+  const refreshed = mergeCodexAppHistoryMessages(history, current).filter(
+    (message) =>
+      message.id ? historyIds.has(message.id) : history.includes(message),
   );
   const seen = new Set<string>();
   return [...older, ...refreshed, ...liveTail].filter((message) => {
