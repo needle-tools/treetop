@@ -21,6 +21,7 @@ import {
   DEFAULT_APP_NAME,
   defaultAppPathFor,
 } from "../../../scripts/build-launch";
+import { electrobunCliPreparationFor } from "../../../scripts/patch-launcher";
 
 test("launcher enables per-monitor v2 DPI before starting the window worker, once", () => {
   const source = "new Worker();";
@@ -97,6 +98,20 @@ test("build:launch defaults to the Treetop electrobun artifact names", () => {
   expect(defaultAppPathFor("linux", "x64")).toBe(
     resolve("build/stable-linux-x64/Treetop"),
   );
+});
+
+test("build preparation re-signs the cached Electrobun CLI on macOS", () => {
+  expect(electrobunCliPreparationFor("darwin", "/repo")).toEqual({
+    command: "codesign",
+    args: [
+      "--force",
+      "--sign",
+      "-",
+      resolve("/repo/node_modules/electrobun/bin/electrobun"),
+    ],
+  });
+  expect(electrobunCliPreparationFor("win32", "/repo")).toBeUndefined();
+  expect(electrobunCliPreparationFor("linux", "/repo")).toBeUndefined();
 });
 
 for (const entry of [
