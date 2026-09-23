@@ -19,6 +19,7 @@
  * the built bundle. We patch that source template before `electrobun
  * build` runs. Idempotent: a marker comment prevents re-patching.
  */
+import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 
@@ -30,6 +31,43 @@ const targets = [
 ];
 
 const MARKER = "/* SUPERGIT_LAUNCHER_PATCHED */";
+
+/** Electrobun downloads its CLI after package installation. On newer macOS
+ * versions that cached ad-hoc signature can be rejected: the CLI then exits
+ * zero without producing a bundle, leaving build:launch to open an old app.
+ * Re-signing the local build tool makes failure explicit and keeps the
+ * distribution bundle on the same build timestamp as the native payload. */
+export function electrobunCliPreparationFor(platform: NodeJS.Platform, root: string): {
+  command: string;
+  args: string[];
+} | undefined {
+  if (platform !== "darwin") return undefined;
+  return {
+    command: "codesign",
+    args: [
+      "--force",
+      "--sign",
+      "-",
+      resolve(root, "node_modules/electrobun/bin/electrobun"),
+    ],
+  };
+}
+
+function prepareElectrobunCli(): void {
+  const preparation = electrobunCliPreparationFor(process.platform, ROOT);
+  if (!preparation) return;
+  const cliPath = preparation.args.at(-1)!;
+  if (!existsSync(cliPath)) {
+    throw new Error(`Electrobun CLI not found: ${cliPath}`);
+  }
+  const result = spawnSync(preparation.command, preparation.args, {
+    stdio: "inherit",
+  });
+  if (result.status !== 0) {
+    throw new Error(`Could not prepare Electrobun CLI (codesign exited ${result.status ?? "without a status"})`);
+  }
+  console.log(`  prepared Electrobun CLI: ${cliPath}`);
+}
 
 /** Cleanup must finish before the Worker can create its first WebView2.
  * Existing patched templates also need migration: the marker alone does
@@ -135,6 +173,8 @@ const POST_CLOSE = `
 const ENTRY_OLD = /lib\.symbols\.startEventLoop\s*\(/;
 const EXIT_OLD = /lib\.symbols\.forceExit\s*\(/;
 const ENTRY_NEW = /lib\.symbols\.electrobun_core_run_main_thread\s*\(/;
+
+if (import.meta.main) prepareElectrobunCli();
 
 if (import.meta.main) for (const path of targets) {
   if (!existsSync(path)) {
