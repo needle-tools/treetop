@@ -753,6 +753,8 @@
     align-items: center;
     gap: 0.6rem;
     padding: 0.4rem 0.6rem;
+    height: var(--session-head-height);
+    box-sizing: border-box;
     background: var(--surface-2);
     border-bottom: 1px solid var(--surface-3);
     cursor: grab;
@@ -794,12 +796,21 @@
     flex-direction: column;
     align-items: flex-start;
     gap: 0.15rem;
+    overflow: hidden;
+    font-size: 0.66rem;
     font-variant-numeric: tabular-nums;
   }
   .col-meta > * {
     max-width: 100%;
-    white-space: normal;
+    white-space: nowrap;
     display: block;
+    font-size: inherit;
+  }
+  /* The activity line is slotted through Tooltip, so it is not a direct
+     child like cost and transcript stats. Override the global `.small`
+     utility on every metadata row, including that nested trigger. */
+  .col-meta .small {
+    font-size: inherit;
   }
   .col-meta .placeholder {
     font-style: italic;
