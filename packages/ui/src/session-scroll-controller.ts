@@ -396,12 +396,14 @@ export class SessionScrollController {
     this.renderedOnce = true;
 
     this.afterPaint(() => {
+      if (this.pendingTailFollowSeq !== followSeq) return;
       const current = this.el;
       if (!current) return;
       const mayFollow = firstRender || this.canApplyFollow(pauseSeq);
       if (!mayFollow) this.setActive(false);
       if (shouldStick && mayFollow) this.applyTailFollow(current);
       this.scheduler.nextFrame(() => {
+        if (this.pendingTailFollowSeq !== followSeq) return;
         const settled = this.el;
         const mayFollowSettled = firstRender || this.canApplyFollow(pauseSeq);
         if (!mayFollowSettled) this.setActive(false);

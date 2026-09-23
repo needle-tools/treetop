@@ -70,6 +70,20 @@ function fakeScroller(anchorTop: () => number): HTMLElement {
   } as unknown as HTMLElement;
 }
 
+function countScrollWrites(scroller: HTMLElement): () => number {
+  let scrollTop = scroller.scrollTop;
+  let writes = 0;
+  Object.defineProperty(scroller, "scrollTop", {
+    configurable: true,
+    get: () => scrollTop,
+    set: (value: number) => {
+      scrollTop = value;
+      writes += 1;
+    },
+  });
+  return () => writes;
+}
+
 function fakeLiveWorkScroller(opts: { zen?: boolean } = {}): {
   scroller: HTMLElement;
   workBody: HTMLElement;
@@ -224,6 +238,26 @@ describe("session scroll controller", () => {
 
     expect(scroller.scrollTop).toBe(400);
     expect(controller.isPaused).toBe(true);
+  });
+
+  test("coalesces a burst of streamed tail updates into one correction per frame", () => {
+    const scheduler = new ManualScheduler();
+    const scroller = fakeScroller(() => 220);
+    scroller.scrollTop = 700;
+    const scrollWrites = countScrollWrites(scroller);
+    const controller = createSessionScrollController({
+      scheduler,
+      transcriptActive: () => true,
+    });
+
+    controller.setElement(scroller);
+    controller.updateTail("delta:1");
+    controller.updateTail("delta:2");
+    controller.updateTail("delta:3");
+    scheduler.flush();
+
+    expect(scrollWrites()).toBe(2);
+    expect(scroller.scrollTop).toBe(1_000_000_000);
   });
 
   test("does not mistake a turn-boundary relayout for reader scroll intent", () => {
