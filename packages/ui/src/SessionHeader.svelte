@@ -788,23 +788,29 @@
     max-width: 100%;
   }
   .col-meta {
-    /* Metadata yields before the action cluster. Long costs / transcript
-       stats wrap inside this column instead of pushing the menu and close
-       buttons outside the header. */
-    flex: 0 1 auto;
-    min-width: 0;
+    /* These are deliberately three compact rows. Keep every row intact:
+       wrapping makes the fixed-height header jump to a fourth line and also
+       changes the lane geometry while live values update. */
+    flex: 0 0 max-content;
+    min-width: max-content;
     flex-direction: column;
     align-items: flex-start;
     gap: 0.15rem;
-    overflow: hidden;
+    flex-wrap: nowrap;
+    white-space: nowrap;
     font-size: 0.66rem;
     font-variant-numeric: tabular-nums;
   }
   .col-meta > * {
-    max-width: 100%;
+    flex: 0 0 auto;
+    max-width: none;
     white-space: nowrap;
     display: block;
     font-size: inherit;
+  }
+  .col-meta :global(.tt-wrap) {
+    max-width: none;
+    white-space: nowrap;
   }
   /* The activity line is slotted through Tooltip, so it is not a direct
      child like cost and transcript stats. Override the global `.small`

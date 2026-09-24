@@ -1351,6 +1351,15 @@ history only for canonical app-server item order while retaining live-only
 usage and warning rows at their neighboring item boundary. This is still one
 app-server projection; transcript data is neither merged nor consulted.
 
+The live session header had a separate source-ownership bug: synthetic
+app-server session shells assigned `Date.now()` as their start, so a reset or
+reactive recreation made an old thread say "started just now" and could move
+that value while events streamed. Live sessions now take their immutable start
+from app-server `thread.createdAt`; turn timestamps and transcript metadata are
+not substitutes. The header's three compact metadata rows are also explicitly
+non-wrapping so changing counters cannot create a fourth row or alter lane
+geometry.
+
 The cumulative artifact map consumes the same normalized visual-work entries
 as the per-turn artifact view. Full-history extraction is opt-in while a map is
 open, completed work is cached by immutable item identity, and each session
