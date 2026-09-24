@@ -1379,6 +1379,18 @@ export function codexAppHistoryMessagesFromThread(
   return messages;
 }
 
+/** Immutable creation time reported by app-server for the whole thread.
+ * Turn timestamps describe individual requests and must not be promoted to
+ * the session start, especially when only a latest-turn page is loaded. */
+export function codexAppThreadStartedAt(
+  thread: unknown,
+): string | undefined {
+  if (!thread || typeof thread !== "object") return undefined;
+  return codexUnixSecondsToIso(
+    (thread as Record<string, unknown>).createdAt,
+  );
+}
+
 export function codexAppHistoryMessagesFromTurnPage(
   thread: unknown,
   context: CodexLiveNormalizeContext = {},

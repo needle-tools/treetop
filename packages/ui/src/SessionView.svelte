@@ -115,6 +115,7 @@
     codexUsageEventBelongsToObservedTurn,
     codexEventItemId,
     codexAppHistoryMessagesFromTurnPage,
+    codexAppThreadStartedAt,
     codexAppHistoryTurnIds,
     codexAppHistoryKey,
     codexAppHistoryFailureMessage,
@@ -2011,7 +2012,6 @@
       agent,
       cwd: effectiveSessionCwd || wtPath,
       sessionId: effectiveSessionId,
-      startedAt: previous?.startedAt ?? new Date().toISOString(),
       manualTitle: previous?.manualTitle,
       messages: [],
     };
@@ -2321,6 +2321,7 @@
         body.thread,
         codexLiveNormalizeContext,
       ) as NormalizedMessage[];
+      const threadStartedAt = codexAppThreadStartedAt(body.thread);
       const historyTurnIds = codexAppHistoryTurnIds(body.thread);
       // A turns page is not a superset of app-server notifications: it may be
       // stale just after completion and it omits notification-only rows such
@@ -2358,8 +2359,11 @@
         noteVisualTranscriptChangedFrom(0);
         session = {
           ...session,
+          ...(threadStartedAt ? { startedAt: threadStartedAt } : {}),
           messages: mergedMessages,
         };
+      } else if (threadStartedAt && session.startedAt !== threadStartedAt) {
+        session = { ...session, startedAt: threadStartedAt };
       }
       codexAppHistoryLoadedKey =
         invalidationSeqAtReadStart === codexAppHistoryInvalidationSeq
@@ -2761,7 +2765,6 @@
       agent,
       cwd: wtPath,
       sessionId: resumeSessionId,
-      startedAt: new Date().toISOString(),
       messages: [],
     };
     codexAppSessionKey = codexAppHistorySourceActive

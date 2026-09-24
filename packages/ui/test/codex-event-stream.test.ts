@@ -7,6 +7,7 @@ import {
   canRequestOlderCodexAppThreadHistory,
   codexAppHistoryMessagesFromThread,
   codexAppHistoryMessagesFromTurnPage,
+  codexAppThreadStartedAt,
   codexAppHistoryTurnIds,
   codexLiveMessagesFromEvent,
   codexLiveMessagesEndTurn,
@@ -97,6 +98,21 @@ function event(threadId: string, seq: number): CodexAppEvent {
 }
 
 describe("codex event stream hub", () => {
+  test("uses the app-server thread creation time as the stable session start", () => {
+    expect(
+      codexAppThreadStartedAt({
+        id: "thread-1",
+        createdAt: 1_789_646_010,
+        turns: [
+          { id: "latest", startedAt: 1_790_161_409 },
+          { id: "older", startedAt: 1_790_161_364 },
+        ],
+      }),
+    ).toBe("2026-09-17T11:53:30.000Z");
+    expect(codexAppThreadStartedAt({ createdAt: "invalid" })).toBeUndefined();
+    expect(codexAppThreadStartedAt(null)).toBeUndefined();
+  });
+
   test("presents Computer Use elicitations without exposing the protocol envelope", () => {
     const request: CodexAppEvent = {
       kind: "request",
