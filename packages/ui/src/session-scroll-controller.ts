@@ -11,7 +11,7 @@ import {
   VISUAL_TAIL_FOLLOW_RESUME_PX,
   visualScrollMemoryFromMetrics,
   visualScrollTopFromMemory,
-  zenLiveWorkScrollDelta,
+  liveWorkScrollDelta,
   type VisualScrollMemory,
 } from "./visual-tail-follow";
 
@@ -222,10 +222,10 @@ export class SessionScrollController {
 
   updateIntent(): void {
     if (!this.el) return;
-    const zenLiveDelta = this.zenLiveWorkDelta(this.el);
+    const liveWorkDelta = this.liveWorkDelta(this.el);
     this.setPaused(
-      zenLiveDelta !== undefined
-        ? Math.abs(zenLiveDelta) > VISUAL_TAIL_FOLLOW_RESUME_PX
+      liveWorkDelta !== undefined
+        ? Math.abs(liveWorkDelta) > VISUAL_TAIL_FOLLOW_RESUME_PX
         : shouldPauseVisualTailAfterUserScroll({ metrics: metrics(this.el) }),
     );
   }
@@ -383,7 +383,7 @@ export class SessionScrollController {
     const pauseSeq = this.pauseSeq;
     const selecting = this.hasActiveSelection();
     const shouldStick =
-      (!this.paused && !selecting && this.zenLiveWorkDelta(el) !== undefined) ||
+      (!this.paused && !selecting && this.liveWorkDelta(el) !== undefined) ||
       shouldFollowVisualTail({
         force,
         firstRender,
@@ -440,7 +440,7 @@ export class SessionScrollController {
     this.setActive(
       !!el &&
         !this.paused &&
-        (this.zenLiveWorkDelta(el) !== undefined ||
+        (this.liveWorkDelta(el) !== undefined ||
           isVisualTailFollowActive({
             metrics: metrics(el),
             paused: false,
@@ -459,8 +459,8 @@ export class SessionScrollController {
   }
 
   private applyTailFollow(el: HTMLElement): void {
-    const zenLiveDelta = this.zenLiveWorkDelta(el);
-    if (zenLiveDelta !== undefined) el.scrollTop += zenLiveDelta;
+    const liveWorkDelta = this.liveWorkDelta(el);
+    if (liveWorkDelta !== undefined) el.scrollTop += liveWorkDelta;
     else scrollToEnd(el);
     this.scrollLiveWorkBodiesToEnd(el);
     this.syncActive(el);
@@ -497,8 +497,7 @@ export class SessionScrollController {
     }
   }
 
-  private zenLiveWorkDelta(el: HTMLElement): number | undefined {
-    if (!el.closest(".row.row-zen")) return undefined;
+  private liveWorkDelta(el: HTMLElement): number | undefined {
     const liveWork = el
       .querySelector<HTMLElement>(".work-foldout-live")
       ?.closest<HTMLElement>(".work-row");
@@ -516,10 +515,11 @@ export class SessionScrollController {
     const viewport = el.getBoundingClientRect();
     const user = precedingUser.getBoundingClientRect();
     const work = liveWork.getBoundingClientRect();
-    return zenLiveWorkScrollDelta({
+    return liveWorkScrollDelta({
       viewportTop: viewport.top,
       viewportHeight: viewport.height,
       userHeight: user.height,
+      userBottom: user.bottom,
       workTop: work.top,
     });
   }

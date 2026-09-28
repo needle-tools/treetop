@@ -13,7 +13,7 @@ import {
   shouldPrefetchOlderVisualHistory,
   visualScrollMemoryFromMetrics,
   visualScrollTopFromMemory,
-  zenLiveWorkScrollDelta,
+  liveWorkScrollDelta,
 } from "../src/visual-tail-follow";
 
 describe("visual transcript tail following", () => {
@@ -31,24 +31,26 @@ describe("visual transcript tail following", () => {
     ).toBe(4);
   });
 
-  it("positions live zen work near the top while keeping the end of the user turn visible", () => {
+  it("positions live work near the top while keeping the end of the user turn visible", () => {
     expect(
-      zenLiveWorkScrollDelta({
+      liveWorkScrollDelta({
         viewportTop: 100,
         viewportHeight: 500,
         userHeight: 80,
+        userBottom: 390,
         workTop: 430,
       }),
-    ).toBe(250);
+    ).toBe(242);
 
     expect(
-      zenLiveWorkScrollDelta({
+      liveWorkScrollDelta({
         viewportTop: 100,
         viewportHeight: 500,
-        userHeight: 400,
+        userHeight: 40,
+        userBottom: 400,
         workTop: 430,
       }),
-    ).toBe(155);
+    ).toBe(266);
   });
   it("anchors a paused reader to the nested row nearest the viewport, not its rebuilt work container", () => {
     expect(

@@ -1,19 +1,29 @@
 export const VISUAL_TAIL_FOLLOW_NEAR_PX = 64;
 export const VISUAL_TAIL_FOLLOW_RESUME_PX = 4;
 
-/** Keep live zen work high enough to remain a status surface while reserving
- *  room above it for the end of the user turn that started the work. */
-export function zenLiveWorkScrollDelta(input: {
+/** Keep live work near the top while retaining a small, readable tail of the
+ *  user turn that started it. The inter-row gap is included, but bounded so
+ *  unrelated layout space cannot push the live status surface down. */
+export function liveWorkScrollDelta(input: {
   viewportTop: number;
   viewportHeight: number;
   userHeight: number;
+  userBottom: number;
   workTop: number;
 }): number {
-  const userContextHeight = Math.min(
-    Math.max(input.userHeight, 64),
-    input.viewportHeight * 0.35,
+  const visibleUserTailHeight = Math.min(
+    input.userHeight,
+    64,
+    input.viewportHeight * 0.2,
   );
-  return input.workTop - (input.viewportTop + userContextHeight);
+  const interRowGap = Math.min(
+    Math.max(input.workTop - input.userBottom, 0),
+    24,
+  );
+  return (
+    input.workTop -
+    (input.viewportTop + visibleUserTailHeight + interRowGap)
+  );
 }
 
 export interface VisualScrollMetrics {

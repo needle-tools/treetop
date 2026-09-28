@@ -189,7 +189,7 @@ describe("session scroll controller", () => {
     { label: "regular", zen: false },
     { label: "zen", zen: true },
   ]) {
-    test(`keeps the bounded live work body at its tail in ${label} mode`, () => {
+    test(`anchors live work near the top and keeps its bounded body at the tail in ${label} mode`, () => {
       const scheduler = new ManualScheduler();
       const { scroller, workBody } = fakeLiveWorkScroller({ zen });
       const controller = createSessionScrollController({ scheduler });
@@ -199,7 +199,7 @@ describe("session scroll controller", () => {
       scheduler.flush();
 
       expect(workBody.scrollTop).toBe(1_000_000_000);
-      expect(scroller.scrollTop).toBeGreaterThan(1_490);
+      expect(scroller.scrollTop).toBe(1_712);
     });
   }
 

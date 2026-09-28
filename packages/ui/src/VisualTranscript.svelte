@@ -67,7 +67,6 @@
     visualWorkDetailEntries,
     visualWorkDetailGroups,
     visualWorkOverview,
-    visualWorkImageBlocks,
     visualWorkCountLines,
     visualSubagentLabel,
     visualSubagentMetaFromBlock,
@@ -3378,7 +3377,6 @@
         model: pricingModel,
         modelsDev: modelsDevPricing,
       })}
-      {@const workImageBlocks = visualWorkImageBlocks(item.entries)}
       {@const summarySubagents = workSummarySubagents(visibleWorkEntries)}
       {@const countLines = visualWorkCountLines(workSummary)}
       <li
@@ -3610,14 +3608,6 @@
             </div>
           {/if}
         </details>
-        {#if workImageBlocks.length > 0}
-          <div class="work-summary-media-row">
-            {@render renderInlineMediaStrip(
-              workImageBlocks,
-              "work-summary-media-strip",
-            )}
-          </div>
-        {/if}
       </li>
     {:else if item.kind === "marker"}
       {@const compactionDetails = visualCompactionDetails(item.markerBlock)}
@@ -5394,17 +5384,6 @@
     overflow-x: auto;
     overflow-y: hidden;
   }
-  .work-summary-media-strip {
-    flex: 0 1 34rem;
-    min-width: 8rem;
-    margin: 0;
-  }
-  .work-summary-media-row {
-    display: flex;
-    min-width: 0;
-    max-width: 100%;
-    margin: 0.35rem 0 0 0.5rem;
-  }
   .work-tool-summary-media-strip {
     flex: 0 0 auto;
     max-width: 7rem;
@@ -5442,14 +5421,6 @@
   }
   .work-tool-summary-media-strip .media-photo-frame img {
     max-height: 8rem;
-  }
-  .work-summary-media-strip .media-image-open {
-    width: 5rem;
-    max-height: 4rem;
-    flex: 0 0 5rem;
-  }
-  .work-summary-media-strip .media-photo-frame img {
-    max-height: 4rem;
   }
   .media-block a:hover,
   .media-image-open:hover {

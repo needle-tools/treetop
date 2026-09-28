@@ -115,19 +115,6 @@ export interface VisualMediaBlock extends MessageBlock {
   mimeType?: string;
 }
 
-export function visualWorkImageBlocks<
-  B extends MessageBlock,
-  M extends Message<B>,
->(entries: readonly VisualWorkEntry<B, M>[]): B[] {
-  return entries.flatMap((entry) =>
-    entry.blocks.filter(
-      (block) =>
-        block.type === "media" &&
-        (block as B & { mediaKind?: string }).mediaKind === "image",
-    ),
-  );
-}
-
 export function visualMediaPathTarget(
   block: MessageBlock,
 ): Extract<VisualToolPreviewPart, { kind: "path" }> | undefined {

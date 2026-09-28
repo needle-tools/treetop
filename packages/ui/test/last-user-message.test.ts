@@ -60,7 +60,6 @@ import {
   visualWorkDetailEntries,
   visualWorkDetailGroups,
   visualWorkOverview,
-  visualWorkImageBlocks,
   visualWorkCountLines,
   visualWorkSummary,
   visualUserImageAttachments,
@@ -1478,57 +1477,6 @@ describe("buildVisualTranscriptItems", () => {
         toolUseId: "ig-1",
       },
       { type: "text", text: "Generated your Duberman image." },
-    ]);
-  });
-
-  it("collects every viewed image for the collapsed work summary", () => {
-    const items = buildVisualTranscriptItems([
-      msg("user", "compare the renders", "2026-09-01T10:00:00.000Z"),
-      {
-        role: "assistant",
-        timestamp: "2026-09-01T10:00:01.000Z",
-        blocks: [
-          {
-            type: "media",
-            mediaKind: "image",
-            path: "/tmp/baseline.png",
-            title: "baseline.png",
-          },
-        ],
-      },
-      {
-        role: "assistant",
-        timestamp: "2026-09-01T10:00:02.000Z",
-        blocks: [
-          {
-            type: "media",
-            mediaKind: "image",
-            path: "/tmp/candidate.png",
-            title: "candidate.png",
-          },
-          {
-            type: "media",
-            mediaKind: "artifact",
-            path: "/tmp/report.json",
-            title: "report.json",
-          },
-        ],
-      },
-      msg("assistant", "The candidate is cleaner.", "2026-09-01T10:00:03.000Z"),
-    ]);
-
-    const work = items.find((item) => item.kind === "work");
-    if (!work || work.kind !== "work") throw new Error("expected work item");
-
-    expect(visualWorkImageBlocks(work.entries)).toEqual([
-      expect.objectContaining({
-        mediaKind: "image",
-        path: "/tmp/baseline.png",
-      }),
-      expect.objectContaining({
-        mediaKind: "image",
-        path: "/tmp/candidate.png",
-      }),
     ]);
   });
 

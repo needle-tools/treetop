@@ -170,9 +170,14 @@ The durable shape is one `.messages` scroller owned by
 its summary and the preceding user turn remain visible, but its tail/pause state
 belongs to that same controller rather than a second component-level authority.
 Paused updates anchor the deepest visible stable transcript row across the
-Svelte update. In zen, an unpaused live work round anchors its summary near the
-viewport top while reserving the preceding user turn's visible tail above it;
-completed responses return to ordinary bottom-tail following.
+Svelte update. In both regular and zen layouts, an unpaused live work round
+anchors its summary near the viewport top while reserving a small tail of the
+preceding user turn plus their real inter-row gap above it. The reserved tail
+is capped rather than scaling to 35% of the viewport, which had left the work
+surface visibly too low. Viewed images remain in their timeline entries; do
+not duplicate them into a gallery after the work summary, because that changes
+the tail geometry as images decode. Completed responses return to ordinary
+bottom-tail following.
 
 ## Mechanics — what each Chrome phase actually costs
 

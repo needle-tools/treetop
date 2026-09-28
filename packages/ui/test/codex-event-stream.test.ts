@@ -76,7 +76,6 @@ import {
   buildVisualTranscriptItems,
   buildVisualWorkDisplayEntries,
   visualSubagentMetaFromBlocks,
-  visualWorkImageBlocks,
   visualWorkOverview,
   visualWorkSummary,
 } from "../src/last-user-message";
@@ -3099,7 +3098,7 @@ describe("codex event stream hub", () => {
     ]);
   });
 
-  test("keeps app-server imageView items available to collapsed work summaries", () => {
+  test("keeps app-server imageView items in their timeline work entries", () => {
     const messages = codexAppHistoryMessagesFromThread({
       turns: [
         {
@@ -3136,7 +3135,13 @@ describe("codex event stream hub", () => {
     if (!work || work.kind !== "work") throw new Error("expected work item");
 
     expect(
-      visualWorkImageBlocks(work.entries).map((block) => block.path),
+      work.entries.flatMap((entry) =>
+        entry.blocks.flatMap((block) =>
+          block.type === "media" && block.mediaKind === "image"
+            ? [block.path]
+            : [],
+        ),
+      ),
     ).toEqual(["/tmp/baseline.png", "/tmp/candidate.png"]);
   });
 
@@ -3582,9 +3587,6 @@ describe("codex event stream hub", () => {
         mediaKind: "image",
         path: "/tmp/duberman.png",
       }),
-    ]);
-    expect(visualWorkImageBlocks(work.entries)).toEqual([
-      expect.objectContaining({ path: "/tmp/duberman.png" }),
     ]);
   });
 
