@@ -106,6 +106,7 @@
     codexCliStates,
     isCodexCliWorking,
     resolveTerminalWorking,
+    CodexDeferredEventBuffer,
     canRequestOlderCodexAppThreadHistory,
     codexAppEventDeliveryMode,
     codexAsyncQuestionAnswerText,
@@ -138,7 +139,6 @@
     codexToolInputQuality,
     mergeCodexAppHistoryMessages,
     reconcileCodexAppHistoryMessages,
-    replayCodexEventsFrom,
     shouldApplyCodexAppHistoryResponse,
     shouldApplyCodexAppMutation,
     shouldLoadCodexAppThreadHistory,
@@ -643,7 +643,8 @@
   let codexAppLiveTurnIds = new Set<string>();
   let codexAppStartedTurnIds = new Set<string>();
   let codexCompletedLiveItemIds = new Set<string>();
-  let codexDeferredVisualEventKey = "";
+  const codexDeferredVisualEvents = new CodexDeferredEventBuffer();
+  let codexHasDeferredVisualEvents = false;
   let visualHistoryScrollAnchor: {
     el: HTMLElement;
     scrollHeight: number;
@@ -1344,7 +1345,7 @@
     nearViewport: columnNearViewport,
     transcriptOverride: !!transcriptSessionOverride,
     liveAppHistorySource: codexAppHistorySourceActive,
-    hasDeferredVisualEvents: !!codexDeferredVisualEventKey,
+    hasDeferredVisualEvents: codexHasDeferredVisualEvents,
   });
   let previousRenderReadBody = renderReadBody;
   $: if (previousRenderReadBody !== renderReadBody) {
@@ -2205,7 +2206,8 @@
         clearTimeout(codexAppHistoryRetryTimer);
         codexAppHistoryRetryTimer = null;
       }
-      codexDeferredVisualEventKey = "";
+      codexDeferredVisualEvents.clear();
+      codexHasDeferredVisualEvents = false;
       codexSeenEvents.clear();
       codexAppLiveTurnIds = new Set();
       codexAppStartedTurnIds = new Set();
@@ -2390,7 +2392,8 @@
         invalidationSeqAtReadStart === codexAppHistoryInvalidationSeq
           ? targetHistoryKey
           : "";
-      codexDeferredVisualEventKey = "";
+      codexDeferredVisualEvents.clear();
+      codexHasDeferredVisualEvents = false;
       codexAppHistoryFailureKey = "";
       codexAppHistoryFailureText = "";
       codexAppHistoryFailureCount = 0;
@@ -2678,7 +2681,7 @@
   });
   $: codexAppHistoryFetchActive =
     codexAppHistorySourceActive && codexAppLiveSurfaceActive;
-  $: if (codexAppLiveSurfaceActive && codexDeferredVisualEventKey) {
+  $: if (codexAppLiveSurfaceActive && codexHasDeferredVisualEvents) {
     catchUpDeferredCodexVisualEvents();
   }
   $: sessionFileSource = liveCodexApp ? (transcriptSource ?? "") : source;
@@ -3266,7 +3269,8 @@
         if (
           codexEventStreamRequiresHistoryReconciliation(previousState, state)
         ) {
-          codexDeferredVisualEventKey = "";
+          codexDeferredVisualEvents.clear();
+          codexHasDeferredVisualEvents = false;
           invalidateCodexAppHistoryForReconciliation();
         }
       },
@@ -3284,7 +3288,10 @@
           applyCodexEventStateOnly(event);
           const projectionAction = codexOffscreenProjectionAction(event);
           if (projectionAction === "defer") {
-            codexDeferredVisualEventKey ||= codexEventReplayKey(event);
+            codexDeferredVisualEvents.push(event);
+            if (!codexHasDeferredVisualEvents) {
+              codexHasDeferredVisualEvents = true;
+            }
           } else {
             applyCodexEvent(event, true);
           }
@@ -3305,12 +3312,10 @@
   }
 
   function catchUpDeferredCodexVisualEvents(): void {
-    const firstEventKey = codexDeferredVisualEventKey;
     const threadId = effectiveSessionId;
-    if (!firstEventKey || !threadId) return;
-    const replay = codexAppTransport
-      ? { complete: false, events: [] as CodexAppEvent[] }
-      : replayCodexEventsFrom(daemonId, threadId, firstEventKey);
+    if (!codexHasDeferredVisualEvents || !threadId) return;
+    const replay = codexDeferredVisualEvents.drain();
+    codexHasDeferredVisualEvents = false;
     if (!replay.complete) {
       const historyKey = codexAppHistoryKey(threadId, effectiveSessionCwd);
       codexAppHistoryLoadedKey = "";
@@ -3325,9 +3330,6 @@
       for (const event of replay.events) applyCodexEvent(event, true);
       flushCodexDeltaPatches();
     });
-    if (codexDeferredVisualEventKey === firstEventKey) {
-      codexDeferredVisualEventKey = "";
-    }
   }
 
   function codexEventTimingName(method: string): string {
@@ -3365,6 +3367,8 @@
 
   function closeCodexEventStream(): void {
     discardCodexDeltaPatches();
+    codexDeferredVisualEvents.clear();
+    codexHasDeferredVisualEvents = false;
     unsubscribeCodexEvents?.();
     unsubscribeCodexEvents = null;
     codexEventsThreadId = null;

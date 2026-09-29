@@ -1335,6 +1335,37 @@ app-server history remains the source for later remounts. The emergency byte
 eviction uses an advancing queue cursor so a large stream cannot turn the
 memory guard into repeated O(n) array shifts.
 
+A 2026-09-29 FastVid trace showed that the per-thread ring still retained the
+wrong lifetime and representation. The daemon answered the relevant thread
+read in 47 ms, while the browser spent 67 seconds outside the server, recorded
+event-loop stalls up to 234 seconds, and the WebKit content process reached a
+16.3 GiB physical footprint. A native sample was almost entirely inside the
+shared EventSource callback and its microtask checkpoint. The stream had
+retained one parsed object per token delta for every active turn on the daemon
+once any surface had opened the shared stream; mounting another surface
+synchronously replayed that whole active-turn backlog
+even though durable app-server history is the remount source. The shared hub
+now retains no historical event objects and never replays pre-subscription
+traffic. It coalesces adjacent deltas for the same item into frame-sized ordered
+deliveries, flushing them before every immediate snapshot. An already-mounted
+offscreen pane owns its exact missed interval locally, where adjacent deltas
+are stored in bounded 64 KiB chunks and replayed before its body becomes live;
+overflow still falls back to authoritative thread history. This keeps the
+cheap subscription and exact visible projection while removing both the raw
+callback storm and the unbounded parsed-object multiplier.
+
+That renderer-side repair was necessary but did not remove the EventSource
+boundary itself: the daemon still emitted one SSE frame per app-server event,
+including its synchronous 300-event subscription replay. Retained recordings
+contain turns with 27,314 and 22,932 delta frames, so WebKit still had to run
+one callback and one `JSON.parse` for every fragment before the renderer could
+coalesce them. The daemon now transports adjacent canonical events in ordered
+batches of at most 256, flushed within 16 ms; it does not interpret, merge, or
+drop the events. The browser accepts both the batched envelope and the legacy
+single-event envelope, then applies the existing visual-delta compactor. A
+30,000-event boundary test verifies exact reconstructed text, exact event
+ordering across transport batches, and fewer than ten visual deliveries.
+
 Queued user rows exposed one more offscreen reconciliation ordering bug. Their
 optimistic send-time anchor could precede a prior turn's final reply when that
 reply arrived later through authoritative app-server history, producing

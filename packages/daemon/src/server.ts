@@ -251,9 +251,11 @@ import { buildProvisionPlan } from "./provision";
 import { ClaudeCliAdapter } from "./claude-cli-adapter";
 import {
   CodexAppServerAdapter,
+  CodexAppEventTransportBatcher,
   classifyRealtimeVoiceError,
   resolveCodexBinary,
   voiceContextPrompt,
+  type CodexAppServerEvent,
 } from "./codex-app-server";
 import { createNativeAgentRegistry } from "./native-agent-adapters";
 
@@ -4562,18 +4564,33 @@ const server = Bun.serve<TermWsData, never>({
       if (url.pathname === "/api/codex-app/events" && req.method === "GET") {
         const threadId = url.searchParams.get("threadId") || undefined;
         let unsubscribe: (() => void) | null = null;
+        let flushTimer: ReturnType<typeof setTimeout> | null = null;
+        const batcher = new CodexAppEventTransportBatcher();
         const stream = new ReadableStream<Uint8Array>({
           start(controller) {
-            const send = (event: unknown) => {
+            const sendBatch = (events: CodexAppServerEvent[]) => {
+              if (events.length === 0) return;
               try {
                 controller.enqueue(
                   sseEncoder.encode(
-                    `event: codex\ndata: ${JSON.stringify(event)}\n\n`,
+                    `event: codex\ndata: ${JSON.stringify(events)}\n\n`,
                   ),
                 );
               } catch {
+                if (flushTimer !== null) clearTimeout(flushTimer);
+                flushTimer = null;
                 unsubscribe?.();
               }
+            };
+            const flush = () => {
+              if (flushTimer !== null) clearTimeout(flushTimer);
+              flushTimer = null;
+              sendBatch(batcher.drain());
+            };
+            const send = (event: CodexAppServerEvent) => {
+              const fullBatch = batcher.push(event);
+              if (fullBatch) sendBatch(fullBatch);
+              if (flushTimer === null) flushTimer = setTimeout(flush, 16);
             };
             controller.enqueue(sseEncoder.encode(`: connected\n\n`));
             if (threadId) {
@@ -4590,6 +4607,9 @@ const server = Bun.serve<TermWsData, never>({
             unsubscribe = codexAgent.subscribe(threadId, send);
           },
           cancel() {
+            if (flushTimer !== null) clearTimeout(flushTimer);
+            flushTimer = null;
+            batcher.drain();
             unsubscribe?.();
             unsubscribe = null;
           },

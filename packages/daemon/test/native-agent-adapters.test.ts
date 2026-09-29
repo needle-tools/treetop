@@ -13,12 +13,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   CodexAppServerAdapter,
+  CodexAppEventTransportBatcher,
   CodexAppServerRpc,
   classifyRealtimeVoiceError,
   codexAppServerCommand,
   realtimeVoiceStartParams,
   resolveCodexBinary,
   voiceContextPrompt,
+  type CodexAppServerEvent,
   type CodexAppServerProcess,
 } from "../src/codex-app-server";
 import {
@@ -96,6 +98,32 @@ function parseWrite(writes: string[], index: number): Record<string, unknown> {
   if (!raw) throw new Error(`missing write ${index}`);
   return JSON.parse(raw) as Record<string, unknown>;
 }
+
+describe("CodexAppEventTransportBatcher", () => {
+  test("batches a high-rate event stream without dropping or reordering events", () => {
+    const batcher = new CodexAppEventTransportBatcher();
+    const flushed: CodexAppServerEvent[][] = [];
+    for (let seq = 1; seq <= 10_000; seq += 1) {
+      const batch = batcher.push({
+        kind: "notification",
+        method: "item/agentMessage/delta",
+        params: { threadId: "thread-1", itemId: "message-1", delta: "x" },
+        threadId: "thread-1",
+        turnId: "turn-1",
+        receivedAt: "2026-09-29T00:00:00.000Z",
+        seq,
+      });
+      if (batch) flushed.push(batch);
+    }
+    const tail = batcher.drain();
+    if (tail.length) flushed.push(tail);
+
+    expect(flushed.length).toBeLessThan(50);
+    expect(flushed.flat().map((event) => event.seq)).toEqual(
+      Array.from({ length: 10_000 }, (_, index) => index + 1),
+    );
+  });
+});
 
 describe("CodexAppServerAdapter", () => {
   test("prefers the standalone Codex CLI over the ChatGPT app bundle", () => {

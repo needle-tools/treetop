@@ -527,6 +527,8 @@ export interface CodexAppSessionTransport {
 export type CodexEventVisualDelivery = "ignore" | "batched-delta" | "immediate";
 
 export const CODEX_LIVE_OUTPUT_LIMIT = 128 * 1024;
+const DEFAULT_DEFERRED_EVENT_BYTES = 128 * 1024 * 1024;
+const DEFERRED_DELTA_CHUNK_CHARS = 64 * 1024;
 
 const CODEX_OUTPUT_TRUNCATION_MARKER =
   "\n[… output truncated for display; full output remains in the session …]\n";
@@ -585,6 +587,102 @@ export function codexEventVisualDelivery(
       return "batched-delta";
     default:
       return "immediate";
+  }
+}
+
+type DeferredEventEntry =
+  | { kind: "event"; event: CodexAppEvent }
+  | {
+      kind: "delta";
+      event: CodexAppEvent;
+      deltas: string[];
+      chars: number;
+    };
+
+/**
+ * Holds only the visual events missed by one already-mounted offscreen pane.
+ * Adjacent streaming deltas for the same item are replay-equivalent, so keep
+ * them in bounded chunks rather than retaining one parsed JSON object per
+ * token. Completed snapshots and usage are projected immediately elsewhere.
+ */
+export class CodexDeferredEventBuffer {
+  private entries: DeferredEventEntry[] = [];
+  private bytes = 0;
+  private complete = true;
+
+  constructor(private readonly maxBytes = DEFAULT_DEFERRED_EVENT_BYTES) {}
+
+  get hasEvents(): boolean {
+    return !this.complete || this.entries.length > 0;
+  }
+
+  push(event: CodexAppEvent): void {
+    if (!this.complete) return;
+    if (Number.isFinite(this.maxBytes)) {
+      this.bytes += JSON.stringify(event).length;
+      if (this.bytes > this.maxBytes) {
+        this.entries = [];
+        this.complete = false;
+        return;
+      }
+    }
+
+    const delta =
+      codexEventVisualDelivery(event) === "batched-delta" &&
+      typeof event.params.delta === "string"
+        ? event.params.delta
+        : undefined;
+    const previous = this.entries.at(-1);
+    if (
+      delta !== undefined &&
+      previous?.kind === "delta" &&
+      previous.event.method === event.method &&
+      eventThreadId(previous.event) === eventThreadId(event) &&
+      eventTurnId(previous.event) === eventTurnId(event) &&
+      codexEventItemId(previous.event) === codexEventItemId(event) &&
+      previous.chars + delta.length <= DEFERRED_DELTA_CHUNK_CHARS
+    ) {
+      previous.deltas.push(delta);
+      previous.chars += delta.length;
+      return;
+    }
+    if (delta !== undefined) {
+      this.entries.push({
+        kind: "delta",
+        event,
+        deltas: [delta],
+        chars: delta.length,
+      });
+      return;
+    }
+    this.entries.push({ kind: "event", event });
+  }
+
+  drain(): { complete: boolean; events: CodexAppEvent[] } {
+    const complete = this.complete;
+    const entries = this.entries;
+    this.clear();
+    if (!complete) return { complete: false, events: [] };
+    return {
+      complete: true,
+      events: entries.map((entry) =>
+        entry.kind === "event"
+          ? entry.event
+          : {
+              ...entry.event,
+              params: {
+                ...entry.event.params,
+                delta: entry.deltas.join(""),
+              },
+            },
+      ),
+    };
+  }
+
+  clear(): void {
+    this.entries = [];
+    this.bytes = 0;
+    this.complete = true;
   }
 }
 
@@ -827,23 +925,12 @@ interface Hub {
   es: EventSourceLike;
   state: CodexEventStreamState;
   subscribers: Set<HubSubscriber>;
-  replayByThread: Map<string, CodexReplayBucket>;
-}
-
-interface CodexReplayEntry {
-  event: CodexAppEvent;
-  bytes: number;
-}
-
-interface CodexReplayBucket {
-  entries: CodexReplayEntry[];
-  head: number;
-  bytes: number;
+  pendingEvents: CodexDeferredEventBuffer;
+  flushFrame: number | null;
+  flushTimer: ReturnType<typeof setTimeout> | null;
 }
 
 const hubs = new Map<string, Hub>();
-const DEFAULT_REPLAY_BYTES_PER_THREAD = 128 * 1024 * 1024;
-let replayBytesPerThread = DEFAULT_REPLAY_BYTES_PER_THREAD;
 let eventSourceCtorForTests: EventSourceConstructor | null = null;
 
 function daemonKey(daemonId: string | undefined): string {
@@ -881,38 +968,11 @@ function eventTurnId(event: CodexAppEvent): string | undefined {
   );
 }
 
-function replayThreadKey(threadId: string | undefined): string {
-  return threadId ?? "";
-}
-
 export function codexEventReplayKey(event: CodexAppEvent): string {
   const id = event.id ?? "";
   const delta =
     typeof event.params?.delta === "string" ? event.params.delta : "";
   return `${eventThreadId(event) ?? ""}:${event.kind}:${event.method}:${id}:${event.seq ?? event.receivedAt}:${delta}`;
-}
-
-export function replayCodexEventsFrom(
-  daemonId: string | undefined,
-  threadId: string,
-  firstEventKey: string,
-): { complete: boolean; events: CodexAppEvent[] } {
-  const hub = hubs.get(daemonKey(daemonId));
-  if (!hub || !firstEventKey) return { complete: false, events: [] };
-  const bucket = hub.replayByThread.get(replayThreadKey(threadId));
-  if (!bucket) return { complete: false, events: [] };
-  let firstIndex = -1;
-  for (let index = bucket.head; index < bucket.entries.length; index += 1) {
-    if (codexEventReplayKey(bucket.entries[index]!.event) === firstEventKey) {
-      firstIndex = index;
-      break;
-    }
-  }
-  if (firstIndex < 0) return { complete: false, events: [] };
-  return {
-    complete: true,
-    events: bucket.entries.slice(firstIndex).map(({ event }) => event),
-  };
 }
 
 function subscriberWantsEvent(
@@ -923,75 +983,73 @@ function subscriberWantsEvent(
   return eventThreadId(event) === subscriber.threadId;
 }
 
-function recordReplayEvent(
-  hub: Hub,
-  event: CodexAppEvent,
-  serializedBytes: number,
-): void {
-  const key = replayThreadKey(eventThreadId(event));
-  let bucket = hub.replayByThread.get(key);
-  if (!bucket) {
-    bucket = { entries: [], head: 0, bytes: 0 };
-    hub.replayByThread.set(key, bucket);
-  }
-  bucket.entries.push({ event, bytes: serializedBytes });
-  bucket.bytes += serializedBytes;
-  if (bucket.bytes <= replayBytesPerThread) return;
-
-  while (
-    bucket.head < bucket.entries.length &&
-    bucket.bytes > replayBytesPerThread
-  ) {
-    bucket.bytes -= bucket.entries[bucket.head]!.bytes;
-    bucket.head += 1;
-  }
-  if (bucket.head >= 1_024 && bucket.head * 2 >= bucket.entries.length) {
-    bucket.entries = bucket.entries.slice(bucket.head);
-    bucket.head = 0;
-  }
-}
-
-function pruneCompletedTurnReplay(hub: Hub, event: CodexAppEvent): void {
-  if (event.method !== "turn/completed") return;
-  const turnId = eventTurnId(event);
-  if (!turnId) return;
-  const key = replayThreadKey(eventThreadId(event));
-  const bucket = hub.replayByThread.get(key);
-  if (!bucket) return;
-  bucket.entries = bucket.entries.slice(bucket.head).filter(
-    ({ event: entry }) => eventTurnId(entry) !== turnId,
-  );
-  bucket.head = 0;
-  bucket.bytes = bucket.entries.reduce((total, entry) => total + entry.bytes, 0);
-  if (!bucket.entries.length) hub.replayByThread.delete(key);
-}
-
-function pushEvent(
-  hub: Hub,
-  event: CodexAppEvent,
-  serializedBytes: number,
-): void {
-  if (codexEventVisualDelivery(event) === "ignore") return;
-  recordReplayEvent(hub, event, serializedBytes);
+function deliverEvent(hub: Hub, event: CodexAppEvent): void {
   for (const subscriber of hub.subscribers) {
     if (subscriberWantsEvent(subscriber, event)) subscriber.onEvent?.(event);
   }
-  pruneCompletedTurnReplay(hub, event);
 }
 
-function parseEvent(data: unknown): CodexAppEvent | null {
-  if (typeof data !== "string") return null;
+function flushPendingEvents(hub: Hub): void {
+  if (hub.flushFrame !== null) {
+    cancelAnimationFrame(hub.flushFrame);
+    hub.flushFrame = null;
+  }
+  if (hub.flushTimer !== null) {
+    clearTimeout(hub.flushTimer);
+    hub.flushTimer = null;
+  }
+  const pending = hub.pendingEvents.drain();
+  for (const event of pending.events) deliverEvent(hub, event);
+}
+
+function schedulePendingEventFlush(hub: Hub): void {
+  if (hub.flushFrame !== null || hub.flushTimer !== null) return;
+  if (typeof requestAnimationFrame === "function") {
+    hub.flushFrame = requestAnimationFrame(() => {
+      hub.flushFrame = null;
+      flushPendingEvents(hub);
+    });
+  }
+  hub.flushTimer = setTimeout(() => {
+    hub.flushTimer = null;
+    flushPendingEvents(hub);
+  }, typeof requestAnimationFrame === "function" ? 50 : 16);
+}
+
+function pushEvent(hub: Hub, event: CodexAppEvent): void {
+  if (codexEventVisualDelivery(event) === "ignore") return;
+  let hasSubscriber = false;
+  for (const subscriber of hub.subscribers) {
+    if (!subscriberWantsEvent(subscriber, event)) continue;
+    hasSubscriber = true;
+    break;
+  }
+  if (!hasSubscriber) return;
+  if (codexEventVisualDelivery(event) === "batched-delta") {
+    hub.pendingEvents.push(event);
+    schedulePendingEventFlush(hub);
+    return;
+  }
+  flushPendingEvents(hub);
+  deliverEvent(hub, event);
+}
+
+function parseEvents(data: unknown): CodexAppEvent[] {
+  if (typeof data !== "string") return [];
   try {
-    const parsed = JSON.parse(data) as CodexAppEvent;
-    if (!parsed || typeof parsed !== "object") return null;
-    if (typeof parsed.method !== "string") return null;
-    if (parsed.kind !== "notification" && parsed.kind !== "request")
-      return null;
-    if (!parsed.params || typeof parsed.params !== "object") return null;
-    if (typeof parsed.receivedAt !== "string") return null;
-    return parsed;
+    const parsed = JSON.parse(data) as unknown;
+    const candidates = Array.isArray(parsed) ? parsed : [parsed];
+    return candidates.filter((candidate): candidate is CodexAppEvent => {
+      if (!candidate || typeof candidate !== "object") return false;
+      const event = candidate as Partial<CodexAppEvent>;
+      if (typeof event.method !== "string") return false;
+      if (event.kind !== "notification" && event.kind !== "request")
+        return false;
+      if (!event.params || typeof event.params !== "object") return false;
+      return typeof event.receivedAt === "string";
+    });
   } catch {
-    return null;
+    return [];
   }
 }
 
@@ -2775,7 +2833,9 @@ function messagePayloadWeight(message: { blocks: unknown[] }): number {
   return weight;
 }
 
-export function codexEventItemId(event: CodexAppEvent): string | undefined {
+export function codexEventItemId(
+  event: Pick<CodexAppEvent, "params" | "turnId">,
+): string | undefined {
   const item = codexEventItem(event.params);
   if (
     (item?.type === "function_call" ||
@@ -2990,13 +3050,14 @@ function createHub(daemonId: string | undefined): Hub {
     es,
     state: "connecting",
     subscribers: new Set(),
-    replayByThread: new Map(),
+    pendingEvents: new CodexDeferredEventBuffer(Number.POSITIVE_INFINITY),
+    flushFrame: null,
+    flushTimer: null,
   };
   es.onopen = () => setState(hub, "live");
   es.onerror = () => setState(hub, "reconnecting");
   es.addEventListener("codex", (msg) => {
-    const event = parseEvent(msg.data);
-    if (event) pushEvent(hub, event, msg.data.length);
+    for (const event of parseEvents(msg.data)) pushEvent(hub, event);
   });
   return hub;
 }
@@ -3012,27 +3073,17 @@ export function subscribeCodexEvents(
     hub = createHub(daemonId);
     hubs.set(key, hub);
   }
+  // A subscriber owns only events received after it mounted. Flush any
+  // already-scheduled batch before adding it; durable thread history supplies
+  // the older projection.
+  flushPendingEvents(hub);
   const hubSubscriber: HubSubscriber = { ...subscriber, threadId };
   hub.subscribers.add(hubSubscriber);
   hubSubscriber.onState?.(hub.state);
-  const replayEntries = threadId
-    ? (() => {
-        const bucket = hub.replayByThread.get(replayThreadKey(threadId));
-        return bucket ? bucket.entries.slice(bucket.head) : [];
-      })()
-    : [...hub.replayByThread.values()]
-        .flatMap((bucket) => bucket.entries.slice(bucket.head))
-        .sort((a, b) =>
-          (a.event.seq ?? 0) !== (b.event.seq ?? 0)
-            ? (a.event.seq ?? 0) - (b.event.seq ?? 0)
-            : a.event.receivedAt.localeCompare(b.event.receivedAt),
-        );
-  for (const { event } of replayEntries) {
-    hubSubscriber.onEvent?.(event);
-  }
   return () => {
     const current = hubs.get(key);
     if (!current) return;
+    flushPendingEvents(current);
     current.subscribers.delete(hubSubscriber);
     if (current.subscribers.size > 0) return;
     current.es.close();
@@ -3046,15 +3097,11 @@ export function __setCodexEventSourceCtorForTests(
   eventSourceCtorForTests = ctor;
 }
 
-export function __setCodexEventReplayByteLimitForTests(
-  bytes: number | null,
-): void {
-  replayBytesPerThread = bytes ?? DEFAULT_REPLAY_BYTES_PER_THREAD;
-}
-
 export function __resetCodexEventStreamsForTests(): void {
-  for (const hub of hubs.values()) hub.es.close();
+  for (const hub of hubs.values()) {
+    flushPendingEvents(hub);
+    hub.es.close();
+  }
   hubs.clear();
   eventSourceCtorForTests = null;
-  replayBytesPerThread = DEFAULT_REPLAY_BYTES_PER_THREAD;
 }

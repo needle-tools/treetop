@@ -65,7 +65,7 @@ export type CodexAppServerEvent =
       threadId?: string;
       turnId?: string;
       receivedAt: string;
-      seq: number;
+      seq?: number;
     }
   | {
       kind: "request";
@@ -75,10 +75,34 @@ export type CodexAppServerEvent =
       threadId?: string;
       turnId?: string;
       receivedAt: string;
-      seq: number;
+      seq?: number;
     };
 
 export type CodexAppServerListener = (event: CodexAppServerEvent) => void;
+
+/**
+ * Groups adjacent app-server events for transport without interpreting or
+ * rewriting them. This keeps the SSE boundary cheap while preserving the
+ * canonical event sequence consumed by every client.
+ */
+export class CodexAppEventTransportBatcher {
+  private events: CodexAppServerEvent[] = [];
+
+  constructor(private readonly maxEvents = 256) {}
+
+  push(event: CodexAppServerEvent): CodexAppServerEvent[] | undefined {
+    const flushed =
+      this.events.length >= this.maxEvents ? this.drain() : undefined;
+    this.events.push(event);
+    return flushed;
+  }
+
+  drain(): CodexAppServerEvent[] {
+    const events = this.events;
+    this.events = [];
+    return events;
+  }
+}
 
 export interface CodexAppServerRecordedFrame {
   seq: number;

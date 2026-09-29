@@ -1,8 +1,8 @@
 import { beforeEach, describe, expect, test } from "bun:test";
 import {
   CODEX_APP_HISTORY_TURNS_PAGE_SIZE,
+  CodexDeferredEventBuffer,
   __resetCodexEventStreamsForTests,
-  __setCodexEventReplayByteLimitForTests,
   __setCodexEventSourceCtorForTests,
   canRequestOlderCodexAppThreadHistory,
   codexAppHistoryMessagesFromThread,
@@ -24,7 +24,6 @@ import {
   codexAppHistoryRetryDelayMs,
   codexToolInputQuality,
   codexEventThreadIdForSession,
-  codexEventReplayKey,
   codexEventRequiresHistoryReconciliation,
   codexEventStreamRequiresHistoryReconciliation,
   codexEventDeltaSupersededByCompletedItem,
@@ -38,7 +37,6 @@ import {
   codexOutputDeltaNeedsToolUse,
   mergeCodexAppHistoryMessages,
   reconcileCodexAppHistoryMessages,
-  replayCodexEventsFrom,
   shouldLoadCodexAppThreadHistory,
   shouldRunCodexAppLiveSurface,
   shouldSubscribeCodexAppLiveState,
@@ -467,7 +465,120 @@ describe("codex event stream hub", () => {
     expect(b.map((e) => e.seq)).toEqual([2]);
   });
 
-  test("replays hub history to later subscribers", () => {
+  test("coalesces token-rate live deltas before subscriber delivery", async () => {
+    const received: CodexAppEvent[] = [];
+    subscribeCodexEvents(undefined, "t1", {
+      onEvent: (entry) => received.push(entry),
+    });
+    for (let seq = 1; seq <= 10_000; seq += 1) {
+      FakeEventSource.instances[0]?.emit("codex", {
+        kind: "notification",
+        method: "item/agentMessage/delta",
+        params: {
+          threadId: "t1",
+          turnId: "turn-1",
+          itemId: "message-1",
+          delta: "x",
+        },
+        threadId: "t1",
+        turnId: "turn-1",
+        receivedAt: "2026-09-29T00:00:00.000Z",
+        seq,
+      });
+    }
+
+    expect(received).toEqual([]);
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    expect(received.length).toBeLessThan(4);
+    expect(received.map((entry) => entry.params.delta).join("")).toBe(
+      "x".repeat(10_000),
+    );
+  });
+
+  test("accepts daemon transport batches and preserves event order", () => {
+    const received: CodexAppEvent[] = [];
+    subscribeCodexEvents(undefined, "t1", {
+      onEvent: (entry) => received.push(entry),
+    });
+
+    FakeEventSource.instances[0]?.emit("codex", [
+      event("t1", 1),
+      event("t2", 2),
+      event("t1", 3),
+    ]);
+
+    expect(received.map((entry) => entry.seq)).toEqual([1, 3]);
+  });
+
+  test("projects a recorded-scale transport burst through bounded visual deliveries", async () => {
+    const received: CodexAppEvent[] = [];
+    subscribeCodexEvents(undefined, "t1", {
+      onEvent: (entry) => received.push(entry),
+    });
+
+    const events = Array.from({ length: 30_000 }, (_, index) => ({
+      kind: "notification" as const,
+      method: "item/agentMessage/delta",
+      params: {
+        threadId: "t1",
+        turnId: "turn-1",
+        itemId: "message-1",
+        delta: "x",
+      },
+      threadId: "t1",
+      turnId: "turn-1",
+      receivedAt: "2026-09-29T00:00:00.000Z",
+      seq: index + 1,
+    }));
+    for (let offset = 0; offset < events.length; offset += 256) {
+      FakeEventSource.instances[0]?.emit(
+        "codex",
+        events.slice(offset, offset + 256),
+      );
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    expect(received.length).toBeLessThan(10);
+    expect(received.map((entry) => entry.params.delta).join("")).toBe(
+      "x".repeat(30_000),
+    );
+  });
+
+  test("flushes pending deltas before an immediate item snapshot", () => {
+    const received: CodexAppEvent[] = [];
+    subscribeCodexEvents(undefined, "t1", {
+      onEvent: (entry) => received.push(entry),
+    });
+    FakeEventSource.instances[0]?.emit("codex", {
+      kind: "notification",
+      method: "item/agentMessage/delta",
+      params: { threadId: "t1", turnId: "turn-1", itemId: "m1", delta: "hi" },
+      threadId: "t1",
+      turnId: "turn-1",
+      receivedAt: "2026-09-29T00:00:00.000Z",
+      seq: 1,
+    });
+    FakeEventSource.instances[0]?.emit("codex", {
+      kind: "notification",
+      method: "item/completed",
+      params: {
+        threadId: "t1",
+        turnId: "turn-1",
+        item: { id: "m1", type: "agentMessage", text: "hi" },
+      },
+      threadId: "t1",
+      turnId: "turn-1",
+      receivedAt: "2026-09-29T00:00:00.010Z",
+      seq: 2,
+    });
+
+    expect(received.map((entry) => entry.method)).toEqual([
+      "item/agentMessage/delta",
+      "item/completed",
+    ]);
+  });
+
+  test("does not replay pre-subscription traffic into a newly mounted surface", () => {
     const a: CodexAppEvent[] = [];
     const b: CodexAppEvent[] = [];
 
@@ -477,106 +588,74 @@ describe("codex event stream hub", () => {
     subscribeCodexEvents(undefined, "t1", { onEvent: (e) => b.push(e) });
 
     expect(a.map((e) => e.seq)).toEqual([1]);
-    expect(b.map((e) => e.seq)).toEqual([1]);
+    expect(b).toEqual([]);
   });
 
-  test("replays the exact offscreen event interval without another subscription", () => {
-    subscribeCodexEvents(undefined, "t1", { onEvent: () => {} });
-    const firstMissed = event("t1", 11);
-    FakeEventSource.instances[0]?.emit("codex", firstMissed);
-    FakeEventSource.instances[0]?.emit("codex", event("t2", 12));
-    FakeEventSource.instances[0]?.emit("codex", event("t1", 13));
-
-    const replay = replayCodexEventsFrom(
-      undefined,
-      "t1",
-      codexEventReplayKey(firstMissed),
-    );
-
-    expect(replay.complete).toBe(true);
-    expect(replay.events.map((entry) => entry.seq)).toEqual([11, 13]);
-  });
-
-  test("does not let a noisy thread evict another thread's replay interval", () => {
-    subscribeCodexEvents(undefined, "t1", { onEvent: () => {} });
-    const firstMissed = event("t1", 1);
-    FakeEventSource.instances[0]?.emit("codex", firstMissed);
-    for (let seq = 2; seq <= 2_002; seq += 1) {
-      FakeEventSource.instances[0]?.emit("codex", event("t2", seq));
+  test("compacts adjacent deferred deltas without changing their projection", () => {
+    const deferred = new CodexDeferredEventBuffer();
+    for (let seq = 1; seq <= 10_000; seq += 1) {
+      deferred.push({
+        kind: "notification",
+        method: "item/agentMessage/delta",
+        params: {
+          threadId: "t1",
+          turnId: "turn-1",
+          itemId: "message-1",
+          delta: `${seq},`,
+        },
+        threadId: "t1",
+        turnId: "turn-1",
+        receivedAt: "2026-09-29T00:00:00.000Z",
+        seq,
+      });
     }
 
-    const replay = replayCodexEventsFrom(
-      undefined,
-      "t1",
-      codexEventReplayKey(firstMissed),
+    const drained = deferred.drain();
+    expect(drained.complete).toBe(true);
+    expect(drained.events.length).toBeLessThan(20);
+    expect(drained.events.map((entry) => entry.params.delta).join("")).toBe(
+      Array.from({ length: 10_000 }, (_, index) => `${index + 1},`).join(""),
     );
-
-    expect(replay.complete).toBe(true);
-    expect(replay.events.map((entry) => entry.seq)).toEqual([1]);
+    expect(deferred.hasEvents).toBe(false);
   });
 
-  test("does not evict a long active turn merely because it has many events", () => {
-    subscribeCodexEvents(undefined, "t1", { onEvent: () => {} });
-    const firstMissed = event("t1", 1);
-    FakeEventSource.instances[0]?.emit("codex", firstMissed);
-    for (let seq = 2; seq <= 2_002; seq += 1) {
-      FakeEventSource.instances[0]?.emit("codex", event("t1", seq));
-    }
-
-    const replay = replayCodexEventsFrom(
-      undefined,
-      "t1",
-      codexEventReplayKey(firstMissed),
-    );
-
-    expect(replay.complete).toBe(true);
-    expect(replay.events).toHaveLength(2_002);
-  });
-
-  test("requires authoritative history only after one thread exceeds its byte budget", () => {
-    __setCodexEventReplayByteLimitForTests(500);
-    subscribeCodexEvents(undefined, "t1", { onEvent: () => {} });
-    const firstMissed = event("t1", 1);
-    FakeEventSource.instances[0]?.emit("codex", firstMissed);
-    FakeEventSource.instances[0]?.emit("codex", {
-      ...event("t1", 2),
-      params: { delta: "x".repeat(500) },
-    });
-
-    expect(
-      replayCodexEventsFrom(
-        undefined,
-        "t1",
-        codexEventReplayKey(firstMissed),
-      ),
-    ).toEqual({ complete: false, events: [] });
-  });
-
-  test("delivers turn completion before pruning its transient replay events", () => {
-    const received: CodexAppEvent[] = [];
-    subscribeCodexEvents(undefined, "t1", {
-      onEvent: (entry) => received.push(entry),
-    });
-    const firstMissed = { ...event("t1", 1), turnId: "turn-1" };
-    FakeEventSource.instances[0]?.emit("codex", firstMissed);
-    FakeEventSource.instances[0]?.emit("codex", {
-      ...event("t1", 2),
-      method: "turn/completed",
+  test("preserves interleaved deferred event order", () => {
+    const deferred = new CodexDeferredEventBuffer();
+    const delta = (seq: number, itemId: string, text: string): CodexAppEvent => ({
+      kind: "notification",
+      method: "item/agentMessage/delta",
+      params: { threadId: "t1", turnId: "turn-1", itemId, delta: text },
+      threadId: "t1",
       turnId: "turn-1",
-      params: { threadId: "t1", turnId: "turn-1" },
+      receivedAt: "2026-09-29T00:00:00.000Z",
+      seq,
+    });
+    deferred.push(delta(1, "a", "one"));
+    deferred.push(delta(2, "a", " two"));
+    deferred.push(delta(3, "b", "other"));
+    deferred.push(delta(4, "a", " three"));
+
+    expect(
+      deferred.drain().events.map((entry) => [
+        entry.params.itemId,
+        entry.params.delta,
+      ]),
+    ).toEqual([
+      ["a", "one two"],
+      ["b", "other"],
+      ["a", " three"],
+    ]);
+  });
+
+  test("marks deferred catch-up incomplete when its byte budget is exceeded", () => {
+    const deferred = new CodexDeferredEventBuffer(100);
+    deferred.push({
+      ...event("t1", 1),
+      method: "item/agentMessage/delta",
+      params: { threadId: "t1", itemId: "a", delta: "x".repeat(101) },
     });
 
-    expect(received.map((entry) => entry.method)).toEqual([
-      "turn/status",
-      "turn/completed",
-    ]);
-    expect(
-      replayCodexEventsFrom(
-        undefined,
-        "t1",
-        codexEventReplayKey(firstMissed),
-      ),
-    ).toEqual({ complete: false, events: [] });
+    expect(deferred.drain()).toEqual({ complete: false, events: [] });
   });
 
   test("reports connection state to each subscriber", () => {
