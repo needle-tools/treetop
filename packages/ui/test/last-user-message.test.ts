@@ -8617,6 +8617,200 @@ describe("visualWorkOverview", () => {
       "routes/+page.svelte",
     ]);
   });
+
+  it("tracks binary script arguments and files explicitly saved by command output", () => {
+    const toolUse = {
+      message: {
+        role: "assistant",
+        timestamp: "2026-09-29T18:23:49.872Z",
+        blocks: [
+          {
+            type: "tool_use",
+            toolName: "exec_command",
+            toolUseId: "generate-glb",
+            toolInput: {
+              cmd: "node experiments/unimate-webgpu/run-seacat-three.mjs '/Users/herbst/Downloads/AI_SeaCat_optimized_rigged (2).glb' experiments/unimate-webgpu/output/AI_SeaCat_unimate_v2_three_objaverse_heun12.glb objaverse heun 12 10",
+              workdir: "/private/tmp/baker-unimate",
+            },
+          },
+        ],
+      },
+      blocks: [
+        {
+          type: "tool_use",
+          toolName: "exec_command",
+          toolUseId: "generate-glb",
+          toolInput: {
+            cmd: "node experiments/unimate-webgpu/run-seacat-three.mjs '/Users/herbst/Downloads/AI_SeaCat_optimized_rigged (2).glb' experiments/unimate-webgpu/output/AI_SeaCat_unimate_v2_three_objaverse_heun12.glb objaverse heun 12 10",
+            workdir: "/private/tmp/baker-unimate",
+          },
+        },
+      ],
+      messageIndex: 1,
+    };
+    const toolResult = {
+      message: {
+        role: "tool",
+        timestamp: "2026-09-29T18:26:54.301Z",
+        blocks: [
+          {
+            type: "tool_result",
+            toolUseId: "generate-glb",
+            text: "Saved /private/tmp/baker-unimate/experiments/unimate-webgpu/output/AI_SeaCat_unimate_v2_three_objaverse_heun12.glb",
+          },
+        ],
+      },
+      blocks: [
+        {
+          type: "tool_result",
+          toolUseId: "generate-glb",
+          text: "Saved /private/tmp/baker-unimate/experiments/unimate-webgpu/output/AI_SeaCat_unimate_v2_three_objaverse_heun12.glb",
+        },
+      ],
+      messageIndex: 2,
+    };
+    const entries = buildVisualWorkDisplayEntries([toolUse, toolResult]);
+
+    const overview = visualWorkOverview({ kind: "work", entries: [] }, entries);
+
+    expect(overview.artifacts).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          path: "/Users/herbst/Downloads/AI_SeaCat_optimized_rigged (2).glb",
+          action: "referenced",
+        }),
+        expect.objectContaining({
+          path: "/private/tmp/baker-unimate/experiments/unimate-webgpu/output/AI_SeaCat_unimate_v2_three_objaverse_heun12.glb",
+          action: "produced",
+        }),
+      ]),
+    );
+  });
+
+  it("tracks viewed images from paired tool-result media as reads", () => {
+    const entries = buildVisualWorkDisplayEntries([
+      {
+        message: {
+          role: "assistant",
+          timestamp: "2026-09-29T18:27:18.390Z",
+          blocks: [
+            {
+              type: "tool_use",
+              toolName: "view_image",
+              toolUseId: "view-previews",
+              toolInput: "{path:p}",
+            },
+          ],
+        },
+        blocks: [
+          {
+            type: "tool_use",
+            toolName: "view_image",
+            toolUseId: "view-previews",
+            toolInput: "{path:p}",
+          },
+        ],
+        messageIndex: 1,
+      },
+      {
+        message: {
+          role: "tool",
+          timestamp: "2026-09-29T18:27:18.557Z",
+          blocks: [
+            {
+              type: "tool_result",
+              toolName: "view_image",
+              toolUseId: "view-previews",
+              text: "/tmp/previews/walking-0.7.png",
+            },
+            {
+              type: "media",
+              mediaKind: "image",
+              path: "/tmp/previews/walking-0.7.png",
+              title: "walking-0.7.png",
+              toolName: "view_image",
+              toolUseId: "view-previews",
+            },
+          ],
+        },
+        blocks: [
+          {
+            type: "tool_result",
+            toolName: "view_image",
+            toolUseId: "view-previews",
+            text: "/tmp/previews/walking-0.7.png",
+          },
+          {
+            type: "media",
+            mediaKind: "image",
+            path: "/tmp/previews/walking-0.7.png",
+            title: "walking-0.7.png",
+            toolName: "view_image",
+            toolUseId: "view-previews",
+          },
+        ],
+        messageIndex: 2,
+      },
+    ]);
+
+    const overview = visualWorkOverview({ kind: "work", entries: [] }, entries);
+
+    expect(overview.artifacts).toContainEqual(
+      expect.objectContaining({
+        kind: "image",
+        action: "used",
+        path: "/tmp/previews/walking-0.7.png",
+      }),
+    );
+  });
+
+  it("distinguishes image inputs from image outputs in artifacts", () => {
+    const entries = buildVisualWorkDisplayEntries([
+      {
+        message: {
+          role: "assistant",
+          blocks: [
+            {
+              type: "tool_use",
+              toolName: "exec_command",
+              toolUseId: "convert-image",
+              toolInput: {
+                cmd: "magick /tmp/source.png -resize 256x256 /tmp/output.webp",
+              },
+            },
+          ],
+        },
+        blocks: [
+          {
+            type: "tool_use",
+            toolName: "exec_command",
+            toolUseId: "convert-image",
+            toolInput: {
+              cmd: "magick /tmp/source.png -resize 256x256 /tmp/output.webp",
+            },
+          },
+        ],
+        messageIndex: 1,
+      },
+    ]);
+
+    const overview = visualWorkOverview({ kind: "work", entries: [] }, entries);
+
+    expect(overview.artifacts).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          kind: "image",
+          action: "used",
+          path: "/tmp/source.png",
+        }),
+        expect.objectContaining({
+          kind: "image",
+          action: "produced",
+          path: "/tmp/output.webp",
+        }),
+      ]),
+    );
+  });
 });
 
 describe("visualFileEditSummaryForBlock", () => {

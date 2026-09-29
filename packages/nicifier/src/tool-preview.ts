@@ -7186,13 +7186,27 @@ function commandSummaryParts(
     return textProcessPreviewParts(summary);
   }
   if (summary.kind === "script-file") {
-    return [
+    const parts: VisualToolPreviewPart[] = [
       { kind: "text", text: `Run ${summary.language} script ` },
       ...interspersePathParts([summary.script]),
-      ...(summary.args.length
-        ? [{ kind: "text" as const, text: ` ${summary.args.join(" ")}` }]
-        : []),
     ];
+    let plainArgs = "";
+    const flushPlainArgs = () => {
+      if (!plainArgs) return;
+      parts.push({ kind: "text", text: plainArgs });
+      plainArgs = "";
+    };
+    for (const arg of summary.args) {
+      if (!looksLikePathToken(arg)) {
+        plainArgs += ` ${arg}`;
+        continue;
+      }
+      flushPlainArgs();
+      parts.push({ kind: "text", text: " " });
+      parts.push(...interspersePathParts([arg]));
+    }
+    flushPlainArgs();
+    return parts;
   }
   if (summary.kind === "process-check") {
     if (summary.pids?.length) {

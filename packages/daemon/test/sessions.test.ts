@@ -1102,6 +1102,107 @@ describe("parseCodexJsonl", () => {
     ]);
   });
 
+  test("associates path lines with images returned by a Codex tool wrapper", () => {
+    const firstDataUrl = `data:image/png;base64,${Buffer.from("first image").toString("base64")}`;
+    const secondDataUrl = `data:image/png;base64,${Buffer.from("second image").toString("base64")}`;
+    const text = [
+      JSON.stringify({
+        timestamp: "2026-09-29T18:27:18.390Z",
+        type: "response_item",
+        payload: {
+          type: "custom_tool_call",
+          name: "exec",
+          call_id: "call-images",
+          input:
+            'for (const p of paths) { const r = await tools.view_image({ path: p }); text(p); image(r.image_url); }',
+        },
+      }),
+      JSON.stringify({
+        timestamp: "2026-09-29T18:27:18.557Z",
+        type: "response_item",
+        payload: {
+          type: "custom_tool_call_output",
+          call_id: "call-images",
+          output: [
+            { type: "input_text", text: "Script completed\nOutput:\n" },
+            { type: "input_text", text: "/tmp/previews/walking-0.7.png" },
+            { type: "input_image", image_url: firstDataUrl },
+            { type: "input_text", text: "/tmp/previews/running-0.7.png" },
+            { type: "input_image", image_url: secondDataUrl },
+          ],
+        },
+      }),
+    ].join("\n");
+
+    const session = parseCodexJsonl(text);
+
+    expect(session.messages[1]?.blocks.slice(1)).toMatchObject([
+      {
+        type: "media",
+        mediaKind: "image",
+        path: "/tmp/previews/walking-0.7.png",
+        title: "walking-0.7.png",
+        toolName: "view_image",
+      },
+      {
+        type: "media",
+        mediaKind: "image",
+        path: "/tmp/previews/running-0.7.png",
+        title: "running-0.7.png",
+        toolName: "view_image",
+      },
+    ]);
+  });
+
+  test("associates ImageView completion paths with pathless wrapper images", () => {
+    const dataUrl = `data:image/png;base64,${Buffer.from("image bytes").toString("base64")}`;
+    const text = [
+      JSON.stringify({
+        timestamp: "2026-09-29T18:20:00.000Z",
+        type: "response_item",
+        payload: {
+          type: "custom_tool_call",
+          name: "exec",
+          call_id: "call-images",
+          input:
+            'for (const p of paths) { const r = await tools.view_image({ path: p }); image(r.image_url); }',
+        },
+      }),
+      JSON.stringify({
+        timestamp: "2026-09-29T18:20:01.000Z",
+        type: "event_msg",
+        payload: {
+          type: "item_completed",
+          item: {
+            type: "ImageView",
+            id: "exec-image-1",
+            path: "file:///tmp/previews/walking-0.7.png",
+          },
+        },
+      }),
+      JSON.stringify({
+        timestamp: "2026-09-29T18:20:01.100Z",
+        type: "response_item",
+        payload: {
+          type: "custom_tool_call_output",
+          call_id: "call-images",
+          output: [{ type: "input_image", image_url: dataUrl }],
+        },
+      }),
+    ].join("\n");
+
+    const session = parseCodexJsonl(text);
+
+    expect(session.messages).toHaveLength(2);
+    expect(session.messages[1]?.blocks[1]).toMatchObject({
+      type: "media",
+      mediaKind: "image",
+      path: "/tmp/previews/walking-0.7.png",
+      title: "walking-0.7.png",
+      toolName: "view_image",
+    });
+  });
+
   test("keeps Codex image generation calls visible before media exists", () => {
     const line = JSON.stringify({
       timestamp: "2026-06-19T10:00:00.000Z",

@@ -376,25 +376,43 @@ function toolOutput(
   if (!Array.isArray(output)) return { text: "", mediaBlocks: [] };
   const texts: string[] = [];
   const mediaBlocks: CodexTranscriptBlock[] = [];
+  let pendingImagePath: string | undefined;
   for (const value of output) {
     if (typeof value === "string") {
-      if (value.trim()) texts.push(value);
+      if (value.trim()) {
+        texts.push(value);
+        pendingImagePath = toolOutputImagePath(value);
+      }
       continue;
     }
     const item = object(value);
     if (!item) continue;
     const media = contentMedia(item, resolveInlineData);
     if (media) {
+      if (pendingImagePath && media.mediaKind === "image" && !media.path) {
+        media.path = pendingImagePath;
+        media.title = mediaTitle(pendingImagePath);
+        media.alt = media.title;
+      }
       mediaBlocks.push(media);
+      pendingImagePath = undefined;
       continue;
     }
     const text = string(item, "text") ?? string(item, "content");
     const type = string(item, "type");
     if (text && [undefined, "text", "input_text", "output_text", "inputText", "outputText"].includes(type)) {
       texts.push(text);
+      pendingImagePath = toolOutputImagePath(text);
     }
   }
   return { text: texts.join("\n"), mediaBlocks };
+}
+
+function toolOutputImagePath(text: string): string | undefined {
+  const value = text.trim();
+  if (!value || /[\r\n]/.test(value)) return undefined;
+  if (!/\.(?:avif|bmp|gif|jpe?g|png|svg|webp)$/i.test(value)) return undefined;
+  return value;
 }
 
 function subagentUse(name: string, input: unknown, clip: (value: string) => string): Partial<CodexTranscriptBlock> {
@@ -564,6 +582,7 @@ export function createCodexTranscriptNormalizer(options: CodexTranscriptNormaliz
   let agentPath: string | undefined;
   let suppressForkedParent = false;
   const pendingWebSearchIds: string[] = [];
+  const pendingViewedImagePaths: string[] = [];
 
   const message = (
     role: CodexTranscriptRole,
@@ -652,6 +671,12 @@ export function createCodexTranscriptNormalizer(options: CodexTranscriptNormaliz
       }
       if (rowType === "event_msg" && payload) {
         if (payloadType === "item_completed") {
+          const completedItem = object(payload.item);
+          if (string(completedItem, "type") === "ImageView") {
+            const path = localPathFromFileUrl(string(completedItem, "path"));
+            if (path) pendingViewedImagePaths.push(path);
+            return { recognized: true, messages: [] };
+          }
           const activity = codexSubagentActivityFields(payload.item);
           if (activity) return { recognized: true, messages: [message("assistant", [{ type: "subagent", ...activity }], timestamp)] };
         }
@@ -946,6 +971,16 @@ export function createCodexTranscriptNormalizer(options: CodexTranscriptNormaliz
           return { recognized: true, messages: [] };
         }
         const output = toolOutput(payload.output, options.resolveInlineData);
+        if (name === "view_image" && pendingViewedImagePaths.length > 0) {
+          for (const media of output.mediaBlocks) {
+            if (media.mediaKind !== "image") continue;
+            const path = pendingViewedImagePaths.shift();
+            if (!path || media.path) continue;
+            media.path = path;
+            media.title = mediaTitle(path);
+            media.alt = media.title;
+          }
+        }
         if (["get_goal", "create_goal", "update_goal"].includes(name ?? "")) {
           const goal = goalBlock(output.text);
           return { recognized: true, messages: goal ? [message("system", [goal], timestamp)] : [] };
@@ -1012,4 +1047,14 @@ export function createCodexTranscriptNormalizer(options: CodexTranscriptNormaliz
       return { recognized: true, messages: [] };
     },
   };
+}
+
+function localPathFromFileUrl(value: string | undefined): string | undefined {
+  if (!value) return undefined;
+  if (!value.startsWith("file://")) return value;
+  try {
+    return decodeURIComponent(new URL(value).pathname);
+  } catch {
+    return undefined;
+  }
 }

@@ -986,10 +986,57 @@ function artifactsForEntry(
       });
     }
   }
-  for (const media of visualToolMediaBlocks(primaryToolBlock, resultBlock)) {
-    addArtifact(artifacts, mediaArtifact(media, primaryToolBlock));
+  const mediaBlocks = new Map<string, { media: VisualMediaBlock; tool: MessageBlock | undefined }>();
+  for (const toolBlock of toolUseBlocks(entry)) {
+    for (const media of visualToolMediaBlocks(toolBlock, resultBlock)) {
+      mediaBlocks.set(mediaArtifactIdentity(media), { media, tool: toolBlock });
+    }
+  }
+  for (const source of [entry.entry, entry.pairedResult]) {
+    for (const block of source?.blocks ?? []) {
+      if (block.type !== "media") continue;
+      const media = block as VisualMediaBlock;
+      const identity = mediaArtifactIdentity(media);
+      if (!mediaBlocks.has(identity)) {
+        mediaBlocks.set(identity, { media, tool: primaryToolBlock });
+      }
+    }
+  }
+  for (const { media, tool } of mediaBlocks.values()) {
+    addArtifact(artifacts, mediaArtifact(media, tool));
+  }
+  for (const path of producedArtifactPaths(resultBlock)) {
+    addArtifact(artifacts, {
+      kind: imageArtifactPath(path) ? "image" : "file",
+      action: "produced",
+      label: basename(path),
+      path,
+      title: path,
+    });
   }
   return artifacts;
+}
+
+function mediaArtifactIdentity(media: VisualMediaBlock): string {
+  return media.path ?? media.url ?? `${media.mediaKind}\u0000${media.title ?? media.alt ?? "media"}`;
+}
+
+function imageArtifactPath(path: string): boolean {
+  return /\.(?:avif|bmp|gif|jpe?g|png|svg|webp)$/i.test(path);
+}
+
+function producedArtifactPaths(
+  resultBlock: MessageBlock | undefined,
+): string[] {
+  if (!resultBlock || resultBlock.type !== "tool_result") return [];
+  const body = cleanVisualToolResultText(resultBlock.text).body;
+  const paths: string[] = [];
+  for (const line of body.split(/\r?\n/)) {
+    const match = line.match(/^\s*(?:Saved|Exported|Wrote|Written)\s+(.+?)\s*$/i);
+    const path = match?.[1]?.replace(/^['"]|['"]$/g, "").trim();
+    if (path && looksLikeArtifactPath(path, basename(path))) paths.push(path);
+  }
+  return [...new Set(paths)];
 }
 
 function allocateCapturedContent(
@@ -1007,14 +1054,16 @@ function mediaArtifact(
   toolBlock: MessageBlock | undefined,
 ): Omit<VisualWorkArtifact, "id"> {
   const toolName = (toolBlock?.toolName ?? "").toLowerCase();
+  const title = (media.title ?? "").toLowerCase();
+  const produced =
+    title === "output image" ||
+    title === "generated image" ||
+    title === "screenshot" ||
+    toolName.includes("screenshot") ||
+    toolName.includes("generation");
   return {
     kind: "image",
-    action:
-      toolName.includes("screenshot") ||
-      toolName.includes("image") ||
-      toolName.includes("generation")
-        ? "produced"
-        : "used",
+    action: produced ? "produced" : "used",
     label:
       (media.title ?? media.path)
         ? basename(media.title ?? media.path!)
