@@ -131,6 +131,9 @@
     codexLiveMessagesFromEvent,
     codexLiveMessagesEndTurn,
     codexLiveToolUseFromEvent,
+    codexIsUserInputRequest,
+    codexQuestionRequestSummary,
+    codexQuestionRequestTarget,
     codexRequestAllowsAction,
     codexRequestPresentation,
     codexRequestNeedsUserInteraction,
@@ -2590,6 +2593,7 @@
   let codexQueueDraining = false;
   let codexQueueBlocked = false;
   let codexQueueExpanded = false;
+  let codexQuestionsExpanded = false;
   let codexGoalExpanded = false;
   let codexPlanExpanded = false;
   let codexWarningsExpanded = false;
@@ -4974,6 +4978,38 @@
   ): Promise<void> {
     const questionId = block.questionId;
     if (!questionId || answeredAsyncQuestionIds.has(questionId)) return;
+    const requestTarget = codexQuestionRequestTarget(
+      codexRequests,
+      questionId,
+    );
+    if (requestTarget) {
+      const question = codexRequestQuestions(requestTarget.request).find(
+        (candidate) => candidate.id === requestTarget.questionId,
+      );
+      if (question) {
+        setCodexQuestionDraft(requestTarget.request, question, answer);
+        if (codexRequestQuestions(requestTarget.request).length > 1) {
+          codexQuestionsExpanded = true;
+          codexGoalExpanded = false;
+          codexPlanExpanded = false;
+          codexQueueExpanded = false;
+          codexWarningsExpanded = false;
+          return;
+        }
+        answeredAsyncQuestionIds = new Set(answeredAsyncQuestionIds).add(
+          questionId,
+        );
+        const accepted = await answerCodexRequest(
+          requestTarget.request,
+          "accept",
+        );
+        if (accepted) return;
+      }
+      const next = new Set(answeredAsyncQuestionIds);
+      next.delete(questionId);
+      answeredAsyncQuestionIds = next;
+      return;
+    }
     answeredAsyncQuestionIds = new Set(answeredAsyncQuestionIds).add(questionId);
     const payload = {
       text: codexAsyncQuestionAnswerText(block.text, answer),
@@ -5246,10 +5282,6 @@
     return codexRequestSupportsPersistence(req, "always");
   }
 
-  function codexIsUserInputRequest(req: CodexAppEvent): boolean {
-    return req.method.includes("requestUserInput");
-  }
-
   async function answerCodexRequest(
     req: CodexAppEvent,
     action:
@@ -5260,8 +5292,8 @@
       | "applyNetworkPolicyAmendment"
       | "decline"
       | "cancel",
-  ): Promise<void> {
-    if (req.id === undefined) return;
+  ): Promise<boolean> {
+    if (req.id === undefined) return false;
     const answers: Record<string, { answers: string[] }> = {};
     if (codexIsUserInputRequest(req)) {
       for (const q of codexRequestQuestions(req)) {
@@ -5287,12 +5319,22 @@
         throw new Error(body?.error ?? `HTTP ${res.status}`);
       }
       codexRequests = codexRequests.filter((r) => r.id !== req.id);
+      if (codexIsUserInputRequest(req)) {
+        const requestId = String(req.id ?? req.seq ?? req.receivedAt);
+        const answered = new Set(answeredAsyncQuestionIds);
+        for (const question of codexRequestQuestions(req)) {
+          answered.add(`${requestId}:${question.id}`);
+        }
+        answeredAsyncQuestionIds = answered;
+      }
       const key = codexRequestKey(req);
       const { [key]: _removed, ...rest } = codexRequestDrafts;
       codexRequestDrafts = rest;
       awaitingInput = codexRequests.length > 0;
+      return true;
     } catch (e) {
       sendError = e instanceof Error ? e.message : String(e);
+      return false;
     }
   }
 
@@ -5360,7 +5402,15 @@
     lastFocusComposerSeq = focusComposerSeq;
     void focusComposerInput();
   }
-  $: showComposerTray = codexVisualAppSurface && codexRequests.length > 0;
+  $: codexQuestionSummary = codexQuestionRequestSummary(codexRequests);
+  $: showComposerTray =
+    codexVisualAppSurface && codexQuestionSummary.otherRequests.length > 0;
+  $: if (
+    codexQuestionSummary.questionCount === 0 &&
+    codexQuestionsExpanded
+  ) {
+    codexQuestionsExpanded = false;
+  }
   $: if (codexQueuedMessages.length === 0 && codexQueueExpanded) {
     codexQueueExpanded = false;
   }
@@ -5460,6 +5510,7 @@
     if (codexPlanExpanded) {
       codexGoalExpanded = false;
       codexQueueExpanded = false;
+      codexQuestionsExpanded = false;
       codexWarningsExpanded = false;
     }
   }
@@ -5469,6 +5520,7 @@
     if (codexGoalExpanded) {
       codexPlanExpanded = false;
       codexQueueExpanded = false;
+      codexQuestionsExpanded = false;
       codexWarningsExpanded = false;
     } else {
       cancelCodexGoalEdit();
@@ -5480,6 +5532,17 @@
     if (codexQueueExpanded) {
       codexGoalExpanded = false;
       codexPlanExpanded = false;
+      codexQuestionsExpanded = false;
+      codexWarningsExpanded = false;
+    }
+  }
+
+  function toggleCodexQuestionsPane(): void {
+    codexQuestionsExpanded = !codexQuestionsExpanded;
+    if (codexQuestionsExpanded) {
+      codexGoalExpanded = false;
+      codexPlanExpanded = false;
+      codexQueueExpanded = false;
       codexWarningsExpanded = false;
     }
   }
@@ -5490,6 +5553,7 @@
       codexGoalExpanded = false;
       codexPlanExpanded = false;
       codexQueueExpanded = false;
+      codexQuestionsExpanded = false;
     }
   }
 
@@ -6201,7 +6265,7 @@
       {#if showComposerTray}
         <div class="composer-tray">
           <div class="codex-requests">
-            {#each codexRequests as req (req.id)}
+            {#each codexQuestionSummary.otherRequests as req (req.id)}
               {@const presentation = codexRequestPresentation(req)}
               <div class="codex-request">
                 <div class="codex-request-main">
@@ -6234,64 +6298,9 @@
                       title={presentation.preview}>{presentation.preview}</code
                     >
                   {/if}
-                  {#if codexIsUserInputRequest(req)}
-                    <div class="codex-request-questions">
-                      {#each codexRequestQuestions(req) as q (q.id)}
-                        <label class="codex-request-question">
-                          <span>{q.header || q.question || "Answer"}</span>
-                          {#if q.question && q.header}
-                            <small>{q.question}</small>
-                          {/if}
-                          {#if q.options && q.options.length}
-                            <select
-                              value={codexQuestionDraft(req, q)}
-                              on:change={(e) =>
-                                setCodexQuestionDraft(
-                                  req,
-                                  q,
-                                  (e.currentTarget as HTMLSelectElement).value,
-                                )}
-                            >
-                              <option value="">Choose…</option>
-                              {#each q.options as opt (opt.label)}
-                                <option value={opt.label}>
-                                  {opt.label}{opt.description
-                                    ? ` — ${opt.description}`
-                                    : ""}
-                                </option>
-                              {/each}
-                            </select>
-                          {:else}
-                            <input
-                              type={q.isSecret ? "password" : "text"}
-                              value={codexQuestionDraft(req, q)}
-                              on:input={(e) =>
-                                setCodexQuestionDraft(
-                                  req,
-                                  q,
-                                  (e.currentTarget as HTMLInputElement).value,
-                                )}
-                            />
-                          {/if}
-                        </label>
-                      {/each}
-                    </div>
-                  {/if}
                 </div>
                 <div class="codex-request-actions">
-                  {#if codexIsUserInputRequest(req)}
-                    <button
-                      type="button"
-                      on:click={() => void answerCodexRequest(req, "accept")}
-                      title="Send these answers to Codex">Send</button
-                    >
-                    <button
-                      type="button"
-                      on:click={() => void answerCodexRequest(req, "cancel")}
-                      title="Cancel this input request">Cancel</button
-                    >
-                  {:else}
-                    {#if codexRequestAllowsAction(req, "accept")}
+                  {#if codexRequestAllowsAction(req, "accept")}
                       <button
                         type="button"
                         on:click={() => void answerCodexRequest(req, "accept")}
@@ -6351,8 +6360,76 @@
                         on:click={() => void answerCodexRequest(req, "cancel")}
                         title="Cancel this Codex request">Cancel</button
                       >
-                    {/if}
                   {/if}
+                </div>
+              </div>
+            {/each}
+          </div>
+        </div>
+      {/if}
+      {#if agent === "codex" && codexQuestionSummary.questionCount && codexQuestionsExpanded}
+        <div class="codex-question-pane" aria-label="Codex questions">
+          <div class="codex-requests">
+            {#each codexQuestionSummary.questionRequests as req (req.id)}
+              <div class="codex-request question-request">
+                <div class="codex-request-main">
+                  <div class="codex-request-heading question-request-heading">
+                    <span class="question-request-symbol" aria-hidden="true">?</span>
+                    <span class="codex-request-title">Question</span>
+                  </div>
+                  <div class="codex-request-questions">
+                    {#each codexRequestQuestions(req) as q (q.id)}
+                      <label class="codex-request-question">
+                        <span>{q.header || q.question || "Answer"}</span>
+                        {#if q.question && q.header}
+                          <small>{q.question}</small>
+                        {/if}
+                        {#if q.options && q.options.length}
+                          <select
+                            value={codexQuestionDraft(req, q)}
+                            on:change={(e) =>
+                              setCodexQuestionDraft(
+                                req,
+                                q,
+                                (e.currentTarget as HTMLSelectElement).value,
+                              )}
+                          >
+                            <option value="">Choose…</option>
+                            {#each q.options as opt (opt.label)}
+                              <option value={opt.label}>
+                                {opt.label}{opt.description
+                                  ? ` — ${opt.description}`
+                                  : ""}
+                              </option>
+                            {/each}
+                          </select>
+                        {:else}
+                          <input
+                            type={q.isSecret ? "password" : "text"}
+                            value={codexQuestionDraft(req, q)}
+                            on:input={(e) =>
+                              setCodexQuestionDraft(
+                                req,
+                                q,
+                                (e.currentTarget as HTMLInputElement).value,
+                              )}
+                          />
+                        {/if}
+                      </label>
+                    {/each}
+                  </div>
+                </div>
+                <div class="codex-request-actions">
+                  <button
+                    type="button"
+                    on:click={() => void answerCodexRequest(req, "accept")}
+                    title="Send these answers to Codex">Send</button
+                  >
+                  <button
+                    type="button"
+                    on:click={() => void answerCodexRequest(req, "cancel")}
+                    title="Cancel this input request">Cancel</button
+                  >
                 </div>
               </div>
             {/each}
@@ -6712,7 +6789,7 @@
             disabled={sending && agent !== "codex" && !ollamaAbort}
           ></textarea>
         </div>
-        {#if agent === "codex" && (codexLatestGoal || codexLatestPlan || codexQueuedMessages.length || composerWarnings.length)}
+        {#if agent === "codex" && (codexLatestGoal || codexLatestPlan || codexQueuedMessages.length || codexQuestionSummary.questionCount || composerWarnings.length)}
           <div class="composer-indicators">
             {#if codexLatestGoal}
               <button
@@ -6753,6 +6830,25 @@
                   : "Show queued messages"}
               >
                 Queue: {codexQueuedMessages.length}
+              </button>
+            {/if}
+            {#if codexQuestionSummary.questionCount}
+              <button
+                type="button"
+                class="codex-composer-badge question"
+                class:expanded={codexQuestionsExpanded}
+                on:click={toggleCodexQuestionsPane}
+                title={codexQuestionsExpanded
+                  ? "Collapse questions"
+                  : "Show questions"}
+                aria-label={codexQuestionsExpanded
+                  ? "Collapse pending questions"
+                  : "Show pending questions"}
+              >
+                <span aria-hidden="true">?</span>
+                {codexQuestionSummary.questionCount === 1
+                  ? "Question"
+                  : `Questions: ${codexQuestionSummary.questionCount}`}
               </button>
             {/if}
             {#if composerWarnings.length}
@@ -7329,6 +7425,7 @@
     overscroll-behavior: contain;
   }
   .codex-queue-pane,
+  .codex-question-pane,
   .codex-warning-pane,
   .codex-goal-pane,
   .codex-plan-pane {
@@ -7357,6 +7454,15 @@
   .codex-warning-pane {
     left: auto;
     width: min(100%, 34rem);
+  }
+  .codex-question-pane {
+    left: auto;
+    width: min(100%, 42rem);
+    border-color: color-mix(
+      in srgb,
+      var(--chip-purple-text) 42%,
+      var(--surface-3)
+    );
   }
   .codex-goal-head {
     display: flex;
@@ -7488,6 +7594,18 @@
     border-radius: var(--radius-sm);
     background: var(--surface-1);
   }
+  .codex-request.question-request {
+    border-color: color-mix(
+      in srgb,
+      var(--chip-purple-text) 34%,
+      var(--surface-3)
+    );
+    background: color-mix(
+      in srgb,
+      var(--chip-purple-bg) 32%,
+      var(--surface-1)
+    );
+  }
   .codex-request-main {
     min-width: 0;
     display: flex;
@@ -7503,6 +7621,22 @@
     display: flex;
     align-items: center;
     gap: 0.4rem;
+  }
+  .question-request-heading {
+    color: var(--chip-purple-text);
+  }
+  .question-request-symbol {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 1.15rem;
+    height: 1.15rem;
+    border: 1px solid currentColor;
+    border-radius: 999px;
+    color: var(--chip-purple-text);
+    font-size: 0.72rem;
+    font-weight: 800;
+    line-height: 1;
   }
   .codex-request-risk {
     border: 1px solid var(--surface-3);
@@ -8055,6 +8189,26 @@
     border-color: color-mix(in srgb, var(--error-text) 46%, var(--surface-3));
     color: var(--error-text);
   }
+  .codex-composer-badge.question {
+    gap: 0.28rem;
+    border-color: color-mix(
+      in srgb,
+      var(--chip-purple-text) 48%,
+      var(--surface-3)
+    );
+    color: var(--chip-purple-text);
+  }
+  .codex-composer-badge.question > span {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 0.92rem;
+    height: 0.92rem;
+    border: 1px solid currentColor;
+    border-radius: 999px;
+    font-size: 0.62rem;
+    font-weight: 800;
+  }
   .codex-composer-badge.goal {
     border-color: color-mix(in srgb, var(--status-dirty) 46%, var(--surface-3));
   }
@@ -8067,6 +8221,20 @@
     border-color: color-mix(in srgb, var(--error-text) 64%, var(--surface-3));
     background: color-mix(in srgb, var(--error-bg) 38%, var(--surface-2));
     color: var(--error-text);
+  }
+  .codex-composer-badge.question:hover,
+  .codex-composer-badge.question.expanded {
+    border-color: color-mix(
+      in srgb,
+      var(--chip-purple-text) 68%,
+      var(--surface-3)
+    );
+    background: color-mix(
+      in srgb,
+      var(--chip-purple-bg) 46%,
+      var(--surface-2)
+    );
+    color: var(--chip-purple-text);
   }
   .composer-send {
     display: inline-flex;

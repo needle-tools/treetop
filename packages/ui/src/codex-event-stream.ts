@@ -77,6 +77,17 @@ export interface CodexRequestPresentation {
   details: Array<{ label: string; value: string }>;
 }
 
+export interface CodexQuestionRequestSummary {
+  questionRequests: CodexAppEvent[];
+  otherRequests: CodexAppEvent[];
+  questionCount: number;
+}
+
+export interface CodexQuestionRequestTarget {
+  request: CodexAppEvent;
+  questionId: string;
+}
+
 const CODEX_USER_INTERACTION_REQUESTS = new Set([
   "item/commandExecution/requestApproval",
   "item/fileChange/requestApproval",
@@ -89,6 +100,52 @@ const CODEX_USER_INTERACTION_REQUESTS = new Set([
 
 export function codexRequestNeedsUserInteraction(method: string): boolean {
   return CODEX_USER_INTERACTION_REQUESTS.has(method);
+}
+
+export function codexIsUserInputRequest(request: CodexAppEvent): boolean {
+  return request.method === "item/tool/requestUserInput";
+}
+
+export function codexQuestionRequestSummary(
+  requests: readonly CodexAppEvent[],
+): CodexQuestionRequestSummary {
+  const questionRequests: CodexAppEvent[] = [];
+  const otherRequests: CodexAppEvent[] = [];
+  let questionCount = 0;
+  for (const request of requests) {
+    if (!codexIsUserInputRequest(request)) {
+      otherRequests.push(request);
+      continue;
+    }
+    questionRequests.push(request);
+    const questions = request.params.questions;
+    const count = Array.isArray(questions)
+      ? questions.filter(
+          (question) => !!question && typeof question === "object",
+        ).length
+      : 0;
+    questionCount += Math.max(1, count);
+  }
+  return { questionRequests, otherRequests, questionCount };
+}
+
+export function codexQuestionRequestTarget(
+  requests: readonly CodexAppEvent[],
+  transcriptQuestionId: string,
+): CodexQuestionRequestTarget | undefined {
+  for (const request of requests) {
+    if (!codexIsUserInputRequest(request)) continue;
+    const requestId = String(
+      request.id ?? request.seq ?? request.receivedAt,
+    );
+    const prefix = `${requestId}:`;
+    if (!transcriptQuestionId.startsWith(prefix)) continue;
+    return {
+      request,
+      questionId: transcriptQuestionId.slice(prefix.length),
+    };
+  }
+  return undefined;
 }
 
 export function codexAsyncQuestionAnswerText(
@@ -1271,6 +1328,23 @@ export function codexLiveMessagesFromEvent(
     (settings ? stringField(settings, "model") : undefined);
   if (eventModel) context.model = eventModel;
   const timestamp = codexLiveItemTimestamp(event);
+  if (codexIsUserInputRequest(event)) {
+    const requestId = String(event.id ?? event.seq ?? event.receivedAt);
+    const blocks = asyncQuestionBlocksFromPayload(event.params, requestId).map(
+      (block, index) => ({
+        ...block,
+        questionId: `${requestId}:${block.questionId ?? index}`,
+      }),
+    );
+    if (blocks.length) {
+      messages.push({
+        id: `codex-question-request-${requestId}`,
+        role: "assistant",
+        timestamp,
+        blocks,
+      });
+    }
+  }
   const contextSnapshot = codexContextSnapshotFromPayload(event.params);
   if (contextSnapshot) {
     const pending = context.pendingCompactionMarker;

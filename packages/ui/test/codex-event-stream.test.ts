@@ -17,6 +17,8 @@ import {
   codexRequestPresentation,
   codexRequestAllowsAction,
   codexRequestNeedsUserInteraction,
+  codexQuestionRequestSummary,
+  codexQuestionRequestTarget,
   codexRequestResponseResult,
   codexRequestSupportsPersistence,
   codexAppHistoryKey,
@@ -400,6 +402,47 @@ describe("codex event stream hub", () => {
     expect(hostCallbacks.every((method) => !codexRequestNeedsUserInteraction(method))).toBe(
       true,
     );
+  });
+
+  test("separates pending questions from approvals and counts every question", () => {
+    const requests: CodexAppEvent[] = [
+      {
+        kind: "request",
+        id: 1,
+        method: "item/commandExecution/requestApproval",
+        params: { command: "git status" },
+        receivedAt: "2026-09-29T10:00:00.000Z",
+      },
+      {
+        kind: "request",
+        id: 2,
+        method: "item/tool/requestUserInput",
+        params: {
+          questions: [
+            { id: "scope", question: "Which scope?" },
+            { id: "format", question: "Which format?" },
+          ],
+        },
+        receivedAt: "2026-09-29T10:00:01.000Z",
+      },
+      {
+        kind: "request",
+        id: 3,
+        method: "item/tool/requestUserInput",
+        params: {},
+        receivedAt: "2026-09-29T10:00:02.000Z",
+      },
+    ];
+
+    const summary = codexQuestionRequestSummary(requests);
+    expect(summary.questionRequests.map((request) => request.id)).toEqual([2, 3]);
+    expect(summary.otherRequests.map((request) => request.id)).toEqual([1]);
+    expect(summary.questionCount).toBe(3);
+    expect(codexQuestionRequestTarget(requests, "2:format")).toEqual({
+      request: requests[1],
+      questionId: "format",
+    });
+    expect(codexQuestionRequestTarget(requests, "99:missing")).toBeUndefined();
   });
 
   beforeEach(() => {
@@ -3742,6 +3785,49 @@ describe("codex event stream hub", () => {
       turnId: "turn-1",
       receivedAt: "2026-09-12T17:04:02.000Z",
     }, context)).toEqual([]);
+  });
+
+  test("projects pending app-server input requests into the transcript flow", () => {
+    const messages = codexLiveMessagesFromEvent({
+      kind: "request",
+      id: 42,
+      method: "item/tool/requestUserInput",
+      params: {
+        questions: [
+          {
+            id: "scope",
+            header: "Scope",
+            question: "Which scope should this use?",
+            options: [
+              { label: "Current file", description: "Only this file" },
+              { label: "Project", description: "The whole project" },
+            ],
+          },
+        ],
+      },
+      threadId: "thread-1",
+      turnId: "turn-1",
+      receivedAt: "2026-09-29T10:00:00.000Z",
+    });
+
+    expect(messages).toEqual([
+      {
+        id: "codex-question-request-42",
+        role: "assistant",
+        timestamp: "2026-09-29T10:00:00.000Z",
+        blocks: [
+          {
+            type: "question",
+            text: "Which scope should this use?",
+            questionId: "42:scope",
+            questionOptions: [
+              { label: "Current file", description: "Only this file" },
+              { label: "Project", description: "The whole project" },
+            ],
+          },
+        ],
+      },
+    ]);
   });
 
   test("keeps an async question attached to the selected answer", () => {

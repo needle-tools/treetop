@@ -14,7 +14,10 @@
 </script>
 
 <div class="async-question" data-answered={answered || undefined}>
-  <div class="async-question-heading">Question</div>
+  <div class="async-question-heading">
+    <span class="async-question-symbol" aria-hidden="true">?</span>
+    <span>Question</span>
+  </div>
   {#if text}
     <div class="async-question-prompt">{text}</div>
   {/if}
@@ -49,20 +52,40 @@
     gap: 0.55rem;
     margin: 0.35rem 0;
     padding: 0.8rem 0.9rem;
-    border: 1px solid color-mix(in srgb, var(--accent) 38%, var(--surface-3));
+    border: 1px solid
+      color-mix(in srgb, var(--chip-purple-text) 38%, var(--surface-3));
     border-radius: 0.75rem;
-    background: color-mix(in srgb, var(--accent) 7%, var(--surface-2));
+    background: color-mix(
+      in srgb,
+      var(--chip-purple-bg) 28%,
+      var(--surface-2)
+    );
   }
   .async-question[data-answered] {
     border-color: var(--surface-3);
     background: var(--surface-2);
   }
   .async-question-heading {
-    color: var(--accent);
+    display: flex;
+    align-items: center;
+    gap: 0.35rem;
+    color: var(--chip-purple-text);
     font-size: 0.72rem;
     font-weight: 700;
     letter-spacing: 0.04em;
     text-transform: uppercase;
+  }
+  .async-question-symbol {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 1.2rem;
+    height: 1.2rem;
+    border: 1px solid currentColor;
+    border-radius: 999px;
+    font-size: 0.72rem;
+    font-weight: 800;
+    line-height: 1;
   }
   .async-question-prompt {
     color: var(--text-1);
@@ -90,8 +113,12 @@
     cursor: pointer;
   }
   .async-question-options button:not(:disabled):hover {
-    border-color: var(--accent);
-    background: color-mix(in srgb, var(--accent) 10%, var(--surface-1));
+    border-color: var(--chip-purple-text);
+    background: color-mix(
+      in srgb,
+      var(--chip-purple-bg) 42%,
+      var(--surface-1)
+    );
   }
   .async-question-options small,
   .async-question-answered {
