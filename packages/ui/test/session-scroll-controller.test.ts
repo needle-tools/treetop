@@ -260,6 +260,29 @@ describe("session scroll controller", () => {
     expect(scroller.scrollTop).toBe(1_000_000_000);
   });
 
+  test("keeps an explicit send-time follow when the optimistic tail update supersedes it", () => {
+    const scheduler = new ManualScheduler();
+    const scroller = fakeScroller(() => 220);
+    scroller.scrollTop = 700;
+    const controller = createSessionScrollController({
+      scheduler,
+      transcriptActive: () => true,
+    });
+
+    controller.setElement(scroller);
+    controller.updateTail("completed-turn");
+    scheduler.flush();
+
+    scroller.scrollTop = 700;
+    controller.forceTailFollow();
+    scroller.scrollHeight = 2_000;
+    controller.updateTail("optimistic-user-and-live-work");
+    scheduler.flush();
+
+    expect(controller.isPaused).toBe(false);
+    expect(scroller.scrollTop).toBe(1_000_000_000);
+  });
+
   test("does not mistake a turn-boundary relayout for reader scroll intent", () => {
     const scheduler = new ManualScheduler();
     const scroller = fakeScroller(() => 220);

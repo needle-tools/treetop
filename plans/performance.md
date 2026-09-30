@@ -179,6 +179,12 @@ not duplicate them into a gallery after the work summary, because that changes
 the tail geometry as images decode. Completed responses return to ordinary
 bottom-tail following.
 
+An explicit tail-follow request is sticky until its scheduled correction runs.
+Sending an app-server message first forces follow, then the optimistic user row
+changes the reactive tail key; that second update must coalesce with, not erase,
+the pending force. Otherwise the newly grown DOM already looks far from the end
+and the send leaves the reader behind even though they were following the tail.
+
 ## Mechanics — what each Chrome phase actually costs
 
 Useful background for anyone touching the always-on chrome:

@@ -101,6 +101,7 @@ export class SessionScrollController {
   private readerRestoreSeq = 0;
   private tailFollowSeq = 0;
   private pendingTailFollowSeq = 0;
+  private pendingTailFollowForced = false;
   private layoutObserver: ResizeObserver | null = null;
   private cursorSettled = false;
   private pointerScrollIntent = false;
@@ -196,6 +197,7 @@ export class SessionScrollController {
   reset(): void {
     this.tailFollowSeq += 1;
     this.pendingTailFollowSeq = 0;
+    this.pendingTailFollowForced = false;
     this.renderedOnce = false;
     this.tailKey = "";
     this.paused = false;
@@ -374,7 +376,8 @@ export class SessionScrollController {
     if (!el) return;
     const followSeq = ++this.tailFollowSeq;
     this.pendingTailFollowSeq = followSeq;
-    const force = options.force === true;
+    this.pendingTailFollowForced ||= options.force === true;
+    const force = this.pendingTailFollowForced;
     const firstRender = !this.renderedOnce;
     if (firstRender && !usableLayout(el)) {
       this.waitForLayout(options);
@@ -418,6 +421,7 @@ export class SessionScrollController {
         this.scheduler.nextFrame(() => {
           if (this.pendingTailFollowSeq !== followSeq) return;
           this.pendingTailFollowSeq = 0;
+          this.pendingTailFollowForced = false;
           this.syncActive();
         });
       });
