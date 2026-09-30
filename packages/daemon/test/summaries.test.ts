@@ -127,6 +127,30 @@ describe("SummariesStore", () => {
     expect(got!.frontmatter.title).toBeUndefined();
   });
 
+  test("Codex summaries from before history filtering are stale", async () => {
+    const ws = await tempWorkspace();
+    const store = await SummariesStore.open(ws);
+    const source = join(ws, "codex.jsonl");
+    await writeFile(source, "{}\n");
+    const mtimeMs = (await stat(source)).mtimeMs;
+    const summary = {
+      agent: "codex" as const,
+      model: "llama3.2:3b",
+      sourceMtimeMs: mtimeMs,
+      generatedAt: "2026-09-30T00:00:00.000Z",
+      includedMessages: 1,
+      totalMessages: 1,
+      truncatedMessages: 0,
+      estimatedTokens: 10,
+      elapsedMs: 100,
+      body: "old history-based summary",
+    };
+    await store.write(source, summary);
+    expect((await store.staleness(source)).stale).toBe(true);
+    await store.write(source, { ...summary, parserVersion: 2 });
+    expect((await store.staleness(source)).stale).toBe(false);
+  });
+
   test("read returns null when no summary has been written", async () => {
     const ws = await tempWorkspace();
     const store = await SummariesStore.open(ws);

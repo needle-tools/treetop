@@ -148,7 +148,11 @@ import {
 } from "./ollama";
 import { fetchClaudeOAuthUsage } from "./claude-oauth-usage";
 import { fetchCodexOAuthUsage } from "./codex-oauth-usage";
-import { SummariesStore, RepoSummariesStore } from "./summaries";
+import {
+  SummariesStore,
+  RepoSummariesStore,
+  isCurrentSummary,
+} from "./summaries";
 import { sampleSessionForSummary, cleanAiTitle } from "./ollama-summarize";
 import {
   collectRepoActivity,
@@ -654,7 +658,7 @@ const repoSummaries = await RepoSummariesStore.open(WORKSPACE_PATH);
  *  touching disk. */
 const aiTitles = new Map<string, string>();
 for (const rec of await summaries.listAll()) {
-  if (rec.frontmatter.title) {
+  if (rec.frontmatter.title && isCurrentSummary(rec)) {
     aiTitles.set(rec.frontmatter.source.toLowerCase(), rec.frontmatter.title);
   }
 }
@@ -2024,7 +2028,11 @@ function reposNDJSONFresh(
                     return {
                       ...wt,
                       ...details,
-                      agents: agentsForWorktree(wt.path, titled),
+                      agents: agentsForWorktree(
+                        wt.path,
+                        titled,
+                        repos.map((registered) => registered.path),
+                      ),
                     };
                   }),
                 );
@@ -5645,7 +5653,8 @@ const server = Bun.serve<TermWsData, never>({
           );
         }
         const { summary, stale } = await summaries.staleness(source);
-        if (!summary) return json({ summary: null });
+        if (!summary || !isCurrentSummary(summary))
+          return json({ summary: null, stale });
         return json({
           summary: { frontmatter: summary.frontmatter, body: summary.body },
           stale,
@@ -5914,6 +5923,7 @@ const server = Bun.serve<TermWsData, never>({
                 agent: resolved.agent,
                 sessionId: parsed.sessionId || undefined,
                 title: aiTitle,
+                ...(resolved.agent === "codex" ? { parserVersion: 2 } : {}),
                 model,
                 sourceMtimeMs,
                 generatedAt: new Date(startedAt).toISOString(),

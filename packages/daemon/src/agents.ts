@@ -724,6 +724,7 @@ interface CodexSessionOverview {
   meta: { cwd?: string; id?: string };
   usage: CodexTokenUsage;
   firstUserMessage?: string;
+  hasHistoryReplay: boolean;
   lastUserMessages: string[];
   messageCount?: number;
   contextTokens?: number;
@@ -735,7 +736,12 @@ function isCodexSystemInjected(text: string): boolean {
   if (t.startsWith("<")) return true;
   if (t.startsWith("# AGENTS.md") || t.startsWith("# CLAUDE.md")) return true;
   if (/^#\s+(Instructions|Context|System)\b/i.test(t)) return true;
+  if (isCodexHistoryReplay(t)) return true;
   return false;
+}
+
+function isCodexHistoryReplay(text: string): boolean {
+  return /^The following is the Codex agent history\b/i.test(text.trimStart());
 }
 
 function extractCodexUserText(line: string): string | undefined {
@@ -791,6 +797,7 @@ function ingestCodexOverviewLine(
     meta: { cwd?: string; id?: string };
     usage: CodexTokenUsage;
     firstUserMessage?: string;
+    hasHistoryReplay: boolean;
     lastUserMessages: string[];
     messageCount: number;
     contextChars: number;
@@ -882,6 +889,21 @@ function ingestCodexOverviewLine(
         }
       }
       if (role === "user") {
+        const content = payload.content;
+        if (
+          Array.isArray(content) &&
+          content.some(
+            (block) =>
+              typeof block === "object" &&
+              block !== null &&
+              typeof (block as { text?: unknown }).text === "string" &&
+              isCodexHistoryReplay((block as { text: string }).text),
+          )
+        )
+          state.hasHistoryReplay = true;
+        if (typeof content === "string" && isCodexHistoryReplay(content)) {
+          state.hasHistoryReplay = true;
+        }
         const text = extractCodexUserText(line);
         if (text) {
           if (!state.firstUserMessage) state.firstUserMessage = text;
@@ -910,6 +932,7 @@ async function readCodexSessionOverview(
       model: undefined,
     } satisfies CodexTokenUsage,
     firstUserMessage: undefined as string | undefined,
+    hasHistoryReplay: false,
     lastUserMessages: [] as string[],
     messageCount: 0,
     contextChars: 0,
@@ -946,6 +969,7 @@ async function readCodexSessionOverview(
     meta: state.meta,
     usage: state.usage,
     firstUserMessage: state.firstUserMessage,
+    hasHistoryReplay: state.hasHistoryReplay,
     lastUserMessages: state.lastUserMessages,
     messageCount:
       exact && state.messageCount > 0 ? state.messageCount : undefined,
@@ -1448,6 +1472,8 @@ export async function scanCodex(
             );
             const meta = overview.meta;
             if (!meta.cwd) return null;
+            if (overview.hasHistoryReplay && !overview.firstUserMessage)
+              return null;
             const fileMs = performance.now() - tFile;
             const lastMsgs = overview.lastUserMessages;
             return {
@@ -1859,13 +1885,20 @@ const normCase =
 export function agentsForWorktree(
   worktreePath: string,
   sessions: AgentSession[],
+  registeredRoots: string[] = [],
 ): AgentSession[] {
   const wt = normCase(resolve(worktreePath));
   const wtWithSep = wt.endsWith(sep) ? wt : wt + sep;
+  const nestedRoots = registeredRoots
+    .map((path) => normCase(resolve(path)))
+    .filter((path) => path.startsWith(wtWithSep));
   return sessions
     .filter((s) => {
       const c = normCase(s.cwd);
-      return c === wt || c.startsWith(wtWithSep);
+      return (
+        (c === wt || c.startsWith(wtWithSep)) &&
+        !nestedRoots.some((root) => c === root || c.startsWith(root + sep))
+      );
     })
     .sort((a, b) => Date.parse(b.lastActive) - Date.parse(a.lastActive));
 }

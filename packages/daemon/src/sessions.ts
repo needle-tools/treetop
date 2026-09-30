@@ -1049,6 +1049,7 @@ function codexVisibleUserText(text: string): string {
   const trimmed = visible.trim();
   if (/^#\s+(AGENTS|CLAUDE)\.md instructions\b/i.test(trimmed)) return "";
   if (/^#\s+(Instructions|Context|System)\b/i.test(trimmed)) return "";
+  if (/^The following is the Codex agent history\b/i.test(trimmed)) return "";
   return trimmed;
 }
 

@@ -453,6 +453,43 @@ describe("parseClaudeJsonl with interrupt markers", () => {
 });
 
 describe("parseCodexJsonl", () => {
+  test("excludes injected history replay from transcript and summary input", () => {
+    const text = [
+      JSON.stringify({
+        type: "session_meta",
+        payload: { id: "history", cwd: "/proj" },
+      }),
+      JSON.stringify({
+        type: "response_item",
+        payload: {
+          type: "message",
+          role: "user",
+          content: [
+            {
+              type: "input_text",
+              text: "The following is the Codex agent history added since your last approval:\nPrevious session content",
+            },
+          ],
+        },
+      }),
+      JSON.stringify({
+        type: "response_item",
+        payload: {
+          type: "message",
+          role: "user",
+          content: [{ type: "input_text", text: "Fix this file" }],
+        },
+      }),
+    ].join("\n");
+    const session = parseCodexJsonl(text);
+    expect(
+      session.messages.flatMap((message) =>
+        message.blocks.map((block) =>
+          block.type === "text" ? block.text : "",
+        ),
+      ),
+    ).toEqual(["Fix this file"]);
+  });
   test("returns an empty session for empty input", () => {
     expect(parseCodexJsonl("").messages).toEqual([]);
   });

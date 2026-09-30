@@ -54,6 +54,8 @@ export interface SummaryFrontmatter {
    *  the session's name when the user hasn't set one, and as the rename
    *  placeholder. */
   title?: string;
+  /** Codex parser version used to exclude injected history from summaries. */
+  parserVersion?: number;
   model: string;
   sourceMtimeMs: number;
   generatedAt: string;
@@ -81,6 +83,13 @@ export interface StalenessResult {
    *  no summary, or when the recorded sourceMtimeMs matches the
    *  current mtime exactly. */
   stale: boolean;
+}
+
+export function isCurrentSummary(summary: SummaryRecord): boolean {
+  return (
+    summary.frontmatter.agent !== "codex" ||
+    (summary.frontmatter.parserVersion ?? 0) >= 2
+  );
 }
 
 /** Derive the on-disk filename key for a given session source path.
@@ -115,6 +124,7 @@ export class SummariesStore {
       agent: input.agent,
       sessionId: input.sessionId,
       title: input.title,
+      parserVersion: input.parserVersion,
       model: input.model,
       sourceMtimeMs: input.sourceMtimeMs,
       generatedAt: input.generatedAt,
@@ -163,7 +173,8 @@ export class SummariesStore {
     }
     const stale =
       currentMtimeMs === null ||
-      currentMtimeMs !== summary.frontmatter.sourceMtimeMs;
+      currentMtimeMs !== summary.frontmatter.sourceMtimeMs ||
+      !isCurrentSummary(summary);
     return { summary, stale };
   }
 
@@ -401,6 +412,8 @@ export function renderFile(fm: SummaryFrontmatter, body: string): string {
   lines.push(`agent: ${fm.agent}`);
   if (fm.sessionId) lines.push(`sessionId: ${quoteYaml(fm.sessionId)}`);
   if (fm.title) lines.push(`title: ${quoteYaml(fm.title)}`);
+  if (fm.parserVersion !== undefined)
+    lines.push(`parserVersion: ${fm.parserVersion}`);
   lines.push(`model: ${quoteYaml(fm.model)}`);
   lines.push(`sourceMtimeMs: ${fm.sourceMtimeMs}`);
   lines.push(`generatedAt: ${quoteYaml(fm.generatedAt)}`);
@@ -476,6 +489,9 @@ function parseFrontmatter(text: string): SummaryFrontmatter | null {
     agent,
     sessionId: typeof out.sessionId === "string" ? out.sessionId : undefined,
     title: typeof out.title === "string" ? out.title : undefined,
+    ...(typeof out.parserVersion === "number"
+      ? { parserVersion: out.parserVersion }
+      : {}),
     model: String(out.model),
     sourceMtimeMs: Number(out.sourceMtimeMs),
     generatedAt: String(out.generatedAt),

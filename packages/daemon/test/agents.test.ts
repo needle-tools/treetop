@@ -1486,6 +1486,72 @@ describe("scanCodex", () => {
     expect(s.firstUserMessage).toBe("Fix the auth bug");
   });
 
+  test("skips Codex history replay when choosing the session title", async () => {
+    clearCodexScanCache();
+    const root = await tempDir("supergit-codex-history-title-");
+    await writeFile(
+      join(root, "session.jsonl"),
+      [
+        JSON.stringify({
+          type: "session_meta",
+          payload: { id: "history-test", cwd: "/proj" },
+        }),
+        JSON.stringify({
+          type: "response_item",
+          payload: {
+            type: "message",
+            role: "user",
+            content: [
+              {
+                type: "input_text",
+                text: "The following is the Codex agent history added since your last approval:\nTool call arguments, tool results, retry reason...",
+              },
+            ],
+          },
+        }),
+        JSON.stringify({
+          type: "response_item",
+          payload: {
+            type: "message",
+            role: "user",
+            content: [{ type: "input_text", text: "Fix the actual issue" }],
+          },
+        }),
+      ].join("\n"),
+    );
+    const [session] = await scanCodex([root]);
+    expect(session?.title).toBe("Fix the actual issue");
+    expect(session?.lastUserMessages).toEqual(["Fix the actual issue"]);
+  });
+
+  test("does not list a Codex rollout containing only injected history", async () => {
+    clearCodexScanCache();
+    const root = await tempDir("supergit-codex-history-only-");
+    await writeFile(
+      join(root, "session.jsonl"),
+      [
+        JSON.stringify({
+          type: "session_meta",
+          payload: { id: "history-only", cwd: "/proj" },
+        }),
+        JSON.stringify({
+          type: "response_item",
+          payload: {
+            type: "message",
+            role: "user",
+            content: [
+              {
+                type: "input_text",
+                text: "The following is the Codex agent history added since your last approval:\nTool output from another session",
+              },
+            ],
+          },
+        }),
+      ].join("\n"),
+    );
+    expect(await scanCodex([root])).toEqual([]);
+  });
+
   test("skips Codex turn-aborted control messages for session previews", async () => {
     clearCodexScanCache();
     const root = await tempDir("supergit-codex-turn-aborted-");
@@ -1722,6 +1788,19 @@ describe("agentsForWorktree", () => {
   test("matches a subdirectory of the worktree", () => {
     const sessions = [s("/repo/sub/dir")];
     expect(agentsForWorktree("/repo", sessions)).toHaveLength(1);
+  });
+
+  test("assigns a nested repo session only to its own worktree", () => {
+    const parent = resolve("/repo");
+    const nested = resolve("/repo/modules/engine");
+    const sessions = [s("/repo/src"), s("/repo/modules/engine/src")];
+    const registered = [parent, nested];
+    expect(
+      agentsForWorktree(parent, sessions, registered).map((x) => x.cwd),
+    ).toEqual([resolve("/repo/src")]);
+    expect(
+      agentsForWorktree(nested, sessions, registered).map((x) => x.cwd),
+    ).toEqual([resolve("/repo/modules/engine/src")]);
   });
 
   test("does not match a sibling path with the worktree as prefix", () => {

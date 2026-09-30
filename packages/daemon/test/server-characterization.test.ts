@@ -418,7 +418,7 @@ describe("/api/repos agent enrichment", () => {
     const fnBody = start >= 0 && end > start ? SERVER_TS.slice(start, end) : "";
     const agentsAt = fnBody.indexOf("sharedDetectAgents()");
     const detailsAt = fnBody.indexOf("getWorktreeDetails(wt.path)");
-    const agentsForWtAt = fnBody.indexOf("agentsForWorktree(wt.path, titled)");
+    const agentsForWtAt = fnBody.indexOf("agentsForWorktree(");
     expect(agentsAt).toBeGreaterThan(-1);
     expect(detailsAt).toBeGreaterThan(-1);
     expect(agentsForWtAt).toBeGreaterThan(-1);
