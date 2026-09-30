@@ -253,6 +253,7 @@ import {
   CodexAppServerAdapter,
   CodexAppEventTransportBatcher,
   classifyRealtimeVoiceError,
+  listCodexModelsFresh,
   resolveCodexBinary,
   voiceContextPrompt,
   type CodexAppServerEvent,
@@ -4491,7 +4492,20 @@ const server = Bun.serve<TermWsData, never>({
           return json({ error: "agent, cwd required" }, { status: 400 });
         }
         try {
-          const started = await nativeAgents.startSession({ agent, cwd });
+          let model: string | undefined;
+          if (agent === "codex") {
+            const models = await listCodexModelsFresh(cwd);
+            const selected =
+              models.find(
+                (candidate) => candidate.isDefault && !candidate.hidden,
+              ) ?? models.find((candidate) => !candidate.hidden);
+            model = selected?.model ?? selected?.id;
+          }
+          const started = await nativeAgents.startSession({
+            agent,
+            cwd,
+            model,
+          });
           return json({ ok: true, ...started });
         } catch (e) {
           const message = e instanceof Error ? e.message : String(e);
@@ -4721,7 +4735,7 @@ const server = Bun.serve<TermWsData, never>({
       if (url.pathname === "/api/codex-app/models" && req.method === "GET") {
         const cwd = url.searchParams.get("cwd") || WORKSPACE_PATH;
         try {
-          const models = await codexAgent.listModels(cwd);
+          const models = await listCodexModelsFresh(cwd);
           return json({ ok: true, models });
         } catch (e) {
           return json(

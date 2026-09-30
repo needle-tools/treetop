@@ -6,7 +6,6 @@ export interface CodexModelsResult {
   error: string;
 }
 
-const codexModelsCache = new Map<string, CodexModelsResult>();
 const codexModelsInFlight = new Map<string, Promise<CodexModelsResult>>();
 
 export function codexModelsCacheKey(
@@ -21,8 +20,6 @@ export async function loadSharedCodexModels(
   cwd: string,
 ): Promise<CodexModelsResult> {
   const key = codexModelsCacheKey(daemonId, cwd);
-  const cached = codexModelsCache.get(key);
-  if (cached) return cached;
   const inFlight = codexModelsInFlight.get(key);
   if (inFlight) return inFlight;
   const promise = (async () => {
@@ -40,7 +37,6 @@ export async function loadSharedCodexModels(
         models: Array.isArray(body?.models) ? body.models : [],
         error: "",
       };
-      codexModelsCache.set(key, result);
       return result;
     } catch (e) {
       return {

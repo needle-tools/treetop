@@ -10,6 +10,7 @@ export interface NativeAgentTurnRequest {
 export interface NativeAgentStartRequest {
   agent: string;
   cwd: string;
+  model?: string;
 }
 
 export interface NativeAgentStartedSession {

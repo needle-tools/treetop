@@ -550,6 +550,7 @@ export class CodexAppServerAdapter implements NativeAgentAdapter {
     const result = await rpc.request("thread/start", {
       cwd: req.cwd,
       serviceName: "supergit",
+      ...(req.model ? { model: req.model } : {}),
     });
     const sessionId =
       nestedString(result, ["thread", "id"]) ??
@@ -563,7 +564,8 @@ export class CodexAppServerAdapter implements NativeAgentAdapter {
       source: nestedString(result, ["thread", "path"]),
       model:
         nestedString(result, ["model"]) ??
-        nestedString(result, ["thread", "settings", "model"]),
+        nestedString(result, ["thread", "settings", "model"]) ??
+        req.model,
     };
   }
 
@@ -1018,6 +1020,20 @@ export class CodexAppServerAdapter implements NativeAgentAdapter {
     );
   }
 
+  async close(): Promise<void> {
+    const proc = this.proc;
+    const rpc = this.rpc;
+    this.proc = null;
+    this.rpc = null;
+    this.initializePromise = null;
+    this.loadedThreads.clear();
+    this.activeTurns.clear();
+    rpc?.close();
+    if (!proc) return;
+    proc.kill("SIGTERM");
+    await proc.exited.catch(() => {});
+  }
+
   private observeTurnLifecycle(event: CodexAppServerEvent): void {
     const threadId = event.threadId;
     if (!threadId) return;
@@ -1242,6 +1258,32 @@ export class CodexAppServerAdapter implements NativeAgentAdapter {
       totalBytes -= file.size;
     }
     return totalBytes;
+  }
+}
+
+/**
+ * Model catalogs are captured when Codex app-server initializes. Querying the
+ * conversation adapter can therefore pin a catalog that predates a CLI model
+ * refresh. Use a short-lived, isolated process so refreshing the picker never
+ * interrupts the app-server that owns active turns.
+ */
+export async function listCodexModelsFresh(
+  cwd: string,
+  options: CodexAppServerAdapterOptions = {},
+): Promise<CodexModelInfo[]> {
+  const adapter = new CodexAppServerAdapter({
+    ...options,
+    autoRecord: false,
+    clientInfo: options.clientInfo ?? {
+      name: "treetop",
+      title: "Treetop",
+      version: "0.0.0",
+    },
+  });
+  try {
+    return await adapter.listModels(cwd);
+  } finally {
+    await adapter.close();
   }
 }
 

@@ -17,6 +17,7 @@ import {
   CodexAppServerRpc,
   classifyRealtimeVoiceError,
   codexAppServerCommand,
+  listCodexModelsFresh,
   realtimeVoiceStartParams,
   resolveCodexBinary,
   voiceContextPrompt,
@@ -261,6 +262,38 @@ describe("CodexAppServerAdapter", () => {
       model: "gpt-5.5",
     });
     expect(fake.killed).toEqual([]);
+  });
+
+  test("starts a new Codex thread with the freshly resolved default model", async () => {
+    const fake = fakeCodexProcess();
+    const adapter = new CodexAppServerAdapter({ spawn: () => fake.proc });
+    const started = adapter.startSession({
+      agent: "codex",
+      cwd: "/repo",
+      model: "gpt-6.1-sol",
+    });
+
+    await waitFor(() => fake.writes[0], "initialize request");
+    fake.enqueue({ id: 0, result: {} });
+    await waitFor(() => fake.writes[2], "thread start request");
+    expect(parseWrite(fake.writes, 2)).toEqual({
+      id: 1,
+      method: "thread/start",
+      params: {
+        cwd: "/repo",
+        serviceName: "supergit",
+        model: "gpt-6.1-sol",
+      },
+    });
+    fake.enqueue({
+      id: 1,
+      result: { thread: { id: "thr_fresh", cwd: "/repo" } },
+    });
+
+    await expect(started).resolves.toMatchObject({
+      sessionId: "thr_fresh",
+      model: "gpt-6.1-sol",
+    });
   });
 
   test("restarts a silent Codex app-server after an RPC timeout", async () => {
@@ -602,6 +635,36 @@ describe("CodexAppServerAdapter", () => {
         additionalSpeedTiers: ["priority"],
       },
     ]);
+  });
+
+  test("lists models through an isolated app-server and closes it afterwards", async () => {
+    const fake = fakeCodexProcess();
+    const listed = listCodexModelsFresh("/repo", {
+      spawn: () => fake.proc,
+    });
+
+    await waitFor(() => fake.writes[0], "catalog initialize request");
+    fake.enqueue({ id: 0, result: {} });
+    await waitFor(() => fake.writes[2], "catalog model list request");
+    fake.enqueue({
+      id: 1,
+      result: {
+        data: [{ id: "gpt-6.1-sol", model: "gpt-6.1-sol" }],
+        nextCursor: null,
+      },
+    });
+
+    await expect(listed).resolves.toEqual([
+      {
+        id: "gpt-6.1-sol",
+        model: "gpt-6.1-sol",
+        displayName: undefined,
+        description: undefined,
+        isDefault: false,
+        defaultReasoningEffort: undefined,
+      },
+    ]);
+    expect(fake.killed).toEqual(["SIGTERM"]);
   });
 
   test("records app-server json-rpc traffic automatically with a bounded buffer", async () => {

@@ -11,6 +11,7 @@ import {
   shouldLoadCodexModelCatalog,
 } from "../src/claude-session-menu";
 import type { SessionMenuItem } from "../src/SessionMenu.svelte";
+import { loadSharedCodexModels } from "../src/codex-model-catalog";
 
 function noop() {}
 
@@ -502,6 +503,67 @@ describe("codexAgentSettings", () => {
       "sandbox:dangerFullAccess",
       "approval:never",
     ]);
+  });
+});
+
+describe("shared Codex model catalog", () => {
+  test("refreshes the catalog whenever the model picker requests it", async () => {
+    const originalFetch = globalThis.fetch;
+    let calls = 0;
+    globalThis.fetch = (async () => {
+      calls += 1;
+      return Response.json({
+        models: [{ id: calls === 1 ? "gpt-6-sol" : "gpt-6.1-sol" }],
+      });
+    }) as typeof fetch;
+
+    try {
+      const first = await loadSharedCodexModels(
+        "refresh-test-daemon",
+        "/refresh-test",
+      );
+      const refreshed = await loadSharedCodexModels(
+        "refresh-test-daemon",
+        "/refresh-test",
+      );
+
+      expect(first.models.map((model) => model.id)).toEqual(["gpt-6-sol"]);
+      expect(refreshed.models.map((model) => model.id)).toEqual([
+        "gpt-6.1-sol",
+      ]);
+      expect(calls).toBe(2);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  test("coalesces simultaneous picker requests for the same daemon and cwd", async () => {
+    const originalFetch = globalThis.fetch;
+    let resolveFetch!: (response: Response) => void;
+    let calls = 0;
+    globalThis.fetch = (() => {
+      calls += 1;
+      return new Promise<Response>((resolve) => {
+        resolveFetch = resolve;
+      });
+    }) as typeof fetch;
+
+    try {
+      const first = loadSharedCodexModels(
+        "in-flight-test-daemon",
+        "/in-flight-test",
+      );
+      const second = loadSharedCodexModels(
+        "in-flight-test-daemon",
+        "/in-flight-test",
+      );
+      expect(calls).toBe(1);
+      resolveFetch(Response.json({ models: [{ id: "gpt-6.1-sol" }] }));
+      expect(await first).toEqual(await second);
+      expect(calls).toBe(1);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
   });
 });
 

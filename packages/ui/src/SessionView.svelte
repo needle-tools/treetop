@@ -2612,7 +2612,6 @@
   let codexGoalLoadKey = "";
   let codexQueueHydratedKey = "";
   let codexModels: CodexModelInfo[] = [];
-  let codexModelsKey = "";
   let codexModelsLoadingKey = "";
   let codexModelsLoading = false;
   let codexModelsError = "";
@@ -2977,7 +2976,7 @@
   });
   async function loadCodexModels(cwd: string): Promise<void> {
     const key = cwd ? codexModelsCacheKey(daemonId, cwd) : "";
-    if (!cwd || codexModelsKey === key || codexModelsLoadingKey === key) return;
+    if (!cwd || codexModelsLoadingKey === key) return;
     codexModelsLoading = true;
     codexModelsLoadingKey = key;
     codexModelsError = "";
@@ -2986,7 +2985,6 @@
       if (codexModelsLoadingKey !== key) return;
       codexModels = result.models;
       codexModelsError = result.error;
-      codexModelsKey = key;
     } finally {
       if (codexModelsLoadingKey === key) {
         codexModelsLoadingKey = "";
