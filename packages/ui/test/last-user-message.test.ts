@@ -67,6 +67,7 @@ import {
   visualFileEditTotals,
   visualFileEditSummaryForBlock,
   visualObservedProcessOutput,
+  visualThinkingHasExpandableBody,
   visualThinkingSummary,
   updateVisualTranscriptItems,
   withoutDuplicateOptimisticUserMessages,
@@ -3061,6 +3062,22 @@ describe("visualToolReadResultPreview", () => {
 });
 
 describe("visualThinkingSummary", () => {
+  it("only treats thinking with detail beyond its title as expandable", () => {
+    expect(
+      visualThinkingHasExpandableBody("**Testing tmux client build**"),
+    ).toBe(false);
+    expect(
+      visualThinkingHasExpandableBody(
+        "**Testing tmux client build**\nRunning the smoke test against the rebuilt client.",
+      ),
+    ).toBe(true);
+    expect(
+      visualThinkingHasExpandableBody(
+        "This single line is intentionally much longer than the concise thinking title limit so its complete content remains available in the expandable reasoning body.",
+      ),
+    ).toBe(true);
+  });
+
   it("removes duplicated thinking labels and markdown title wrappers", () => {
     expect(
       visualThinkingSummary(

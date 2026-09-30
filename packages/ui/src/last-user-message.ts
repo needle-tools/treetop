@@ -1012,6 +1012,13 @@ export function visualThinkingSummary(text: string | undefined): {
   if (title && !body && title.length <= 96) return { title, body: "" };
   return { title: "", body: cleaned };
 }
+
+export function visualThinkingHasExpandableBody(
+  text: string | undefined,
+): boolean {
+  return visualThinkingSummary(text).body.length > 0;
+}
+
 function hasBlockType(
   entry: VisualWorkEntry | undefined,
   type: string,

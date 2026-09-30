@@ -56,6 +56,14 @@ function threadPage(complete: boolean): unknown {
           { type: "summary_text", text: "Completing the previous request" },
         ],
       },
+      {
+        id: "latest-command",
+        type: "commandExecution",
+        command: "/bin/zsh -lc 'pwd'",
+        cwd: "/tmp/treetop-session-lifecycle",
+        status: "completed",
+        aggregatedOutput: "/tmp/treetop-session-lifecycle\n",
+      },
       ...(complete
         ? [
             {
@@ -214,6 +222,32 @@ async function completeLatestTurn(currentPage: Page): Promise<void> {
 }
 
 describe.serial("SessionView browser lifecycle", () => {
+  test(
+    "aligns title-only thinking rows with neighboring work entries",
+    async () => {
+      const currentPage = await openHarness();
+      const thinkingChip = currentPage.locator(
+        ".work-entry-static .work-thinking-chip",
+      );
+      const commandChip = currentPage.locator(
+        ".work-entry:not(.work-entry-static) .work-tool-chip",
+      );
+
+      await thinkingChip.waitFor();
+      await commandChip.first().waitFor();
+      const [thinkingBox, commandBox] = await Promise.all([
+        thinkingChip.boundingBox(),
+        commandChip.first().boundingBox(),
+      ]);
+
+      expect(thinkingBox).not.toBeNull();
+      expect(commandBox).not.toBeNull();
+      expect(Math.abs(thinkingBox!.x - commandBox!.x)).toBeLessThan(1);
+      await currentPage.close();
+    },
+    30_000,
+  );
+
   test(
     "preserves a paused reader through completion layout",
     async () => {

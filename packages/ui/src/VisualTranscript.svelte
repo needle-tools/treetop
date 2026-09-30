@@ -39,6 +39,7 @@
     visualObservedProcessOwnerToolUseBlock,
     visualPlanFromBlock,
     visualPathPreviewTargets,
+    visualThinkingHasExpandableBody,
     visualThinkingSummary,
     shouldShowLiveToolTimer,
     shouldShowLiveWorkTimer,
@@ -1397,6 +1398,17 @@
     return entry.blocks.some((block) => block.type === "thinking");
   }
 
+  function workEntryHasExpandableContent(
+    entry: VisualWorkEntry<NormalizedBlock, NormalizedMessage>,
+  ): boolean {
+    if (!isThinkingWorkEntry(entry)) return true;
+    return entry.blocks.some(
+      (block) =>
+        block.type !== "thinking" ||
+        visualThinkingHasExpandableBody(block.text),
+    );
+  }
+
   function forceOpenThinkingEntry(
     workKey: string,
     displayEntry: ReturnType<typeof buildVisualWorkDisplayEntries>[number],
@@ -1404,6 +1416,7 @@
   ): boolean {
     return (
       isThinkingWorkEntry(entry) &&
+      workEntryHasExpandableContent(entry) &&
       expandedThinkingWorkKeys.has(workEntryRenderKey(workKey, displayEntry))
     );
   }
@@ -3023,6 +3036,8 @@
                             workKey,
                             displayEntry,
                           )}
+                          {@const entryExpandable =
+                            workEntryHasExpandableContent(entry)}
                           {#if isSteeredUserMessage(entry.message)}
                             <div
                               class="work-steering-user-message"
@@ -3040,6 +3055,35 @@
                                   entry.message,
                                   -1,
                                 )}
+                              </div>
+                            </div>
+                          {:else if !entryExpandable}
+                            <div
+                              class="work-entry work-entry-static"
+                              data-visual-scroll-anchor={entryRenderKey}
+                            >
+                              <div class="work-entry-summary">
+                                <span
+                                  class="work-tool-chip icon-only work-thinking-chip"
+                                >
+                                  {@render renderThinkingIcon()}
+                                </span>
+                                <span
+                                  class="work-tool-preview work-thinking-preview"
+                                  title={collapsedPreview || collapsedTitle}
+                                >
+                                  {collapsedPreview || collapsedTitle}
+                                </span>
+                                {#if entry.message.timestamp}
+                                  <span
+                                    class="muted small work-entry-time"
+                                    title={absoluteTimeTitle(
+                                      entry.message.timestamp,
+                                    )}
+                                  >
+                                    {relTimeFromIso(entry.message.timestamp)}
+                                  </span>
+                                {/if}
                               </div>
                             </div>
                           {:else}
@@ -4133,7 +4177,8 @@
     max-width: 100%;
   }
   .work-foldout > summary,
-  .work-entry > summary {
+  .work-entry > summary,
+  .work-entry > .work-entry-summary {
     display: flex;
     align-items: center;
     gap: 0.45rem;
@@ -4142,8 +4187,11 @@
     box-sizing: border-box;
     list-style: none;
     color: var(--text-muted);
-    cursor: pointer;
     user-select: none;
+  }
+  .work-foldout > summary,
+  .work-entry > summary {
+    cursor: pointer;
   }
   .work-foldout > summary {
     width: fit-content;
@@ -4224,7 +4272,8 @@
     display: none;
   }
   .work-foldout > summary::before,
-  .work-entry > summary::before {
+  .work-entry > summary::before,
+  .work-entry > .work-entry-summary::before {
     content: "";
     display: inline-block;
     flex: 0 0 0rem;
@@ -4681,7 +4730,8 @@
     font-size: 0.68rem;
     line-height: 1;
   }
-  .work-entry > summary {
+  .work-entry > summary,
+  .work-entry > .work-entry-summary {
     justify-content: flex-start;
     min-height: 1.7rem;
     padding: 0.15rem 0.2rem;
@@ -4693,7 +4743,10 @@
     background: color-mix(in srgb, var(--surface-1) 48%, transparent);
     color: var(--text-1);
   }
-  .work-entry > summary > span:not(.work-tool-chip):first-child {
+  .work-entry > summary > span:not(.work-tool-chip):first-child,
+  .work-entry
+    > .work-entry-summary
+    > span:not(.work-tool-chip):first-child {
     min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
