@@ -53,6 +53,7 @@ import {
   visualToolMediaBlocks,
   visualFileEditCountBadge,
   visualMediaPathTarget,
+  visualFileEditPreview,
   visualObservedProcessOwnerToolUseBlock,
   visualToolRemoteHostLabel,
   visualTranscriptMessageWindow,
@@ -8814,6 +8815,38 @@ describe("visualWorkOverview", () => {
 });
 
 describe("visualFileEditSummaryForBlock", () => {
+  it("uses a direct file preview for one edit and a tree preview for several", () => {
+    const single = {
+      title: "Edited pin-ik-unified.ts",
+      files: [
+        {
+          path: "src/pin-ik-unified.ts",
+          action: "edited" as const,
+          raw: "@@\n-old\n+new",
+        },
+      ],
+    };
+    expect(visualFileEditPreview(single)).toEqual({
+      kind: "file",
+      file: single.files[0],
+    });
+
+    const multiple = {
+      title: "Edited 2 files",
+      files: [
+        ...single.files,
+        { path: "src/rig.ts", action: "edited" as const, raw: "@@\n+x" },
+      ],
+    };
+    expect(visualFileEditPreview(multiple)).toEqual({
+      kind: "tree",
+      summary: multiple,
+    });
+    expect(
+      visualFileEditPreview({ title: "Edited files", files: [] }),
+    ).toBeUndefined();
+  });
+
   it("totals file edit stats for compact edit rows", () => {
     expect(
       visualFileEditCountBadge({

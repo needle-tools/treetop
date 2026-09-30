@@ -30,6 +30,7 @@
     getVisualTranscriptItemKey,
     getVisualWorkDisplayEntryKey,
     visualFileEditCountBadge,
+    visualFileEditPreview,
     visualCompactionDetails,
     visualFileEditSummaryForBlock,
     visualFileEditTotals,
@@ -1748,6 +1749,49 @@
     return { staged: [], unstaged: paths, untracked: [], stats, diffs };
   }
 
+  function workChangedSummaryForFileEdits(
+    summary: VisualFileEditSummary,
+  ): WorkChangedSummary {
+    const paths = summary.files.map((file) =>
+      worktreeRelativePreviewPath(file.path),
+    );
+    const stats = Object.fromEntries(
+      summary.files.map((file) => [
+        worktreeRelativePreviewPath(file.path),
+        {
+          added: file.additions ?? 0,
+          removed: file.deletions ?? 0,
+          binary: false,
+        },
+      ]),
+    );
+    const diffs = Object.fromEntries(
+      summary.files
+        .filter((file) => file.raw !== undefined)
+        .map((file) => [worktreeRelativePreviewPath(file.path), file.raw!]),
+    );
+    return { staged: [], unstaged: paths, untracked: [], stats, diffs };
+  }
+
+  function fileEditPathTarget(
+    file: VisualFileEditSummary["files"][number],
+  ): VisualPreviewPathPart | undefined {
+    const target = visualPathPreviewTargets([
+      worktreeRelativePreviewPath(file.path),
+    ])[0];
+    if (!target) return undefined;
+    return file.raw === undefined ? { ...target, diffKind: "workdir" } : target;
+  }
+
+  function fileEditActionLabel(
+    action: VisualFileEditSummary["files"][number]["action"],
+  ): string {
+    if (action === "added") return "Created";
+    if (action === "deleted") return "Deleted";
+    if (action === "written") return "Wrote";
+    return "Edited";
+  }
+
   function workArtifactsForFileEdits(
     summary: VisualFileEditSummary,
   ): VisualWorkArtifact[] {
@@ -2583,6 +2627,48 @@
   {/each}
 {/snippet}
 
+{#snippet renderCollapsedFileEditSummary(summary: VisualFileEditSummary)}
+  {@const preview = visualFileEditPreview(summary)}
+  <span class="work-tool-chip icon-only file-edit">
+    <span class="work-file-edits-icon" aria-hidden="true">✎</span>
+  </span>
+  {#if preview?.kind === "file"}
+    {@const target = fileEditPathTarget(preview.file)}
+    <span class="work-tool-preview work-file-edit-preview">
+      <span>{fileEditActionLabel(preview.file.action)} </span>
+      {#if target}
+        {@render renderPreviewPathChip(
+          target,
+          undefined,
+          preview.file.raw !== undefined
+            ? { title: preview.file.path, body: preview.file.raw }
+            : undefined,
+        )}
+      {:else}
+        <span>{preview.file.path}</span>
+      {/if}
+    </span>
+  {:else if preview?.kind === "tree"}
+    <Tooltip variant="wide" escapeClip>
+      <span
+        slot="trigger"
+        class="work-tool-preview work-file-edit-preview work-file-edit-tree-trigger"
+      >
+        {summary.title}
+      </span>
+      <span slot="content" class="work-changed-tooltip">
+        <ChangedFilesTooltipBody
+          summary={workChangedSummaryForFileEdits(preview.summary)}
+          worktreePath={sessionCwd}
+          {daemonId}
+          layout="tree"
+          labels={{ unstaged: "changed" }}
+        />
+      </span>
+    </Tooltip>
+  {/if}
+{/snippet}
+
 {#snippet renderFileEditSummary(summary: VisualFileEditSummary)}
   <div class="work-file-edits">
     <SparseArtifactTree
@@ -3068,14 +3154,9 @@
                                   {@const executionLayers =
                                     visualToolExecutionLayers(toolBlock)}
                                   {#if editSummary}
-                                    <span
-                                      class="work-tool-chip icon-only file-edit"
-                                    >
-                                      <span
-                                        class="work-file-edits-icon"
-                                        aria-hidden="true">✎</span
-                                      >
-                                    </span>
+                                    {@render renderCollapsedFileEditSummary(
+                                      editSummary,
+                                    )}
                                   {:else}
                                     <span
                                       class="work-tool-chip"
@@ -3112,11 +3193,6 @@
                                     {/each}
                                   {/if}
                                   {#if editSummary}
-                                    <span
-                                      class="work-tool-preview work-file-edit-preview"
-                                    >
-                                      {editSummary.title}
-                                    </span>
                                     {#if isPositiveDiffCount(editTotals.additions)}
                                       <span class="work-file-add"
                                         >+{editTotals.additions}</span

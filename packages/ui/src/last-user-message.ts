@@ -349,6 +349,20 @@ export interface VisualFileEditSummary {
   files: VisualFileEdit[];
 }
 
+export type VisualFileEditPreview =
+  | { kind: "file"; file: VisualFileEdit }
+  | { kind: "tree"; summary: VisualFileEditSummary };
+
+export function visualFileEditPreview(
+  summary: VisualFileEditSummary,
+): VisualFileEditPreview | undefined {
+  if (summary.files.length === 0) return undefined;
+  if (summary.files.length === 1) {
+    return { kind: "file", file: summary.files[0]! };
+  }
+  return { kind: "tree", summary };
+}
+
 export interface VisualSubagentMeta {
   id?: string;
   nickname?: string;
