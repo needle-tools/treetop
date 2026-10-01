@@ -1383,6 +1383,33 @@ first canonical item in its own turn, without comparing timestamps, sorting
 history, or consulting transcript data. It still disappears when the matching
 canonical app-server `userMessage` arrives through thread history.
 
+A 2026-10-01 FastVid turn exposed the same race before app-server had returned
+the new turn ID: a normal optimistic send still honored its incidental tail-row
+anchor, so completion reconciliation could place the prior final reply after
+the new request and make that reply disappear into the new live work group.
+Only steering is position-bearing inside an existing turn. A normal send now
+stays after the complete current projection until its canonical user item or
+turn ID arrives.
+
+The same trace exposed a paused-reader race in scroll correction. Every live
+update captured a semantic row anchor, but a later wheel/scrollbar gesture while
+already paused did not invalidate the scheduled correction because the pause
+boolean had not changed. Those stale corrections fought an ongoing gesture,
+producing flicker and repeated jumps toward the old position. Explicit wheel
+and pointer-drag scrolling now advances the anchor epoch even while already
+paused. A bare `scroll` event deliberately does not: streamed layout, browser
+clamping, and native scroll anchoring can emit it without reader input, and the
+semantic-row correction must still run in that case.
+
+The regression suite now also mounts the production `SessionView` in real
+Chromium against a test app-server boundary (HTTP thread history, SSE
+completion event, and turn POST). It checks both contracts together: a paused
+reader remains on the same part of the transcript across completion layout,
+and a late prior-turn reply remains before an optimistic next request while
+tail-follow stays active. This browser test runs as part of the normal
+repository `bun test` discovery, rather than living as a manual Replay Lab
+check.
+
 A 2026-09-23 FHIR session exposed the complementary failure after acceptance:
 the live normalizer handled `agentMessage` item snapshots but discarded the
 app-server's canonical `userMessage` snapshots. When the optimistic row was

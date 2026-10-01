@@ -248,6 +248,12 @@ export class SessionScrollController {
   }
 
   onWheel(event: WheelEvent): void {
+    if (event.deltaY !== 0) {
+      // `scroll` itself is ambiguous: streamed layout can clamp or anchor the
+      // element without reader input. Wheel is explicit reader intent, so it
+      // invalidates any paused-row correction captured before this gesture.
+      this.pauseSeq += 1;
+    }
     if (event.deltaY < 0) {
       this.setPaused(true);
       this.options.requestOlder?.();
@@ -295,6 +301,10 @@ export class SessionScrollController {
       }
       return;
     }
+    // A pointer drag is explicit reader intent. A bare `scroll` is not: layout
+    // changes and native scroll anchoring can emit one while live rows update,
+    // and that event must retain the semantic-row correction.
+    if (this.pointerScrollIntent) this.pauseSeq += 1;
     this.pointerScrollIntent = false;
     this.updateIntent();
     this.saveMemory();

@@ -1929,6 +1929,11 @@ function optimisticInsertionIndex<B extends MessageBlock, M extends Message<B>>(
     );
     if (firstMessageInTurn >= 0) return firstMessageInTurn - 1;
   }
+  // A normal send starts a new turn. Until app-server returns its turn id,
+  // keep it after the complete live projection instead of pinning it to the
+  // row that happened to be last at click time. Completion reconciliation can
+  // still append the prior turn's final reply or usage rows in that interval.
+  if (overlay.intent !== "steer") return messages.length - 1;
   if (typeof overlay.optimisticAfterMessageId === "string") {
     const byId = messages.findIndex(
       (message) => message.id === overlay.optimisticAfterMessageId,

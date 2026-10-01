@@ -164,6 +164,54 @@ describe("session scroll controller", () => {
     expect(scroller.scrollTop).toBe(464);
   });
 
+  test("does not apply a stale paused anchor after another reader wheel gesture", () => {
+    const scheduler = new ManualScheduler();
+    let anchorTop = 220;
+    const scroller = fakeScroller(() => anchorTop);
+    const controller = createSessionScrollController({ scheduler });
+
+    controller.setElement(scroller);
+    controller.setPaused(true);
+    const anchor = controller.capturePausedReaderAnchor();
+    anchorTop += 64;
+    controller.restorePausedReaderAnchor(anchor!);
+
+    controller.onWheel({
+      deltaX: 0,
+      deltaY: -80,
+      preventDefault: () => {},
+    } as WheelEvent);
+    scroller.scrollTop = 300;
+    controller.onScroll();
+    scheduler.flush();
+
+    expect(scroller.scrollTop).toBe(300);
+    expect(controller.isPaused).toBe(true);
+  });
+
+  test("still restores a paused reader anchor after a layout-only scroll", () => {
+    const scheduler = new ManualScheduler();
+    let anchorTop = 220;
+    const scroller = fakeScroller(() => anchorTop);
+    const controller = createSessionScrollController({ scheduler });
+
+    controller.setElement(scroller);
+    controller.setPaused(true);
+    const anchor = controller.capturePausedReaderAnchor();
+    anchorTop += 64;
+    controller.restorePausedReaderAnchor(anchor!);
+
+    // Streaming layout and native scroll anchoring can emit `scroll` without
+    // a wheel or pointer gesture. That event must not cancel the semantic-row
+    // correction which keeps the reader at the same transcript position.
+    scroller.scrollTop = 420;
+    controller.onScroll();
+    scheduler.flush();
+
+    expect(scroller.scrollTop).toBe(484);
+    expect(controller.isPaused).toBe(true);
+  });
+
   test("uses transcript rows, not work containers, as paused reader anchors", () => {
     const scheduler = new ManualScheduler();
     const selectors: string[] = [];

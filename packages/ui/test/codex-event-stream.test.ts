@@ -75,6 +75,7 @@ test("CLI state survives I/O animation and silence and is isolated by daemon/ses
 import {
   buildVisualTranscriptItems,
   buildVisualWorkDisplayEntries,
+  mergeVisualSessionMessages,
   visualSubagentMetaFromBlocks,
   visualWorkOverview,
   visualWorkSummary,
@@ -4045,6 +4046,60 @@ describe("codex event stream hub", () => {
         { preserveLiveProjection: true },
       ),
     ).toEqual([canonicalUser, response, usage]);
+  });
+
+  test("keeps a new optimistic turn after a late prior-turn completion refresh", () => {
+    const previousUser = {
+      id: "previous-user",
+      role: "user" as const,
+      timestamp: "2026-10-01T10:00:00.000Z",
+      blocks: [{ type: "text" as const, text: "do the previous work" }],
+    };
+    const previousProgress = {
+      id: "previous-progress",
+      role: "assistant" as const,
+      timestamp: "2026-10-01T10:00:01.000Z",
+      blocks: [{ type: "thinking" as const, text: "working" }],
+    };
+    const previousReply = {
+      id: "previous-reply",
+      role: "assistant" as const,
+      timestamp: "2026-10-01T10:00:08.000Z",
+      blocks: [{ type: "text" as const, text: "previous answer" }],
+    };
+    const optimisticNextUser = {
+      id: "codex-optimistic-user-next",
+      role: "user" as const,
+      timestamp: "2026-10-01T10:00:09.000Z",
+      optimisticAfterMessageId: previousProgress.id,
+      optimisticAfterMessageIndex: 1,
+      blocks: [{ type: "text" as const, text: "next request" }],
+    };
+
+    const completedPriorTurn = reconcileCodexAppHistoryMessages(
+      [previousUser, previousProgress, previousReply],
+      [previousUser, previousProgress],
+      [previousUser, previousProgress],
+      { preserveLiveProjection: true },
+    );
+    const projected = mergeVisualSessionMessages(completedPriorTurn, [
+      optimisticNextUser,
+    ]);
+
+    expect(
+      projected.map((message) => ({
+        role: message.role,
+        text: message.blocks[0]?.text,
+      })),
+    ).toEqual([
+      { role: "user", text: "do the previous work" },
+      { role: "assistant", text: "working" },
+      { role: "assistant", text: "previous answer" },
+      { role: "user", text: "next request" },
+    ]);
+    expect(
+      buildVisualTranscriptItems(projected).map((item) => item.kind),
+    ).toEqual(["message", "work", "message", "message"]);
   });
 
   test("reads turn identities from an app-server history page", () => {

@@ -2513,7 +2513,7 @@ describe("mergeVisualSessionMessages", () => {
     expect(mergeVisualSessionMessages(messages, [])).toBe(messages);
   });
 
-  it("places optimistic user rows after their send-time anchor", () => {
+  it("keeps a new optimistic turn after late prior-turn output", () => {
     const before = msg("assistant", "before", "2026-06-19T10:00:00.000Z");
     before.id = "before";
     const liveAssistant = msg(
@@ -2534,7 +2534,32 @@ describe("mergeVisualSessionMessages", () => {
       mergeVisualSessionMessages([before, liveAssistant], [optimistic]).map(
         (message) => message.blocks[0]?.text,
       ),
-    ).toEqual(["before", "queued follow-up", "working"]);
+    ).toEqual(["before", "working", "queued follow-up"]);
+  });
+
+  it("keeps steering at its send-time anchor while later live output arrives", () => {
+    const before = msg("assistant", "before", "2026-06-19T10:00:00.000Z");
+    before.id = "before";
+    const liveAssistant = msg(
+      "assistant",
+      "working",
+      "2026-06-19T10:00:02.000Z",
+    );
+    const optimistic: Message = {
+      id: "codex-optimistic-user-steer",
+      role: "user",
+      timestamp: "2026-06-19T10:00:01.000Z",
+      intent: "steer",
+      optimisticAfterMessageId: "before",
+      optimisticAfterMessageIndex: 0,
+      blocks: [{ type: "text", text: "change course" }],
+    };
+
+    expect(
+      mergeVisualSessionMessages([before, liveAssistant], [optimistic]).map(
+        (message) => message.blocks[0]?.text,
+      ),
+    ).toEqual(["before", "change course", "working"]);
   });
 
   it("keeps a dequeued user row after a late-reconciled prior-turn reply", () => {
