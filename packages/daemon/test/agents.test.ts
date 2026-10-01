@@ -1552,6 +1552,50 @@ describe("scanCodex", () => {
     expect(await scanCodex([root])).toEqual([]);
   });
 
+  test("does not list Codex guardian auto-review rollouts as sessions", async () => {
+    clearCodexScanCache();
+    const root = await tempDir("supergit-codex-guardian-");
+    const writeSession = async (
+      id: string,
+      source: unknown,
+      parentThreadId?: string,
+    ) => {
+      await writeFile(
+        join(root, `${id}.jsonl`),
+        [
+          JSON.stringify({
+            type: "session_meta",
+            payload: {
+              id,
+              cwd: "/repo",
+              source,
+              ...(parentThreadId ? { parent_thread_id: parentThreadId } : {}),
+            },
+          }),
+          JSON.stringify({
+            type: "response_item",
+            payload: {
+              type: "message",
+              role: "user",
+              content: [{ type: "input_text", text: "Real-looking user text" }],
+            },
+          }),
+        ].join("\n"),
+      );
+    };
+    await writeSession("main", "cli");
+    await writeSession("guardian", { subagent: { other: "guardian" } }, "main");
+    await writeSession(
+      "ordinary-subagent",
+      { subagent: { agent_name: "explorer" } },
+      "main",
+    );
+
+    expect(
+      (await scanCodex([root])).map((session) => session.sessionId).sort(),
+    ).toEqual(["main", "ordinary-subagent"]);
+  });
+
   test("skips Codex turn-aborted control messages for session previews", async () => {
     clearCodexScanCache();
     const root = await tempDir("supergit-codex-turn-aborted-");

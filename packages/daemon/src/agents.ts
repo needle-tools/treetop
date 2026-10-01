@@ -721,7 +721,7 @@ const CODEX_SCAN_CONCURRENCY = 8;
 const codexScanLimit = createLimiter(CODEX_SCAN_CONCURRENCY);
 
 interface CodexSessionOverview {
-  meta: { cwd?: string; id?: string };
+  meta: { cwd?: string; id?: string; isGuardian?: boolean };
   usage: CodexTokenUsage;
   firstUserMessage?: string;
   hasHistoryReplay: boolean;
@@ -729,6 +729,16 @@ interface CodexSessionOverview {
   messageCount?: number;
   contextTokens?: number;
   contextTokensExact?: boolean;
+}
+
+function isCodexGuardianSource(source: unknown): boolean {
+  if (!source || typeof source !== "object") return false;
+  const subagent = (source as Record<string, unknown>).subagent;
+  return (
+    !!subagent &&
+    typeof subagent === "object" &&
+    (subagent as Record<string, unknown>).other === "guardian"
+  );
 }
 
 function isCodexSystemInjected(text: string): boolean {
@@ -794,7 +804,7 @@ function extractCodexUserText(line: string): string | undefined {
 function ingestCodexOverviewLine(
   line: string,
   state: {
-    meta: { cwd?: string; id?: string };
+    meta: { cwd?: string; id?: string; isGuardian?: boolean };
     usage: CodexTokenUsage;
     firstUserMessage?: string;
     hasHistoryReplay: boolean;
@@ -823,6 +833,7 @@ function ingestCodexOverviewLine(
     state.meta = {
       cwd: typeof p.cwd === "string" ? p.cwd : undefined,
       id: typeof p.id === "string" ? p.id : undefined,
+      isGuardian: isCodexGuardianSource(p.source),
     };
   }
   if (!state.meta.cwd && typeof obj.cwd === "string") {
@@ -925,7 +936,7 @@ async function readCodexSessionOverview(
   const head = await readHead(path, exact ? fileSize : CODEX_HEAD_BYTES);
   const tail = !exact ? await readTail(path, CODEX_TAIL_BYTES) : "";
   const state = {
-    meta: {} as { cwd?: string; id?: string },
+    meta: {} as { cwd?: string; id?: string; isGuardian?: boolean },
     usage: {
       lastInputTokens: undefined,
       modelContextWindow: undefined,
@@ -1472,6 +1483,7 @@ export async function scanCodex(
             );
             const meta = overview.meta;
             if (!meta.cwd) return null;
+            if (meta.isGuardian) return null;
             if (overview.hasHistoryReplay && !overview.firstUserMessage)
               return null;
             const fileMs = performance.now() - tFile;
