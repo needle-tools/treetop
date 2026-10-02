@@ -1420,6 +1420,18 @@ history only for canonical app-server item order while retaining live-only
 usage and warning rows at their neighboring item boundary. This is still one
 app-server projection; transcript data is neither merged nor consulted.
 
+A 2026-10-02 recurrence found two remaining replacement paths. A canonical
+user snapshot can arrive after another item from its newly accepted turn; a
+plain append then removes the correctly placed optimistic row and briefly
+renders response -> request. Matching new-turn user snapshots are now inserted
+before the first already-observed item carrying that authoritative turn ID.
+Separately, optimistic reconciliation used to match equal user text anywhere
+in the session, so a new short reply such as "yes" could be mistaken for an
+older turn and disappear. Content matches are now bounded to rows after the
+send-time anchor and reject conflicting turn IDs. The browser lifecycle test
+covers the response-first/canonical-user-second delivery order; a focused
+projection test covers repeated user text across turns.
+
 The live session header had a separate source-ownership bug: synthetic
 app-server session shells assigned `Date.now()` as their start, so a reset or
 reactive recreation made an old thread say "started just now" and could move

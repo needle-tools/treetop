@@ -11,6 +11,7 @@
   import { flip } from "svelte/animate";
   import TerminalView from "./TerminalView.svelte";
   import VisualTranscript from "./VisualTranscript.svelte";
+  import AsyncQuestionCard from "./AsyncQuestionCard.svelte";
   import {
     canRequestOlderTranscriptMessages,
     shouldPrefetchOlderVisualHistory,
@@ -76,6 +77,7 @@
     mergeVisualSessionMessages,
     updateVisualTranscriptItems,
     visualMessageTurnIndexes,
+    visualPendingQuestions,
     visualTranscriptMessageWindow,
     visualTranscriptTailKey,
     visualPlanFromPayload,
@@ -2588,6 +2590,8 @@
   let codexEventStreamState: CodexEventStreamState | "closed" = "closed";
   let codexActiveTurnId: string | null = null;
   let codexRequests: CodexAppEvent[] = [];
+  let codexPendingTranscriptQuestions: NormalizedBlock[] = [];
+  let codexPendingQuestionCount = 0;
   let codexRequestDrafts: Record<string, Record<string, string>> = {};
   let codexQueuedMessages: CodexQueuedMessage<ImageInlineAttachment>[] = [];
   let codexQueueDraining = false;
@@ -3918,8 +3922,27 @@
         messages[existingIndex] = message;
         firstChangedIndex = Math.min(firstChangedIndex, existingIndex);
       } else {
-        firstChangedIndex = Math.min(firstChangedIndex, messages.length);
-        messages.push(message);
+        const matchingNewTurnUser =
+          message.role === "user" && message.turnId
+            ? codexOptimisticUserMessages.find(
+                (optimistic) =>
+                  optimistic.intent !== "steer" &&
+                  optimistic.turnId === message.turnId &&
+                  hasCanonicalUserMessageMatchingOptimistic(
+                    [...messages, message],
+                    optimistic,
+                  ),
+              )
+            : undefined;
+        const firstMessageInTurn = matchingNewTurnUser
+          ? messages.findIndex(
+              (candidate) => candidate.turnId === message.turnId,
+            )
+          : -1;
+        const insertionIndex =
+          firstMessageInTurn >= 0 ? firstMessageInTurn : messages.length;
+        firstChangedIndex = Math.min(firstChangedIndex, insertionIndex);
+        messages.splice(insertionIndex, 0, message);
       }
       changed = true;
     }
@@ -5401,10 +5424,23 @@
     void focusComposerInput();
   }
   $: codexQuestionSummary = codexQuestionRequestSummary(codexRequests);
+  $: codexPendingTranscriptQuestions = visualPendingQuestions<
+    NormalizedBlock,
+    NormalizedMessage
+  >(
+    session?.messages ?? [],
+    answeredAsyncQuestionIds,
+  ).filter(
+    (question) =>
+      !question.questionId ||
+      !codexQuestionRequestTarget(codexRequests, question.questionId),
+  );
+  $: codexPendingQuestionCount =
+    codexQuestionSummary.questionCount + codexPendingTranscriptQuestions.length;
   $: showComposerTray =
     codexVisualAppSurface && codexQuestionSummary.otherRequests.length > 0;
   $: if (
-    codexQuestionSummary.questionCount === 0 &&
+    codexPendingQuestionCount === 0 &&
     codexQuestionsExpanded
   ) {
     codexQuestionsExpanded = false;
@@ -6365,7 +6401,7 @@
           </div>
         </div>
       {/if}
-      {#if agent === "codex" && codexQuestionSummary.questionCount && codexQuestionsExpanded}
+      {#if agent === "codex" && codexPendingQuestionCount && codexQuestionsExpanded}
         <div class="codex-question-pane" aria-label="Codex questions">
           <div class="codex-requests">
             {#each codexQuestionSummary.questionRequests as req (req.id)}
@@ -6430,6 +6466,15 @@
                   >
                 </div>
               </div>
+            {/each}
+            {#each codexPendingTranscriptQuestions as question (question.questionId ?? question.text)}
+              <AsyncQuestionCard
+                questionId={question.questionId}
+                text={question.text}
+                options={question.questionOptions ?? []}
+                onAnswer={(_questionId, answer) =>
+                  answerCodexAsyncQuestion(question, answer)}
+              />
             {/each}
           </div>
         </div>
@@ -6787,7 +6832,7 @@
             disabled={sending && agent !== "codex" && !ollamaAbort}
           ></textarea>
         </div>
-        {#if agent === "codex" && (codexLatestGoal || codexLatestPlan || codexQueuedMessages.length || codexQuestionSummary.questionCount || composerWarnings.length)}
+        {#if agent === "codex" && (codexLatestGoal || codexLatestPlan || codexQueuedMessages.length || codexPendingQuestionCount || composerWarnings.length)}
           <div class="composer-indicators">
             {#if codexLatestGoal}
               <button
@@ -6830,7 +6875,7 @@
                 Queue: {codexQueuedMessages.length}
               </button>
             {/if}
-            {#if codexQuestionSummary.questionCount}
+            {#if codexPendingQuestionCount}
               <button
                 type="button"
                 class="codex-composer-badge question"
@@ -6844,9 +6889,9 @@
                   : "Show pending questions"}
               >
                 <span aria-hidden="true">?</span>
-                {codexQuestionSummary.questionCount === 1
+                {codexPendingQuestionCount === 1
                   ? "Question"
-                  : `Questions: ${codexQuestionSummary.questionCount}`}
+                  : `Questions: ${codexPendingQuestionCount}`}
               </button>
             {/if}
             {#if composerWarnings.length}
@@ -7458,7 +7503,7 @@
     width: min(100%, 42rem);
     border-color: color-mix(
       in srgb,
-      var(--chip-purple-text) 42%,
+      var(--warning, #e0a34b) 42%,
       var(--surface-3)
     );
   }
@@ -7595,12 +7640,12 @@
   .codex-request.question-request {
     border-color: color-mix(
       in srgb,
-      var(--chip-purple-text) 34%,
+      var(--warning, #e0a34b) 34%,
       var(--surface-3)
     );
     background: color-mix(
       in srgb,
-      var(--chip-purple-bg) 32%,
+      var(--warning, #e0a34b) 9%,
       var(--surface-1)
     );
   }
@@ -7621,7 +7666,7 @@
     gap: 0.4rem;
   }
   .question-request-heading {
-    color: var(--chip-purple-text);
+    color: var(--warning, #e0a34b);
   }
   .question-request-symbol {
     display: inline-flex;
@@ -7631,7 +7676,7 @@
     height: 1.15rem;
     border: 1px solid currentColor;
     border-radius: 999px;
-    color: var(--chip-purple-text);
+    color: var(--warning, #e0a34b);
     font-size: 0.72rem;
     font-weight: 800;
     line-height: 1;
@@ -8191,10 +8236,10 @@
     gap: 0.28rem;
     border-color: color-mix(
       in srgb,
-      var(--chip-purple-text) 48%,
+      var(--warning, #e0a34b) 48%,
       var(--surface-3)
     );
-    color: var(--chip-purple-text);
+    color: var(--warning, #e0a34b);
   }
   .codex-composer-badge.question > span {
     display: inline-flex;
@@ -8224,15 +8269,15 @@
   .codex-composer-badge.question.expanded {
     border-color: color-mix(
       in srgb,
-      var(--chip-purple-text) 68%,
+      var(--warning, #e0a34b) 68%,
       var(--surface-3)
     );
     background: color-mix(
       in srgb,
-      var(--chip-purple-bg) 46%,
+      var(--warning, #e0a34b) 16%,
       var(--surface-2)
     );
-    color: var(--chip-purple-text);
+    color: var(--warning, #e0a34b);
   }
   .composer-send {
     display: inline-flex;

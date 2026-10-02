@@ -3027,6 +3027,9 @@
                             displayEntry.pairedMedia,
                           )}
                           {@const entryBlock = entry.blocks[0]}
+                          {@const questionBlock = entry.blocks.find(
+                            (block) => block.type === "question",
+                          )}
                           {@const planBlock = workEntryPlanBlock(entry)}
                           {@const resultBlock = workEntryToolResultBlock(entry)}
                           {@const collapsedTitle = workEntryTitle(entry)}
@@ -3089,6 +3092,7 @@
                           {:else}
                             <details
                               class="work-entry"
+                              class:work-entry-question={!!questionBlock}
                               data-visual-scroll-anchor={entryRenderKey}
                               open={forceOpenThinkingEntry(
                                 workKey,
@@ -3117,7 +3121,19 @@
                                     event.currentTarget,
                                   )}
                               >
-                                {#if planBlock}
+                                {#if questionBlock}
+                                  <span
+                                    class="work-tool-chip icon-only work-question-chip"
+                                  >
+                                    <span class="work-question-symbol" aria-hidden="true">?</span>
+                                  </span>
+                                  <span
+                                    class="work-tool-preview work-question-preview"
+                                    title={questionBlock.text ?? "Question"}
+                                  >
+                                    {questionBlock.text ?? "Question"}
+                                  </span>
+                                {:else if planBlock}
                                   <span class="work-tool-chip work-plan-chip">
                                     <span>{planTitle(planBlock)}</span>
                                   </span>
@@ -4813,6 +4829,54 @@
   }
   .work-thinking-chip {
     color: var(--text-2);
+  }
+  .work-entry-question > summary {
+    border: 1px solid
+      color-mix(in srgb, var(--warning, #e0a34b) 34%, var(--surface-3));
+    background: color-mix(
+      in srgb,
+      var(--warning, #e0a34b) 8%,
+      transparent
+    );
+  }
+  .work-entry-question > summary:hover,
+  .work-entry-question[open] > summary {
+    border-color: color-mix(
+      in srgb,
+      var(--warning, #e0a34b) 56%,
+      var(--surface-3)
+    );
+    background: color-mix(
+      in srgb,
+      var(--warning, #e0a34b) 13%,
+      transparent
+    );
+  }
+  .work-question-chip {
+    border-color: color-mix(
+      in srgb,
+      var(--warning, #e0a34b) 52%,
+      var(--surface-3)
+    );
+    color: var(--warning, #e0a34b);
+    background: color-mix(
+      in srgb,
+      var(--warning, #e0a34b) 12%,
+      var(--surface-2)
+    );
+  }
+  .work-question-symbol {
+    font-size: 0.76rem;
+    font-weight: 800;
+    line-height: 1;
+  }
+  .work-question-preview {
+    color: color-mix(
+      in srgb,
+      var(--warning, #e0a34b) 58%,
+      var(--text-1)
+    );
+    font-weight: 650;
   }
   .work-thinking-chip .thinking-icon {
     width: 0.86rem;

@@ -64,6 +64,18 @@ function threadPage(complete: boolean): unknown {
         status: "completed",
         aggregatedOutput: "/tmp/treetop-session-lifecycle\n",
       },
+      {
+        id: "latest-question",
+        type: "agentMessage",
+        delivery: "async",
+        text: "Which scope should this use?\n\n1. Current file\n2. Whole project",
+        questions: [
+          {
+            title: "Which scope should this use?",
+            options: ["Current file", "Whole project"],
+          },
+        ],
+      },
       ...(complete
         ? [
             {
@@ -221,7 +233,50 @@ async function completeLatestTurn(currentPage: Page): Promise<void> {
     .waitFor();
 }
 
+function emitCodexEvents(events: readonly unknown[]): void {
+  for (const client of eventClients) {
+    client.write(`event: codex\ndata: ${JSON.stringify(events)}\n\n`);
+  }
+}
+
 describe.serial("SessionView browser lifecycle", () => {
+  test(
+    "surfaces async transcript questions in the composer and work flow",
+    async () => {
+      const currentPage = await openHarness();
+      const questionBadge = currentPage.getByRole("button", {
+        name: "Show pending questions",
+      });
+      await questionBadge.waitFor();
+      const questionChip = currentPage.locator(".work-question-chip");
+      await questionChip.waitFor();
+      const [questionColor, thinkingColor, questionBackground] =
+        await currentPage.evaluate(() => {
+          const question = document.querySelector<HTMLElement>(
+            ".work-question-chip",
+          );
+          const thinking = document.querySelector<HTMLElement>(
+            ".work-thinking-chip",
+          );
+          if (!question || !thinking) throw new Error("missing work chips");
+          return [
+            getComputedStyle(question).color,
+            getComputedStyle(thinking).color,
+            getComputedStyle(question).backgroundColor,
+          ];
+        });
+      expect(questionColor).not.toBe(thinkingColor);
+      expect(questionBackground).not.toBe("rgba(0, 0, 0, 0)");
+
+      await questionBadge.click();
+      const questionPane = currentPage.getByLabel("Codex questions");
+      await questionPane.getByText("Which scope should this use?").waitFor();
+      await questionPane.getByRole("button", { name: "Current file" }).waitFor();
+      await currentPage.close();
+    },
+    30_000,
+  );
+
   test(
     "aligns title-only thinking rows with neighboring work entries",
     async () => {
@@ -312,6 +367,71 @@ describe.serial("SessionView browser lifecycle", () => {
           )) < 4,
         "SessionView did not keep following the new turn tail",
       );
+    },
+    30_000,
+  );
+
+  test(
+    "keeps the sent request before its response when app-server confirms the user item late",
+    async () => {
+      const currentPage = await openHarness();
+      const composer = currentPage.locator("textarea.composer-input");
+      await composer.fill("Start the next request");
+      await composer.press("Enter");
+      await currentPage
+        .locator(".messages")
+        .getByText("Start the next request")
+        .waitFor();
+      await currentPage.waitForTimeout(150);
+
+      emitCodexEvents([
+        {
+          kind: "notification",
+          method: "item/completed",
+          params: {
+            threadId,
+            turnId: "turn-next",
+            item: {
+              id: "next-answer",
+              type: "agentMessage",
+              text: "This is the new turn response.",
+            },
+          },
+          threadId,
+          turnId: "turn-next",
+          receivedAt: "2026-10-01T10:00:10.000Z",
+        },
+      ]);
+      await currentPage.getByText("This is the new turn response.").waitFor();
+
+      emitCodexEvents([
+        {
+          kind: "notification",
+          method: "item/completed",
+          params: {
+            threadId,
+            turnId: "turn-next",
+            item: {
+              id: "next-user",
+              type: "userMessage",
+              content: [{ type: "text", text: "Start the next request" }],
+            },
+          },
+          threadId,
+          turnId: "turn-next",
+          receivedAt: "2026-10-01T10:00:11.000Z",
+        },
+      ]);
+
+      await waitForCondition(async () => {
+        const transcriptText = await currentPage.locator(".messages").innerText();
+        return (
+          transcriptText.indexOf("Start the next request") >= 0 &&
+          transcriptText.indexOf("Start the next request") <
+            transcriptText.indexOf("This is the new turn response.")
+        );
+      }, "The canonical user row moved behind its app-server response");
+      await currentPage.close();
     },
     30_000,
   );

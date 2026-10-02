@@ -172,6 +172,35 @@ export interface Message<B extends MessageBlock = MessageBlock> {
   optimisticAfterMessageIndex?: number;
 }
 
+/** Questions are actionable only while they remain after the latest user
+ * message. This keeps historical questions browseable in the transcript
+ * without resurrecting them as pending composer interactions after reload. */
+export function visualPendingQuestions<
+  B extends MessageBlock,
+  M extends Message<B>,
+>(messages: readonly M[], answeredIds: ReadonlySet<string>): B[] {
+  let latestUserIndex = -1;
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    if (messages[index]?.role === "user") {
+      latestUserIndex = index;
+      break;
+    }
+  }
+
+  const seenIds = new Set<string>();
+  const pending: B[] = [];
+  for (let index = latestUserIndex + 1; index < messages.length; index += 1) {
+    for (const block of messages[index]?.blocks ?? []) {
+      if (block.type !== "question") continue;
+      const id = block.questionId;
+      if (id && (answeredIds.has(id) || seenIds.has(id))) continue;
+      if (id) seenIds.add(id);
+      pending.push(block);
+    }
+  }
+  return pending;
+}
+
 /** Latest real conversation timestamp, excluding empty accounting/replay rows. */
 export function latestSessionMessageActivityIso(
   messages: readonly Message[],
@@ -1776,6 +1805,26 @@ function sameUserMessageContent<B extends MessageBlock>(
   );
 }
 
+function canonicalUserMessageMatchesOptimistic<B extends MessageBlock>(
+  message: Message<B>,
+  messageIndex: number,
+  optimistic: Message<B>,
+): boolean {
+  if (isOptimisticUserMessage(message)) return false;
+  if (!sameUserMessageContent(message, optimistic)) return false;
+  if (
+    optimistic.turnId &&
+    message.turnId &&
+    optimistic.turnId !== message.turnId
+  ) {
+    return false;
+  }
+  return (
+    typeof optimistic.optimisticAfterMessageIndex !== "number" ||
+    messageIndex > optimistic.optimisticAfterMessageIndex
+  );
+}
+
 export function withoutDuplicateOptimisticUserMessages<
   B extends MessageBlock,
   M extends Message<B>,
@@ -1817,7 +1866,7 @@ export function withOptimisticUserMessageIntent<
   M extends Message<B>,
 >(messages: readonly M[], overlays: readonly Message<B>[]): M[] {
   if (overlays.length === 0) return [...messages];
-  return messages.map((message) => {
+  return messages.map((message, messageIndex) => {
     if (message.role !== "user" || isOptimisticUserMessage(message)) {
       return message;
     }
@@ -1825,7 +1874,11 @@ export function withOptimisticUserMessageIntent<
       (overlay) =>
         isOptimisticUserMessage(overlay) &&
         userMessageIntent(overlay) &&
-        sameUserMessageContent(message, overlay),
+        canonicalUserMessageMatchesOptimistic(
+          message,
+          messageIndex,
+          overlay,
+        ),
     );
     return withUserMessageIntent(message, userMessageIntent(optimistic));
   });
@@ -1836,10 +1889,12 @@ export function hasCanonicalUserMessageMatchingOptimistic<
   M extends Message<B>,
 >(messages: readonly M[], optimistic: Message<B>): boolean {
   if (!isOptimisticUserMessage(optimistic)) return false;
-  return messages.some(
-    (message) =>
-      !isOptimisticUserMessage(message) &&
-      sameUserMessageContent(message, optimistic),
+  return messages.some((message, messageIndex) =>
+    canonicalUserMessageMatchesOptimistic(
+      message,
+      messageIndex,
+      optimistic,
+    ),
   );
 }
 

@@ -26,6 +26,7 @@ import {
   shouldShowLiveWorkTimer,
   visualPlanFromBlock,
   visualPlanFromPayload,
+  visualPendingQuestions,
   visualPathPreviewTargets,
   visualToolCallPayloadLanguage,
   visualToolCallPayloadText,
@@ -246,6 +247,39 @@ describe("formatVisualWorkDuration", () => {
         "2026-06-22T10:00:04.200Z",
       ),
     ).toBeUndefined();
+  });
+});
+
+describe("visualPendingQuestions", () => {
+  const question = (id: string, text: string): Message => ({
+    role: "assistant",
+    blocks: [{ type: "question", questionId: id, text }],
+  });
+
+  it("returns every unanswered question after the latest user message", () => {
+    expect(
+      visualPendingQuestions(
+        [
+          msg("user", "Start"),
+          question("old", "An older question"),
+          msg("user", "That was answered"),
+          question("scope", "Which scope?"),
+          question("format", "Which format?"),
+        ],
+        new Set(["format"]),
+      ).map((block) => block.questionId),
+    ).toEqual(["scope"]);
+  });
+
+  it("does not resurrect historical questions with no current interaction", () => {
+    expect(
+      visualPendingQuestions([
+        msg("user", "Start"),
+        question("old", "An older question"),
+        msg("user", "Continue"),
+        msg("assistant", "Done"),
+      ], new Set()),
+    ).toEqual([]);
   });
 });
 
@@ -2636,6 +2670,31 @@ describe("mergeVisualSessionMessages", () => {
         (message) => message.blocks[0]?.text,
       ),
     ).toEqual(["older request", "older reply", "latest request"]);
+  });
+
+  it("does not replace a new optimistic reply with identical text from an older turn", () => {
+    const priorUser = msg("user", "yes", "2026-06-19T09:59:00.000Z");
+    priorUser.id = "prior-user";
+    const priorAssistant = msg(
+      "assistant",
+      "Should I continue?",
+      "2026-06-19T10:00:00.000Z",
+    );
+    priorAssistant.id = "prior-assistant";
+    const optimistic: Message = {
+      id: "codex-optimistic-user-latest",
+      role: "user",
+      timestamp: "2026-06-19T10:00:01.000Z",
+      optimisticAfterMessageId: "prior-assistant",
+      optimisticAfterMessageIndex: 1,
+      blocks: [{ type: "text", text: "yes" }],
+    };
+
+    expect(
+      mergeVisualSessionMessages([priorUser, priorAssistant], [optimistic]).map(
+        (message) => message.id,
+      ),
+    ).toEqual(["prior-user", "prior-assistant", "codex-optimistic-user-latest"]);
   });
 
   it("drops optimistic rows when matching canonical user rows arrive", () => {

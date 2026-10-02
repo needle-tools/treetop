@@ -53,11 +53,11 @@
     margin: 0.35rem 0;
     padding: 0.8rem 0.9rem;
     border: 1px solid
-      color-mix(in srgb, var(--chip-purple-text) 38%, var(--surface-3));
+      color-mix(in srgb, var(--warning, #e0a34b) 42%, var(--surface-3));
     border-radius: 0.75rem;
     background: color-mix(
       in srgb,
-      var(--chip-purple-bg) 28%,
+      var(--warning, #e0a34b) 9%,
       var(--surface-2)
     );
   }
@@ -69,7 +69,7 @@
     display: flex;
     align-items: center;
     gap: 0.35rem;
-    color: var(--chip-purple-text);
+    color: var(--warning, #e0a34b);
     font-size: 0.72rem;
     font-weight: 700;
     letter-spacing: 0.04em;
@@ -113,10 +113,10 @@
     cursor: pointer;
   }
   .async-question-options button:not(:disabled):hover {
-    border-color: var(--chip-purple-text);
+    border-color: var(--warning, #e0a34b);
     background: color-mix(
       in srgb,
-      var(--chip-purple-bg) 42%,
+      var(--warning, #e0a34b) 15%,
       var(--surface-1)
     );
   }
