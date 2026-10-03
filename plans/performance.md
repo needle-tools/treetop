@@ -1478,3 +1478,45 @@ closed panes do no parsing. Replay drives the inspector with the current source
 line, coalesced to ten visual updates per second. A live pane polls a byte-range
 endpoint and parses only appended bytes, while older context items stay
 collapsed/windowed until explicitly expanded.
+
+### Closed live action groups still mounted their rows (2026-10-03)
+
+The Baker `better GLB solve` session made a renderer-only stall reproducible:
+its 1.70 GB transcript had 86,351 JSONL rows, while the current app-server turn
+alone projected about 4,800 items / 4,600 visual-work entries. The daemon still
+served the full thread in tens of milliseconds, but browser diagnostics recorded
+4.3-25.3 second event-loop stalls and multi-second `codex-event.settle` spans.
+An equivalent local projection spent about 34ms normalizing/building display
+entries and roughly 0.2s in a warm full-work overview, so neither explained the
+orders-of-magnitude browser freeze by itself.
+
+The live timeline grouped old actions under closed `<details>` elements, but CSS
+closure only hid their bodies: every command, result, tooltip, and nested detail
+row remained mounted and participated in every streamed Svelte reconciliation.
+Closed action groups now retain their `<details>` shell, summary, geometry, and
+open-state subscription while unmounting only the hidden detail rows. Opening a
+group remounts those rows on demand. A real-browser lifecycle test closes and
+reopens the production component to cover both the cost gate and the unchanged
+interaction contract.
+
+### App-server history lost turn boundaries (2026-10-06)
+
+The same Baker lane remained slow after hidden action rows were gated. Its
+current 40-turn app-server page contained 4,152 normalized messages but only two
+explicit `userMessage` items. The history normalizer had discarded each
+app-server turn ID, so the shared recent-history window fell back to user-row
+boundaries and treated all 4,152 messages as visible. That rebuilt 3,026 display
+entries and 500 action-group summaries on every live event; the exact production
+projection took about 2.6 seconds before Svelte DOM work, matching 8–16 second
+browser event-settle stalls while the daemon itself answered in milliseconds.
+
+Canonical app-server history and live messages now retain their turn ID. The
+shared transcript window uses those authoritative boundaries when present,
+keeping complete turns and at least the two latest turns without depending on a
+user row. The shared visual projection also groups a canonical turn that omits
+its user item into the normal work/response shape rather than falling back to
+raw message rows. On the captured Baker response this reduces the initial
+window from 4,152 to 142 messages, 500 action groups to 6, and the measured
+normalization/window/projection/overview pass from about 2.64 seconds to about
+82 milliseconds. Transcript sources without turn IDs retain the existing
+user-boundary behavior.

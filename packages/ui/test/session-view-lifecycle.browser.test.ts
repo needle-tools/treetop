@@ -304,6 +304,48 @@ describe.serial("SessionView browser lifecycle", () => {
   );
 
   test(
+    "unmounts collapsed work action rows and remounts them on demand",
+    async () => {
+      const currentPage = await openHarness();
+      emitCodexEvents([
+        {
+          kind: "notification",
+          method: "turn/started",
+          params: { threadId, turn: { id: latestTurnId } },
+          threadId,
+          turnId: latestTurnId,
+          receivedAt: "2026-10-01T10:00:07.000Z",
+        },
+      ]);
+      const openGroup = currentPage.locator(".work-action-group[open]").first();
+      await openGroup.waitFor();
+      expect(
+        await openGroup.locator(".work-action-group-entries").count(),
+      ).toBeGreaterThan(0);
+
+      const groupId = await openGroup.getAttribute("data-work-action-group");
+      expect(groupId).not.toBeNull();
+      await openGroup.locator(":scope > summary").click();
+      const stableGroup = currentPage.locator(
+        `[data-work-action-group="${groupId}"]`,
+      );
+      await waitForCondition(
+        async () =>
+          (await stableGroup.locator(".work-action-group-entries").count()) ===
+          0,
+        "Collapsed action rows remained mounted",
+      );
+
+      await stableGroup.locator(":scope > summary").click();
+      await stableGroup
+        .locator(".work-action-group-entries")
+        .waitFor({ state: "attached" });
+      await currentPage.close();
+    },
+    30_000,
+  );
+
+  test(
     "preserves a paused reader through completion layout",
     async () => {
       const currentPage = await openHarness();

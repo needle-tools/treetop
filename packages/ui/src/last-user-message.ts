@@ -2583,6 +2583,37 @@ export function buildVisualTranscriptItems<
       continue;
     }
     if (message.role !== "user") {
+      if (message.turnId) {
+        const turnId = message.turnId;
+        const turnStartedAt = message.timestamp;
+        const turnEntries: VisualWorkEntry<B, M>[] = [];
+        while (
+          messageIndex < messages.length &&
+          messages[messageIndex]?.role !== "user" &&
+          messages[messageIndex]?.turnId === turnId
+        ) {
+          const turnMessage = messages[messageIndex]!;
+          const turnBlocks = displayBlocks(turnMessage);
+          if (
+            turnBlocks.length > 0 ||
+            isTokenOnlyUsageMessage(turnMessage)
+          ) {
+            turnEntries.push({
+              message: turnMessage,
+              blocks: turnBlocks,
+              messageIndex: messageIndex + messageIndexOffset,
+            });
+          }
+          messageIndex += 1;
+        }
+        pushTurnWorkAndResponse(
+          turnEntries,
+          turnStartedAt,
+          opts.active === true && messageIndex >= messages.length,
+          messages[messageIndex]?.timestamp,
+        );
+        continue;
+      }
       const entry = {
         message,
         blocks,
@@ -2636,6 +2667,7 @@ export function buildVisualTranscriptItems<
     }
     previousTurnAcceptsSteering = false;
     const userTimestamp = message.timestamp;
+    const userTurnId = message.turnId;
     const turnStartedAt = pendingTurnStartedAt ?? userTimestamp;
     const turnEntries: VisualWorkEntry<B, M>[] = turnWasAlreadyOpen
       ? [
@@ -2652,7 +2684,10 @@ export function buildVisualTranscriptItems<
     messageIndex += 1;
     while (
       messageIndex < messages.length &&
-      messages[messageIndex]?.role !== "user"
+      messages[messageIndex]?.role !== "user" &&
+      (!userTurnId ||
+        !messages[messageIndex]?.turnId ||
+        messages[messageIndex]?.turnId === userTurnId)
     ) {
       const turnMessage = messages[messageIndex]!;
       const turnBlocks = displayBlocks(turnMessage);
@@ -2750,22 +2785,48 @@ export function visualTranscriptMessageWindow<
   }
 
   let start = Math.max(0, totalMessageCount - minMessages);
-  for (let index = start; index >= 0; index -= 1) {
-    if (messages[index]?.role === "user") {
-      start = index;
-      break;
+  const tailHasTurnIdentity = messages
+    .slice(start)
+    .some((message) => !!message.turnId);
+  if (tailHasTurnIdentity) {
+    const boundaryTurnId = messages[start]?.turnId;
+    if (boundaryTurnId) {
+      while (start > 0 && messages[start - 1]?.turnId === boundaryTurnId) {
+        start -= 1;
+      }
+    }
+  } else {
+    for (let index = start; index >= 0; index -= 1) {
+      if (messages[index]?.role === "user") {
+        start = index;
+        break;
+      }
     }
   }
 
   const minUserTurns = Math.max(0, Math.trunc(opts.minUserTurns ?? 2) || 0);
   if (minUserTurns > 0) {
-    let seenUserTurns = 0;
-    for (let index = totalMessageCount - 1; index >= 0; index -= 1) {
-      if (messages[index]?.role !== "user") continue;
-      seenUserTurns += 1;
-      if (seenUserTurns >= minUserTurns) {
-        start = Math.min(start, index);
-        break;
+    if (tailHasTurnIdentity) {
+      const seenTurnIds = new Set<string>();
+      let turnStart = totalMessageCount;
+      for (let index = totalMessageCount - 1; index >= 0; index -= 1) {
+        const turnId = messages[index]?.turnId;
+        if (turnId && !seenTurnIds.has(turnId)) {
+          if (seenTurnIds.size >= minUserTurns) break;
+          seenTurnIds.add(turnId);
+        }
+        if (seenTurnIds.size > 0) turnStart = index;
+      }
+      start = Math.min(start, turnStart);
+    } else {
+      let seenUserTurns = 0;
+      for (let index = totalMessageCount - 1; index >= 0; index -= 1) {
+        if (messages[index]?.role !== "user") continue;
+        seenUserTurns += 1;
+        if (seenUserTurns >= minUserTurns) {
+          start = Math.min(start, index);
+          break;
+        }
       }
     }
   }

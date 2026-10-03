@@ -1538,6 +1538,7 @@ describe("codex event stream hub", () => {
         id: "codex-marker-turn-1-context-42",
         role: "system",
         timestamp: "2026-06-30T04:22:46.776Z",
+        turnId: "turn-1",
         blocks: [{ type: "marker", text: "[Context compacted]" }],
       },
     ]);
@@ -1578,6 +1579,7 @@ describe("codex event stream hub", () => {
         id: "codex-marker-compact-1",
         role: "system",
         timestamp: "2026-08-27T21:16:51.869Z",
+        turnId: "turn-1",
         blocks: [{
           type: "marker",
           text: "[Context compacted]",
@@ -1691,6 +1693,7 @@ describe("codex event stream hub", () => {
       id: "codex-marker-compact-1",
       role: "system",
       timestamp: "2026-08-27T21:16:03.500Z",
+      turnId: "turn-1",
       blocks: [{
         type: "marker",
         text: "[Context compacted]",
@@ -1838,6 +1841,7 @@ describe("codex event stream hub", () => {
       id: "codex-output-call-empty",
       role: "tool",
       timestamp: undefined,
+      turnId: "turn-1",
       blocks: [
         {
           type: "tool_result",
@@ -1944,6 +1948,7 @@ describe("codex event stream hub", () => {
         id: "codex-tool-call-logs",
         role: "assistant",
         timestamp: "2026-06-22T10:00:00.000Z",
+        turnId: "turn-1",
         blocks: [
           {
             type: "tool_use",
@@ -2095,6 +2100,7 @@ describe("codex event stream hub", () => {
         id: "codex-user-user-1",
         role: "user",
         timestamp: "2026-06-22T10:00:00.000Z",
+        turnId: "turn-1",
         blocks: [
           {
             type: "media",
@@ -2110,6 +2116,7 @@ describe("codex event stream hub", () => {
         id: "codex-tool-call-1",
         role: "assistant",
         timestamp: "2026-06-22T10:00:00.000Z",
+        turnId: "turn-1",
         blocks: [
           {
             type: "tool_use",
@@ -2127,6 +2134,7 @@ describe("codex event stream hub", () => {
         id: "codex-output-call-1",
         role: "tool",
         timestamp: "2026-06-22T10:00:00.000Z",
+        turnId: "turn-1",
         blocks: [
           {
             type: "tool_result",
@@ -2140,6 +2148,7 @@ describe("codex event stream hub", () => {
         id: "codex-agent-agent-1",
         role: "assistant",
         timestamp: "2026-06-22T10:00:00.000Z",
+        turnId: "turn-1",
         blocks: [{ type: "text", text: "Found it." }],
       },
     ]);
@@ -2167,6 +2176,7 @@ describe("codex event stream hub", () => {
         id: "codex-user-user-1",
         role: "user",
         timestamp: "2026-09-23T07:56:52.190Z",
+        turnId: "turn-1",
         blocks: [{ type: "text", text: "just answer" }],
       },
     ]);
@@ -2204,6 +2214,7 @@ describe("codex event stream hub", () => {
         id: "codex-plan-reasoning-1",
         role: "assistant",
         timestamp: "2026-06-22T10:00:00.000Z",
+        turnId: "turn-1",
         blocks: [
           {
             type: "thinking",
@@ -2246,6 +2257,10 @@ describe("codex event stream hub", () => {
     expect(messages.map((message) => message.id)).toEqual([
       "codex-user-user-older",
       "codex-user-user-newer",
+    ]);
+    expect(messages.map((message) => message.turnId)).toEqual([
+      "turn-older",
+      "turn-newer",
     ]);
   });
 
@@ -2391,6 +2406,7 @@ describe("codex event stream hub", () => {
         id: `codex-agent-${agentItem.id}`,
         role: "assistant",
         timestamp: "2026-09-18T09:52:49.692Z",
+        turnId: "turn-1",
         blocks: [{ type: "text", text: agentItem.text }],
       },
     ]);
@@ -2422,6 +2438,7 @@ describe("codex event stream hub", () => {
         id: "codex-usage-turn-usage-2026-06-22T10:00:00.000Z",
         role: "assistant",
         timestamp: "2026-06-22T10:00:00.000Z",
+        turnId: "turn-usage",
         tokensUsed: 286,
         tokenUsage: {
           input: 1234,
@@ -2464,6 +2481,7 @@ describe("codex event stream hub", () => {
         id: "codex-usage-usage-item",
         role: "assistant",
         timestamp: "2026-06-22T10:00:00.000Z",
+        turnId: "turn-usage",
         tokensUsed: 286,
         tokenUsage: {
           input: 1234,
@@ -2645,6 +2663,7 @@ describe("codex event stream hub", () => {
         id: "codex-usage-turn-usage-2026-06-22T10:00:02.000Z",
         role: "assistant",
         timestamp: "2026-06-22T10:00:02.000Z",
+        turnId: "turn-usage",
         tokensUsed: 91,
         tokenUsage: {
           input: 2345,
@@ -2684,6 +2703,7 @@ describe("codex event stream hub", () => {
         id: "codex-usage-turn-usage-2026-06-22T10:00:02.000Z",
         role: "assistant",
         timestamp: "2026-06-22T10:00:02.000Z",
+        turnId: "turn-usage",
         tokensUsed: 12,
         tokenUsage: {
           input: 70,
@@ -2845,6 +2865,7 @@ describe("codex event stream hub", () => {
         id: "codex-tool-call-spawn",
         role: "assistant",
         timestamp: "2026-06-22T09:59:59.000Z",
+        turnId: "turn-1",
         blocks: [
           {
             type: "tool_use",
@@ -2952,6 +2973,7 @@ describe("codex event stream hub", () => {
         id: "codex-subagent-call-spawn-audio",
         role: "assistant",
         timestamp: undefined,
+        turnId: "turn-1",
         blocks: [
           {
             type: "subagent",
@@ -3199,6 +3221,7 @@ describe("codex event stream hub", () => {
         id: "codex-tool-view-1",
         role: "assistant",
         timestamp: "2026-06-22T10:00:00.000Z",
+        turnId: "turn-1",
         blocks: [
           {
             type: "tool_use",
@@ -3475,6 +3498,7 @@ describe("codex event stream hub", () => {
         id: "codex-tool-call-logs",
         role: "assistant",
         timestamp: "2026-06-22T10:00:00.000Z",
+        turnId: "turn-1",
         blocks: [
           {
             type: "tool_use",
@@ -3559,6 +3583,7 @@ describe("codex event stream hub", () => {
         id: "codex-tool-image-1",
         role: "assistant",
         timestamp: "2026-07-02T15:41:04.000Z",
+        turnId: "turn-1",
         blocks: [
           {
             type: "tool_use",
@@ -3740,6 +3765,7 @@ describe("codex event stream hub", () => {
       id: "codex-agent-call-question",
       role: "assistant",
       timestamp: undefined,
+      turnId: "turn-1",
       blocks: [{
         type: "question",
         text: "Should exports include OTIO?",
@@ -3816,6 +3842,7 @@ describe("codex event stream hub", () => {
         id: "codex-question-request-42",
         role: "assistant",
         timestamp: "2026-09-29T10:00:00.000Z",
+        turnId: "turn-1",
         blocks: [
           {
             type: "question",

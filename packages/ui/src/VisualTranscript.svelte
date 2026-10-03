@@ -1553,14 +1553,6 @@
     restoreDetailsScrollAnchor();
   }
 
-  function workActionGroupOpen(
-    groupId: string,
-    autoOpen: boolean,
-  ): boolean {
-    if (closedWorkActionGroupKeys.has(groupId)) return false;
-    return autoOpen || openWorkActionGroupKeys.has(groupId);
-  }
-
   function pinWorkActionGroupOpen(groupId: string): void {
     if (openWorkActionGroupKeys.has(groupId)) return;
     openWorkActionGroupKeys = new Set([...openWorkActionGroupKeys, groupId]);
@@ -3668,12 +3660,13 @@
                         {#if groupIsCollapsible}
                           {@const groupAutoOpen =
                             workGroup.id === autoOpenActionGroupId}
-                          {@const groupOpen = workActionGroupOpen(
-                            workGroup.id,
-                            groupAutoOpen,
-                          )}
+                          {@const groupOpen =
+                            !closedWorkActionGroupKeys.has(workGroup.id) &&
+                            (groupAutoOpen ||
+                              openWorkActionGroupKeys.has(workGroup.id))}
                           <details
                             class="work-action-group"
+                            data-work-action-group={workGroup.id}
                             open={groupOpen}
                             use:preserveDetailsToggleScroll
                             on:toggle={(event) =>
@@ -3705,16 +3698,18 @@
                                 groupOverview,
                               )}
                             </summary>
-                            <div class="work-action-group-entries">
-                              {#each workGroup.entries as displayEntry (getVisualWorkDisplayEntryKey(displayEntry))}
-                                {@render renderWorkDisplayEntry(
-                                  displayEntry,
-                                  item,
-                                  workKey,
-                                  visibleWorkEntries,
-                                )}
-                              {/each}
-                            </div>
+                            {#if groupOpen}
+                              <div class="work-action-group-entries">
+                                {#each workGroup.entries as displayEntry (getVisualWorkDisplayEntryKey(displayEntry))}
+                                  {@render renderWorkDisplayEntry(
+                                    displayEntry,
+                                    item,
+                                    workKey,
+                                    visibleWorkEntries,
+                                  )}
+                                {/each}
+                              </div>
+                            {/if}
                           </details>
                         {:else}
                           {#each workGroup.entries as displayEntry (getVisualWorkDisplayEntryKey(displayEntry))}

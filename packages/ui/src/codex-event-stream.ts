@@ -538,6 +538,7 @@ export interface CodexAppHistoryMessage {
   tokensUsed?: number;
   tokenUsage?: CodexAppTokenUsage;
   model?: string;
+  turnId?: string;
 }
 
 export interface CodexAppTokenUsage {
@@ -1503,7 +1504,16 @@ export function codexLiveMessagesFromEvent(
       context.pendingCompactionMarker = { ...liveMarker, timestamp };
     }
   }
-  return messages;
+  const turnId =
+    event.turnId ??
+    (typeof event.params.turnId === "string"
+      ? event.params.turnId
+      : undefined);
+  return turnId
+    ? messages.map((message) =>
+        message.turnId ? message : { ...message, turnId },
+      )
+    : messages;
 }
 
 export function codexAppHistoryMessagesFromThread(
@@ -1544,7 +1554,11 @@ export function codexAppHistoryMessagesFromThread(
         timestamp: completedTimestamp,
       };
     }
-    messages.push(...turnMessages);
+    messages.push(
+      ...turnMessages.map((message) =>
+        turnId && !message.turnId ? { ...message, turnId } : message,
+      ),
+    );
   }
   return messages;
 }

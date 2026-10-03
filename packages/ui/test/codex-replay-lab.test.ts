@@ -1521,6 +1521,7 @@ Narrate this page live`,
         id: "codex-tool-call-b",
         role: "assistant",
         timestamp: "1970-01-01T00:00:00.000Z",
+        turnId: "turn-b",
         blocks: [
           {
             type: "tool_use",

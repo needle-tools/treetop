@@ -682,6 +682,33 @@ describe("visual plan extraction", () => {
 });
 
 describe("buildVisualTranscriptItems", () => {
+  it("uses app-server turn boundaries when canonical turns omit user rows", () => {
+    const messages: Message[] = [
+      {
+        ...msg("assistant", "Inspecting the first turn"),
+        turnId: "turn-1",
+        blocks: [{ type: "thinking", text: "Inspecting the first turn" }],
+      },
+      { ...msg("assistant", "First answer"), turnId: "turn-1" },
+      {
+        ...msg("assistant", "Inspecting the second turn"),
+        turnId: "turn-2",
+        blocks: [{ type: "thinking", text: "Inspecting the second turn" }],
+      },
+      { ...msg("assistant", "Second answer"), turnId: "turn-2" },
+    ];
+
+    const items = buildVisualTranscriptItems(messages);
+
+    expect(items.map((item) => item.kind)).toEqual([
+      "work",
+      "message",
+      "work",
+      "message",
+    ]);
+    expect(items.filter((item) => item.kind === "work")).toHaveLength(2);
+  });
+
   it("keeps user turns as right-alignable message items", () => {
     const items = buildVisualTranscriptItems([
       msg("user", "please fix it", "2026-06-19T10:00:00.000Z"),
@@ -2138,6 +2165,30 @@ describe("updateVisualTranscriptItems", () => {
     expect(window.messageIndexOffset).toBe(0);
     expect(window.messages[0]?.blocks[0]?.text).toBe("first");
     expect(window.messages.at(-2)?.blocks[0]?.text).toBe("latest");
+  });
+
+  it("bounds app-server history by canonical turn IDs when turns omit user rows", () => {
+    const messages: Message[] = [];
+    for (let turn = 0; turn < 40; turn += 1) {
+      for (let item = 0; item < 100; item += 1) {
+        messages.push({
+          ...msg("assistant", `turn ${turn}, item ${item}`),
+          turnId: `turn-${turn}`,
+        });
+      }
+    }
+
+    const window = visualTranscriptMessageWindow(messages, {
+      minMessages: 100,
+      minUserTurns: 2,
+    });
+
+    expect(window.messageIndexOffset).toBe(3800);
+    expect(window.hiddenMessageCount).toBe(3800);
+    expect(window.messages).toHaveLength(200);
+    expect(new Set(window.messages.map((message) => message.turnId))).toEqual(
+      new Set(["turn-38", "turn-39"]),
+    );
   });
 
   it("keeps canonical message indexes when updating a visible tail window", () => {
