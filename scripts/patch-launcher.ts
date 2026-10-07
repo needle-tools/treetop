@@ -31,6 +31,38 @@ const targets = [
 
 const MARKER = "/* SUPERGIT_LAUNCHER_PATCHED */";
 
+const DPI_MARKER = "/* TREETOP_PER_MONITOR_DPI */";
+const DPI_INIT = `
+  ${DPI_MARKER}
+  // Set the process default on the launcher thread before the Worker
+  // can create any HWND. Windows otherwise bitmap-stretches our UI.
+  if (process.platform === "win32") {
+    try {
+      const { dlopen: _dpiDlopen } = __require("bun:ffi");
+      const _dpiUser32 = _dpiDlopen("user32.dll", {
+        SetProcessDpiAwarenessContext: { args: ["i64"], returns: "i32" },
+      });
+      try {
+        // DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2 = (HANDLE)-4.
+        if (!_dpiUser32.symbols.SetProcessDpiAwarenessContext(-4n)) {
+          console.warn("[LAUNCHER] Could not enable per-monitor DPI awareness (process default may already be set)");
+        }
+      } finally { _dpiUser32.close(); }
+    } catch (error) {
+      console.warn("[LAUNCHER] Could not initialize DPI awareness:", error);
+    }
+  }
+`;
+
+export function addDpiAwarenessBeforeWorker(source: string): string {
+  if (source.includes(DPI_MARKER)) return source;
+  const worker = source.indexOf("new Worker(");
+  if (worker < 0) throw new Error("Unrecognized launcher: missing app Worker");
+  // Insert before the complete statement, including a possible assignment.
+  const lineStart = source.lastIndexOf("\n", worker) + 1;
+  return source.slice(0, lineStart) + DPI_INIT + source.slice(lineStart);
+}
+
 /** Cleanup must finish before the Worker can create its first WebView2.
  * Existing patched templates also need migration: the marker alone does
  * not mean they have the safe startup order. */
@@ -143,7 +175,7 @@ if (import.meta.main) for (const path of targets) {
   }
   const src = readFileSync(path, "utf8");
   if (src.includes(MARKER)) {
-    const migrated = moveCleanupBeforeWorker(src);
+    const migrated = addDpiAwarenessBeforeWorker(moveCleanupBeforeWorker(src));
     if (migrated !== src) writeFileSync(path, migrated);
     console.log(`  ${migrated !== src ? "moved cleanup before Worker" : "already patched"}: ${path}`);
     continue;
@@ -180,7 +212,7 @@ if (import.meta.main) for (const path of targets) {
       "\n" +
       POST_CLOSE +
       src.slice(found);
-    writeFileSync(path, moveCleanupBeforeWorker(out));
+    writeFileSync(path, addDpiAwarenessBeforeWorker(moveCleanupBeforeWorker(out)));
     console.log(`  patched (new API): ${path}`);
     continue;
   }
@@ -199,6 +231,6 @@ if (import.meta.main) for (const path of targets) {
   let out = src.slice(0, mExit.index!) + POST_CLOSE + "  " + src.slice(mExit.index!);
   const mStart2 = out.match(ENTRY_OLD);
   out = out.slice(0, mStart2!.index!) + PRE_INIT + "  " + out.slice(mStart2!.index!);
-  writeFileSync(path, moveCleanupBeforeWorker(out));
+  writeFileSync(path, addDpiAwarenessBeforeWorker(moveCleanupBeforeWorker(out)));
   console.log(`  patched (old API): ${path}`);
 }

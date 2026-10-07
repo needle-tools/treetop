@@ -1,11 +1,60 @@
 import { expect, test } from "bun:test";
 import { resolve } from "node:path";
-import { moveCleanupBeforeWorker } from "../../../scripts/patch-launcher";
+import { moveCleanupBeforeWorker, addDpiAwarenessBeforeWorker } from "../../../scripts/patch-launcher";
 import {
   DEFAULT_APP_BUNDLE_ID,
   DEFAULT_APP_NAME,
   defaultAppPathFor,
 } from "../../../scripts/build-launch";
+
+test("launcher enables per-monitor v2 DPI before starting the window worker, once", () => {
+  const source = "new Worker();";
+  const fixed = addDpiAwarenessBeforeWorker(source);
+  const events: unknown[] = [];
+  const run = (platform: string, success = true) => {
+    events.length = 0;
+    new Function("process", "__require", "Worker", "console", fixed)(
+      { platform },
+      () => ({ dlopen: () => ({ symbols: {
+        SetProcessDpiAwarenessContext: (context: bigint) => { events.push(context); return success ? 1 : 0; },
+      }, close: () => events.push("close") }) }),
+      class { constructor() { events.push("worker"); } },
+      { warn: () => events.push("warning") },
+    );
+    return [...events];
+  };
+  expect(run("win32")).toEqual([-4n, "close", "worker"]);
+  expect(run("darwin")).toEqual(["worker"]);
+  expect(run("linux")).toEqual(["worker"]);
+  expect(run("win32", false)).toEqual([-4n, "warning", "close", "worker"]);
+  expect(addDpiAwarenessBeforeWorker(fixed)).toBe(fixed);
+});
+
+test.skipIf(process.platform !== "win32")("launcher sets the real Windows DPI context to per-monitor v2", () => {
+  const script = addDpiAwarenessBeforeWorker(`
+    new Worker();
+  `);
+  const probe = `
+    const __require = require;
+    class Worker {
+      constructor() {
+        const { dlopen } = require("bun:ffi");
+        const user32 = dlopen("user32.dll", {
+          GetThreadDpiAwarenessContext: { args: [], returns: "i64" },
+          AreDpiAwarenessContextsEqual: { args: ["i64", "i64"], returns: "i32" },
+        });
+        const context = user32.symbols.GetThreadDpiAwarenessContext();
+        console.log(user32.symbols.AreDpiAwarenessContextsEqual(context, -4n));
+        user32.close();
+      }
+    }
+    ${script}
+  `;
+  const child = Bun.spawnSync([process.execPath, "-e", probe]);
+  expect(child.exitCode).toBe(0);
+  expect(child.stdout.toString().trim()).toBe("1");
+  expect(child.stderr.toString()).toBe("");
+});
 
 test("build:launch defaults to the Treetop electrobun artifact names", () => {
   expect(DEFAULT_APP_NAME).toBe("Treetop");

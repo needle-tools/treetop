@@ -81,6 +81,16 @@ Tracking cross-platform issues found while porting supergit to Windows.
 
 ## Fixed (general bugs)
 
+- [x] **Blurry native app on scaled displays (2026-10-07, source fix)** —
+      The installed launcher reported `PROCESS_DPI_UNAWARE`, causing Windows
+      to bitmap-stretch the web UI. `scripts/patch-launcher.ts` now sets
+      `DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2` on the launcher thread
+      before starting the app Worker, including already-patched templates.
+      Execution tests verify ordering, idempotence, platform guards, and
+      initialization warnings; a separate Windows process verifies the real
+      native DPI context. Requires rebuilding and relaunching the app;
+      the running app was left untouched.
+
 - [x] **White window on rapid close/reopen (2026-09-10, source fix)** —
       installed `Resources/main.js` started the app Worker before running
       synchronous WebView2 cleanup. The first launch took 3.7s to start the
