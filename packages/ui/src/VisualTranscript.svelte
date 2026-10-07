@@ -1223,17 +1223,21 @@
 
   function subagentTitle(meta: VisualSubagentMeta): string {
     const label = visualSubagentLabel(meta);
-    if (meta.action === "spawn") return `Spawn ${label}`;
-    if (meta.action === "wait") return `Wait for ${label}`;
+    if (meta.action === "spawn") return `Subagent ${label} started`;
+    if (meta.action === "wait") return `Waiting for ${label}`;
     if (meta.status === "completed") return `${label} completed`;
     if (meta.status === "failed") return `${label} failed`;
-    return `Subagent ${label}`;
+    return `${label} active`;
   }
 
   function subagentPreview(meta: VisualSubagentMeta): string {
-    return (meta.result || meta.task || meta.id || "")
+    return (meta.result || meta.task || "")
       .replace(/\s+/g, " ")
       .trim();
+  }
+
+  function subagentMetadata(meta: VisualSubagentMeta): string {
+    return [meta.model, meta.effort, meta.type].filter(Boolean).join(" · ");
   }
 
   function workSummarySubagents(
@@ -1485,6 +1489,18 @@
   function workEntryHasExpandableContent(
     entry: VisualWorkEntry<NormalizedBlock, NormalizedMessage>,
   ): boolean {
+    const subagent = entry.blocks
+      .map((block) => visualSubagentMetaFromBlock(block))
+      .find(Boolean);
+    if (subagent) {
+      return !!(
+        subagent.task ||
+        subagent.result ||
+        subagent.model ||
+        subagent.effort ||
+        subagent.type
+      );
+    }
     if (!isThinkingWorkEntry(entry)) return true;
     return entry.blocks.some(
       (block) =>
@@ -2186,6 +2202,34 @@
     <ToolIcon name="spawn_agent" />
     <span>{visualSubagentLabel(meta)}</span>
   </button>
+{/snippet}
+
+{#snippet renderSubagentDetails(meta: VisualSubagentMeta)}
+  <div class="subagent-detail-card">
+    {#if subagentMetadata(meta)}
+      <div class="subagent-detail-meta">{subagentMetadata(meta)}</div>
+    {/if}
+    {#if meta.task}
+      <div class="subagent-detail-section">
+        <span class="subagent-detail-label">Input</span>
+        <div
+          class="md"
+          data-supergit-markdown-source={meta.task}
+          use:mermaidDiagrams={meta.task}
+        >{@html md(meta.task)}</div>
+      </div>
+    {/if}
+    {#if meta.result}
+      <div class="subagent-detail-section">
+        <span class="subagent-detail-label">Output</span>
+        <div
+          class="md"
+          data-supergit-markdown-source={meta.result}
+          use:mermaidDiagrams={meta.result}
+        >{@html md(meta.result)}</div>
+      </div>
+    {/if}
+  </div>
 {/snippet}
 
 {#snippet renderPreviewPathButton(
@@ -3053,6 +3097,7 @@
                             visualSubagentMetaFromBlocks(
                               toolBlock,
                               visibleResultBlock,
+                              displayEntry.pairedSubagent,
                             ) ?? visualSubagentMetaFromBlock(entry.blocks[0])}
                           {@const observedProcessOutput =
                             visualObservedProcessOutput(
@@ -3154,17 +3199,24 @@
                               data-visual-scroll-anchor={entryRenderKey}
                             >
                               <div class="work-entry-summary">
-                                <span
-                                  class="work-tool-chip icon-only work-thinking-chip"
-                                >
-                                  {@render renderThinkingIcon()}
-                                </span>
-                                <span
-                                  class="work-tool-preview work-thinking-preview"
-                                  title={collapsedPreview || collapsedTitle}
-                                >
-                                  {collapsedPreview || collapsedTitle}
-                                </span>
+                                {#if subagentMeta}
+                                  {@render renderSubagentBadge(subagentMeta)}
+                                  <span class="work-tool-preview">
+                                    {subagentTitle(subagentMeta)}
+                                  </span>
+                                {:else}
+                                  <span
+                                    class="work-tool-chip icon-only work-thinking-chip"
+                                  >
+                                    {@render renderThinkingIcon()}
+                                  </span>
+                                  <span
+                                    class="work-tool-preview work-thinking-preview"
+                                    title={collapsedPreview || collapsedTitle}
+                                  >
+                                    {collapsedPreview || collapsedTitle}
+                                  </span>
+                                {/if}
                                 {#if entry.message.timestamp}
                                   <span
                                     class="muted small work-entry-time"
@@ -3486,7 +3538,9 @@
                                   class="work-entry-body"
                                   on:wheel|capture={handOffNestedWheel}
                                 >
-                                  {#if editSummary}
+                                  {#if subagentMeta}
+                                    {@render renderSubagentDetails(subagentMeta)}
+                                  {:else if editSummary}
                                     {@render renderFileEditSummary(editSummary)}
                                     <details
                                       class="work-raw-tool-details"
@@ -4904,6 +4958,25 @@
   }
   .subagent-detail {
     align-items: flex-start;
+  }
+  .subagent-detail-card {
+    display: grid;
+    gap: 0.55rem;
+    min-width: 0;
+  }
+  .subagent-detail-meta,
+  .subagent-detail-label {
+    color: var(--text-muted);
+    font-size: 0.68rem;
+  }
+  .subagent-detail-section {
+    display: grid;
+    gap: 0.25rem;
+    min-width: 0;
+  }
+  .subagent-detail-section :global(.md) {
+    min-width: 0;
+    color: var(--text-2);
   }
   .work-tool-chip.icon-only {
     padding: 0.14rem 0.32rem;

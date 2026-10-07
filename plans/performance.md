@@ -1292,6 +1292,17 @@ the shared transcript scroller back to its live tail. Analysis rows navigate
 through that same controller; exact analysis-map edges map to exact transcript
 edges, while interior rows retain semantic turn-centered navigation.
 
+The follow handle had a separate end-position regression (2026-10-07): its
+forced correction still applied the live-work top alignment, which could leave
+a compact transcript 168px above its real bottom. Both handles now request an
+exact end jump. That bottom-follow choice stays armed across later output until
+the reader pauses or the session resets; automatic live-work alignment remains
+the default for other follow requests. A Chromium regression clicks the real
+handle with an overflowing live-work body and checks both scroll endpoints to
+within 1px, then verifies that later output is still followed. Controller tests
+also cover a response growing beyond the near-end threshold and upward reader
+input detaching again.
+
 Live app-server history failures were a separate blank-pane path from the
 visibility/render lifecycle bugs. `SessionView` permanently remembered a
 failed history key, so a transient timeout or socket failure could leave an
@@ -1409,6 +1420,16 @@ and a late prior-turn reply remains before an optimistic next request while
 tail-follow stays active. This browser test runs as part of the normal
 repository `bun test` discovery, rather than living as a manual Replay Lab
 check.
+
+A 2026-10-07 question-popup review found that `AsyncQuestionCard` inherited
+16px body and option text and introduced oversized padding, rounded tiles,
+and a circled uppercase heading beside the compact composer panels. It now
+uses their existing typography, small radius, spacing, and action-button
+treatment; the question pane shares the goal/plan pane width. The amber accent
+remains, while the decorative question circles are removed from the card,
+request heading, and composer badge. The browser lifecycle test compares
+rendered question typography, panel geometry, and control radii with the
+existing goal panel so this mismatch cannot silently return.
 
 A 2026-09-23 FHIR session exposed the complementary failure after acceptance:
 the live normalizer handled `agentMessage` item snapshots but discarded the

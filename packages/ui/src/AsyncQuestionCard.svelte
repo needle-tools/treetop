@@ -14,10 +14,7 @@
 </script>
 
 <div class="async-question" data-answered={answered || undefined}>
-  <div class="async-question-heading">
-    <span class="async-question-symbol" aria-hidden="true">?</span>
-    <span>Question</span>
-  </div>
+  <div class="async-question-heading">Question</div>
   {#if text}
     <div class="async-question-prompt">{text}</div>
   {/if}
@@ -49,80 +46,73 @@
 <style>
   .async-question {
     display: grid;
-    gap: 0.55rem;
-    margin: 0.35rem 0;
-    padding: 0.8rem 0.9rem;
+    gap: 0.35rem;
+    min-width: 0;
+    padding: 0.45rem 0.5rem;
     border: 1px solid
       color-mix(in srgb, var(--warning, #e0a34b) 42%, var(--surface-3));
-    border-radius: 0.75rem;
+    border-radius: var(--radius-sm);
     background: color-mix(
       in srgb,
       var(--warning, #e0a34b) 9%,
-      var(--surface-2)
+      var(--surface-1)
     );
   }
   .async-question[data-answered] {
     border-color: var(--surface-3);
-    background: var(--surface-2);
+    background: var(--surface-1);
   }
   .async-question-heading {
-    display: flex;
-    align-items: center;
-    gap: 0.35rem;
     color: var(--warning, #e0a34b);
-    font-size: 0.72rem;
-    font-weight: 700;
-    letter-spacing: 0.04em;
-    text-transform: uppercase;
-  }
-  .async-question-symbol {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    width: 1.2rem;
-    height: 1.2rem;
-    border: 1px solid currentColor;
-    border-radius: 999px;
-    font-size: 0.72rem;
-    font-weight: 800;
-    line-height: 1;
+    font-size: 0.75rem;
+    font-weight: 650;
   }
   .async-question-prompt {
     color: var(--text-1);
-    font-weight: 600;
-    line-height: 1.4;
+    font-size: 0.74rem;
+    line-height: 1.35;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
   }
   .async-question-options {
     display: flex;
     flex-wrap: wrap;
-    gap: 0.45rem;
+    gap: 0.35rem;
   }
   .async-question-options button,
   .async-question-option {
     display: grid;
     gap: 0.15rem;
-    padding: 0.45rem 0.65rem;
-    border: 1px solid var(--surface-3);
-    border-radius: 0.55rem;
-    color: var(--text-1);
-    background: var(--surface-1);
+    min-height: 1.5rem;
+    padding: 0.25rem 0.55rem;
+    border: 1px solid color-mix(in srgb, var(--surface-3) 86%, transparent);
+    border-radius: var(--radius-sm);
+    color: var(--text-2);
+    background: color-mix(in srgb, var(--surface-1) 80%, transparent);
     text-align: left;
     font: inherit;
+    font-size: 0.68rem;
+    font-weight: 700;
+    line-height: 1;
   }
   .async-question-options button:not(:disabled) {
     cursor: pointer;
   }
-  .async-question-options button:not(:disabled):hover {
+  .async-question-options button:not(:disabled):hover,
+  .async-question-options button:focus-visible {
+    color: var(--text-1);
     border-color: var(--warning, #e0a34b);
-    background: color-mix(
-      in srgb,
-      var(--warning, #e0a34b) 15%,
-      var(--surface-1)
-    );
+    outline: none;
+  }
+  .async-question-options button:disabled {
+    opacity: 0.45;
+    cursor: default;
   }
   .async-question-options small,
   .async-question-answered {
     color: var(--text-muted);
-    font-size: 0.72rem;
+    font-size: 0.68rem;
+    font-weight: 400;
+    line-height: 1.35;
   }
 </style>

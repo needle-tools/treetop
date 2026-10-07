@@ -332,6 +332,9 @@ export interface PersistedSession {
    *  source canonicalization in the current page. Deliberately not restored
    *  by `sanitizeSession`; reloads should key by the persisted source. */
   renderKey?: string;
+  /** UI-only parent lane for subagent navigation. Deliberately not restored
+   *  by `sanitizeSession`; the parent remains open in the current strip. */
+  returnSource?: string;
 }
 
 /** Parse the app-wide Codex defaults into the names persisted on a session.

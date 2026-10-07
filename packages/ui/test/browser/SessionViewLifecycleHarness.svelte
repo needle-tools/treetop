@@ -8,6 +8,7 @@
   let stopped = false;
   const terminal = new URLSearchParams(location.search).has("terminal");
   let attachTermId: string | undefined = terminal ? "test-terminal" : undefined;
+  let openedSubagentId = "";
 </script>
 
 <main class="session-lifecycle-stage" data-working={working} data-stopped={stopped}>
@@ -25,7 +26,9 @@
     onStopVisualApp={() => (stopped = true)}
     onVisualResume={() => (stopped = false)}
     spawnReady={false}
+    onOpenSubagent={(subagentId) => (openedSubagentId = subagentId)}
   />
+  <output data-opened-subagent>{openedSubagentId}</output>
 </main>
 
 <style>

@@ -281,6 +281,7 @@ export interface VisualWorkDisplayEntry<
   pairedResult?: VisualWorkEntry<B, M>;
   pairedMedia?: B[];
   pairedToolUse?: VisualWorkEntry<B, M>;
+  pairedSubagent?: B;
   markerBlock?: B;
   markerKind?: VisualMarkerKind;
   markerLabel?: string;
@@ -437,22 +438,30 @@ function normalizedSubagentToolName(
 export function visualSubagentMetaFromBlocks(
   toolUseBlock: MessageBlock | undefined,
   resultBlock?: MessageBlock | undefined,
+  activityBlock?: MessageBlock | undefined,
 ): VisualSubagentMeta | undefined {
+  const activity = visualSubagentMetaFromBlock(activityBlock);
   const direct =
     visualSubagentMetaFromToolResult(toolUseBlock, resultBlock) ??
     visualSubagentMetaFromBlock(resultBlock) ??
-    visualSubagentMetaFromBlock(toolUseBlock);
+    visualSubagentMetaFromBlock(toolUseBlock) ??
+    activity;
   if (!direct) return undefined;
   const input = recordFromUnknown(toolUseBlock?.toolInput);
   return {
     ...direct,
+    id: direct.id ?? activity?.id,
     nickname:
       direct.nickname ??
+      activity?.nickname ??
       stringFromUnknown(input?.task_name) ??
       stringFromUnknown(input?.target),
-    type: direct.type ?? stringFromUnknown(input?.agent_type),
-    model: direct.model ?? stringFromUnknown(input?.model),
-    effort: direct.effort ?? stringFromUnknown(input?.reasoning_effort),
+    type: direct.type ?? activity?.type ?? stringFromUnknown(input?.agent_type),
+    model: direct.model ?? activity?.model ?? stringFromUnknown(input?.model),
+    effort:
+      direct.effort ??
+      activity?.effort ??
+      stringFromUnknown(input?.reasoning_effort),
     task: visibleSubagentText(direct.task ?? input?.message),
   };
 }
@@ -563,6 +572,7 @@ export function visualWorkSubagents<
     ...entry.entry.blocks,
     ...(entry.pairedToolUse?.blocks ?? []),
     ...(entry.pairedResult?.blocks ?? []),
+    ...(entry.pairedSubagent ? [entry.pairedSubagent] : []),
   ];
   for (const entry of entries) {
     for (const block of blocksFor(entry)) {
@@ -586,7 +596,7 @@ export function visualWorkSubagents<
       (block) => block.type === "subagent",
     );
     const meta =
-      visualSubagentMetaFromBlocks(toolUse, result) ??
+      visualSubagentMetaFromBlocks(toolUse, result, directBlock) ??
       visualSubagentMetaFromBlock(directBlock);
     if (!meta) continue;
     const toolUseId =
@@ -601,12 +611,55 @@ export function visualWorkSubagents<
       ...meta,
       ...(id ? { id } : {}),
       nickname: existing?.nickname ?? meta.nickname,
+      type: existing?.type ?? meta.type,
+      model: existing?.model ?? meta.model,
+      effort: existing?.effort ?? meta.effort,
       task: existing?.task ?? meta.task,
       result: meta.result ?? existing?.result,
     });
   }
   return [...byKey.values()];
 }
+
+/** Current child-agent roster for a rendered transcript window. Each child is
+ * represented once, with its latest lifecycle state and richest known spawn /
+ * completion metadata. */
+export function visualTranscriptSubagents<
+  B extends MessageBlock,
+  M extends Message<B>,
+>(items: readonly VisualTranscriptItem<B, M>[]): VisualSubagentMeta[] {
+  const byKey = new Map<string, VisualSubagentMeta>();
+  for (const item of items) {
+    if (item.kind !== "work") continue;
+    let workSubagents = visualTranscriptSubagentWorkCache.get(item);
+    if (!workSubagents) {
+      workSubagents = visualWorkSubagents(
+        buildVisualWorkDisplayEntries(item.entries),
+      );
+      visualTranscriptSubagentWorkCache.set(item, workSubagents);
+    }
+    for (const meta of workSubagents) {
+      const key = meta.id ?? `${meta.action}:${visualSubagentLabel(meta)}`;
+      const existing = byKey.get(key);
+      byKey.set(key, {
+        ...existing,
+        ...meta,
+        nickname: existing?.nickname ?? meta.nickname,
+        type: existing?.type ?? meta.type,
+        model: existing?.model ?? meta.model,
+        effort: existing?.effort ?? meta.effort,
+        task: existing?.task ?? meta.task,
+        result: meta.result ?? existing?.result,
+      });
+    }
+  }
+  return [...byKey.values()];
+}
+
+const visualTranscriptSubagentWorkCache = new WeakMap<
+  object,
+  VisualSubagentMeta[]
+>();
 
 export function visualSubagentLabel(meta: VisualSubagentMeta): string {
   return (
@@ -1287,6 +1340,7 @@ export function buildVisualWorkDisplayEntries<
   const collapsedMediaIndexes = new Set<number>();
   const collapsedResultIndexes = new Set<number>();
   const collapsedSubagentNotificationIndexes = new Set<number>();
+  const subagentActivityByToolUseIndex = new Map<number, B>();
 
   for (let index = 0; index < entries.length; index += 1) {
     const entry = entries[index]!;
@@ -1375,6 +1429,19 @@ export function buildVisualWorkDisplayEntries<
 
   for (let index = 1; index < entries.length; index += 1) {
     if (!hasBlockType(entries[index]!, "subagent")) continue;
+    const activityBlock = firstSubagentBlock(entries[index]);
+    if (
+      activityBlock?.toolUseId &&
+      toolUseById.has(activityBlock.toolUseId) &&
+      visualSubagentMetaFromBlock(activityBlock)?.action === "spawn"
+    ) {
+      subagentActivityByToolUseIndex.set(
+        toolUseById.get(activityBlock.toolUseId)!,
+        activityBlock,
+      );
+      collapsedSubagentNotificationIndexes.add(index);
+      continue;
+    }
     const previousIndex = index - 1;
     if (
       isRedundantSubagentNotification(
@@ -1437,6 +1504,11 @@ export function buildVisualWorkDisplayEntries<
       pairedResults,
       pairedResult: pairedResults?.at(-1),
       pairedMedia,
+      pairedSubagent: subagentActivityByToolUseIndex.get(
+        hasBlockType(entry, "tool_use")
+          ? index
+          : (toolUseIndexByResult.get(index) ?? -1),
+      ),
       pairedToolUse,
       previewContext: snapshotUidLabels ? { snapshotUidLabels } : undefined,
     };

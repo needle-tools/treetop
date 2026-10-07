@@ -452,4 +452,36 @@ describe("session scroll controller", () => {
     expect(scroller.scrollTop).toBe(1_000_000_000);
     expect(controller.isPaused).toBe(false);
   });
+
+  test("keeps an explicit end jump at the bottom during live work and later tail growth", () => {
+    const scheduler = new ManualScheduler();
+    const { scroller, workBody } = fakeLiveWorkScroller();
+    const controller = createSessionScrollController({ scheduler });
+    controller.setElement(scroller);
+    controller.updateTail("initial-live-work");
+    scheduler.flush();
+    controller.setPaused(true);
+
+    controller.scrollToEdge("end");
+    scheduler.flush();
+    expect(scroller.scrollTop).toBe(1_000_000_000);
+    expect(workBody.scrollTop).toBe(1_000_000_000);
+
+    // A new response can grow by more than the near-end threshold in one
+    // render, before a browser scroll event has a chance to correct it.
+    scroller.querySelector = () => null;
+    scroller.scrollTop = 1_500;
+    scroller.scrollHeight += 300;
+    controller.updateTail("later-live-output");
+    scheduler.flush();
+    expect(scroller.scrollTop).toBe(1_000_000_000);
+    expect(controller.isActive).toBe(true);
+
+    controller.onWheel({ deltaY: -100 } as WheelEvent);
+    scroller.scrollTop = 1_600;
+    controller.updateTail("output-after-reader-scroll");
+    scheduler.flush();
+    expect(scroller.scrollTop).toBe(1_600);
+    expect(controller.isPaused).toBe(true);
+  });
 });

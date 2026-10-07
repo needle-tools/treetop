@@ -14,6 +14,7 @@ import {
   latestVisualPlan,
   visualSubagentMetaFromBlock,
   visualSubagentMetaFromBlocks,
+  visualTranscriptSubagents,
   visualWorkSubagents,
 } from "../src/last-user-message";
 
@@ -535,9 +536,8 @@ describe("visual transcript provider flow", () => {
     });
 
     const { work } = onlyWorkItem(session.messages);
-    const agents = visualWorkSubagents(
-      buildVisualWorkDisplayEntries(work.entries),
-    );
+    const displayEntries = buildVisualWorkDisplayEntries(work.entries);
+    const agents = visualWorkSubagents(displayEntries);
     expect(agents).toEqual([
       expect.objectContaining({
         id: childId,
@@ -546,6 +546,19 @@ describe("visual transcript provider flow", () => {
       }),
     ]);
     expect(agents[0]?.task).toBeUndefined();
+    expect(
+      displayEntries.filter(
+        (entry) => entry.entry.blocks[0]?.type === "subagent",
+      ),
+    ).toHaveLength(1);
+    expect(visualTranscriptSubagents(onlyWorkItem(session.messages).items)).toEqual([
+      expect.objectContaining({
+        id: childId,
+        nickname: "audio_types",
+        model: "gpt-5.6-luna",
+        status: "completed",
+      }),
+    ]);
   });
 
   test("attaches Codex turn approval context to command tools", () => {

@@ -2,6 +2,7 @@ import { mount } from "svelte";
 import "../../src/styles/tokens.css";
 import "../../src/styles/base.css";
 import "../../src/styles/popover.css";
+import "../../src/styles/composer-panel.css";
 import "../../src/styles/header.css";
 import SessionViewLifecycleHarness from "./SessionViewLifecycleHarness.svelte";
 

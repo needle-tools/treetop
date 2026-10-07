@@ -1,4 +1,4 @@
-import { isLiveCodexAppSource } from "./storage";
+import { codexAppSource, isLiveCodexAppSource } from "./storage";
 
 /**
  * Pure session-source routing helpers extracted from App.svelte.
@@ -83,6 +83,28 @@ export interface OpenSession {
    *  new-session picker when the box offers >1 shell (Windows: PowerShell
    *  vs CMD). Overrides the daemon's default shell in cmdForOpenSession. */
   shellCmd?: string[];
+}
+
+export function subagentSessionTarget(options: {
+  parentSource: string;
+  childId: string;
+  transcriptSource: string;
+}): {
+  source: string;
+  transcriptSource?: string;
+  returnSource: string;
+} {
+  if (isLiveCodexAppSource(options.parentSource)) {
+    return {
+      source: codexAppSource(options.childId),
+      transcriptSource: options.transcriptSource,
+      returnSource: options.parentSource,
+    };
+  }
+  return {
+    source: options.transcriptSource,
+    returnSource: options.parentSource,
+  };
 }
 
 export interface Worktree {

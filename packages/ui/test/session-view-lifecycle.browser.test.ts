@@ -72,6 +72,28 @@ function threadPage(complete: boolean): unknown {
         aggregatedOutput: "/tmp/treetop-session-lifecycle\n",
       },
       {
+        id: "latest-subagent-spawn",
+        type: "dynamicToolCall",
+        tool: "spawn_agent",
+        arguments: {
+          task_name: "layout_review",
+          model: "gpt-6-astra",
+          reasoning_effort: "high",
+          message: "Review the lifecycle layout without changing it.",
+        },
+        result: {
+          agent_id: "child-layout-review",
+          nickname: "Kierkegaard",
+        },
+      },
+      {
+        id: "latest-subagent-activity",
+        type: "subAgentActivity",
+        kind: "started",
+        agentThreadId: "child-layout-review",
+        agentPath: "/root/layout_review",
+      },
+      {
         id: "latest-question",
         type: "agentMessage",
         delivery: "async",
@@ -315,6 +337,227 @@ describe("SessionView browser lifecycle", { concurrency: false }, () => {
     } finally { await currentPage.close(); }
   }, 30000);
 
+  test("surfaces a canonical subagent roster and opens the selected child", async () => {
+    const currentPage = await openHarness();
+    const badge = currentPage.getByRole("button", {
+      name: "Show subagents",
+    });
+    await badge.waitFor();
+    expect(await badge.textContent()).toContain("Subagents: 1");
+    await badge.click();
+    const pane = currentPage.getByLabel("Codex subagents");
+    await pane.getByText("Kierkegaard").waitFor();
+    await pane.getByText("gpt-6-astra · high").waitFor();
+    await pane
+      .getByText("Review the lifecycle layout without changing it.")
+      .waitFor();
+    await pane.locator(".composer-panel-item").click();
+    expect(
+      await currentPage.locator("[data-opened-subagent]").textContent(),
+    ).toBe("child-layout-review");
+    expect(
+      await currentPage.locator(".messages").getByText("child-layout-review").count(),
+    ).toBe(0);
+    await currentPage.close();
+  }, 30_000);
+
+  test("queue and subagents share the composer panel and item system", async () => {
+    const currentPage = await openHarness();
+    await currentPage
+      .getByRole("button", { name: "Show subagents" })
+      .click();
+    const subagentPanel = currentPage.getByLabel("Codex subagents");
+    await subagentPanel.waitFor();
+    expect(await subagentPanel.getAttribute("data-composer-panel")).toBe(
+      "subagents",
+    );
+    const subagentItem = subagentPanel.locator(".composer-panel-item");
+    await subagentItem.waitFor();
+    const sharedCardStyles = async (locator: typeof subagentItem) =>
+      locator.evaluate((element) => {
+        const style = getComputedStyle(element);
+        return {
+          borderRadius: style.borderRadius,
+          background: style.backgroundColor,
+          padding: style.padding,
+        };
+      });
+    const subagentCardStyles = await sharedCardStyles(subagentItem);
+    await currentPage
+      .getByRole("button", { name: "Collapse subagents" })
+      .click();
+
+    emitCodexEvents([
+      {
+        kind: "notification",
+        method: "turn/started",
+        params: { threadId, turn: { id: "turn-queue" } },
+        threadId,
+        turnId: "turn-queue",
+        receivedAt: "2026-10-07T10:00:00.000Z",
+      },
+    ]);
+    const composer = currentPage.locator(".composer-input");
+    await composer.fill("Run the focused queue regression next");
+    await currentPage
+      .getByRole("button", { name: "Queue Codex message" })
+      .click();
+    const queueBadge = currentPage.getByRole("button", {
+      name: "Show queued messages",
+    });
+    await queueBadge.waitFor();
+    await queueBadge.click();
+
+    const queuePanel = currentPage.getByLabel("Queued Codex messages");
+    expect(await queuePanel.getAttribute("data-composer-panel")).toBe("queue");
+    const queueItem = queuePanel.locator(".composer-panel-item");
+    await queueItem.waitFor();
+    await queueItem.getByText("Next", { exact: true }).waitFor();
+    await queueItem
+      .getByText("Run the focused queue regression next")
+      .waitFor();
+
+    expect(await sharedCardStyles(queueItem)).toEqual(subagentCardStyles);
+    await currentPage.close();
+  }, 30_000);
+
+  test("the follow handle reaches the exact bottom and keeps following streamed output", async () => {
+    const currentPage = await openHarness();
+    await currentPage
+      .locator(".session-lifecycle-stage")
+      .evaluate((element) => {
+        (element as HTMLElement).style.height = "320px";
+        (element as HTMLElement).style.setProperty(
+          "--session-body-min-height",
+          "12rem",
+        );
+      });
+    const messages = currentPage.locator(".messages");
+    const followHandle = currentPage.locator(".session-tail-follow");
+    emitCodexEvents([
+      {
+        kind: "notification",
+        method: "turn/started",
+        params: { threadId, turn: { id: latestTurnId } },
+        threadId,
+        turnId: latestTurnId,
+        receivedAt: "2026-10-07T09:59:59.000Z",
+      },
+    ]);
+    await currentPage.locator(".work-foldout-live").waitFor();
+    emitCodexEvents(
+      Array.from({ length: 12 }, (_, index) => ({
+        kind: "notification",
+        method: "item/completed",
+        params: {
+          threadId,
+          turnId: latestTurnId,
+          item: {
+            id: `follow-command-${index}`,
+            type: "commandExecution",
+            command: `/bin/zsh -lc 'echo ${index}'`,
+            status: "completed",
+            aggregatedOutput: `${index}\n`,
+          },
+        },
+        threadId,
+        turnId: latestTurnId,
+        receivedAt: "2026-10-07T09:59:59.000Z",
+      })),
+    );
+    await currentPage.waitForTimeout(150);
+    const actionGroup = currentPage
+      .locator(".work-foldout-live .work-action-group")
+      .last();
+    if ((await actionGroup.getAttribute("open")) === null) {
+      await actionGroup.locator(":scope > summary").click();
+    }
+    await currentPage.waitForTimeout(150);
+    const liveBody = currentPage.locator(
+      ".work-foldout-live > .work-foldout-body",
+    );
+    expect(
+      await liveBody.evaluate(
+        (element) => element.scrollHeight - element.clientHeight,
+      ),
+    ).toBeGreaterThan(0);
+    await messages.evaluate((element) => {
+      element.dispatchEvent(
+        new WheelEvent("wheel", { bubbles: true, deltaY: -100 }),
+      );
+      element.scrollTop = element.scrollHeight - element.clientHeight - 40;
+      element.dispatchEvent(new Event("scroll", { bubbles: true }));
+    });
+    expect(await followHandle.getAttribute("class")).not.toContain("active");
+    await followHandle.click();
+    await currentPage.waitForTimeout(150);
+    const tailDistance = () =>
+      messages.evaluate(
+        (element) =>
+          element.scrollHeight - element.clientHeight - element.scrollTop,
+      );
+    expect(await tailDistance()).toBeLessThanOrEqual(1);
+    expect(await followHandle.getAttribute("class")).toContain("active");
+    expect(
+      await liveBody.evaluate(
+        (element) =>
+          element.scrollHeight - element.clientHeight - element.scrollTop,
+      ),
+    ).toBeLessThanOrEqual(1);
+
+    emitCodexEvents([
+      {
+        kind: "notification",
+        method: "turn/started",
+        params: { threadId, turn: { id: "turn-follow" } },
+        threadId,
+        turnId: "turn-follow",
+        receivedAt: "2026-10-07T10:00:00.000Z",
+      },
+      {
+        kind: "notification",
+        method: "item/completed",
+        params: {
+          threadId,
+          turnId: "turn-follow",
+          item: {
+            id: "follow-user",
+            type: "userMessage",
+            content: [
+              { type: "text", text: "Continue following this request" },
+            ],
+          },
+        },
+        threadId,
+        turnId: "turn-follow",
+        receivedAt: "2026-10-07T10:00:01.000Z",
+      },
+      {
+        kind: "notification",
+        method: "item/completed",
+        params: {
+          threadId,
+          turnId: "turn-follow",
+          item: {
+            id: "follow-answer",
+            type: "agentMessage",
+            text: "The next output is visible at the bottom.",
+          },
+        },
+        threadId,
+        turnId: "turn-follow",
+        receivedAt: "2026-10-07T10:00:02.000Z",
+      },
+    ]);
+    await messages
+      .getByText("The next output is visible at the bottom.")
+      .waitFor();
+    await currentPage.waitForTimeout(150);
+    expect(await tailDistance()).toBeLessThanOrEqual(1);
+    expect(await followHandle.getAttribute("class")).toContain("active");
+    await currentPage.close();
+  }, 30_000);
+
   test(
     "surfaces async transcript questions in the composer and work flow",
     async () => {
@@ -347,6 +590,67 @@ describe("SessionView browser lifecycle", { concurrency: false }, () => {
       const questionPane = currentPage.getByLabel("Codex questions");
       await questionPane.getByText("Which scope should this use?").waitFor();
       await questionPane.getByRole("button", { name: "Current file" }).waitFor();
+      const questionStyles = await questionPane.evaluate((pane) => {
+        const style = getComputedStyle(pane);
+        const prompt = getComputedStyle(
+          pane.querySelector(".async-question-prompt")!,
+        );
+        const option = getComputedStyle(
+          pane.querySelector(".async-question-options button")!,
+        );
+        const card = getComputedStyle(pane.querySelector(".async-question")!);
+        return {
+          width: style.width,
+          padding: style.padding,
+          radius: style.borderRadius,
+          font: prompt.fontSize,
+          weight: prompt.fontWeight,
+          lineHeight: prompt.lineHeight,
+          optionFont: option.fontSize,
+          optionRadius: option.borderRadius,
+          cardRadius: card.borderRadius,
+        };
+      });
+      emitCodexEvents([
+        {
+          kind: "notification",
+          method: "thread/goal/updated",
+          params: {
+            threadId,
+            turnId: latestTurnId,
+            goal: {
+              threadId,
+              objective: "Use the existing composer styles.",
+              status: "active",
+            },
+          },
+          threadId,
+          turnId: latestTurnId,
+          receivedAt: "2026-10-07T11:00:00.000Z",
+        },
+      ]);
+      await currentPage
+        .getByRole("button", { name: "Show goal", exact: true })
+        .click();
+      const goalPane = currentPage.getByLabel("Codex goal", { exact: true });
+      await goalPane.waitFor();
+      const goalStyles = await goalPane.evaluate((pane) => {
+        const style = getComputedStyle(pane);
+        const text = getComputedStyle(pane.querySelector(".codex-goal-objective")!);
+        const action = getComputedStyle(pane.querySelector(".codex-goal-action")!);
+        return {
+          width: style.width,
+          padding: style.padding,
+          radius: style.borderRadius,
+          font: text.fontSize,
+          weight: text.fontWeight,
+          lineHeight: text.lineHeight,
+          optionFont: action.fontSize,
+          optionRadius: action.borderRadius,
+          cardRadius: action.borderRadius,
+        };
+      });
+      expect(questionStyles).toEqual(goalStyles);
       await currentPage.close();
     },
     30_000,

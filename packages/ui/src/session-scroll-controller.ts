@@ -96,6 +96,7 @@ export class SessionScrollController {
   private tailKey = "";
   private renderedOnce = false;
   private paused = false;
+  private followExactEnd = false;
   private active = false;
   private pauseSeq = 0;
   private readerRestoreSeq = 0;
@@ -159,8 +160,9 @@ export class SessionScrollController {
   scrollToEdge(edge: "start" | "end"): void {
     if (!this.el) return;
     if (edge === "end") {
+      this.followExactEnd = true;
       this.forceTailFollow();
-      this.el.scrollTop = 1_000_000_000;
+      scrollToEnd(this.el);
     } else {
       this.setPaused(true);
       this.el.scrollTop = 0;
@@ -201,6 +203,7 @@ export class SessionScrollController {
     this.renderedOnce = false;
     this.tailKey = "";
     this.paused = false;
+    this.followExactEnd = false;
     this.pointerScrollIntent = false;
     this.pausedLiveWorkBodyKeys.clear();
     this.pauseSeq += 1;
@@ -215,6 +218,7 @@ export class SessionScrollController {
   }
 
   setPaused(paused: boolean): void {
+    if (paused) this.followExactEnd = false;
     if (this.paused !== paused) {
       this.paused = paused;
       this.pauseSeq += 1;
@@ -224,7 +228,9 @@ export class SessionScrollController {
 
   updateIntent(): void {
     if (!this.el) return;
-    const liveWorkDelta = this.liveWorkDelta(this.el);
+    const liveWorkDelta = this.followExactEnd
+      ? undefined
+      : this.liveWorkDelta(this.el);
     this.setPaused(
       liveWorkDelta !== undefined
         ? Math.abs(liveWorkDelta) > VISUAL_TAIL_FOLLOW_RESUME_PX
@@ -396,7 +402,9 @@ export class SessionScrollController {
     const pauseSeq = this.pauseSeq;
     const selecting = this.hasActiveSelection();
     const shouldStick =
-      (!this.paused && !selecting && this.liveWorkDelta(el) !== undefined) ||
+      (!this.paused &&
+        !selecting &&
+        (this.followExactEnd || this.liveWorkDelta(el) !== undefined)) ||
       shouldFollowVisualTail({
         force,
         firstRender,
@@ -454,7 +462,7 @@ export class SessionScrollController {
     this.setActive(
       !!el &&
         !this.paused &&
-        (this.liveWorkDelta(el) !== undefined ||
+        ((!this.followExactEnd && this.liveWorkDelta(el) !== undefined) ||
           isVisualTailFollowActive({
             metrics: metrics(el),
             paused: false,
@@ -473,7 +481,11 @@ export class SessionScrollController {
   }
 
   private applyTailFollow(el: HTMLElement): void {
-    const liveWorkDelta = this.liveWorkDelta(el);
+    // A reader's jump to the end must stay at the real bottom. The default
+    // live-work alignment can otherwise pull it back above the latest output.
+    const liveWorkDelta = this.followExactEnd
+      ? undefined
+      : this.liveWorkDelta(el);
     if (liveWorkDelta !== undefined) el.scrollTop += liveWorkDelta;
     else scrollToEnd(el);
     this.scrollLiveWorkBodiesToEnd(el);

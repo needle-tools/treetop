@@ -35,6 +35,7 @@ import {
   shouldMountTerminalView,
   shouldRenderSessionReadBody,
   shouldApplyTranscriptSessionOverride,
+  subagentSessionTarget,
   type AgentSession,
   type ShellRecord,
   type OpenSession,
@@ -1384,6 +1385,35 @@ describe("resumeTargetForSessionSurface", () => {
         hasVisualResume: false,
       }),
     ).toBeNull();
+  });
+});
+
+describe("subagentSessionTarget", () => {
+  test("opens children of live app-server sessions through app-server while retaining the transcript path", () => {
+    expect(
+      subagentSessionTarget({
+        parentSource: "__codex_app__:parent-thread",
+        childId: "child-thread",
+        transcriptSource: "/sessions/child-thread.jsonl",
+      }),
+    ).toEqual({
+      source: "__codex_app__:child-thread",
+      transcriptSource: "/sessions/child-thread.jsonl",
+      returnSource: "__codex_app__:parent-thread",
+    });
+  });
+
+  test("keeps children of saved transcripts on the transcript transport", () => {
+    expect(
+      subagentSessionTarget({
+        parentSource: "/sessions/parent.jsonl",
+        childId: "child-thread",
+        transcriptSource: "/sessions/child-thread.jsonl",
+      }),
+    ).toEqual({
+      source: "/sessions/child-thread.jsonl",
+      returnSource: "/sessions/parent.jsonl",
+    });
   });
 });
 

@@ -15,6 +15,7 @@
     reconcileLiveAgentTerminals,
     selectDormantTuiSources,
     selectSessionsForBackgroundSpawn,
+    subagentSessionTarget,
     type BackgroundSpawnCandidate,
   } from "./session-source-routing";
   import {
@@ -3605,6 +3606,8 @@
     /** UI-only key that keeps a mounted column alive when its persisted
      *  source is canonicalized (e.g. shell `__new__` → `__attached__`). */
     renderKey?: string;
+    /** UI-only source of the parent lane that opened this subagent. */
+    returnSource?: string;
     /** Explicit shell command for a plain terminal column, stamped by
      *  openNewTerminalInWt when the box offered >1 shell (Windows:
      *  PowerShell vs CMD). cmdForOpenSession prefers it over the
@@ -4088,8 +4091,13 @@
       return;
     }
 
+    const target = subagentSessionTarget({
+      parentSource: currentSource,
+      childId: body.sessionId ?? subagentId,
+      transcriptSource: body.source,
+    });
     const existing = openSessionsByWt[wtPath] ?? [];
-    const alreadyOpen = existing.find((entry) => entry.source === body.source);
+    const alreadyOpen = existing.find((entry) => entry.source === target.source);
     if (alreadyOpen) {
       scrollNewColIntoView(wtPath, alreadyOpen.source);
       return;
@@ -4097,8 +4105,10 @@
 
     const entry: OpenSession = {
       agent: body.agent ?? "codex",
-      source: body.source,
+      source: target.source,
       resumeSessionId: body.sessionId ?? subagentId,
+      transcriptSource: target.transcriptSource,
+      returnSource: target.returnSource,
     };
     rememberSessionSurface(entry, surface);
     const currentIndex = existing.findIndex(
@@ -4111,7 +4121,7 @@
     const next = [...existing];
     next.splice(insertAt, 0, entry);
     openSessionsByWt = { ...openSessionsByWt, [wtPath]: next };
-    scrollNewColIntoView(wtPath, body.source);
+    scrollNewColIntoView(wtPath, target.source);
   }
   const visibleWorktreesPersistence = new VisibleWorktreesStore(
     getDaemonKV(),
@@ -12811,6 +12821,13 @@
                                       subagentId,
                                       surface,
                                     )}
+                                  onNavigateBack={s.returnSource
+                                    ? () =>
+                                        scrollNewColIntoView(
+                                          wt.path,
+                                          s.returnSource!,
+                                        )
+                                    : undefined}
                                   onOpenRemotePath={(remoteHost, remotePath) =>
                                     void openTranscriptRemotePath(
                                       wt.path,
