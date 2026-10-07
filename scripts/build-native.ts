@@ -23,6 +23,7 @@ import { existsSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { installPayloadPathspec } from "../packages/daemon/src/provision";
+import { DAEMON_BUILD_EXTERNALS } from "./build-native-options";
 
 const ROOT = resolve(import.meta.dir, "..");
 const BUILD = resolve(ROOT, "build");
@@ -81,7 +82,8 @@ await mkdir(FLAT, { recursive: true });
 // On Windows `bun build --compile` auto-appends `.exe`; on mac/linux it doesn't.
 const binaryPath = join(FLAT, `supergit${exe}`);
 const buildTime = new Date().toISOString();
-await $`bun build --compile ${resolve(ROOT, "packages/daemon/src/server.ts")} --outfile ${join(FLAT, "supergit")} --define process.env.SUPERGIT_BUILD_TIME='"${buildTime}"'`.quiet();
+const externalArgs = DAEMON_BUILD_EXTERNALS.flatMap(name => ["--external", name]);
+await $`bun build --compile ${resolve(ROOT, "packages/daemon/src/server.ts")} --outfile ${join(FLAT, "supergit")} ${externalArgs} --define process.env.SUPERGIT_BUILD_TIME='"${buildTime}"'`.quiet();
 // Write build-info.json so the Electrobun entry script knows our version.
 await writeFile(join(FLAT, "build-info.json"), JSON.stringify({ buildTime }));
 console.log("     ✓ Daemon binary compiled");

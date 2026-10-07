@@ -1,5 +1,19 @@
 import { expect, test } from "bun:test";
 import { resolve } from "node:path";
+import { mkdtemp, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { DAEMON_BUILD_EXTERNALS } from "../../../scripts/build-native-options";
+
+test("daemon bundles SSH without requiring its optional native CPU detector", async () => {
+  const directory = await mkdtemp(resolve(tmpdir(), "treetop-ssh-bundle-"));
+  const entrypoint = resolve(directory, "entry.ts");
+  await writeFile(entrypoint, `import { Client, Server } from ${JSON.stringify(require.resolve("ssh2"))}; export { Client, Server };`);
+  const result = await Bun.build({ entrypoints: [entrypoint], outdir: directory, target: "bun", external: DAEMON_BUILD_EXTERNALS });
+  expect(result.success).toBe(true);
+  const bundled = await import(result.outputs[0]!.path);
+  expect(typeof bundled.Client).toBe("function");
+  expect(typeof bundled.Server).toBe("function");
+});
 import { restoreWindowState, captureWindowState, restoreWindowModeOnReady } from "../../../src/electrobun/window-state";
 
 test("startup fullscreen waits for the inner webview and restores only once", () => {

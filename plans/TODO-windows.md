@@ -4,6 +4,12 @@ Tracking cross-platform issues found while porting supergit to Windows.
 
 ## Fixed (source code)
 
+- [x] **Daemon compile fails on `cpufeatures.node`** — SSH's optional
+      `cpu-features` module may be installed without its native addon. The
+      standalone daemon build now marks it external so ssh2's existing
+      runtime fallback handles its absence. A regression test bundles the
+      actual SSH implementation and loads its Client/Server exports successfully.
+
 - [x] **Restored fullscreen inner height** — applying saved fullscreen/maximized
       mode immediately after BrowserWindow creation races WebView2's asynchronous
       controller initialization. Restore once on the first `dom-ready` event so
