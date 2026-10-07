@@ -23,6 +23,8 @@ export interface Toast {
    *  dismisses the toast). Used by the session-share invite toast to
    *  open the accept/decline dialog. */
   onClick?: () => void;
+  /** Persist acknowledgement when the user closes or clicks a reminder. */
+  onDismiss?: () => void;
   /** When true, the toast does NOT auto-dismiss on a timer. The user
    *  has to click the body (which fires onClick) or the close button.
    *  Used for invite toasts that should persist until acted on. */
@@ -39,6 +41,7 @@ export type AddToastOpts = {
   messageItalic?: boolean;
   ttlMs?: number;
   onClick?: () => void;
+  onDismiss?: () => void;
   persist?: boolean;
   silent?: boolean;
 };
@@ -111,6 +114,7 @@ export function createToastManager<H = ReturnType<typeof setTimeout>>(
         agent: opts.agent,
         messageItalic: opts.messageItalic,
         onClick: opts.onClick,
+        onDismiss: opts.onDismiss,
         persist: opts.persist,
       },
     ];
@@ -137,6 +141,7 @@ export function createToastManager<H = ReturnType<typeof setTimeout>>(
   }
 
   function dismissToast(id: number): void {
+    const toast = toastList.find(toast => toast.id === id);
     const h = timers.get(id);
     if (h !== undefined) {
       clear(h);
@@ -144,6 +149,7 @@ export function createToastManager<H = ReturnType<typeof setTimeout>>(
     }
     toastList = toastList.filter((x) => x.id !== id);
     notify();
+    toast?.onDismiss?.();
   }
 
   function toasts(): Toast[] {

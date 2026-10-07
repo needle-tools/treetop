@@ -11,6 +11,18 @@ import { describe, it, expect, beforeEach } from "bun:test";
 import { createToastManager } from "../src/toast-manager";
 import type { Toast } from "../src/toast-manager";
 
+it("persistent reminder dismissal invokes acknowledgement once without a timeout", () => {
+  const deps = makeDeps();
+  const manager = createToastManager(deps);
+  let acknowledged = 0;
+  const id = manager.addToast({ kind: "info", message: "Reminder", persist: true, onDismiss: () => { acknowledged++; } });
+  expect(manager.toasts()).toHaveLength(1);
+  expect(deps.scheduled).toHaveLength(0);
+  manager.dismissToast(id);
+  manager.dismissToast(id);
+  expect(acknowledged).toBe(1);
+});
+
 // ---------------------------------------------------------------------------
 // Fake dependency factories
 // ---------------------------------------------------------------------------

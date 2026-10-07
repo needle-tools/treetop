@@ -16,8 +16,26 @@ import { join } from "node:path";
 import { Workspace, type Repo } from "../src/workspace";
 import { EventLog } from "../src/events";
 import { handleMcp, handleMcpHttp, withTreetopMcp } from "../src/mcp";
+import { remindersForWorkspace } from "../src/reminders";
 
 describe("MCP dashboard tools", () => {
+  test("schedules, filters and cancels durable project/session reminders through MCP", async () => {
+    const ctx = await setup();
+    const repo = await ctx.workspace.addRepo(await tempDir());
+    const result = await ctx.call("schedule_reminder", { title: "Cloud review", message: "Check logs", details: "More information", delay_seconds: 60, repo_id: repo.id, session_source: "session.jsonl" });
+    const reminder = JSON.parse(result.result.content[0].text);
+    expect(reminder.status).toBe("scheduled");
+    expect(reminder.sessionSource).toBe("session.jsonl");
+    const listed = JSON.parse((await ctx.call("list_reminders", { repo_id: repo.id, status: "scheduled" })).result.content[0].text);
+    expect(listed.map((item: any) => item.id)).toEqual([reminder.id]);
+    expect((await ctx.call("schedule_reminder", { title: "x", message: "x", delay_seconds: 1, repo_id: "missing" })).error.code).toBe(-32602);
+    expect((await ctx.call("schedule_reminder", { title: "x", message: "x", delay_seconds: 0 })).error.code).toBe(-32602);
+    expect((await ctx.call("schedule_reminder", { title: "x", message: "x", delay_seconds: 1, at: "2030-01-01T00:00:00Z" })).error.code).toBe(-32602);
+    await ctx.call("cancel_reminder", { id: reminder.id });
+    expect(await remindersForWorkspace(ctx.workspace.path).takeDue(Date.now() + 120000)).toEqual([]);
+    expect(JSON.parse((await ctx.call("list_reminders", { status: "cancelled" })).result.content[0].text)[0].id).toBe(reminder.id);
+    expect(ctx.changes.some(change => change.kind === "reminder_changed")).toBe(true);
+  });
   test("lists and searches sessions across projects with filters and pagination", async () => {
     const workspace = await Workspace.open(await mkdtemp(join(tmpdir(), "mcp-session-query-")));
     const events = await EventLog.open(workspace.path);
@@ -92,6 +110,10 @@ describe("MCP dashboard tools", () => {
         "open_session",
         "list_sessions",
         "search_sessions",
+        "schedule_reminder",
+        "list_reminders",
+        "cancel_reminder",
+        "dismiss_reminder",
       ]),
     );
     const initialized = (await handleMcp(

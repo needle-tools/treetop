@@ -104,6 +104,7 @@ import {
 } from "./ollama-sessions";
 import { feedShellInput, clearShellInputBuffer } from "./shell-input";
 import { handleMcpHttp, withTreetopMcp } from "./mcp";
+import { remindersForWorkspace, startReminderScheduler, handleRemindersHttp } from "./reminders";
 import * as inflight from "./inflight";
 import { pingSubscribers } from "./sse-heartbeat";
 import { changeKindInvalidatesRepos } from "./sse-change-kinds";
@@ -511,6 +512,8 @@ process.title =
 
 const workspace = await Workspace.open(WORKSPACE_PATH);
 const events = await EventLog.open(WORKSPACE_PATH);
+const reminderStore = remindersForWorkspace(workspace.path);
+let stopReminders: (() => void) | undefined;
 const errors = await ErrorLog.open(INSTANCE_LOG_PATH);
 const shells = await ShellsLog.open(
   READONLY_MODE ? INSTANCE_RUNTIME_PATH : WORKSPACE_PATH,
@@ -6680,6 +6683,12 @@ const server = Bun.serve<TermWsData, never>({
         return json({ inbox, mutes });
       }
 
+      if (url.pathname === "/api/reminders" || url.pathname.startsWith("/api/reminders/")) {
+        const response = await handleRemindersHttp(req, reminderStore, change => broadcast("change", change));
+        for (const [key, value] of Object.entries(CORS)) response.headers.set(key, value);
+        return response;
+      }
+
       if (url.pathname === "/api/messages/send" && req.method === "POST") {
         // Sender side — POST our message to the chosen peer's
         // /api/messages/receive endpoint, then mirror the outbound
@@ -10696,6 +10705,10 @@ const server = Bun.serve<TermWsData, never>({
 });
 
 // Release the port cleanly when --watch restarts us, or on Ctrl-C.
+if (!READONLY_MODE) stopReminders = startReminderScheduler(reminderStore,
+  reminder => broadcast("change", { kind: "reminder_due", reminder }),
+  error => console.error("supergit daemon: reminder delivery failed", error));
+
 // Two failure modes we have to defend against:
 //   1) Re-entry: SIGINT (from terminal) and SIGTERM (from parent
 //      start.ts calling server.kill()) arrive back-to-back. Without a
@@ -10724,6 +10737,7 @@ const shutdown = async (signal: string) => {
   hardExit.unref?.();
   try {
     if (fetchTimer) clearInterval(fetchTimer);
+    stopReminders?.();
     stopActivity();
     // Soft-kill PTYs first (SIGTERM / ConPTY close), wait out the grace,
     // then force-kill stragglers — before we tear anything else down.

@@ -23,6 +23,7 @@ import { isAbsolute, resolve, relative } from "node:path";
 import { NotesStore } from "./notes";
 import { detectEditors, findWindowsFork } from "./open";
 import { detectAgents, agentsForWorktree, type AgentSession } from "./agents";
+import { remindersForWorkspace } from "./reminders";
 
 interface ToolDef {
   name: string;
@@ -35,6 +36,27 @@ interface ToolDef {
 }
 
 const TOOLS: ToolDef[] = [
+  {
+    name: "schedule_reminder",
+    description: "Schedule a one-time Treetop reminder. Supply either at (ISO timestamp with timezone) or delay_seconds. A persistent bottom-right toast appears when due; clicking opens details and optionally focuses repo_id and session_source. Reminders survive daemon restarts; while it is stopped they become due when it starts again. Does not send agent messages or execute commands.",
+    inputSchema: { type: "object", properties: {
+      title: { type: "string", maxLength: 4096 }, message: { type: "string", maxLength: 4096 },
+      details: { type: "string", maxLength: 16384 },
+      at: { type: "string", description: "ISO timestamp with Z or explicit timezone offset." },
+      delay_seconds: { type: "number", exclusiveMinimum: 0 },
+      repo_id: { type: "string", description: "Optional project from list_repos to focus on click." },
+      session_source: { type: "string", description: "Optional session source from list_sessions to focus on click." },
+    }, required: ["title", "message"] },
+  },
+  {
+    name: "list_reminders",
+    description: "List persistent Treetop reminders, earliest first. Filter by project or status; due reminders remain available until dismissed.",
+    inputSchema: { type: "object", properties: { repo_id: { type: "string" }, status: { type: "string", enum: ["scheduled", "due", "dismissed", "cancelled"] } } },
+  },
+  ...["cancel_reminder", "dismiss_reminder"].map((name): ToolDef => ({
+    name, description: name === "cancel_reminder" ? "Cancel a scheduled reminder by id without firing it." : "Dismiss a due reminder and remove its alert across Treetop windows.",
+    inputSchema: { type: "object", properties: { id: { type: "string" } }, required: ["id"] },
+  })),
   ...["list_sessions", "search_sessions"].map((name): ToolDef => ({
     name,
     description: name === "list_sessions"
@@ -227,7 +249,7 @@ interface McpContext {
 }
 
 const SERVER_INSTRUCTIONS =
-  "Treetop is the project dashboard hosting this agent session. Use its MCP tools when the user asks to manage Treetop projects, colors, order, commands, notes, or session columns. To add a command, call add_command; it saves a project action without running it. Use the session working directory or pass your current absolute cwd to identify the project; use list_repos to confirm project ids. Never guess another project's id. Only change Treetop state when requested by the user.";
+  "Treetop is the project dashboard hosting this agent session. Use its MCP tools when the user asks to manage Treetop projects, colors, order, commands, notes, reminders, or session columns. Use schedule_reminder for timed alerts; attach repo_id and session_source to link a project/session. To add a command, call add_command; it saves a project action without running it. Use the session working directory or pass your current absolute cwd to identify the project; use list_repos to confirm project ids. Never guess another project's id. Only change Treetop state when requested by the user.";
 
 /** Add only this session's MCP connection, preserving other agent settings. */
 export function withTreetopMcp(
@@ -339,6 +361,42 @@ async function dispatchMcp(
 
       try {
         switch (name) {
+          case "schedule_reminder": {
+            for (const field of ["title", "message", "details", "at", "repo_id", "session_source"]) {
+              if (args[field] !== undefined && typeof args[field] !== "string")
+                return err(request.id, -32602, `${name}: ${field} must be a string`);
+            }
+            if ((args.at !== undefined) === (args.delay_seconds !== undefined))
+              return err(request.id, -32602, `${name}: provide exactly one of at or delay_seconds`);
+            if (args.delay_seconds !== undefined && (typeof args.delay_seconds !== "number" || !Number.isFinite(args.delay_seconds) || args.delay_seconds <= 0 || args.delay_seconds > 315360000))
+              return err(request.id, -32602, `${name}: delay_seconds must be positive and at most ten years`);
+            if (args.repo_id !== undefined && !(await ctx.workspace.listRepos()).some(repo => repo.id === args.repo_id))
+              return err(request.id, -32602, `${name}: project not found`);
+            const now = Date.now();
+            const reminder = await remindersForWorkspace(ctx.workspace.path).schedule({
+              title: args.title as string, message: args.message as string, details: args.details as string | undefined,
+              dueAt: args.at as string | undefined ?? new Date(now + (args.delay_seconds as number) * 1000).toISOString(),
+              repoId: args.repo_id as string | undefined, sessionSource: args.session_source as string | undefined,
+            }, now);
+            ctx.changed?.({ kind: "reminder_changed", id: reminder.id });
+            return ok(request.id, textContent(JSON.stringify(reminder)));
+          }
+          case "list_reminders": {
+            if (args.repo_id !== undefined && typeof args.repo_id !== "string")
+              return err(request.id, -32602, `${name}: repo_id must be a string`);
+            if (args.status !== undefined && !["scheduled", "due", "dismissed", "cancelled"].includes(args.status as string))
+              return err(request.id, -32602, `${name}: invalid status`);
+            const items = (await remindersForWorkspace(ctx.workspace.path).list()).filter(item =>
+              (args.repo_id === undefined || item.repoId === args.repo_id) && (args.status === undefined || item.status === args.status));
+            return ok(request.id, textContent(JSON.stringify(items)));
+          }
+          case "cancel_reminder":
+          case "dismiss_reminder": {
+            if (typeof args.id !== "string" || !args.id.trim()) return err(request.id, -32602, `${name}: id is required`);
+            const reminder = await remindersForWorkspace(ctx.workspace.path).updateStatus(args.id, name === "cancel_reminder" ? "cancelled" : "dismissed");
+            ctx.changed?.({ kind: "reminder_changed", id: reminder.id });
+            return ok(request.id, textContent(JSON.stringify(reminder)));
+          }
           case "list_sessions":
           case "search_sessions": {
             for (const field of ["repo_id", "agent", "cwd", "after", "before", "query"]) {

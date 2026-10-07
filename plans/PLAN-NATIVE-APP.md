@@ -269,6 +269,27 @@ per-monitor-v2, upgrades previously patched templates, and passes both real
 Win32 probes. Probe assertions include exit code/stdout/stderr for future
 diagnosis. CI verification is pending push.
 
+### MCP reminders (2026-10-07)
+
+`schedule_reminder` accepts a timezone-qualified `at` or `delay_seconds`, title,
+message, optional plain-text details, `repo_id` and `session_source` (from session
+queries). `list_reminders` filters by project/status; `cancel_reminder` cancels
+scheduled items and `dismiss_reminder` acknowledges due ones. State is stored
+atomically in workspace `reminders.json`. The daemon checks once per second and
+catches overdue items on startup; notifications require a running daemon and
+surface when the dashboard reconnects. Read-only instances do not run timers.
+
+The header Reminders panel lists upcoming/due items. Due reminders show persistent
+bottom-right toasts, removed only by clicking or dismissing. Clicking opens a
+details dialog and focuses the optional linked project/session; the dialog also
+offers a Go to project/session action. Acknowledgement propagates across windows.
+SSE changes trigger refresh, with periodic reconciliation for missed events.
+MCP initialization instructions advertise reminders to supported agent clients.
+
+Validation: 57 focused reminder, MCP integration and toast tests pass; both UI
+components compile, and the new storage/controller modules pass strict TypeScript
+checks. The production daemon was not rebuilt or restarted.
+
 ### Earlier packaging questions
 
 - Does Electrobun's process model let us keep the daemon as a

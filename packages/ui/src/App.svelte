@@ -158,6 +158,13 @@
   } from "./summary-queue";
   import { openInvite } from "./receive-invite-dialog";
   import MessagesInbox from "./MessagesInbox.svelte";
+  import Reminders from "./Reminders.svelte";
+  import type { Reminder } from "../../daemon/src/reminders";
+  let reminderRevision = 0;
+  async function focusReminder(reminder: Reminder): Promise<void> {
+    if (reminder.repoId) await focusRepoRow(reminder.repoId);
+    if (reminder.sessionSource) await focusVoiceSession(reminder.sessionSource);
+  }
   import { refreshMessages } from "./messages-store";
   import RepoRecentSummary from "./RepoRecentSummary.svelte";
   import { marked } from "marked";
@@ -6808,6 +6815,10 @@
           }
           return;
         }
+        if (payload.kind === "reminder_due" || payload.kind === "reminder_changed") {
+          reminderRevision++;
+          return;
+        }
         if (
           payload.kind === "message_mute" ||
           payload.kind === "message_unmute" ||
@@ -9774,6 +9785,7 @@
           </span>
         </Tooltip>
         <MessagesInbox />
+        <Reminders revision={reminderRevision} {addToast} {dismissToast} {focusReminder} />
       </div>
 
       <div class="actions-anchor">
