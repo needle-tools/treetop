@@ -22,6 +22,7 @@ import { randomUUID } from "node:crypto";
 import { isAbsolute, resolve, relative } from "node:path";
 import { NotesStore } from "./notes";
 import { detectEditors, findWindowsFork } from "./open";
+import { detectAgents, agentsForWorktree, type AgentSession } from "./agents";
 
 interface ToolDef {
   name: string;
@@ -34,6 +35,27 @@ interface ToolDef {
 }
 
 const TOOLS: ToolDef[] = [
+  ...["list_sessions", "search_sessions"].map((name): ToolDef => ({
+    name,
+    description: name === "list_sessions"
+      ? "List discovered agent sessions across registered projects, newest first, with optional project, agent, cwd and activity-date filters. Includes session IDs and sources for resuming."
+      : "Search sessions across projects by case-insensitive literal text in IDs, titles, paths, and indexed first/recent user prompts. Does not search full transcripts. Supports the same filters as list_sessions.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        ...(name === "search_sessions" ? { query: { type: "string", minLength: 1 } } : {}),
+        repo_id: { type: "string" },
+        agent: { type: "string", enum: ["claude", "codex", "copilot", "ollama"] },
+        cwd: { type: "string", description: "Absolute working directory; includes nested folders." },
+        after: { type: "string", format: "date-time", description: "Inclusive lastActive lower bound." },
+        before: { type: "string", format: "date-time", description: "Inclusive lastActive upper bound." },
+        include_unregistered: { type: "boolean", default: false },
+        limit: { type: "integer", minimum: 1, maximum: 100, default: 25 },
+        offset: { type: "integer", minimum: 0, default: 0 },
+      },
+      ...(name === "search_sessions" ? { required: ["query"] } : {}),
+    },
+  })),
   {
     name: "add_command",
     description:
@@ -201,6 +223,7 @@ interface McpContext {
   changed?: (change: Record<string, unknown>) => void;
   runningCommands?: () => { repoId: string; [key: string]: unknown }[];
   sessionCwd?: string;
+  sessions?: () => Promise<AgentSession[]>;
 }
 
 const SERVER_INSTRUCTIONS =
@@ -316,6 +339,69 @@ async function dispatchMcp(
 
       try {
         switch (name) {
+          case "list_sessions":
+          case "search_sessions": {
+            for (const field of ["repo_id", "agent", "cwd", "after", "before", "query"]) {
+              if (args[field] !== undefined && typeof args[field] !== "string")
+                return err(request.id, -32602, `${name}: ${field} must be a string`);
+            }
+            if (name === "search_sessions" && (typeof args.query !== "string" || !args.query.trim()))
+              return err(request.id, -32602, `${name}: query is required`);
+            if (args.agent !== undefined && !["claude", "codex", "copilot", "ollama"].includes(args.agent as string))
+              return err(request.id, -32602, `${name}: invalid agent`);
+            if (args.cwd !== undefined && !isAbsolute(args.cwd as string))
+              return err(request.id, -32602, `${name}: cwd must be absolute`);
+            for (const field of ["after", "before"]) {
+              if (args[field] !== undefined && !Number.isFinite(Date.parse(args[field] as string)))
+                return err(request.id, -32602, `${name}: ${field} must be a valid timestamp`);
+            }
+            if (args.after && args.before && Date.parse(args.after as string) > Date.parse(args.before as string))
+              return err(request.id, -32602, `${name}: after must not exceed before`);
+            if (args.include_unregistered !== undefined && typeof args.include_unregistered !== "boolean")
+              return err(request.id, -32602, `${name}: include_unregistered must be boolean`);
+            const limit = args.limit ?? 25;
+            const offset = args.offset ?? 0;
+            if (typeof limit !== "number" || !Number.isInteger(limit) || limit < 1 || limit > 100 ||
+                typeof offset !== "number" || !Number.isInteger(offset) || offset < 0)
+              return err(request.id, -32602, `${name}: limit must be 1..100 and offset a nonnegative integer`);
+            const repos = await ctx.workspace.listRepos();
+            if (args.repo_id !== undefined && !repos.some(repo => repo.id === args.repo_id))
+              return err(request.id, -32602, `${name}: project not found`);
+            const [sessions, titles, worktrees] = await Promise.all([
+              ctx.sessions ? ctx.sessions() : detectAgents(ctx.workspace.path),
+              ctx.workspace.listSessionTitles(),
+              Promise.all(repos.map(async repo => ({ repo, worktrees: await listWorktrees(repo.path) }))),
+            ]);
+            const roots = worktrees.flatMap(entry => entry.worktrees.filter(wt => !wt.bare).map(wt => wt.path));
+            const projectBySource = new Map<string, typeof repos[number]>();
+            for (const entry of worktrees) {
+              for (const wt of entry.worktrees.filter(wt => !wt.bare)) {
+                for (const session of agentsForWorktree(wt.path, sessions, roots))
+                  projectBySource.set(session.source, entry.repo);
+              }
+            }
+            const cwdSources = args.cwd
+              ? new Set(agentsForWorktree(args.cwd as string, sessions).map(session => session.source))
+              : undefined;
+            const query = (args.query as string | undefined)?.trim().toLowerCase();
+            const matches = sessions.flatMap(session => {
+              const repo = projectBySource.get(session.source);
+              if ((!repo && !args.include_unregistered) || (args.repo_id && repo?.id !== args.repo_id) ||
+                  (args.agent && session.agent !== args.agent) || (cwdSources && !cwdSources.has(session.source))) return [];
+              const active = Date.parse(session.lastActive);
+              if ((args.after && !(active >= Date.parse(args.after as string))) ||
+                  (args.before && !(active <= Date.parse(args.before as string)))) return [];
+              const manualTitle = titles[session.source] || session.manualTitle;
+              const fields = [session.sessionId, session.source, session.cwd, session.title, manualTitle,
+                session.aiTitle, session.firstUserMessage, session.lastUserMessage, ...(session.lastUserMessages ?? []), repo?.name, repo?.path];
+              if (query && !fields.some(value => value?.toLowerCase().includes(query))) return [];
+              return [{ ...session, manualTitle, repoId: repo?.id ?? null, repoName: repo?.name ?? null, repoPath: repo?.path ?? null }];
+            }).sort((a, b) => Date.parse(b.lastActive) - Date.parse(a.lastActive) || a.source.localeCompare(b.source));
+            return ok(request.id, textContent(JSON.stringify({
+              sessions: matches.slice(offset, offset + limit), total: matches.length, limit, offset,
+              nextOffset: offset + limit < matches.length ? offset + limit : null,
+            })));
+          }
           case "add_command": {
             if (typeof args.command !== "string" || !args.command.trim())
               return err(

@@ -31,9 +31,10 @@ const targets = [
 
 const MARKER = "/* SUPERGIT_LAUNCHER_PATCHED */";
 
-const DPI_MARKER = "/* TREETOP_PER_MONITOR_DPI */";
-const DPI_INIT = `
-  ${DPI_MARKER}
+const LEGACY_DPI_MARKER = "/* TREETOP_PER_MONITOR_DPI */";
+const DPI_MARKER = "/* TREETOP_PER_MONITOR_DPI_V2 */";
+const LEGACY_DPI_INIT = `
+  ${LEGACY_DPI_MARKER}
   // Set the process default on the launcher thread before the Worker
   // can create any HWND. Windows otherwise bitmap-stretches our UI.
   if (process.platform === "win32") {
@@ -54,8 +55,21 @@ const DPI_INIT = `
   }
 `;
 
+const DPI_INIT = LEGACY_DPI_INIT
+  .replace(LEGACY_DPI_MARKER, DPI_MARKER)
+  .replace(
+    'SetProcessDpiAwarenessContext: { args: ["i64"], returns: "i32" },',
+    'SetProcessDpiAwarenessContext: { args: ["i64"], returns: "i32" },\n        SetThreadDpiAwarenessContext: { args: ["i64"], returns: "i64" },',
+  )
+  .replace(
+    '      } finally { _dpiUser32.close(); }',
+    '        // A preexisting thread override survives a process-default change.\n        if (!_dpiUser32.symbols.SetThreadDpiAwarenessContext(-4n)) {\n          console.warn("[LAUNCHER] Could not enable per-monitor DPI awareness on the launcher thread");\n        }\n      } finally { _dpiUser32.close(); }',
+  );
+
 export function addDpiAwarenessBeforeWorker(source: string): string {
   if (source.includes(DPI_MARKER)) return source;
+  // Upgrade launcher templates patched before thread overrides were handled.
+  source = source.replace(LEGACY_DPI_INIT, "");
   const worker = source.indexOf("new Worker(");
   if (worker < 0) throw new Error("Unrecognized launcher: missing app Worker");
   // Insert before the complete statement, including a possible assignment.

@@ -1,5 +1,20 @@
 import { expect, test } from "bun:test";
 import { resolve } from "node:path";
+import { restoreWindowState, captureWindowState } from "../../../src/electrobun/window-state";
+
+test("window restoration keeps normal bounds through fullscreen, maximize and minimize", () => {
+  const initial = restoreWindowState({ x: 10, y: 20, width: 1000, height: 800 });
+  expect(initial.fullscreen).toBe(false);
+  const fullscreen = captureWindowState(initial, { x: 0, y: 0, width: 1920, height: 1080 }, { fullscreen: true, maximized: false, minimized: false });
+  expect(fullscreen.width).toBe(1000);
+  expect(restoreWindowState(JSON.parse(JSON.stringify(fullscreen))).fullscreen).toBe(true);
+  const minimized = captureWindowState(fullscreen, { x: -32000, y: -32000, width: 160, height: 39 }, { fullscreen: false, maximized: false, minimized: true });
+  expect(minimized).toEqual(fullscreen);
+  const maximized = captureWindowState(initial, { x: 0, y: 0, width: 1920, height: 1040 }, { fullscreen: false, maximized: true, minimized: false });
+  expect(maximized.maximized).toBe(true);
+  expect(maximized.width).toBe(1000);
+  expect(restoreWindowState({ width: 0 }).width).toBe(1400);
+});
 import { moveCleanupBeforeWorker, addDpiAwarenessBeforeWorker } from "../../../scripts/patch-launcher";
 import {
   DEFAULT_APP_BUNDLE_ID,
@@ -17,25 +32,34 @@ test("launcher enables per-monitor v2 DPI before starting the window worker, onc
       { platform },
       () => ({ dlopen: () => ({ symbols: {
         SetProcessDpiAwarenessContext: (context: bigint) => { events.push(context); return success ? 1 : 0; },
+        SetThreadDpiAwarenessContext: (context: bigint) => { events.push("thread"); events.push(context); return -1n; },
       }, close: () => events.push("close") }) }),
       class { constructor() { events.push("worker"); } },
       { warn: () => events.push("warning") },
     );
     return [...events];
   };
-  expect(run("win32")).toEqual([-4n, "close", "worker"]);
+  expect(run("win32")).toEqual([-4n, "thread", -4n, "close", "worker"]);
   expect(run("darwin")).toEqual(["worker"]);
   expect(run("linux")).toEqual(["worker"]);
-  expect(run("win32", false)).toEqual([-4n, "warning", "close", "worker"]);
+  expect(run("win32", false)).toEqual([-4n, "warning", "thread", -4n, "close", "worker"]);
   expect(addDpiAwarenessBeforeWorker(fixed)).toBe(fixed);
 });
 
-test.skipIf(process.platform !== "win32")("launcher sets the real Windows DPI context to per-monitor v2", () => {
+for (const overrideThread of [false, true]) {
+test.skipIf(process.platform !== "win32")(`launcher sets the real Windows DPI context to per-monitor v2${overrideThread ? " with a preexisting thread override" : ""}`, () => {
   const script = addDpiAwarenessBeforeWorker(`
     new Worker();
   `);
   const probe = `
     const __require = require;
+    ${overrideThread ? `
+      const initial = require("bun:ffi").dlopen("user32.dll", {
+        SetThreadDpiAwarenessContext: { args: ["i64"], returns: "i64" },
+      });
+      initial.symbols.SetThreadDpiAwarenessContext(-1n);
+      initial.close();
+    ` : ""}
     class Worker {
       constructor() {
         const { dlopen } = require("bun:ffi");
@@ -51,10 +75,12 @@ test.skipIf(process.platform !== "win32")("launcher sets the real Windows DPI co
     ${script}
   `;
   const child = Bun.spawnSync([process.execPath, "-e", probe]);
-  expect(child.exitCode).toBe(0);
-  expect(child.stdout.toString().trim()).toBe("1");
-  expect(child.stderr.toString()).toBe("");
+  const diagnostic = `DPI probe exit=${child.exitCode}; stdout=${child.stdout.toString()}; stderr=${child.stderr.toString()}`;
+  expect(child.exitCode, diagnostic).toBe(0);
+  expect(child.stdout.toString().trim(), diagnostic).toBe("1");
+  expect(child.stderr.toString(), diagnostic).toBe("");
 });
+}
 
 test("build:launch defaults to the Treetop electrobun artifact names", () => {
   expect(DEFAULT_APP_NAME).toBe("Treetop");

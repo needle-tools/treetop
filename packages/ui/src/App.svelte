@@ -34,6 +34,8 @@
   import { onMount, onDestroy, tick } from "svelte";
   import { flip } from "svelte/animate";
   import {
+    loadZenRow,
+    saveZenRow,
     mergeOpenedSession,
     DismissedSessionsStore,
     ExpandedStore,
@@ -741,9 +743,9 @@
   let notesListOpen: Record<string, boolean> = {};
   /** Per-row "zen" focus — one worktree row takes over the viewport,
    *  hiding the top bar and all other rows. `null` = no row focused.
-   *  Toggled from the row-head; Esc exits. Purely cosmetic, no state
-   *  persisted to workspace. */
-  let zenRowKey: string | null = null;
+   *  Toggled from the row-head; Esc exits. Restored from daemon prefs. */
+  let zenRowKey: string | null = loadZenRow(getDaemonKV());
+  $: saveZenRow(getDaemonKV(), zenRowKey);
   /** Zen-mode override for notes visibility. Notes hide by default in
    *  zen (the whole point of zen is a clean focus surface) regardless
    *  of `notesHiddenByRow`; this flag lets the user explicitly show
@@ -4731,6 +4733,7 @@
    *  rows to lay out, then restore the saved scroll offset — unless the
    *  user already started scrolling, in which case we leave them be. */
   function restoreScrollPosition(): void {
+    if (zenRowKey) return;
     const raw = getDaemonKV().getItem(SCROLL_KEY);
     if (!raw) return;
     const target = parseInt(raw, 10);
@@ -7791,6 +7794,7 @@
     // once the initial load's repos have streamed in (see SCROLL_KEY).
     window.addEventListener("scroll", scrollSaver.trigger, { passive: true });
     void load("mount").then(() => {
+      if (zenRowKey && !rows.some(row => row.key === zenRowKey)) zenRowKey = null;
       restoreScrollPosition();
       // Re-spawn live PTYs for restored terminal-mode sessions in the
       // background so their dock dots light at startup (regression #4 B).

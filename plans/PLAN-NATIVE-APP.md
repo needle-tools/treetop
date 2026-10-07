@@ -239,6 +239,36 @@ cwd-based command registration, CLI startup arguments, concurrent session opens,
 secondary-worktree visibility, and idempotent UI column merging. Deployment
 requires the user's normal rebuild/relaunch; the running daemon is untouched.
 
+### Session queries and window restoration (2026-10-07)
+
+MCP `list_sessions` and `search_sessions` reuse cached agent discovery and attach
+registered project IDs, names and paths plus saved session titles. Both accept
+`repo_id`, `agent`, absolute `cwd` (including descendants), inclusive `after` /
+`before` activity timestamps, `include_unregistered`, `limit` (1–100), and
+`offset`. Results sort newest first and include total and nextOffset. Search is
+case-insensitive literal matching over session IDs, titles, paths and indexed
+first/recent user prompts, not full transcript text. Discovery covers Claude,
+Codex, Copilot and Ollama; new columns appear once an agent transcript is found.
+
+The native window preserves fullscreen/maximized mode alongside its existing
+per-device window bounds, retaining normal bounds while fullscreen/maximized
+and ignoring minimized frames. Close flushes pending state synchronously.
+Zen worktree selection lives in daemon prefs (`supergit:zenRow`), restores on
+startup, and clears when exited or the saved row no longer exists. Window mode
+restoration requires rebuilding the native launcher; no production process was
+restarted during implementation.
+
+Focused validation: 227 tests pass across session integration, window-launch
+and UI storage tests; App.svelte compiles. The local full suite's DPI probe
+passes, but two Git subprocess tests exceeded 5 seconds (all eight pull tests
+pass separately with a 15-second timeout). CI run 37644628977's original GitHub
+log shows the DPI probe returned 0 instead of 1. A real Win32 regression
+reproduces this with a preexisting thread override: changing the process default
+does not reset that override. The launcher now also sets its thread to
+per-monitor-v2, upgrades previously patched templates, and passes both real
+Win32 probes. Probe assertions include exit code/stdout/stderr for future
+diagnosis. CI verification is pending push.
+
 ### Earlier packaging questions
 
 - Does Electrobun's process model let us keep the daemon as a

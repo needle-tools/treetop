@@ -18,6 +18,40 @@ import { EventLog } from "../src/events";
 import { handleMcp, handleMcpHttp, withTreetopMcp } from "../src/mcp";
 
 describe("MCP dashboard tools", () => {
+  test("lists and searches sessions across projects with filters and pagination", async () => {
+    const workspace = await Workspace.open(await mkdtemp(join(tmpdir(), "mcp-session-query-")));
+    const events = await EventLog.open(workspace.path);
+    const makeRepo = async () => {
+      const path = await tempDir();
+      expect(await Bun.spawn(["git", "init", path], { stdout: "ignore", stderr: "ignore" }).exited).toBe(0);
+      return workspace.addRepo(path);
+    };
+    const a = await makeRepo();
+    const b = await makeRepo();
+    const sessions = [
+      { agent: "claude" as const, cwd: a.path, source: "a.jsonl", sessionId: "a", title: "Fix renderer", lastActive: "2026-10-07T12:00:00Z" },
+      { agent: "codex" as const, cwd: b.path, source: "b.jsonl", sessionId: "b", lastUserMessage: "Investigate RENDERER crash", lastActive: "2026-10-07T13:00:00Z" },
+      { agent: "copilot" as const, cwd: join(tmpdir(), "unregistered"), source: "outside", lastActive: "2026-10-07T14:00:00Z" },
+    ];
+    await workspace.setSessionTitle("a.jsonl", "Graphics bug");
+    const call = async (name: string, args: Record<string, unknown> = {}) => {
+      const response = await handleMcp({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name, arguments: args } }, { workspace, events, sessions: async () => sessions }) as any;
+      return response.error ? response : JSON.parse(response.result.content[0].text);
+    };
+    const found = await call("search_sessions", { query: "renderer", limit: 1 });
+    expect(found.total).toBe(2);
+    expect(found.sessions[0].repoId).toBe(b.id);
+    expect(found.nextOffset).toBe(1);
+    expect((await call("search_sessions", { query: "graphics" })).sessions[0].sessionId).toBe("a");
+    expect((await call("list_sessions", { repo_id: a.id, agent: "claude", cwd: a.path })).total).toBe(1);
+    expect((await call("list_sessions", { after: "2026-10-07T12:30:00Z", before: "2026-10-07T13:30:00Z" })).total).toBe(1);
+    expect((await call("list_sessions", { include_unregistered: true })).total).toBe(3);
+    expect((await call("search_sessions", { query: "renderer", offset: 1 })).sessions[0].repoId).toBe(a.id);
+    for (const args of [{ limit: -1 }, { offset: 0.5 }, { after: "bad" }, { agent: "bad" }, { cwd: "relative" }, { repo_id: "unknown" }]) {
+      expect((await call("list_sessions", args)).error.code).toBe(-32602);
+    }
+    expect((await call("search_sessions", { query: " " })).error.code).toBe(-32602);
+  });
   async function setup() {
     const workspace = await Workspace.open(
       await mkdtemp(join(tmpdir(), "treetop-mcp-")),
@@ -56,6 +90,8 @@ describe("MCP dashboard tools", () => {
         "reorder_repos",
         "set_repo_color",
         "open_session",
+        "list_sessions",
+        "search_sessions",
       ]),
     );
     const initialized = (await handleMcp(

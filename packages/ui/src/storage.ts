@@ -13,6 +13,17 @@ export interface KVStore {
   setItem(key: string, value: string): void;
 }
 
+export function loadZenRow(storage: KVStore): string | null {
+  try {
+    const value = JSON.parse(storage.getItem("supergit:zenRow") ?? "null");
+    return typeof value === "string" && value.includes("|") ? value : null;
+  } catch { return null; }
+}
+
+export function saveZenRow(storage: KVStore, row: string | null): void {
+  storage.setItem("supergit:zenRow", JSON.stringify(row));
+}
+
 export class ExpandedStore {
   constructor(
     private readonly storage: KVStore,

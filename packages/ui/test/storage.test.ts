@@ -1,5 +1,7 @@
 import { test, expect, describe } from "bun:test";
 import {
+  loadZenRow,
+  saveZenRow,
   mergeOpenedSession,
   CommandTermStore,
   CommandUrlPickStore,
@@ -39,6 +41,18 @@ import {
   type KVStore,
   type PersistedSession,
 } from "../src/storage";
+
+test("zen row is restored from shared preferences and exit clears it", () => {
+  const values = new Map<string, string>();
+  const kv = { getItem: (key: string) => values.get(key) ?? null, setItem: (key: string, value: string) => { values.set(key, value); } };
+  expect(loadZenRow(kv)).toBeNull();
+  saveZenRow(kv, "project|C:\\git\\needle-cloud");
+  expect(loadZenRow(kv)).toBe("project|C:\\git\\needle-cloud");
+  saveZenRow(kv, null);
+  expect(loadZenRow(kv)).toBeNull();
+  kv.setItem("supergit:zenRow", "{broken");
+  expect(loadZenRow(kv)).toBeNull();
+});
 
 test("external session opening preserves existing columns and ignores repeat events", () => {
   const previous = { agent: "codex" as const, source: "__new__:codex:old" };

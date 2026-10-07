@@ -24,6 +24,7 @@ const MIGRATED_KEYS = [
   "supergit:commitsExpanded",
   "supergit:visibleWorktrees",
   "supergit:notesHidden",
+  "supergit:zenRow",
   "supergit:dismissedShells",
   "supergit:dismissedSessions",
   "supergit:foldedRows",

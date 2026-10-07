@@ -29,6 +29,7 @@ import { homedir } from "node:os";
 import { spawn as bunSpawn } from "bun";
 import { planLogRotation } from "../../packages/daemon/src/log-rotation";
 import { dlopen, FFIType, ptr } from "bun:ffi";
+import { restoreWindowState, captureWindowState, type WindowState } from "./window-state";
 
 // ── Startup logger + stall watchdog ──────────────────────────────────
 // Background: we've had two recurrences where the window opens but the
@@ -418,8 +419,6 @@ process.on("exit", () => {
 
 // ── Window bounds persistence ────────────────────────────────────────
 
-type WindowBounds = { x: number; y: number; width: number; height: number };
-
 const BOUNDS_DIR = join(homedir(), ".config", "supergit");
 const BOUNDS_FILE = join(BOUNDS_DIR, "window.json");
 
@@ -428,35 +427,26 @@ const BOUNDS_FILE = join(BOUNDS_DIR, "window.json");
 // straight to electrobun's createWindow, which rejects them with
 // "Parent window has invalid client area: 144x0" and no window ever
 // appears. Treat anything that looks minimized/zero-ish as garbage.
-function isSaneBounds(b: WindowBounds): boolean {
-  return (
-    Number.isFinite(b.x) && Number.isFinite(b.y) &&
-    Number.isFinite(b.width) && Number.isFinite(b.height) &&
-    b.width >= 400 && b.height >= 300 &&
-    b.x > -10000 && b.y > -10000
-  );
-}
-
-function loadBounds(): WindowBounds {
-  const fallback = { x: 100, y: 100, width: 1400, height: 900 };
+function loadBounds(): WindowState {
   try {
     const raw = readFileSync(BOUNDS_FILE, "utf-8");
-    const parsed = JSON.parse(raw);
-    if (typeof parsed.x === "number" && typeof parsed.width === "number" && isSaneBounds(parsed))
-      return parsed;
+    return restoreWindowState(JSON.parse(raw));
   } catch {}
-  return fallback;
+  return restoreWindowState(null);
 }
 
 let saveTimer: ReturnType<typeof setTimeout> | null = null;
-function saveBounds(bounds: WindowBounds): void {
-  if (!isSaneBounds(bounds)) return;
+function writeWindowState(state: WindowState): void {
+  try {
+    mkdirSync(BOUNDS_DIR, { recursive: true });
+    writeFileSync(BOUNDS_FILE, JSON.stringify(state));
+  } catch (error) { llog(`Failed to save window state: ${error}`); }
+}
+function saveBounds(state: WindowState): void {
   if (saveTimer) clearTimeout(saveTimer);
   saveTimer = setTimeout(() => {
-    try {
-      mkdirSync(BOUNDS_DIR, { recursive: true });
-      writeFileSync(BOUNDS_FILE, JSON.stringify(bounds));
-    } catch {}
+    saveTimer = null;
+    writeWindowState(state);
   }, 500);
 }
 
@@ -547,6 +537,7 @@ try {
 }
 
 const bounds = loadBounds();
+let windowState = bounds;
 llog(`window bounds x=${bounds.x} y=${bounds.y} w=${bounds.width} h=${bounds.height}`);
 
 beginPhase("new BrowserWindow");
@@ -558,6 +549,8 @@ const win = new BrowserWindow({
   frame: bounds,
 });
 endPhase("new BrowserWindow");
+if (bounds.maximized) win.maximize();
+if (bounds.fullscreen) win.setFullScreen(true);
 
 // Windows: set taskbar icon + dark title bar via Win32 API.
 // Electrobun doesn't call setWindowIcon or DwmSetWindowAttribute,
@@ -620,22 +613,26 @@ if (isWin) {
 
 llog(`boot complete (total ${Date.now() - LAUNCHER_START}ms)`);
 
-win.on("resize", (event: any) => {
-  const frame = win.getFrame();
-  saveBounds(frame);
-});
-
-win.on("move", (event: any) => {
-  const frame = win.getFrame();
-  saveBounds(frame);
-});
+function captureState(): void {
+  windowState = captureWindowState(windowState, win.getFrame(), {
+    fullscreen: win.isFullScreen(), maximized: win.isMaximized(), minimized: win.isMinimized(),
+  });
+  saveBounds(windowState);
+}
+win.on("resize", captureState);
+win.on("move", captureState);
 
 // Window lifecycle events. "close" fires when the user clicks X / Alt+F4 /
 // menu Quit — useful to confirm in the log whether a hang is "process
 // died before close" or "close fired but process never exited". The
 // "closed" event arrives after destruction completes.
 try {
-  win.on("close", () => llog("window close event"));
+  win.on("close", () => {
+    captureState();
+    if (saveTimer) { clearTimeout(saveTimer); saveTimer = null; }
+    writeWindowState(windowState);
+    llog("window close event");
+  });
 } catch {
   /* electrobun's BrowserWindow may not expose all events; ignore. */
 }

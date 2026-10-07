@@ -9746,6 +9746,7 @@ const server = Bun.serve<TermWsData, never>({
       if (url.pathname === "/mcp") {
         const response = await handleMcpHttp(req, {
           workspace, events,
+          sessions: sharedDetectAgents,
           runningCommands: () => [...runningCommands.values()].map(command => ({
             linkId: command.linkId, repoId: command.repoId, pid: command.pid,
             startedAt: command.startedAt, cmd: command.cmd,
