@@ -1,5 +1,5 @@
 import { $ } from "bun";
-import { access } from "node:fs/promises";
+import { access, realpath } from "node:fs/promises";
 import { join as joinPath, resolve as resolvePath } from "node:path";
 
 const PUSH_PULL_TIMEOUT_MS = 60_000;
@@ -153,12 +153,17 @@ export async function listWorktrees(repoPath: string): Promise<Worktree[]> {
       .quiet()
       .text();
     const worktrees = parseWorktreeList(result);
+    const canonicalRepo = await realpath(normalRepo).catch(() => normalRepo);
+    const firstWorktreePath = worktrees[0]?.path;
+    const canonicalFirstWorktree = firstWorktreePath
+      ? await realpath(firstWorktreePath).catch(() => firstWorktreePath)
+      : undefined;
     // Guard: git -C walks upward, so a plain dir inside a parent repo
     // succeeds but returns the PARENT's worktree. Reject when the
     // returned root isn't the path we asked about — BUT allow
     // submodules through: their worktree path points at
     // .git/modules/… which resolveSubmoduleWorktreePaths will fix.
-    if (worktrees.length > 0 && worktrees[0]!.path !== normalRepo) {
+    if (worktrees.length > 0 && canonicalFirstWorktree !== canonicalRepo) {
       const isSubmoduleGitdir = /[/\\]\.git[/\\]/.test(worktrees[0]!.path);
       if (!isSubmoduleGitdir) {
         if (await fileExists(repoPath)) {

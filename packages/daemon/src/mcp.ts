@@ -19,6 +19,7 @@ import type { Workspace } from "./workspace";
 import type { EventLog } from "./events";
 import { listWorktrees } from "./git";
 import { randomUUID } from "node:crypto";
+import { realpath } from "node:fs/promises";
 import { isAbsolute, resolve, relative } from "node:path";
 import { NotesStore } from "./notes";
 import { detectEditors, findWindowsFork } from "./open";
@@ -840,14 +841,24 @@ async function dispatchMcp(
                 -32602,
                 "open_session: cwd must be absolute",
               );
-            const normalize = (path: string) =>
-              process.platform === "win32"
-                ? resolve(path).toLowerCase()
-                : resolve(path);
+            const normalize = async (path: string) => {
+              const absolute = resolve(path);
+              const canonical = await realpath(absolute).catch(() => absolute);
+              return process.platform === "win32"
+                ? canonical.toLowerCase()
+                : canonical;
+            };
             const worktrees = await listWorktrees(repo.path);
-            const worktree = worktrees.find(
-              (wt) => normalize(wt.path) === normalize(target),
+            const normalizedTarget = await normalize(target);
+            const normalizedWorktrees = await Promise.all(
+              worktrees.map(async (worktree) => ({
+                worktree,
+                path: await normalize(worktree.path),
+              })),
             );
+            const worktree = normalizedWorktrees.find(
+              (candidate) => candidate.path === normalizedTarget,
+            )?.worktree;
             if (!worktree || worktree.bare)
               return err(
                 request.id,
