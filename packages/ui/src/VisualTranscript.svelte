@@ -549,6 +549,90 @@
     return html;
   }
 
+  let mermaidLoader:
+    | Promise<(typeof import("mermaid"))["default"]>
+    | undefined;
+  let mermaidRenderId = 0;
+
+  function loadMermaid(): Promise<(typeof import("mermaid"))["default"]> {
+    if (!mermaidLoader) {
+      mermaidLoader = import("mermaid").then(({ default: mermaid }) => {
+        mermaid.initialize({
+          startOnLoad: false,
+          securityLevel: "strict",
+          suppressErrorRendering: true,
+          theme: "dark",
+          fontFamily:
+            'ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
+          flowchart: { htmlLabels: false },
+        });
+        return mermaid;
+      });
+    }
+    return mermaidLoader;
+  }
+
+  async function hydrateMermaidDiagrams(root: HTMLElement): Promise<void> {
+    const diagrams = [...root.querySelectorAll<HTMLElement>(
+      ".mermaid-diagram",
+    )].filter((diagram) => !diagram.dataset.mermaidStatus);
+    if (diagrams.length === 0) return;
+    for (const diagram of diagrams) {
+      diagram.dataset.mermaidStatus = "rendering";
+    }
+    let mermaid: (typeof import("mermaid"))["default"];
+    try {
+      mermaid = await loadMermaid();
+    } catch {
+      for (const diagram of diagrams) {
+        diagram.dataset.mermaidStatus = "error";
+        diagram.textContent = "Couldn’t load diagram renderer";
+      }
+      return;
+    }
+    for (const diagram of diagrams) {
+      const source = diagram.textContent ?? "";
+      try {
+        const { svg, bindFunctions } = await mermaid.render(
+          `treetop-mermaid-${++mermaidRenderId}`,
+          source,
+        );
+        if (!diagram.isConnected) continue;
+        diagram.innerHTML = DOMPurify.sanitize(svg, {
+          USE_PROFILES: { svg: true, svgFilters: true },
+        });
+        diagram.dataset.mermaidStatus = "rendered";
+        bindFunctions?.(diagram);
+      } catch {
+        if (!diagram.isConnected) continue;
+        diagram.dataset.mermaidStatus = "error";
+        diagram.innerHTML = `<div class="mermaid-error">Couldn’t render diagram</div><pre><code>${escapeAttr(source)}</code></pre>`;
+      }
+    }
+  }
+
+  function mermaidDiagrams(
+    node: HTMLElement,
+    _markdown: string,
+  ): { update: (markdown: string) => void; destroy: () => void } {
+    let generation = 0;
+    const schedule = () => {
+      const scheduledGeneration = ++generation;
+      queueMicrotask(() => {
+        if (scheduledGeneration === generation) {
+          void hydrateMermaidDiagrams(node);
+        }
+      });
+    };
+    schedule();
+    return {
+      update: schedule,
+      destroy: () => {
+        generation += 1;
+      },
+    };
+  }
+
   function portal(node: HTMLElement): { destroy: () => void } {
     document.body.appendChild(node);
     return {
@@ -2468,7 +2552,11 @@
           <LoadingSpinner size="0.9rem" label="Waiting for response" />
         </div>
       {:else if displayText}
-        <div class="block text md" data-supergit-markdown-source={displayText}>
+        <div
+          class="block text md"
+          data-supergit-markdown-source={displayText}
+          use:mermaidDiagrams={displayText}
+        >
           {@html md(displayText)}
         </div>
       {/if}
@@ -2484,6 +2572,7 @@
             <div
               class="tag-body md"
               data-supergit-markdown-source={thought.body}
+              use:mermaidDiagrams={thought.body}
             >
               {@html md(thought.body)}
             </div>
@@ -2513,6 +2602,7 @@
             <div
               class="subagent-preview md"
               data-supergit-markdown-source={subagentPreview(subagent)}
+              use:mermaidDiagrams={subagentPreview(subagent)}
             >
               {@html md(subagentPreview(subagent))}
             </div>
@@ -2690,7 +2780,11 @@
   {#each blocks as b, blockIndex (visualBlockRenderKey(b, blockIndex))}
     {#if b.type === "text"}
       {#if b.text}
-        <div class="work-step-text md" data-supergit-markdown-source={b.text}>
+        <div
+          class="work-step-text md"
+          data-supergit-markdown-source={b.text}
+          use:mermaidDiagrams={b.text}
+        >
           {@html md(b.text)}
         </div>
       {/if}
@@ -2703,6 +2797,7 @@
             <div
               class="tag-body md"
               data-supergit-markdown-source={thought.body}
+              use:mermaidDiagrams={thought.body}
             >
               {@html md(thought.body)}
             </div>
@@ -2737,6 +2832,7 @@
             <div
               class="tag-body md"
               data-supergit-markdown-source={subagentPreview(subagent)}
+              use:mermaidDiagrams={subagentPreview(subagent)}
             >
               {@html md(subagentPreview(subagent))}
             </div>
@@ -5400,6 +5496,55 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+  .md :global(.mermaid-diagram) {
+    box-sizing: border-box;
+    width: 100%;
+    min-height: 5rem;
+    margin: 0.65em 0;
+    padding: 0.75rem;
+    overflow: auto;
+    border: 1px solid color-mix(in srgb, var(--surface-3) 72%, transparent);
+    border-radius: 0.7rem;
+    background: color-mix(in srgb, var(--surface-2) 52%, transparent);
+  }
+  .md :global(.mermaid-diagram[data-mermaid-status="rendering"]) {
+    display: grid;
+    place-items: center;
+    color: var(--text-muted);
+    font-size: 0.78rem;
+  }
+  .md
+    :global(
+      .mermaid-diagram[data-mermaid-status="rendering"]::after
+    ) {
+    content: "Rendering diagram…";
+  }
+  .md
+    :global(
+      .mermaid-diagram[data-mermaid-status="rendering"] .mermaid-source
+    ) {
+    display: none;
+  }
+  .md :global(.mermaid-source) {
+    margin: 0;
+    white-space: pre-wrap;
+  }
+  .md :global(.mermaid-diagram svg) {
+    display: block;
+    width: auto;
+    min-width: min(100%, 24rem);
+    max-width: 100%;
+    height: auto;
+    margin: 0 auto;
+  }
+  .md :global(.mermaid-error) {
+    margin-bottom: 0.45rem;
+    color: var(--error-text);
+    font-size: 0.78rem;
+  }
+  .md :global(.mermaid-diagram pre) {
+    margin: 0;
   }
   .md :global(.md-code-copy) {
     position: relative;

@@ -1328,6 +1328,14 @@ export function buildVisualWorkDisplayEntries<
     const pairedResults = resultsByToolUse.get(pairedToolUseIndex) ?? [];
     pairedResults.push(namedResult);
     resultsByToolUse.set(pairedToolUseIndex, pairedResults);
+    const embeddedMedia = entry.blocks.filter(
+      (block) => block.type === "media",
+    );
+    if (embeddedMedia.length > 0) {
+      const media = mediaByToolUse.get(pairedToolUseIndex) ?? [];
+      media.push(...embeddedMedia);
+      mediaByToolUse.set(pairedToolUseIndex, media);
+    }
     pairedToolUses.add(pairedToolUseIndex);
     if (
       shouldCollapseToolResultPair(

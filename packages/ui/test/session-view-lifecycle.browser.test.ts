@@ -88,7 +88,14 @@ function threadPage(complete: boolean): unknown {
             {
               id: "latest-answer",
               type: "agentMessage",
-              text: "The previous answer arrived during completion reconciliation.",
+              text: [
+                "The previous answer arrived during completion reconciliation.",
+                "",
+                "```mermaid",
+                "graph LR",
+                "request --> response",
+                "```",
+              ].join("\n"),
             },
           ]
         : []),
@@ -442,6 +449,43 @@ describe("SessionView browser lifecycle", { concurrency: false }, () => {
       }));
       assert(after.top < after.max - 100);
       assert(Math.abs(after.top - before.top) < 80);
+    },
+    30_000,
+  );
+
+  test(
+    "renders Mermaid fences as diagrams in app-server messages",
+    async () => {
+      const currentPage = await openHarness();
+      const pageErrors: string[] = [];
+      currentPage.on("pageerror", (error) => pageErrors.push(error.message));
+      await completeLatestTurn(currentPage);
+      const diagram = currentPage.locator(".mermaid-diagram");
+      await diagram.waitFor({ state: "attached" });
+      try {
+        await waitForCondition(
+          async () =>
+            (await diagram.getAttribute("data-mermaid-status")) === "rendered",
+          "Mermaid diagram did not render",
+        );
+      } catch {
+        const diagramState = await diagram.evaluateAll((elements) =>
+          elements.map((element) => ({
+            status: (element as HTMLElement).dataset.mermaidStatus,
+            parent: element.parentElement?.className,
+            connected: element.isConnected,
+            html: element.outerHTML,
+          })),
+        );
+        throw new Error(
+          `Mermaid diagram did not render (${JSON.stringify(diagramState)}; errors: ${pageErrors.join(" | ") || "none"})`,
+        );
+      }
+      expect(await diagram.locator("svg").count()).toBe(1);
+      expect(await currentPage.locator("code.language-mermaid").count()).toBe(
+        0,
+      );
+      await currentPage.close();
     },
     30_000,
   );

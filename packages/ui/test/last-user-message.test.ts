@@ -6927,6 +6927,67 @@ describe("buildVisualWorkDisplayEntries", () => {
     expect(entries[0]?.pairedMedia).toEqual(generatedMedia.blocks);
   });
 
+  it("attaches images embedded beside tool output to the visible tool row", () => {
+    const toolUse = {
+      message: {
+        role: "assistant",
+        blocks: [
+          {
+            type: "tool_use",
+            toolName: "exec_command",
+            toolUseId: "call-1",
+          },
+        ],
+      },
+      blocks: [
+        {
+          type: "tool_use",
+          toolName: "exec_command",
+          toolUseId: "call-1",
+        },
+      ],
+      messageIndex: 1,
+    };
+    const image = {
+      type: "media",
+      mediaKind: "image",
+      url: "/api/session/media?hash=image-1",
+      title: "Image",
+      toolName: "exec_command",
+      toolUseId: "call-1",
+    };
+    const mixedResult = {
+      message: {
+        role: "tool",
+        blocks: [
+          {
+            type: "tool_result",
+            toolName: "exec_command",
+            toolUseId: "call-1",
+            text: "Script completed",
+          },
+          image,
+        ],
+      },
+      blocks: [
+        {
+          type: "tool_result",
+          toolName: "exec_command",
+          toolUseId: "call-1",
+          text: "Script completed",
+        },
+        image,
+      ],
+      messageIndex: 2,
+    };
+
+    const entries = buildVisualWorkDisplayEntries([toolUse, mixedResult]);
+
+    expect(entries).toHaveLength(1);
+    expect(entries[0]?.entry).toBe(toolUse);
+    expect(entries[0]?.pairedMedia).toEqual([image]);
+  });
+
   it("shows read-log output at the result point without a duplicate poll-start row", () => {
     const toolUse = {
       message: {

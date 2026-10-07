@@ -25,4 +25,10 @@ describe("markdown code rendering", () => {
       '<div class="md-code-frame"><div class="md-code-head"><span class="md-code-lang">ts</span><button type="button" class="md-code-copy" aria-label="Copy ts code">Copy</button></div><pre><code class="language-ts">const x = &quot;&lt;tag&gt;&quot;;</code></pre></div>',
     );
   });
+
+  it("marks Mermaid fences for diagram rendering instead of showing source code", () => {
+    expect(markdownCodeBlockHtml("graph TD\nA --> B", "mermaid")).toBe(
+      '<div class="mermaid-diagram" role="img" aria-label="Mermaid diagram"><pre class="mermaid-source">graph TD\nA --&gt; B</pre></div>',
+    );
+  });
 });

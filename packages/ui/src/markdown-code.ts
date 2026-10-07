@@ -20,6 +20,9 @@ export function markdownCodeBlockHtml(
   lang: string | null | undefined,
 ): string {
   const label = markdownCodeLanguage(lang);
+  if (label.toLowerCase() === "mermaid") {
+    return `<div class="mermaid-diagram" role="img" aria-label="Mermaid diagram"><pre class="mermaid-source">${escapeMarkdownCodeHtml(code)}</pre></div>`;
+  }
   const className = markdownCodeLanguageClass(label);
   const escapedLabel = escapeMarkdownCodeHtml(label);
   return `<div class="md-code-frame"><div class="md-code-head"><span class="md-code-lang">${escapedLabel}</span><button type="button" class="md-code-copy" aria-label="Copy ${escapedLabel} code">Copy</button></div><pre><code class="language-${escapeMarkdownCodeHtml(className)}">${escapeMarkdownCodeHtml(code)}</code></pre></div>`;
