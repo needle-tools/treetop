@@ -1,6 +1,25 @@
 import { expect, test } from "bun:test";
 import { resolve } from "node:path";
-import { restoreWindowState, captureWindowState } from "../../../src/electrobun/window-state";
+import { restoreWindowState, captureWindowState, restoreWindowModeOnReady } from "../../../src/electrobun/window-state";
+
+test("startup fullscreen waits for the inner webview and restores only once", () => {
+  let ready: (() => void) | undefined;
+  const actions: string[] = [];
+  restoreWindowModeOnReady(
+    restoreWindowState({ x: 10, y: 20, width: 1000, height: 800, fullscreen: true, maximized: true }),
+    {
+      onReady: (callback) => { ready = callback; },
+      maximize: () => { actions.push("maximize"); },
+      setFullScreen: (enabled) => { actions.push(`fullscreen:${enabled}`); },
+    },
+  );
+  expect(actions).toEqual([]);
+  expect(ready).toBeDefined();
+  ready!();
+  expect(actions).toEqual(["maximize", "fullscreen:true"]);
+  ready!();
+  expect(actions).toEqual(["maximize", "fullscreen:true"]);
+});
 
 test("window restoration keeps normal bounds through fullscreen, maximize and minimize", () => {
   const initial = restoreWindowState({ x: 10, y: 20, width: 1000, height: 800 });

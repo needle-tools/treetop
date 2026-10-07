@@ -29,7 +29,7 @@ import { homedir } from "node:os";
 import { spawn as bunSpawn } from "bun";
 import { planLogRotation } from "../../packages/daemon/src/log-rotation";
 import { dlopen, FFIType, ptr } from "bun:ffi";
-import { restoreWindowState, captureWindowState, type WindowState } from "./window-state";
+import { restoreWindowState, captureWindowState, restoreWindowModeOnReady, type WindowState } from "./window-state";
 
 // ── Startup logger + stall watchdog ──────────────────────────────────
 // Background: we've had two recurrences where the window opens but the
@@ -549,8 +549,11 @@ const win = new BrowserWindow({
   frame: bounds,
 });
 endPhase("new BrowserWindow");
-if (bounds.maximized) win.maximize();
-if (bounds.fullscreen) win.setFullScreen(true);
+restoreWindowModeOnReady(bounds, {
+  onReady: (callback) => win.webview.on("dom-ready", callback),
+  maximize: () => win.maximize(),
+  setFullScreen: (enabled) => win.setFullScreen(enabled),
+});
 
 // Windows: set taskbar icon + dark title bar via Win32 API.
 // Electrobun doesn't call setWindowIcon or DwmSetWindowAttribute,

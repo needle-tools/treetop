@@ -4,6 +4,13 @@ Tracking cross-platform issues found while porting supergit to Windows.
 
 ## Fixed (source code)
 
+- [x] **Restored fullscreen inner height** — applying saved fullscreen/maximized
+      mode immediately after BrowserWindow creation races WebView2's asynchronous
+      controller initialization. Restore once on the first `dom-ready` event so
+      the inner view receives the native resize. Later navigations leave the
+      user's current window mode unchanged. Lifecycle and bounds tests pass;
+      native rebuild/relaunch is still needed for visual verification.
+
 - [x] **`package.json` start script** — bash-only syntax (`${VAR:-default}`, `exec -a`).
       Replaced with cross-platform `start.ts` launcher.
 - [x] **UI static serving** (`server.ts:2718`) — `startsWith(UI_DIR + "/")` fails on

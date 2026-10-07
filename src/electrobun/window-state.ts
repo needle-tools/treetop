@@ -1,6 +1,23 @@
 export type WindowBounds = { x: number; y: number; width: number; height: number };
 export type WindowState = WindowBounds & { fullscreen: boolean; maximized: boolean };
 
+/** WebView2 creates its controller asynchronously. Restore native window mode
+ * only once the inner view is ready to receive the resulting resize. */
+export function restoreWindowModeOnReady(state: WindowState, window: {
+  onReady: (callback: () => void) => void;
+  maximize: () => void;
+  setFullScreen: (enabled: boolean) => void;
+}): void {
+  if (!state.maximized && !state.fullscreen) return;
+  let restored = false;
+  window.onReady(() => {
+    if (restored) return;
+    restored = true;
+    if (state.maximized) window.maximize();
+    if (state.fullscreen) window.setFullScreen(true);
+  });
+}
+
 function sane(bounds: WindowBounds): boolean {
   return [bounds.x, bounds.y, bounds.width, bounds.height].every(Number.isFinite) &&
     bounds.width >= 400 && bounds.height >= 300 && bounds.x > -10000 && bounds.y > -10000;
