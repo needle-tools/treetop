@@ -1,5 +1,5 @@
 import { test, expect, describe } from "bun:test";
-import { mkdtemp, writeFile } from "node:fs/promises";
+import { mkdtemp, writeFile, mkdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import {
@@ -7,6 +7,7 @@ import {
   detectEditors,
   fallbackEditorForFailedFileManagerOpen,
   findWorkspaceFile,
+  findWindowsFork,
   isUrlLike,
   resetDetectEditorsCache,
   windowsOpenCommand,
@@ -16,6 +17,18 @@ import {
 async function tempDir(): Promise<string> {
   return mkdtemp(join(tmpdir(), "supergit-open-"));
 }
+
+test("findWindowsFork supports current Velopack and legacy installations", async () => {
+  const local = await tempDir();
+  await mkdir(join(local, "Fork", "current"), { recursive: true });
+  expect(await findWindowsFork(local)).toBeNull();
+  const current = join(local, "Fork", "current", "Fork.exe");
+  await writeFile(current, "");
+  expect(await findWindowsFork(local)).toBe(current);
+  const legacy = join(local, "Fork", "Fork.exe");
+  await writeFile(legacy, "");
+  expect(await findWindowsFork(local)).toBe(legacy);
+});
 
 describe("findWorkspaceFile", () => {
   test("returns null for a missing directory", async () => {

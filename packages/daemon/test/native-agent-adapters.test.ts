@@ -773,6 +773,24 @@ describe("CodexAppServerRpc", () => {
 });
 
 describe("ClaudeCliAdapter", () => {
+  test("headless Claude receives the Treetop MCP connection and cwd", async () => {
+    let spawned: { cmd: string[]; cwd: string } | undefined;
+    const adapter = new ClaudeCliAdapter({
+      mcpUrl: () => "http://127.0.0.1:50001/mcp",
+      spawn(opts) {
+        spawned = opts;
+        return { pid: 1, exited: Promise.resolve(0), kill() {} };
+      },
+      async stat() { return {}; },
+    });
+    const run = adapter.sendTurn({ agent: "claude", sessionId: "session", cwd: "/repo", text: "add a command" });
+    await run.exited;
+    expect(spawned!.cmd).toContain("--mcp-config");
+    const config = JSON.parse(spawned!.cmd[spawned!.cmd.indexOf("--mcp-config") + 1]!);
+    expect(new URL(config.mcpServers.treetop.url).searchParams.get("cwd")).toBe("/repo");
+    expect(spawned!.cmd.slice(-1)).toEqual(["add a command"]);
+    expect(spawned!.cmd).toContain("--append-system-prompt");
+  });
   test("runs a headless Claude resume turn through the native adapter contract", async () => {
     const exited = deferred<number>();
     const spawned: { cmd: string[]; cwd: string }[] = [];

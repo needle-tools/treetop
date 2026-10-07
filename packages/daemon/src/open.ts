@@ -71,6 +71,22 @@ const KNOWN_EDITORS: readonly EditorSpec[] = [
 const SPECIAL_APPS = new Set(["fork", "terminal", "files"]);
 const CMD_TO_SPEC = new Map(KNOWN_EDITORS.map((e) => [e.cmd, e]));
 
+export async function findWindowsFork(
+  localAppData = process.env.LOCALAPPDATA ?? join(homedir(), "AppData", "Local"),
+): Promise<string | null> {
+  for (const executable of [
+    join(localAppData, "Fork", "Fork.exe"),
+    join(localAppData, "Fork", "current", "Fork.exe"),
+  ]) {
+    try {
+      if ((await stat(executable)).isFile()) return executable;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
+  }
+  return null;
+}
+
 export function fallbackEditorForFailedFileManagerOpen(args: {
   platform: NodeJS.Platform;
   exitCode: number;
@@ -378,19 +394,10 @@ export async function openIn(
       return { via: "Fork" };
     }
     if (process.platform === "win32") {
-      // Fork on Windows: the updater stub at %LOCALAPPDATA%\Fork\Fork.exe
-      // launches current\Fork.exe with remaining args. Just pass the repo
-      // path — no subcommand needed.
-      const forkExe = join(
-        process.env.LOCALAPPDATA ?? join(homedir(), "AppData", "Local"),
-        "Fork",
-        "Fork.exe",
-      );
-      try {
-        await access(forkExe);
-      } catch {
-        throw new Error("Fork not found at " + forkExe);
-      }
+      // Legacy installs have a root launcher; Velopack installs keep
+      // the executable in current/. Both accept the repository path.
+      const forkExe = await findWindowsFork();
+      if (!forkExe) throw new Error("Fork not found in the local Fork installation");
       Bun.spawn([forkExe, path], {
         stdout: "ignore",
         stderr: "ignore",

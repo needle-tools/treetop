@@ -34,6 +34,7 @@
   import { onMount, onDestroy, tick } from "svelte";
   import { flip } from "svelte/animate";
   import {
+    mergeOpenedSession,
     DismissedSessionsStore,
     ExpandedStore,
     StarredSessionsStore,
@@ -6354,6 +6355,26 @@
             // both skip; pre-fix we always called load(), but a payload
             // we can't parse can't be a real mutation either.
           }
+        }
+        if (payload.kind === "mcp_open_session") {
+          const opened = payload as unknown as { repoId: string; cwd: string; session: OpenSession };
+          openSessionsByWt = mergeOpenedSession(openSessionsByWt, opened.cwd, opened.session) as typeof openSessionsByWt;
+          const repo = repos.find(repo => !repo.daemonId && repo.id === opened.repoId);
+          const visible = visibleWorktreesByRepo[opened.repoId] ?? (repo?.worktrees?.[0] ? [repo.worktrees[0].path] : []);
+          if (!visible.includes(opened.cwd)) {
+            visibleWorktreesByRepo = { ...visibleWorktreesByRepo, [opened.repoId]: [...visible, opened.cwd] };
+          }
+          zenRowKey = null;
+          unfoldRowIfFolded(`${opened.repoId}|${opened.cwd}`);
+          markTransientDiscovery(opened.session.source);
+          scrollNewColIntoView(opened.cwd, opened.session.source);
+          void refreshEvents();
+          return;
+        }
+        if (payload.kind === "repos_reorder" && "repoOrder" in payload) {
+          savedRepoOrder = (payload as unknown as { repoOrder: string[] }).repoOrder;
+          getDaemonKV().setItem(REPO_ORDER_KEY, JSON.stringify(savedRepoOrder));
+          repos = sortReposByKeys(repos, savedRepoOrder);
         }
         // Cheap events-only refetch so the notes-list popover ("Recently
         // deleted" + Undo) and the Undo tray pick up the new event

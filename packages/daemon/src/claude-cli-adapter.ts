@@ -1,5 +1,6 @@
 import { stat as fsStat, unlink as fsUnlink } from "node:fs/promises";
 import { join } from "node:path";
+import { withTreetopMcp } from "./mcp";
 import type {
   NativeAgentAdapter,
   NativeAgentRun,
@@ -21,6 +22,7 @@ export interface ClaudeCliAdapterOptions {
   spawn?: (opts: ClaudeSpawnOptions) => ClaudeSpawnedProcess;
   stat?: (path: string) => Promise<unknown>;
   unlink?: (path: string) => Promise<unknown>;
+  mcpUrl?: () => string;
 }
 
 function defaultSpawn(opts: ClaudeSpawnOptions): ClaudeSpawnedProcess {
@@ -46,11 +48,13 @@ export class ClaudeCliAdapter implements NativeAgentAdapter {
   ) => ClaudeSpawnedProcess;
   private readonly stat: (path: string) => Promise<unknown>;
   private readonly unlink: (path: string) => Promise<unknown>;
+  private readonly mcpUrl?: () => string;
 
   constructor(opts: ClaudeCliAdapterOptions = {}) {
     this.spawnProc = opts.spawn ?? defaultSpawn;
     this.stat = opts.stat ?? fsStat;
     this.unlink = opts.unlink ?? fsUnlink;
+    this.mcpUrl = opts.mcpUrl;
   }
 
   sendTurn(req: NativeAgentTurnRequest): NativeAgentRun {
@@ -71,16 +75,17 @@ export class ClaudeCliAdapter implements NativeAgentAdapter {
       }),
     );
 
+    const cmd = [
+      "claude",
+      "-p",
+      "-r",
+      req.sessionId,
+      "--permission-mode",
+      "bypassPermissions",
+      req.text,
+    ];
     const proc = this.spawnProc({
-      cmd: [
-        "claude",
-        "-p",
-        "-r",
-        req.sessionId,
-        "--permission-mode",
-        "bypassPermissions",
-        req.text,
-      ],
+      cmd: this.mcpUrl ? withTreetopMcp(cmd, this.mcpUrl(), req.cwd) : cmd,
       cwd: req.cwd,
     });
 

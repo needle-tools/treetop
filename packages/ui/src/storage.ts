@@ -578,6 +578,21 @@ export class OpenSessionsStore {
   }
 }
 
+/** Merge a daemon-requested column without dropping local unsaved columns.
+ * Replayed events must not create another terminal for the same source. */
+export function mergeOpenedSession<T extends PersistedSession>(
+  current: Record<string, T[]>,
+  cwd: string,
+  entry: unknown,
+): Record<string, (T | PersistedSession)[]> {
+  const session = sanitizeSession(entry);
+  if (
+    !session ||
+    (current[cwd] ?? []).some(existing => existing.source === session.source)
+  ) return current;
+  return { ...current, [cwd]: [session, ...(current[cwd] ?? [])] };
+}
+
 /** Source prefixes the daemon doesn't list in `/api/agents` but the UI
  *  still wants to render: brand-new agent sessions before their JSONL
  *  has appeared on disk, plus Terminal-column shells (which are entirely

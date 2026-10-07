@@ -202,6 +202,45 @@ so there's no win from embedding just the UI.
 5. Signing / notarisation / installer / auto-update — last, per platform.
 
 ## Open questions
+
+### Treetop MCP and agent startup (2026-10-07)
+
+`/mcp` now serves stateless MCP HTTP with JSON responses, initialization
+instructions, ping, notification acknowledgements, and tool discovery. Tools:
+`list_repos`, `add_repo`, `remove_repo`, `reorder_repos`, `set_repo_color`,
+`list_commands`, `add_command`, `list_connected_apps`, `list_notes`, and
+`open_session`. Commands are saved project actions, not executed by MCP.
+Editor/app queries include detected editors, Fork's installation, and project
+URL/file/folder links. Notes support an optional anchor prefix filter.
+
+Agent PTYs automatically receive a session-scoped MCP connection: Codex uses
+`-c mcp_servers.treetop.url=...`, Claude uses `--mcp-config` plus appended
+instructions, and Copilot CLI uses `--additional-mcp-config`. The HTTP URL
+carries the launch cwd, allowing `add_command` to resolve its registered
+project without an explicit id. Explicit `repo_id` or `cwd` selects a project
+from another client. The Codex app-server process also connects; because it
+hosts threads with different cwds, its tools use the current thread's cwd
+argument rather than a fixed process cwd. Headless Claude resume turns receive
+the same connection. No global agent config or project instruction files are
+modified. This does not install a skill; MCP initialization instructions supply
+the workflow. Other clients can use the same endpoint if they support MCP;
+the built-in Ollama chat does not yet have an MCP tool bridge.
+
+Session opening persists a new/resumed agent or shell column in daemon prefs,
+reveals its worktree, unfolds the row, and broadcasts the change to the UI.
+The dashboard starts the CLI when it mounts the column; when closed, it picks
+up the saved column next time. Project mutations broadcast normal change kinds
+so caches, watchers, colors, and project order update across clients. Reorder
+also updates the saved local project keys while preserving remote project slots.
+Concurrent MCP tool calls are serialized per workspace to preserve both writes.
+
+Validation covers HTTP lifecycle, mutations and notifications, project queries,
+cwd-based command registration, CLI startup arguments, concurrent session opens,
+secondary-worktree visibility, and idempotent UI column merging. Deployment
+requires the user's normal rebuild/relaunch; the running daemon is untouched.
+
+### Earlier packaging questions
+
 - Does Electrobun's process model let us keep the daemon as a
   long-lived thing the webview talks to via HTTP/WS (as today), or do
   we need to move to its typed IPC bridge? HTTP/WS keeps the dev

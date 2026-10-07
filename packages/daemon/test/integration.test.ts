@@ -10,11 +10,414 @@
  */
 
 import { test, expect, describe } from "bun:test";
-import { mkdtemp } from "node:fs/promises";
+import { mkdtemp, mkdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Workspace, type Repo } from "../src/workspace";
 import { EventLog } from "../src/events";
+import { handleMcp, handleMcpHttp, withTreetopMcp } from "../src/mcp";
+
+describe("MCP dashboard tools", () => {
+  async function setup() {
+    const workspace = await Workspace.open(
+      await mkdtemp(join(tmpdir(), "treetop-mcp-")),
+    );
+    const events = await EventLog.open(workspace.path);
+    const changes: Record<string, unknown>[] = [];
+    const ctx = {
+      workspace,
+      events,
+      changed: (change: Record<string, unknown>) => changes.push(change),
+    };
+    const call = async (name: string, args: Record<string, unknown> = {}) =>
+      (await handleMcp(
+        {
+          jsonrpc: "2.0",
+          id: 1,
+          method: "tools/call",
+          params: { name, arguments: args },
+        },
+        ctx,
+      )) as any;
+    return { ...ctx, changes, call };
+  }
+
+  test("discovers tools and handles MCP lifecycle messages", async () => {
+    const ctx = await setup();
+    const listed = (await handleMcp(
+      { jsonrpc: "2.0", id: 1, method: "tools/list" },
+      ctx,
+    )) as any;
+    expect(listed.result.tools.map((tool: any) => tool.name)).toEqual(
+      expect.arrayContaining([
+        "list_repos",
+        "add_repo",
+        "remove_repo",
+        "reorder_repos",
+        "set_repo_color",
+        "open_session",
+      ]),
+    );
+    const initialized = (await handleMcp(
+      {
+        jsonrpc: "2.0",
+        id: 2,
+        method: "initialize",
+        params: { protocolVersion: "2025-11-25" },
+      },
+      ctx,
+    )) as any;
+    expect(initialized.result.protocolVersion).toBe("2025-11-25");
+    expect(
+      await handleMcp(
+        { jsonrpc: "2.0", method: "notifications/initialized" },
+        ctx,
+      ),
+    ).toBeNull();
+    expect(
+      await handleMcp({ jsonrpc: "2.0", id: 3, method: "ping" }, ctx),
+    ).toEqual({ jsonrpc: "2.0", id: 3, result: {} });
+  });
+
+  test("HTTP accepts initialization notifications and rejects unsupported SSE", async () => {
+    const ctx = await setup();
+    const post = (body: unknown) =>
+      handleMcpHttp(
+        new Request("http://localhost/mcp", {
+          method: "POST",
+          body: JSON.stringify(body),
+        }),
+        ctx,
+      );
+    const response = await post({
+      jsonrpc: "2.0",
+      method: "notifications/initialized",
+    });
+    expect(response.status).toBe(202);
+    expect(await response.text()).toBe("");
+    const invalid = await post({ jsonrpc: "2.0", method: "ping", id: {} });
+    expect(invalid.status).toBe(400);
+    expect(((await invalid.json()) as any).error.code).toBe(-32600);
+    expect(
+      (
+        await handleMcpHttp(
+          new Request("http://localhost/mcp", {
+            headers: { Accept: "text/event-stream" },
+          }),
+          ctx,
+        )
+      ).status,
+    ).toBe(405);
+    const ping = await post({ jsonrpc: "2.0", id: "ping", method: "ping" });
+    expect(await ping.json()).toEqual({
+      jsonrpc: "2.0",
+      id: "ping",
+      result: {},
+    });
+  });
+
+  test("startup connects Claude and Codex to Treetop with session cwd, preserving existing arguments", () => {
+    const endpoint = "http://127.0.0.1:50001/mcp";
+    const cwd = "C:\\project with spaces";
+    const codex = withTreetopMcp(["codex", "resume", "thread"], endpoint, cwd);
+    expect(codex.slice(-2)).toEqual(["resume", "thread"]);
+    const config = codex[codex.indexOf("-c") + 1]!;
+    const url = new URL(JSON.parse(config.slice(config.indexOf("=") + 1)));
+    expect(url.searchParams.get("cwd")).toBe(cwd);
+    const claude = withTreetopMcp(
+      ["claude", "--resume", "session"],
+      endpoint,
+      cwd,
+    );
+    expect(claude.slice(-2)).toEqual(["--resume", "session"]);
+    expect(
+      JSON.parse(claude[claude.indexOf("--mcp-config") + 1]!).mcpServers
+        .treetop,
+    ).toEqual({ type: "http", url: url.toString() });
+    expect(claude[claude.indexOf("--append-system-prompt") + 1]).toContain(
+      "add_command",
+    );
+    const copilot = withTreetopMcp(
+      ["copilot", "--resume", "session"],
+      endpoint,
+      cwd,
+    );
+    expect(
+      JSON.parse(copilot[copilot.indexOf("--additional-mcp-config") + 1]!)
+        .mcpServers.treetop,
+    ).toEqual({ type: "http", url: url.toString(), tools: ["*"] });
+    expect(copilot.slice(-2)).toEqual(["--resume", "session"]);
+    const shell = ["powershell.exe"];
+    expect(withTreetopMcp(shell, endpoint, cwd)).toBe(shell);
+  });
+
+  test("adds a command to the caller's project via the session MCP URL", async () => {
+    const ctx = await setup();
+    const repo = await ctx.workspace.addRepo(
+      await mkdtemp(join(tmpdir(), "mcp-command-")),
+    );
+    const initialized = await handleMcpHttp(
+      new Request(`http://localhost/mcp?cwd=${encodeURIComponent(repo.path)}`, {
+        method: "POST",
+        body: JSON.stringify({ jsonrpc: "2.0", id: 0, method: "initialize", params: { protocolVersion: "2025-11-25" } }),
+      }),
+      ctx,
+    );
+    const instructions = ((await initialized.json()) as any).result.instructions;
+    expect(instructions).toContain("add_command");
+    expect(instructions).toContain(JSON.stringify(repo.path));
+    const response = await handleMcpHttp(
+      new Request(`http://localhost/mcp?cwd=${encodeURIComponent(repo.path)}`, {
+        method: "POST",
+        body: JSON.stringify({
+          jsonrpc: "2.0",
+          id: 1,
+          method: "tools/call",
+          params: {
+            name: "add_command",
+            arguments: { command: "bun test", name: "Tests" },
+          },
+        }),
+      }),
+      ctx,
+    );
+    const result = (await response.json()) as any;
+    expect(result.error).toBeUndefined();
+    const saved = (await ctx.workspace.listRepos())[0]!.customLinks!;
+    expect(saved).toHaveLength(1);
+    expect(saved[0]).toMatchObject({
+      kind: "command",
+      cmd: "bun test",
+      name: "Tests",
+      runMode: "internal",
+    });
+    expect(ctx.changes.at(-1)?.kind).toBe("custom_link_add");
+    const withoutContext = await ctx.call("add_command", {
+      command: "bun test",
+    });
+    expect(withoutContext.error ?? withoutContext.result?.isError).toBeTruthy();
+    expect((await ctx.workspace.listRepos())[0]!.customLinks).toHaveLength(1);
+  });
+
+  test("queries project commands, app links, and notes with filters", async () => {
+    const ctx = await setup();
+    const repo = await ctx.workspace.addRepo(
+      await mkdtemp(join(tmpdir(), "mcp-query-")),
+    );
+    const command = await ctx.workspace.addCustomLink(repo.id, {
+      kind: "command",
+      cmd: "bun test",
+      runMode: "internal",
+      name: "Tests",
+    });
+    await ctx.workspace.addCustomLink(repo.id, {
+      url: "https://example.com",
+      name: "Dashboard",
+    });
+    const notes = await NotesStore.open(ctx.workspace.path);
+    const note = await notes.create({
+      body: "Project notes",
+      anchors: [`worktree:${repo.path}`],
+      tags: ["project"],
+    });
+    await notes.create({ body: "Other notes", anchors: ["session:elsewhere"] });
+    const commands = JSON.parse(
+      (await ctx.call("list_commands", { repo_id: repo.id })).result.content[0]
+        .text,
+    );
+    expect(commands.saved).toHaveLength(1);
+    expect(commands.saved[0]).toMatchObject({
+      repoId: repo.id,
+      id: command.id,
+      cmd: "bun test",
+    });
+    const apps = JSON.parse(
+      (await ctx.call("list_connected_apps", { repo_id: repo.id })).result
+        .content[0].text,
+    );
+    expect(Array.isArray(apps.editors)).toBe(true);
+    expect(apps.projectLinks).toHaveLength(1);
+    expect(apps.projectLinks[0]).toMatchObject({
+      repoId: repo.id,
+      url: "https://example.com",
+    });
+    const foundNotes = JSON.parse(
+      (await ctx.call("list_notes", { anchor_prefix: `worktree:${repo.path}` }))
+        .result.content[0].text,
+    );
+    expect(foundNotes).toEqual([note]);
+    const unknown = await ctx.call("list_commands", { repo_id: "missing" });
+    expect(unknown.error ?? unknown.result?.isError).toBeTruthy();
+  });
+
+  test("adds, reorders, colors and removes projects with live dashboard changes", async () => {
+    const ctx = await setup();
+    const first = JSON.parse(
+      (
+        await ctx.call("add_repo", {
+          path: await mkdtemp(join(tmpdir(), "mcp-repo-")),
+        })
+      ).result.content[0].text,
+    );
+    const second = await ctx.workspace.addRepo(
+      await mkdtemp(join(tmpdir(), "mcp-repo-")),
+    );
+    await ctx.workspace.patchPrefs({
+      "supergit:repoOrder": JSON.stringify([
+        `local\0${first.id}`,
+        "remote\0project",
+        `local\0${second.id}`,
+      ]),
+    });
+    expect(
+      (await ctx.call("reorder_repos", { order: [second.id, first.id] })).error,
+    ).toBeUndefined();
+    expect((await ctx.workspace.listRepos()).map((repo) => repo.id)).toEqual([
+      second.id,
+      first.id,
+    ]);
+    expect(
+      JSON.parse((await ctx.workspace.getPrefs())["supergit:repoOrder"]!),
+    ).toEqual([`local\0${second.id}`, "remote\0project", `local\0${first.id}`]);
+    expect(
+      (await ctx.call("set_repo_color", { id: first.id, color: "#ABCDEF" }))
+        .error,
+    ).toBeUndefined();
+    expect((await ctx.workspace.listRepos())[1]!.color).toBe("#abcdef");
+    await ctx.call("set_repo_color", { id: first.id, color: null });
+    expect((await ctx.workspace.listRepos())[1]!.color).toBeUndefined();
+    const before = ctx.changes.length;
+    await ctx.call("set_repo_color", { id: first.id, color: null });
+    expect(ctx.changes).toHaveLength(before);
+    const invalid = await ctx.call("reorder_repos", {
+      order: [first.id, first.id],
+    });
+    expect(invalid.error ?? invalid.result?.isError).toBeTruthy();
+    await ctx.call("remove_repo", { id: first.id });
+    expect(ctx.changes.map((change) => change.kind)).toEqual([
+      "add_repo",
+      "repos_reorder",
+      "repo_color",
+      "repo_color",
+      "remove_repo",
+    ]);
+    const actions = await ctx.events.list();
+    await undoAction(
+      ctx.workspace,
+      ctx.events,
+      actions[actions.length - 1]!.id,
+    );
+    expect(
+      (await ctx.workspace.listRepos()).some((repo) => repo.id === first.id),
+    ).toBe(true);
+  });
+
+  test("opens a Claude session durably in the selected project without losing other columns", async () => {
+    const ctx = await setup();
+    const repo = await ctx.workspace.addRepo(
+      await mkdtemp(join(tmpdir(), "mcp-session-")),
+    );
+    const previous = { agent: "codex", source: "__new__:codex:existing" };
+    await ctx.workspace.patchPrefs({
+      "supergit:openSessions": JSON.stringify({ [repo.path]: [previous] }),
+      "supergit:foldedRows": JSON.stringify([
+        `${repo.id}|${repo.path}`,
+        "other-row",
+      ]),
+      "supergit:visibleWorktrees": JSON.stringify({ [repo.id]: [] }),
+    });
+    const result = await ctx.call("open_session", {
+      repo_id: repo.id,
+      agent: "claude",
+    });
+    expect(result.error).toBeUndefined();
+    const opened = JSON.parse(result.result.content[0].text);
+    expect(opened.cwd).toBe(repo.path);
+    expect(opened.session.source).toStartWith("__new__:claude:");
+    expect(opened.session.preassignedSessionId).toMatch(/^[0-9a-f-]{36}$/);
+    const prefs = await ctx.workspace.getPrefs();
+    expect(JSON.parse(prefs["supergit:openSessions"]!)[repo.path]).toEqual([
+      opened.session,
+      previous,
+    ]);
+    expect(JSON.parse(prefs["supergit:foldedRows"]!)).toEqual(["other-row"]);
+    expect(JSON.parse(prefs["supergit:visibleWorktrees"]!)[repo.id]).toEqual([
+      repo.path,
+    ]);
+    expect(ctx.changes.at(-1)).toEqual({ kind: "mcp_open_session", ...opened });
+    const invalid = await ctx.call("open_session", {
+      repo_id: repo.id,
+      agent: "claude",
+      cwd: tmpdir(),
+    });
+    expect(invalid.error ?? invalid.result?.isError).toBeTruthy();
+    expect(await ctx.workspace.getPrefs()).toEqual(prefs);
+  });
+
+  test("concurrent MCP session opens preserve both columns and model/resume options", async () => {
+    const ctx = await setup();
+    const repo = await ctx.workspace.addRepo(
+      await mkdtemp(join(tmpdir(), "mcp-concurrent-")),
+    );
+    await Promise.all([
+      ctx.call("open_session", {
+        repo_id: repo.id,
+        agent: "codex",
+        resume_session_id: "existing-thread",
+        model: "chosen-model",
+      }),
+      ctx.call("open_session", { repo_id: repo.id, agent: "shell" }),
+    ]);
+    const sessions = JSON.parse(
+      (await ctx.workspace.getPrefs())["supergit:openSessions"]!,
+    )[repo.path];
+    expect(sessions).toHaveLength(2);
+    expect(sessions[0].agent).toBe("shell");
+    expect(sessions[1]).toMatchObject({
+      agent: "codex",
+      resumeSessionId: "existing-thread",
+      codexModel: "chosen-model",
+    });
+  });
+
+  test("opening in a secondary worktree reveals it even without a saved visibility preference", async () => {
+    const ctx = await setup();
+    const folder = await mkdtemp(join(tmpdir(), "mcp-worktrees-"));
+    const primary = join(folder, "main");
+    const secondary = join(folder, "feature");
+    await mkdir(primary);
+    for (const args of [
+      ["init"],
+      [
+        "-c",
+        "user.name=Test",
+        "-c",
+        "user.email=test@example.com",
+        "commit",
+        "--allow-empty",
+        "-m",
+        "initial",
+      ],
+      ["worktree", "add", "-b", "feature", secondary],
+    ]) {
+      const result = Bun.spawnSync(["git", "-C", primary, ...args]);
+      expect(result.exitCode).toBe(0);
+    }
+    const repo = await ctx.workspace.addRepo(primary);
+    const opened = await ctx.call("open_session", {
+      repo_id: repo.id,
+      agent: "codex",
+      cwd: secondary,
+    });
+    expect(opened.error).toBeUndefined();
+    const returned = JSON.parse(opened.result.content[0].text);
+    const visible = JSON.parse(
+      (await ctx.workspace.getPrefs())["supergit:visibleWorktrees"]!,
+    )[repo.id];
+    expect(visible).toHaveLength(2);
+    expect(visible).toContain(returned.cwd);
+  });
+});
 import { NotesStore } from "../src/notes";
 
 async function tempDir(): Promise<string> {

@@ -6,6 +6,7 @@ import type {
   NativeAgentTurnRequest,
 } from "./native-agent-adapters";
 import { existsSync } from "node:fs";
+import { withTreetopMcp } from "./mcp";
 
 export interface CodexAppServerProcess {
   pid: number;
@@ -24,6 +25,7 @@ export interface CodexClientInfo {
 export interface CodexAppServerAdapterOptions {
   spawn?: (cwd: string) => CodexAppServerProcess;
   clientInfo?: CodexClientInfo;
+  mcpUrl?: () => string;
 }
 
 type JsonObject = Record<string, unknown>;
@@ -117,9 +119,11 @@ export interface CodexThreadReadResult {
   backwardsCursor?: string | null;
 }
 
-function defaultSpawn(cwd: string): CodexAppServerProcess {
+function defaultSpawn(cwd: string, mcpUrl?: string): CodexAppServerProcess {
   const proc = Bun.spawn({
-    cmd: [resolveCodexBinary(), "app-server"],
+    cmd: mcpUrl
+      ? withTreetopMcp([resolveCodexBinary(), "app-server"], mcpUrl)
+      : [resolveCodexBinary(), "app-server"],
     cwd,
     stdin: "pipe",
     stdout: "pipe",
@@ -151,7 +155,8 @@ export class CodexAppServerAdapter implements NativeAgentAdapter {
   private readonly historyLimit = 300;
 
   constructor(opts: CodexAppServerAdapterOptions = {}) {
-    this.spawnProc = opts.spawn ?? defaultSpawn;
+    this.spawnProc =
+      opts.spawn ?? ((cwd) => defaultSpawn(cwd, opts.mcpUrl?.()));
     this.clientInfo = opts.clientInfo ?? {
       name: "supergit",
       title: "supergit",

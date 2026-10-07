@@ -1,5 +1,6 @@
 import { test, expect, describe } from "bun:test";
 import {
+  mergeOpenedSession,
   CommandTermStore,
   CommandUrlPickStore,
   DismissedSessionsStore,
@@ -38,6 +39,17 @@ import {
   type KVStore,
   type PersistedSession,
 } from "../src/storage";
+
+test("external session opening preserves existing columns and ignores repeat events", () => {
+  const previous = { agent: "codex" as const, source: "__new__:codex:old" };
+  const opened = { agent: "claude" as const, source: "__new__:claude:new", preassignedSessionId: "id" };
+  const current = { project: [previous] };
+  const next = mergeOpenedSession(current, "project", opened);
+  expect(next.project).toEqual([opened, previous]);
+  expect(current.project).toEqual([previous]);
+  expect(mergeOpenedSession(next, "project", opened)).toBe(next);
+  expect(mergeOpenedSession(current, "project", { agent: "bogus", source: "bad" })).toBe(current);
+});
 
 class MemStore implements KVStore {
   data = new Map<string, string>();

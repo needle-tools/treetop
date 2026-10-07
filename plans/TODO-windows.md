@@ -81,6 +81,12 @@ Tracking cross-platform issues found while porting supergit to Windows.
 
 ## Fixed (general bugs)
 
+- [x] **Fork opening fails with "Fork not found" (2026-10-07, source fix)** —
+      Newer Velopack installs have `%LOCALAPPDATA%/Fork/current/Fork.exe`
+      without the old root-level launcher. `open.ts` now checks both layouts,
+      retaining the root launcher preference for older installations. A real
+      temporary-directory test covers absent, current, and legacy layouts.
+
 - [x] **Blurry native app on scaled displays (2026-10-07, source fix)** —
       The installed launcher reported `PROCESS_DPI_UNAWARE`, causing Windows
       to bitmap-stretch the web UI. `scripts/patch-launcher.ts` now sets

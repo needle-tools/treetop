@@ -91,7 +91,7 @@ import { ErrorLog, type ErrorKind, type ErrorSource } from "./errors";
 import { ShellsLog } from "./shells";
 import { OllamaSessionsLog } from "./ollama-sessions";
 import { feedShellInput, clearShellInputBuffer } from "./shell-input";
-import { handleMcp, mcpServerInfo, type JsonRpcRequest } from "./mcp";
+import { handleMcpHttp, withTreetopMcp } from "./mcp";
 import * as inflight from "./inflight";
 import { pingSubscribers } from "./sse-heartbeat";
 import { changeKindInvalidatesRepos } from "./sse-change-kinds";
@@ -380,9 +380,10 @@ const PORT = Number(process.env.SUPERGIT_PORT ?? process.env.PORT ?? 7777);
 // remote/tunnel deployments override with SUPERGIT_BIND=127.0.0.1.
 const BIND = process.env.SUPERGIT_BIND || "0.0.0.0";
 
-const codexAgent = new CodexAppServerAdapter();
+const treetopMcpUrl = (): string => `http://127.0.0.1:${server.port}/mcp`;
+const codexAgent = new CodexAppServerAdapter({ mcpUrl: treetopMcpUrl });
 const nativeAgents = createNativeAgentRegistry({
-  claude: new ClaudeCliAdapter(),
+  claude: new ClaudeCliAdapter({ mcpUrl: treetopMcpUrl }),
   codex: codexAgent,
 });
 
@@ -4731,7 +4732,7 @@ const server = Bun.serve<TermWsData, never>({
         // `~/.bun/bin/`, but a pre-existing `/opt/homebrew/bin/codex`
         // shadows it on PATH. resolveAgentBinary returns the newest
         // mtime, so a freshly-bun-installed codex wins.
-        let resolvedCmd = body.cmd.slice();
+        let resolvedCmd = withTreetopMcp(body.cmd.slice(), treetopMcpUrl(), body.cwd);
         if (
           head0 &&
           !body.cmd[0]!.includes("/") &&
@@ -9742,30 +9743,20 @@ const server = Bun.serve<TermWsData, never>({
         }
       }
 
-      if (url.pathname === "/mcp" && req.method === "GET") {
-        return json(mcpServerInfo());
-      }
-
-      if (url.pathname === "/mcp" && req.method === "POST") {
-        const body = (await req
-          .json()
-          .catch(() => null)) as JsonRpcRequest | null;
-        if (
-          !body ||
-          body.jsonrpc !== "2.0" ||
-          typeof body.method !== "string"
-        ) {
-          return json(
-            {
-              jsonrpc: "2.0",
-              id: body?.id ?? null,
-              error: { code: -32600, message: "invalid JSON-RPC 2.0 request" },
-            },
-            { status: 400 },
-          );
-        }
-        const result = await handleMcp(body, { workspace, events });
-        return json(result);
+      if (url.pathname === "/mcp") {
+        const response = await handleMcpHttp(req, {
+          workspace, events,
+          runningCommands: () => [...runningCommands.values()].map(command => ({
+            linkId: command.linkId, repoId: command.repoId, pid: command.pid,
+            startedAt: command.startedAt, cmd: command.cmd,
+          })),
+          changed: (change) => {
+            broadcast("change", change);
+            if (change.kind === "add_repo" || change.kind === "remove_repo") void reconcileWorktreeWatchers();
+          },
+        });
+        for (const [key, value] of Object.entries(CORS)) response.headers.set(key, value);
+        return response;
       }
 
       // ── SSH remote filesystem routes ──────────────────────────────
