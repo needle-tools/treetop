@@ -3,12 +3,15 @@ import type { ServerResponse } from "node:http";
 import { resolve } from "node:path";
 import { chromium, type Browser, type Page } from "playwright-core";
 import { createServer, type Plugin, type ViteDevServer } from "vite";
+import { svelte } from "@sveltejs/vite-plugin-svelte";
 
 const uiRoot = resolve(import.meta.dir, "..");
 let server: ViteDevServer;
 let browser: Browser;
 let origin = "";
 let latestTurnComplete = false;
+let terminalStopStatus = 200;
+let terminalStopCalls = 0;
 const eventClients = new Set<ServerResponse>();
 const threadId = "lifecycle-thread";
 const latestTurnId = "turn-latest";
@@ -122,6 +125,13 @@ function lifecycleApiPlugin(): Plugin {
           response.end(JSON.stringify(threadPage(latestTurnComplete)));
           return;
         }
+        if (url.pathname === "/api/terminals/test-terminal" && request.method === "DELETE") {
+          terminalStopCalls++;
+          response.statusCode = terminalStopStatus;
+          response.setHeader("Content-Type", "application/json");
+          response.end(JSON.stringify(terminalStopStatus === 200 ? { ok: true } : { error: "Terminal stop rejected" }));
+          return;
+        }
         if (
           url.pathname === "/api/codex-app/turns" &&
           request.method === "POST"
@@ -151,9 +161,10 @@ function lifecycleApiPlugin(): Plugin {
 beforeAll(async () => {
   server = await createServer({
     root: uiRoot,
-    configFile: resolve(uiRoot, "vite.config.ts"),
+    configFile: false,
+    resolve: { alias: { "@treetop/nicifier": resolve(uiRoot, "../nicifier/src/index.ts") } },
     logLevel: "error",
-    plugins: [lifecycleApiPlugin()],
+    plugins: [svelte(), lifecycleApiPlugin()],
     server: {
       host: "127.0.0.1",
       port: 0,
@@ -240,6 +251,59 @@ function emitCodexEvents(events: readonly unknown[]): void {
 }
 
 describe.serial("SessionView browser lifecycle", () => {
+  test("a terminal shown visually stays attached; failed Stop preserves it and successful Stop clears it", async () => {
+    terminalStopCalls = 0;
+    terminalStopStatus = 502;
+    const currentPage = await browser.newPage();
+    try {
+      await currentPage.goto(`${origin}/test/browser/session-view-lifecycle.html?terminal=1`, { waitUntil: "networkidle" });
+      await currentPage.getByRole("button", { name: "Session menu", exact: true }).click();
+      await currentPage.getByText("View as", { exact: true }).hover();
+      await currentPage.getByText("Visual", { exact: true }).click();
+      expect(await currentPage.locator(".composer").count()).toBe(0);
+      const stop = currentPage.getByRole("button", { name: "Stop Session", exact: true });
+      await stop.click();
+      await waitForCondition(async () => terminalStopCalls === 1, "Stop did not address the attached terminal");
+      await stop.waitFor();
+      expect(await currentPage.locator("main").getAttribute("data-stopped")).toBe("false");
+      terminalStopStatus = 200;
+      await stop.click();
+      await waitForCondition(async () => await currentPage.locator("main").getAttribute("data-stopped") === "true", "Successful stop retained the terminal attachment");
+      expect(terminalStopCalls).toBe(2);
+      await currentPage.getByRole("button", { name: "Resume", exact: true }).waitFor();
+    } finally { terminalStopStatus = 200; await currentPage.close(); }
+  }, 30000);
+
+  test("switching to terminal transcript clears visual activity and switching back reconnects", async () => {
+    const currentPage = await openHarness();
+    try {
+      emitCodexEvents([{ kind: "notification", method: "turn/started", params: { threadId, turn: { id: "turn-switch" } }, threadId, turnId: "turn-switch", receivedAt: "2026-10-08T00:00:00Z" }]);
+      await waitForCondition(async () => await currentPage.locator("main").getAttribute("data-working") === "true", "Visual turn did not become active");
+      await currentPage.getByRole("button", { name: "Session menu", exact: true }).click();
+      await currentPage.getByText("View as", { exact: true }).hover();
+      await currentPage.getByText("Terminal", { exact: true }).click();
+      await waitForCondition(async () => await currentPage.locator("main").getAttribute("data-working") === "false", "Terminal transcript retained visual activity");
+      expect(await currentPage.locator(".composer").count()).toBe(0);
+      await currentPage.getByRole("button", { name: "Session menu", exact: true }).click();
+      await currentPage.getByText("View as", { exact: true }).hover();
+      await currentPage.getByText("Visual", { exact: true }).click();
+      await waitForCondition(async () => eventClients.size > 0, "Visual event subscription did not resume");
+    } finally { await currentPage.close(); }
+  }, 30000);
+
+  test("Stop interrupts a running visual session and leaves it stopped until Resume", async () => {
+    const currentPage = await openHarness();
+    try {
+      emitCodexEvents([{ kind: "notification", method: "turn/started", params: { threadId, turn: { id: "turn-stop" } }, threadId, turnId: "turn-stop", receivedAt: "2026-10-08T00:00:00Z" }]);
+      await waitForCondition(async () => await currentPage.locator("main").getAttribute("data-working") === "true", "Visual turn did not start");
+      await currentPage.getByRole("button", { name: "Stop", exact: true }).click();
+      await waitForCondition(async () => await currentPage.locator("main").getAttribute("data-stopped") === "true", "Stop only interrupted the turn without stopping the session");
+      expect(await currentPage.locator("main").getAttribute("data-working")).toBe("false");
+      await currentPage.getByRole("button", { name: "Resume", exact: true }).click();
+      await waitForCondition(async () => await currentPage.locator("main").getAttribute("data-stopped") === "false", "Resume did not restore the visual session");
+    } finally { await currentPage.close(); }
+  }, 30000);
+
   test(
     "surfaces async transcript questions in the composer and work flow",
     async () => {

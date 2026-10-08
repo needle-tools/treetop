@@ -286,9 +286,37 @@ offers a Go to project/session action. Acknowledgement propagates across windows
 SSE changes trigger refresh, with periodic reconciliation for missed events.
 MCP initialization instructions advertise reminders to supported agent clients.
 
+Reminder delivery also appears in Inbox. `/api/messages` includes a reminders
+section derived from the durable store; it includes every due reminder and keeps
+dismissed ones through 48 hours after `dismissedAt`. Dismissal is idempotent and
+does not extend retention. Older dismissed records without a timestamp are kept.
+Inbox entries open the same details/project/session action as toasts; dismissed
+history does not contribute to the unread badge. Cancelled/upcoming reminders
+remain in the Reminders panel/MCP rather than the delivered Inbox history.
+
 Validation: 57 focused reminder, MCP integration and toast tests pass; both UI
 components compile, and the new storage/controller modules pass strict TypeScript
 checks. The production daemon was not rebuilt or restarted.
+
+### Codex display switching and stop/resume (2026-10-08)
+
+Visual activity and queued sends are gated by the active visual surface. Switching
+to a terminal transcript removes visual activity; displaying a live terminal
+visually preserves its attachment and Stop control without enabling app-server
+sends in parallel. Stop interrupts a running visual turn, blocks its queue, and
+persists an explicit stopped state until Resume (even before a transcript path
+exists). Resume availability now reacts to surface/state changes. Terminal stop
+checks the response, preserves the attachment on failure, and clears stale
+terminal/activity state on success/exit. Failed stop requests show an error.
+
+Browser lifecycle regressions cover switching, visual stop/resume and an attached
+terminal's failed/successful stop. On Windows, Bun's Playwright launch/connect
+hangs during setup; the same suite is exercised through Node's test runtime.
+
+Validation: 511 focused unit/integration tests and all 9 browser lifecycle tests
+pass; the changed Svelte components compile. The repository-wide Svelte check
+still reports 49 errors in existing type definitions/usages outside these changes.
+The production app has not been rebuilt or restarted.
 
 ### Earlier packaging questions
 

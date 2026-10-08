@@ -51,6 +51,25 @@ test("invalid persistence is reported without overwriting existing data", async 
   expect(await readFile(file, "utf8")).toBe("broken JSON");
 });
 
+test("inbox keeps overdue reminders and retains dismissed ones for 48 hours after acknowledgement", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "treetop-reminders-"));
+  const store = new ReminderStore(directory);
+  const start = Date.parse("2026-10-08T00:00:00Z");
+  const due = await store.schedule({ title: "Review", message: "Ready", dueAt: new Date(start + 1000).toISOString() }, start);
+  const cancelled = await store.schedule({ title: "Cancelled", message: "Unused", dueAt: new Date(start + 2000).toISOString() }, start);
+  expect(await store.listInbox(start)).toEqual([]);
+  await store.updateStatus(cancelled.id, "cancelled");
+  await store.takeDue(start + 3000);
+  const dismissedAt = start + 7 * 86400000;
+  expect((await store.listInbox(dismissedAt)).map(item => item.id)).toEqual([due.id]);
+  await store.updateStatus(due.id, "dismissed", dismissedAt);
+  const reopened = new ReminderStore(directory);
+  expect((await reopened.listInbox(dismissedAt + 48 * 3600000))[0]?.dismissedAt).toBe(new Date(dismissedAt).toISOString());
+  await reopened.updateStatus(due.id, "dismissed", dismissedAt + 3600000);
+  expect(await reopened.listInbox(dismissedAt + 48 * 3600000 + 1)).toEqual([]);
+  expect((await reopened.list())[0]?.status).toBe("dismissed");
+});
+
 test("concurrent scheduling and ticking preserve all reminders; cancelled reminders never fire", async () => {
   const store = new ReminderStore(await mkdtemp(join(tmpdir(), "treetop-reminders-")));
   const items = await Promise.all(["one", "two"].map(title => store.schedule({ title, message: title, dueAt: "2026-10-08T12:00:00Z" }, Date.parse("2026-10-08T11:00:00Z"))));

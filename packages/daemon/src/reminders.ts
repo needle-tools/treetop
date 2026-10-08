@@ -11,6 +11,7 @@ export interface Reminder {
   dueAt: string;
   createdAt: string;
   deliveredAt?: string;
+  dismissedAt?: string;
   repoId?: string;
   sessionSource?: string;
   status: ReminderStatus;
@@ -47,6 +48,11 @@ export class ReminderStore {
   list(): Promise<Reminder[]> {
     return this.serialized(async () => (await this.read()).sort((a, b) => Date.parse(a.dueAt) - Date.parse(b.dueAt)));
   }
+  async listInbox(now = Date.now()): Promise<Reminder[]> {
+    return (await this.list()).filter(item => item.status === "due" ||
+      (item.status === "dismissed" && (!item.dismissedAt || now - Date.parse(item.dismissedAt) <= 48 * 3600000)))
+      .sort((a, b) => Date.parse(b.deliveredAt ?? b.dueAt) - Date.parse(a.deliveredAt ?? a.dueAt));
+  }
   schedule(input: ReminderInput, now = Date.now()): Promise<Reminder> {
     return this.serialized(async () => {
       for (const field of ["title", "message"] as const) {
@@ -68,7 +74,7 @@ export class ReminderStore {
       return reminder;
     });
   }
-  updateStatus(id: string, status: "dismissed" | "cancelled"): Promise<Reminder> {
+  updateStatus(id: string, status: "dismissed" | "cancelled", now = Date.now()): Promise<Reminder> {
     return this.serialized(async () => {
       const items = await this.read();
       const item = items.find(item => item.id === id);
@@ -77,7 +83,11 @@ export class ReminderStore {
         throw new Error("Only due reminders can be dismissed");
       if (status === "cancelled" && item.status !== "scheduled" && item.status !== "cancelled")
         throw new Error("Only scheduled reminders can be cancelled");
-      if (item.status !== status) { item.status = status; await this.write(items); }
+      if (item.status !== status) {
+        item.status = status;
+        if (status === "dismissed") item.dismissedAt = new Date(now).toISOString();
+        await this.write(items);
+      }
       return item;
     });
   }

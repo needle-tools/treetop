@@ -6676,11 +6676,12 @@ const server = Bun.serve<TermWsData, never>({
       // ──────────────────────────────────────────────────────────────
 
       if (url.pathname === "/api/messages" && req.method === "GET") {
-        const [inbox, mutes] = await Promise.all([
+        const [inbox, mutes, reminders] = await Promise.all([
           getMessages(workspace.path),
           listMutes(workspace.path),
+          reminderStore.listInbox(),
         ]);
-        return json({ inbox, mutes });
+        return json({ inbox, mutes, reminders });
       }
 
       if (url.pathname === "/api/reminders" || url.pathname.startsWith("/api/reminders/")) {

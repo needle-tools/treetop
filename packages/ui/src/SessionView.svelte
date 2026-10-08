@@ -222,9 +222,8 @@
    *  Resume. For Codex App, the parent swaps a stopped transcript source
    *  to the live app-server source while preserving the transcript path. */
   export let onVisualResume: (() => void) | undefined = undefined;
-  /** Called when an idle live Codex App pane should detach back to its
-   *  saved transcript. Running turns still use the app-server interrupt
-   *  path; this is only the idle live-wire stop affordance. */
+  /** Called after a visual session is stopped (including interrupting an
+   *  active turn) so its saved history stays open until explicit resume. */
   export let onStopVisualApp: (() => void) | undefined = undefined;
   /** Optional extra menu items appended after the built-in ones in
    *  the header's burger menu. Used by Ollama to inject "Resume with
@@ -261,6 +260,7 @@
    *  experimental visual app-server surface for this session. Default
    *  read/transcript views must not grow the Codex composer. */
   export let visualAppEnabled: boolean = false;
+  export let visualAppStopped = false;
   /** Recorded app-server boundary for Replay Lab. Production leaves this
    *  undefined and continues through the shared HTTP/SSE transport. */
   export let codexAppTransport: CodexAppSessionTransport | undefined =
@@ -309,6 +309,7 @@
    *  re-spawns, e.g. after a stale-attach fallback) a PTY, so the parent
    *  can keep the session's `attachTermId` pointed at the live terminal. */
   export let onSpawn: (id: string) => void = () => {};
+  export let onTerminalStopped: () => void = () => {};
   /** Whole-file message count for this session, supplied by the parent
    *  from `/api/repos`'s pre-scanned agent metadata. `/api/session`
    *  only ships the trimmed tail (last MAX_CACHED_MESSAGES = 100), so
@@ -1028,6 +1029,9 @@
 
   function handleTerminalExit(): void {
     cliExited = true;
+    working = false;
+    awaitingInput = false;
+    onTerminalStopped();
     // PTY finished by itself (user typed `exit`, agent crashed, ...).
     // Same effect as Dispose: flip to read, scroll to the newest messages on
     // the next render. This is shared by the painted TerminalView and the
@@ -1203,10 +1207,8 @@
     onWorkingChange(working);
   }
 
-  /** Hard ceiling on how long we wait for `DELETE /api/terminals/:id` to
-   *  return before flipping the column back to read mode anyway. The
-   *  daemon's grace timer will reap the PTY regardless, so a hung
-   *  request shouldn't strand the user with a "Stopping…" button. */
+  /** Bound stop requests; failed/unconfirmed requests leave the session
+   *  attached and show an error so the user can retry. */
   const DISPOSE_TIMEOUT_MS = 5_000;
   /** Minimum visible "Stopping…" feedback window. The fetch itself is
    *  typically <10ms (the daemon just sends SIGTERM and returns) so
@@ -1242,28 +1244,22 @@
     play("session-stop");
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), DISPOSE_TIMEOUT_MS);
-    let timedOut = false;
     try {
-      if (terminalId) {
-        await fetch(
-          apiUrl(`/api/terminals/${encodeURIComponent(terminalId)}`, daemonId),
+      const termId = terminalId ?? attachTermId;
+      if (termId) {
+        const response = await fetch(
+          apiUrl(`/api/terminals/${encodeURIComponent(termId)}`, daemonId),
           {
             method: "DELETE",
             signal: controller.signal,
           },
-        ).catch((e) => {
-          // AbortError = we timed out; anything else = network blip.
-          // Either way the daemon's grace timer will clean up the PTY,
-          // so we still flip back to read mode below.
-          if (e?.name === "AbortError") timedOut = true;
-        });
+        );
+        if (!response.ok) {
+          const body = await response.json().catch(() => null);
+          throw new Error(body?.error ?? `Stop failed (HTTP ${response.status})`);
+        }
       }
-    } finally {
-      clearTimeout(timeout);
-      if (timedOut) {
-        sendError =
-          "Dispose timed out after 5s — the daemon will reap the PTY on its own; flipping back to read view.";
-      }
+      onTerminalStopped();
       // Flip back to read mode and force a scroll-to-bottom on the next
       // render — the user expects to land at the newest messages, not
       // wherever they last scrolled to before opening the terminal.
@@ -1272,11 +1268,21 @@
       // tries to respawn the PTY we just killed — which races the daemon's
       // grace-timer cleanup and can look like the column disappeared.
       terminalId = null;
+      cliExited = true;
+      working = false;
+      awaitingInput = false;
       disposing = false;
       resetVisualTailFollow();
       mode = "read";
       onModeChange(mode);
       void load();
+    } catch (e) {
+      sendError = e instanceof Error && e.name === "AbortError"
+        ? "Could not confirm the session stopped within 5 seconds. Try again."
+        : e instanceof Error ? e.message : String(e);
+    } finally {
+      clearTimeout(timeout);
+      disposing = false;
     }
   }
   /** Live count of claude subprocesses the daemon is still running for
@@ -1476,20 +1482,7 @@
     }
   }
 
-  function canResumeCurrentSurface(): boolean {
-    if (renderOnly) return false;
-    return resumeTargetForSessionSurface({
-      agent,
-      transcriptSurface,
-      sessionId: effectiveSessionId,
-      hasCustomResume: !!onCustomResume,
-      liveAppSurface: codexVisualAppSurface,
-      hasVisualResume: !!onVisualResume,
-    }) !== null;
-  }
-
-  function resumeTitleForAgent(): string {
-    const target = resumeTargetForSessionSurface({
+  $: sessionResumeTarget = renderOnly ? null : resumeTargetForSessionSurface({
       agent,
       transcriptSurface,
       sessionId: effectiveSessionId,
@@ -1497,6 +1490,8 @@
       liveAppSurface: codexVisualAppSurface,
       hasVisualResume: !!onVisualResume,
     });
+
+  function resumeTitleForAgent(target: "visual" | "terminal" | null): string {
     if (target === "visual") {
       return agent === "codex"
         ? "Resume this Codex session in the visual chat surface"
@@ -1519,18 +1514,21 @@
 
   function showTerminalTranscriptSurface(): void {
     transcriptSurface = "terminal";
+    if (attachTermId && !cliExited) mode = "terminal";
   }
 
   function resumeInTerminalSurface(): void {
     if (onCustomResume) onCustomResume();
     else {
       transcriptSurface = "terminal";
+      cliExited = false;
       mode = "terminal";
     }
   }
 
   function resumeInVisualSurface(): void {
     transcriptSurface = "read";
+    codexQueueBlocked = false;
     onVisualResume?.();
   }
 
@@ -2672,7 +2670,7 @@
 
   $: liveCodexApp = agent === "codex" && isLiveCodexAppSource(source);
   $: codexVisualAppSurface =
-    liveCodexApp && visualAppEnabled && transcriptSurface === "read";
+    liveCodexApp && visualAppEnabled && !visualAppStopped && !attachTermId && transcriptSurface === "read" && mode === "read";
   $: codexAppLiveSurfaceActive = shouldRunCodexAppLiveSurface({
     visualAppSurface: codexVisualAppSurface,
     mode,
@@ -2683,11 +2681,11 @@
     mode,
   });
   $: codexAppHistorySourceActive = shouldUseCodexAppHistorySource({
-    liveSurfaceActive: codexVisualAppSurface,
+    liveSurfaceActive: liveCodexApp && transcriptSurface === "read" && mode === "read" && (codexVisualAppSurface || (visualAppStopped && !transcriptSource)),
     transcriptSource,
   });
   $: codexAppHistoryFetchActive =
-    codexAppHistorySourceActive && codexAppLiveSurfaceActive;
+    codexAppHistorySourceActive && columnNearViewport;
   $: if (codexAppLiveSurfaceActive && codexHasDeferredVisualEvents) {
     catchUpDeferredCodexVisualEvents();
   }
@@ -2744,7 +2742,7 @@
   }
   $: effectiveSessionId = resumeSessionId ?? session?.sessionId;
   $: effectiveSessionCwd = session?.cwd || wtPath;
-  $: codexRunning = liveCodexApp && (sending || !!codexActiveTurnId);
+  $: codexRunning = codexAppLiveStateActive && (sending || !!codexActiveTurnId);
   $: codexVisualAppCanStop =
     codexVisualAppSurface && (codexRunning || !!onStopVisualApp);
   $: visualTranscriptActive = liveCodexApp ? codexRunning : sending;
@@ -2772,7 +2770,7 @@
         : liveCodexApp
           ? codexRunning
           : inflight.length > 0;
-    const nextAwaiting = awaitingInput;
+    const nextAwaiting = (mode === "terminal" || codexAppLiveStateActive) && awaitingInput;
     if (reportedWorking !== nextWorking) {
       reportedWorking = nextWorking;
       onWorkingChange(nextWorking);
@@ -5064,7 +5062,7 @@
   }
 
   async function drainCodexQueue(): Promise<void> {
-    if (codexQueueDraining || codexRunning || codexQueuedMessages.length === 0)
+    if (!codexAppLiveStateActive || disposing || codexQueueBlocked || codexQueueDraining || codexRunning || codexQueuedMessages.length === 0)
       return;
     const [next, ...rest] = codexQueuedMessages;
     if (!next) return;
@@ -5210,10 +5208,10 @@
     );
   }
 
-  async function stopCodexTurn(): Promise<void> {
-    if (!session?.sessionId) return;
+  async function stopCodexTurn(): Promise<boolean> {
+    if (!session?.sessionId) return false;
     try {
-      await fetch(apiUrl("/api/codex-app/turns/interrupt", daemonId), {
+      const response = await fetch(apiUrl("/api/codex-app/turns/interrupt", daemonId), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -5221,17 +5219,28 @@
           turnId: codexActiveTurnId,
         }),
       });
+      if (!response.ok) {
+        const body = await response.json().catch(() => null);
+        throw new Error(body?.error ?? `Interrupt failed (HTTP ${response.status})`);
+      }
+      return true;
     } catch (e) {
       sendError = e instanceof Error ? e.message : String(e);
+      return false;
     }
   }
 
   async function stopCodexVisualAppSession(): Promise<void> {
-    if (codexRunning) {
-      await stopCodexTurn();
-      return;
-    }
-    onStopVisualApp?.();
+    if (disposing) return;
+    disposing = true;
+    codexQueueBlocked = true;
+    try {
+      if (codexRunning && !(await stopCodexTurn())) return;
+      sending = false;
+      codexActiveTurnId = null;
+      awaitingInput = false;
+      onStopVisualApp?.();
+    } finally { disposing = false; }
   }
 
   function codexRequestKey(req: CodexAppEvent): string {
@@ -5618,7 +5627,8 @@
   }
 
   $: if (
-    liveCodexApp &&
+    codexAppLiveStateActive &&
+    !disposing &&
     !codexRunning &&
     codexQueuedMessages.length > 0 &&
     !codexQueueDraining &&
@@ -5843,11 +5853,11 @@
       aiTitle={summaryTitle}
       titleEditable={!renderOnly}
       {mode}
-      canResume={canResumeCurrentSurface()}
+      canResume={sessionResumeTarget !== null}
       canEnd={mode === "read"
-        ? codexVisualAppCanStop
+        ? codexVisualAppCanStop || (!!attachTermId && !cliExited)
         : !!effectiveSessionId && (agent === "claude" || agent === "codex")}
-      showEndInRead={codexVisualAppCanStop}
+      showEndInRead={codexVisualAppCanStop || (!!attachTermId && !cliExited)}
       {disposing}
       {awaitingInput}
       working={mode === "terminal"
@@ -5891,11 +5901,9 @@
       onFind={openSessionFind}
       {onClose}
       {onDragStart}
-      resumeTitle={resumeTitleForAgent()}
+      resumeTitle={resumeTitleForAgent(sessionResumeTarget)}
       endSessionTitle={mode === "read" && codexVisualAppSurface
-        ? codexRunning
-          ? "Interrupt the running Codex turn"
-          : "Stop the live Codex app session and keep the saved transcript open"
+        ? "Stop this visual session and keep its history open"
         : undefined}
       endSessionLabel={mode === "read" && codexVisualAppSurface
         ? "Stop"
@@ -6156,6 +6164,7 @@
     </span>
   {/snippet}
 
+  {#if sendError && !showChatComposer}<p class="error" role="alert">{sendError}</p>{/if}
   {#if terminalMounted}
     <TerminalView
       cmd={agent === "codex"

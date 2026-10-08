@@ -9,6 +9,8 @@
   import { onDestroy, onMount } from "svelte";
   import { apiUrl } from "./api";
   import Popover from "./Popover.svelte";
+  import type { Reminder } from "../../daemon/src/reminders";
+  export let openReminder: (reminder: Reminder) => void;
   import {
     messages,
     refreshMessages,
@@ -373,8 +375,8 @@
     class:open
     on:click={toggleOpen}
     title={count > 0
-      ? `${count} message${count === 1 ? "" : "s"} from other supergit peers`
-      : "Messages from other supergit peers on your LAN"}
+      ? `${count} unread messages and reminders`
+      : "Messages and reminders"}
   >
     <!-- Inbox tray icon (lucide "inbox"). Inline SVG so it picks up
          currentColor and we don't pull a sprite dependency. -->
@@ -402,8 +404,20 @@
   </button>
   {#if open}
     <Popover variant="actions" extraClass="inbox-popover" unclamped>
-      <span slot="head">Messages</span>
-      {#if rows.length === 0}
+      <span slot="head">Inbox</span>
+      {#if $messages.reminders?.length}
+        <section class="inbox-reminders">
+          <strong>Reminders</strong>
+          {#each $messages.reminders as reminder (reminder.id)}
+            <button class="inbox-reminder" on:click={() => { setOpen(false); openReminder(reminder); }}>
+              <strong>{reminder.title}</strong>
+              <span>{reminder.message}</span>
+              <small>{reminder.status === "dismissed" ? "Dismissed" : "Due"} · {relTime(reminder.deliveredAt ?? reminder.dueAt)}</small>
+            </button>
+          {/each}
+        </section>
+      {/if}
+      {#if rows.length === 0 && !$messages.reminders?.length}
         <p class="muted small nopad">
           No peers discovered on this network yet, and nobody's sent you
           anything. Once another supergit instance comes online on your LAN
@@ -747,6 +761,8 @@
 </div>
 
 <style>
+  .inbox-reminders { padding: 12px; display: grid; gap: 8px; }
+  .inbox-reminder { display: grid; gap: 4px; text-align: left; padding: 10px; border: 1px solid var(--border-muted); border-radius: 6px; white-space: pre-wrap; overflow-wrap: anywhere; }
   .inbox-icon {
     flex: 0 0 auto;
     opacity: 0.85;

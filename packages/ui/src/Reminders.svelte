@@ -56,7 +56,7 @@
     }
     await refresh();
   }
-  function view(reminder: Reminder): void {
+  export function view(reminder: Reminder): void {
     showDetails(reminder);
     if (reminder.status === "due") void change(reminder.id, "dismiss").catch(reportError);
   }

@@ -253,6 +253,12 @@ describe("DismissedSessionsStore", () => {
 });
 
 describe("OpenSessionsStore", () => {
+  test("explicitly stopped visual sessions stay stopped across reloads", () => {
+    const kv = new MemStore();
+    const store = new OpenSessionsStore(kv, "stopped-visual");
+    store.save({ project: [{ agent: "codex", source: codexAppSource("thread"), resumeSessionId: "thread", visualAppStopped: true }] });
+    expect(new OpenSessionsStore(kv, "stopped-visual").load().project?.[0]?.visualAppStopped).toBe(true);
+  });
   const KEY = "supergit:openSessions";
 
   test("returns {} when nothing is stored", () => {

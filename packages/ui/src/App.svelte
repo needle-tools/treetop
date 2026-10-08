@@ -161,6 +161,7 @@
   import Reminders from "./Reminders.svelte";
   import type { Reminder } from "../../daemon/src/reminders";
   let reminderRevision = 0;
+  let reminderPanel: Reminders | undefined;
   async function focusReminder(reminder: Reminder): Promise<void> {
     if (reminder.repoId) await focusRepoRow(reminder.repoId);
     if (reminder.sessionSource) await focusVoiceSession(reminder.sessionSource);
@@ -3551,6 +3552,7 @@
   // repo stays visually obvious) but can be opened side-by-side as a
   // horizontal strip below the row.
   interface OpenSession {
+    visualAppStopped?: boolean;
     /** Includes `"shell"` for plain-terminal columns (no JSONL transcript;
      *  the daemon spawns the user's $SHELL as a PTY). */
     agent:
@@ -4008,6 +4010,9 @@
       source: liveSource,
       resumeSessionId: sid,
       transcriptSource: transcriptSource ?? s.transcriptSource ?? s.source,
+      visualAppStopped: undefined,
+      attachTermId: undefined,
+      surface: "read",
     };
     delete nextEntry.mode;
     rememberSessionSurface(nextEntry, "read");
@@ -4025,13 +4030,16 @@
     transcriptSource: string | undefined,
   ): void {
     const source = transcriptSource ?? s.transcriptSource;
-    if (s.agent !== "codex" || !source || source.startsWith("__codex_app__:")) {
+    if (s.agent !== "codex") {
       return;
     }
     const nextEntry: OpenSession = {
       ...s,
-      source,
-      transcriptSource: undefined,
+      source: source && !source.startsWith("__codex_app__:") ? source : s.source,
+      transcriptSource: source && !source.startsWith("__codex_app__:") ? undefined : s.transcriptSource,
+      visualAppStopped: true,
+      attachTermId: undefined,
+      surface: "read",
     };
     delete nextEntry.mode;
     rememberSessionSurface(nextEntry, "read");
@@ -4043,7 +4051,7 @@
     transientWorking = { ...transientWorking, [s.source]: false };
     transientAwaiting = { ...transientAwaiting, [s.source]: false };
     clearFinishedFor(s.source);
-    scrollNewColIntoView(wtPath, source);
+    scrollNewColIntoView(wtPath, nextEntry.source);
   }
 
   async function openSubagentSession(
@@ -6817,6 +6825,7 @@
         }
         if (payload.kind === "reminder_due" || payload.kind === "reminder_changed") {
           reminderRevision++;
+          void refreshMessages();
           return;
         }
         if (
@@ -9784,8 +9793,8 @@
             {/if}
           </span>
         </Tooltip>
-        <MessagesInbox />
-        <Reminders revision={reminderRevision} {addToast} {dismissToast} {focusReminder} />
+        <MessagesInbox openReminder={(reminder) => reminderPanel?.view(reminder)} />
+        <Reminders bind:this={reminderPanel} revision={reminderRevision} {addToast} {dismissToast} {focusReminder} />
       </div>
 
       <div class="actions-anchor">
@@ -12649,6 +12658,7 @@
                                   ] ?? 0}
                                   resumeSessionId={s.resumeSessionId ??
                                     agentMeta?.sessionId}
+                                  visualAppStopped={s.visualAppStopped ?? false}
                                   transcriptSource={effectiveSessionForView.transcriptSource}
                                   visualAppEnabled={isExplicitVisualSurface({
                                     ...s,
@@ -12735,6 +12745,10 @@
                                   manualTitleOverride={agentMeta?.manualTitle ??
                                     newSessionTitles[titleSource] ??
                                     newSessionTitles[s.source]}
+                                  onTerminalStopped={() => {
+                                    const next = setSessionAttachTermId(openSessionsByWt, wt.path, s.source, undefined);
+                                    openSessionsByWt = { ...next, [wt.path]: (next[wt.path] ?? []).map(entry => entry.source === s.source && entry.agent === "codex" ? { ...entry, visualAppStopped: true } : entry) };
+                                  }}
                                   onSpawn={(id) => {
                                     markTerminalLive(id);
                                     // Keep this session's attachTermId on the
@@ -12786,16 +12800,7 @@
                                       s.transcriptSource ?? agentMeta?.source,
                                     );
                                   }}
-                                  onStopVisualApp={(s.transcriptSource ??
-                                  agentMeta?.source)
-                                    ? () =>
-                                        stopCodexVisualSession(
-                                          wt.path,
-                                          s,
-                                          s.transcriptSource ??
-                                            agentMeta?.source,
-                                        )
-                                    : undefined}
+                                  onStopVisualApp={() => stopCodexVisualSession(wt.path, s, s.transcriptSource ?? agentMeta?.source)}
                                   onOpenSubagent={(subagentId, surface) =>
                                     void openSubagentSession(
                                       wt.path,

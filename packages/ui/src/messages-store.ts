@@ -8,6 +8,7 @@
 
 import { writable } from "svelte/store";
 import { apiUrl } from "./api";
+import type { Reminder } from "../../daemon/src/reminders";
 
 export interface StoredMessage {
   id: string;
@@ -24,6 +25,7 @@ export interface PeerInbox {
   messages: StoredMessage[];
 }
 export interface InboxSnapshot {
+  reminders?: Reminder[];
   inbox: PeerInbox[];
   /** Map of peerId → ISO expiry of an active mute. */
   mutes: Record<string, string>;
@@ -45,6 +47,7 @@ async function runRefreshMessages(): Promise<void> {
     messages.set({
       inbox: body.inbox ?? [],
       mutes: body.mutes ?? {},
+      reminders: body.reminders ?? [],
     });
   } catch {
     // best-effort — empty state on failure is fine
@@ -74,7 +77,7 @@ export function refreshMessages(): Promise<void> {
  *  ("out") entries are ours — they never contribute to the unread
  *  badge. */
 export function totalCount(snap: InboxSnapshot): number {
-  let n = 0;
+  let n = (snap.reminders ?? []).filter(item => item.status === "due").length;
   for (const row of snap.inbox) {
     if (snap.mutes[row.peer.id]) continue;
     for (const m of row.messages) {
@@ -96,7 +99,7 @@ export function unreadCount(
   if (!lastReadAtIso) return totalCount(snap);
   const cutoff = Date.parse(lastReadAtIso);
   if (!Number.isFinite(cutoff)) return totalCount(snap);
-  let n = 0;
+  let n = (snap.reminders ?? []).filter(item => item.status === "due" && Date.parse(item.deliveredAt ?? item.dueAt) > cutoff).length;
   for (const row of snap.inbox) {
     if (snap.mutes[row.peer.id]) continue;
     for (const m of row.messages) {

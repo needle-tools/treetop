@@ -46,6 +46,17 @@ function snap(
   return { inbox, mutes };
 }
 
+test("reminder inbox entries count as unread by delivery time, while dismissed history does not", () => {
+  const base = { title: "Review", message: "Ready", createdAt: "2026-10-07T00:00:00Z", dueAt: "2026-10-08T00:00:00Z", deliveredAt: "2026-10-09T00:00:00Z" };
+  const snapshot: InboxSnapshot = { inbox: [], mutes: {}, reminders: [
+    { ...base, id: "due", status: "due" },
+    { ...base, id: "dismissed", status: "dismissed" },
+  ] };
+  expect(totalCount(snapshot)).toBe(1);
+  expect(unreadCount(snapshot, "2026-10-08T12:00:00Z")).toBe(1);
+  expect(unreadCount(snapshot, "2026-10-09T00:00:00Z")).toBe(0);
+});
+
 describe("totalCount", () => {
   test("is zero for an empty inbox", () => {
     expect(totalCount({ inbox: [], mutes: {} })).toBe(0);
@@ -222,6 +233,14 @@ describe("messages store", () => {
 
     expect(calls).toHaveLength(2);
     expect(get(messages).inbox[0]?.peer.id).toBe("second");
+  });
+
+  test("refresh preserves dismissed reminder history returned by the daemon", async () => {
+    const reminder = { id: "history", title: "Review", message: "Ready", status: "dismissed" as const, createdAt: "2026-10-07T00:00:00Z", dueAt: "2026-10-08T00:00:00Z", dismissedAt: "2026-10-08T10:00:00Z" };
+    globalThis.fetch = (async () => Response.json({ inbox: [], mutes: {}, reminders: [reminder] })) as typeof fetch;
+    await refreshMessages();
+    expect(get(messages).reminders).toEqual([reminder]);
+    expect(totalCount(get(messages))).toBe(0);
   });
 });
 

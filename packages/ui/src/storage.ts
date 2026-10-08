@@ -312,6 +312,8 @@ export interface PersistedSession {
    *  It is embedded here so an open-session backup is self-contained. The
    *  SessionSurfaceStore alias map remains useful after a session is closed. */
   surface?: SessionSurface;
+  /** Explicitly stopped visual sessions must stay stopped across reloads. */
+  visualAppStopped?: boolean;
   /** Optional. When `"terminal"`, the mounted SessionView should own a
    *  live `claude --resume` / `codex resume` PTY. This is deliberately
    *  separate from the visual-vs-terminal transcript preference stored in
@@ -639,6 +641,7 @@ function sanitizeSession(item: unknown): PersistedSession | null {
   if (o.surface === "read" || o.surface === "terminal") {
     out.surface = o.surface;
   }
+  if (o.visualAppStopped === true) out.visualAppStopped = true;
   if (o.mode === "terminal") {
     out.mode = "terminal";
   }
@@ -1166,7 +1169,7 @@ export function setSessionAttachTermId(
   byWt: Record<string, PersistedSession[]>,
   wtPath: string,
   source: string,
-  termId: string,
+  termId: string | undefined,
 ): Record<string, PersistedSession[]> {
   const list = byWt[wtPath];
   if (!list) return byWt;
