@@ -19,6 +19,7 @@
     mutePeer,
     unmutePeer,
     unreadCount,
+    unreadReminderCount,
     recallLastRead,
     markInboxRead,
   } from "./messages-store";
@@ -77,6 +78,7 @@
   let copiedTimer: Record<string, ReturnType<typeof setTimeout> | null> = {};
 
   $: count = unreadCount($messages, lastReadAt);
+  $: reminderUnread = unreadReminderCount($messages, lastReadAt);
 
   // Unified rows: every peer the user can talk to — peers who've
   // messaged us (with history) and peers currently discovered on the
@@ -399,23 +401,30 @@
     </svg>
     Inbox
     {#if count > 0}
-      <span class="count inbox-unread-count">{count}</span>
+      <span class="count inbox-unread-count" title={`${reminderUnread} unread reminders; ${count - reminderUnread} unread messages`} aria-label={`${reminderUnread} unread reminders; ${count - reminderUnread} unread messages`}>{count}</span>
     {/if}
   </button>
   {#if open}
     <Popover variant="actions" extraClass="inbox-popover" unclamped>
       <span slot="head">Inbox</span>
       {#if $messages.reminders?.length}
-        <section class="inbox-reminders">
-          <strong>Reminders</strong>
-          {#each $messages.reminders as reminder (reminder.id)}
-            <button class="inbox-reminder" on:click={() => { setOpen(false); openReminder(reminder); }}>
-              <strong>{reminder.title}</strong>
-              <span>{reminder.message}</span>
-              <small>{reminder.status === "dismissed" ? "Dismissed" : "Due"} · {relTime(reminder.deliveredAt ?? reminder.dueAt)}</small>
-            </button>
-          {/each}
-        </section>
+        <ul class="inbox-list">
+          <li class="inbox-row">
+            <div class="inbox-head">
+              <span class="inbox-peer-label">Reminders {#if reminderUnread > 0}<span class="inbox-peer-unread">{reminderUnread}</span>{/if}</span>
+            </div>
+            <ul class="inbox-msgs">
+              {#each $messages.reminders as reminder (reminder.id)}
+                <li class="inbox-msg">
+                  <button class="inbox-body" on:click={() => { setOpen(false); openReminder(reminder); }}>
+                    <strong>{reminder.title}</strong>{#if reminder.message !== reminder.title}<br />{reminder.message}{/if}
+                  </button>
+                  <span class="inbox-msg-footer"><span class="inbox-msg-time muted small">{reminder.status === "dismissed" ? "Dismissed" : "Due"} · {relTime(reminder.deliveredAt ?? reminder.dueAt)}</span></span>
+                </li>
+              {/each}
+            </ul>
+          </li>
+        </ul>
       {/if}
       {#if rows.length === 0 && !$messages.reminders?.length}
         <p class="muted small nopad">
@@ -761,8 +770,6 @@
 </div>
 
 <style>
-  .inbox-reminders { padding: 12px; display: grid; gap: 8px; }
-  .inbox-reminder { display: grid; gap: 4px; text-align: left; padding: 10px; border: 1px solid var(--border-muted); border-radius: 6px; white-space: pre-wrap; overflow-wrap: anywhere; }
   .inbox-icon {
     flex: 0 0 auto;
     opacity: 0.85;
@@ -954,6 +961,7 @@
     gap: 0.15rem;
   }
   .inbox-body {
+    text-align: left;
     margin: 0;
     padding: 0.45rem 1.7rem 0.45rem 0.55rem;
     background: color-mix(in srgb, var(--surface-2) 50%, transparent);

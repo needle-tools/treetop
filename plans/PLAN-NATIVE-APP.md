@@ -271,6 +271,25 @@ diagnosis. CI verification is pending push.
 
 ### MCP reminders (2026-10-07)
 
+MCP `get_settings` reads stored app overrides (`supergit:settings`), Codex
+defaults, project order and project configuration including command buttons.
+`export_settings` returns the same data as formatted JSON with `schemaVersion: 1`
+and `exportedAt` so an agent can save it to a file. Optional `repo_id` filters the
+projects array; workspace settings/order remain global. UI defaults that have
+never been overridden are not part of the persisted settings snapshot. Runtime
+session state is not exported. Both tools are read-only. Existing `list_commands`
+queries saved/running commands, and `add_command` saves a project command by id
+or session cwd, broadcasting its action button without executing it.
+
+`edit_command` updates a saved command by `repo_id` and `command_id`; omitted
+fields retain their value, and null clears name/command working directory. IDs
+and other links remain intact. Changes broadcast and append an agent action.
+`list_events` exposes the existing recorded action log (payloads and undo/redo
+metadata) with exact type/actor, inclusive date-range and pagination filters,
+newest first. It is a query, not a live event stream or agent transcript reader.
+Validation: all 22 MCP/workspace integration tests pass, including command edits
+appearing in the queried action history and read-only settings exports.
+
 `schedule_reminder` accepts a timezone-qualified `at` or `delay_seconds`, title,
 message, optional plain-text details, `repo_id` and `session_source` (from session
 queries). `list_reminders` filters by project/status; `cancel_reminder` cancels
@@ -279,7 +298,10 @@ atomically in workspace `reminders.json`. The daemon checks once per second and
 catches overdue items on startup; notifications require a running daemon and
 surface when the dashboard reconnects. Read-only instances do not run timers.
 
-The header Reminders panel lists upcoming/due items. Due reminders show persistent
+Reminders are listed in Inbox, using its compact message-list styles and unread
+badge (including an accessible reminder/message count breakdown). There is no
+separate Reminders header menu; upcoming/cancelled items remain queryable through
+MCP. Due reminders show persistent
 bottom-right toasts, removed only by clicking or dismissing. Clicking opens a
 details dialog and focuses the optional linked project/session; the dialog also
 offers a Go to project/session action. Acknowledgement propagates across windows.
@@ -292,7 +314,7 @@ dismissed ones through 48 hours after `dismissedAt`. Dismissal is idempotent and
 does not extend retention. Older dismissed records without a timestamp are kept.
 Inbox entries open the same details/project/session action as toasts; dismissed
 history does not contribute to the unread badge. Cancelled/upcoming reminders
-remain in the Reminders panel/MCP rather than the delivered Inbox history.
+remain queryable through MCP rather than the delivered Inbox history.
 
 Validation: 57 focused reminder, MCP integration and toast tests pass; both UI
 components compile, and the new storage/controller modules pass strict TypeScript

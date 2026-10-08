@@ -16,6 +16,7 @@ import {
   refreshMessages,
   totalCount,
   unreadCount,
+  unreadReminderCount,
   recallLastRead,
   markInboxRead,
   type InboxSnapshot,
@@ -53,6 +54,9 @@ test("reminder inbox entries count as unread by delivery time, while dismissed h
     { ...base, id: "dismissed", status: "dismissed" },
   ] };
   expect(totalCount(snapshot)).toBe(1);
+  expect(unreadReminderCount(snapshot, null)).toBe(1);
+  expect(unreadReminderCount(snapshot, "2026-10-08T12:00:00Z")).toBe(1);
+  expect(unreadReminderCount(snapshot, "2026-10-09T00:00:00Z")).toBe(0);
   expect(unreadCount(snapshot, "2026-10-08T12:00:00Z")).toBe(1);
   expect(unreadCount(snapshot, "2026-10-09T00:00:00Z")).toBe(0);
 });

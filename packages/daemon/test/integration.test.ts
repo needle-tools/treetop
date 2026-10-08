@@ -19,6 +19,86 @@ import { handleMcp, handleMcpHttp, withTreetopMcp } from "../src/mcp";
 import { remindersForWorkspace } from "../src/reminders";
 
 describe("MCP dashboard tools", () => {
+  test("queries recorded events newest first with actor, action, time and pagination filters", async () => {
+    const ctx = await setup();
+    const first = await ctx.events.append({ type: "custom_link_add", actor: "agent", payload: { id: "project", command: "bun test" } });
+    const second = await ctx.events.append({ type: "custom_link_update", actor: "user", payload: { id: "project" } });
+    const third = await ctx.events.append({ type: "custom_link_update", actor: "agent", payload: { id: "other" } });
+    const all = JSON.parse((await ctx.call("list_events", { limit: 1 })).result.content[0].text);
+    expect(all.events[0].id).toBe(third.id);
+    expect(all.total).toBe(3);
+    expect(all.nextOffset).toBe(1);
+    const filtered = JSON.parse((await ctx.call("list_events", { actor: "agent", type: "custom_link_update", after: first.timestamp, before: third.timestamp })).result.content[0].text);
+    expect(filtered.events.map((event: any) => event.id)).toEqual([third.id]);
+    const page = JSON.parse((await ctx.call("list_events", { offset: 1, limit: 2 })).result.content[0].text);
+    expect(page.events.map((event: any) => event.id)).toEqual([second.id, first.id]);
+    expect(page.nextOffset).toBeNull();
+    for (const args of [{ limit: 0 }, { actor: "unknown" }, { after: "invalid" }, { offset: -1 }, { type: 42 }])
+      expect((await ctx.call("list_events", args)).error.code).toBe(-32602);
+    expect(ctx.changes).toEqual([]);
+  });
+  test("edits saved commands in place, preserves omitted fields and rejects other links", async () => {
+    const ctx = await setup();
+    const repo = await ctx.workspace.addRepo(await mkdtemp(join(tmpdir(), "mcp-edit-command-")));
+    const command = await ctx.workspace.addCustomLink(repo.id, { kind: "command", cmd: "bun test", name: "Tests", cwd: "packages/ui", runMode: "external" });
+    const url = await ctx.workspace.addCustomLink(repo.id, { kind: "url", url: "https://example.com" });
+    const updated = await ctx.call("edit_command", { repo_id: repo.id, command_id: command.id, command: "bun test --watch", name: "Watch" });
+    expect(updated.error).toBeUndefined();
+    expect(JSON.parse(updated.result.content[0].text).link).toMatchObject({ id: command.id, cmd: "bun test --watch", name: "Watch", cwd: "packages/ui", runMode: "external" });
+    const cleared = await ctx.call("edit_command", { repo_id: repo.id, command_id: command.id, name: null, command_cwd: null, run_mode: "internal" });
+    const link = JSON.parse(cleared.result.content[0].text).link;
+    expect(link.name).toBeUndefined();
+    expect(link.cwd).toBeUndefined();
+    expect(link.cmd).toBe("bun test --watch");
+    expect(link.runMode).toBe("internal");
+    for (const args of [
+      { command_id: url.id, command: "changed" },
+      { command_id: "missing", command: "changed" },
+      { command_id: command.id, command: "" },
+      { command_id: command.id, run_mode: "invalid" },
+      { command_id: command.id },
+    ]) expect((await ctx.call("edit_command", { repo_id: repo.id, ...args })).error.code).toBe(-32602);
+    const stored = (await ctx.workspace.listRepos())[0]!.customLinks!;
+    expect(stored).toHaveLength(2);
+    expect(stored.find(item => item.id === url.id)).toEqual(url);
+    expect(ctx.changes.filter(change => change.kind === "custom_link_update")).toHaveLength(2);
+    const history = JSON.parse((await ctx.call("list_events", { type: "custom_link_update", actor: "agent" })).result.content[0].text);
+    expect(history.events).toHaveLength(2);
+    expect(history.events[0].payload.link).toMatchObject({ id: command.id, cmd: "bun test --watch", runMode: "internal" });
+  });
+  test("reads and exports stored settings and project commands without changing workspace state", async () => {
+    const ctx = await setup();
+    const first = await ctx.workspace.addRepo(await mkdtemp(join(tmpdir(), "mcp-settings-")));
+    const other = await ctx.workspace.addRepo(await mkdtemp(join(tmpdir(), "mcp-settings-other-")));
+    await ctx.workspace.setRepoColor(first.id, "#ff0000");
+    await ctx.workspace.addCustomLink(first.id, { kind: "command", cmd: "bun test", cwd: "packages/ui", name: "UI tests", runMode: "external" });
+    await ctx.workspace.patchPrefs({
+      "supergit:settings": JSON.stringify({ "terminal.fontSize": 16, "appearance.showGreeting": false }),
+      "supergit:codexApp:turnSettings": JSON.stringify({ model: "gpt-6.1", effort: "high" }),
+      "supergit:repoOrder": JSON.stringify([`repo:${other.id}`, `repo:${first.id}`]),
+      "supergit:openSessions": JSON.stringify({ privateSession: "unrelated runtime state" }),
+    });
+    const before = await ctx.workspace.getPrefs();
+    const read = await ctx.call("get_settings", { repo_id: first.id });
+    expect(read.error).toBeUndefined();
+    const settings = JSON.parse(read.result.content[0].text);
+    expect(settings.settings).toEqual({ "terminal.fontSize": 16, "appearance.showGreeting": false });
+    expect(settings.agentDefaults.codex).toEqual({ model: "gpt-6.1", effort: "high" });
+    expect(settings.projects).toHaveLength(1);
+    expect(settings.projects[0]).toMatchObject({ id: first.id, path: first.path, color: "#ff0000", customLinks: [{ kind: "command", cmd: "bun test", cwd: "packages/ui", name: "UI tests", runMode: "external" }] });
+    expect(settings.preferences).toBeUndefined();
+    const exported = JSON.parse((await ctx.call("export_settings", {})).result.content[0].text);
+    expect(exported.schemaVersion).toBe(1);
+    expect(Number.isFinite(Date.parse(exported.exportedAt))).toBe(true);
+    expect(exported.projectOrder).toEqual([`repo:${other.id}`, `repo:${first.id}`]);
+    expect(exported.projects).toHaveLength(2);
+    expect(await ctx.workspace.getPrefs()).toEqual(before);
+    expect(ctx.changes).toEqual([]);
+    expect((await ctx.call("get_settings", { repo_id: "missing" })).error.code).toBe(-32602);
+    expect((await ctx.call("export_settings", { repo_id: 42 })).error.code).toBe(-32602);
+    await ctx.workspace.patchPrefs({ "supergit:settings": "broken JSON" });
+    expect((await ctx.call("get_settings", {})).result.isError).toBe(true);
+  });
   test("schedules, filters and cancels durable project/session reminders through MCP", async () => {
     const ctx = await setup();
     const repo = await ctx.workspace.addRepo(await tempDir());
@@ -114,6 +194,12 @@ describe("MCP dashboard tools", () => {
         "list_reminders",
         "cancel_reminder",
         "dismiss_reminder",
+        "get_settings",
+        "export_settings",
+        "list_commands",
+        "add_command",
+        "edit_command",
+        "list_events",
       ]),
     );
     const initialized = (await handleMcp(

@@ -9794,7 +9794,6 @@
           </span>
         </Tooltip>
         <MessagesInbox openReminder={(reminder) => reminderPanel?.view(reminder)} />
-        <Reminders bind:this={reminderPanel} revision={reminderRevision} {addToast} {dismissToast} {focusReminder} />
       </div>
 
       <div class="actions-anchor">
@@ -13179,6 +13178,7 @@
     </div>
   {/if}
 </main>
+<Reminders bind:this={reminderPanel} revision={reminderRevision} {addToast} {dismissToast} {focusReminder} />
 
 <SessionDock
   entries={dockEntries}

@@ -37,6 +37,34 @@ interface ToolDef {
 
 const TOOLS: ToolDef[] = [
   {
+    name: "edit_command",
+    description: "Edit a saved project command by repo_id and command_id from list_commands. Omitted fields keep their current values; null clears name or command_cwd. Preserves its id and updates the dashboard without executing the command.",
+    inputSchema: { type: "object", properties: {
+      repo_id: { type: "string" }, command_id: { type: "string" },
+      command: { type: "string" }, name: { type: ["string", "null"] },
+      command_cwd: { type: ["string", "null"] },
+      run_mode: { type: "string", enum: ["internal", "external", "shell"] },
+    }, required: ["repo_id", "command_id"] },
+  },
+  {
+    name: "list_events",
+    description: "Read Treetop's recorded action/event log, newest first, including payloads and undo/redo metadata. Filter by action type, actor or inclusive timestamps; supports pagination. This is a query of recorded operations, not a live stream or full agent transcript.",
+    inputSchema: { type: "object", properties: {
+      type: { type: "string", description: "Exact action type, e.g. custom_link_add or custom_link_update." },
+      actor: { type: "string", enum: ["user", "agent", "supergit"] },
+      after: { type: "string", format: "date-time" }, before: { type: "string", format: "date-time" },
+      limit: { type: "integer", minimum: 1, maximum: 100, default: 25 },
+      offset: { type: "integer", minimum: 0, default: 0 },
+    } },
+  },
+  ...["get_settings", "export_settings"].map((name): ToolDef => ({
+    name,
+    description: name === "get_settings"
+      ? "Read stored Treetop app setting overrides, Codex agent defaults, project order and project configuration (colors, links and saved commands). Optional repo_id filters projects. Defaults that have never been overridden are defined by the UI and are not included."
+      : "Export stored Treetop settings and project configuration as formatted JSON, with a schema version and export timestamp. Includes app overrides, Codex defaults, project order, colors, links and saved commands. Optional repo_id filters projects. The caller can save the JSON to a file; this tool is read-only.",
+    inputSchema: { type: "object", properties: { repo_id: { type: "string", description: "Optional project id from list_repos; filters the projects array." } } },
+  })),
+  {
     name: "schedule_reminder",
     description: "Schedule a one-time Treetop reminder. Supply either at (ISO timestamp with timezone) or delay_seconds. A persistent bottom-right toast appears when due; clicking opens details and optionally focuses repo_id and session_source. Reminders survive daemon restarts; while it is stopped they become due when it starts again. Does not send agent messages or execute commands.",
     inputSchema: { type: "object", properties: {
@@ -249,7 +277,7 @@ interface McpContext {
 }
 
 const SERVER_INSTRUCTIONS =
-  "Treetop is the project dashboard hosting this agent session. Use its MCP tools when the user asks to manage Treetop projects, colors, order, commands, notes, reminders, or session columns. Use schedule_reminder for timed alerts; attach repo_id and session_source to link a project/session. To add a command, call add_command; it saves a project action without running it. Use the session working directory or pass your current absolute cwd to identify the project; use list_repos to confirm project ids. Never guess another project's id. Only change Treetop state when requested by the user.";
+  "Treetop is the project dashboard hosting this agent session. Read/export settings with get_settings or export_settings; inspect recorded actions with list_events. Query project commands with list_commands; save/edit project buttons with add_command/edit_command (without running them). Use schedule_reminder for timed alerts with optional repo_id/session_source links. Use the session working directory or pass your current absolute cwd to identify the project; use list_repos to confirm project ids. Tools also manage projects, colors, order, notes and session columns. Never guess another project's id. Only change Treetop state when requested by the user.";
 
 /** Add only this session's MCP connection, preserving other agent settings. */
 export function withTreetopMcp(
@@ -361,6 +389,86 @@ async function dispatchMcp(
 
       try {
         switch (name) {
+          case "list_events": {
+            for (const field of ["type", "actor", "after", "before"]) {
+              if (args[field] !== undefined && typeof args[field] !== "string")
+                return err(request.id, -32602, `${name}: ${field} must be a string`);
+            }
+            if (args.actor !== undefined && !["user", "agent", "supergit"].includes(args.actor as string))
+              return err(request.id, -32602, `${name}: invalid actor`);
+            const after = args.after === undefined ? -Infinity : Date.parse(args.after as string);
+            const before = args.before === undefined ? Infinity : Date.parse(args.before as string);
+            if (Number.isNaN(after) || Number.isNaN(before) || after > before)
+              return err(request.id, -32602, `${name}: invalid date range`);
+            const limit = args.limit ?? 25, offset = args.offset ?? 0;
+            if (typeof limit !== "number" || !Number.isInteger(limit) || limit < 1 || limit > 100 ||
+                typeof offset !== "number" || !Number.isInteger(offset) || offset < 0)
+              return err(request.id, -32602, `${name}: limit must be 1..100 and offset a nonnegative integer`);
+            const events = (await ctx.events.list()).reverse().filter(event =>
+              (args.type === undefined || event.type === args.type) &&
+              (args.actor === undefined || event.actor === args.actor) &&
+              Date.parse(event.timestamp) >= after && Date.parse(event.timestamp) <= before
+            ).sort((a, b) => Date.parse(b.timestamp) - Date.parse(a.timestamp));
+            return ok(request.id, textContent(JSON.stringify({ events: events.slice(offset, offset + limit), total: events.length, limit, offset, nextOffset: offset + limit < events.length ? offset + limit : null })));
+          }
+          case "edit_command": {
+            for (const field of ["repo_id", "command_id"]) {
+              if (typeof args[field] !== "string" || !(args[field] as string).trim())
+                return err(request.id, -32602, `${name}: ${field} is required`);
+            }
+            if (args.command !== undefined && (typeof args.command !== "string" || !args.command.trim()))
+              return err(request.id, -32602, `${name}: command must be nonempty`);
+            for (const field of ["name", "command_cwd"]) {
+              if (args[field] !== undefined && args[field] !== null && typeof args[field] !== "string")
+                return err(request.id, -32602, `${name}: ${field} must be a string or null`);
+            }
+            if (args.run_mode !== undefined && !["internal", "external", "shell"].includes(args.run_mode as string))
+              return err(request.id, -32602, `${name}: invalid run_mode`);
+            if (!["command", "name", "command_cwd", "run_mode"].some(field => args[field] !== undefined))
+              return err(request.id, -32602, `${name}: supply at least one field to edit`);
+            const repo = (await ctx.workspace.listRepos()).find(repo => repo.id === args.repo_id);
+            const current = repo?.customLinks?.find(link => link.id === args.command_id);
+            if (!current || current.kind !== "command")
+              return err(request.id, -32602, `${name}: saved project command not found`);
+            const link = await ctx.workspace.updateCustomLink(repo!.id, current.id, {
+              kind: "command", cmd: args.command as string | undefined,
+              ...(args.name !== undefined ? { name: (args.name ?? "") as string } : {}),
+              ...(args.command_cwd !== undefined ? { cwd: (args.command_cwd ?? "") as string } : {}),
+              runMode: args.run_mode as "internal" | "external" | "shell" | undefined,
+            });
+            if (!link) throw new Error("Command was removed before the update");
+            await ctx.events.append({ type: "custom_link_update", actor: "agent", payload: { id: repo!.id, linkId: current.id, link } });
+            ctx.changed?.({ kind: "custom_link_update", id: repo!.id, linkId: current.id });
+            return ok(request.id, textContent(JSON.stringify({ repoId: repo!.id, link })));
+          }
+          case "get_settings":
+          case "export_settings": {
+            if (args.repo_id !== undefined && typeof args.repo_id !== "string")
+              return err(request.id, -32602, `${name}: repo_id must be a string`);
+            const [allProjects, prefs] = await Promise.all([
+              ctx.workspace.listRepos(), ctx.workspace.getPrefs(),
+            ]);
+            const projects = allProjects.filter(project => args.repo_id === undefined || project.id === args.repo_id);
+            if (args.repo_id !== undefined && !projects.length)
+              return err(request.id, -32602, `${name}: project not found`);
+            const storedObject = (key: string): Record<string, unknown> => {
+              const value = JSON.parse(prefs[key] ?? "{}");
+              if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`Invalid settings object: ${key}`);
+              return value;
+            };
+            const projectOrder = JSON.parse(prefs["supergit:repoOrder"] ?? "[]");
+            if (!Array.isArray(projectOrder) || projectOrder.some(key => typeof key !== "string"))
+              throw new Error("Invalid project order settings");
+            const snapshot = {
+              schemaVersion: 1,
+              ...(name === "export_settings" ? { exportedAt: new Date().toISOString() } : {}),
+              settings: storedObject("supergit:settings"),
+              agentDefaults: { codex: storedObject("supergit:codexApp:turnSettings") },
+              projectOrder,
+              projects,
+            };
+            return ok(request.id, textContent(JSON.stringify(snapshot, null, name === "export_settings" ? 2 : undefined)));
+          }
           case "schedule_reminder": {
             for (const field of ["title", "message", "details", "at", "repo_id", "session_source"]) {
               if (args[field] !== undefined && typeof args[field] !== "string")

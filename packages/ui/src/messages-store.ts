@@ -99,7 +99,7 @@ export function unreadCount(
   if (!lastReadAtIso) return totalCount(snap);
   const cutoff = Date.parse(lastReadAtIso);
   if (!Number.isFinite(cutoff)) return totalCount(snap);
-  let n = (snap.reminders ?? []).filter(item => item.status === "due" && Date.parse(item.deliveredAt ?? item.dueAt) > cutoff).length;
+  let n = unreadReminderCount(snap, lastReadAtIso);
   for (const row of snap.inbox) {
     if (snap.mutes[row.peer.id]) continue;
     for (const m of row.messages) {
@@ -109,6 +109,12 @@ export function unreadCount(
     }
   }
   return n;
+}
+
+export function unreadReminderCount(snap: InboxSnapshot, lastReadAtIso: string | null): number {
+  const cutoff = lastReadAtIso ? Date.parse(lastReadAtIso) : NaN;
+  return (snap.reminders ?? []).filter(item => item.status === "due" &&
+    (!Number.isFinite(cutoff) || Date.parse(item.deliveredAt ?? item.dueAt) > cutoff)).length;
 }
 
 const LAST_READ_KEY = "supergit.inbox.lastReadAt";
