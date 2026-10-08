@@ -2815,7 +2815,14 @@ export function buildVisualTranscriptItems<
       });
       messageIndex += 1;
     }
+    const nextMessage = messages[messageIndex];
+    const sameTurnSteer =
+      !!userTurnId &&
+      nextMessage?.role === "user" &&
+      nextMessage.turnId === userTurnId &&
+      hasExplicitSteerIntent(nextMessage);
     const turnStillOpen: boolean =
+      sameTurnSteer ||
       ((turnWasAlreadyOpen || hasTurnMarker(turnEntries, "started")) &&
         !hasTurnMarker(turnEntries, "complete") &&
         !hasTurnMarker(turnEntries, "aborted")) ||
@@ -2826,8 +2833,8 @@ export function buildVisualTranscriptItems<
       (turnWasAlreadyOpen || hasSteeringEligibleWork(turnEntries));
     if (
       acceptsSteering &&
-      messages[messageIndex]?.role === "user" &&
-      hasExplicitSteerIntent(messages[messageIndex])
+      nextMessage?.role === "user" &&
+      hasExplicitSteerIntent(nextMessage)
     ) {
       pendingTurnPrefixEntries = turnEntries;
       pendingTurnStartedAt = turnStartedAt;

@@ -4621,7 +4621,14 @@ const server = Bun.serve<TermWsData, never>({
                 receivedAt: new Date().toISOString(),
               });
             }
-            unsubscribe = codexAgent.subscribe(threadId, send);
+            // The browser hydrates every visible thread through thread/read.
+            // Replaying buffered deltas here races that canonical snapshot and
+            // can append an already-represented suffix to an active item. A
+            // reconnect also triggers a thread/read reconciliation in the UI,
+            // so this transport must carry only events emitted after attach.
+            unsubscribe = codexAgent.subscribe(threadId, send, {
+              replay: false,
+            });
           },
           cancel() {
             if (flushTimer !== null) clearTimeout(flushTimer);

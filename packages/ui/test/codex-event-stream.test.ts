@@ -28,6 +28,9 @@ import {
   codexEventThreadIdForSession,
   codexEventRequiresHistoryReconciliation,
   codexEventStreamRequiresHistoryReconciliation,
+  codexRecoverableIssueFromEvent,
+  codexEventResolvesRecoverableIssue,
+  withoutResolvedCodexRecoverableIssueMessages,
   codexEventDeltaSupersededByCompletedItem,
   codexOffscreenProjectionAction,
   codexUsageEventBelongsToObservedTurn,
@@ -722,6 +725,104 @@ describe("codex event stream hub", () => {
     expect(
       codexEventStreamRequiresHistoryReconciliation("live", "reconnecting"),
     ).toBe(false);
+  });
+
+  test("resolves recoverable connection warnings once the turn resumes", () => {
+    const retrying: CodexAppEvent = {
+      kind: "notification",
+      method: "error",
+      params: {
+        error: { message: "Reconnecting... 2/5" },
+        willRetry: true,
+      },
+      threadId: "thread-1",
+      turnId: "turn-1",
+      receivedAt: "2026-08-27T12:05:15.765Z",
+      seq: 20,
+    };
+    const fallback: CodexAppEvent = {
+      kind: "notification",
+      method: "warning",
+      params: {
+        message: "Falling back from WebSockets to HTTPS transport.",
+      },
+      threadId: "thread-1",
+      turnId: "turn-1",
+      receivedAt: "2026-08-27T12:05:16.000Z",
+      seq: 21,
+    };
+    const resumed: CodexAppEvent = {
+      kind: "notification",
+      method: "item/agentMessage/delta",
+      params: { itemId: "answer", delta: "Recovered" },
+      threadId: "thread-1",
+      turnId: "turn-1",
+      receivedAt: "2026-08-27T12:05:17.000Z",
+      seq: 22,
+    };
+
+    const retryIssue = codexRecoverableIssueFromEvent(retrying);
+    const fallbackIssue = codexRecoverableIssueFromEvent(fallback);
+    expect(retryIssue).toEqual({
+      message: "Reconnecting... 2/5",
+      threadId: "thread-1",
+      turnId: "turn-1",
+    });
+    expect(fallbackIssue?.message).toBe(
+      "Falling back from WebSockets to HTTPS transport.",
+    );
+    expect(codexEventResolvesRecoverableIssue(fallbackIssue!, resumed)).toBe(
+      true,
+    );
+    expect(
+      codexRecoverableIssueFromEvent({
+        ...fallback,
+        params: { message: "This model is nearing its context limit." },
+      }),
+    ).toBeUndefined();
+    expect(
+      codexRecoverableIssueFromEvent({
+        ...retrying,
+        params: { error: { message: "The model rejected this request." } },
+      }),
+    ).toBeUndefined();
+    expect(
+      withoutResolvedCodexRecoverableIssueMessages(
+        [
+          {
+            id: "retry",
+            role: "system",
+            turnId: "turn-1",
+            blocks: [
+              { type: "marker", text: "[Retrying: Reconnecting... 2/5]" },
+            ],
+          },
+          {
+            id: "fallback",
+            role: "system",
+            turnId: "turn-1",
+            blocks: [
+              {
+                type: "marker",
+                text: "[Warning: Falling back from WebSockets to HTTPS transport.]",
+              },
+            ],
+          },
+          {
+            id: "persistent",
+            role: "system",
+            turnId: "turn-1",
+            blocks: [
+              {
+                type: "marker",
+                text: "[Warning: This model is nearing its context limit.]",
+              },
+            ],
+          },
+        ],
+        fallbackIssue!,
+      ).map((message) => message.id),
+    ).toEqual(["persistent"]);
   });
 
   test("reconciles authoritative history after every completed turn", () => {
@@ -2262,6 +2363,85 @@ describe("codex event stream hub", () => {
       "turn-older",
       "turn-newer",
     ]);
+  });
+
+  test("keeps later user messages in one app-server turn as steering", () => {
+    const messages = codexAppHistoryMessagesFromThread({
+      id: "thread-1",
+      turns: [
+        {
+          id: "turn-1",
+          startedAt: 1782122400,
+          status: "inProgress",
+          items: [
+            {
+              id: "user-1",
+              type: "userMessage",
+              content: [{ type: "text", text: "build the feature" }],
+            },
+            {
+              id: "agent-1",
+              type: "agentMessage",
+              text: "I’m implementing it.",
+            },
+            {
+              id: "user-2",
+              type: "userMessage",
+              content: [{ type: "text", text: "keep the API compatible" }],
+            },
+            {
+              id: "agent-2",
+              type: "agentMessage",
+              text: "I’ll preserve the API.",
+            },
+          ],
+        },
+      ],
+    });
+
+    expect(
+      messages
+        .filter((message) => message.role === "user")
+        .map((message) => message.intent),
+    ).toEqual([undefined, "steer"]);
+
+    const items = buildVisualTranscriptItems(messages, { active: true });
+    expect(items.map((item) => item.kind)).toEqual(["message", "work"]);
+    expect(items[1]?.kind === "work" ? visualWorkSummary(items[1].entries) : null)
+      .toMatchObject({ steerings: 1 });
+  });
+
+  test("keeps live user item snapshots classified across a steer", () => {
+    const context = {};
+    const event = (id: string, text: string, method: "item/started" | "item/completed") =>
+      codexLiveMessagesFromEvent(
+        {
+          kind: "notification",
+          method,
+          params: {
+            threadId: "thread-1",
+            turnId: "turn-1",
+            item: {
+              id,
+              type: "userMessage",
+              content: [{ type: "text", text }],
+            },
+          },
+          threadId: "thread-1",
+          turnId: "turn-1",
+          receivedAt: "2026-06-22T10:00:00.000Z",
+        },
+        context,
+      );
+
+    expect(event("user-1", "build the feature", "item/started")[0]?.intent)
+      .toBeUndefined();
+    expect(event("user-1", "build the feature", "item/completed")[0]?.intent)
+      .toBeUndefined();
+    expect(event("user-2", "keep the API compatible", "item/started")[0]?.intent)
+      .toBe("steer");
+    expect(event("user-2", "keep the API compatible", "item/completed")[0]?.intent)
+      .toBe("steer");
   });
 
   test("prepends older app-server turn pages without dropping live/newer rows", () => {

@@ -421,6 +421,63 @@ describe("SessionView browser lifecycle", { concurrency: false }, () => {
     await currentPage.close();
   }, 30_000);
 
+  test("clears a transient connection warning after app-server output resumes", async () => {
+    const currentPage = await openHarness();
+    const reconnecting = "Connection lost; reconnecting to Codex.";
+    emitCodexEvents([
+      {
+        kind: "notification",
+        method: "error",
+        params: {
+          threadId,
+          turnId: latestTurnId,
+          message: reconnecting,
+          willRetry: true,
+        },
+        threadId,
+        turnId: latestTurnId,
+        receivedAt: "2026-10-07T10:00:00.000Z",
+      },
+    ]);
+
+    const warningBadge = currentPage.getByRole("button", {
+      name: "Show warnings",
+    });
+    await warningBadge.waitFor();
+    await warningBadge.click();
+    await currentPage.getByLabel("Codex warnings").getByText(reconnecting).waitFor();
+
+    emitCodexEvents([
+      {
+        kind: "notification",
+        method: "item/completed",
+        params: {
+          threadId,
+          turnId: latestTurnId,
+          item: {
+            id: "answer-after-reconnect",
+            type: "agentMessage",
+            text: "The response continued after reconnecting.",
+          },
+        },
+        threadId,
+        turnId: latestTurnId,
+        receivedAt: "2026-10-07T10:00:01.000Z",
+      },
+    ]);
+
+    await currentPage
+      .getByText("The response continued after reconnecting.")
+      .waitFor();
+    await waitForCondition(
+      async () =>
+        (await currentPage.getByRole("button", { name: "Show warnings" }).count()) === 0 &&
+        (await currentPage.getByText(reconnecting).count()) === 0,
+      "Recovered app-server warning remained visible",
+    );
+    await currentPage.close();
+  }, 30_000);
+
   test("the follow handle reaches the exact bottom and keeps following streamed output", async () => {
     const currentPage = await openHarness();
     await currentPage

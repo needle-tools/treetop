@@ -505,6 +505,7 @@ export interface CodexLiveMarker {
 export interface CodexLiveNormalizeContext {
   toolNames?: Map<string, string>;
   toolInputs?: Map<string, unknown>;
+  userMessageIdsByTurn?: Map<string, Set<string>>;
   previousTotalTokenUsage?: CodexAppTokenUsage;
   latestContextTokens?: number;
   compactionStartedAtMs?: Map<string, number>;
@@ -527,6 +528,19 @@ function codexLiveToolInputMap(
   return context.toolInputs;
 }
 
+function codexLiveUserMessageIntent(
+  context: CodexLiveNormalizeContext,
+  turnId: string | undefined,
+  itemId: string | undefined,
+): "steer" | undefined {
+  if (!turnId || !itemId) return undefined;
+  context.userMessageIdsByTurn ??= new Map<string, Set<string>>();
+  const ids = context.userMessageIdsByTurn.get(turnId) ?? new Set<string>();
+  ids.add(itemId);
+  context.userMessageIdsByTurn.set(turnId, ids);
+  return ids.values().next().value === itemId ? undefined : "steer";
+}
+
 export interface CodexAppHistoryBlock extends AgentTranscriptBlock {
   streaming?: boolean;
 }
@@ -539,6 +553,7 @@ export interface CodexAppHistoryMessage {
   tokenUsage?: CodexAppTokenUsage;
   model?: string;
   turnId?: string;
+  intent?: "steer";
 }
 
 export interface CodexAppTokenUsage {
@@ -948,6 +963,97 @@ export function codexEventStreamRequiresHistoryReconciliation(
   next: CodexEventStreamState,
 ): boolean {
   return previous === "reconnecting" && next === "live";
+}
+
+export interface CodexRecoverableIssue {
+  message: string;
+  threadId?: string;
+  turnId?: string;
+}
+
+function codexEventIssueMessage(event: CodexAppEvent): string | undefined {
+  if (typeof event.params.message === "string" && event.params.message.trim()) {
+    return event.params.message.trim();
+  }
+  const error = event.params.error;
+  if (!error || typeof error !== "object") return undefined;
+  const message = (error as Record<string, unknown>).message;
+  return typeof message === "string" && message.trim()
+    ? message.trim()
+    : undefined;
+}
+
+const CODEX_RECOVERABLE_WARNING =
+  /(?:reconnect|disconnect|fall(?:ing)? back|websockets?|https transport|connection (?:lost|closed|reset))/i;
+
+export function codexRecoverableIssueFromEvent(
+  event: CodexAppEvent,
+): CodexRecoverableIssue | undefined {
+  const message = codexEventIssueMessage(event);
+  if (!message) return undefined;
+  const recoverable =
+    (event.method === "error" && event.params.willRetry === true) ||
+    (event.method === "warning" && CODEX_RECOVERABLE_WARNING.test(message));
+  return recoverable
+    ? {
+        message,
+        ...(event.threadId ? { threadId: event.threadId } : {}),
+        ...(event.turnId ? { turnId: event.turnId } : {}),
+      }
+    : undefined;
+}
+
+export function codexEventResolvesRecoverableIssue(
+  issue: CodexRecoverableIssue,
+  event: CodexAppEvent,
+): boolean {
+  if (event.method === "error" || event.method === "warning") return false;
+  if (issue.threadId && event.threadId && issue.threadId !== event.threadId) {
+    return false;
+  }
+  if (
+    issue.turnId &&
+    event.turnId &&
+    issue.turnId !== event.turnId &&
+    event.method !== "turn/started"
+  ) {
+    return false;
+  }
+  return (
+    event.method === "turn/started" ||
+    event.method === "turn/completed" ||
+    event.method === "turn/status" ||
+    event.method === "thread/tokenUsage/updated" ||
+    event.method === "token_count" ||
+    event.method.startsWith("item/") ||
+    event.method.endsWith("/outputDelta")
+  );
+}
+
+function codexRecoverableMarkerText(text: string | undefined): boolean {
+  if (!text) return false;
+  if (/^\[Retrying:/i.test(text)) return true;
+  return /^\[Warning:/i.test(text) && CODEX_RECOVERABLE_WARNING.test(text);
+}
+
+export function withoutResolvedCodexRecoverableIssueMessages<
+  T extends {
+    turnId?: string;
+    blocks: readonly { type: string; text?: string }[];
+  },
+>(messages: readonly T[], issue: CodexRecoverableIssue): T[] {
+  return messages.flatMap((message) => {
+    if (issue.turnId && message.turnId && issue.turnId !== message.turnId) {
+      return [message];
+    }
+    const blocks = message.blocks.filter(
+      (block) =>
+        block.type !== "marker" || !codexRecoverableMarkerText(block.text),
+    );
+    if (blocks.length === message.blocks.length) return [message];
+    if (blocks.length === 0) return [];
+    return [{ ...message, blocks } as T];
+  });
 }
 
 export function codexAppEventDeliveryMode(opts: {
@@ -1387,13 +1493,25 @@ export function codexLiveMessagesFromEvent(
     (event.method === "item/started" || event.method === "item/completed") &&
     liveItem?.type === "userMessage"
   ) {
+    const turnId =
+      event.turnId ??
+      (typeof event.params.turnId === "string"
+        ? event.params.turnId
+        : undefined);
+    const intent = codexLiveUserMessageIntent(
+      context,
+      turnId,
+      codexEventItemId(event),
+    );
     messages.push(
       ...codexAppMessagesFromThreadItem(
         liveItem,
-        event.turnId,
+        turnId,
         timestamp,
         codexLiveToolNameMap(context),
         context,
+      ).map((message) =>
+        intent && message.role === "user" ? { ...message, intent } : message,
       ),
     );
   }
@@ -1537,7 +1655,16 @@ export function codexAppHistoryMessagesFromThread(
     const completedTimestamp = codexUnixSecondsToIso(turnRecord.completedAt);
     const items = Array.isArray(turnRecord.items) ? turnRecord.items : [];
     const turnMessages: CodexAppHistoryMessage[] = [];
+    const userMessageIds: string[] = [];
     for (const rawItem of items) {
+      const item =
+        rawItem && typeof rawItem === "object"
+          ? (rawItem as Record<string, unknown>)
+          : undefined;
+      const userMessageId =
+        item?.type === "userMessage"
+          ? stringField(item, "id") ?? stringField(item, "call_id") ?? turnId
+          : undefined;
       const itemMessages = codexAppMessagesFromThreadItem(
         rawItem,
         turnId,
@@ -1545,7 +1672,18 @@ export function codexAppHistoryMessagesFromThread(
         toolNames,
         usageContext,
       );
-      turnMessages.push(...itemMessages);
+      const intent: "steer" | undefined =
+        userMessageIds.length > 0 ? "steer" : undefined;
+      turnMessages.push(
+        ...itemMessages.map((message) =>
+          intent && message.role === "user" ? { ...message, intent } : message,
+        ),
+      );
+      if (userMessageId) userMessageIds.push(userMessageId);
+    }
+    if (turnId && userMessageIds.length > 0) {
+      context.userMessageIdsByTurn ??= new Map<string, Set<string>>();
+      context.userMessageIdsByTurn.set(turnId, new Set(userMessageIds));
     }
     if (completedTimestamp && turnMessages.length > 0) {
       const finalIndex = turnMessages.length - 1;

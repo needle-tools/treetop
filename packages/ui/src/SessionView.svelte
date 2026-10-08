@@ -122,6 +122,8 @@
     codexEventReplayKey,
     codexEventRequiresHistoryReconciliation,
     codexEventStreamRequiresHistoryReconciliation,
+    codexRecoverableIssueFromEvent,
+    codexEventResolvesRecoverableIssue,
     codexEventDeltaSupersededByCompletedItem,
     codexOffscreenProjectionAction,
     codexUsageEventBelongsToObservedTurn,
@@ -157,12 +159,14 @@
     shouldSubscribeCodexAppLiveState,
     shouldUseCodexAppHistorySource,
     subscribeCodexEvents,
+    withoutResolvedCodexRecoverableIssueMessages,
     type CodexAppEvent,
     type CodexAppHistoryMessage,
     type CodexAppSessionTransport,
     type CodexAppThreadPage,
     type CodexEventStreamState,
     type CodexLiveNormalizeContext,
+    type CodexRecoverableIssue,
   } from "./codex-event-stream";
   import { record, time } from "./timings";
   import { splitParent } from "./file-browser-utils";
@@ -668,6 +672,7 @@
   let sending = false;
   let archiving = false;
   let sendError = "";
+  let codexRecoverableIssue: CodexRecoverableIssue | null = null;
   let composerMotionSourceEl: HTMLElement | null = null;
   let composerQueueTargetEl: HTMLButtonElement | undefined = undefined;
   let composerInputEl: HTMLTextAreaElement | null = null;
@@ -3387,6 +3392,7 @@
     unsubscribeCodexEvents = null;
     codexEventsThreadId = null;
     codexEventStreamState = "closed";
+    codexRecoverableIssue = null;
     codexLiveNormalizeContext = { toolNames: new Map(), toolInputs: new Map() };
   }
 
@@ -3517,6 +3523,7 @@
   }
 
   function applyCodexEventStateOnly(event: CodexAppEvent): void {
+    updateCodexRecoverableIssue(event);
     if (event.kind === "request") {
       if (codexRequestNeedsUserInteraction(event.method)) {
         codexRequests = [
@@ -3589,6 +3596,38 @@
     }
   }
 
+  function updateCodexRecoverableIssue(event: CodexAppEvent): void {
+    const nextIssue = codexRecoverableIssueFromEvent(event);
+    if (nextIssue) {
+      codexRecoverableIssue = nextIssue;
+      return;
+    }
+    const resolved = codexRecoverableIssue;
+    if (!resolved || !codexEventResolvesRecoverableIssue(resolved, event)) {
+      return;
+    }
+    codexRecoverableIssue = null;
+    if (sendError === resolved.message) sendError = "";
+    if (!session) return;
+    const messages = withoutResolvedCodexRecoverableIssueMessages(
+      session.messages,
+      resolved,
+    );
+    if (
+      messages.length === session.messages.length &&
+      messages.every((message, index) => message === session?.messages[index])
+    ) {
+      return;
+    }
+    const changedIndex = session.messages.findIndex(
+      (message, index) => message !== messages[index],
+    );
+    noteVisualTranscriptChangedFrom(
+      changedIndex >= 0 ? changedIndex : messages.length,
+    );
+    session = { ...session, messages };
+  }
+
   function applyCodexEvent(
     event: CodexAppEvent,
     lifecycleAlreadyApplied = false,
@@ -3598,6 +3637,7 @@
     const key = codexEventReplayKey(event);
     if (codexSeenEvents.has(key)) return;
     codexSeenEvents.add(key);
+    updateCodexRecoverableIssue(event);
     if (codexSeenEvents.size > 1000) {
       const first = codexSeenEvents.values().next().value;
       if (first) codexSeenEvents.delete(first);
