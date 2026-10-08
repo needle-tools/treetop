@@ -103,6 +103,7 @@ export function installPayloadPathspec(): string[] {
     ".",
     ":!AGENTS.md", // symlink → CLAUDE.md; Windows tar can't even extract it
     ":!CLAUDE.md", // AI-agent dev rules — internal, not needed on the box
+    ":!.codex", // bundled skills are not needed remotely and can exceed the Windows installer tar path limit
     ":!plans", // internal design docs
     ":!demos", // sample content
     ":!artifacts", // scratch / build artifacts

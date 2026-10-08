@@ -59,6 +59,7 @@ describe("installPayloadPathspec", () => {
     expect(ps[0]).toBe(".");
     expect(ps).toContain(":!AGENTS.md"); // symlink Windows tar can't extract
     expect(ps).toContain(":!CLAUDE.md"); // AI-agent rules, internal
+    expect(ps).toContain(":!.codex"); // bundled skills can exceed the Windows installer tar path limit
     expect(ps).toContain(":!plans"); // internal design docs
   });
 

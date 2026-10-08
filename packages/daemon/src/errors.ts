@@ -251,6 +251,7 @@ export class ErrorLog {
 
     const keepBytes = Math.min(this.options.pruneTargetBytes, size);
     const file = await openFile(this.path, "r");
+    let kept: Buffer;
     try {
       const buffer = Buffer.alloc(keepBytes);
       await file.read(buffer, 0, keepBytes, size - keepBytes);
@@ -259,13 +260,13 @@ export class ErrorLog {
         const firstNewline = buffer.indexOf(0x0a);
         start = firstNewline >= 0 ? firstNewline + 1 : buffer.length;
       }
-      const kept = buffer.subarray(start);
-      const tmpPath = `${this.path}.${process.pid}.tmp`;
-      await writeFile(tmpPath, kept);
-      await rename(tmpPath, this.path);
+      kept = buffer.subarray(start);
     } finally {
       await file.close();
     }
+    const tmpPath = `${this.path}.${process.pid}.tmp`;
+    await writeFile(tmpPath, kept);
+    await rename(tmpPath, this.path);
   }
 }
 
