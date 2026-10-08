@@ -458,6 +458,54 @@ describe("visual transcript provider flow", () => {
     });
   });
 
+  test("keeps readable task metadata when a child task body is encrypted", () => {
+    const session = parseCodexJsonl(
+      jsonl([
+        {
+          timestamp: "2026-10-08T08:58:24.000Z",
+          type: "session_meta",
+          payload: {
+            id: "01a11a4e-5a46-7ee1-81d8-560f780287ce",
+            agent_path: "/root/headphones_reference_02",
+            parent_thread_id: "parent-thread",
+          },
+        },
+        {
+          timestamp: "2026-10-08T08:58:25.000Z",
+          type: "response_item",
+          payload: {
+            type: "agent_message",
+            author: "/root",
+            recipient: "/root/headphones_reference_02",
+            content: [
+              {
+                type: "input_text",
+                text: [
+                  "Message Type: NEW_TASK",
+                  "Task name: /root/headphones_reference_02",
+                  "Sender: /root",
+                  "Payload:",
+                ].join("\n"),
+              },
+              { type: "encrypted_content", data: "gAAAAA-encrypted-task" },
+            ],
+          },
+        },
+      ]),
+    );
+
+    expect(session.messages).toHaveLength(1);
+    expect(session.messages[0]).toMatchObject({
+      role: "user",
+      blocks: [
+        {
+          type: "text",
+          text: "Task from root\nheadphones_reference_02 · encrypted payload",
+        },
+      ],
+    });
+  });
+
   test("normalizes Codex SubAgentActivity rows and keeps one badge per child", () => {
     const childId = "01a0874c-317f-7b63-ad0d-3b22af3faa93";
     const session = parseCodexJsonl(
@@ -559,6 +607,185 @@ describe("visual transcript provider flow", () => {
         status: "completed",
       }),
     ]);
+  });
+
+  test("joins current Codex collaboration rows without inventing wait agents", () => {
+    const childId = "01a115d7-d6d0-7970-a07c-8a63d1364f94";
+    const session = parseCodexJsonl(
+      jsonl([
+        {
+          timestamp: "2026-10-07T12:10:00.000Z",
+          type: "session_meta",
+          payload: { id: "parent" },
+        },
+        {
+          timestamp: "2026-10-07T12:10:01.000Z",
+          type: "response_item",
+          payload: {
+            type: "message",
+            role: "user",
+            content: [{ type: "input_text", text: "Review the implementation." }],
+          },
+        },
+        {
+          timestamp: "2026-10-07T12:10:02.000Z",
+          type: "response_item",
+          payload: {
+            type: "function_call",
+            name: "spawn_agent",
+            call_id: "call-spawn-review",
+            arguments: JSON.stringify({
+              task_name: "implementation_review",
+              model: "gpt-6-astra",
+              reasoning_effort: "high",
+              message: `gAAAAABq${"x".repeat(120)}`,
+            }),
+          },
+        },
+        {
+          timestamp: "2026-10-07T12:10:02.100Z",
+          type: "event_msg",
+          payload: {
+            type: "item_completed",
+            item: {
+              type: "SubAgentActivity",
+              id: "call-spawn-review",
+              kind: "started",
+              agent_thread_id: childId,
+              agent_path: "/root/implementation_review",
+            },
+          },
+        },
+        {
+          timestamp: "2026-10-07T12:10:02.200Z",
+          type: "response_item",
+          payload: {
+            type: "function_call_output",
+            call_id: "call-spawn-review",
+            output: JSON.stringify({ task_name: "/root/implementation_review" }),
+          },
+        },
+        {
+          timestamp: "2026-10-07T12:10:03.000Z",
+          type: "response_item",
+          payload: {
+            type: "function_call",
+            name: "wait_agent",
+            call_id: "call-wait-any",
+            arguments: JSON.stringify({ timeout_ms: 30_000 }),
+          },
+        },
+        {
+          timestamp: "2026-10-07T12:10:33.000Z",
+          type: "response_item",
+          payload: {
+            type: "function_call_output",
+            call_id: "call-wait-any",
+            output: JSON.stringify({ timed_out: true }),
+          },
+        },
+        {
+          timestamp: "2026-10-07T12:10:34.000Z",
+          type: "response_item",
+          payload: {
+            type: "agent_message",
+            author: "/root/implementation_review",
+            recipient: "/root",
+            content: [
+              {
+                type: "output_text",
+                text:
+                  "Message Type: FINAL_ANSWER\n" +
+                  "Task name: implementation_review\n" +
+                  "Sender: /root/implementation_review\n" +
+                  "Payload:\nThe implementation is sound.",
+              },
+            ],
+          },
+        },
+        {
+          timestamp: "2026-10-07T12:10:34.100Z",
+          type: "response_item",
+          payload: {
+            type: "function_call",
+            name: "list_agents",
+            call_id: "call-list",
+            arguments: "{}",
+          },
+        },
+        {
+          timestamp: "2026-10-07T12:10:34.200Z",
+          type: "response_item",
+          payload: {
+            type: "function_call_output",
+            call_id: "call-list",
+            output: JSON.stringify({
+              agents: [
+                { agent_name: "/root", agent_status: "running" },
+                {
+                  agent_name: "/root/implementation_review",
+                  agent_status: { completed: "The implementation is sound." },
+                },
+              ],
+            }),
+          },
+        },
+        {
+          timestamp: "2026-10-07T12:10:35.000Z",
+          type: "response_item",
+          payload: {
+            type: "function_call",
+            name: "spawn_agent",
+            call_id: "call-spawn-full",
+            arguments: JSON.stringify({
+              task_name: "extra_review",
+              message: `gAAAAABq${"y".repeat(120)}`,
+            }),
+          },
+        },
+        {
+          timestamp: "2026-10-07T12:10:35.100Z",
+          type: "response_item",
+          payload: {
+            type: "function_call_output",
+            call_id: "call-spawn-full",
+            output: "collab spawn failed: agent thread limit reached",
+          },
+        },
+      ]),
+    );
+
+    const agents = visualTranscriptSubagents(onlyWorkItem(session.messages).items);
+    expect(agents).toHaveLength(2);
+    expect(agents).toContainEqual(
+      expect.objectContaining({
+        id: childId,
+        nickname: "implementation_review",
+        model: "gpt-6-astra",
+        effort: "high",
+        status: "completed",
+        result: "The implementation is sound.",
+      }),
+    );
+    expect(agents).toContainEqual(
+      expect.objectContaining({
+        nickname: "extra_review",
+        status: "failed",
+        result: "collab spawn failed: agent thread limit reached",
+      }),
+    );
+    expect(agents.every((agent) => agent.action !== "wait")).toBe(true);
+    expect(agents.every((agent) => agent.task === undefined)).toBe(true);
+    expect(
+      session.messages
+        .flatMap((message) => message.blocks)
+        .filter(
+          (block) =>
+            block.type === "subagent" &&
+            block.subagentId === childId &&
+            block.subagentResult === "The implementation is sound.",
+        ),
+    ).toHaveLength(2);
   });
 
   test("attaches Codex turn approval context to command tools", () => {

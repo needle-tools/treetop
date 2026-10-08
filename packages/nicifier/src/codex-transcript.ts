@@ -421,10 +421,13 @@ function subagentUse(name: string, input: unknown, clip: (value: string) => stri
   if (name !== "spawn_agent" && name !== "wait_agent") return {};
   const row = object(input) ?? {};
   const targets = Array.isArray(row.targets) ? row.targets.filter((value): value is string => typeof value === "string") : [];
+  const subagentId = string(row, "agent_id") ?? (targets.length === 1 ? targets[0] : undefined);
+  if (name === "wait_agent" && !subagentId) return {};
   return {
     subagentAction: name === "spawn_agent" ? "spawn" : "wait",
     subagentStatus: name === "spawn_agent" ? "running" : "unknown",
-    subagentId: string(row, "agent_id") ?? (targets.length === 1 ? targets[0] : undefined),
+    subagentId,
+    subagentNickname: name === "spawn_agent" ? string(row, "task_name") : undefined,
     subagentType: string(row, "agent_type"),
     subagentModel: string(row, "model"),
     subagentEffort: string(row, "reasoning_effort"),
@@ -438,7 +441,13 @@ function subagentResult(name: string | undefined, output: string, clip: (value: 
   try {
     row = object(JSON.parse(output));
   } catch {
-    return {};
+    return name === "spawn_agent" && output.trim()
+      ? {
+          subagentAction: "spawn",
+          subagentStatus: "failed",
+          subagentResult: clip(output),
+        }
+      : {};
   }
   if (!row) return {};
   if (name === "spawn_agent") {
@@ -446,11 +455,11 @@ function subagentResult(name: string | undefined, output: string, clip: (value: 
       subagentAction: "spawn",
       subagentStatus: "running",
       subagentId: string(row, "agent_id"),
-      subagentNickname: string(row, "nickname"),
+      subagentNickname: string(row, "nickname") ?? string(row, "task_name")?.split("/").filter(Boolean).pop(),
     };
   }
   const entries = Object.entries(object(row.status) ?? {});
-  if (entries.length !== 1) return { subagentAction: "wait" };
+  if (entries.length !== 1) return {};
   const [subagentId, raw] = entries[0]!;
   const state = object(raw) ?? {};
   const completed = string(state, "completed");
@@ -493,6 +502,49 @@ function subagentNotification(value: string, clip: (value: string) => string): C
     subagentId: string(row, "agent_path"),
     subagentResult: result ? clip(result) : undefined,
   };
+}
+
+function subagentRosterBlocks(
+  output: string,
+  rootPath: string | undefined,
+  idByPath: ReadonlyMap<string, string>,
+  clip: (value: string) => string,
+): CodexTranscriptBlock[] {
+  let row: Record<string, unknown> | undefined;
+  try {
+    row = object(JSON.parse(output));
+  } catch {
+    return [];
+  }
+  if (!row || !Array.isArray(row.agents)) return [];
+  return row.agents.flatMap((value) => {
+    const agent = object(value);
+    const path = string(agent, "agent_name");
+    if (!agent || !path || path === rootPath) return [];
+    if (rootPath && !path.startsWith(`${rootPath}/`)) return [];
+    const rawStatus = agent.agent_status;
+    const status = object(rawStatus);
+    const completed = string(status, "completed");
+    const failed = string(status, "failed") ?? string(status, "error");
+    const statusName = typeof rawStatus === "string" ? rawStatus : undefined;
+    const result = completed ?? failed;
+    return [{
+      type: "subagent" as const,
+      text: result ? clip(result) : undefined,
+      subagentAction: "notification" as const,
+      subagentStatus: completed
+        ? "completed" as const
+        : failed
+          ? "failed" as const
+          : "running" as const,
+      subagentId: idByPath.get(path),
+      subagentNickname: path.split("/").filter(Boolean).pop(),
+      subagentResult: result ? clip(result) : undefined,
+      ...(statusName && statusName !== "running"
+        ? { text: clip(statusName) }
+        : {}),
+    }];
+  });
 }
 
 function goalBlock(output: string): CodexTranscriptBlock | undefined {
@@ -582,6 +634,7 @@ export function createCodexTranscriptNormalizer(options: CodexTranscriptNormaliz
   let sandboxPolicy: string | undefined;
   let sessionId: string | undefined;
   let agentPath: string | undefined;
+  const subagentIdByPath = new Map<string, string>();
   let suppressForkedParent = false;
   const pendingWebSearchIds: string[] = [];
   const pendingViewedImagePaths: string[] = [];
@@ -644,8 +697,9 @@ export function createCodexTranscriptNormalizer(options: CodexTranscriptNormaliz
         const nextSessionId = string(payload, "id");
         if (!sessionId) {
           sessionId = nextSessionId;
-          agentPath = string(payload, "agent_path");
-          suppressForkedParent = !!string(payload, "forked_from_id");
+          const forkedFromId = string(payload, "forked_from_id");
+          agentPath = string(payload, "agent_path") ?? (forkedFromId ? undefined : "/root");
+          suppressForkedParent = !!forkedFromId;
         } else if (suppressForkedParent && nextSessionId !== sessionId) {
           return { recognized: true, messages: [] };
         }
@@ -680,7 +734,11 @@ export function createCodexTranscriptNormalizer(options: CodexTranscriptNormaliz
             return { recognized: true, messages: [] };
           }
           const activity = codexSubagentActivityFields(payload.item);
-          if (activity) return { recognized: true, messages: [message("assistant", [{ type: "subagent", ...activity }], timestamp)] };
+          if (activity) {
+            const path = string(completedItem, "agent_path") ?? string(completedItem, "agentPath");
+            if (path) subagentIdByPath.set(path, activity.subagentId);
+            return { recognized: true, messages: [message("assistant", [{ type: "subagent", ...activity }], timestamp)] };
+          }
         }
         if (payloadType === "thread_settings_applied") {
           const settings = object(payload.thread_settings);
@@ -783,6 +841,10 @@ export function createCodexTranscriptNormalizer(options: CodexTranscriptNormaliz
       if (rowType !== "response_item" || !payload) return { recognized: false, messages: [] };
       if (payloadType === "agent_message") {
         const contents = Array.isArray(payload.content) ? payload.content : [payload.content];
+        const hasEncryptedContent = contents.some((raw) => {
+          const part = object(raw);
+          return part && string(part, "type") === "encrypted_content";
+        });
         const visible = contents.flatMap((raw) => {
           if (typeof raw === "string") return [raw];
           const part = object(raw);
@@ -796,12 +858,41 @@ export function createCodexTranscriptNormalizer(options: CodexTranscriptNormaliz
           .join("\n")
           .trim();
         const author = string(payload, "author");
-        const heading = author ? `Message from ${author}` : "Inter-agent message";
+        const recipient = string(payload, "recipient");
+        const envelopeType = visible.match(/^Message Type:\s*([^\n]+)/im)?.[1]?.trim().toUpperCase();
+        const taskName = visible.match(/^Task name:\s*([^\n]+)/im)?.[1]?.trim();
+        const sender = visible.match(/^Sender:\s*([^\n]+)/im)?.[1]?.trim() ?? author;
+        if (author && agentPath && recipient === agentPath && author.startsWith(`${agentPath}/`)) {
+          const nickname = taskName ?? author.split("/").filter(Boolean).pop();
+          const failed = envelopeType === "ERROR" || envelopeType === "FAILED";
+          return {
+            recognized: true,
+            messages: [message("assistant", [{
+              type: "subagent",
+              text: clip(body || `Message from ${author}`),
+              subagentAction: "notification",
+              subagentStatus: failed ? "failed" : envelopeType === "FINAL_ANSWER" ? "completed" : "running",
+              subagentId: subagentIdByPath.get(author),
+              subagentNickname: nickname,
+              subagentResult: body ? clip(body) : undefined,
+            }], timestamp)],
+          };
+        }
+        const senderLabel = sender?.split("/").filter(Boolean).pop();
+        const taskLabel = taskName?.split("/").filter(Boolean).pop();
+        const heading = envelopeType === "NEW_TASK" && senderLabel
+          ? `Task from ${senderLabel}`
+          : author
+            ? `Message from ${author}`
+            : "Inter-agent message";
+        const fallbackBody = !body && taskLabel
+          ? `${taskLabel}${hasEncryptedContent ? " · encrypted payload" : ""}`
+          : body;
         return {
           recognized: true,
           messages: [message(author && author === agentPath ? "assistant" : "user", [{
             type: "text",
-            text: clip(body ? `${heading}\n${body}` : heading),
+            text: clip(fallbackBody ? `${heading}\n${fallbackBody}` : heading),
           }], timestamp)],
         };
       }
@@ -973,6 +1064,9 @@ export function createCodexTranscriptNormalizer(options: CodexTranscriptNormaliz
           return { recognized: true, messages: [] };
         }
         const output = toolOutput(payload.output, options.resolveInlineData);
+        const rosterBlocks = name === "list_agents"
+          ? subagentRosterBlocks(output.text, agentPath, subagentIdByPath, clip)
+          : [];
         if (name === "view_image" && pendingViewedImagePaths.length > 0) {
           for (const media of output.mediaBlocks) {
             if (media.mediaKind !== "image") continue;
@@ -1000,7 +1094,12 @@ export function createCodexTranscriptNormalizer(options: CodexTranscriptNormaliz
         }))];
         return {
           recognized: true,
-          messages: [message("tool", blocks, timestamp)],
+          messages: [
+            message("tool", blocks, timestamp),
+            ...(rosterBlocks.length
+              ? [message("assistant", rosterBlocks, timestamp)]
+              : []),
+          ],
         };
       }
       if (payloadType === "web_search_call") {

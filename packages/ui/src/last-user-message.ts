@@ -498,11 +498,11 @@ function visualSubagentMetaFromToolResult(
   }
   const status = recordFromUnknown(record.status);
   if (!status) {
-    return { action: "wait", status: "unknown" };
+    return undefined;
   }
   const entries = Object.entries(status);
   if (entries.length !== 1) {
-    return { action: "wait", status: "unknown" };
+    return undefined;
   }
   const [id, rawState] = entries[0]!;
   const state = recordFromUnknown(rawState);
@@ -545,9 +545,15 @@ export function visualSubagentMetaFromBlock(
         (target): target is string => typeof target === "string",
       )
     : [];
+  const id = block.subagentId ?? stringFromUnknown(input?.agent_id) ?? targets[0];
+  if (toolName === "wait_agent" && !id) return undefined;
   return {
-    id: block.subagentId ?? stringFromUnknown(input?.agent_id) ?? targets[0],
-    nickname: block.subagentNickname,
+    id,
+    nickname:
+      block.subagentNickname ??
+      (toolName === "spawn_agent"
+        ? stringFromUnknown(input?.task_name)
+        : undefined),
     action:
       block.subagentAction ?? (toolName === "spawn_agent" ? "spawn" : "wait"),
     status:
