@@ -41,6 +41,7 @@ import {
   listCommitFiles,
   getDiff,
   getFileDiff,
+  getDiffFileContent,
   getCommitDiff,
   getCommitFileDiff,
   fetchAll,
@@ -58,6 +59,7 @@ import {
   parseUnpushedCommits,
   type DiffKind,
   type FileDiffKind,
+  type DiffFileContentKind,
 } from "./git";
 import { createLimiter } from "./concurrency";
 import { createStaleWhileRevalidateCache } from "./async-cache";
@@ -3795,6 +3797,12 @@ const server = Bun.serve<TermWsData, never>({
               path: "/api/file-diff",
               description:
                 "git diff text for a single file: ?path=<wt>&file=<rel-file>&kind=workdir|staged|untracked&context=<n> (default context=0). Used by the per-file hover popup in the worktree-row 'changed files' tooltip — fetches one path's hunks instead of the whole workdir diff.",
+            },
+            {
+              method: "GET",
+              path: "/api/diff-file-content",
+              description:
+                "exact before/after bytes for visual file diffs: ?path=<wt>&file=<rel-file>&kind=workdir|staged|untracked|commit&side=before|after, plus sha/oldFile for commit renames",
             },
             {
               method: "GET",
@@ -9008,6 +9016,44 @@ const server = Bun.serve<TermWsData, never>({
         return new Response(diff, {
           headers: {
             "Content-Type": "text/plain; charset=utf-8",
+            ...CORS,
+          },
+        });
+      }
+
+      if (url.pathname === "/api/diff-file-content" && req.method === "GET") {
+        const path = url.searchParams.get("path");
+        const file = url.searchParams.get("file");
+        const kind = url.searchParams.get("kind");
+        const side = url.searchParams.get("side");
+        const sha = url.searchParams.get("sha") ?? undefined;
+        const oldFile = url.searchParams.get("oldFile") ?? undefined;
+        if (
+          !path ||
+          !file ||
+          !["workdir", "staged", "untracked", "commit"].includes(kind ?? "") ||
+          (side !== "before" && side !== "after")
+        ) {
+          return json(
+            {
+              error:
+                "?path=<worktree-path>&file=<file>&kind=workdir|staged|untracked|commit&side=before|after required",
+            },
+            { status: 400 },
+          );
+        }
+        const content = await getDiffFileContent(
+          path,
+          file,
+          kind as DiffFileContentKind,
+          side,
+          { sha, oldFile },
+        );
+        if (!content) return json({ error: "not found" }, { status: 404 });
+        return new Response(content, {
+          headers: {
+            "Content-Type": Bun.file(file).type || "application/octet-stream",
+            "Cache-Control": "no-store",
             ...CORS,
           },
         });

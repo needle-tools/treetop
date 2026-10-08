@@ -373,6 +373,19 @@ export function sparseArtifactRowHasContent(
   );
 }
 
+export function sparseArtifactRowDiffKind(
+  row: Pick<SparseArtifactTreeRow, "artifacts">,
+): "workdir" | "staged" | "untracked" | undefined {
+  for (const artifact of row.artifacts) {
+    if (artifact.diffKind) return artifact.diffKind;
+    const nested = visualWorkArtifactChanges(artifact).find(
+      (change) => change.diffKind,
+    )?.diffKind;
+    if (nested) return nested;
+  }
+  return undefined;
+}
+
 export function sparseArtifactRowDiffChanges(
   row: Pick<SparseArtifactTreeRow, "artifacts">,
 ): VisualWorkArtifactChange[] {

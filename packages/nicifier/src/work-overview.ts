@@ -945,6 +945,12 @@ function artifactsForEntry(
           additions: file.additions,
           deletions: file.deletions,
           diff: file.raw,
+          diffKind:
+            file.raw === undefined
+              ? file.action === "added"
+                ? "untracked"
+                : "workdir"
+              : undefined,
           fileAction: file.action,
           contentTokenCount,
           contentTokenCountEstimated:

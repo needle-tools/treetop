@@ -1857,9 +1857,12 @@
   function workChangedSummaryForFileEdits(
     summary: VisualFileEditSummary,
   ): WorkChangedSummary {
-    const paths = summary.files.map((file) =>
-      worktreeRelativePreviewPath(file.path),
-    );
+    const unstaged = summary.files
+      .filter((file) => file.action !== "added")
+      .map((file) => worktreeRelativePreviewPath(file.path));
+    const untracked = summary.files
+      .filter((file) => file.action === "added")
+      .map((file) => worktreeRelativePreviewPath(file.path));
     const stats = Object.fromEntries(
       summary.files.map((file) => [
         worktreeRelativePreviewPath(file.path),
@@ -1875,7 +1878,7 @@
         .filter((file) => file.raw !== undefined)
         .map((file) => [worktreeRelativePreviewPath(file.path), file.raw!]),
     );
-    return { staged: [], unstaged: paths, untracked: [], stats, diffs };
+    return { staged: [], unstaged, untracked, stats, diffs };
   }
 
   function fileEditPathTarget(
@@ -1885,7 +1888,12 @@
       worktreeRelativePreviewPath(file.path),
     ])[0];
     if (!target) return undefined;
-    return file.raw === undefined ? { ...target, diffKind: "workdir" } : target;
+    return file.raw === undefined
+      ? {
+          ...target,
+          diffKind: file.action === "added" ? "untracked" : "workdir",
+        }
+      : target;
   }
 
   function fileEditActionLabel(
@@ -1909,6 +1917,12 @@
       additions: file.additions,
       deletions: file.deletions,
       diff: file.raw,
+      diffKind:
+        file.raw === undefined
+          ? file.action === "added"
+            ? "untracked"
+            : "workdir"
+          : undefined,
       fileAction: file.action,
     }));
   }
@@ -2814,7 +2828,6 @@
       artifacts={workArtifactsForFileEdits(summary)}
       worktreePath={sessionCwd}
       {daemonId}
-      diffFallback="none"
       onOpenPath={openWorkArtifact}
     />
   </div>

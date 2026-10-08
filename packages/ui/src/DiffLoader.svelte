@@ -71,7 +71,16 @@
 {:else if diffText.trim().length === 0}
   <span class="fd-muted">No textual changes.</span>
 {:else}
-  <Diff text={diffText} compact {hideSingleFileHeader} />
+  <Diff
+    text={diffText}
+    compact
+    {hideSingleFileHeader}
+    {worktreePath}
+    filePath={file}
+    sourceKind={sha ? "commit" : kind}
+    {sha}
+    {daemonId}
+  />
 {/if}
 
 <style>

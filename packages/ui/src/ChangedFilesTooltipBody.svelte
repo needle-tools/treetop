@@ -465,7 +465,15 @@
     </div>
     {#if hovered.diff !== undefined}
       {#if hovered.diff.trim()}
-        <Diff text={hovered.diff} hideSingleFileHeader />
+        <Diff
+          text={hovered.diff}
+          hideSingleFileHeader
+          {worktreePath}
+          filePath={hovered.path}
+          sourceKind={sha ? "commit" : DIFF_KIND[hovered.kind]}
+          {sha}
+          {daemonId}
+        />
       {:else}
         <span class="file-diff-empty">No textual diff in this session.</span>
       {/if}

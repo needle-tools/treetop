@@ -782,7 +782,7 @@ export type VisualToolPreviewPart =
       text: string;
       path: string;
       range: string;
-      diffKind?: "workdir" | "staged";
+      diffKind?: "workdir" | "staged" | "untracked";
     };
 
 export interface VisualToolPreviewContext {
@@ -8333,6 +8333,21 @@ function changedLineCount(value: unknown): number | undefined {
     : value.split("\n").length;
 }
 
+function fullFileContentDiff(
+  content: string,
+  action: "added" | "deleted",
+): string {
+  const lines = content ? content.split(/\r?\n/) : [];
+  if (content.endsWith("\n")) lines.pop();
+  const count = lines.length;
+  const header =
+    action === "added"
+      ? `@@ -0,0 +1,${count} @@`
+      : `@@ -1,${count} +0,0 @@`;
+  const prefix = action === "added" ? "+" : "-";
+  return [header, ...lines.map((line) => `${prefix}${line}`)].join("\n");
+}
+
 function countUnifiedDiffLines(
   diff: unknown,
 ): { additions: number; deletions: number } | undefined {
@@ -8385,11 +8400,17 @@ function lineCountsFromChange(
         : undefined,
     };
   }
-  if (typeof item.content === "string" && action === "added") {
+  if (
+    typeof item.content === "string" &&
+    (action === "added" || action === "deleted")
+  ) {
+    const lineCount = changedLineCount(item.content) ?? 0;
     return {
-      additions: changedLineCount(item.content),
-      deletions: 0,
-      writtenTokenCountEstimate: estimateTextTokenCount(item.content),
+      additions: action === "added" ? lineCount : 0,
+      deletions: action === "deleted" ? lineCount : 0,
+      raw: fullFileContentDiff(item.content, action),
+      writtenTokenCountEstimate:
+        action === "added" ? estimateTextTokenCount(item.content) : undefined,
     };
   }
   return {
@@ -8492,6 +8513,10 @@ function claudeEditSummary(
         path,
         action: "added",
         additions: changedLineCount(input.content),
+        raw:
+          typeof input.content === "string"
+            ? fullFileContentDiff(input.content, "added")
+            : undefined,
         writtenTokenCountEstimate:
           typeof input.content === "string"
             ? estimateTextTokenCount(input.content)
@@ -8522,7 +8547,10 @@ function shellHeredocEditSummary(
       action: opener[1] === ">>" ? "edited" : "added",
       additions: body ? body.split(/\r?\n/).length : 0,
       deletions: 0,
-      raw: body,
+      raw:
+        opener[1] === ">>"
+          ? body
+          : fullFileContentDiff(body, "added"),
       writtenTokenCountEstimate: estimateTextTokenCount(body),
     },
   ]);

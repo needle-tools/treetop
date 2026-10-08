@@ -8290,6 +8290,48 @@ describe("visualWorkOverview", () => {
     ]);
   });
 
+  it("marks raw-less file edits for the shared git diff fallback", () => {
+    const entries = buildVisualWorkDisplayEntries([
+      {
+        message: {
+          role: "assistant",
+          blocks: [
+            {
+              type: "tool_use",
+              toolName: "exec_command",
+              toolUseId: "script-write",
+              toolInput: {
+                cmd: "python3 -c \"from pathlib import Path; Path('src/app.ts').write_text(body)\"",
+              },
+            },
+          ],
+        },
+        blocks: [
+          {
+            type: "tool_use",
+            toolName: "exec_command",
+            toolUseId: "script-write",
+            toolInput: {
+              cmd: "python3 -c \"from pathlib import Path; Path('src/app.ts').write_text(body)\"",
+            },
+          },
+        ],
+        messageIndex: 1,
+      },
+    ]);
+
+    expect(
+      visualWorkOverview({ kind: "work", entries: [] }, entries).artifacts,
+    ).toEqual([
+      expect.objectContaining({
+        action: "changed",
+        path: "src/app.ts",
+        diff: undefined,
+        diffKind: "workdir",
+      }),
+    ]);
+  });
+
   it("summarizes fresh token work without using cached context as the headline", () => {
     const entries = buildVisualWorkDisplayEntries([
       {
@@ -9245,7 +9287,44 @@ describe("visualFileEditSummaryForBlock", () => {
           action: "added",
           additions: 2,
           deletions: 0,
+          raw: [
+            "@@ -0,0 +1,2 @@",
+            "+const IMAGE_EXTENSIONS = new Set(['png']);",
+            "+const VIDEO_EXTENSIONS = new Set(['mp4']);",
+          ].join("\n"),
           writtenTokenCountEstimate: 22,
+        },
+      ],
+    });
+  });
+
+  it("keeps deleted file content as a full red diff", () => {
+    expect(
+      visualFileEditSummaryForBlock({
+        type: "tool_use",
+        toolName: "file change",
+        toolInput: {
+          changes: {
+            "src/obsolete.ts": {
+              type: "delete",
+              content: "export const obsolete = true;\nsecond();\n",
+            },
+          },
+        },
+      }),
+    ).toEqual({
+      title: "Deleted obsolete.ts",
+      files: [
+        {
+          path: "src/obsolete.ts",
+          action: "deleted",
+          additions: 0,
+          deletions: 2,
+          raw: [
+            "@@ -1,2 +0,0 @@",
+            "-export const obsolete = true;",
+            "-second();",
+          ].join("\n"),
         },
       ],
     });
@@ -9344,6 +9423,30 @@ describe("visualFileEditSummaryForBlock", () => {
     });
   });
 
+  it("keeps Claude Write content as a full green diff", () => {
+    expect(
+      visualFileEditSummaryForBlock({
+        type: "tool_use",
+        toolName: "Write",
+        toolInput: {
+          file_path: "/repo/src/new.ts",
+          content: "export const value = 1;\n",
+        },
+      }),
+    ).toEqual({
+      title: "Added new.ts",
+      files: [
+        {
+          path: "/repo/src/new.ts",
+          action: "added",
+          additions: 1,
+          raw: "@@ -0,0 +1,1 @@\n+export const value = 1;",
+          writtenTokenCountEstimate: 6,
+        },
+      ],
+    });
+  });
+
   it("summarizes files mutated by inline Python and JavaScript scripts", () => {
     expect(
       visualFileEditSummaryForBlock({
@@ -9412,7 +9515,7 @@ describe("visualFileEditSummaryForBlock", () => {
           action: "added",
           additions: 2,
           deletions: 0,
-          raw: "one\ntwo",
+          raw: "@@ -0,0 +1,2 @@\n+one\n+two",
           writtenTokenCountEstimate: 2,
         },
         { path: "src/other.ts", action: "edited" },

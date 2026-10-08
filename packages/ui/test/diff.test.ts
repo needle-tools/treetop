@@ -6,7 +6,44 @@ import {
   parseDiffStructured,
   extractCommitHeader,
   withoutSingleFileDiffHeader,
+  diffAssetKind,
+  diffAssetContentUrl,
 } from "../src/diff";
+
+describe("diff asset previews", () => {
+  test("recognizes browser-renderable raster images and SVG", () => {
+    expect(diffAssetKind("preview.PNG")).toBe("raster");
+    expect(diffAssetKind("photo.jpeg")).toBe("raster");
+    expect(diffAssetKind("texture.webp")).toBe("raster");
+    expect(diffAssetKind("drawing.svg")).toBe("svg");
+    expect(diffAssetKind("notes.txt")).toBeNull();
+  });
+
+  test("builds one canonical content URL for worktree and commit revisions", () => {
+    expect(
+      diffAssetContentUrl({
+        worktreePath: "/repo with spaces",
+        file: "art/preview.png",
+        kind: "staged",
+        side: "before",
+      }),
+    ).toBe(
+      "/api/diff-file-content?path=%2Frepo+with+spaces&file=art%2Fpreview.png&kind=staged&side=before",
+    );
+    expect(
+      diffAssetContentUrl({
+        worktreePath: "/repo",
+        file: "new.svg",
+        oldFile: "old.svg",
+        kind: "commit",
+        side: "after",
+        sha: "abc1234",
+      }),
+    ).toBe(
+      "/api/diff-file-content?path=%2Frepo&file=new.svg&kind=commit&side=after&sha=abc1234&oldFile=old.svg",
+    );
+  });
+});
 
 describe("isPositiveDiffCount", () => {
   test("shows positive line changes", () => {

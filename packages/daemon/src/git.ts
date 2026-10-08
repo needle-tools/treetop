@@ -1,6 +1,11 @@
 import { $ } from "bun";
-import { access, realpath } from "node:fs/promises";
-import { join as joinPath, resolve as resolvePath } from "node:path";
+import { access, readFile, realpath } from "node:fs/promises";
+import {
+  isAbsolute,
+  join as joinPath,
+  relative as relativePath,
+  resolve as resolvePath,
+} from "node:path";
 
 const PUSH_PULL_TIMEOUT_MS = 60_000;
 
@@ -1433,6 +1438,76 @@ export type DiffKind = "workdir" | "staged";
  *  a path lives in, so accepting `untracked` here avoids a wasteful full
  *  workdir diff + post-filter on the client. */
 export type FileDiffKind = DiffKind | "untracked";
+export type DiffFileContentKind = FileDiffKind | "commit";
+export type DiffFileContentSide = "before" | "after";
+
+/**
+ * Return one exact side of a file diff as bytes. Text diffs and visual asset
+ * diffs intentionally share the same git semantics:
+ *
+ * - workdir: index -> disk
+ * - staged: HEAD -> index
+ * - untracked: missing -> disk
+ * - commit: first parent -> commit
+ *
+ * `null` means that side does not exist (new/deleted file), git could not
+ * resolve it, or the requested path escapes the worktree boundary.
+ */
+export async function getDiffFileContent(
+  worktreePath: string,
+  file: string,
+  kind: DiffFileContentKind,
+  side: DiffFileContentSide,
+  options: { sha?: string; oldFile?: string } = {},
+): Promise<Buffer | null> {
+  const root = resolvePath(worktreePath);
+  const requestedFile = side === "before" ? (options.oldFile ?? file) : file;
+  const absoluteFile = resolvePath(root, requestedFile);
+  const relativeFile = relativePath(root, absoluteFile);
+  if (
+    !relativeFile ||
+    relativeFile === ".." ||
+    relativeFile.startsWith(`..${process.platform === "win32" ? "\\" : "/"}`) ||
+    isAbsolute(relativeFile)
+  ) {
+    return null;
+  }
+
+  if (kind === "untracked") {
+    if (side === "before") return null;
+    try {
+      return await readFile(absoluteFile);
+    } catch {
+      return null;
+    }
+  }
+
+  if (kind === "workdir" && side === "after") {
+    try {
+      return await readFile(absoluteFile);
+    } catch {
+      return null;
+    }
+  }
+
+  let revision: string;
+  if (kind === "workdir") {
+    revision = `:${relativeFile}`;
+  } else if (kind === "staged") {
+    revision = side === "before" ? `HEAD:${relativeFile}` : `:${relativeFile}`;
+  } else {
+    const sha = options.sha;
+    if (!sha || !/^[0-9a-f]{4,64}$/i.test(sha)) return null;
+    revision = `${sha}${side === "before" ? "^" : ""}:${relativeFile}`;
+  }
+
+  try {
+    const result = await $`git -C ${root} show ${revision}`.quiet().nothrow();
+    return result.exitCode === 0 ? result.stdout : null;
+  } catch {
+    return null;
+  }
+}
 
 /**
  * Textual diff for a single file. Used by the per-row hover popup in the

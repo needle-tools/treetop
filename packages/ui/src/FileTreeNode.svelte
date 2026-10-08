@@ -10,6 +10,7 @@
   import Diff from "./Diff.svelte";
   import FileSystemIcon from "./FileSystemIcon.svelte";
   import LoadingSpinner from "./LoadingSpinner.svelte";
+  import type { DiffAssetSourceKind } from "./diff";
 
   export let entry: FileEntry;
   export let parentDir: string;
@@ -46,6 +47,7 @@
 
   // --- File diff tooltip ---
   let diffText: string | null = null;
+  let loadedDiffKind: DiffAssetSourceKind | undefined;
   let diffLoading = false;
 
   function relPath(): string {
@@ -74,13 +76,21 @@
     try {
       const file = relPath();
       const primary = diffKind();
+      let usedKind = primary as DiffAssetSourceKind;
       let text = await fetchDiffForKind(file, primary);
-      if (!text && primary !== "workdir")
-        text = await fetchDiffForKind(file, "workdir");
-      if (!text && primary !== "staged")
-        text = await fetchDiffForKind(file, "staged");
-      if (!text && primary !== "untracked")
-        text = await fetchDiffForKind(file, "untracked");
+      if (!text && primary !== "workdir") {
+        usedKind = "workdir";
+        text = await fetchDiffForKind(file, usedKind);
+      }
+      if (!text && primary !== "staged") {
+        usedKind = "staged";
+        text = await fetchDiffForKind(file, usedKind);
+      }
+      if (!text && primary !== "untracked") {
+        usedKind = "untracked";
+        text = await fetchDiffForKind(file, usedKind);
+      }
+      loadedDiffKind = text ? usedKind : undefined;
       diffText = text || "";
     } catch {
       diffText = "(failed to load diff)";
@@ -97,7 +107,10 @@
   }
   let folderStats: FolderStat[] | null = null;
   let folderStatsLoading = false;
-  let statDiffs: Record<string, { loading: boolean; text: string | null }> = {};
+  let statDiffs: Record<
+    string,
+    { loading: boolean; text: string | null; kind?: DiffAssetSourceKind }
+  > = {};
   let statExpanded: Set<string> = new Set();
 
   async function loadFolderStats() {
@@ -124,16 +137,20 @@
     statDiffs = { ...statDiffs, [filePath]: { loading: true, text: null } };
     try {
       let text = "";
-      for (const kind of ["workdir", "staged", "untracked"]) {
+      let usedKind: DiffAssetSourceKind | undefined;
+      for (const kind of ["workdir", "staged", "untracked"] as const) {
         const res = await fetch(
           `/api/file-diff?path=${encodeURIComponent(wtPath)}&file=${encodeURIComponent(filePath)}&kind=${kind}&context=3`,
         );
         if (res.ok) text = await res.text();
-        if (text) break;
+        if (text) {
+          usedKind = kind;
+          break;
+        }
       }
       statDiffs = {
         ...statDiffs,
-        [filePath]: { loading: false, text: text || "" },
+        [filePath]: { loading: false, text: text || "", kind: usedKind },
       };
     } catch {
       statDiffs = {
@@ -230,8 +247,13 @@
                     {#if statDiffs[f.path]?.loading}
                       <LoadingSpinner size="0.9rem" />
                     {:else if statDiffs[f.path]?.text != null}
-                      {#if statDiffs[f.path].text.length > 0}
-                        <Diff text={statDiffs[f.path].text} />
+                      {#if statDiffs[f.path]!.text!.length > 0}
+                        <Diff
+                          text={statDiffs[f.path]!.text!}
+                          worktreePath={wtPath}
+                          filePath={f.path}
+                          sourceKind={statDiffs[f.path].kind}
+                        />
                       {:else}
                         <span class="muted small">No diff</span>
                       {/if}
@@ -314,7 +336,12 @@
             <LoadingSpinner size="0.9rem" />
           {:else if diffText !== null}
             {#if diffText.length > 0}
-              <Diff text={diffText} />
+              <Diff
+                text={diffText}
+                worktreePath={wtPath}
+                filePath={relPath()}
+                sourceKind={loadedDiffKind}
+              />
             {:else}
               <span class="muted small">No changes to show</span>
             {/if}
@@ -367,8 +394,13 @@
                     {#if statDiffs[f.path]?.loading}
                       <LoadingSpinner size="0.9rem" />
                     {:else if statDiffs[f.path]?.text != null}
-                      {#if statDiffs[f.path].text.length > 0}
-                        <Diff text={statDiffs[f.path].text} />
+                      {#if statDiffs[f.path]!.text!.length > 0}
+                        <Diff
+                          text={statDiffs[f.path]!.text!}
+                          worktreePath={wtPath}
+                          filePath={f.path}
+                          sourceKind={statDiffs[f.path].kind}
+                        />
                       {:else}
                         <span class="muted small">No diff</span>
                       {/if}

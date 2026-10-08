@@ -1,10 +1,16 @@
 <script lang="ts">
   import { parseDiffStructured, extractCommitHeader } from "./diff";
   import Diff from "./Diff.svelte";
+  import type { DiffAssetSourceKind } from "./diff";
 
   export let text: string = "";
   /** Hide the commit-header line even if one is present in the text. */
   export let showCommitHeader: boolean = true;
+  export let worktreePath: string | undefined = undefined;
+  export let sourceKind: DiffAssetSourceKind | undefined = undefined;
+  export let sha: string | undefined = undefined;
+  export let daemonId: string | undefined = undefined;
+  export let assetVersion: string | number | undefined = undefined;
 
   $: parsed = parseDiffStructured(text);
   $: commit = showCommitHeader ? extractCommitHeader(text) : null;
@@ -88,7 +94,18 @@
     </aside>
     <div class="file-panel">
       {#if parsed.files[selected]}
-        <Diff lines={parsed.files[selected].lines} />
+        <Diff
+          lines={parsed.files[selected].lines}
+          {worktreePath}
+          filePath={parsed.files[selected].path}
+          oldFilePath={parsed.files[selected].oldPath}
+          {sourceKind}
+          {sha}
+          {daemonId}
+          {assetVersion}
+          beforeAvailable={!parsed.files[selected].isNew}
+          afterAvailable={!parsed.files[selected].isDeleted}
+        />
       {/if}
     </div>
   </div>

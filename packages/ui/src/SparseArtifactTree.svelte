@@ -14,6 +14,7 @@
     sparseArtifactRowActionSummary,
     sparseArtifactRowChanges,
     sparseArtifactRowHasContent,
+    sparseArtifactRowDiffKind,
     sparseArtifactRowLifecycle,
     sameSparseArtifactInputs,
     type SparseArtifactTreeRow,
@@ -23,7 +24,7 @@
   export let worktreePath: string | undefined = undefined;
   export let daemonId: string | undefined = undefined;
   export let sha: string | undefined = undefined;
-  export let diffFallback: "none" | "git" = "none";
+  export let diffFallback: "none" | "git" = "git";
   export let rows: readonly SparseArtifactTreeRow[] | undefined = undefined;
   export let lazyContent = false;
   export let showActions = true;
@@ -99,7 +100,7 @@
           {@const artifact = row.artifacts[0]}
           {@const lifecycle = sparseArtifactRowLifecycle(row)}
           {@const hasContent = sparseArtifactRowHasContent(row)}
-          {@const gitDiffKind = row.artifacts.find((item) => item.diffKind)?.diffKind}
+          {@const gitDiffKind = sparseArtifactRowDiffKind(row)}
           {#if hasContent || (row.kind === "file" && diffFallback === "git" && gitDiffKind && worktreePath)}
             <Tooltip variant="wide" escapeClip onShow={() => revealContent(row.id)}>
               <button
@@ -130,6 +131,11 @@
                       text={change.diff ?? change.preview ?? ""}
                       hideSingleFileHeader={change.diff !== undefined}
                       compact={change.preview !== undefined}
+                      {worktreePath}
+                      filePath={row.hrefPath}
+                      sourceKind={sha ? "commit" : gitDiffKind}
+                      {sha}
+                      {daemonId}
                     />
                   {:else if contentChanges.length > 1}
                     <span class="sparse-artifact-change-chain">
@@ -142,6 +148,11 @@
                             text={change.diff ?? change.preview ?? ""}
                             hideSingleFileHeader={change.diff !== undefined}
                             compact={change.preview !== undefined}
+                            {worktreePath}
+                            filePath={row.hrefPath}
+                            sourceKind={sha ? "commit" : gitDiffKind}
+                            {sha}
+                            {daemonId}
                           />
                         </span>
                       {/each}
