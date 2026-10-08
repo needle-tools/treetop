@@ -137,7 +137,7 @@ const TOOLS: ToolDef[] = [
   {
     name: "list_commands",
     description:
-      "Query saved project commands and currently running project commands. Optionally filter by repo_id. Does not execute commands.",
+      "Query saved project commands and currently running project commands. Saved commands include name, cmd, runMode, configured cwd (null means the project/worktree directory), and defaultCwd resolved against repoPath. When run from a different worktree, relative cwd uses that worktree instead. Optionally filter by repo_id. Does not execute commands.",
     inputSchema: {
       type: "object",
       properties: { repo_id: { type: "string" } },
@@ -674,7 +674,12 @@ async function dispatchMcp(
                 request.id,
                 textContent(
                   JSON.stringify({
-                    saved: links.filter((link) => link.kind === "command"),
+                    saved: links.filter((link) => link.kind === "command").map(link => ({
+                      ...link,
+                      cwd: link.cwd ?? null,
+                      defaultCwd: resolve(link.repoPath, link.cwd ?? ""),
+                      runMode: link.runMode ?? "internal",
+                    })),
                     running: (ctx.runningCommands?.() ?? []).filter(
                       (command) =>
                         args.repo_id === undefined ||

@@ -19,6 +19,15 @@ import { handleMcp, handleMcpHttp, withTreetopMcp } from "../src/mcp";
 import { remindersForWorkspace } from "../src/reminders";
 
 describe("MCP dashboard tools", () => {
+  test("command queries expose configured cwd, resolved project-default cwd and run mode", async () => {
+    const ctx = await setup();
+    const repo = await ctx.workspace.addRepo(await mkdtemp(join(tmpdir(), "mcp-command-settings-")));
+    await ctx.workspace.addCustomLink(repo.id, { kind: "command", cmd: "npm run dev" });
+    await ctx.workspace.addCustomLink(repo.id, { kind: "command", cmd: "bun test", cwd: "tools/tests", runMode: "external" });
+    const commands = JSON.parse((await ctx.call("list_commands", { repo_id: repo.id })).result.content[0].text).saved;
+    expect(commands[0]).toMatchObject({ cwd: null, defaultCwd: repo.path, runMode: "internal" });
+    expect(commands[1]).toMatchObject({ cwd: "tools/tests", defaultCwd: join(repo.path, "tools/tests"), runMode: "external" });
+  });
   test("queries recorded events newest first with actor, action, time and pagination filters", async () => {
     const ctx = await setup();
     const first = await ctx.events.append({ type: "custom_link_add", actor: "agent", payload: { id: "project", command: "bun test" } });

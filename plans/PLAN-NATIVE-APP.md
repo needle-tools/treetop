@@ -280,6 +280,9 @@ never been overridden are not part of the persisted settings snapshot. Runtime
 session state is not exported. Both tools are read-only. Existing `list_commands`
 queries saved/running commands, and `add_command` saves a project command by id
 or session cwd, broadcasting its action button without executing it.
+Saved command queries explicitly include `cwd` (null for the project/worktree
+directory), `defaultCwd` resolved against `repoPath`, and `runMode`. Running from
+another worktree resolves relative command cwd against that worktree instead.
 
 `edit_command` updates a saved command by `repo_id` and `command_id`; omitted
 fields retain their value, and null clears name/command working directory. IDs
