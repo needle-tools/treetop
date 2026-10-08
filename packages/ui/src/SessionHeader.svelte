@@ -772,14 +772,9 @@
     align-items: center;
   }
   .col-name {
-    /* Grow to fill the space col-meta + col-actions don't claim. The
-       title can still ellipsize (it explicitly sets min-width: 0 on
-       its own button), but we floor col-name itself at a ~2x-wider
-       minimum so a cramped column doesn't truncate the title down to
-       6 chars before anything else gives. Pair with the bumped
-       .session-col min-width in worktree-row.css. */
+    /* Let the title yield space to the controls when metadata grows. */
     flex: 1 1 0;
-    min-width: 16ch;
+    min-width: 0;
     flex-direction: column;
     align-items: flex-start;
     gap: 0.15rem;
@@ -788,11 +783,11 @@
     max-width: 100%;
   }
   .col-meta {
-    /* These are deliberately three compact rows. Keep every row intact:
-       wrapping makes the fixed-height header jump to a fourth line and also
-       changes the lane geometry while live values update. */
-    flex: 0 0 max-content;
-    min-width: max-content;
+    /* Keep the three rows on one line, but let long values truncate before
+       they push the action buttons outside the column. */
+    flex: 0 1 max-content;
+    min-width: 0;
+    overflow: hidden;
     flex-direction: column;
     align-items: flex-start;
     gap: 0.15rem;
@@ -803,13 +798,15 @@
   }
   .col-meta > * {
     flex: 0 0 auto;
-    max-width: none;
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
     white-space: nowrap;
     display: block;
     font-size: inherit;
   }
   .col-meta :global(.tt-wrap) {
-    max-width: none;
+    max-width: 100%;
     white-space: nowrap;
   }
   /* The activity line is slotted through Tooltip, so it is not a direct
