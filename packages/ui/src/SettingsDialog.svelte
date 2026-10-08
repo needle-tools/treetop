@@ -304,40 +304,6 @@
 {/if}
 
 <style>
-  .settings-overlay {
-    position: fixed;
-    inset: 0;
-    background: rgba(0, 0, 0, 0.5);
-    display: flex;
-    align-items: flex-start;
-    justify-content: center;
-    padding-top: 9vh;
-    z-index: 2000;
-    backdrop-filter: blur(2px);
-  }
-  .settings-dialog {
-    width: min(640px, 92vw);
-    max-height: 76vh;
-    display: flex;
-    flex-direction: column;
-    background: var(--surface-1);
-    color: var(--text, inherit);
-    border: 1px solid var(--surface-2);
-    border-radius: var(--radius-md, 8px);
-    box-shadow: 0 12px 32px rgba(0, 0, 0, 0.5);
-  }
-  .settings-head {
-    display: flex;
-    align-items: center;
-    gap: 0.7rem;
-    padding: 0.8rem 1rem 0.6rem;
-    border-bottom: 1px solid var(--surface-2);
-  }
-  .settings-head h2 {
-    margin: 0;
-    font-size: 0.95rem;
-    font-weight: 600;
-  }
   .settings-search {
     flex: 1;
     font: inherit;
@@ -370,28 +336,6 @@
   .settings-reset-all:disabled {
     opacity: 0.4;
     cursor: default;
-  }
-  .settings-close {
-    font: inherit;
-    background: transparent;
-    border: none;
-    color: var(--text-muted);
-    cursor: pointer;
-    padding: 0.2rem 0.35rem;
-    border-radius: 4px;
-  }
-  .settings-close:hover {
-    color: inherit;
-    background: var(--surface-2);
-  }
-  .settings-body {
-    overflow-y: auto;
-    padding: 0.4rem 1rem 0.9rem;
-  }
-  .settings-empty {
-    margin: 0.8rem 0;
-    font-size: 0.82rem;
-    color: var(--text-muted);
   }
   .settings-section h3 {
     margin: 0.9rem 0 0.3rem;

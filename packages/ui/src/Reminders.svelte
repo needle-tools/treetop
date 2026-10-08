@@ -64,25 +64,23 @@
 </script>
 
 {#if selected}
-  <dialog use:openDialog class="reminder-details" aria-labelledby="reminder-heading" on:cancel={() => (selected = null)}>
-    <header><h2 id="reminder-heading">{selected.title}</h2><button class="reminder-close" on:click={() => (selected = null)} aria-label="Close reminder details">×</button></header>
-    <p>{selected.message}</p>
-    {#if error}<p role="alert">{error}</p>{/if}
-    {#if selected.details}<div class="reminder-content">{selected.details}</div>{/if}
+  <dialog use:openDialog class="settings-dialog" aria-labelledby="reminder-heading" on:cancel={() => (selected = null)}>
+    <div class="settings-head"><h2 id="reminder-heading">{selected.title}</h2><button class="settings-close" on:click={() => (selected = null)} aria-label="Close reminder details">×</button></div>
+    <div class="settings-body">
+    <p class="settings-empty reminder-content">{selected.message}</p>
+    {#if error}<p class="settings-empty" role="alert">{error}</p>{/if}
+    {#if selected.details}<div class="settings-empty reminder-content">{selected.details}</div>{/if}
     <p class="muted small">Scheduled for {new Date(selected.dueAt).toLocaleString()}</p>
     <footer>
       {#if selected.repoId || selected.sessionSource}<button on:click={() => { if (selected) void focusReminder(selected).catch(reportError); selected = null; }}>Go to {selected.sessionSource ? "session" : "project"}</button>{/if}
       <button on:click={() => (selected = null)}>Close</button>
     </footer>
+    </div>
   </dialog>
 {/if}
 
 <style>
-  .reminder-details { position: fixed; inset: 0; margin: auto; box-sizing: border-box; width: min(560px, calc(100vw - 32px)); height: fit-content; max-height: calc(100dvh - 32px); overflow: auto; padding: 24px; border: 1px solid var(--border-muted); border-radius: 12px; background: var(--surface-0); color: var(--text-1); font-size: 1rem; line-height: 1.5; }
-  .reminder-details::backdrop { background: #0007; }
-  header { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; }
-  h2 { margin: 0; min-width: 0; font-size: 1.25rem; line-height: 1.4; overflow-wrap: anywhere; }
-  .reminder-close { flex: 0 0 32px; width: 32px; height: 32px; padding: 0; display: grid; place-items: center; }
+  h2 { flex: 1; min-width: 0; overflow-wrap: anywhere; }
   footer { display: flex; justify-content: flex-end; flex-wrap: wrap; gap: 8px; margin-top: 20px; }
   p, .reminder-content { white-space: pre-wrap; overflow-wrap: anywhere; }
 </style>
