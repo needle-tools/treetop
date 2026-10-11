@@ -1899,6 +1899,7 @@ function canonicalUserMessageMatchesOptimistic<B extends MessageBlock>(
   message: Message<B>,
   messageIndex: number,
   optimistic: Message<B>,
+  anchorIndex = optimistic.optimisticAfterMessageIndex,
 ): boolean {
   if (isOptimisticUserMessage(message)) return false;
   if (!sameUserMessageContent(message, optimistic)) return false;
@@ -1909,10 +1910,49 @@ function canonicalUserMessageMatchesOptimistic<B extends MessageBlock>(
   ) {
     return false;
   }
-  return (
-    typeof optimistic.optimisticAfterMessageIndex !== "number" ||
-    messageIndex > optimistic.optimisticAfterMessageIndex
-  );
+  return typeof anchorIndex !== "number" || messageIndex > anchorIndex;
+}
+
+function optimisticMatchAnchorIndex<B extends MessageBlock>(
+  messages: readonly Message<B>[],
+  optimistic: Message<B>,
+): number | undefined {
+  if (optimistic.optimisticAfterMessageId) {
+    const index = messages.findIndex(
+      (message) => message.id === optimistic.optimisticAfterMessageId,
+    );
+    if (index >= 0) return index;
+  }
+  return optimistic.optimisticAfterMessageIndex;
+}
+
+function matchOptimisticUserMessages<
+  B extends MessageBlock,
+  M extends Message<B>,
+>(
+  messages: readonly M[],
+  overlays: readonly Message<B>[],
+): Map<Message<B>, number> {
+  const matches = new Map<Message<B>, number>();
+  const usedIndexes = new Set<number>();
+  for (const overlay of overlays) {
+    if (!isOptimisticUserMessage(overlay)) continue;
+    const anchorIndex = optimisticMatchAnchorIndex(messages, overlay);
+    const index = messages.findIndex(
+      (message, messageIndex) =>
+        !usedIndexes.has(messageIndex) &&
+        canonicalUserMessageMatchesOptimistic(
+          message,
+          messageIndex,
+          overlay,
+          anchorIndex,
+        ),
+    );
+    if (index < 0) continue;
+    usedIndexes.add(index);
+    matches.set(overlay, index);
+  }
+  return matches;
 }
 
 export function withoutDuplicateOptimisticUserMessages<
@@ -1925,7 +1965,8 @@ export function withoutDuplicateOptimisticUserMessages<
     if (
       previous &&
       sameUserMessageContent(previous, message) &&
-      (isOptimisticUserMessage(previous) || isOptimisticUserMessage(message))
+      isOptimisticUserMessage(previous) !== isOptimisticUserMessage(message) &&
+      (!previous.turnId || !message.turnId || previous.turnId === message.turnId)
     ) {
       if (
         isOptimisticUserMessage(previous) &&
@@ -1954,7 +1995,11 @@ export function withoutDuplicateOptimisticUserMessages<
 export function withOptimisticUserMessageIntent<
   B extends MessageBlock,
   M extends Message<B>,
->(messages: readonly M[], overlays: readonly Message<B>[]): M[] {
+>(
+  messages: readonly M[],
+  overlays: readonly Message<B>[],
+  matches = matchOptimisticUserMessages(messages, overlays),
+): M[] {
   if (overlays.length === 0) return [...messages];
   return messages.map((message, messageIndex) => {
     if (message.role !== "user" || isOptimisticUserMessage(message)) {
@@ -1964,11 +2009,7 @@ export function withOptimisticUserMessageIntent<
       (overlay) =>
         isOptimisticUserMessage(overlay) &&
         userMessageIntent(overlay) &&
-        canonicalUserMessageMatchesOptimistic(
-          message,
-          messageIndex,
-          overlay,
-        ),
+        matches.get(overlay) === messageIndex,
     );
     return withUserMessageIntent(message, userMessageIntent(optimistic));
   });
@@ -1977,15 +2018,53 @@ export function withOptimisticUserMessageIntent<
 export function hasCanonicalUserMessageMatchingOptimistic<
   B extends MessageBlock,
   M extends Message<B>,
->(messages: readonly M[], optimistic: Message<B>): boolean {
+>(
+  messages: readonly M[],
+  optimistic: Message<B>,
+  overlays: readonly Message<B>[] = [optimistic],
+): boolean {
   if (!isOptimisticUserMessage(optimistic)) return false;
-  return messages.some((message, messageIndex) =>
-    canonicalUserMessageMatchesOptimistic(
-      message,
-      messageIndex,
-      optimistic,
-    ),
+  return matchOptimisticUserMessages(messages, overlays).has(optimistic);
+}
+
+/** Replace a locally sent row at its established position when app-server
+ * acknowledges it after output has already streamed. App-server history may
+ * subsequently refine ordering using its canonical item sequence. */
+export function canonicalUserMessageInsertionIndex<
+  B extends MessageBlock,
+  M extends Message<B>,
+>(
+  messages: readonly M[],
+  incoming: M,
+  overlays: readonly M[],
+): number {
+  if (incoming.role !== "user") return messages.length;
+  const matches = matchOptimisticUserMessages(
+    [...messages, incoming],
+    overlays,
   );
+  let previousOverlayAnchor = -1;
+  for (const overlay of overlays) {
+    const match = matches.get(overlay);
+    if (match === messages.length) {
+      if (overlay.intent !== "steer" && incoming.turnId) {
+        const firstInTurn = messages.findIndex(
+          (message) => message.turnId === incoming.turnId,
+        );
+        if (firstInTurn >= 0) return firstInTurn;
+      }
+      return (
+        Math.max(
+          previousOverlayAnchor,
+          optimisticInsertionIndex(messages, overlay),
+        ) + 1
+      );
+    }
+    if (match !== undefined) {
+      previousOverlayAnchor = Math.max(previousOverlayAnchor, match);
+    }
+  }
+  return messages.length;
 }
 
 export function mergeVisualSessionMessages<
@@ -1993,22 +2072,25 @@ export function mergeVisualSessionMessages<
   M extends Message<B>,
 >(messages: readonly M[], overlays: readonly M[]): M[] {
   if (overlays.length === 0) return messages as M[];
+  const matches = matchOptimisticUserMessages(messages, overlays);
   const messagesWithIntent = withOptimisticUserMessageIntent(
     messages,
     overlays,
+    matches,
   );
-  if (overlays.length === 0)
-    return withoutDuplicateOptimisticUserMessages(messagesWithIntent);
-  const pendingOverlays = overlays.filter(
-    (overlay) =>
-      !hasCanonicalUserMessageMatchingOptimistic(messagesWithIntent, overlay),
-  );
-  if (pendingOverlays.length === 0) {
-    return withoutDuplicateOptimisticUserMessages(messagesWithIntent);
-  }
   const overlaysByAnchor = new Map<number, M[]>();
-  for (const overlay of pendingOverlays) {
-    const anchor = optimisticInsertionIndex(messagesWithIntent, overlay);
+  let previousOverlayAnchor = -1;
+  for (const overlay of overlays) {
+    const match = matches.get(overlay);
+    if (match !== undefined) {
+      previousOverlayAnchor = Math.max(previousOverlayAnchor, match);
+      continue;
+    }
+    const anchor = Math.max(
+      previousOverlayAnchor,
+      optimisticInsertionIndex(messagesWithIntent, overlay),
+    );
+    previousOverlayAnchor = anchor;
     const list = overlaysByAnchor.get(anchor) ?? [];
     list.push(overlay);
     overlaysByAnchor.set(anchor, list);
@@ -2021,7 +2103,7 @@ export function mergeVisualSessionMessages<
     const anchored = overlaysByAnchor.get(index);
     if (anchored) merged.push(...anchored);
   });
-  return withoutDuplicateOptimisticUserMessages(merged);
+  return merged;
 }
 
 function visualTranscriptTailBlockKey(block: MessageBlock): string {
@@ -2205,21 +2287,14 @@ function messageKey<B extends MessageBlock, M extends Message<B>>(
   ].join(":");
 }
 
-function blockSignature(block: MessageBlock): string {
-  const planKey =
-    block.planItems?.map((item) => `${item.status}:${item.step}`).join("\n") ??
-    "";
-  return [
-    block.type,
-    block.text ?? "",
-    block.toolUseId ?? "",
-    block.toolName ?? "",
-    stableJson(block.toolInput),
-    block.explanation ?? "",
-    block.questionId ?? "",
-    stableJson(block.questionOptions),
-    planKey,
-  ].join("\u0000");
+function sameBlockContent(a: MessageBlock, b: MessageBlock): boolean {
+  if (a === b) return true;
+  const keys = Object.keys(a) as Array<keyof MessageBlock>;
+  if (keys.length !== Object.keys(b).length) return false;
+  // Blocks are immutable. Compare every field, including media and lifecycle
+  // metadata, without hashing large patches, image URLs, or tool payloads.
+  // Replaced nested objects conservatively refresh their row.
+  return keys.every((key) => Object.hasOwn(b, key) && a[key] === b[key]);
 }
 
 function messageMetadataSignature<
@@ -2237,43 +2312,43 @@ function messageMetadataSignature<
   ].join("\u0000");
 }
 
-function entrySignature<B extends MessageBlock, M extends Message<B>>(
-  entry: VisualWorkEntry<B, M>,
-): string {
-  return [
-    getVisualWorkEntryKey(entry),
-    messageMetadataSignature(entry.message),
-    entry.blocks.map(blockSignature).join("\u0001"),
-  ].join("\u0002");
+function sameEntryContent<B extends MessageBlock, M extends Message<B>>(
+  a: VisualWorkEntry<B, M>,
+  b: VisualWorkEntry<B, M>,
+): boolean {
+  return (
+    getVisualWorkEntryKey(a) === getVisualWorkEntryKey(b) &&
+    messageMetadataSignature(a.message) === messageMetadataSignature(b.message) &&
+    a.blocks.length === b.blocks.length &&
+    a.blocks.every((block, index) => sameBlockContent(block, b.blocks[index]!))
+  );
 }
 
-function itemSignature<B extends MessageBlock, M extends Message<B>>(
-  item: VisualTranscriptItem<B, M>,
-): string {
-  if (item.kind === "message") {
-    return [
-      getVisualTranscriptItemKey(item, item.messageIndex),
-      messageMetadataSignature(item.message),
-      item.blocks.map(blockSignature).join("\u0001"),
-    ].join("\u0002");
+function sameItemContent<B extends MessageBlock, M extends Message<B>>(
+  a: VisualTranscriptItem<B, M>,
+  b: VisualTranscriptItem<B, M>,
+): boolean {
+  if (a.kind === "message" && b.kind === "message") return sameEntryContent(a, b);
+  if (a.kind === "marker" && b.kind === "marker") {
+    return (
+      sameEntryContent(a.entry, b.entry) &&
+      sameBlockContent(a.markerBlock, b.markerBlock) &&
+      a.markerKind === b.markerKind &&
+      a.markerLabel === b.markerLabel
+    );
   }
-  if (item.kind === "marker") {
-    return [
-      getVisualTranscriptItemKey(item),
-      blockSignature(item.markerBlock),
-      item.markerKind,
-      item.markerLabel,
-    ].join("\u0002");
-  }
-  return [
-    getVisualTranscriptItemKey(item),
-    item.startedAt ?? "",
-    item.endedAt ?? "",
-    item.open === true ? "open" : "closed",
-    item.terminalMarkerKind ?? "",
-    item.terminalMarkerLabel ?? "",
-    item.entries.map(entrySignature).join("\u0003"),
-  ].join("\u0002");
+  if (a.kind !== "work" || b.kind !== "work") return false;
+  return (
+    a.startedAt === b.startedAt &&
+    a.endedAt === b.endedAt &&
+    a.open === b.open &&
+    a.terminalMarkerKind === b.terminalMarkerKind &&
+    a.terminalMarkerLabel === b.terminalMarkerLabel &&
+    a.entries.length === b.entries.length &&
+    a.entries.every((entry, index) =>
+      sameEntryContent(entry, b.entries[index]!),
+    )
+  );
 }
 
 function sameBlockReferences<B extends MessageBlock>(
@@ -2405,7 +2480,7 @@ export function reuseStableVisualTranscriptItems<
     const previousItem = previousByKey.get(key);
     if (!previousItem) return item;
     if (sameItemReferences(previousItem, item)) return previousItem;
-    if (itemSignature(previousItem) === itemSignature(item)) {
+    if (sameItemContent(previousItem, item)) {
       return previousItem;
     }
     if (item.kind !== "work" || previousItem.kind !== "work") {
@@ -2424,7 +2499,7 @@ export function reuseStableVisualTranscriptItems<
       if (
         previousEntry &&
         (sameEntryReferences(previousEntry, entry) ||
-          entrySignature(previousEntry) === entrySignature(entry))
+          sameEntryContent(previousEntry, entry))
       ) {
         reusedAny = true;
         return previousEntry;
@@ -2934,6 +3009,36 @@ export function visualTranscriptMessageWindow<
     hiddenMessageCount: start,
     totalMessageCount,
   };
+}
+
+export function visualTranscriptReaderWindow<
+  B extends MessageBlock,
+  M extends Message<B>,
+>(
+  messages: readonly M[],
+  opts: {
+    minMessages: number;
+    minUserTurns?: number;
+    paused: boolean;
+    retainedStartMessage?: M;
+  },
+): VisualTranscriptMessageWindow<M> {
+  let minMessages = opts.minMessages;
+  const retained = opts.paused ? opts.retainedStartMessage : undefined;
+  if (retained) {
+    const retainedIndex = messages.findIndex(
+      (message) =>
+        message === retained ||
+        (!!retained.id && !!message.id && message.id === retained.id),
+    );
+    if (retainedIndex >= 0) {
+      minMessages = Math.max(minMessages, messages.length - retainedIndex);
+    }
+  }
+  return visualTranscriptMessageWindow(messages, {
+    minMessages,
+    minUserTurns: opts.minUserTurns,
+  });
 }
 
 function commonMessagePrefixLength<

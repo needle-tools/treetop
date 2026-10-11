@@ -1136,7 +1136,16 @@ export function codexEventReplayKey(event: CodexAppEvent): string {
   const id = event.id ?? "";
   const delta =
     typeof event.params?.delta === "string" ? event.params.delta : "";
-  return `${eventThreadId(event) ?? ""}:${event.kind}:${event.method}:${id}:${event.seq ?? event.receivedAt}:${delta}`;
+  return [
+    eventThreadId(event) ?? "",
+    eventTurnId(event) ?? "",
+    codexEventItemId(event) ?? "",
+    event.kind,
+    event.method,
+    id,
+    event.seq ?? event.receivedAt,
+    delta,
+  ].join(":");
 }
 
 function subscriberWantsEvent(
@@ -1743,7 +1752,14 @@ export function codexAppHistoryTurnIds(thread: unknown): Set<string> {
 }
 
 export function mergeCodexAppHistoryMessages<
-  M extends { id?: string; blocks: unknown[] },
+  M extends {
+    id?: string;
+    blocks: unknown[];
+    timestamp?: string;
+    role?: string;
+    intent?: string;
+    turnId?: string;
+  },
 >(history: readonly M[], current: readonly M[]): M[] {
   const historyIndexById = new Map<string, number>();
   history.forEach((message, index) => {
@@ -1761,10 +1777,27 @@ export function mergeCodexAppHistoryMessages<
     const currentMessage = historyMessage.id
       ? currentById.get(historyMessage.id)
       : undefined;
-    return currentMessage &&
-      messagePayloadWeight(currentMessage) >= messagePayloadWeight(historyMessage)
-      ? currentMessage
-      : historyMessage;
+    const selected =
+      currentMessage &&
+      messagePayloadWeight(currentMessage) >=
+        messagePayloadWeight(historyMessage)
+        ? currentMessage
+        : historyMessage;
+    // Receiving a user item before the turn page cannot establish whether it
+    // opened the turn or steered it. The canonical page knows its position;
+    // payload length must not override that identity after reconnect.
+    if (
+      historyMessage.role === "user" &&
+      (selected.intent !== historyMessage.intent ||
+        (historyMessage.turnId && selected.turnId !== historyMessage.turnId))
+    ) {
+      return {
+        ...selected,
+        intent: historyMessage.intent,
+        turnId: historyMessage.turnId ?? selected.turnId,
+      };
+    }
+    return selected;
   });
   const nextCanonicalBoundary = new Array<number | undefined>(current.length);
   let nextBoundary: number | undefined;
@@ -1787,12 +1820,21 @@ export function mergeCodexAppHistoryMessages<
     }
   }
   const extrasByBoundary = new Map<number, M[]>();
+  const historyStart = history.reduce<string | undefined>(
+    (earliest, message) =>
+      message.timestamp && (!earliest || message.timestamp < earliest)
+        ? message.timestamp
+        : earliest,
+    undefined,
+  );
   current.forEach((message, currentIndex) => {
     if (message.id && historyIndexById.has(message.id)) return;
     const boundary =
       nextCanonicalBoundary[currentIndex] ??
       previousCanonicalBoundary[currentIndex] ??
-      canonical.length;
+      (historyStart && message.timestamp && message.timestamp < historyStart
+        ? 0
+        : canonical.length);
     const extras = extrasByBoundary.get(boundary) ?? [];
     extras.push(message);
     extrasByBoundary.set(boundary, extras);

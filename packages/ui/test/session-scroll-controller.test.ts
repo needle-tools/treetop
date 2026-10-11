@@ -128,6 +128,134 @@ function fakeLiveWorkScroller(opts: { zen?: boolean } = {}): {
 }
 
 describe("session scroll controller", () => {
+  test("restores a paused live-work body on remount without pausing its outer viewport", () => {
+    const scheduler = new ManualScheduler();
+    const first = fakeLiveWorkScroller();
+    const controller = createSessionScrollController({ scheduler });
+    controller.setMemoryKey("nested-body-reader-remount");
+    controller.setElement(first.scroller);
+    controller.updateTail("initial");
+    scheduler.flush();
+    first.workBody.scrollTop = 400;
+    controller.onLiveWorkBodyScroll("work:live", first.workBody);
+    expect(controller.isPaused).toBe(false);
+    controller.setElement(null);
+    const next = fakeLiveWorkScroller();
+    controller.setElement(next.scroller);
+    scheduler.flush();
+    expect(next.workBody.scrollTop).toBe(400);
+    expect(controller.isPaused).toBe(false);
+    expect(controller.isActive).toBe(false);
+    next.workBody.scrollTop =
+      next.workBody.scrollHeight - next.workBody.clientHeight;
+    controller.onLiveWorkBodyScroll("work:live", next.workBody);
+    expect(controller.isActive).toBe(true);
+  });
+
+  test("remembers an intentional jump to the beginning after previously reading midway", () => {
+    const scheduler = new ManualScheduler();
+    const scroller = fakeScroller(() => 220);
+    // Exercise the metric fallback, without a stable row to conceal a stale
+    // saved scrollTop after navigating to the actual start.
+    scroller.querySelectorAll = (() =>
+      []) as unknown as typeof scroller.querySelectorAll;
+    const controller = createSessionScrollController({ scheduler });
+    controller.setMemoryKey("intentional-top-memory");
+    controller.setElement(scroller);
+    controller.updateTail("initial");
+    scheduler.flush();
+    controller.setPaused(true);
+    scroller.scrollTop = 400;
+    controller.saveMemory();
+    controller.scrollToEdge("start");
+    controller.setElement(null);
+    const replacement = fakeScroller(() => 220);
+    replacement.scrollTop = 0;
+    controller.setElement(replacement);
+    scheduler.flush();
+    expect(replacement.scrollTop).toBe(0);
+    expect(controller.isPaused).toBe(true);
+  });
+
+  test("keeps an upward reader gesture paused after restoring a prepended row", () => {
+    const scheduler = new ManualScheduler();
+    let anchorTop = 220;
+    const scroller = fakeScroller(() => anchorTop);
+    const controller = createSessionScrollController({ scheduler });
+    controller.setElement(scroller);
+    controller.setPaused(true);
+    const anchor = controller.capturePausedReaderAnchor()!;
+    anchorTop += 300;
+    controller.restorePausedReaderAnchor(anchor);
+    scheduler.flush();
+    expect(scroller.scrollTop).toBe(700);
+
+    controller.onWheel({ deltaY: -2 } as WheelEvent);
+    scroller.scrollTop = 698;
+    controller.onScroll();
+    expect(controller.isPaused).toBe(true);
+  });
+
+  test("lets native upward scroll interrupt a pending update when geometry is unchanged", () => {
+    const scheduler = new ManualScheduler();
+    const scroller = fakeScroller(() => 220);
+    let scrollTop = 700;
+    Object.defineProperty(scroller, "scrollTop", {
+      get: () => scrollTop,
+      set: (value: number) => {
+        scrollTop = Math.max(
+          0,
+          Math.min(value, scroller.scrollHeight - scroller.clientHeight),
+        );
+      },
+    });
+    const controller = createSessionScrollController({ scheduler });
+    controller.setElement(scroller);
+    controller.updateTail("initial");
+    scheduler.flush();
+    controller.updateTail("streamed-same-height-text");
+    scroller.scrollTop = 500;
+    controller.onScroll();
+    scheduler.flush();
+    expect(scroller.scrollTop).toBe(500);
+    expect(controller.isPaused).toBe(true);
+  });
+
+  test("does not move a selection started after a tail update was scheduled", () => {
+    const scheduler = new ManualScheduler();
+    const scroller = fakeScroller(() => 220);
+    let selecting = false;
+    const controller = createSessionScrollController({
+      scheduler,
+      getSelection: () =>
+        selecting
+          ? ({
+              isCollapsed: false,
+              rangeCount: 1,
+              anchorNode: {},
+              focusNode: {},
+            } as Selection)
+          : null,
+    });
+    controller.setElement(scroller);
+    controller.updateTail("initial");
+    selecting = true;
+    scheduler.flush();
+    expect(scroller.scrollTop).toBe(400);
+  });
+
+  test("does not write to the transcript after disposal with tail work queued", () => {
+    const scheduler = new ManualScheduler();
+    const scroller = fakeScroller(() => 220);
+    const writes = countScrollWrites(scroller);
+    const controller = createSessionScrollController({ scheduler });
+    controller.setElement(scroller);
+    controller.updateTail("initial");
+    controller.dispose();
+    scheduler.flush();
+    expect(writes()).toBe(0);
+  });
+
   test("keeps the first wheel gesture native while recording upward reader intent", () => {
     const controller = createSessionScrollController();
     let prevented = false;
@@ -271,6 +399,56 @@ describe("session scroll controller", () => {
     expect(workBody.scrollTop).toBe(1_000_000_000);
   });
 
+  test("remembers live-work follow intent while the lane is offscreen", () => {
+    const scheduler = new ManualScheduler();
+    const first = fakeLiveWorkScroller();
+    first.scroller.scrollHeight = 4_000;
+    first.scroller.scrollTop = 1_000;
+    const controller = createSessionScrollController({ scheduler });
+    controller.setMemoryKey("live-work-remount");
+    controller.setElement(first.scroller);
+    controller.updateTail("live-output:1");
+    scheduler.flush();
+
+    expect(controller.isPaused).toBe(false);
+    expect(controller.isActive).toBe(true);
+    expect(first.scroller.scrollTop).toBeLessThan(3_000);
+
+    controller.setElement(null);
+    const next = fakeLiveWorkScroller();
+    next.scroller.scrollHeight = 4_500;
+    next.scroller.scrollTop = 0;
+    controller.setElement(next.scroller);
+    scheduler.flush();
+
+    expect(controller.isPaused).toBe(false);
+    expect(controller.isActive).toBe(true);
+  });
+
+  test("keeps live-work follow when remount's programmatic scroll event precedes alignment", () => {
+    const scheduler = new ManualScheduler();
+    const first = fakeLiveWorkScroller();
+    const controller = createSessionScrollController({ scheduler });
+    controller.setMemoryKey("live-work-remount-scroll-event");
+    controller.setElement(first.scroller);
+    controller.updateTail("live-output");
+    scheduler.flush();
+    controller.setElement(null);
+
+    const next = fakeLiveWorkScroller();
+    next.scroller.scrollTop = 0;
+    controller.setElement(next.scroller);
+    scheduler.flushNext();
+    scheduler.flushNext();
+    // The browser reports the restoreMemory scrollTop write before the
+    // follow-up frame aligns the live-work header. This is not reader input.
+    controller.onScroll();
+    expect(controller.isPaused).toBe(false);
+    scheduler.flush();
+    expect(controller.isActive).toBe(true);
+    expect(next.workBody.scrollTop).toBe(1_000_000_000);
+  });
+
   test("keeps a paused reader in place when a new transcript step arrives", () => {
     const scheduler = new ManualScheduler();
     const scroller = fakeScroller(() => 220);
@@ -305,6 +483,30 @@ describe("session scroll controller", () => {
     scheduler.flush();
 
     expect(scrollWrites()).toBe(2);
+    expect(scroller.scrollTop).toBe(1_000_000_000);
+  });
+
+  test("keeps following when ordinary live updates grow between scheduled corrections", () => {
+    const scheduler = new ManualScheduler();
+    const scroller = fakeScroller(() => 220);
+    scroller.scrollTop = 700;
+    const controller = createSessionScrollController({
+      scheduler,
+      transcriptActive: () => true,
+    });
+
+    controller.setElement(scroller);
+    controller.updateTail("ordinary-live-item-1");
+
+    // Svelte can render the first item before the scheduled correction, then
+    // receive another app-server item in a second flush. The first update was
+    // observed at the tail, so the second must not revoke that follow intent
+    // merely because the newly grown DOM is now farther from the old position.
+    scroller.scrollHeight = 2_000;
+    controller.updateTail("ordinary-live-item-2");
+    scheduler.flush();
+
+    expect(controller.isPaused).toBe(false);
     expect(scroller.scrollTop).toBe(1_000_000_000);
   });
 
@@ -400,6 +602,146 @@ describe("session scroll controller", () => {
 
     controller.onScroll();
 
+    expect(controller.isPaused).toBe(true);
+  });
+
+  test("cancels a queued late-layout correction when the reader scrolls up", () => {
+    const scheduler = new ManualScheduler();
+    const scroller = fakeScroller(() => 220);
+    const controller = createSessionScrollController({ scheduler });
+    controller.setElement(scroller);
+    controller.updateTail("idle");
+    scheduler.flush();
+
+    scroller.scrollTop = 700;
+    scroller.scrollHeight = 1_400;
+    controller.onScroll();
+    controller.onWheel({ deltaY: -100 } as WheelEvent);
+    scroller.scrollTop = 600;
+    controller.onScroll();
+    scheduler.flush();
+
+    expect(scroller.scrollTop).toBe(600);
+    expect(controller.isPaused).toBe(true);
+  });
+
+  test("does not let first-render follow overwrite intervening reader intent", () => {
+    const scheduler = new ManualScheduler();
+    const scroller = fakeScroller(() => 220);
+    const controller = createSessionScrollController({ scheduler });
+    controller.setElement(scroller);
+    controller.updateTail("initial");
+    controller.onWheel({ deltaY: -100 } as WheelEvent);
+    scroller.scrollTop = 300;
+    controller.onScroll();
+    scheduler.flush();
+
+    expect(scroller.scrollTop).toBe(300);
+    expect(controller.isPaused).toBe(true);
+  });
+
+  test("does not let remount restoration overwrite intervening reader intent", () => {
+    const scheduler = new ManualScheduler();
+    const scroller = fakeScroller(() => 220);
+    const controller = createSessionScrollController({ scheduler });
+    controller.setMemoryKey("restore-race-reader-intent");
+    controller.setElement(scroller);
+    controller.updateTail("initial");
+    scheduler.flush();
+    scroller.scrollTop = 700;
+    controller.setElement(null);
+
+    const replacement = fakeScroller(() => 220);
+    controller.setElement(replacement);
+    controller.onWheel({ deltaY: -100 } as WheelEvent);
+    replacement.scrollTop = 300;
+    controller.onScroll();
+    scheduler.flush();
+
+    expect(replacement.scrollTop).toBe(300);
+    expect(controller.isPaused).toBe(true);
+  });
+
+  test("lets scrollbar input detach while a tail update is pending", () => {
+    const scheduler = new ManualScheduler();
+    const scroller = fakeScroller(() => 220);
+    const controller = createSessionScrollController({ scheduler });
+    controller.setElement(scroller);
+    controller.updateTail("initial");
+    scheduler.flush();
+    scroller.scrollTop = 700;
+    controller.updateTail("next");
+    controller.onPointerDown();
+    scroller.scrollTop = 300;
+    controller.onScroll();
+    controller.onPointerUp();
+    scheduler.flush();
+
+    expect(scroller.scrollTop).toBe(300);
+    expect(controller.isPaused).toBe(true);
+  });
+
+  test("does not let element replacement overwrite intervening reader intent", () => {
+    const scheduler = new ManualScheduler();
+    const scroller = fakeScroller(() => 220);
+    const controller = createSessionScrollController({ scheduler });
+    controller.setElement(scroller);
+    controller.updateTail("initial");
+    scheduler.flush();
+    scroller.scrollTop = 700;
+
+    const replacement = fakeScroller(() => 220);
+    controller.setElement(replacement);
+    controller.onWheel({ deltaY: -100 } as WheelEvent);
+    replacement.scrollTop = 300;
+    controller.onScroll();
+    scheduler.flush();
+
+    expect(replacement.scrollTop).toBe(300);
+    expect(controller.isPaused).toBe(true);
+  });
+
+  test("keeps explicit upward intent even for a two-pixel gesture near the tail", () => {
+    const scheduler = new ManualScheduler();
+    const scroller = fakeScroller(() => 220);
+    const controller = createSessionScrollController({ scheduler });
+    controller.setElement(scroller);
+    controller.updateTail("initial");
+    scheduler.flush();
+    scroller.scrollTop = 700;
+    controller.onScroll();
+
+    controller.onWheel({ deltaY: -2 } as WheelEvent);
+    scroller.scrollTop = 698;
+    controller.onScroll();
+    controller.updateTail("later-update");
+    scheduler.flush();
+
+    expect(scroller.scrollTop).toBe(698);
+    expect(controller.isPaused).toBe(true);
+
+    controller.onWheel({ deltaY: 2 } as WheelEvent);
+    scroller.scrollTop = 700;
+    controller.onScroll();
+    expect(controller.isPaused).toBe(false);
+  });
+
+  test("detaches an idle reader when a bare native scroll moves away from the tail", () => {
+    const scheduler = new ManualScheduler();
+    const scroller = fakeScroller(() => 220);
+    const controller = createSessionScrollController({ scheduler });
+    controller.setElement(scroller);
+    controller.updateTail("settled-idle-turn");
+    scheduler.flush();
+
+    // Scrollbar drags, keyboard scrolling, and some WebKit gestures can reach
+    // us as a native scroll without a preceding wheel/pointer event. With no
+    // content-size change, this is reader intent and must detach tail follow.
+    scroller.scrollTop = 100;
+    controller.onScroll();
+    scheduler.flush();
+
+    expect(scroller.scrollTop).toBe(100);
     expect(controller.isPaused).toBe(true);
   });
 

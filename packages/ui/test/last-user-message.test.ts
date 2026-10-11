@@ -19,6 +19,7 @@ import {
   latestVisualGoal,
   latestVisualPlan,
   mergeVisualSessionMessages,
+  hasCanonicalUserMessageMatchingOptimistic,
   visualTranscriptTailKey,
   visualMessageTurnIndexes,
   reuseStableVisualTranscriptItems,
@@ -58,6 +59,7 @@ import {
   visualObservedProcessOwnerToolUseBlock,
   visualToolRemoteHostLabel,
   visualTranscriptMessageWindow,
+  visualTranscriptReaderWindow,
   visualWorkAutoOpenActionGroupId,
   visualWorkDetailEntries,
   visualWorkDetailGroups,
@@ -1979,6 +1981,107 @@ describe("buildVisualTranscriptItems", () => {
 });
 
 describe("reuseStableVisualTranscriptItems", () => {
+  for (const [label, before, after] of [
+    [
+      "media path",
+      { type: "media", mediaKind: "image", path: "before.png" },
+      { type: "media", mediaKind: "image", path: "after.png" },
+    ],
+    [
+      "stream completion",
+      { type: "tool_result", text: "done", streaming: true },
+      { type: "tool_result", text: "done", streaming: false },
+    ],
+    [
+      "subagent completion",
+      { type: "subagent", subagentId: "child", subagentStatus: "running" },
+      {
+        type: "subagent",
+        subagentId: "child",
+        subagentStatus: "completed",
+        subagentResult: "Fixed the bug",
+      },
+    ],
+    [
+      "observed file edits",
+      { type: "tool_use", toolName: "exec_command" },
+      {
+        type: "tool_use",
+        toolName: "exec_command",
+        observedFileEdits: [
+          { path: "changed.ts", action: "edited", additions: 2 },
+        ],
+      },
+    ],
+  ] as const) {
+    it(`refreshes ${label} when the same live row receives metadata`, () => {
+      const user = msg("user", "work", "2026-10-08T10:00:00.000Z");
+      const first = { id: "live-row", role: "assistant", blocks: [before] } as Message;
+      const updated = { ...first, blocks: [after] } as Message;
+      const previous = buildVisualTranscriptItems([user, first], { active: true });
+      const next = reuseStableVisualTranscriptItems(
+        previous,
+        buildVisualTranscriptItems([user, updated], { active: true }),
+      );
+      expect(next[1]).not.toBe(previous[1]);
+      if (next[1]?.kind !== "work") throw new Error("expected work item");
+      expect(next[1].entries[0]?.message).toBe(updated);
+    });
+  }
+
+  it("refreshes compaction details without changing the marker text", () => {
+    const first: Message = {
+      id: "compact",
+      role: "system",
+      blocks: [
+        {
+          type: "marker",
+          text: "[Context compacted]",
+          compaction: { beforeTokens: 100_000 },
+        },
+      ],
+    };
+    const updated: Message = {
+      ...first,
+      blocks: [
+        {
+          ...first.blocks[0]!,
+          compaction: {
+            beforeTokens: 100_000,
+            afterTokens: 20_000,
+            durationMs: 3_000,
+          },
+        },
+      ],
+    };
+    const previous = buildVisualTranscriptItems([first]);
+    const next = reuseStableVisualTranscriptItems(previous, buildVisualTranscriptItems([updated]));
+    expect(next[0]).not.toBe(previous[0]);
+    if (next[0]?.kind !== "marker") throw new Error("expected compaction marker");
+    expect(next[0].markerBlock.compaction?.afterTokens).toBe(20_000);
+  });
+
+  it("does not serialize large unchanged payloads while comparing recreated rows", () => {
+    let serialized = 0;
+    const toolInput = {
+      patch: "x".repeat(200_000),
+      toJSON() {
+        serialized += 1;
+        return {};
+      },
+    };
+    const first: Message = {
+      id: "heavy",
+      role: "assistant",
+      blocks: [{ type: "tool_use", toolName: "apply_patch", toolInput }],
+    };
+    const recreated: Message = { ...first, blocks: [{ ...first.blocks[0]! }] };
+    const previous = buildVisualTranscriptItems([first]);
+    const next = reuseStableVisualTranscriptItems(previous, buildVisualTranscriptItems([recreated]));
+    expect(next[0]).toBe(previous[0]);
+    expect(serialized).toBe(0);
+  });
+
   it("preserves unchanged transcript item identities when the live tail grows", () => {
     const user = msg("user", "fix it", "2026-06-19T10:00:00.000Z");
     const firstAnswer = msg(
@@ -2206,6 +2309,35 @@ describe("updateVisualTranscriptItems", () => {
     expect(new Set(window.messages.map((message) => message.turnId))).toEqual(
       new Set(["turn-38", "turn-39"]),
     );
+  });
+
+  it("retains the paused reader's rendered window while live rows append", () => {
+    const previousMessages = Array.from({ length: 120 }, (_, index) => ({
+      ...msg("assistant", `message ${index}`),
+      id: `message-${index}`,
+      turnId: `turn-${index}`,
+    }));
+    const previousWindow = visualTranscriptReaderWindow(previousMessages, {
+      minMessages: 20,
+      paused: false,
+    });
+    const nextMessages = [
+      ...previousMessages.map((message) => ({ ...message })),
+      ...Array.from({ length: 30 }, (_, index) => ({
+        ...msg("assistant", `live ${index}`),
+        id: `live-${index}`,
+        turnId: `live-turn-${index}`,
+      })),
+    ];
+
+    const pausedWindow = visualTranscriptReaderWindow(nextMessages, {
+      minMessages: 20,
+      paused: true,
+      retainedStartMessage: previousWindow.messages[0],
+    });
+
+    expect(pausedWindow.messages[0]?.id).toBe(previousWindow.messages[0]?.id);
+    expect(pausedWindow.messages).toHaveLength(50);
   });
 
   it("keeps canonical message indexes when updating a visible tail window", () => {
@@ -2610,6 +2742,34 @@ describe("withoutDuplicateOptimisticUserMessages", () => {
 });
 
 describe("mergeVisualSessionMessages", () => {
+  it("preserves repeated steering sends and acknowledges them one at a time", () => {
+    const user: Message = { id: "user", role: "user", turnId: "turn", blocks: [{ type: "text", text: "work" }] };
+    const anchor: Message = { id: "anchor", role: "assistant", turnId: "turn", blocks: [{ type: "thinking", text: "working" }] };
+    const first: Message = { id: "codex-optimistic-user-steer-first", role: "user", intent: "steer", turnId: "turn", optimisticAfterMessageId: "anchor", optimisticAfterMessageIndex: 1, blocks: [{ type: "text", text: "continue" }] };
+    const second: Message = { ...first, id: "codex-optimistic-user-steer-second" };
+    const canonicalFirst: Message = { id: "canonical-first", role: "user", intent: "steer", turnId: "turn", blocks: first.blocks };
+    const canonicalSecond: Message = { ...canonicalFirst, id: "canonical-second" };
+    const ids = (messages: Message[]) => messages.map(message => message.id);
+    expect(ids(mergeVisualSessionMessages([user, anchor], [first]))).toEqual(["user", "anchor", first.id]);
+    expect(ids(mergeVisualSessionMessages([user, anchor], [first, second]))).toEqual(["user", "anchor", first.id, second.id]);
+    expect(ids(mergeVisualSessionMessages([user, anchor, canonicalFirst], [first, second]))).toEqual(["user", "anchor", canonicalFirst.id, second.id]);
+    expect(hasCanonicalUserMessageMatchingOptimistic([user, anchor, canonicalFirst], first, [first, second])).toBe(true);
+    expect(hasCanonicalUserMessageMatchingOptimistic([user, anchor, canonicalFirst], second, [first, second])).toBe(false);
+    expect(ids(mergeVisualSessionMessages([user, anchor, canonicalFirst, canonicalSecond], [first, second]))).toEqual(["user", "anchor", canonicalFirst.id, canonicalSecond.id]);
+    const canonical = [user, anchor, canonicalFirst, canonicalSecond];
+    expect(buildVisualTranscriptItems(mergeVisualSessionMessages(canonical, [first, second]), { active: true }))
+      .toEqual(buildVisualTranscriptItems(canonical, { active: true }));
+  });
+
+  it("does not acknowledge a queued request with an older identical message after pagination", () => {
+    const old: Message = { id: "old", role: "user", blocks: [{ type: "text", text: "continue" }] };
+    const anchor: Message = { id: "anchor", role: "assistant", blocks: [{ type: "text", text: "prior answer" }] };
+    const pending: Message = { id: "codex-optimistic-user-next", role: "user", optimisticAfterMessageId: "anchor", optimisticAfterMessageIndex: 0, blocks: old.blocks };
+    const prefix = [msg("user", "older"), msg("assistant", "older answer")];
+    const history = [...prefix, old, anchor];
+    expect(mergeVisualSessionMessages(history, [pending]).map(message => message.id)).toEqual([...history.map(message => message.id), pending.id]);
+  });
+
   it("reuses canonical history when there are no optimistic overlays", () => {
     const messages = [msg("user", "hello"), msg("assistant", "world")];
 

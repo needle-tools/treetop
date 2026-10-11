@@ -15,12 +15,17 @@ import {
   type VisualScrollMemory,
 } from "./visual-tail-follow";
 
-const scrollMemoryByKey = new Map<string, VisualScrollMemory>();
+interface SessionScrollMemory extends VisualScrollMemory {
+  outerPaused: boolean;
+  liveWorkBodies: Array<{ key: string; scrollTop: number; paused: boolean }>;
+}
+
+const scrollMemoryByKey = new Map<string, SessionScrollMemory>();
 const SCROLL_MEMORY_LIMIT = 200;
 const CURSOR_SETTLE_MS = 300;
 const DOCUMENT_POSITION_FOLLOWING = 4;
 
-function rememberScrollMemory(key: string, memory: VisualScrollMemory): void {
+function rememberScrollMemory(key: string, memory: SessionScrollMemory): void {
   if (!key) return;
   if (scrollMemoryByKey.has(key)) scrollMemoryByKey.delete(key);
   scrollMemoryByKey.set(key, memory);
@@ -42,6 +47,7 @@ export interface SessionScrollControllerOptions {
   historyAnchorActive?: () => boolean;
   transcriptActive?: () => boolean;
   onActiveChange?: (active: boolean) => void;
+  onPausedChange?: (paused: boolean) => void;
   getSelection?: () => Selection | null;
 }
 
@@ -103,11 +109,18 @@ export class SessionScrollController {
   private tailFollowSeq = 0;
   private pendingTailFollowSeq = 0;
   private pendingTailFollowForced = false;
+  private pendingTailFollowShouldStick = false;
   private layoutObserver: ResizeObserver | null = null;
   private cursorSettled = false;
   private pointerScrollIntent = false;
   private settleTimer: ReturnType<typeof setTimeout> | null = null;
   private pausedLiveWorkBodyKeys = new Set<string>();
+  private observedScrollHeight = 0;
+  private observedScrollTop = 0;
+  private pendingMemoryRestore: {
+    el: HTMLElement;
+    pauseSeq: number;
+  } | null = null;
 
   constructor(options: SessionScrollControllerOptions = {}) {
     this.options = options;
@@ -154,6 +167,7 @@ export class SessionScrollController {
     const box = target.getBoundingClientRect();
     this.el.scrollTop +=
       (box.top + box.bottom) / 2 - (viewport.top + viewport.bottom) / 2;
+    this.recordProgrammaticScroll();
     this.saveMemory();
   }
 
@@ -167,7 +181,14 @@ export class SessionScrollController {
       this.setPaused(true);
       this.el.scrollTop = 0;
     }
+    this.recordProgrammaticScroll();
     this.saveMemory();
+  }
+
+  recordProgrammaticScroll(): void {
+    if (!this.el) return;
+    this.observedScrollHeight = this.el.scrollHeight;
+    this.observedScrollTop = this.el.scrollTop;
   }
 
   setMemoryKey(key: string): void {
@@ -180,10 +201,14 @@ export class SessionScrollController {
     const previous = this.el;
     if (previous && this.renderedOnce) this.saveMemory(previous);
     this.el = next;
+    this.pendingMemoryRestore = null;
     if (!next) {
+      this.observedScrollHeight = 0;
       this.setActive(false);
       return;
     }
+    this.observedScrollHeight = next.scrollHeight;
+    this.observedScrollTop = next.scrollTop;
     if (this.restoreMemory(next)) return;
     if (previous && this.renderedOnce) {
       this.preserveReplacement(previous, next);
@@ -197,20 +222,34 @@ export class SessionScrollController {
   }
 
   reset(): void {
+    this.pendingMemoryRestore = null;
     this.tailFollowSeq += 1;
     this.pendingTailFollowSeq = 0;
     this.pendingTailFollowForced = false;
+    this.pendingTailFollowShouldStick = false;
     this.renderedOnce = false;
     this.tailKey = "";
+    const wasPaused = this.paused;
     this.paused = false;
+    if (wasPaused) this.options.onPausedChange?.(false);
     this.followExactEnd = false;
     this.pointerScrollIntent = false;
+    this.observedScrollHeight = this.el?.scrollHeight ?? 0;
+    this.observedScrollTop = this.el?.scrollTop ?? 0;
     this.pausedLiveWorkBodyKeys.clear();
     this.pauseSeq += 1;
     this.setActive(false);
   }
 
   dispose(): void {
+    this.pendingMemoryRestore = null;
+    this.tailFollowSeq += 1;
+    this.pendingTailFollowSeq = 0;
+    this.pendingTailFollowForced = false;
+    this.pendingTailFollowShouldStick = false;
+    this.readerRestoreSeq += 1;
+    this.pauseSeq += 1;
+    this.el = null;
     this.layoutObserver?.disconnect();
     this.layoutObserver = null;
     if (this.settleTimer) clearTimeout(this.settleTimer);
@@ -222,6 +261,7 @@ export class SessionScrollController {
     if (this.paused !== paused) {
       this.paused = paused;
       this.pauseSeq += 1;
+      this.options.onPausedChange?.(paused);
     }
     this.syncActive();
   }
@@ -286,7 +326,16 @@ export class SessionScrollController {
     // emits a normal scroll event for that layout change. It is not reader
     // intent, and treating it as such cancels follow between replay/live
     // turns. Explicit wheel intent still updates pause state in onWheel.
-    if (this.pendingTailFollowSeq !== 0 && !this.paused) {
+    const stableUpwardScroll =
+      !!this.el &&
+      this.el.scrollHeight === this.observedScrollHeight &&
+      this.el.scrollTop < this.observedScrollTop;
+    if (
+      this.pendingTailFollowSeq !== 0 &&
+      !this.paused &&
+      !this.pointerScrollIntent &&
+      !stableUpwardScroll
+    ) {
       if (
         this.el &&
         !isNearVisualScrollEnd(this.el, VISUAL_TAIL_FOLLOW_RESUME_PX)
@@ -296,23 +345,42 @@ export class SessionScrollController {
       return;
     }
     if (!this.paused && !this.pointerScrollIntent) {
-      if (
-        this.el &&
-        !isNearVisualScrollEnd(this.el, VISUAL_TAIL_FOLLOW_RESUME_PX)
-      ) {
-        this.scheduleTailFollow({ force: true });
-      } else {
-        this.syncActive();
-        this.saveMemory();
+      const el = this.el;
+      const layoutChanged =
+        !!el && el.scrollHeight !== this.observedScrollHeight;
+      if (el) this.observedScrollHeight = el.scrollHeight;
+      if (layoutChanged) {
+        // Late image/font/disclosure layout can move a followed viewport
+        // without a new transcript tail key. Preserve follow only when the
+        // content geometry actually changed; a quiet bare scroll is reader
+        // intent (scrollbar, keyboard, and some WebKit gestures).
+        if (!isNearVisualScrollEnd(el, VISUAL_TAIL_FOLLOW_RESUME_PX)) {
+          this.settleTailFollow(el);
+        } else {
+          this.observedScrollTop = el.scrollTop;
+          this.syncActive();
+          this.saveMemory();
+        }
+        return;
       }
-      return;
     }
-    // A pointer drag is explicit reader intent. A bare `scroll` is not: layout
-    // changes and native scroll anchoring can emit one while live rows update,
-    // and that event must retain the semantic-row correction.
+    // A pointer drag is explicit reader intent. A bare `scroll` is reader
+    // intent when geometry stayed stable; the branch above already retained
+    // follow for native scroll anchoring caused by a content-height change.
     if (this.pointerScrollIntent) this.pauseSeq += 1;
-    this.pointerScrollIntent = false;
-    this.updateIntent();
+    if (this.el) {
+      // A small upward gesture is still reader intent, even while it remains
+      // inside the end tolerance. Only movement back toward the tail may
+      // reattach a paused reader. A programmatic restore records its position
+      // before the browser dispatches scroll; that no-movement event must not
+      // cancel the next alignment frame while the live header is unaligned.
+      if (this.el.scrollTop < this.observedScrollTop) this.setPaused(true);
+      else if (this.el.scrollTop > this.observedScrollTop) {
+        this.updateIntent();
+      }
+      this.observedScrollHeight = this.el.scrollHeight;
+      this.observedScrollTop = this.el.scrollTop;
+    }
     this.saveMemory();
     this.options.requestOlder?.();
   }
@@ -359,6 +427,7 @@ export class SessionScrollController {
       const nextOffsetTop = target.getBoundingClientRect().top - scrollerTop;
       const delta = nextOffsetTop - anchor.offsetTop;
       if (Math.abs(delta) >= 0.5) anchor.el.scrollTop += delta;
+      this.recordProgrammaticScroll();
     });
   }
 
@@ -370,21 +439,35 @@ export class SessionScrollController {
         layoutUsable: usableLayout(el),
         metrics: current,
         previous: scrollMemoryByKey.get(this.memoryKey),
+        restoring:
+          this.pendingMemoryRestore?.el === el &&
+          this.pendingMemoryRestore.pauseSeq === this.pauseSeq,
       })
     ) {
       return;
     }
     const anchor = this.scrollAnchor(el);
-    rememberScrollMemory(
-      this.memoryKey,
-      visualScrollMemoryFromMetrics({
+    rememberScrollMemory(this.memoryKey, {
+      ...visualScrollMemoryFromMetrics({
         metrics: current,
         paused: this.paused,
+        followTail:
+          !this.paused &&
+          (this.followExactEnd ||
+            this.liveWorkDelta(el) !== undefined ||
+            isNearVisualScrollEnd(current, VISUAL_TAIL_FOLLOW_NEAR_PX)) &&
+          this.liveWorkBodiesAreFollowing(el),
         nearPx: VISUAL_TAIL_FOLLOW_NEAR_PX,
         anchorKey: anchor?.key,
         anchorOffsetTop: anchor?.offsetTop,
       }),
-    );
+      outerPaused: this.paused,
+      liveWorkBodies: this.liveWorkBodies(el).map(({ body, key }) => ({
+        key,
+        scrollTop: body.scrollTop,
+        paused: this.pausedLiveWorkBodyKeys.has(key),
+      })),
+    });
   }
 
   scheduleTailFollow(options: { force?: boolean } = {}): void {
@@ -401,7 +484,7 @@ export class SessionScrollController {
     }
     const pauseSeq = this.pauseSeq;
     const selecting = this.hasActiveSelection();
-    const shouldStick =
+    const shouldStickNow =
       (!this.paused &&
         !selecting &&
         (this.followExactEnd || this.liveWorkDelta(el) !== undefined)) ||
@@ -413,6 +496,8 @@ export class SessionScrollController {
         restoredMemory: scrollMemoryByKey.get(this.memoryKey),
         selecting,
       });
+    this.pendingTailFollowShouldStick ||= shouldStickNow;
+    const shouldStick = this.pendingTailFollowShouldStick;
     this.syncActive(el);
     this.renderedOnce = true;
 
@@ -420,13 +505,13 @@ export class SessionScrollController {
       if (this.pendingTailFollowSeq !== followSeq) return;
       const current = this.el;
       if (!current) return;
-      const mayFollow = firstRender || this.canApplyFollow(pauseSeq);
+      const mayFollow = this.canApplyFollow(pauseSeq);
       if (!mayFollow) this.setActive(false);
       if (shouldStick && mayFollow) this.applyTailFollow(current);
       this.scheduler.nextFrame(() => {
         if (this.pendingTailFollowSeq !== followSeq) return;
         const settled = this.el;
-        const mayFollowSettled = firstRender || this.canApplyFollow(pauseSeq);
+        const mayFollowSettled = this.canApplyFollow(pauseSeq);
         if (!mayFollowSettled) this.setActive(false);
         if (
           settled &&
@@ -440,6 +525,7 @@ export class SessionScrollController {
           if (this.pendingTailFollowSeq !== followSeq) return;
           this.pendingTailFollowSeq = 0;
           this.pendingTailFollowForced = false;
+          this.pendingTailFollowShouldStick = false;
           this.syncActive();
         });
       });
@@ -477,7 +563,7 @@ export class SessionScrollController {
   }
 
   private canApplyFollow(seq: number): boolean {
-    return this.pauseSeq === seq && !this.paused;
+    return this.pauseSeq === seq && !this.paused && !this.hasActiveSelection();
   }
 
   private applyTailFollow(el: HTMLElement): void {
@@ -489,6 +575,8 @@ export class SessionScrollController {
     if (liveWorkDelta !== undefined) el.scrollTop += liveWorkDelta;
     else scrollToEnd(el);
     this.scrollLiveWorkBodiesToEnd(el);
+    this.observedScrollHeight = el.scrollHeight;
+    this.observedScrollTop = el.scrollTop;
     this.syncActive(el);
   }
 
@@ -572,9 +660,29 @@ export class SessionScrollController {
     const memory = scrollMemoryByKey.get(this.memoryKey);
     if (!memory) return false;
     this.renderedOnce = true;
-    this.setPaused(!memory.followTail);
+    this.setPaused(memory.outerPaused);
+    const pauseSeq = this.pauseSeq;
+    const pendingRestore = { el, pauseSeq };
+    this.pendingMemoryRestore = pendingRestore;
     this.afterPaint(() => {
-      if (this.el !== el) return;
+      if (this.pendingMemoryRestore === pendingRestore) {
+        this.pendingMemoryRestore = null;
+      }
+      if (this.el !== el || this.pauseSeq !== pauseSeq) return;
+      const liveBodies = new Map(
+        this.liveWorkBodies(el).map(({ key, body }) => [key, body]),
+      );
+      for (const saved of memory.liveWorkBodies) {
+        const body = liveBodies.get(saved.key);
+        if (!body) continue;
+        if (saved.paused) {
+          this.pausedLiveWorkBodyKeys.add(saved.key);
+          body.scrollTop = saved.scrollTop;
+        } else {
+          this.pausedLiveWorkBodyKeys.delete(saved.key);
+          scrollToEnd(body);
+        }
+      }
       if (
         !memory.followTail &&
         memory.anchorKey &&
@@ -588,11 +696,13 @@ export class SessionScrollController {
           const targetRect = target.getBoundingClientRect();
           el.scrollTop +=
             targetRect.top - scrollerRect.top - memory.anchorOffsetTop;
+          this.observedScrollTop = el.scrollTop;
           this.syncActive(el);
           return;
         }
       }
       el.scrollTop = visualScrollTopFromMemory({ memory, next: metrics(el) });
+      this.observedScrollTop = el.scrollTop;
       if (memory.followTail) this.scrollLiveWorkBodiesToEnd(el);
       this.syncActive(el);
       if (memory.followTail) this.settleTailFollow(el);
@@ -606,21 +716,23 @@ export class SessionScrollController {
     if (!followedTail) this.setPaused(true);
     const pauseSeq = this.pauseSeq;
     this.afterPaint(() => {
-      if (this.el !== next) return;
+      if (this.el !== next || this.pauseSeq !== pauseSeq) return;
       const followTail = followedTail && this.canApplyFollow(pauseSeq);
       next.scrollTop = replacementVisualScrollTop({
         previous: previousMetrics,
         next: metrics(next),
         followTail,
       });
+      this.observedScrollTop = next.scrollTop;
       this.syncActive(next);
       if (followTail) this.settleTailFollow(next);
     });
   }
 
   private settleTailFollow(el: HTMLElement): void {
+    const pauseSeq = this.pauseSeq;
     this.scheduler.nextFrame(() => {
-      if (this.el !== el) return;
+      if (this.el !== el || !this.canApplyFollow(pauseSeq)) return;
       this.applyTailFollow(el);
     });
   }

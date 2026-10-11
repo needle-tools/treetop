@@ -72,6 +72,7 @@
     applyVisualTranscriptDeltaPatches,
     formatVisualWorkDuration,
     hasCanonicalUserMessageMatchingOptimistic,
+    canonicalUserMessageInsertionIndex,
     lastUserMessageBurst,
     lastUserMessageWithContext as buildLastUserMessageWithContext,
     latestSessionMessageActivityIso,
@@ -83,7 +84,7 @@
     visualPendingQuestions,
     visualSubagentLabel,
     visualTranscriptSubagents,
-    visualTranscriptMessageWindow,
+    visualTranscriptReaderWindow,
     visualTranscriptTailKey,
     visualPlanFromPayload,
     withOptimisticUserMessageIntent,
@@ -647,6 +648,7 @@
   const VISUAL_HISTORY_MESSAGES_STEP = 100;
   const MAX_VISUAL_HISTORY_MESSAGES = 2_000;
   let visualHistoryMinMessages = DEFAULT_VISUAL_HISTORY_MESSAGES;
+  let visualTailFollowPaused = false;
   let visualHistoryRequestInFlight = false;
   let visualHistorySourceKey = "";
   let codexAppHistoryLoadedKey = "";
@@ -660,6 +662,9 @@
   let codexAppHistoryNextCursor: string | null = null;
   let codexAppLiveTurnIds = new Set<string>();
   let codexAppStartedTurnIds = new Set<string>();
+  let codexTurnLifecycleSeq = 0;
+  let codexTurnSourceEpoch = 0;
+  let codexPendingTurnStartOptimisticId: string | null = null;
   let codexCompletedLiveItemIds = new Set<string>();
   const codexDeferredVisualEvents = new CodexDeferredEventBuffer();
   let codexHasDeferredVisualEvents = false;
@@ -1341,16 +1346,32 @@
    *  rapid-fire "5 quick messages" sequence shows the whole thread
    *  of intent rather than only the last fragment. */
   let codexOptimisticUserMessages: NormalizedMessage[] = [];
+  let retainedVisualWindowStartMessage: NormalizedMessage | undefined;
+  function currentVisualRenderWindow(
+    messages: NormalizedMessage[],
+    minMessages: number,
+    paused: boolean,
+  ) {
+    const window = visualTranscriptReaderWindow(messages, {
+      minMessages,
+      minUserTurns: 2,
+      paused,
+      retainedStartMessage: retainedVisualWindowStartMessage,
+    });
+    retainedVisualWindowStartMessage = window.messages[0];
+    return window;
+  }
   $: visualSessionMessages = mergeVisualSessionMessages(
     transcriptSessionOverride?.messages ?? session?.messages ?? [],
     codexOptimisticUserMessages,
   );
   $: visualSessionMessageTurnIndexes =
     visualMessageTurnIndexes(visualSessionMessages);
-  $: visualRenderWindow = visualTranscriptMessageWindow(visualSessionMessages, {
-    minMessages: visualHistoryMinMessages,
-    minUserTurns: 2,
-  });
+  $: visualRenderWindow = currentVisualRenderWindow(
+    visualSessionMessages,
+    visualHistoryMinMessages,
+    visualTailFollowPaused,
+  );
   $: visualHistoryHiddenMessageCount = Math.max(
     visualRenderWindow.hiddenMessageCount,
     Math.max(
@@ -1945,6 +1966,9 @@
     onActiveChange(active) {
       visualTailFollowActive = active;
     },
+    onPausedChange(paused) {
+      visualTailFollowPaused = paused;
+    },
   });
   let transcriptTurnNavigationSeq = 0;
   let transcriptTurnNavigationTarget: number | undefined;
@@ -2029,6 +2053,7 @@
 
   function resetVisualHistoryWindow(): void {
     visualHistoryMinMessages = DEFAULT_VISUAL_HISTORY_MESSAGES;
+    retainedVisualWindowStartMessage = undefined;
     visualHistoryRequestInFlight = false;
     visualHistoryScrollAnchor = null;
     codexAppHistoryNextCursor = null;
@@ -2079,6 +2104,9 @@
       });
     }
     if (codexAppHistorySourceActive) {
+      if (visualRenderWindow.messages.length < session.messages.length) {
+        return true;
+      }
       const threadId = effectiveSessionId;
       return canRequestOlderCodexAppThreadHistory({
         threadId,
@@ -2110,11 +2138,10 @@
       return;
     }
     const loadedMessageCount = session?.messages.length ?? 0;
-    const loadedHistoryMax = Math.min(
-      maxVisualHistoryMessages(),
-      loadedMessageCount,
-    );
-    if (visualHistoryMinMessages < loadedHistoryMax) {
+    const loadedHistoryMax = codexAppHistorySourceActive
+      ? loadedMessageCount
+      : Math.min(maxVisualHistoryMessages(), loadedMessageCount);
+    if (visualRenderWindow.messages.length < loadedHistoryMax) {
       visualHistoryMinMessages = Math.min(
         loadedHistoryMax,
         Math.max(
@@ -2228,6 +2255,29 @@
       codexAppLiveTurnIds = new Set();
       codexAppStartedTurnIds = new Set();
       codexCompletedLiveItemIds = new Set();
+      codexTurnLifecycleSeq += 1;
+      codexTurnSourceEpoch += 1;
+      codexPendingTurnStartOptimisticId = null;
+      codexOptimisticUserMessages = [];
+      codexActiveTurnId = null;
+      codexQueueDraining = false;
+      // Hydrate the new owner's queue before clearing running state can
+      // promote work. A live-to-live switch need not change liveCodexApp.
+      const queueKey =
+        agent === "codex" && !codexAppTransport
+          ? codexQueueStorageKey()
+          : undefined;
+      if (queueKey) {
+        restoreCodexQueue(queueKey);
+      } else {
+        codexQueueHydratedKey = "";
+        codexQueuedMessages = [];
+        codexQueueBlocked = false;
+      }
+      if (agent === "codex") {
+        sending = false;
+        sendError = "";
+      }
       codexLiveDetectedModel = "";
       if (!codexAppHistorySourceActive) codexAppSessionKey = "";
       resetToCodexAppSession();
@@ -2309,6 +2359,7 @@
     const targetHistoryKey = codexAppHistoryKey(threadId, cwd);
     const invalidationSeqAtReadStart = codexAppHistoryInvalidationSeq;
     const messagesAtReadStart = session.messages;
+    const renderedMessagesAtReadStart = visualRenderWindow.messages.length;
     const historySnapshotCapturedDuringActiveTurn =
       sending || codexActiveTurnId !== null;
     const targetStillOwned = () =>
@@ -2394,6 +2445,15 @@
               },
             )
       ) as NormalizedMessage[];
+      if (cursor && mergedMessages.length > messagesAtReadStart.length) {
+        visualHistoryMinMessages = Math.min(
+          mergedMessages.length,
+          Math.max(
+            visualHistoryMinMessages,
+            renderedMessagesAtReadStart + VISUAL_HISTORY_MESSAGES_STEP,
+          ),
+        );
+      }
       if (!sameMessageReferences(session.messages, mergedMessages)) {
         noteVisualTranscriptChangedFrom(0);
         session = {
@@ -3522,8 +3582,26 @@
     scheduleCodexDeltaFlush();
   }
 
+  function bindPendingCodexTurn(turnId: string | undefined): void {
+    if (!turnId || !codexPendingTurnStartOptimisticId) return;
+    const optimisticId = codexPendingTurnStartOptimisticId;
+    codexPendingTurnStartOptimisticId = null;
+    codexOptimisticUserMessages = codexOptimisticUserMessages.map((message) =>
+      message.id === optimisticId && !message.turnId
+        ? { ...message, turnId }
+        : message,
+    );
+  }
+
   function applyCodexEventStateOnly(event: CodexAppEvent): void {
     updateCodexRecoverableIssue(event);
+    if (
+      event.method === "turn/started" ||
+      event.method === "turn/completed" ||
+      event.method === "turn/status"
+    ) {
+      codexTurnLifecycleSeq += 1;
+    }
     if (event.kind === "request") {
       if (codexRequestNeedsUserInteraction(event.method)) {
         codexRequests = [
@@ -3535,6 +3613,7 @@
       return;
     }
     if (event.method === "turn/started") {
+      bindPendingCodexTurn(event.turnId);
       if (event.turnId) {
         codexAppLiveTurnIds = new Set(codexAppLiveTurnIds).add(event.turnId);
         codexAppStartedTurnIds.add(event.turnId);
@@ -3669,6 +3748,14 @@
     }
     const skipLifecycle =
       lifecycleAlreadyApplied && codexEventLifecycleHandledStateOnly(event);
+    if (
+      !skipLifecycle &&
+      (event.method === "turn/started" ||
+        event.method === "turn/completed" ||
+        event.method === "turn/status")
+    ) {
+      codexTurnLifecycleSeq += 1;
+    }
     const eventTurnId =
       event.turnId ??
       (typeof event.params.turnId === "string"
@@ -3750,6 +3837,7 @@
 
     if (event.method === "turn/started") {
       if (skipLifecycle) return;
+      bindPendingCodexTurn(event.turnId);
       codexActiveTurnId = event.turnId ?? codexActiveTurnId;
       sending = true;
       sendError = "";
@@ -3970,25 +4058,11 @@
         messages[existingIndex] = message;
         firstChangedIndex = Math.min(firstChangedIndex, existingIndex);
       } else {
-        const matchingNewTurnUser =
-          message.role === "user" && message.turnId
-            ? codexOptimisticUserMessages.find(
-                (optimistic) =>
-                  optimistic.intent !== "steer" &&
-                  optimistic.turnId === message.turnId &&
-                  hasCanonicalUserMessageMatchingOptimistic(
-                    [...messages, message],
-                    optimistic,
-                  ),
-              )
-            : undefined;
-        const firstMessageInTurn = matchingNewTurnUser
-          ? messages.findIndex(
-              (candidate) => candidate.turnId === message.turnId,
-            )
-          : -1;
-        const insertionIndex =
-          firstMessageInTurn >= 0 ? firstMessageInTurn : messages.length;
+        const insertionIndex = canonicalUserMessageInsertionIndex(
+          messages,
+          message,
+          codexOptimisticUserMessages,
+        );
         firstChangedIndex = Math.min(firstChangedIndex, insertionIndex);
         messages.splice(insertionIndex, 0, message);
       }
@@ -4418,6 +4492,9 @@
         role: "user",
         timestamp: new Date().toISOString(),
         intent,
+        ...(intent === "steer" && codexActiveTurnId
+          ? { turnId: codexActiveTurnId }
+          : {}),
         optimisticAfterMessageId: anchorId,
         optimisticAfterMessageIndex: anchorIndex,
         blocks,
@@ -4959,12 +5036,15 @@
     if (!opts.steer && sending) return false;
     sending = true;
     sendError = "";
+    const lifecycleSeqAtSend = codexTurnLifecycleSeq;
+    const sourceEpochAtSend = codexTurnSourceEpoch;
     const optimisticId = optimisticCodexUser(
       payload.text,
       payload.attachments,
       opts.sourceRect ?? null,
       opts.steer ? "steer" : undefined,
     );
+    if (!opts.steer) codexPendingTurnStartOptimisticId = optimisticId;
     try {
       const { res, body } = await withRequestDeadline(
         CODEX_TURN_REQUEST_TIMEOUT_MS,
@@ -5001,8 +5081,13 @@
         },
       );
       if (!res.ok) throw new Error(body?.error ?? `HTTP ${res.status}`);
+      if (codexTurnSourceEpoch !== sourceEpochAtSend) return true;
       if (typeof body?.turnId === "string") {
-        codexActiveTurnId = body.turnId;
+        // SSE can finish this turn (and promote the next queued turn) before
+        // the request response arrives. Its lifecycle state is already newer.
+        if (codexTurnLifecycleSeq === lifecycleSeqAtSend) {
+          codexActiveTurnId = body.turnId;
+        }
         codexOptimisticUserMessages = codexOptimisticUserMessages.map(
           (message) =>
             message.id === optimisticId
@@ -5012,9 +5097,29 @@
       }
       return true;
     } catch (e) {
+      if (codexTurnSourceEpoch !== sourceEpochAtSend) return false;
+      const optimistic = codexOptimisticUserMessages.find(
+        (message) => message.id === optimisticId,
+      );
+      // A failed HTTP response cannot undo a send the app-server has already
+      // accepted over SSE. A steer needs its own user-item acknowledgment:
+      // its turn was already running before this request.
+      if (
+        optimistic &&
+        ((!opts.steer &&
+          optimistic.turnId &&
+          codexAppLiveTurnIds.has(optimistic.turnId)) ||
+          hasCanonicalUserMessageMatchingOptimistic(
+            session?.messages ?? [],
+            optimistic,
+            codexOptimisticUserMessages,
+          ))
+      ) {
+        return true;
+      }
       removeOptimisticCodexUser(optimisticId);
       sendError = e instanceof Error ? e.message : String(e);
-      sending = opts.steer ? true : false;
+      if (codexTurnLifecycleSeq === lifecycleSeqAtSend) sending = opts.steer;
       if (opts.fromQueue) {
         codexQueuedMessages = [opts.fromQueue, ...codexQueuedMessages];
       } else if (!inputText.trim() && composerAttachments.length === 0) {
@@ -5022,6 +5127,10 @@
         composerAttachments = payload.attachments;
       }
       return false;
+    } finally {
+      if (codexPendingTurnStartOptimisticId === optimisticId) {
+        codexPendingTurnStartOptimisticId = null;
+      }
     }
   }
 
@@ -5117,12 +5226,17 @@
     const [next, ...rest] = codexQueuedMessages;
     if (!next) return;
     codexQueueDraining = true;
+    const sourceEpochAtSend = codexTurnSourceEpoch;
     codexQueuedMessages = rest;
     try {
       const ok = await startCodexTurn(next, { steer: false, fromQueue: next });
-      if (!ok) codexQueueBlocked = true;
+      if (!ok && codexTurnSourceEpoch === sourceEpochAtSend) {
+        codexQueueBlocked = true;
+      }
     } finally {
-      codexQueueDraining = false;
+      if (codexTurnSourceEpoch === sourceEpochAtSend) {
+        codexQueueDraining = false;
+      }
     }
   }
 

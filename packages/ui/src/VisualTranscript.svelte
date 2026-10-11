@@ -2352,71 +2352,89 @@
   </Tooltip>
 {/snippet}
 
+{#snippet renderWorkOverviewPill(
+  overview: VisualWorkOverview,
+  pill: WorkSummaryPillItem,
+)}
+  {#if pill.kind === "changed"}
+    {@render renderWorkChangedSummary(overview)}
+  {:else if pill.kind === "response"}
+    <span
+      class="work-summary-chip"
+      title={`${overview.responseCount} agent responses`}
+    >
+      <ToolIcon name="agent_response" />
+      <span use:pulseOnValueChange={pill.pulseValue}>
+        {overview.responseCount}
+      </span>
+    </span>
+  {:else if pill.kind === "category"}
+    <span
+      class="work-summary-chip dim"
+      title={`${pill.category.count} ${pill.category.label}${
+        pill.category.count === 1 ? "" : "s"
+      }`}
+    >
+      <ToolIcon name={pill.category.iconName} />
+      <span use:pulseOnValueChange={pill.pulseValue}>
+        {pill.category.count}
+      </span>
+    </span>
+  {:else if pill.kind === "language"}
+    <span
+      class="work-summary-chip dim work-code-language-badge"
+      title={`${pill.language.count} ${pill.language.label} script${
+        pill.language.count === 1 ? "" : "s"
+      }`}
+    >
+      <span>{pill.language.label}</span>
+      {#if pill.language.count > 1}
+        <span use:pulseOnValueChange={pill.pulseValue}>
+          {pill.language.count}
+        </span>
+      {/if}
+    </span>
+  {:else if pill.kind === "remote"}
+    {@render renderRemoteHostBadge(pill.remoteHost)}
+  {:else if pill.kind === "tool-percent"}
+    <span
+      class="work-summary-chip dim numeric"
+      title={`${overview.time.toolWaitPercent}% tool wait · ${overview.time.agentPercent}% agent`}
+    >
+      <span use:pulseOnValueChange={pill.pulseValue}>
+        {overview.time.toolWaitPercent}%
+      </span>
+      <span>tools</span>
+    </span>
+  {/if}
+{/snippet}
+
 {#snippet renderWorkOverviewPills(
   overview: VisualWorkOverview,
   showInlineMeta = true,
+  animatePills = false,
 )}
-  <span class="work-summary-pills">
-    {#each workSummaryPillItems(overview, showInlineMeta) as pill (pill.key)}
-      <span
-        class="work-summary-pill-shell"
-        animate:flip={{ duration: 180 }}
-        transition:scale={{ duration: 130, start: 0.92 }}
-      >
-        {#if pill.kind === "changed"}
-          {@render renderWorkChangedSummary(overview)}
-        {:else if pill.kind === "response"}
-          <span
-            class="work-summary-chip"
-            title={`${overview.responseCount} agent responses`}
-          >
-            <ToolIcon name="agent_response" />
-            <span use:pulseOnValueChange={pill.pulseValue}>
-              {overview.responseCount}
-            </span>
-          </span>
-        {:else if pill.kind === "category"}
-          <span
-            class="work-summary-chip dim"
-            title={`${pill.category.count} ${pill.category.label}${
-              pill.category.count === 1 ? "" : "s"
-            }`}
-          >
-            <ToolIcon name={pill.category.iconName} />
-            <span use:pulseOnValueChange={pill.pulseValue}>
-              {pill.category.count}
-            </span>
-          </span>
-        {:else if pill.kind === "language"}
-          <span
-            class="work-summary-chip dim work-code-language-badge"
-            title={`${pill.language.count} ${pill.language.label} script${
-              pill.language.count === 1 ? "" : "s"
-            }`}
-          >
-            <span>{pill.language.label}</span>
-            {#if pill.language.count > 1}
-              <span use:pulseOnValueChange={pill.pulseValue}>
-                {pill.language.count}
-              </span>
-            {/if}
-          </span>
-        {:else if pill.kind === "remote"}
-          {@render renderRemoteHostBadge(pill.remoteHost)}
-        {:else if pill.kind === "tool-percent"}
-          <span
-            class="work-summary-chip dim numeric"
-            title={`${overview.time.toolWaitPercent}% tool wait · ${overview.time.agentPercent}% agent`}
-          >
-            <span use:pulseOnValueChange={pill.pulseValue}>
-              {overview.time.toolWaitPercent}%
-            </span>
-            <span>tools</span>
-          </span>
-        {/if}
-      </span>
-    {/each}
-  </span>
+  {#if animatePills}
+    <span class="work-summary-pills">
+      {#each workSummaryPillItems(overview, showInlineMeta) as pill (pill.key)}
+        <span
+          class="work-summary-pill-shell work-summary-pill-shell-motion"
+          animate:flip={{ duration: 180 }}
+          transition:scale={{ duration: 130, start: 0.92 }}
+        >
+          {@render renderWorkOverviewPill(overview, pill)}
+        </span>
+      {/each}
+    </span>
+  {:else}
+    <span class="work-summary-pills">
+      {#each workSummaryPillItems(overview, showInlineMeta) as pill (pill.key)}
+        <span class="work-summary-pill-shell">
+          {@render renderWorkOverviewPill(overview, pill)}
+        </span>
+      {/each}
+    </span>
+  {/if}
 {/snippet}
 
 {#snippet renderWorkOverviewRightMeta(overview: VisualWorkOverview)}
@@ -3716,7 +3734,7 @@
                 {/each}
               </span>
             {/if}
-            {@render renderWorkOverviewPills(workOverview)}
+            {@render renderWorkOverviewPills(workOverview, true, liveWorkOpen)}
             {@render renderWorkOverviewRightMeta(workOverview)}
           </summary>
           {#if workFoldoutOpen}
@@ -4583,6 +4601,8 @@
     flex: 0 0 auto;
     min-width: 0;
     max-width: 100%;
+  }
+  .work-summary-pill-shell-motion {
     will-change: transform;
   }
   .work-summary-chip {
@@ -4633,7 +4653,7 @@
     }
   }
   @media (prefers-reduced-motion: reduce) {
-    .work-summary-pill-shell {
+    .work-summary-pill-shell-motion {
       will-change: auto;
     }
     .work-summary-chip {

@@ -1453,6 +1453,33 @@ send-time anchor and reject conflicting turn IDs. The browser lifecycle test
 covers the response-first/canonical-user-second delivery order; a focused
 projection test covers repeated user text across turns.
 
+A 2026-10-11 steering and queue lifecycle audit found that optimistic rows
+were still reconciled by content without one-to-one ownership. Repeated equal
+steers could therefore acknowledge each other, while a late canonical steer
+could move behind already-rendered output and conceal that output. Optimistic
+rows now match canonical app-server user items one-to-one after their stable
+message anchor, and canonical acknowledgements replace the row at its visible
+position. Turn lifecycle events also outrank late HTTP start responses, so a
+completed turn cannot be reopened and block the next queued request. Source
+epochs prevent delayed responses from mutating a reused SessionView after an
+A -> B -> A switch. Queue ownership is synchronously restored on every source
+change; queued work from A can no longer be submitted to B. Browser coverage
+asserts exact visible request/response order through fast completion, delayed
+acknowledgements and failures, queue promotion, source switches, and offscreen
+remounts. Transcript messages remain outside this app-server projection.
+
+A later adversarial audit found three remaining parity failures. A disjoint
+latest app-server page could place previously observed older live rows after
+the new page; unmatched rows older than the page now stay before it. A steer
+seen live before its history page could be classified as ordinary input and
+keep that identity forever; canonical app-server history now corrects its
+intent and turn identity without replacing richer live content. Finally, the
+stable visual-item cache compared only a subset of block fields, so media,
+stream completion, subagent results, file edits, and compaction details could
+change underneath an obsolete rendered row. Cache reuse now compares every
+immutable block field shallowly, conservatively refreshing replaced nested
+metadata without serializing large tool or media payloads.
+
 The live session header had a separate source-ownership bug: synthetic
 app-server session shells assigned `Date.now()` as their start, so a reset or
 reactive recreation made an old thread say "started just now" and could move
@@ -1520,6 +1547,25 @@ group remounts those rows on demand. A real-browser lifecycle test closes and
 reopens the production component to cover both the cost gate and the unchanged
 interaction contract.
 
+### Static work-summary pills promoted into hundreds of layers (2026-10-11)
+
+A long-running native instance reached 8.35 GB WebContent RSS and 148% CPU while
+the daemon remained below 200 MB RSS and 1% CPU. Renderer diagnostics captured
+the discontinuity: a lane remount raised the page from 18 to 709 running
+animations, 694 of them `.work-summary-pill-shell`, and from roughly 15k to 26k
+DOM elements. FPS fell to 19 while otherwise sub-millisecond Codex event handlers
+took multiple seconds to settle through rendering.
+
+Every work-summary pill, including immutable historical and nested action-group
+summaries, carried `animate:flip`, an intro scale transition, and permanent
+`will-change: transform`. Remounting a long lane therefore promoted and animated
+hundreds of static pills at once. Only the current live round's top summary can
+actually change arrangement. Motion and transform promotion now apply solely to
+that summary; historical and nested summaries keep the same markup, chips, value
+pulses, and appearance without individual compositor layers. A Chromium lifecycle
+test moves a long live lane offscreen and back, then verifies that the live
+summary retains motion while grouped summaries are not transform-promoted.
+
 ### App-server history lost turn boundaries (2026-10-06)
 
 The same Baker lane remained slow after hidden action rows were gated. Its
@@ -1541,3 +1587,27 @@ window from 4,152 to 142 messages, 500 action groups to 6, and the measured
 normalization/window/projection/overview pass from about 2.64 seconds to about
 82 milliseconds. Transcript sources without turn IDs retain the existing
 user-boundary behavior.
+
+### Paused virtual readers drifted during live growth (2026-10-11)
+
+The bounded app-server window could advance its oldest rendered message while
+new live rows arrived. The scroll controller then had no surviving semantic
+anchor to restore, so a paused reader could move by thousands of pixels even
+though tail following was off. The shared window now retains its rendered
+start while paused and returns to the normal bounded tail when following
+resumes. The controller audit also fixed stale post-restore metrics, native
+scrolls racing queued follow work, selection and disposal races, intentional
+top-position persistence, and independent scroll memory for nested live-work
+bodies. Browser coverage appends enough live rows to cross the virtualization
+boundary while the reader remains mid-history.
+
+A subsequent basic live-follow regression came from consecutive app-server
+updates arriving in separate Svelte flushes before the first scheduled scroll
+correction. The first update correctly captured that the reader was following,
+but the newly grown DOM made the second update look far from the tail; it then
+superseded the first correction with a false "do not follow" decision. Pending
+ordinary follow intent is now sticky across coalesced updates, just like an
+explicit send-time follow, while the existing pause generation still lets a
+wheel, pointer, selection, or other reader action cancel it. The controller
+test reproduces growth between corrections, and the real SessionView browser
+test delivers ordinary assistant rows through consecutive live event frames.

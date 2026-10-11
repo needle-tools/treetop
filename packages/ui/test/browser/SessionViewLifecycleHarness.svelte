@@ -2,7 +2,7 @@
   import SessionView from "../../src/SessionView.svelte";
   import { codexAppSource } from "../../src/storage";
 
-  const threadId = "lifecycle-thread";
+  let threadId = "lifecycle-thread";
   const cwd = "/tmp/treetop-session-lifecycle";
   let working = false;
   let stopped = false;
@@ -30,6 +30,13 @@
   />
   <output data-opened-subagent>{openedSubagentId}</output>
 </main>
+<button
+  onclick={() =>
+    (threadId =
+      threadId === "lifecycle-thread"
+        ? "other-lifecycle-thread"
+        : "lifecycle-thread")}>Switch session</button
+>
 
 <style>
   :global(html),

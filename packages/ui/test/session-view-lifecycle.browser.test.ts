@@ -14,14 +14,22 @@ let server: ViteDevServer;
 let browser: Browser;
 let origin = "";
 let latestTurnComplete = false;
+let historicalWorkGroupCount = 0;
+let historicalTurnCount = 18;
+let olderHistoryAvailable = false;
 let terminalStopStatus = 200;
 let terminalStopCalls = 0;
+let turnRequestDelayMs = 120;
+let turnRequestCount = 0;
+let turnResponseIds: string[] = [];
+let turnResponseStatus = 200;
+const turnRequestInputs: { threadId: string; text: string }[] = [];
 const eventClients = new Set<ServerResponse>();
 const threadId = "lifecycle-thread";
 const latestTurnId = "turn-latest";
 
 function threadPage(complete: boolean): unknown {
-  const turns = Array.from({ length: 18 }, (_, index) => {
+  const turns = Array.from({ length: historicalTurnCount }, (_, index) => {
     const turnNumber = index + 1;
     return {
       id: `turn-${turnNumber}`,
@@ -49,7 +57,7 @@ function threadPage(complete: boolean): unknown {
   turns.push({
     id: latestTurnId,
     startedAt: 1_780_000_200,
-    completedAt: 1_780_000_208,
+    ...(complete ? { completedAt: 1_780_000_208 } : {}),
     items: [
       {
         id: "latest-user",
@@ -71,6 +79,31 @@ function threadPage(complete: boolean): unknown {
         status: "completed",
         aggregatedOutput: "/tmp/treetop-session-lifecycle\n",
       },
+      ...Array.from({ length: historicalWorkGroupCount }, (_, index) => [
+        {
+          id: `historical-reasoning-${index}`,
+          type: "reasoning",
+          summary: [
+            {
+              type: "summary_text",
+              text: `Planning historical command ${index}`,
+            },
+          ],
+        },
+        {
+          id: `historical-command-${index}`,
+          type: "commandExecution",
+          command: `/bin/zsh -lc 'echo ${index}'`,
+          cwd: "/tmp/treetop-session-lifecycle",
+          status: "completed",
+          aggregatedOutput: `${index}\n`,
+        },
+        {
+          id: `historical-response-${index}`,
+          type: "agentMessage",
+          text: `Historical checkpoint ${index}`,
+        },
+      ]).flat(),
       {
         id: "latest-subagent-spawn",
         type: "dynamicToolCall",
@@ -132,6 +165,47 @@ function threadPage(complete: boolean): unknown {
       turns: turns.reverse(),
     },
     model: "gpt-6.1",
+    nextCursor: olderHistoryAvailable ? "older-page" : null,
+  };
+}
+
+function olderThreadPage(): unknown {
+  const turns = Array.from({ length: 80 }, (_, index) => ({
+    id: `turn-older-page-${index}`,
+    startedAt: 1_779_999_000 + index * 10,
+    completedAt: 1_779_999_005 + index * 10,
+    items: [
+      {
+        id: `user-older-page-${index}`,
+        type: "userMessage",
+        content: [
+          {
+            type: "text",
+            text:
+              index === 0
+                ? "Oldest loaded request must remain reachable without a cursor"
+                : index === 30
+                ? "Older paged request that must remain in scrollback"
+                : `Older paged request ${index}`,
+          },
+        ],
+      },
+      {
+        id: `answer-older-page-${index}`,
+        type: "agentMessage",
+        text: `Older paged response ${index} that must remain in scrollback`,
+      },
+    ],
+  })).reverse();
+  return {
+    ok: true,
+    thread: {
+      id: threadId,
+      cwd: "/tmp/treetop-session-lifecycle",
+      createdAt: 1_779_999_900,
+      turns,
+    },
+    model: "gpt-6.1",
     nextCursor: null,
   };
 }
@@ -155,7 +229,17 @@ function lifecycleApiPlugin(): Plugin {
         }
         if (url.pathname === "/api/codex-app/thread") {
           response.setHeader("Content-Type", "application/json");
-          response.end(JSON.stringify(threadPage(latestTurnComplete)));
+          if (url.searchParams.get("threadId") === "other-lifecycle-thread") {
+            response.end(JSON.stringify({ ok: true, thread: { id: "other-lifecycle-thread", cwd: "/tmp/treetop-session-lifecycle", turns: [{ id: "other-turn", items: [{ id: "other-answer", type: "agentMessage", text: "OTHER_SESSION_ANSWER" }] }] }, nextCursor: null }));
+            return;
+          }
+          response.end(
+            JSON.stringify(
+              url.searchParams.get("cursor") === "older-page"
+                ? olderThreadPage()
+                : threadPage(latestTurnComplete),
+            ),
+          );
           return;
         }
         if (url.pathname === "/api/terminals/test-terminal" && request.method === "DELETE") {
@@ -169,13 +253,21 @@ function lifecycleApiPlugin(): Plugin {
           url.pathname === "/api/codex-app/turns" &&
           request.method === "POST"
         ) {
-          await new Promise((resolveDelay) => setTimeout(resolveDelay, 120));
+          const chunks: Buffer[] = [];
+          for await (const chunk of request) chunks.push(Buffer.from(chunk));
+          const input = JSON.parse(Buffer.concat(chunks).toString());
+          turnRequestInputs.push({ threadId: input.threadId, text: input.text });
+          const responseTurnId = input.steer ? input.expectedTurnId : (turnResponseIds.shift() ?? "turn-next");
+          const responseStatus = turnResponseStatus;
+          turnRequestCount += 1;
+          await new Promise((resolveDelay) => setTimeout(resolveDelay, turnRequestDelayMs));
           response.setHeader("Content-Type", "application/json");
+          response.statusCode = responseStatus;
           response.end(
             JSON.stringify({
               ok: true,
               threadId,
-              turnId: "turn-next",
+              turnId: responseTurnId,
             }),
           );
           return;
@@ -236,7 +328,10 @@ async function openHarness(): Promise<Page> {
   );
   await currentPage.locator(".messages").waitFor();
   await waitForCondition(
-    async () => (await currentPage.locator(".msg").count()) > 20,
+    async () =>
+      historicalWorkGroupCount > 0
+        ? (await currentPage.locator(".work-row").count()) > 0
+        : (await currentPage.locator(".msg").count()) > 20,
     "SessionView did not render its history",
   );
   await waitForCondition(
@@ -284,6 +379,311 @@ function emitCodexEvents(events: readonly unknown[]): void {
 }
 
 describe("SessionView browser lifecycle", { concurrency: false }, () => {
+  test("keeps queued work owned by its session when the view switches sessions", async () => {
+    const currentPage = await openHarness();
+    const requestsBefore = turnRequestInputs.length;
+    try {
+      emitCodexEvents([{
+        kind: "notification", method: "turn/started", threadId,
+        turnId: latestTurnId, receivedAt: "2026-10-01T10:00:10.000Z",
+        params: { turn: { id: latestTurnId } },
+      }]);
+      await currentPage.getByRole("button", { name: "Stop Codex", exact: true }).waitFor();
+      const composer = currentPage.locator("textarea.composer-input");
+      await composer.fill("QUEUED_FOR_ORIGINAL_SESSION");
+      await composer.press("Enter");
+      await currentPage.getByRole("button", { name: "Show queued messages", exact: true }).waitFor();
+      expect(turnRequestInputs.slice(requestsBefore)).toEqual([]);
+
+      await currentPage.getByRole("button", { name: "Switch session", exact: true }).click();
+      await currentPage.locator(".messages").getByText("OTHER_SESSION_ANSWER", { exact: true }).waitFor();
+      await currentPage.waitForTimeout(250);
+      expect(turnRequestInputs.slice(requestsBefore)).toEqual([]);
+      expect(await currentPage.getByRole("button", { name: "Show queued messages", exact: true }).count()).toBe(0);
+      expect(await currentPage.locator(".messages").innerText()).not.toContain("QUEUED_FOR_ORIGINAL_SESSION");
+
+      await currentPage.getByRole("button", { name: "Switch session", exact: true }).click();
+      await waitForCondition(async () => turnRequestInputs.length > requestsBefore, "Original queue was not restored");
+      expect(turnRequestInputs.slice(requestsBefore)).toEqual([
+        { threadId, text: "QUEUED_FOR_ORIGINAL_SESSION" },
+      ]);
+    } finally {
+      await currentPage.close();
+    }
+  }, 30_000);
+
+  test("isolates a pending send from a different session and its late HTTP response", async () => {
+    const currentPage = await openHarness();
+    turnRequestDelayMs = 750;
+    try {
+      const requestsBefore = turnRequestCount;
+      await currentPage.locator("textarea.composer-input").fill("OLD_SESSION_PENDING");
+      await currentPage.locator("textarea.composer-input").press("Enter");
+      await waitForCondition(async () => turnRequestCount > requestsBefore, "Send did not reach server");
+      await currentPage.getByRole("button", { name: "Switch session", exact: true }).click();
+      await currentPage.locator(".messages").getByText("OTHER_SESSION_ANSWER", { exact: true }).waitFor();
+      expect(await currentPage.locator(".messages").getByText("OLD_SESSION_PENDING", { exact: true }).count()).toBe(0);
+      expect(await currentPage.getByRole("button", { name: "Stop Codex", exact: true }).count()).toBe(0);
+      await currentPage.waitForTimeout(900);
+      expect(await currentPage.locator(".messages").getByText("OLD_SESSION_PENDING", { exact: true }).count()).toBe(0);
+      expect(await currentPage.getByRole("button", { name: "Stop Codex", exact: true }).count()).toBe(0);
+    } finally {
+      turnRequestDelayMs = 120;
+      await currentPage.close();
+    }
+  }, 30_000);
+
+  test("ignores an old send failure after switching away and back to the same source", async () => {
+    const currentPage = await openHarness();
+    turnRequestDelayMs = 1500;
+    turnResponseStatus = 502;
+    try {
+      const requestsBefore = turnRequestCount;
+      const composer = currentPage.locator("textarea.composer-input");
+      await composer.fill("OLD_SOURCE_REQUEST");
+      await composer.press("Enter");
+      await waitForCondition(async () => turnRequestCount > requestsBefore, "Send did not reach server");
+      await currentPage.getByRole("button", { name: "Switch session", exact: true }).click();
+      await currentPage.locator(".messages").getByText("OTHER_SESSION_ANSWER", { exact: true }).waitFor();
+      await currentPage.getByRole("button", { name: "Switch session", exact: true }).click();
+      await currentPage.waitForTimeout(1600);
+      expect(await composer.inputValue()).toBe("");
+      expect(await currentPage.getByText("HTTP 502", { exact: true }).count()).toBe(0);
+    } finally {
+      turnRequestDelayMs = 120;
+      turnResponseStatus = 200;
+      await currentPage.close();
+    }
+  }, 30_000);
+
+  test("keeps an SSE-confirmed completed send accepted after a late HTTP failure", async () => {
+    const currentPage = await openHarness();
+    turnRequestDelayMs = 750;
+    turnResponseStatus = 502;
+    const initialRequests = turnRequestCount;
+    try {
+      const composer = currentPage.locator("textarea.composer-input");
+      await composer.fill("CONFIRMED_REQUEST");
+      await composer.press("Enter");
+      await waitForCondition(async () => turnRequestCount > initialRequests, "Send was not received");
+      emitCodexEvents([
+        { kind: "notification", method: "turn/started", threadId, turnId: "turn-next", receivedAt: "2026-10-01T10:00:10.000Z", params: { turn: { id: "turn-next" } } },
+        { kind: "notification", method: "item/completed", threadId, turnId: "turn-next", receivedAt: "2026-10-01T10:00:11.000Z", params: { item: { id: "confirmed-user", type: "userMessage", content: [{ type: "text", text: "CONFIRMED_REQUEST" }] } } },
+        { kind: "notification", method: "item/completed", threadId, turnId: "turn-next", receivedAt: "2026-10-01T10:00:12.000Z", params: { item: { id: "confirmed-answer", type: "agentMessage", text: "CONFIRMED_ANSWER" } } },
+        { kind: "notification", method: "turn/completed", threadId, turnId: "turn-next", receivedAt: "2026-10-01T10:00:13.000Z", params: { turnId: "turn-next" } },
+      ]);
+      await currentPage.locator(".messages").getByText("CONFIRMED_ANSWER", { exact: true }).waitFor();
+      await currentPage.waitForTimeout(900);
+      expect(await composer.inputValue()).toBe("");
+      expect(await currentPage.locator(".messages").innerText()).toContain("CONFIRMED_REQUEST");
+      expect(await currentPage.getByText("HTTP 502", { exact: true }).count()).toBe(0);
+    } finally {
+      turnRequestDelayMs = 120;
+      turnResponseStatus = 200;
+      await currentPage.close();
+    }
+  }, 30_000);
+
+  test("accepts only the acknowledged steer when identical sends receive late HTTP failures", async () => {
+    const currentPage = await openHarness();
+    turnRequestDelayMs = 750;
+    turnResponseStatus = 502;
+    const requestsBefore = turnRequestCount;
+    try {
+      emitCodexEvents([{ kind: "notification", method: "turn/started", threadId, turnId: latestTurnId, receivedAt: "2026-10-01T10:00:10.000Z", params: { turn: { id: latestTurnId } } }]);
+      const composer = currentPage.locator("textarea.composer-input");
+      await composer.fill("REPEATED_STEER");
+      await currentPage.locator(".composer-steer").click();
+      await waitForCondition(async () => turnRequestCount === requestsBefore + 1, "First steer did not reach server");
+      turnRequestDelayMs = 1600;
+      await composer.fill("REPEATED_STEER");
+      await currentPage.locator(".composer-steer").click();
+      await waitForCondition(async () => turnRequestCount === requestsBefore + 2, "Second steer did not reach server");
+      const sequence = async () => (await currentPage.locator(".messages").innerText()).match(/REPEATED_STEER/g) ?? [];
+      expect(await sequence()).toEqual(["REPEATED_STEER", "REPEATED_STEER"]);
+      emitCodexEvents([{ kind: "notification", method: "item/completed", threadId, turnId: latestTurnId, receivedAt: "2026-10-01T10:00:11.000Z", params: { item: { id: "accepted-first-steer", type: "userMessage", content: [{ type: "text", text: "REPEATED_STEER" }] } } }]);
+      await currentPage.waitForTimeout(900);
+      expect(await composer.inputValue()).toBe("");
+      expect(await sequence()).toEqual(["REPEATED_STEER", "REPEATED_STEER"]);
+      await currentPage.waitForTimeout(900);
+      expect(await composer.inputValue()).toBe("REPEATED_STEER");
+      expect(await sequence()).toEqual(["REPEATED_STEER"]);
+    } finally {
+      turnRequestDelayMs = 120;
+      turnResponseStatus = 200;
+      await currentPage.close();
+    }
+  }, 30_000);
+
+  test("preserves each promoted queued request through fast completion, late user items, and remount", async () => {
+    const currentPage = await openHarness();
+    turnRequestDelayMs = 500;
+    turnResponseIds = ["queued-turn-1", "queued-turn-2"];
+    const initialRequests = turnRequestCount;
+    const item = (turnId: string, id: string, type: string, text: string) => ({
+      kind: "notification", method: "item/completed", threadId, turnId, receivedAt: "2026-10-01T10:00:11.000Z",
+      params: { item: { id, type, ...(type === "userMessage" ? { content: [{ type: "text", text }] } : { text }) } },
+    });
+    const lifecycle = (turnId: string, method: string) => ({
+      kind: "notification", method, threadId, turnId, receivedAt: "2026-10-01T10:00:12.000Z", params: { turnId, turn: { id: turnId } },
+    });
+    const sequence = async () => (await currentPage.locator(".messages").innerText()).match(/QUEUED_ONE|QUEUED_TWO|ANSWER_ONE|ANSWER_TWO/g) ?? [];
+    try {
+      emitCodexEvents([lifecycle(latestTurnId, "turn/started")]);
+      await currentPage.getByRole("button", { name: "Stop Codex", exact: true }).waitFor();
+      const composer = currentPage.locator("textarea.composer-input");
+      await composer.fill("QUEUED_ONE");
+      await composer.press("Enter");
+      await composer.fill("QUEUED_TWO");
+      await composer.press("Enter");
+      expect(await sequence()).toEqual([]);
+      await completeLatestTurn(currentPage);
+      await waitForCondition(async () => turnRequestCount === initialRequests + 1, "First queued request was not promoted");
+      expect(await sequence()).toEqual(["QUEUED_ONE"]);
+      emitCodexEvents([
+        lifecycle("queued-turn-1", "turn/started"),
+        item("queued-turn-1", "queued-user-1", "userMessage", "QUEUED_ONE"),
+        item("queued-turn-1", "queued-answer-1", "agentMessage", "ANSWER_ONE"),
+        lifecycle("queued-turn-1", "turn/completed"),
+      ]);
+      await waitForCondition(async () => turnRequestCount === initialRequests + 2, "Second queued request was blocked by a stale start response");
+      expect(await sequence()).toEqual(["QUEUED_ONE", "ANSWER_ONE", "QUEUED_TWO"]);
+      emitCodexEvents([
+        lifecycle("queued-turn-2", "turn/started"),
+        item("queued-turn-2", "queued-answer-2", "agentMessage", "ANSWER_TWO"),
+      ]);
+      await waitForCondition(async () => (await sequence()).includes("ANSWER_TWO"), "Second queued response was not shown");
+      expect(await sequence()).toEqual(["QUEUED_ONE", "ANSWER_ONE", "QUEUED_TWO", "ANSWER_TWO"]);
+      emitCodexEvents([
+        item("queued-turn-2", "queued-user-2", "userMessage", "QUEUED_TWO"),
+        lifecycle("queued-turn-2", "turn/completed"),
+      ]);
+      await currentPage.waitForTimeout(650);
+      expect(await sequence()).toEqual(["QUEUED_ONE", "ANSWER_ONE", "QUEUED_TWO", "ANSWER_TWO"]);
+      const stage = currentPage.locator(".session-lifecycle-stage");
+      await stage.evaluate(element => { (element as HTMLElement).style.transform = "translateX(2000px)"; });
+      await waitForCondition(async () => (await currentPage.locator(".messages").count()) === 0, "Lane did not unmount");
+      await stage.evaluate(element => { (element as HTMLElement).style.transform = ""; });
+      await currentPage.locator(".messages").waitFor();
+      expect(await sequence()).toEqual(["QUEUED_ONE", "ANSWER_ONE", "QUEUED_TWO", "ANSWER_TWO"]);
+    } finally {
+      turnRequestDelayMs = 120;
+      turnResponseIds = [];
+      await currentPage.close();
+    }
+  }, 30_000);
+
+  test("does not reopen a completed turn when its start response arrives late", async () => {
+    const currentPage = await openHarness();
+    turnRequestDelayMs = 750;
+    const initialRequests = turnRequestCount;
+    try {
+      await currentPage.locator("textarea.composer-input").fill("FAST_REQUEST");
+      await currentPage.locator("textarea.composer-input").press("Enter");
+      await waitForCondition(async () => turnRequestCount > initialRequests, "Turn start did not reach server");
+      emitCodexEvents([
+        { kind: "notification", method: "turn/started", threadId, turnId: "turn-next", receivedAt: "2026-10-01T10:00:10.000Z", params: { turn: { id: "turn-next" } } },
+        { kind: "notification", method: "item/completed", threadId, turnId: "turn-next", receivedAt: "2026-10-01T10:00:11.000Z", params: { item: { id: "fast-user", type: "userMessage", content: [{ type: "text", text: "FAST_REQUEST" }] } } },
+        { kind: "notification", method: "item/completed", threadId, turnId: "turn-next", receivedAt: "2026-10-01T10:00:12.000Z", params: { item: { id: "fast-answer", type: "agentMessage", text: "FAST_ANSWER" } } },
+        { kind: "notification", method: "turn/completed", threadId, turnId: "turn-next", receivedAt: "2026-10-01T10:00:13.000Z", params: { turnId: "turn-next" } },
+      ]);
+      await currentPage.locator(".messages").getByText("FAST_ANSWER", { exact: true }).waitFor();
+      const sequence = async () => (await currentPage.locator(".messages").innerText()).match(/FAST_REQUEST|FAST_ANSWER/g) ?? [];
+      expect(await sequence()).toEqual(["FAST_REQUEST", "FAST_ANSWER"]);
+      await currentPage.waitForTimeout(900);
+      expect(await currentPage.getByRole("button", { name: "Stop Codex", exact: true }).count()).toBe(0);
+      expect(await sequence()).toEqual(["FAST_REQUEST", "FAST_ANSWER"]);
+    } finally {
+      turnRequestDelayMs = 120;
+      await currentPage.close();
+    }
+  }, 30_000);
+
+  test("keeps a canonical steer at its visible position when output arrives before acknowledgment", async () => {
+    const currentPage = await openHarness();
+    try {
+      emitCodexEvents([{ kind: "notification", method: "turn/started", threadId, turnId: latestTurnId,
+        receivedAt: "2026-10-01T10:00:01.000Z", params: { threadId, turn: { id: latestTurnId } } }]);
+      await currentPage.locator("textarea.composer-input").fill("STEER_KEEP_THIS_MESSAGE");
+      await currentPage.locator(".composer-steer").waitFor();
+      await currentPage.locator(".composer-steer").click();
+      const textSequence = async () => (await currentPage.locator(".messages").innerText()).match(/STEER_KEEP_THIS_MESSAGE|OUTPUT_AFTER_STEER/g) ?? [];
+      await waitForCondition(async () => (await textSequence()).length === 1, "Optimistic steer did not render");
+      expect(await textSequence()).toEqual(["STEER_KEEP_THIS_MESSAGE"]);
+      emitCodexEvents([{ kind: "notification", method: "item/completed", threadId, turnId: latestTurnId,
+        receivedAt: "2026-10-01T10:00:03.000Z", params: { item: { id: "after-steer", type: "agentMessage", text: "OUTPUT_AFTER_STEER" } } }]);
+      await waitForCondition(async () => (await textSequence()).length === 2, "Output after steer did not render");
+      expect(await textSequence()).toEqual(["STEER_KEEP_THIS_MESSAGE", "OUTPUT_AFTER_STEER"]);
+      emitCodexEvents([{ kind: "notification", method: "item/completed", threadId, turnId: latestTurnId,
+        receivedAt: "2026-10-01T10:00:04.000Z", params: { item: { id: "confirmed-steer", type: "userMessage", content: [{ type: "text", text: "STEER_KEEP_THIS_MESSAGE" }] } } }]);
+      await currentPage.waitForTimeout(250);
+      expect(await textSequence()).toEqual(["STEER_KEEP_THIS_MESSAGE", "OUTPUT_AFTER_STEER"]);
+    } finally {
+      await currentPage.close();
+    }
+  }, 30_000);
+
+  test(
+    "promotes only the live top summary after a long lane remount",
+    async () => {
+      historicalWorkGroupCount = 15;
+      let currentPage: Page | undefined;
+      try {
+        currentPage = await openHarness();
+        emitCodexEvents([
+          {
+            kind: "notification",
+            method: "turn/started",
+            params: { threadId, turn: { id: latestTurnId } },
+            threadId,
+            turnId: latestTurnId,
+            receivedAt: "2026-10-11T17:00:00.000Z",
+          },
+        ]);
+        await currentPage.locator(".work-foldout-live").waitFor();
+        const stage = currentPage.locator(".session-lifecycle-stage");
+        await stage.evaluate((element) => {
+          (element as HTMLElement).style.transform = "translateX(2000px)";
+        });
+        await waitForCondition(
+          async () => (await currentPage!.locator(".messages").count()) === 0,
+          "Offscreen long-work lane did not release its transcript body",
+        );
+        await stage.evaluate((element) => {
+          (element as HTMLElement).style.transform = "";
+        });
+        await currentPage.locator(".messages").waitFor();
+        await currentPage.waitForTimeout(250);
+        const summaryPillCount = await currentPage
+          .locator(".work-summary-pill-shell")
+          .count();
+        expect(summaryPillCount).toBeGreaterThan(10);
+        const liveSummaryPill = currentPage.locator(
+          ".work-foldout-live > summary .work-summary-pill-shell",
+        ).first();
+        const groupedSummaryPill = currentPage.locator(
+          ".work-foldout-live .work-action-group .work-summary-pill-shell",
+        ).first();
+        await liveSummaryPill.waitFor();
+        await groupedSummaryPill.waitFor();
+        expect(
+          await liveSummaryPill.evaluate(
+            (element) => getComputedStyle(element).willChange,
+          ),
+        ).toBe("transform");
+        expect(
+          await groupedSummaryPill.evaluate(
+            (element) => getComputedStyle(element).willChange,
+          ),
+        ).toBe("auto");
+      } finally {
+        historicalWorkGroupCount = 0;
+        await currentPage?.close();
+      }
+    },
+    30_000,
+  );
+
   test("a terminal shown visually stays attached; failed Stop preserves it and successful Stop clears it", async () => {
     terminalStopCalls = 0;
     terminalStopStatus = 502;
@@ -615,6 +1015,119 @@ describe("SessionView browser lifecycle", { concurrency: false }, () => {
     await currentPage.close();
   }, 30_000);
 
+  test("keeps following ordinary live rows that arrive across consecutive frames", async () => {
+    const currentPage = await openHarness();
+    await currentPage
+      .locator(".session-lifecycle-stage")
+      .evaluate((element) => {
+        (element as HTMLElement).style.height = "320px";
+        (element as HTMLElement).style.setProperty(
+          "--session-body-min-height",
+          "12rem",
+        );
+      });
+    await completeLatestTurn(currentPage);
+
+    const messages = currentPage.locator(".messages");
+    const followHandle = currentPage.locator(".session-tail-follow");
+    await followHandle.click();
+    const tailDistance = () =>
+      messages.evaluate(
+        (element) =>
+          element.scrollHeight - element.clientHeight - element.scrollTop,
+      );
+    await waitForCondition(
+      async () => (await tailDistance()) <= 1,
+      "Jump to end did not reach the completed session tail",
+    );
+
+    for (let index = 0; index < 12; index += 1) {
+      emitCodexEvents([
+        {
+          kind: "notification",
+          method: "item/completed",
+          params: {
+            threadId,
+            turnId: "ordinary-live-turn",
+            item: {
+              id: `ordinary-live-answer-${index}`,
+              type: "agentMessage",
+              text: `Ordinary live answer ${index} arrived while following.`,
+            },
+          },
+          threadId,
+          turnId: "ordinary-live-turn",
+          receivedAt: `2026-10-07T10:02:${String(index).padStart(2, "0")}.000Z`,
+        },
+      ]);
+    }
+
+    await messages
+      .getByText("Ordinary live answer 11 arrived while following.", {
+        exact: true,
+      })
+      .waitFor();
+    await currentPage.waitForTimeout(150);
+    expect(await tailDistance()).toBeLessThanOrEqual(1);
+    await currentPage.close();
+  }, 30_000);
+
+  test("keeps following a live-work lane after it leaves and re-enters the viewport", async () => {
+    const currentPage = await openHarness();
+    const stage = currentPage.locator(".session-lifecycle-stage");
+    const followHandle = currentPage.locator(".session-tail-follow");
+    emitCodexEvents([
+      {
+        kind: "notification",
+        method: "turn/started",
+        params: { threadId, turn: { id: latestTurnId } },
+        threadId,
+        turnId: latestTurnId,
+        receivedAt: "2026-10-07T10:01:00.000Z",
+      },
+      ...Array.from({ length: 16 }, (_, index) => ({
+        kind: "notification" as const,
+        method: "item/completed",
+        params: {
+          threadId,
+          turnId: latestTurnId,
+          item: {
+            id: `offscreen-follow-command-${index}`,
+            type: "commandExecution",
+            command: `/bin/zsh -lc 'echo ${index}'`,
+            status: "completed",
+            aggregatedOutput: `${index}\n`,
+          },
+        },
+        threadId,
+        turnId: latestTurnId,
+        receivedAt: "2026-10-07T10:01:01.000Z",
+      })),
+    ]);
+    await currentPage.locator(".work-foldout-live").waitFor();
+    await waitForCondition(
+      async () => (await followHandle.getAttribute("class"))?.includes("active") === true,
+      "Live lane did not begin in tail-follow mode",
+    );
+
+    await stage.evaluate((element) => {
+      (element as HTMLElement).style.transform = "translateX(2000px)";
+    });
+    await waitForCondition(
+      async () => (await currentPage.locator(".messages").count()) === 0,
+      "Offscreen lane did not release its transcript body",
+    );
+    await stage.evaluate((element) => {
+      (element as HTMLElement).style.transform = "";
+    });
+    await currentPage.locator(".messages").waitFor();
+    await waitForCondition(
+      async () => (await followHandle.getAttribute("class"))?.includes("active") === true,
+      "Returning live lane forgot its tail-follow state",
+    );
+    await currentPage.close();
+  }, 30_000);
+
   test(
     "surfaces async transcript questions in the composer and work flow",
     async () => {
@@ -810,6 +1323,147 @@ describe("SessionView browser lifecycle", { concurrency: false }, () => {
       }));
       assert(after.top < after.max - 100);
       assert(Math.abs(after.top - before.top) < 80);
+    },
+    30_000,
+  );
+
+  test(
+    "lets an idle reader scroll away from the tail without a wheel prelude",
+    async () => {
+      const currentPage = await openHarness();
+      const messages = currentPage.locator(".messages");
+      await completeLatestTurn(currentPage);
+      await messages.evaluate((element) => {
+        element.scrollTop = element.scrollHeight;
+      });
+      const targetTop = await messages.evaluate((element) => {
+        const next = Math.max(0, element.scrollTop - 700);
+        element.scrollTop = next;
+        element.dispatchEvent(new Event("scroll", { bubbles: true }));
+        return next;
+      });
+      await currentPage.waitForTimeout(80);
+
+      expect(await messages.evaluate((element) => element.scrollTop)).toBe(
+        targetTop,
+      );
+      expect(
+        await currentPage
+          .locator(".session-tail-follow")
+          .getAttribute("class"),
+      ).not.toContain("active");
+      await currentPage.close();
+    },
+    30_000,
+  );
+
+  test(
+    "keeps paged app-server history visible and reachable after the cursor ends",
+    async () => {
+      olderHistoryAvailable = true;
+      historicalWorkGroupCount = 40;
+      let currentPage: Page | undefined;
+      try {
+        currentPage = await openHarness();
+        const messages = currentPage.locator(".messages");
+        for (let attempt = 0; attempt < 2; attempt += 1) {
+          await messages.evaluate((element) => {
+            element.dispatchEvent(
+              new WheelEvent("wheel", { bubbles: true, deltaY: -700 }),
+            );
+            element.scrollTop = 0;
+            element.dispatchEvent(new Event("scroll", { bubbles: true }));
+          });
+          await currentPage.waitForTimeout(150);
+        }
+
+        await currentPage
+          .getByText("Older paged request that must remain in scrollback")
+          .waitFor();
+        expect(
+          await messages.getByText("Loading earlier messages").count(),
+        ).toBe(0);
+        await messages.evaluate((element) => {
+          element.dispatchEvent(
+            new WheelEvent("wheel", { bubbles: true, deltaY: -700 }),
+          );
+          element.scrollTop = 0;
+          element.dispatchEvent(new Event("scroll", { bubbles: true }));
+        });
+        await currentPage
+          .getByText(
+            "Oldest loaded request must remain reachable without a cursor",
+          )
+          .waitFor();
+      } finally {
+        olderHistoryAvailable = false;
+        historicalWorkGroupCount = 0;
+        await currentPage?.close();
+      }
+    },
+    30_000,
+  );
+
+  test(
+    "keeps a paused virtual window anchored while live app-server rows append",
+    async () => {
+      historicalTurnCount = 180;
+      let currentPage: Page | undefined;
+      try {
+        currentPage = await openHarness();
+        const messages = currentPage.locator(".messages");
+        const anchor = messages.getByText("Historical request 160");
+        await anchor.waitFor();
+        await anchor.evaluate((element) => {
+          element.scrollIntoView({ block: "center" });
+        });
+        await messages.evaluate((element) => {
+          element.dispatchEvent(
+            new WheelEvent("wheel", { bubbles: true, deltaY: -40 }),
+          );
+          element.dispatchEvent(new Event("scroll", { bubbles: true }));
+        });
+        const offsetBefore = await anchor.evaluate((element) => {
+          const scroller = element.closest(".messages") as HTMLElement;
+          return (
+            element.getBoundingClientRect().top -
+            scroller.getBoundingClientRect().top
+          );
+        });
+
+        emitCodexEvents(
+          Array.from({ length: 80 }, (_, index) => ({
+            kind: "notification",
+            method: "item/completed",
+            params: {
+              threadId,
+              turnId: latestTurnId,
+              item: {
+                id: `paused-window-live-answer-${index}`,
+                type: "agentMessage",
+                text: `Live answer appended while reading ${index}`,
+              },
+            },
+            threadId,
+            turnId: latestTurnId,
+            receivedAt: new Date(1_780_000_300_000 + index * 1_000).toISOString(),
+          })),
+        );
+        await currentPage.waitForTimeout(120);
+
+        await anchor.waitFor();
+        const offsetAfter = await anchor.evaluate((element) => {
+          const scroller = element.closest(".messages") as HTMLElement;
+          return (
+            element.getBoundingClientRect().top -
+            scroller.getBoundingClientRect().top
+          );
+        });
+        expect(Math.abs(offsetAfter - offsetBefore)).toBeLessThan(20);
+      } finally {
+        historicalTurnCount = 18;
+        await currentPage?.close();
+      }
     },
     30_000,
   );

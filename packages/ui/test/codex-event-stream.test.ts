@@ -26,6 +26,7 @@ import {
   codexAppHistoryRetryDelayMs,
   codexToolInputQuality,
   codexEventThreadIdForSession,
+  codexEventReplayKey,
   codexEventRequiresHistoryReconciliation,
   codexEventStreamRequiresHistoryReconciliation,
   codexRecoverableIssueFromEvent,
@@ -74,6 +75,27 @@ test("CLI state survives I/O animation and silence and is isolated by daemon/ses
   expect(resolveTerminalWorking("claude", true, false)).toBe(true);
   replaceCodexCliStates([]);
   expect(isCodexCliWorking(get(codexCliStates), "a.jsonl")).toBe(false);
+});
+
+test("same-millisecond notifications retain distinct turn and item identities without sequence numbers", () => {
+  const event: CodexAppEvent = {
+    kind: "notification",
+    method: "item/completed",
+    threadId: "thread",
+    turnId: "turn-1",
+    receivedAt: "2026-10-01T10:00:00.000Z",
+    params: { item: { id: "user-1", type: "userMessage" } },
+  };
+  expect(codexEventReplayKey(event)).not.toBe(
+    codexEventReplayKey({
+      ...event,
+      params: { item: { id: "answer-1", type: "agentMessage" } },
+    }),
+  );
+  expect(codexEventReplayKey(event)).not.toBe(
+    codexEventReplayKey({ ...event, turnId: "turn-2" }),
+  );
+  expect(codexEventReplayKey(event)).toBe(codexEventReplayKey({ ...event }));
 });
 import {
   buildVisualTranscriptItems,
@@ -2409,6 +2431,73 @@ describe("codex event stream hub", () => {
     expect(items.map((item) => item.kind)).toEqual(["message", "work"]);
     expect(items[1]?.kind === "work" ? visualWorkSummary(items[1].entries) : null)
       .toMatchObject({ steerings: 1 });
+  });
+
+  test("uses canonical steering identity when resuming midway through a turn", () => {
+    const context = {};
+    const steer = {
+      id: "user-steer",
+      type: "userMessage",
+      content: [{ type: "text", text: "keep the API compatible" }],
+    };
+    // On reconnect, this item can arrive before the history page containing
+    // the original turn-opening message. It initially looks like turn input.
+    const live = codexLiveMessagesFromEvent(
+      {
+        kind: "notification",
+        method: "item/completed",
+        threadId: "thread",
+        turnId: "turn",
+        receivedAt: "2026-10-08T10:00:02.000Z",
+        params: { item: steer },
+      },
+      context,
+    );
+    const history = codexAppHistoryMessagesFromThread(
+      {
+        turns: [
+          {
+            id: "turn",
+            startedAt: 1791453600,
+            items: [
+              {
+                id: "user-first",
+                type: "userMessage",
+                content: [{ type: "text", text: "build it" }],
+              },
+              steer,
+            ],
+          },
+        ],
+      },
+      context,
+    );
+    const merged = reconcileCodexAppHistoryMessages(history, live, live, {
+      preserveLiveProjection: true,
+    });
+    expect(merged.map(message => message.intent)).toEqual([undefined, "steer"]);
+    expect(merged[1]?.timestamp).toBe(live[0]?.timestamp);
+  });
+
+  test("keeps prior live turns before a disjoint latest app-server page", () => {
+    const older = {
+      id: "old",
+      turnId: "old-turn",
+      timestamp: "2026-10-08T09:00:00.000Z",
+      blocks: [{ type: "text", text: "old answer" }],
+    };
+    const latest = {
+      id: "new",
+      turnId: "new-turn",
+      timestamp: "2026-10-08T10:00:00.000Z",
+      blocks: [{ type: "text", text: "new answer" }],
+    };
+    expect(
+      reconcileCodexAppHistoryMessages([latest], [older], [older], {
+        preserveLiveProjection: true,
+      }),
+    ).toEqual([older, latest]);
+    expect(mergeCodexAppHistoryMessages([older], [latest])).toEqual([older, latest]);
   });
 
   test("keeps live user item snapshots classified across a steer", () => {
