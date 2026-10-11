@@ -88,6 +88,15 @@ test("finds a Codex child transcript in a folder index by its thread id", () => 
   expect(findCodexReplaySubagentSession(sessions, "missing")).toBeUndefined();
 });
 
+test("prefers the child's own transcript identity over inherited parent session metadata", () => {
+  const parentId = "01a11360-b1b6-70d1-9321-30283c795dc0";
+  const sessions = [
+    { threadId: "directory:child", sessionId: parentId, directoryKey: "rollout-child.jsonl" },
+    { threadId: "directory:parent", directoryKey: `rollout-${parentId}.jsonl` },
+  ];
+  expect(findCodexReplaySubagentSession(sessions, parentId)).toBe(sessions[1]);
+});
+
 describe("Replay Lab juice effects", () => {
   test("fires an impact only when active playback enters a later round", () => {
     expect(

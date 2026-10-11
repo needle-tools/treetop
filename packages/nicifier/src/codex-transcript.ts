@@ -2,6 +2,7 @@ import {
   canonicalCodexToolName,
   codexPatchApplyResultText,
   codexSubagentActivityFields,
+  codexCollabAgentToolCallFields,
   parseCodexImageWrapper,
   parseCodexToolScriptInvocations,
   visualFileEditSummaryForBlock,
@@ -82,6 +83,7 @@ export interface AgentTranscriptBlock {
   compaction?: ContextCompactionDetails;
   subagentId?: string;
   subagentNickname?: string;
+  subagentIsParent?: boolean;
   subagentAction?: "spawn" | "wait" | "notification";
   subagentStatus?: "running" | "completed" | "failed" | "unknown";
   subagentType?: string;
@@ -634,6 +636,7 @@ export function createCodexTranscriptNormalizer(options: CodexTranscriptNormaliz
   let sandboxPolicy: string | undefined;
   let sessionId: string | undefined;
   let agentPath: string | undefined;
+  let parentThreadId: string | undefined;
   const subagentIdByPath = new Map<string, string>();
   let suppressForkedParent = false;
   const pendingWebSearchIds: string[] = [];
@@ -697,6 +700,7 @@ export function createCodexTranscriptNormalizer(options: CodexTranscriptNormaliz
         const nextSessionId = string(payload, "id");
         if (!sessionId) {
           sessionId = nextSessionId;
+          parentThreadId = string(payload, "parent_thread_id");
           const forkedFromId = string(payload, "forked_from_id");
           agentPath = string(payload, "agent_path") ?? (forkedFromId ? undefined : "/root");
           suppressForkedParent = !!forkedFromId;
@@ -733,7 +737,13 @@ export function createCodexTranscriptNormalizer(options: CodexTranscriptNormaliz
             if (path) pendingViewedImagePaths.push(path);
             return { recognized: true, messages: [] };
           }
-          const activity = codexSubagentActivityFields(payload.item);
+          const collaboration = codexCollabAgentToolCallFields(payload.item, parentThreadId);
+          if (collaboration.length) {
+            return { recognized: true, messages: collaboration.map((activity) =>
+              message("assistant", [{ type: "subagent", ...activity }], timestamp),
+            ) };
+          }
+          const activity = codexSubagentActivityFields(payload.item, parentThreadId);
           if (activity) {
             const path = string(completedItem, "agent_path") ?? string(completedItem, "agentPath");
             if (path) subagentIdByPath.set(path, activity.subagentId);
@@ -852,11 +862,10 @@ export function createCodexTranscriptNormalizer(options: CodexTranscriptNormaliz
           const text = string(part, "text") ?? string(part, "input_text") ?? string(part, "output_text");
           return text ? [text] : [];
         }).join("\n");
-        const body = visible
-          .split("\n")
-          .filter((line) => !/^(?:Message Type|Task name|Sender):\s*/i.test(line) && !/^Payload:\s*$/i.test(line))
-          .join("\n")
-          .trim();
+        const payloadStart = /^Payload:\s*$/m.exec(visible);
+        const body = (payloadStart
+          ? visible.slice(payloadStart.index + payloadStart[0].length)
+          : visible).trim();
         const author = string(payload, "author");
         const recipient = string(payload, "recipient");
         const envelopeType = visible.match(/^Message Type:\s*([^\n]+)/im)?.[1]?.trim().toUpperCase();
@@ -886,7 +895,7 @@ export function createCodexTranscriptNormalizer(options: CodexTranscriptNormaliz
             ? `Message from ${author}`
             : "Inter-agent message";
         const fallbackBody = !body && taskLabel
-          ? `${taskLabel}${hasEncryptedContent ? " · encrypted payload" : ""}`
+          ? `${taskLabel}${hasEncryptedContent ? "\nTask text is encrypted in this recording." : ""}`
           : body;
         return {
           recognized: true,

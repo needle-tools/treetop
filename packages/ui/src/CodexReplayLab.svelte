@@ -5,6 +5,7 @@
   import SessionContextView from "./SessionContextView.svelte";
   import InspectorPanelHeader from "./InspectorPanelHeader.svelte";
   import type { VisualTranscriptItem } from "./last-user-message";
+  import type { SubagentParentContext } from "./session-source-routing";
   import { writeBrowserClipboard } from "./clipboard-write";
   import { formatByteSize, formatSessionTokens } from "./context-tokens";
   import { codexAppSource } from "./storage";
@@ -125,6 +126,7 @@
   let directoryGeneration = 0;
   let directoryFiles = new Map<string, CodexReplayDirectoryFile>();
   let replayNavigationStack: ReplaySessionIndexEntry[] = [];
+  let subagentParentContexts = new Map<string, SubagentParentContext>();
   let subagentNavigationNotice = "";
   let juiceEnabled = false;
   let juiceImpactCount = 0;
@@ -652,6 +654,7 @@
   async function openReplaySubagent(
     childId: string,
     _surface: "read" | "terminal",
+    context: SubagentParentContext,
   ): Promise<void> {
     const child = findCodexReplaySubagentSession(sessions, childId);
     if (!child) {
@@ -661,6 +664,7 @@
       return;
     }
     const current = sessions.find((entry) => entry.threadId === selectedThreadId);
+    subagentParentContexts = new Map(subagentParentContexts).set(child.threadId, context);
     if (current && current.threadId !== child.threadId) {
       replayNavigationStack = [...replayNavigationStack, current];
     }
@@ -1586,6 +1590,7 @@
                   onArtifactItemsChange={(items) => (artifactItems = items)}
                   {onTranscriptTurnChange}
                   onOpenSubagent={openReplaySubagent}
+                  parentTaskContext={subagentParentContexts.get(selectedThreadId)}
                   onNavigateBack={replayNavigationStack.length
                     ? () => void navigateReplayBack()
                     : undefined}
@@ -1625,6 +1630,7 @@
                   onArtifactItemsChange={(items) => (artifactItems = items)}
                   {onTranscriptTurnChange}
                   onOpenSubagent={openReplaySubagent}
+                  parentTaskContext={subagentParentContexts.get(selectedThreadId)}
                   onNavigateBack={replayNavigationStack.length
                     ? () => void navigateReplayBack()
                     : undefined}

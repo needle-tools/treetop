@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { codexAppHistoryMessagesFromThread } from "../src/codex-event-stream";
 import {
   parseClaudeJsonl,
   parseCodexJsonl,
@@ -458,6 +459,38 @@ describe("visual transcript provider flow", () => {
     });
   });
 
+  test("keeps the parent's full plaintext task and skills without listing the parent as a child", () => {
+    const task = "Inspect the rendering.\nSender: retain this payload line.\nTask name: retain this too.";
+    const session = parseCodexJsonl(jsonl([
+      { type: "session_meta", payload: { id: "child", parent_thread_id: "parent", agent_path: "/root/reviewer" } },
+      { type: "response_item", payload: { type: "message", role: "developer",
+        content: [{ type: "input_text", text: "<skills_instructions>Read the rendering skill.</skills_instructions>" }] } },
+      { type: "response_item", payload: { type: "agent_message", author: "/root", recipient: "/root/reviewer",
+        content: [{ type: "input_text", text: `Message Type: NEW_TASK\nTask name: /root/reviewer\nSender: /root\nPayload:\n${task}` }] } },
+      { type: "event_msg", payload: { type: "item_completed", item: { type: "SubAgentActivity", id: "send-parent",
+        kind: "interacted", agent_thread_id: "parent", agent_path: "/root" } } },
+    ]));
+    expect(session.messages.flatMap(message => message.blocks).some(block =>
+      block.type === "context_update" && block.text?.includes("Read the rendering skill."))).toBe(true);
+    expect(session.messages.find(message => message.role === "user")?.blocks[0]?.text).toBe(`Task from root\n${task}`);
+    expect(visualTranscriptSubagents(buildVisualTranscriptItems(session.messages))).toEqual([]);
+  });
+
+  test("renders every native collaboration receiver with the same metadata as app-server history", () => {
+    const item = { type: "collabAgentToolCall", id: "wait", tool: "wait", status: "completed", receiverThreadIds: ["a", "b"], prompt: null,
+      agentsStates: { a: { status: "completed", message: "A complete" }, b: { status: "running", message: null } } };
+    const user = { role: "user", blocks: [{ type: "text", text: "Review" }] };
+    const session = parseCodexJsonl(jsonl([
+      { type: "response_item", payload: { type: "message", role: "user", content: [{ type: "input_text", text: "Review" }] } },
+      { type: "event_msg", payload: { type: "item_completed", item: { ...item, type: "CollabAgentToolCall", receiver_thread_ids: item.receiverThreadIds, agents_states: item.agentsStates } } },
+    ]));
+    const live = codexAppHistoryMessagesFromThread({ turns: [{ id: "turn", items: [item] }] });
+    const transcriptRoster = visualTranscriptSubagents(buildVisualTranscriptItems(session.messages));
+    const liveRoster = visualTranscriptSubagents(buildVisualTranscriptItems([user, ...live]));
+    expect(transcriptRoster.map(agent => agent.id)).toEqual(["a", "b"]);
+    expect(transcriptRoster).toEqual(liveRoster);
+  });
+
   test("keeps readable task metadata when a child task body is encrypted", () => {
     const session = parseCodexJsonl(
       jsonl([
@@ -500,7 +533,7 @@ describe("visual transcript provider flow", () => {
       blocks: [
         {
           type: "text",
-          text: "Task from root\nheadphones_reference_02 · encrypted payload",
+          text: "Task from root\nheadphones_reference_02\nTask text is encrypted in this recording.",
         },
       ],
     });

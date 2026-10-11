@@ -96,6 +96,7 @@ export interface MessageBlock {
   compaction?: ContextCompactionDetails;
   subagentId?: string;
   subagentNickname?: string;
+  subagentIsParent?: boolean;
   subagentAction?: "spawn" | "wait" | "notification";
   subagentStatus?: "running" | "completed" | "failed" | "unknown";
   subagentType?: string;
@@ -396,12 +397,14 @@ export function visualFileEditPreview(
 export interface VisualSubagentMeta {
   id?: string;
   nickname?: string;
+  isParent?: boolean;
   action: "spawn" | "wait" | "notification";
   status: "running" | "completed" | "failed" | "unknown";
   type?: string;
   model?: string;
   effort?: string;
   task?: string;
+  taskEncrypted?: boolean;
   result?: string;
 }
 
@@ -422,6 +425,10 @@ function visibleSubagentText(value: unknown): string | undefined {
   if (!text) return undefined;
   if (/^gAAAAA[A-Za-z0-9_-]{80,}={0,2}$/.test(text)) return undefined;
   return text;
+}
+
+function encryptedSubagentTask(value: unknown): { taskEncrypted: true } | {} {
+  return stringFromUnknown(value) && !visibleSubagentText(value) ? { taskEncrypted: true } : {};
 }
 
 function normalizedSubagentToolName(
@@ -451,6 +458,7 @@ export function visualSubagentMetaFromBlocks(
   return {
     ...direct,
     id: direct.id ?? activity?.id,
+    ...(direct.isParent || activity?.isParent ? { isParent: true } : {}),
     nickname:
       direct.nickname ??
       activity?.nickname ??
@@ -463,6 +471,7 @@ export function visualSubagentMetaFromBlocks(
       activity?.effort ??
       stringFromUnknown(input?.reasoning_effort),
     task: visibleSubagentText(direct.task ?? input?.message),
+    ...encryptedSubagentTask(input?.message),
   };
 }
 
@@ -526,12 +535,14 @@ export function visualSubagentMetaFromBlock(
     return {
       id: block.subagentId,
       nickname: block.subagentNickname,
+      ...(block.subagentIsParent ? { isParent: true } : {}),
       action: block.subagentAction ?? "notification",
       status: block.subagentStatus ?? "unknown",
       type: block.subagentType,
       model: block.subagentModel,
       effort: block.subagentEffort,
       task: visibleSubagentText(block.subagentMessage),
+      ...encryptedSubagentTask(block.subagentMessage),
       result: block.subagentResult ?? block.text,
     };
   }
@@ -563,6 +574,7 @@ export function visualSubagentMetaFromBlock(
     model: block.subagentModel ?? stringFromUnknown(input?.model),
     effort: block.subagentEffort ?? stringFromUnknown(input?.reasoning_effort),
     task: visibleSubagentText(block.subagentMessage ?? input?.message),
+    ...encryptedSubagentTask(block.subagentMessage ?? input?.message),
     result: block.subagentResult,
   };
 }
@@ -604,7 +616,7 @@ export function visualWorkSubagents<
     const meta =
       visualSubagentMetaFromBlocks(toolUse, result, directBlock) ??
       visualSubagentMetaFromBlock(directBlock);
-    if (!meta) continue;
+    if (!meta || meta.isParent) continue;
     const toolUseId =
       toolUse?.toolUseId ?? result?.toolUseId ?? directBlock?.toolUseId;
     const id =
@@ -666,6 +678,52 @@ const visualTranscriptSubagentWorkCache = new WeakMap<
   object,
   VisualSubagentMeta[]
 >();
+
+/** The roster belongs to the session, not its virtual render window. Only
+ * collaboration rows enter visual grouping; ordinary streamed text keeps the
+ * previous roster identity and never rebuilds offscreen transcript work.
+ * Like the visual grouping caches, this consumes immutable message snapshots:
+ * live upserts, delta patches, and transcript patches replace changed messages. */
+export function createVisualSubagentTracker() {
+  let previous: readonly Message[] = [];
+  let roster: VisualSubagentMeta[] = [];
+  const classifications = new WeakMap<Message, { relevant: boolean; callIds: string[]; pairedIds: string[] }>();
+  function classify(message: Message) {
+    let classification = classifications.get(message);
+    if (!classification) {
+      classification = { relevant: false, callIds: [], pairedIds: [] };
+      for (const block of message.blocks) {
+        if (block.type === "subagent" || normalizedSubagentToolName(block.toolName)) {
+          classification.relevant = true;
+          if (block.toolUseId) classification.callIds.push(block.toolUseId);
+        } else if (block.toolUseId) {
+          classification.pairedIds.push(block.toolUseId);
+        }
+      }
+      classifications.set(message, classification);
+    }
+    return classification;
+  }
+  return (messages: readonly Message[]): VisualSubagentMeta[] => {
+    const callIds = new Set<string>();
+    for (const message of messages) {
+      for (const id of classify(message).callIds) callIds.add(id);
+    }
+    const relevant = messages.filter((message) => {
+      const classification = classify(message);
+      return classification.relevant || classification.pairedIds.some((id) => callIds.has(id));
+    });
+    if (relevant.length === previous.length && relevant.every((message, index) => message === previous[index])) return roster;
+    previous = relevant;
+    roster = visualWorkSubagents(buildVisualWorkDisplayEntries(relevant.flatMap((message, messageIndex) => {
+      const subagents = message.blocks.filter((block) => block.type === "subagent");
+      return subagents.length > 1
+        ? subagents.map((block) => ({ message, messageIndex, blocks: [block] }))
+        : [{ message, messageIndex, blocks: message.blocks }];
+    })));
+    return roster;
+  };
+}
 
 export function visualSubagentLabel(meta: VisualSubagentMeta): string {
   return (

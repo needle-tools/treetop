@@ -16,6 +16,7 @@
     selectDormantTuiSources,
     selectSessionsForBackgroundSpawn,
     subagentSessionTarget,
+    type SubagentParentContext,
     type BackgroundSpawnCandidate,
   } from "./session-source-routing";
   import {
@@ -3608,6 +3609,7 @@
     renderKey?: string;
     /** UI-only source of the parent lane that opened this subagent. */
     returnSource?: string;
+    parentTaskContext?: SubagentParentContext;
     /** Explicit shell command for a plain terminal column, stamped by
      *  openNewTerminalInWt when the box offered >1 shell (Windows:
      *  PowerShell vs CMD). cmdForOpenSession prefers it over the
@@ -4064,6 +4066,7 @@
     agent: OpenSession["agent"],
     subagentId: string,
     surface: SessionSurface,
+    parentTaskContext: SubagentParentContext,
   ): Promise<void> {
     if (agent !== "codex") {
       addToast({
@@ -4081,7 +4084,14 @@
       source?: string;
       error?: string;
     } | null;
-    if (!res.ok || !body?.source) {
+    const target = subagentSessionTarget({
+      parentSource: currentSource,
+      childId: subagentId,
+      resolvedChildId: res.ok ? body?.sessionId : undefined,
+      transcriptSource: res.ok ? body?.source : undefined,
+      parentTaskContext,
+    });
+    if (!target) {
       addToast({
         kind: "warning",
         message:
@@ -4091,24 +4101,29 @@
       return;
     }
 
-    const target = subagentSessionTarget({
-      parentSource: currentSource,
-      childId: body.sessionId ?? subagentId,
-      transcriptSource: body.source,
-    });
     const existing = openSessionsByWt[wtPath] ?? [];
     const alreadyOpen = existing.find((entry) => entry.source === target.source);
     if (alreadyOpen) {
+      openSessionsByWt = {
+        ...openSessionsByWt,
+        [wtPath]: existing.map((entry) => entry === alreadyOpen ? {
+          ...entry,
+          parentTaskContext: target.parentTaskContext,
+          resumeSessionId: target.resumeSessionId,
+          returnSource: currentSource,
+        } : entry),
+      };
       scrollNewColIntoView(wtPath, alreadyOpen.source);
       return;
     }
 
     const entry: OpenSession = {
-      agent: body.agent ?? "codex",
+      agent: "codex",
       source: target.source,
-      resumeSessionId: body.sessionId ?? subagentId,
+      resumeSessionId: target.resumeSessionId,
       transcriptSource: target.transcriptSource,
       returnSource: target.returnSource,
+      parentTaskContext: target.parentTaskContext,
     };
     rememberSessionSurface(entry, surface);
     const currentIndex = existing.findIndex(
@@ -12813,13 +12828,15 @@
                                     );
                                   }}
                                   onStopVisualApp={() => stopCodexVisualSession(wt.path, s, s.transcriptSource ?? agentMeta?.source)}
-                                  onOpenSubagent={(subagentId, surface) =>
+                                  parentTaskContext={s.parentTaskContext}
+                                  onOpenSubagent={(subagentId, surface, context) =>
                                     void openSubagentSession(
                                       wt.path,
                                       s.source,
                                       s.agent,
                                       subagentId,
                                       surface,
+                                      context,
                                     )}
                                   onNavigateBack={s.returnSource
                                     ? () =>

@@ -335,6 +335,8 @@ export interface PersistedSession {
   /** UI-only parent lane for subagent navigation. Deliberately not restored
    *  by `sanitizeSession`; the parent remains open in the current strip. */
   returnSource?: string;
+  /** Same-source navigation context; not restored as transcript history. */
+  parentTaskContext?: import("./session-source-routing").SubagentParentContext;
 }
 
 /** Parse the app-wide Codex defaults into the names persisted on a session.

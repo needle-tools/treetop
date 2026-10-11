@@ -58,6 +58,7 @@ import {
   type CodexEventStreamState,
 } from "../src/codex-event-stream";
 import { get } from "svelte/store";
+import { createVisualSubagentTracker } from "../src/last-user-message";
 
 test("CLI state survives I/O animation and silence and is isolated by daemon/session", () => {
   replaceCodexCliStates([{ source: "a.jsonl", sessionId: "a", working: true }]);
@@ -3077,6 +3078,63 @@ describe("codex event stream hub", () => {
     expect(visualContract(buildVisualTranscriptItems([user, ...live]))).toEqual(
       visualContract(buildVisualTranscriptItems([user, ...history])),
     );
+  });
+
+  test("preserves collaboration prompts and per-child results in app-server history and live events", () => {
+    const item = {
+      type: "collabAgentToolCall", id: "spawn-call", tool: "spawnAgent",
+      status: "completed", senderThreadId: "parent", receiverThreadIds: ["child"],
+      prompt: "Review rendering.\nKeep this complete task visible.",
+      model: "gpt-6-astra", reasoningEffort: "high",
+      agentsStates: { child: { status: "running", message: null } },
+    };
+    const history = codexAppHistoryMessagesFromThread({
+      id: "parent", turns: [{ id: "turn", items: [item] }],
+    });
+    const live = codexLiveMessagesFromEvent({
+      kind: "notification", method: "item/completed", threadId: "parent", turnId: "turn",
+      receivedAt: "2026-10-11T12:00:00.000Z", params: { item },
+    });
+    expect(history.flatMap(message => message.blocks)).toEqual(live.flatMap(message => message.blocks));
+    expect(history.flatMap(message => message.blocks)).toEqual([
+      expect.objectContaining({ type: "subagent", subagentId: "child", subagentAction: "spawn",
+        subagentStatus: "running", subagentMessage: item.prompt, subagentModel: item.model,
+        subagentEffort: "high" }),
+    ]);
+    const wait = { ...item, id: "wait-call", tool: "wait", prompt: null,
+      receiverThreadIds: ["child", "other"],
+      agentsStates: { child: { status: "completed", message: "Review complete." },
+        other: { status: "errored", message: "Failed to initialize." } } };
+    expect(codexAppHistoryMessagesFromThread({ turns: [{ id: "turn", items: [wait] }] })
+      .flatMap(message => message.blocks)).toEqual([
+        expect.objectContaining({ subagentId: "child", subagentStatus: "completed", subagentResult: "Review complete." }),
+        expect.objectContaining({ subagentId: "other", subagentStatus: "failed", subagentResult: "Failed to initialize." }),
+      ]);
+  });
+
+  test("retains resolved subagent model and distinguishes child-to-parent activity", () => {
+    const messages = codexAppHistoryMessagesFromThread({
+      id: "child", parentThreadId: "parent", turns: [{ id: "turn", items: [{
+        type: "subAgentActivity", id: "send-parent", kind: "interacted",
+        agentThreadId: "parent", agentPath: "/root", model: "gpt-6-astra", reasoningEffort: "high",
+      }] }],
+    });
+    expect(messages[0]?.blocks[0]).toMatchObject({
+      subagentId: "parent", subagentIsParent: true,
+      subagentModel: "gpt-6-astra", subagentEffort: "high",
+    });
+  });
+
+  test("replaces native subagent snapshots immutably so the roster observes same-ID completion", () => {
+    const track = createVisualSubagentTracker();
+    const event = { kind: "notification" as const, method: "item/started", threadId: "parent", turnId: "turn", receivedAt: "2026-10-11T12:00:00.000Z", params: { item: { type: "collabAgentToolCall", id: "wait", tool: "wait", receiverThreadIds: ["child"], agentsStates: { child: { status: "running", message: null as string | null } } } } };
+    const running = codexLiveMessagesFromEvent(event);
+    expect(track(running)).toMatchObject([{ id: "child", status: "running" }]);
+    const completed = codexLiveMessagesFromEvent({ ...event, method: "item/completed", params: { item: { ...event.params.item, agentsStates: { child: { status: "completed", message: "Reviewed" } } } } });
+    expect(completed[0]?.id).toBe(running[0]?.id);
+    expect(completed[0]).not.toBe(running[0]);
+    expect(running[0]?.blocks[0]?.subagentStatus).toBe("running");
+    expect(track(completed)).toMatchObject([{ id: "child", status: "completed", result: "Reviewed" }]);
   });
 
   test("normalizes app-server subagent history and live snapshots to the same visual contract", () => {

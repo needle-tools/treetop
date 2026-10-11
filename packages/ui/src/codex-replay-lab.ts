@@ -184,14 +184,10 @@ export function findCodexReplaySubagentSession<
 >(sessions: readonly T[], childId: string): T | undefined {
   const needle = childId.trim().toLowerCase();
   if (!needle) return undefined;
-  return sessions.find((session) =>
-    [
-      session.threadId,
-      session.sessionId,
-      session.directoryKey,
-      session.transcript?.path,
-    ].some((value) => value?.toLowerCase().includes(needle)),
-  );
+  return sessions.find((session) => session.threadId.toLowerCase() === needle)
+    ?? sessions.find((session) => [session.threadId, session.directoryKey, session.transcript?.path]
+      .some((value) => value?.toLowerCase().endsWith(`${needle}.jsonl`)))
+    ?? sessions.find((session) => session.sessionId?.toLowerCase() === needle);
 }
 
 export function replayLabHasDaemon(mode: string): boolean {

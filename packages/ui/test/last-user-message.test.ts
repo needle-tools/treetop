@@ -7,6 +7,8 @@ import {
   applyVisualTranscriptDeltaPatches,
   buildVisualWorkDisplayEntries,
   buildVisualTranscriptItems,
+  createVisualSubagentTracker,
+  visualSubagentMetaFromBlock,
   buildVisibleVisualWorkDisplayEntries,
   cleanVisualUserText,
   cleanVisualToolResultText,
@@ -88,6 +90,40 @@ function msg(role: string, text: string, timestamp?: string): Message {
 function ts(offsetMs: number): string {
   return new Date(Date.now() + offsetMs).toISOString();
 }
+
+describe("session subagent roster", () => {
+  it("refreshes paired subagent results through the real immutable stream patcher", () => {
+    const track = createVisualSubagentTracker();
+    const use: Message = { id: "wait", role: "assistant", blocks: [{ type: "tool_use", toolName: "wait_agent", toolUseId: "wait-call", toolInput: { targets: ["child"] } }] };
+    const first = applyVisualTranscriptDeltaPatches([use], [{
+      id: "wait-result", role: "tool", type: "tool_result",
+      delta: '{"status":{"child":{"completed":',
+      blockFields: { toolUseId: "wait-call" },
+    }]);
+    const originalResult = first[1];
+    expect(track(first)).toMatchObject([{ id: "child", status: "unknown" }]);
+    const final = applyVisualTranscriptDeltaPatches(first, [{ id: "wait-result", role: "tool", type: "tool_result", delta: '"Review complete"}}}' }]);
+    expect(final[0]).toBe(use);
+    expect(final[1]).not.toBe(originalResult);
+    expect(originalResult?.blocks[0]?.text).toBe('{"status":{"child":{"completed":');
+    expect(track(final)).toMatchObject([{ id: "child", status: "completed", result: "Review complete" }]);
+  });
+  it("explains an encrypted task without displaying ciphertext", () => {
+    const encrypted = `gAAAAA${"a".repeat(100)}`;
+    expect(visualSubagentMetaFromBlock({ type: "subagent", subagentId: "child", subagentMessage: encrypted })).toMatchObject({ task: undefined, taskEncrypted: true });
+  });
+  it("retains earlier agents outside the rendered tail and ignores unrelated streaming rows", () => {
+    const track = createVisualSubagentTracker();
+    const spawn: Message = { role: "assistant", blocks: [{ type: "subagent", subagentId: "child", subagentNickname: "review", subagentAction: "spawn", subagentStatus: "running", subagentMessage: "Check the whole change." }] };
+    const messages = [spawn, ...Array.from({ length: 2000 }, () => msg("assistant", "unrelated"))];
+    const roster = track(messages);
+    expect(roster).toMatchObject([{ id: "child", task: "Check the whole change.", status: "running" }]);
+    expect(track([...messages, msg("assistant", "new streamed text")])).toBe(roster);
+    const done: Message = { role: "assistant", blocks: [{ type: "subagent", subagentId: "child", subagentStatus: "completed", subagentResult: "Reviewed." }] };
+    expect(track([...messages, done])).toMatchObject([{ id: "child", task: "Check the whole change.", status: "completed", result: "Reviewed." }]);
+    expect(track([])).toEqual([]);
+  });
+});
 
 describe("formatVisualWorkDuration", () => {
   const start = "2026-06-22T10:00:00.000Z";

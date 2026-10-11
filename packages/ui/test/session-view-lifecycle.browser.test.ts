@@ -16,6 +16,7 @@ let origin = "";
 let latestTurnComplete = false;
 let historicalWorkGroupCount = 0;
 let historicalTurnCount = 18;
+let historicalSubagentOnly = false;
 let olderHistoryAvailable = false;
 let terminalStopStatus = 200;
 let terminalStopCalls = 0;
@@ -156,6 +157,12 @@ function threadPage(complete: boolean): unknown {
         : []),
     ],
   });
+  if (historicalSubagentOnly) {
+    const latest = turns.at(-1)!;
+    const subagentItems = latest.items.filter((item) => item.id.startsWith("latest-subagent"));
+    latest.items = latest.items.filter((item) => !item.id.startsWith("latest-subagent"));
+    turns[0]!.items.push(...subagentItems);
+  }
   return {
     ok: true,
     thread: {
@@ -317,13 +324,13 @@ after(async () => {
   await server?.close();
 }, { timeout: 10_000 });
 
-async function openHarness(): Promise<Page> {
+async function openHarness(options: { query?: string } = {}): Promise<Page> {
   latestTurnComplete = false;
   const currentPage = await browser.newPage({
     viewport: { width: 900, height: 680 },
   });
   await currentPage.goto(
-    `${origin}/test/browser/session-view-lifecycle.html`,
+    `${origin}/test/browser/session-view-lifecycle.html${options.query ? `?${options.query}` : ""}`,
     { waitUntil: "networkidle" },
   );
   await currentPage.locator(".messages").waitFor();
@@ -755,10 +762,65 @@ describe("SessionView browser lifecycle", { concurrency: false }, () => {
     expect(
       await currentPage.locator("[data-opened-subagent]").textContent(),
     ).toBe("child-layout-review");
+    expect(JSON.parse((await currentPage.locator("[data-opened-subagent-context]").textContent())!)).toMatchObject({
+      sourceKind: "app-server",
+      subagent: { id: "child-layout-review", task: "Review the lifecycle layout without changing it.", model: "gpt-6-astra", effort: "high" },
+    });
     expect(
       await currentPage.locator(".messages").getByText("child-layout-review").count(),
     ).toBe(0);
+    emitCodexEvents([{
+      kind: "notification",
+      method: "item/completed",
+      threadId,
+      turnId: "latest-turn",
+      receivedAt: "2026-10-08T00:00:10Z",
+      params: {
+        item: {
+          id: "latest-subagent-completed",
+          type: "subAgentActivity",
+          kind: "completed",
+          agentThreadId: "child-layout-review",
+          agentPath: "/root/layout_review",
+        },
+      },
+    }]);
+    await waitForCondition(
+      async () => await currentPage.getByRole("button", { name: /subagents/i }).count() === 0,
+      "Completed subagent remained in the composer badge",
+    );
+    expect(await currentPage.locator(".messages .work-subagent-badge").count()).toBeGreaterThan(0);
     await currentPage.close();
+  }, 30_000);
+
+  test("keeps earlier subagents in the roster when their turn is outside the virtual window", async () => {
+    historicalSubagentOnly = true;
+    historicalTurnCount = 250;
+    let currentPage: Page | undefined;
+    try {
+      currentPage = await openHarness();
+      expect(await currentPage.locator(".messages .work-subagent-badge").count()).toBe(0);
+      await currentPage.getByRole("button", { name: "Show subagents" }).click();
+      const panel = currentPage.getByLabel("Codex subagents");
+      await panel.getByText("Review the lifecycle layout without changing it.").waitFor();
+      expect(await panel.locator(".composer-panel-item").count()).toBe(1);
+    } finally {
+      historicalSubagentOnly = false;
+      historicalTurnCount = 18;
+      await currentPage?.close();
+    }
+  }, 30_000);
+
+  test("shows the same-source parent task in the child view without inserting a history message", async () => {
+    const currentPage = await openHarness({ query: "parent-task" });
+    try {
+      const context = currentPage.locator(".context-update").filter({ hasText: "Task from parent" });
+      await context.waitFor();
+      expect(await context.locator("strong").textContent()).toBe("the entire renderer");
+      expect(await context.textContent()).toContain("Preserve scrolling and subscriptions.");
+      await currentPage.getByRole("button", { name: "Switch session" }).click();
+      await waitForCondition(async () => await context.count() === 0, "Parent context leaked to another session");
+    } finally { await currentPage.close(); }
   }, 30_000);
 
   test("queue and subagents share the composer panel and item system", async () => {

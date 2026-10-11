@@ -41,6 +41,7 @@ import {
   canonicalCodexToolName,
   asyncQuestionBlocksFromPayload,
   codexSubagentActivityFields,
+  codexCollabAgentToolCallFields,
   contextTokenSnapshotFromUsageRecord,
   nicifyCommand,
   parseCodexToolScriptInvocations,
@@ -503,6 +504,7 @@ export interface CodexLiveMarker {
 }
 
 export interface CodexLiveNormalizeContext {
+  parentThreadId?: string;
   toolNames?: Map<string, string>;
   toolInputs?: Map<string, unknown>;
   userMessageIdsByTurn?: Map<string, Set<string>>;
@@ -1493,11 +1495,12 @@ export function codexLiveMessagesFromEvent(
       blocks: [],
     });
   }
-  const activity = codexSubagentActivityFields(codexEventItem(event.params));
+  const activity = codexSubagentActivityFields(codexEventItem(event.params), context.parentThreadId);
   if (activity) {
     messages.push(codexSubagentActivityMessage(activity, timestamp));
   }
   const liveItem = codexEventItem(event.params);
+  messages.push(...codexCollaborationMessages(liveItem, timestamp, context.parentThreadId));
   if (
     (event.method === "item/started" || event.method === "item/completed") &&
     liveItem?.type === "userMessage"
@@ -1652,9 +1655,11 @@ export function codexAppHistoryMessagesFromThread(
   if (!Array.isArray(turns)) return [];
   const messages: CodexAppHistoryMessage[] = [];
   const threadRecord = thread as Record<string, unknown>;
+  context.parentThreadId = stringField(threadRecord, "parentThreadId") ?? context.parentThreadId;
   const toolNames = codexLiveToolNameMap(context);
   const usageContext: CodexLiveNormalizeContext = {
     model: stringField(threadRecord, "model") ?? context.model,
+    parentThreadId: context.parentThreadId,
   };
   for (const turn of turns) {
     if (!turn || typeof turn !== "object") continue;
@@ -1978,7 +1983,9 @@ function codexAppMessagesFromThreadItem(
       },
     ];
   }
-  const activity = codexSubagentActivityFields(item);
+  const collaboration = codexCollaborationMessages(item, timestamp, usageContext.parentThreadId);
+  if (collaboration.length) return collaboration;
+  const activity = codexSubagentActivityFields(item, usageContext.parentThreadId);
   if (activity) {
     return [codexSubagentActivityMessage(activity, timestamp)];
   }
@@ -2221,6 +2228,17 @@ function codexAppMessagesFromThreadItem(
     ];
   }
   return [];
+}
+
+function codexCollaborationMessages(
+  item: unknown,
+  timestamp: string | undefined,
+  parentThreadId?: string,
+): CodexAppHistoryMessage[] {
+  return codexCollabAgentToolCallFields(item, parentThreadId).map((activity) => ({
+    ...codexSubagentActivityMessage(activity, timestamp),
+    id: `codex-subagent-${activity.toolUseId}-${activity.subagentId}`,
+  }));
 }
 
 function codexSubagentActivityMessage(

@@ -40,14 +40,20 @@ export interface CodexSubagentActivityFields {
   toolUseId: string;
   subagentId: string;
   subagentNickname?: string;
-  subagentAction: "spawn" | "notification";
-  subagentStatus: "running" | "completed" | "failed";
+  subagentIsParent?: boolean;
+  subagentAction: "spawn" | "wait" | "notification";
+  subagentStatus: "running" | "completed" | "failed" | "unknown";
+  subagentModel?: string;
+  subagentEffort?: string;
+  subagentMessage?: string;
+  subagentResult?: string;
 }
 
 /** Normalize the same Codex subagent lifecycle item from its JSONL
  * snake_case/PascalCase representation and app-server camelCase shape. */
 export function codexSubagentActivityFields(
   value: unknown,
+  parentThreadId?: string,
 ): CodexSubagentActivityFields | undefined {
   if (!value || typeof value !== "object") return undefined;
   const item = value as Record<string, unknown>;
@@ -66,10 +72,15 @@ export function codexSubagentActivityFields(
     .split("/")
     .filter(Boolean)
     .pop();
+  const model = subagentStringField(item.model);
+  const effort = subagentStringField(item.reasoning_effort ?? item.reasoningEffort);
   return {
     toolUseId,
     subagentId,
     ...(nickname ? { subagentNickname: nickname } : {}),
+    ...(subagentId === parentThreadId ? { subagentIsParent: true } : {}),
+    ...(model ? { subagentModel: model } : {}),
+    ...(effort ? { subagentEffort: effort } : {}),
     subagentAction: kind === "started" ? "spawn" : "notification",
     subagentStatus:
       kind === "completed"
@@ -78,6 +89,50 @@ export function codexSubagentActivityFields(
           ? "failed"
           : "running",
   };
+}
+
+/** App-server and JSONL carry the same collaboration call in camel/snake case.
+ * Completion of the call is distinct from completion of each target agent. */
+export function codexCollabAgentToolCallFields(
+  value: unknown,
+  parentThreadId?: string,
+): CodexSubagentActivityFields[] {
+  if (!value || typeof value !== "object") return [];
+  const item = value as Record<string, unknown>;
+  if (item.type !== "collabAgentToolCall" && item.type !== "CollabAgentToolCall") return [];
+  const toolUseId = subagentStringField(item.id);
+  if (!toolUseId) return [];
+  const rawStates = item.agentsStates ?? item.agents_states;
+  const states = rawStates && typeof rawStates === "object"
+    ? rawStates as Record<string, unknown> : {};
+  const rawTargets = item.receiverThreadIds ?? item.receiver_thread_ids;
+  const targets = new Set([
+    ...(Array.isArray(rawTargets) ? rawTargets.filter((id): id is string => typeof id === "string") : []),
+    ...Object.keys(states),
+  ]);
+  const model = subagentStringField(item.model);
+  const effort = subagentStringField(item.reasoningEffort ?? item.reasoning_effort);
+  const prompt = subagentStringField(item.prompt);
+  return [...targets].map((id) => {
+    const state = states[id] && typeof states[id] === "object"
+      ? states[id] as Record<string, unknown> : {};
+    const status = subagentStringField(state.status);
+    const result = subagentStringField(state.message);
+    const spawn = item.tool === "spawnAgent" || item.tool === "spawn_agent";
+    return {
+      toolUseId,
+      subagentId: id,
+      ...(id === parentThreadId ? { subagentIsParent: true } : {}),
+      subagentAction: spawn ? "spawn" : item.tool === "wait" ? "wait" : "notification",
+      subagentStatus: status === "completed" ? "completed"
+        : status === "errored" || status === "interrupted" || status === "notFound" ? "failed"
+          : status === "running" || status === "pendingInit" || (spawn && !status) ? "running" : "unknown",
+      ...(model ? { subagentModel: model } : {}),
+      ...(effort ? { subagentEffort: effort } : {}),
+      ...(prompt ? { subagentMessage: prompt } : {}),
+      ...(result ? { subagentResult: result } : {}),
+    };
+  });
 }
 
 function subagentStringField(value: unknown): string | undefined {

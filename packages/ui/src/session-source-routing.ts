@@ -1,4 +1,22 @@
 import { codexAppSource, isLiveCodexAppSource } from "./storage";
+import type { SessionMessageSource } from "./storage";
+import type { VisualSubagentMeta } from "./last-user-message";
+
+/** Navigation context, not a fabricated child history message. */
+export interface SubagentParentContext {
+  sourceKind: SessionMessageSource["kind"];
+  subagent: VisualSubagentMeta;
+}
+
+export function visibleSubagentParentContext(
+  context: SubagentParentContext | undefined,
+  childId: string,
+  sourceKind: SessionMessageSource["kind"],
+): VisualSubagentMeta | undefined {
+  return context?.sourceKind === sourceKind && context.subagent.id === childId && !context.subagent.isParent
+    ? context.subagent
+    : undefined;
+}
 
 /**
  * Pure session-source routing helpers extracted from App.svelte.
@@ -88,22 +106,40 @@ export interface OpenSession {
 export function subagentSessionTarget(options: {
   parentSource: string;
   childId: string;
-  transcriptSource: string;
+  resolvedChildId?: string;
+  transcriptSource?: string;
+  parentTaskContext?: SubagentParentContext;
 }): {
   source: string;
+  resumeSessionId: string;
   transcriptSource?: string;
   returnSource: string;
-} {
+  parentTaskContext?: SubagentParentContext;
+} | undefined {
+  const childId = options.resolvedChildId ?? options.childId;
+  const context = options.parentTaskContext
+    ? {
+        parentTaskContext: {
+          ...options.parentTaskContext,
+          subagent: { ...options.parentTaskContext.subagent, id: childId },
+        },
+      }
+    : {};
   if (isLiveCodexAppSource(options.parentSource)) {
     return {
-      source: codexAppSource(options.childId),
+      source: codexAppSource(childId),
+      resumeSessionId: childId,
       transcriptSource: options.transcriptSource,
       returnSource: options.parentSource,
+      ...context,
     };
   }
+  if (!options.transcriptSource) return undefined;
   return {
     source: options.transcriptSource,
+    resumeSessionId: childId,
     returnSource: options.parentSource,
+    ...context,
   };
 }
 

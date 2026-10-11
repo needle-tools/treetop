@@ -1480,6 +1480,18 @@ change underneath an obsolete rendered row. Cache reuse now compares every
 immutable block field shallowly, conservatively refreshing replaced nested
 metadata without serializing large tool or media payloads.
 
+A 2026-10-11 subagent audit found that the composer roster was incorrectly
+derived from the virtual render window. Spawn prompts, model metadata, and even
+the child itself therefore disappeared once the originating row moved outside
+the mounted tail. The roster now incrementally projects collaboration rows from
+the complete loaded session while the expensive transcript DOM remains
+virtualized; unchanged ordinary streaming rows preserve the prior projection
+by immutable message identity. Parent-task metadata passed while opening a
+child is source-tagged navigation context, not a fabricated history row, so
+app-server and transcript data remain isolated. A live child can open from its
+authoritative app-server ID before a transcript file exists, while transcript
+navigation still requires a resolved file.
+
 The live session header had a separate source-ownership bug: synthetic
 app-server session shells assigned `Date.now()` as their start, so a reset or
 reactive recreation made an old thread say "started just now" and could move

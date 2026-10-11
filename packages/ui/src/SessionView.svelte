@@ -83,7 +83,7 @@
     visualMessageTurnIndexes,
     visualPendingQuestions,
     visualSubagentLabel,
-    visualTranscriptSubagents,
+    createVisualSubagentTracker,
     visualTranscriptReaderWindow,
     visualTranscriptTailKey,
     visualPlanFromPayload,
@@ -107,6 +107,8 @@
     shouldApplyTranscriptSessionOverride,
     shouldMountTerminalView,
     shouldRenderSessionReadBody,
+    visibleSubagentParentContext,
+    type SubagentParentContext,
   } from "./session-source-routing";
   import { apiWsUrl } from "./api";
   import { createTerminalHold, type HoldSocket } from "./terminal-hold";
@@ -299,7 +301,14 @@
   export let onOpenSubagent: (
     subagentId: string,
     surface: "read" | "terminal",
+    context: SubagentParentContext,
   ) => void = () => {};
+  export let parentTaskContext: SubagentParentContext | undefined = undefined;
+
+  function openSubagentWithContext(id: string, surface: "read" | "terminal", meta: VisualSubagentMeta): void {
+    const subagent = codexSubagents.find((entry) => entry.id === id) ?? meta;
+    onOpenSubagent(id, surface, { sourceKind: sessionMessageSource.kind, subagent });
+  }
   export let onOpenRemotePath: (
     remoteHost: string,
     path: string,
@@ -2671,6 +2680,8 @@
   let codexQuestionsExpanded = false;
   let codexSubagentsExpanded = false;
   let codexSubagents: VisualSubagentMeta[] = [];
+  let codexActiveSubagents: VisualSubagentMeta[] = [];
+  const trackSessionSubagents = createVisualSubagentTracker();
   let codexGoalExpanded = false;
   let codexPlanExpanded = false;
   let codexWarningsExpanded = false;
@@ -5610,7 +5621,11 @@
   );
   $: codexPendingQuestionCount =
     codexQuestionSummary.questionCount + codexPendingTranscriptQuestions.length;
-  $: codexSubagents = visualTranscriptSubagents(visualTranscriptItems);
+  $: codexSubagents = trackSessionSubagents(visualSessionMessages);
+  $: codexActiveSubagents = codexSubagents.filter(
+    (subagent) =>
+      subagent.status !== "completed" && subagent.status !== "failed",
+  );
   $: showComposerTray =
     codexVisualAppSurface && codexQuestionSummary.otherRequests.length > 0;
   $: if (
@@ -5619,7 +5634,7 @@
   ) {
     codexQuestionsExpanded = false;
   }
-  $: if (codexSubagents.length === 0 && codexSubagentsExpanded) {
+  $: if (codexActiveSubagents.length === 0 && codexSubagentsExpanded) {
     codexSubagentsExpanded = false;
   }
   $: if (codexQueuedMessages.length === 0 && codexQueueExpanded) {
@@ -6457,7 +6472,8 @@
         ? answerCodexAsyncQuestion
         : undefined}
       {answeredAsyncQuestionIds}
-      {onOpenSubagent}
+      onOpenSubagent={openSubagentWithContext}
+      parentTask={visibleSubagentParentContext(parentTaskContext, effectiveSessionId, sessionMessageSource.kind)}
       {onOpenRemotePath}
     />
   {/if}
@@ -6595,13 +6611,13 @@
           </div>
         </div>
       {/if}
-      {#if agent === "codex" && codexSubagents.length && codexSubagentsExpanded}
+      {#if agent === "codex" && codexActiveSubagents.length && codexSubagentsExpanded}
         <ComposerPanel
           kind="subagents"
           ariaLabel="Codex subagents"
           list={true}
         >
-          {#each codexSubagents as subagent (subagent.id ?? visualSubagentLabel(subagent))}
+          {#each codexActiveSubagents as subagent (subagent.id ?? visualSubagentLabel(subagent))}
             <ComposerPanelItem
               interactive={true}
               disabled={!subagent.id}
@@ -6614,7 +6630,7 @@
                 ? `Open ${visualSubagentLabel(subagent)} · ${subagent.id}`
                 : "This subagent has no resolvable session id"}
               onActivate={() => {
-                if (subagent.id) onOpenSubagent(subagent.id, transcriptSurface);
+                if (subagent.id) openSubagentWithContext(subagent.id, transcriptSurface, subagent);
               }}
             >
               <div class="composer-panel-item-head">
@@ -6632,6 +6648,8 @@
               {/if}
               {#if subagent.task}
                 <div class="composer-panel-item-copy">{subagent.task}</div>
+              {:else if subagent.taskEncrypted}
+                <div class="composer-panel-item-copy muted">Task text is encrypted in this recording.</div>
               {/if}
               {#if subagent.result}
                 <div class="composer-panel-item-copy muted">
@@ -7096,7 +7114,7 @@
             disabled={sending && agent !== "codex" && !ollamaAbort}
           ></textarea>
         </div>
-        {#if agent === "codex" && (codexLatestGoal || codexLatestPlan || codexQueuedMessages.length || codexSubagents.length || codexPendingQuestionCount || composerWarnings.length)}
+        {#if agent === "codex" && (codexLatestGoal || codexLatestPlan || codexQueuedMessages.length || codexActiveSubagents.length || codexPendingQuestionCount || composerWarnings.length)}
           <div class="composer-indicators">
             {#if codexLatestGoal}
               <ComposerBadge
@@ -7131,9 +7149,9 @@
                   : "Show queued messages"}
               />
             {/if}
-            {#if codexSubagents.length}
+            {#if codexActiveSubagents.length}
               <ComposerBadge
-                label={`Subagents: ${codexSubagents.length}`}
+                label={`Subagents: ${codexActiveSubagents.length}`}
                 tone="subagent"
                 expanded={codexSubagentsExpanded}
                 onToggle={toggleCodexSubagentsPane}

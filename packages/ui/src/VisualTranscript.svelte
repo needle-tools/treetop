@@ -248,7 +248,9 @@
   export let onOpenSubagent: (
     subagentId: string,
     surface: "read" | "terminal",
+    meta: VisualSubagentMeta,
   ) => void = () => {};
+  export let parentTask: VisualSubagentMeta | undefined = undefined;
   export let onOpenRemotePath: (
     remoteHost: string,
     path: string,
@@ -1223,6 +1225,7 @@
 
   function subagentTitle(meta: VisualSubagentMeta): string {
     const label = visualSubagentLabel(meta);
+    if (meta.isParent) return `Message to parent ${label}`;
     if (meta.action === "spawn") return `Subagent ${label} started`;
     if (meta.action === "wait") return `Waiting for ${label}`;
     if (meta.status === "completed") return `${label} completed`;
@@ -1250,7 +1253,7 @@
     event.preventDefault();
     event.stopPropagation();
     if (!meta.id) return;
-    onOpenSubagent(meta.id, transcriptSurface);
+    onOpenSubagent(meta.id, transcriptSurface, meta);
   }
 
   function resultBadgeSymbol(label: string): string | undefined {
@@ -1495,6 +1498,7 @@
     if (subagent) {
       return !!(
         subagent.task ||
+        subagent.taskEncrypted ||
         subagent.result ||
         subagent.model ||
         subagent.effort ||
@@ -2208,7 +2212,7 @@
     class:failed={meta.status === "failed"}
     class:running={meta.status === "running"}
     title={meta.id
-      ? `Open subagent ${visualSubagentLabel(meta)} (${meta.id})`
+      ? `Open ${meta.isParent ? "parent" : "subagent"} ${visualSubagentLabel(meta)} (${meta.id})`
       : subagentTitle(meta)}
     disabled={!meta.id}
     on:click={(event) => openSubagent(meta, event)}
@@ -2232,6 +2236,8 @@
           use:mermaidDiagrams={meta.task}
         >{@html md(meta.task)}</div>
       </div>
+    {:else if meta.taskEncrypted}
+      <div class="subagent-detail-section muted">Task text is encrypted in this recording.</div>
     {/if}
     {#if meta.result}
       <div class="subagent-detail-section">
@@ -3653,6 +3659,19 @@
         <span class="visual-history-skeleton-line" style={`--width:${width}%`}
         ></span>
       {/each}
+    </li>
+  {/if}
+  {#if parentTask && (parentTask.task || parentTask.taskEncrypted)}
+    <li class="msg role-system" data-visual-scroll-anchor={`parent-task:${parentTask.id}`} aria-label="Parent task">
+      <details class="context-update block sys-reminder" open>
+        <summary>
+          <span class="context-update-heading">
+            <span class="tag-label">Task from parent</span>
+            <span class="context-update-meta">{visualSubagentLabel(parentTask)}</span>
+          </span>
+        </summary>
+        {@render renderSubagentDetails({ ...parentTask, result: undefined })}
+      </details>
     </li>
   {/if}
   {#each items as item, itemIndex (getVisualTranscriptItemKey(item, itemIndex))}
