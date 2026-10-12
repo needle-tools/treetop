@@ -72,6 +72,7 @@
   import { confirmDialog } from "./confirm-dialog";
   import { flip } from "svelte/animate";
   import { openUrl } from "./open-url";
+  import Tooltip from "./Tooltip.svelte";
   import {
     filterNpmSuggestions,
     npmScriptsPlaceholder,
@@ -275,20 +276,6 @@
     "supergit:commandUrlPicks",
   );
   let cmdUrlOverride: Record<string, string> = cmdUrlPicks.load();
-  let cmdUrlHover = false;
-  let cmdUrlHoverTimer: ReturnType<typeof setTimeout> | null = null;
-  function cmdUrlEnter() {
-    if (cmdUrlHoverTimer) {
-      clearTimeout(cmdUrlHoverTimer);
-      cmdUrlHoverTimer = null;
-    }
-    cmdUrlHover = true;
-  }
-  function cmdUrlLeave() {
-    cmdUrlHoverTimer = setTimeout(() => {
-      cmdUrlHover = false;
-    }, 300);
-  }
   let editingLinkId: string | null = null;
   let editKind: "url" | "file" | "folder" | "command" = "url";
   let editUrl = "";
@@ -970,7 +957,7 @@
 <div
   class="row-actions"
   class:icon-only={iconOnly}
-  class:overlay-open={addOpen || editingLinkId !== null || cmdUrlHover}
+  class:overlay-open={addOpen || editingLinkId !== null}
   on:dragover={onDragOverStrip}
 >
   {#if onAddCustomLink}
@@ -1430,14 +1417,9 @@
           <span>{label}</span>
         {/if}
         {#if cmdUrl}
-          <span
-            class="cmd-url-wrap"
-            class:has-dropdown={cmdUrls && cmdUrls.length > 1}
-            class:dropdown-open={cmdUrlHover && cmdUrls && cmdUrls.length > 1}
-            on:mouseenter={cmdUrlEnter}
-            on:mouseleave={cmdUrlLeave}
-          >
+          <Tooltip escapeClip hideDelayMs={300}>
             <span
+              slot="trigger"
               class="cmd-url-inner"
               role="link"
               tabindex="-1"
@@ -1471,43 +1453,47 @@
                 </svg>
               {/if}
             </span>
-            {#if cmdUrls && cmdUrls.length > 1}
-              <div class="cmd-url-dropdown">
-                {#each cmdUrls as u}
-                  <button
-                    type="button"
-                    class="cmd-url-option"
-                    class:active={u === cmdUrl}
-                    on:click|stopPropagation={() => {
-                      openUrl(u);
-                      cmdUrlOverride = { ...cmdUrlOverride, [link.id]: u };
-                      cmdUrlPicks.set(link.id, u);
-                    }}
+            <svelte:fragment slot="content">
+              {#if cmdUrls && cmdUrls.length > 1}
+                <div class="cmd-url-dropdown">
+                  {#each cmdUrls as u}
+                    <button
+                      type="button"
+                      class="cmd-url-option"
+                      class:active={u === cmdUrl}
+                      on:click|stopPropagation={() => {
+                        openUrl(u);
+                        cmdUrlOverride = { ...cmdUrlOverride, [link.id]: u };
+                        cmdUrlPicks.set(link.id, u);
+                      }}
+                    >
+                      {new URL(u).host}
+                      {#if u === cmdUrl}
+                        <svg
+                          class="cmd-url-option-icon"
+                          viewBox="0 0 24 24"
+                          width="11"
+                          height="11"
+                          aria-hidden="true"
+                        >
+                          <path
+                            d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"
+                          />
+                          <polyline points="15 3 21 3 21 9" />
+                          <line x1="10" y1="14" x2="21" y2="3" />
+                        </svg>
+                      {/if}
+                    </button>
+                  {/each}
+                  <span class="cmd-url-hint"
+                    >Pick a URL to open it and assign it to the open button</span
                   >
-                    {new URL(u).host}
-                    {#if u === cmdUrl}
-                      <svg
-                        class="cmd-url-option-icon"
-                        viewBox="0 0 24 24"
-                        width="11"
-                        height="11"
-                        aria-hidden="true"
-                      >
-                        <path
-                          d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"
-                        />
-                        <polyline points="15 3 21 3 21 9" />
-                        <line x1="10" y1="14" x2="21" y2="3" />
-                      </svg>
-                    {/if}
-                  </button>
-                {/each}
-                <span class="cmd-url-hint"
-                  >Pick a URL to open it and assign it to the open button</span
-                >
-              </div>
-            {/if}
-          </span>
+                </div>
+              {:else}
+                <span>{cmdUrl}</span>
+              {/if}
+            </svelte:fragment>
+          </Tooltip>
         {/if}
       </button>
       {#if onEditCustomLink && !iconOnly}
@@ -2243,11 +2229,6 @@
     stroke-linecap: round;
     stroke-linejoin: round;
   }
-  .cmd-url-wrap {
-    position: relative;
-    display: inline-flex;
-    align-items: center;
-  }
   .cmd-url-caret-icon {
     fill: none;
     stroke: currentColor;
@@ -2258,29 +2239,9 @@
     opacity: 0.6;
     transition: opacity 0.12s;
   }
-  .cmd-url-wrap.dropdown-open .cmd-url-caret-icon {
-    opacity: 1;
-  }
   .cmd-url-dropdown {
-    position: absolute;
-    top: 100%;
-    left: -1rem;
-    z-index: 200;
-    margin-top: 4px;
-    padding: 1em 4px 3px;
-    background: var(--surface-3, #333);
-    border: 1px solid color-mix(in srgb, var(--text-muted) 25%, transparent);
-    border-radius: var(--radius-md, 6px);
-    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
     min-width: 180px;
     white-space: nowrap;
-    pointer-events: none;
-    opacity: 0;
-    transition: opacity 0.1s;
-  }
-  .cmd-url-wrap.dropdown-open .cmd-url-dropdown {
-    pointer-events: auto;
-    opacity: 1;
   }
   .cmd-url-option {
     display: flex;
