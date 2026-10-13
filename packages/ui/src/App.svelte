@@ -138,6 +138,7 @@
   import { spawnNote, flyRestoreNote } from "./StickyNotesLayer.svelte";
   import { notesCountByAnchor, notesAll, type NoteShape } from "./notes-counts";
   import { sessionFocusRequest } from "./session-focus-store";
+  import { installSessionWindowFocus } from "./session-window-focus";
   import EmojiPicker from "./EmojiPicker.svelte";
   import AnchorPicker from "./AnchorPicker.svelte";
   import OpenInButton from "./OpenInButton.svelte";
@@ -8888,6 +8889,7 @@
     // Surface toast requests pushed by child components (e.g.
     // AgentUsageChip's usage warnings) through the local stack.
     const unsubToasts = subscribeToasts((req) => addToast(req));
+    const uninstallSessionWindowFocus = installSessionWindowFocus();
     void hydrateFromServer();
     document.addEventListener("click", handleDocClick);
     // Esc exits zen mode. We don't preventDefault — the browser's own
@@ -9082,6 +9084,7 @@
       closeRemoteStreams();
       unsubErrors();
       unsubToasts();
+      uninstallSessionWindowFocus();
       unsubFocus();
       unsubResume();
       if (resumeLoadTimer) clearTimeout(resumeLoadTimer);
