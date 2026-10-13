@@ -9663,7 +9663,12 @@ describe("visualFileEditSummaryForBlock", () => {
       title: "Edited 2 files",
       files: [
         { path: "src/App.svelte", action: "edited" },
-        { path: "tests/app.test.ts", action: "edited" },
+        {
+          path: "tests/app.test.ts",
+          action: "edited",
+          raw: "@@ -0,0 +1,1 @@\n+test",
+          writtenTokenCountEstimate: 1,
+        },
       ],
     });
 
@@ -9680,6 +9685,41 @@ describe("visualFileEditSummaryForBlock", () => {
       files: [
         { path: "generated.json", action: "edited" },
         { path: "trace.log", action: "edited" },
+      ],
+    });
+  });
+
+  it("keeps literal Python write_text bodies for artifact review", () => {
+    expect(
+      visualFileEditSummaryForBlock({
+        type: "tool_use",
+        toolName: "exec_command",
+        toolInput: {
+          cmd: [
+            "python3 - <<'PY'",
+            "from pathlib import Path",
+            "Path('docs/README.md').write_text('''# Package",
+            "",
+            "Install it with npm.",
+            "''')",
+            "PY",
+          ].join("\n"),
+        },
+      }),
+    ).toEqual({
+      title: "Edited README.md",
+      files: [
+        {
+          path: "docs/README.md",
+          action: "edited",
+          raw: [
+            "@@ -0,0 +1,3 @@",
+            "+# Package",
+            "+",
+            "+Install it with npm.",
+          ].join("\n"),
+          writtenTokenCountEstimate: 8,
+        },
       ],
     });
   });

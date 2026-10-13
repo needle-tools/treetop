@@ -8633,26 +8633,74 @@ function shellScriptEditSummary(
     return literalPaths.get(value);
   }
 
-  const writes: Array<{ index: number; path: string }> = [];
+  const writes: Array<{ index: number; file: VisualFileEdit }> = [];
+  const pathWritePattern = /\b(Path\s*\(\s*['"][^'"\n]+['"]\s*\)|[A-Za-z_$][\w$]*)\s*\.\s*write_(text|bytes)\s*\(/g;
+  for (const match of command.matchAll(pathWritePattern)) {
+    const path = resolvePath(match[1]);
+    if (!path || match.index === undefined) continue;
+    const content = match[2] === "text"
+      ? pythonStringLiteralAt(command, match.index + match[0].length)
+      : undefined;
+    writes.push({
+      index: match.index,
+      file: {
+        path,
+        action: "edited",
+        ...(content === undefined ? {} : {
+          raw: fullFileContentDiff(content, "added"),
+          writtenTokenCountEstimate: estimateTextTokenCount(content),
+        }),
+      },
+    });
+  }
   const patterns = [
     /\bopen\s*\(\s*([^,\n]+)\s*,\s*(['"])[wa][+b]?\2/g,
-    /\b(Path\s*\(\s*['"][^'"\n]+['"]\s*\)|[A-Za-z_$][\w$]*)\s*\.\s*write_(?:text|bytes)\s*\(/g,
     /\b(?:writeFileSync|appendFileSync|writeFile|appendFile|Bun\.write)\s*\(\s*([^,\n]+)/g,
   ];
   for (const pattern of patterns) {
     for (const match of command.matchAll(pattern)) {
       const path = resolvePath(match[1]);
-      if (path && match.index !== undefined) writes.push({ index: match.index, path });
+      if (path && match.index !== undefined) {
+        writes.push({ index: match.index, file: { path, action: "edited" } });
+      }
     }
   }
   writes.sort((a, b) => a.index - b.index);
   const seen = new Set<string>();
-  const files = writes.flatMap(({ path }) => {
-    if (seen.has(path)) return [];
-    seen.add(path);
-    return [{ path, action: "edited" as const }];
+  const files = writes.flatMap(({ file }) => {
+    if (seen.has(file.path)) return [];
+    seen.add(file.path);
+    return [file];
   });
   return files.length > 0 ? summarizeFileEdits(files) : undefined;
+}
+
+function pythonStringLiteralAt(source: string, start: number): string | undefined {
+  let index = start;
+  while (/\s/.test(source[index] ?? "")) index += 1;
+  const prefix = /^(?:r|u|ur|ru)?/i.exec(source.slice(index))?.[0] ?? "";
+  index += prefix.length;
+  const quote = source[index];
+  if (quote !== "'" && quote !== '"') return undefined;
+  const triple = source.slice(index, index + 3) === quote.repeat(3);
+  const delimiter = triple ? quote.repeat(3) : quote;
+  index += delimiter.length;
+  let value = "";
+  while (index < source.length) {
+    if (source.slice(index, index + delimiter.length) === delimiter) return value;
+    const char = source[index]!;
+    if (char !== "\\" || prefix.toLowerCase().includes("r")) {
+      value += char;
+      index += 1;
+      continue;
+    }
+    const escaped = source[index + 1];
+    if (escaped === undefined) return undefined;
+    const decoded = { n: "\n", r: "\r", t: "\t" }[escaped];
+    value += decoded ?? (escaped === quote || escaped === "\\" ? escaped : `\\${escaped}`);
+    index += 2;
+  }
+  return undefined;
 }
 
 function shellFilesystemEditSummary(
