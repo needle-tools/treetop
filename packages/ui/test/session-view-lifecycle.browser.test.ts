@@ -21,6 +21,8 @@ let olderHistoryAvailable = false;
 let terminalStopStatus = 200;
 let terminalStopCalls = 0;
 let turnRequestDelayMs = 120;
+let historyRequestDelayMs = 0;
+let historyRequestCount = 0;
 let turnRequestCount = 0;
 let turnResponseIds: string[] = [];
 let turnResponseStatus = 200;
@@ -235,6 +237,8 @@ function lifecycleApiPlugin(): Plugin {
           return;
         }
         if (url.pathname === "/api/codex-app/thread") {
+          historyRequestCount += 1;
+          if (historyRequestDelayMs) await new Promise(resolveDelay => setTimeout(resolveDelay, historyRequestDelayMs));
           response.setHeader("Content-Type", "application/json");
           if (url.searchParams.get("threadId") === "other-lifecycle-thread") {
             response.end(JSON.stringify({ ok: true, thread: { id: "other-lifecycle-thread", cwd: "/tmp/treetop-session-lifecycle", turns: [{ id: "other-turn", items: [{ id: "other-answer", type: "agentMessage", text: "OTHER_SESSION_ANSWER" }] }] }, nextCursor: null }));
@@ -625,6 +629,16 @@ describe("SessionView browser lifecycle", { concurrency: false }, () => {
         receivedAt: "2026-10-01T10:00:04.000Z", params: { item: { id: "confirmed-steer", type: "userMessage", content: [{ type: "text", text: "STEER_KEEP_THIS_MESSAGE" }] } } }]);
       await currentPage.waitForTimeout(250);
       expect(await textSequence()).toEqual(["STEER_KEEP_THIS_MESSAGE", "OUTPUT_AFTER_STEER"]);
+      emitCodexEvents([{ kind: "notification", method: "item/completed", threadId, turnId: latestTurnId,
+        receivedAt: "2026-10-01T10:00:05.000Z", params: { item: { id: "continued-command", type: "commandExecution",
+          command: "/bin/zsh -lc 'pwd'", cwd: "/tmp/treetop-session-lifecycle", status: "completed",
+          aggregatedOutput: "/tmp/treetop-session-lifecycle\n" } } }]);
+      await waitForCondition(async () => await currentPage.locator('.work-action-group[open]').count() > 0,
+        "Next action group did not open");
+      expect(await textSequence()).toEqual(["STEER_KEEP_THIS_MESSAGE", "OUTPUT_AFTER_STEER"]);
+      expect(await currentPage.locator(".work-steering-user-message").isVisible()).toBe(true);
+      expect(await currentPage.locator(".work-steering-user-message").evaluate(element =>
+        element.closest(".work-action-group") === null)).toBe(true);
     } finally {
       await currentPage.close();
     }
@@ -1132,6 +1146,36 @@ describe("SessionView browser lifecycle", { concurrency: false }, () => {
     await currentPage.waitForTimeout(150);
     expect(await tailDistance()).toBeLessThanOrEqual(1);
     await currentPage.close();
+  }, 30_000);
+
+  test("retains offscreen deltas received during a history refresh", async () => {
+    const currentPage = await openHarness();
+    try {
+      historyRequestDelayMs = 1500;
+      const readsBefore = historyRequestCount;
+      emitCodexEvents([{ kind: "notification", method: "turn/completed", threadId, turnId: latestTurnId,
+        receivedAt: "2026-10-14T10:00:01Z", params: { threadId, turn: { id: latestTurnId, status: "completed" } } }]);
+      await waitForCondition(async () => historyRequestCount > readsBefore, "History refresh did not start");
+      const stage = currentPage.locator(".session-lifecycle-stage");
+      await stage.evaluate(element => { (element as HTMLElement).style.transform = "translateX(2000px)"; });
+      await waitForCondition(async () => await currentPage.locator(".messages").count() === 0, "Lane did not leave viewport");
+      emitCodexEvents([
+        { kind: "notification", method: "turn/started", threadId, turnId: "buffered-turn", receivedAt: "2026-10-14T10:00:02Z",
+          params: { threadId, turn: { id: "buffered-turn" } } },
+        { kind: "notification", method: "item/started", threadId, turnId: "buffered-turn", receivedAt: "2026-10-14T10:00:03Z",
+          params: { item: { id: "buffered-answer", type: "agentMessage", text: "BUFFERED_PREFIX " } } },
+        { kind: "notification", method: "item/agentMessage/delta", threadId, turnId: "buffered-turn", receivedAt: "2026-10-14T10:00:04Z",
+          params: { itemId: "buffered-answer", delta: "DELTA_SURVIVES_HISTORY" } },
+      ]);
+      await currentPage.waitForTimeout(1800);
+      await stage.evaluate(element => { (element as HTMLElement).style.transform = ""; });
+      await currentPage.locator(".messages").waitFor();
+      await waitForCondition(async () => (await currentPage.locator(".messages").innerText()).includes("DELTA_SURVIVES_HISTORY"),
+        "History refresh discarded the buffered live delta");
+    } finally {
+      historyRequestDelayMs = 0;
+      await currentPage.close();
+    }
   }, 30_000);
 
   test("keeps following a live-work lane after it leaves and re-enters the viewport", async () => {

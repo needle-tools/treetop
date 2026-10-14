@@ -9037,6 +9037,48 @@ describe("visualWorkOverview", () => {
     expect(visualWorkAutoOpenActionGroupId(groups, false)).toBeUndefined();
   });
 
+  it("keeps steering exchanges outside collapsible action groups", () => {
+    const entries = buildVisualWorkDisplayEntries([
+      msg("assistant", "Before steering"),
+      { ...msg("user", "Please adjust this"), intent: "steer" as const },
+      msg("assistant", "I will adjust it"),
+      { role: "assistant", blocks: [{ type: "thinking", text: "Continuing" }] },
+    ].map((message, messageIndex) => ({ message, blocks: message.blocks, messageIndex })));
+    const groups = visualWorkDetailGroups(entries);
+    expect(groups.map(group => group.kind)).toEqual(["response", "user", "response", "actions"]);
+    expect(groups[1]?.entries[0]?.entry.message.role).toBe("user");
+    expect(visualWorkAutoOpenActionGroupId(groups, true)).toBe(groups[3]?.id);
+  });
+
+  it("reuses unchanged work projections while live clocks advance", () => {
+    const item = { kind: "work" as const, open: true, startedAt: "2026-10-14T10:00:00Z",
+      entries: [{ message: msg("assistant", "Working"), blocks: [{ type: "text", text: "Working" }], messageIndex: 0 }] };
+    const entries = buildVisibleVisualWorkDisplayEntries(item);
+    expect(buildVisibleVisualWorkDisplayEntries(item)).toBe(entries);
+    const detail = visualWorkDetailEntries(item, entries, { full: false });
+    expect(visualWorkDetailEntries(item, entries, { full: false })).toBe(detail);
+    expect(visualWorkDetailGroups(detail, entries)).toBe(visualWorkDetailGroups(detail, entries));
+    const first = visualWorkOverview(item, entries, { now: "2026-10-14T10:00:01Z" });
+    const later = visualWorkOverview(item, entries, { now: "2026-10-14T10:00:03Z" });
+    expect(later.time.elapsedMs).toBe(3000);
+    expect(later.artifacts).toBe(first.artifacts);
+    expect(later.categories).toBe(first.categories);
+    const updated = { ...item, entries: [...item.entries, { message: msg("assistant", "New output"),
+      blocks: [{ type: "text", text: "New output" }], messageIndex: 1 }] };
+    const changedEntries = buildVisibleVisualWorkDisplayEntries(updated);
+    expect(changedEntries).not.toBe(entries);
+    expect(visualWorkOverview(updated, changedEntries).responseCount).toBe(2);
+    const accounted = buildVisualWorkDisplayEntries([{ message: { ...msg("assistant", "Measured"),
+      tokenUsage: { input: 100, cachedInput: 50, cacheWriteInput: 0, output: 10, reasoningOutput: 0, total: 110 } },
+      blocks: [{ type: "text", text: "Measured" }], messageIndex: 0 }]);
+    const quick = visualWorkOverview(item, accounted, { now: "2026-10-14T10:00:01Z" });
+    const slow = visualWorkOverview(item, accounted, { now: "2026-10-14T10:00:02Z" });
+    expect(quick.tokens.perSecond).toBe(10);
+    expect(slow.tokens.perSecond).toBe(5);
+    expect(slow.tokens.total).toBe(60);
+    expect(visualWorkOverview(item, accounted, { model: "gpt-6-astra" }).cost).not.toBe(slow.cost);
+  });
+
   it("keeps shell syntax fragments out of overview artifacts", () => {
     const cmd = [
       "sed -n '1,90p' src/conversionFamilies.ts",

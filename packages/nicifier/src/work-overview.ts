@@ -168,7 +168,7 @@ export interface VisualWorkOverviewOptions {
 
 export interface VisualWorkDetailGroup<T extends VisualWorkDisplayEntryLike> {
   id: string;
-  kind: "actions" | "response";
+  kind: "actions" | "response" | "user";
   entries: T[];
   /** Includes non-rendered token checkpoints attributed to this visible step. */
   overviewEntries: T[];
@@ -1201,7 +1201,40 @@ function artifactSummary(
   return [...deduped.values()];
 }
 
+// The shared visual projection replaces arrays/messages on change. Keep its
+// content summaries across clock ticks; durations and token rates stay live.
+const workOverviewCache = new WeakMap<readonly VisualWorkDisplayEntryLike[], {
+  model: string | undefined;
+  modelsDev: ModelsDevPricingSnapshot | undefined;
+  overview: VisualWorkOverview;
+}>();
+
 export function visualWorkOverview(
+  item: VisualWorkItemLike,
+  entries: readonly VisualWorkDisplayEntryLike[],
+  options: VisualWorkOverviewOptions = {},
+): VisualWorkOverview {
+  const cached = workOverviewCache.get(entries);
+  if (!cached || cached.model !== options.model || cached.modelsDev !== options.modelsDev) {
+    const overview = computeVisualWorkOverview(item, entries, options);
+    workOverviewCache.set(entries, { model: options.model, modelsDev: options.modelsDev, overview });
+    return overview;
+  }
+  const now = options.now instanceof Date ? options.now.getTime()
+    : typeof options.now === "string" ? Date.parse(options.now)
+    : options.now ?? Date.now();
+  const scopedItem = options.timeScope === "entries" ? itemScopedToEntries(item, entries) : item;
+  const time = workTimeOverview(scopedItem, entries, Number.isFinite(now) ? now : Date.now());
+  const tokens = cached.overview.tokens;
+  return { ...cached.overview, time, tokens: {
+    ...tokens,
+    perSecond: tokenRate(tokens.output, time.elapsedMs),
+    agentPerSecond: tokenRate(tokens.agent, time.elapsedMs),
+    toolPerSecond: tokenRate(tokens.tool, time.elapsedMs),
+  } };
+}
+
+function computeVisualWorkOverview(
   item: VisualWorkItemLike,
   entries: readonly VisualWorkDisplayEntryLike[],
   options: VisualWorkOverviewOptions = {},
@@ -1245,12 +1278,22 @@ export function visualWorkOverview(
   };
 }
 
+const workDetailEntriesCache = new WeakMap<readonly VisualWorkDisplayEntryLike[], VisualWorkDisplayEntryLike[]>();
+const workDetailGroupsCache = new WeakMap<readonly VisualWorkDisplayEntryLike[], {
+  allEntries: readonly VisualWorkDisplayEntryLike[];
+  groups: VisualWorkDetailGroup<VisualWorkDisplayEntryLike>[];
+}>();
+
 export function visualWorkDetailEntries<T extends VisualWorkDisplayEntryLike>(
   item: VisualWorkItemLike,
   entries: readonly T[],
   options: VisualWorkDetailOptions,
 ): T[] {
+  if (!options.full && item.open !== true) return [];
+  const cached = workDetailEntriesCache.get(entries);
+  if (cached) return cached as T[];
   const renderable = entries.filter(isRenderableDetailEntry);
+  workDetailEntriesCache.set(entries, renderable);
   if (options.full) return renderable;
   if (item.open !== true) return [];
   return renderable;
@@ -1271,6 +1314,8 @@ export function visualWorkDetailGroups<T extends VisualWorkDisplayEntryLike>(
   entries: readonly T[],
   allEntries: readonly T[] = entries,
 ): VisualWorkDetailGroup<T>[] {
+  const cached = workDetailGroupsCache.get(entries);
+  if (cached?.allEntries === allEntries) return cached.groups as VisualWorkDetailGroup<T>[];
   const groups: VisualWorkDetailGroup<T>[] = [];
   let pendingActions: T[] = [];
 
@@ -1288,14 +1333,15 @@ export function visualWorkDetailGroups<T extends VisualWorkDisplayEntryLike>(
   }
 
   for (const entry of entries) {
-    if (!isAgentResponseEntry(entry)) {
+    const userMessage = entry.entry.message.role === "user";
+    if (!userMessage && !isAgentResponseEntry(entry)) {
       pendingActions.push(entry);
       continue;
     }
     flushActions();
     groups.push({
-      id: `response:${visualWorkDisplayEntryGroupKey(entry)}`,
-      kind: "response",
+      id: `${userMessage ? "user" : "response"}:${visualWorkDisplayEntryGroupKey(entry)}`,
+      kind: userMessage ? "user" : "response",
       entries: [entry],
       overviewEntries: [entry],
     });
@@ -1317,6 +1363,7 @@ export function visualWorkDetailGroups<T extends VisualWorkDisplayEntryLike>(
       (a, b) => a.entry.messageIndex - b.entry.messageIndex,
     );
   }
+  workDetailGroupsCache.set(entries, { allEntries, groups });
   return groups;
 }
 

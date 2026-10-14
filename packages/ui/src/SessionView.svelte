@@ -2773,7 +2773,13 @@
   $: codexAppHistoryFetchActive =
     codexAppHistorySourceActive && columnNearViewport;
   $: if (codexAppLiveSurfaceActive && codexHasDeferredVisualEvents) {
-    catchUpDeferredCodexVisualEvents();
+    // Run after this visibility flush: synchronous replay mutates session
+    // behind already-evaluated derived messages in Svelte's legacy graph.
+    queueMicrotask(() => {
+      if (codexAppLiveSurfaceActive && codexHasDeferredVisualEvents) {
+        catchUpDeferredCodexVisualEvents();
+      }
+    });
   }
   $: sessionFileSource = liveCodexApp ? (transcriptSource ?? "") : source;
   $: sessionMessageSource = resolveSessionMessageSource({

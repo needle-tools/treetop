@@ -1480,6 +1480,31 @@ change underneath an obsolete rendered row. Cache reuse now compares every
 immutable block field shallowly, conservatively refreshing replaced nested
 metadata without serializing large tool or media payloads.
 
+A 2026-10-14 browser reproduction exposed steering being hidden by action-group
+collapse: the user bubble belonged to the prior tool group, which closed when
+the next tool event opened another group. Shared work-detail grouping now gives
+user messages their own non-collapsible group alongside agent responses. The
+real SessionView lifecycle test verifies the exchange remains visible through
+optimistic send, canonical acknowledgement, agent output, and subsequent tools.
+
+The related lifecycle audit reproduced a stale pane on return from offscreen:
+buffered deltas reached session.messages, but synchronous catch-up inside the
+visibility reactive statement ran after the derived-message pipeline. Svelte's
+legacy dependency graph did not propagate that indirect write in the same flush.
+Catch-up now runs in a guarded microtask after the visibility flush. A real
+SessionView test overlaps a delayed app-server history refresh with an offscreen
+new turn and streaming delta, then verifies the returned pane shows that delta.
+The history response and transcript data remain separate sources.
+
+The same audit measured repeated work-summary computation for unchanged clocks.
+Shared immutable work items, display entries, detail groups, and content summaries
+now retain their projections across ticks; timing and token rates recompute, and
+new entries or pricing/model snapshots invalidate content. A Bun comparison using
+the same 500 command entries and 20 clock updates measured 11.65 ms/update before
+and 0.08 ms/update after. This measures summary CPU only, not total browser frame
+time. Running native diagnostics before the change showed event ingestion mostly
+0–3 ms but rendering settle p95 around 100–400 ms, with maxima over one second.
+
 A 2026-10-11 subagent audit found that the composer roster was incorrectly
 derived from the virtual render window. Spawn prompts, model metadata, and even
 the child itself therefore disappeared once the originating row moved outside

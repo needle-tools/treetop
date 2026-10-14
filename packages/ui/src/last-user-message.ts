@@ -1590,15 +1590,20 @@ export function buildVisualWorkDisplayEntries<
   return out;
 }
 
+// Work items are immutable snapshots, including replacement block metadata.
+const visibleWorkDisplayCache = new WeakMap<object, VisualWorkDisplayEntry[]>();
+
 export function buildVisibleVisualWorkDisplayEntries<
   B extends MessageBlock,
   M extends Message<B>,
 >(
   item: Extract<VisualTranscriptItem<B, M>, { kind: "work" }>,
 ): VisualWorkDisplayEntry<B, M>[] {
+  const cached = visibleWorkDisplayCache.get(item);
+  if (cached) return cached as VisualWorkDisplayEntry<B, M>[];
   const entries = buildVisualWorkDisplayEntries(item.entries);
 
-  return entries.filter((entry) => {
+  const visible = entries.filter((entry) => {
     if (entry.kind !== "marker") return true;
     if (terminalMarkerContinuesLater(item.entries, entry.entry)) return false;
     if (!item.terminalMarkerKind || !item.terminalMarkerLabel) return true;
@@ -1607,6 +1612,8 @@ export function buildVisibleVisualWorkDisplayEntries<
       entry.markerLabel === item.terminalMarkerLabel
     );
   });
+  visibleWorkDisplayCache.set(item, visible);
+  return visible;
 }
 
 function isResponseBlock(block: MessageBlock): boolean {
