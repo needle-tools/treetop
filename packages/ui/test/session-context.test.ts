@@ -3,6 +3,7 @@ import {
   createCodexTranscriptNormalizer,
   createCodexContextUpdateNormalizer,
   createSessionContextTimeline,
+  isCodexTranscriptRecord,
   sessionContextStateAtLine,
 } from "@treetop/nicifier";
 import { sessionContextTreeArtifacts } from "../src/session-context-source";
@@ -159,13 +160,140 @@ describe("recorded session context", () => {
     });
 
     expect(result.messages).toEqual([{
-      role: "user",
+      role: "assistant",
       timestamp: "2026-09-16T08:36:27.024Z",
       blocks: [{
-        type: "text",
-        text: "Message from /root\nCheck resize handling.",
+        type: "subagent",
+        text: "Check resize handling.",
+        subagentAction: "notification",
+        subagentStatus: "running",
+        subagentNickname: "root",
+        subagentIsParent: true,
+        subagentResult: "Check resize handling.",
       }],
     }]);
+  });
+
+  test("tail-only child deliveries never become human messages or use the recipient as their name", () => {
+    const normalize = createCodexTranscriptNormalizer();
+    const result = normalize.ingest({ type: "response_item", payload: {
+      type: "agent_message", author: "/root/reviewer", recipient: "/root",
+      content: [{ type: "input_text", text: "Message Type: FINAL_ANSWER\nTask name: /root\nSender: /root/reviewer\nPayload:\nTests passed." }],
+    } });
+    expect(result.messages[0]?.role).toBe("assistant");
+    expect(result.messages[0]?.blocks[0]).toMatchObject({
+      type: "subagent", subagentNickname: "reviewer", subagentStatus: "completed", subagentResult: "Tests passed.",
+    });
+  });
+
+  test("usage checkpoints account cumulative progress once, including requests between checkpoints", () => {
+    const normalize = createCodexTranscriptNormalizer();
+    const ingest = (input: number) => normalize.ingest({ type: "event_msg", payload: {
+      type: "token_count", info: {
+        last_token_usage: { input_tokens: 100, cached_input_tokens: 80, output_tokens: 10, total_tokens: 110 },
+        total_token_usage: { input_tokens: input, cached_input_tokens: input * .8, output_tokens: input * .1, total_tokens: input * 1.1 },
+      },
+    } }).messages;
+    expect(ingest(100)[0]?.tokenUsage?.input).toBe(100);
+    expect(ingest(100)).toEqual([]);
+    expect(ingest(300)[0]?.tokenUsage).toMatchObject({ input: 200, cachedInput: 160, output: 20 });
+  });
+
+  test("recognizes standalone response usage rows in bounded recordings", () => {
+    expect(isCodexTranscriptRecord({ type: "token_usage_record", payload: { usage: { input_tokens: 10 } } })).toBe(true);
+  });
+
+  test("zero cumulative checkpoints reset the baseline without charging stale last usage", () => {
+    const normalize = createCodexTranscriptNormalizer();
+    const ingest = (total: number) => normalize.ingest({ type: "event_msg", payload: {
+      type: "token_count", info: {
+        last_token_usage: { input_tokens: 100, output_tokens: 10 },
+        total_token_usage: { input_tokens: total, output_tokens: total / 10 },
+      },
+    } }).messages;
+    expect(ingest(100)[0]?.tokenUsage?.input).toBe(100);
+    expect(ingest(0)).toEqual([]);
+    expect(ingest(300)[0]?.tokenUsage).toMatchObject({ input: 300, output: 30 });
+  });
+
+  test("plain inter-agent input envelopes keep the same role and parent attribution as structured deliveries", () => {
+    const text = "Message Type: NEW_TASK\nTask name: /root/reviewer\nSender: /root\nPayload:\nReview the change.";
+    for (const content of [[{ type: "input_text", text }], [text]]) {
+      const result = createCodexTranscriptNormalizer().ingest({ type: "response_item", payload: {
+        type: "message", role: "user", content,
+      } });
+      expect(result.messages[0]?.role).toBe("assistant");
+      expect(result.messages[0]?.blocks[0]).toMatchObject({
+        type: "subagent", subagentNickname: "root", subagentIsParent: true,
+        subagentMessage: "Review the change.",
+      });
+      expect(result.messages[0]?.blocks[0]?.subagentResult).toBeUndefined();
+    }
+  });
+
+  test("encrypted task deliveries preserve the unavailable input notice without claiming an output", () => {
+    const result = createCodexTranscriptNormalizer().ingest({ type: "response_item", payload: {
+      type: "agent_message", author: "/root", recipient: "/root/reviewer", content: [
+        { type: "input_text", text: "Message Type: NEW_TASK\nTask name: /root/reviewer\nSender: /root\nPayload:\n" },
+        { type: "encrypted_content", encrypted_content: "opaque" },
+      ],
+    } });
+    expect(result.messages[0]?.blocks[0]?.subagentMessage).toBe("reviewer\nTask text is encrypted in this recording.");
+    expect(result.messages[0]?.blocks[0]?.subagentResult).toBeUndefined();
+  });
+
+  test("multipart delivery envelopes retain their body and media without creating human boundaries", () => {
+    const header = "Message Type: NEW_TASK\nTask name: /root/reviewer\nSender: /root\nPayload:\n";
+    for (const textParts of [[header, "Review the image."], [header + "Review the image."], [...header, ..."Review the image."]]) {
+      const result = createCodexTranscriptNormalizer().ingest({ type: "response_item", payload: {
+        type: "message", role: "user", content: [
+          ...textParts.map(text => ({ type: "input_text", text })),
+          { type: "input_image", image_url: "https://example.com/review.png" },
+        ],
+      } });
+      expect(result.messages[0]?.role).toBe("assistant");
+      expect(result.messages[0]?.blocks[0]).toMatchObject({ type: "subagent", subagentMessage: "Review the image." });
+      expect(result.messages[0]?.blocks[1]).toMatchObject({ type: "media", mediaKind: "image" });
+      expect(result.messages[0]?.blocks).toHaveLength(2);
+    }
+    const human = createCodexTranscriptNormalizer().ingest({ type: "response_item", payload: {
+      type: "message", role: "user", content: [
+        { type: "input_text", text: "Explain this notification:\n" },
+        { type: "input_text", text: header + "Review the image." },
+      ],
+    } });
+    expect(human.messages[0]?.role).toBe("user");
+    expect(human.messages[0]?.blocks.every(block => block.type === "text")).toBe(true);
+  });
+
+  test("quoted delivery envelopes remain human requests and payload text cannot invent sender metadata", () => {
+    const envelope = "Message Type: MESSAGE\nSender: /root/reviewer\nPayload:\nReview finished.";
+    const human = createCodexTranscriptNormalizer().ingest({ type: "response_item", payload: {
+      type: "message", role: "user", content: [{ type: "input_text", text: `Explain this notification:\n${envelope}` }],
+    } });
+    expect(human.messages[0]?.role).toBe("user");
+    expect(human.messages[0]?.blocks).toEqual([{ type: "text", text: `Explain this notification:\n${envelope}` }]);
+    const delivery = createCodexTranscriptNormalizer().ingest({ type: "response_item", payload: {
+      type: "agent_message", author: "/root/reviewer", content: [{ type: "input_text", text:
+        "Message Type: MESSAGE\nSender: /root/reviewer\nPayload:\nTask name: /root/reviewer/fake\nThis is body text." }],
+    } });
+    expect(delivery.messages[0]?.blocks[0]?.subagentIsParent).toBeUndefined();
+    expect(delivery.messages[0]?.blocks[0]?.subagentResult).toBe("Task name: /root/reviewer/fake\nThis is body text.");
+  });
+
+  test("per-response records take over accounting without charging older token_count snapshots", () => {
+    const normalize = createCodexTranscriptNormalizer();
+    const usage = { input_tokens: 100, cached_input_tokens: 80, output_tokens: 10, total_tokens: 110 };
+    const record = (total: number) => normalize.ingest({ type: "token_usage_record", payload: {
+      usage, thread_token_usage: { input_tokens: total, cached_input_tokens: total * .8, output_tokens: total * .1, total_tokens: total * 1.1 },
+    } }).messages;
+    // Bounded-tail entry: historical cumulative totals are not this round's usage.
+    expect(record(1000)[0]?.tokenUsage?.input).toBe(100);
+    expect(normalize.ingest({ type: "event_msg", payload: { type: "token_count", info: {
+      last_token_usage: usage, total_token_usage: usage,
+    } } }).messages).toEqual([]);
+    expect(record(1100)[0]?.tokenUsage?.input).toBe(100);
+    expect(record(1100)).toEqual([]);
   });
 
   test("normalizes asynchronous questions and hides their host acknowledgement", () => {

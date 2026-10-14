@@ -187,6 +187,7 @@ export function isCodexTranscriptRecord(value: unknown): boolean {
     "response_item",
     "event_msg",
     "turn_context",
+    "token_usage_record",
     "compacted",
   ].includes(string(record, "type") ?? "");
 }
@@ -230,7 +231,7 @@ function containsClippedString(before: unknown, after: unknown): boolean {
   return Object.entries(before as Record<string, unknown>).some(([key, value]) => containsClippedString(value, afterRecord[key]));
 }
 
-function usageFrom(value: unknown): CodexTranscriptTokenUsage | undefined {
+export function codexTokenUsageFromRecord(value: unknown): CodexTranscriptTokenUsage | undefined {
   const usage = object(value);
   if (!usage) return undefined;
   const input = number(usage.input_tokens ?? usage.inputTokens) ?? 0;
@@ -244,7 +245,9 @@ function usageFrom(value: unknown): CodexTranscriptTokenUsage | undefined {
   const output = number(usage.output_tokens ?? usage.outputTokens) ?? 0;
   const reasoningOutput = number(usage.reasoning_output_tokens ?? usage.reasoningOutputTokens) ?? 0;
   const total = number(usage.total_tokens ?? usage.totalTokens) ?? input + output;
-  return input + cachedInput + cacheWriteInput + output + reasoningOutput > 0
+  // A zero checkpoint is still a baseline (for example after a counter reset).
+  return input + cachedInput + cacheWriteInput + output + reasoningOutput + total > 0 ||
+    [usage.input_tokens ?? usage.inputTokens, usage.output_tokens ?? usage.outputTokens, usage.total_tokens ?? usage.totalTokens].some((value) => number(value) === 0)
     ? { input, cachedInput, cacheWriteInput, output, reasoningOutput, total }
     : undefined;
 }
@@ -258,6 +261,97 @@ function usageDelta(current: CodexTranscriptTokenUsage, previous?: CodexTranscri
     output: Math.max(0, current.output - previous.output),
     reasoningOutput: Math.max(0, current.reasoningOutput - previous.reasoningOutput),
     total: Math.max(0, current.total - previous.total),
+  };
+}
+
+/** A checkpoint's cumulative progression is authoritative after the first observation.
+ * `last` describes the last request, not necessarily new work since our last observation.
+ */
+export function codexUsageForCheckpoint(
+  last: CodexTranscriptTokenUsage | undefined,
+  total: CodexTranscriptTokenUsage | undefined,
+  previous: CodexTranscriptTokenUsage | undefined,
+): CodexTranscriptTokenUsage | undefined {
+  if (total?.total === 0) return undefined;
+  const usage = total && previous && total.total >= previous.total
+    ? usageDelta(total, previous)
+    : last ?? total;
+  return usage && (usage.input || usage.output || usage.total || usage.reasoningOutput) ? usage : undefined;
+}
+
+export interface CodexTranscriptUsageState {
+  previousTotalUsage?: CodexTranscriptTokenUsage;
+  hasResponseUsageRecords?: boolean;
+}
+
+/** Shared accounting for both rendered transcript windows and full-file pricing.
+ * Legacy full scans include the first cumulative total; bounded windows bill only
+ * the last request at entry. Response records always start with their own usage.
+ */
+export function codexUsageForTranscriptRecord(
+  value: unknown,
+  state: CodexTranscriptUsageState,
+  includeInitialLegacyTotal = false,
+): CodexTranscriptTokenUsage | undefined {
+  const row = object(value);
+  const payload = object(row?.payload);
+  if (!payload) return undefined;
+  const response = row?.type === "token_usage_record";
+  if (!response && (row?.type !== "event_msg" || state.hasResponseUsageRecords)) return undefined;
+  const info = object(payload.info) ?? payload;
+  const last = codexTokenUsageFromRecord(response ? payload.usage : info.last_token_usage ?? payload.lastTokenUsage ?? payload.usage);
+  const total = codexTokenUsageFromRecord(response ? payload.thread_token_usage : info.total_token_usage ?? payload.totalTokenUsage);
+  const previous = response && !state.hasResponseUsageRecords ? undefined : state.previousTotalUsage;
+  const usage = codexUsageForCheckpoint(
+    !response && includeInitialLegacyTotal && !previous ? undefined : last,
+    total,
+    previous,
+  );
+  if (response) state.hasResponseUsageRecords = true;
+  if (total) state.previousTotalUsage = total;
+  return usage;
+}
+
+/** Inter-agent deliveries are activity, never a new human request/turn boundary.
+ * Works without session_meta, including bounded transcript tails and live envelopes.
+ */
+export function codexInterAgentMessageBlock(
+  content: string | readonly unknown[],
+  options: { author?: string; recipient?: string; subagentId?: string; encrypted?: boolean } = {},
+): CodexTranscriptBlock | undefined {
+  // Input text can be split anywhere across content parts. Classify the whole
+  // message, not a quoted envelope in one part or a header without its body.
+  const text = typeof content === "string" ? content : content.map((raw) => {
+    if (typeof raw === "string") return raw;
+    const part = object(raw);
+    if (!part) return "";
+    for (const key of ["text", "input_text", "output_text"]) {
+      if (typeof part[key] === "string") return part[key];
+    }
+    return "";
+  }).join("");
+  const envelopeType = text.match(/^\s*Message Type:[ \t]*([^\r\n]+)/i)?.[1]?.trim().toUpperCase();
+  const payloadStart = envelopeType ? /^Payload:[ \t]*\r?$/m.exec(text) : null;
+  const header = payloadStart ? text.slice(0, payloadStart.index) : "";
+  const author = options.author ?? header.match(/^Sender:[ \t]*([^\r\n]+)/im)?.[1]?.trim();
+  if (!options.author && (!envelopeType || !author || !payloadStart)) return undefined;
+  const body = (payloadStart ? text.slice(payloadStart.index + payloadStart[0].length) : text).trim();
+  const taskName = header.match(/^Task name:[ \t]*([^\r\n]+)/im)?.[1]?.trim();
+  const recipient = options.recipient ?? taskName;
+  const isParent = !!(author && recipient?.startsWith(`${author}/`));
+  const taskLabel = taskName?.split("/").filter(Boolean).pop();
+  const displayText = body || (options.encrypted
+    ? `${taskLabel ? `${taskLabel}\n` : ""}Task text is encrypted in this recording.`
+    : `Message from ${author ?? "agent"}`);
+  return {
+    type: "subagent",
+    text: displayText,
+    subagentAction: "notification",
+    subagentStatus: envelopeType === "ERROR" || envelopeType === "FAILED" ? "failed" : envelopeType === "FINAL_ANSWER" ? "completed" : "running",
+    ...(options.subagentId ? { subagentId: options.subagentId } : {}),
+    subagentNickname: author?.split("/").filter(Boolean).pop(),
+    ...(isParent ? { subagentIsParent: true } : {}),
+    ...(envelopeType === "NEW_TASK" ? { subagentMessage: displayText } : body ? { subagentResult: body } : {}),
   };
 }
 
@@ -628,7 +722,7 @@ export function createCodexTranscriptNormalizer(options: CodexTranscriptNormaliz
   const clipInput = clipTranscriptValue;
   const toolNames = new Map<string, string>();
   const normalizeContext = createCodexContextUpdateNormalizer();
-  let previousTotalUsage: CodexTranscriptTokenUsage | undefined;
+  const usageState: CodexTranscriptUsageState = {};
   let latestContextTokens: number | undefined;
   let pendingCompaction: CodexTranscriptBlock | undefined;
   let model: string | undefined;
@@ -729,6 +823,10 @@ export function createCodexTranscriptNormalizer(options: CodexTranscriptNormaliz
       if (rowType === "compacted" || payloadType === "compact_context") {
         return compacted(timestamp);
       }
+      if (rowType === "token_usage_record" && payload) {
+        const usage = codexUsageForTranscriptRecord(row, usageState);
+        return { recognized: true, messages: usage ? [message("assistant", [], timestamp, usage)] : [] };
+      }
       if (rowType === "event_msg" && payload) {
         if (payloadType === "item_completed") {
           const completedItem = object(payload.item);
@@ -760,8 +858,6 @@ export function createCodexTranscriptNormalizer(options: CodexTranscriptNormaliz
         }
         const info = object(payload.info) ?? payload;
         const lastRecord = object(info.last_token_usage) ?? object(payload.lastTokenUsage) ?? object(payload.usage);
-        const lastUsage = usageFrom(lastRecord);
-        const totalUsage = usageFrom(object(info.total_token_usage) ?? object(payload.totalTokenUsage));
         if (lastRecord) {
           const snapshot = contextTokenSnapshotFromUsageRecord(lastRecord);
           if (snapshot) {
@@ -772,8 +868,9 @@ export function createCodexTranscriptNormalizer(options: CodexTranscriptNormaliz
             latestContextTokens = snapshot.totalTokens;
           }
         }
-        const usage = lastUsage ?? (totalUsage ? usageDelta(totalUsage, previousTotalUsage) : undefined);
-        if (totalUsage) previousTotalUsage = totalUsage;
+        // Newer transcripts carry authoritative per-response usage. Keep the legacy
+        // context snapshot above, but never bill both representations of that work.
+        const usage = codexUsageForTranscriptRecord(row, usageState);
         if (usage && (usage.total || usage.input || usage.output || usage.reasoningOutput)) {
           return {
             recognized: true,
@@ -862,47 +959,20 @@ export function createCodexTranscriptNormalizer(options: CodexTranscriptNormaliz
           const text = string(part, "text") ?? string(part, "input_text") ?? string(part, "output_text");
           return text ? [text] : [];
         }).join("\n");
-        const payloadStart = /^Payload:\s*$/m.exec(visible);
-        const body = (payloadStart
-          ? visible.slice(payloadStart.index + payloadStart[0].length)
-          : visible).trim();
         const author = string(payload, "author");
-        const recipient = string(payload, "recipient");
-        const envelopeType = visible.match(/^Message Type:\s*([^\n]+)/im)?.[1]?.trim().toUpperCase();
-        const taskName = visible.match(/^Task name:\s*([^\n]+)/im)?.[1]?.trim();
-        const sender = visible.match(/^Sender:\s*([^\n]+)/im)?.[1]?.trim() ?? author;
-        if (author && agentPath && recipient === agentPath && author.startsWith(`${agentPath}/`)) {
-          const nickname = taskName ?? author.split("/").filter(Boolean).pop();
-          const failed = envelopeType === "ERROR" || envelopeType === "FAILED";
-          return {
-            recognized: true,
-            messages: [message("assistant", [{
-              type: "subagent",
-              text: clip(body || `Message from ${author}`),
-              subagentAction: "notification",
-              subagentStatus: failed ? "failed" : envelopeType === "FINAL_ANSWER" ? "completed" : "running",
-              subagentId: subagentIdByPath.get(author),
-              subagentNickname: nickname,
-              subagentResult: body ? clip(body) : undefined,
-            }], timestamp)],
-          };
+        const block = codexInterAgentMessageBlock(visible, {
+          author, recipient: string(payload, "recipient"),
+          subagentId: author ? subagentIdByPath.get(author) : undefined,
+          encrypted: hasEncryptedContent,
+        });
+        if (block) {
+          if (block.text) block.text = clip(block.text);
+          if (block.subagentMessage) block.subagentMessage = clip(block.subagentMessage);
+          if (block.subagentResult) block.subagentResult = clip(block.subagentResult);
         }
-        const senderLabel = sender?.split("/").filter(Boolean).pop();
-        const taskLabel = taskName?.split("/").filter(Boolean).pop();
-        const heading = envelopeType === "NEW_TASK" && senderLabel
-          ? `Task from ${senderLabel}`
-          : author
-            ? `Message from ${author}`
-            : "Inter-agent message";
-        const fallbackBody = !body && taskLabel
-          ? `${taskLabel}${hasEncryptedContent ? "\nTask text is encrypted in this recording." : ""}`
-          : body;
         return {
           recognized: true,
-          messages: [message(author && author === agentPath ? "assistant" : "user", [{
-            type: "text",
-            text: clip(fallbackBody ? `${heading}\n${fallbackBody}` : heading),
-          }], timestamp)],
+          messages: block ? [message("assistant", [block], timestamp)] : [],
         };
       }
       if (payloadType === "message") {
@@ -921,8 +991,16 @@ export function createCodexTranscriptNormalizer(options: CodexTranscriptNormaliz
         const mentioned: { title: string; path: string }[] = [];
         let pendingImagePath: string | undefined;
         const contents = Array.isArray(payload.content) ? payload.content : [payload.content];
+        const delivery = role === "user" ? codexInterAgentMessageBlock(contents) : undefined;
+        if (delivery) {
+          if (delivery.text) delivery.text = clip(delivery.text);
+          if (delivery.subagentMessage) delivery.subagentMessage = clip(delivery.subagentMessage);
+          if (delivery.subagentResult) delivery.subagentResult = clip(delivery.subagentResult);
+          blocks.push(delivery);
+        }
         for (const raw of contents) {
           if (typeof raw === "string") {
+            if (delivery) continue;
             const text = role === "user" ? visibleUserText(raw) : raw;
             if (text) blocks.push(...protocolTextBlocks(text, clip));
             continue;
@@ -931,6 +1009,7 @@ export function createCodexTranscriptNormalizer(options: CodexTranscriptNormaliz
           if (!part) continue;
           const text = string(part, "text") ?? string(part, "input_text") ?? string(part, "output_text");
           if (text) {
+            if (delivery) continue;
             if (role === "user") {
               const envelope = text.match(/^\s*# Files mentioned by the user:\s*\n([\s\S]*?)\n## My request(?: for Codex)?:\s*\n?([\s\S]*)$/i);
               if (envelope) {
@@ -958,6 +1037,9 @@ export function createCodexTranscriptNormalizer(options: CodexTranscriptNormaliz
               }
             }
             const notification = subagentNotification(text, clip);
+            if (notification?.text) notification.text = clip(notification.text);
+            if (notification?.subagentMessage) notification.subagentMessage = clip(notification.subagentMessage);
+            if (notification?.subagentResult) notification.subagentResult = clip(notification.subagentResult);
             if (notification) blocks.push(notification);
             else {
               const visible = role === "user" ? visibleUserText(text) : text;
@@ -987,7 +1069,7 @@ export function createCodexTranscriptNormalizer(options: CodexTranscriptNormaliz
           });
         }
         if (!blocks.length) return { recognized: true, messages: [] };
-        const effectiveRole = role === "user" && blocks.every((block) => block.type === "subagent") ? "assistant" : role;
+        const effectiveRole = role === "user" && blocks.some((block) => block.type === "subagent") && blocks.every((block) => block.type === "subagent" || block.type === "media") ? "assistant" : role;
         return { recognized: true, messages: [message(effectiveRole, blocks, timestamp)] };
       }
       if (payloadType === "function_call" || payloadType === "custom_tool_call") {

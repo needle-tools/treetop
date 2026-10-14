@@ -670,6 +670,8 @@
   let codexAppHistoryRetryTimer: ReturnType<typeof setTimeout> | null = null;
   let codexAppHistoryNextCursor: string | null = null;
   let codexAppLiveTurnIds = new Set<string>();
+  // Ever observed starts for this mounted source, not active turns: final usage
+  // can arrive after completion. Active state belongs to codexActiveTurnId.
   let codexAppStartedTurnIds = new Set<string>();
   let codexTurnLifecycleSeq = 0;
   let codexTurnSourceEpoch = 0;
@@ -3654,7 +3656,6 @@
     if (event.method === "turn/completed") {
       if (event.turnId) {
         codexAppLiveTurnIds = new Set(codexAppLiveTurnIds).add(event.turnId);
-        codexAppStartedTurnIds.delete(event.turnId);
       }
       invalidateCodexAppHistoryForReconciliation();
       codexActiveTurnId = null;
@@ -3879,9 +3880,6 @@
         invalidateCodexAppHistoryForReconciliation();
       }
       if (skipLifecycle) return;
-      if (event.turnId) {
-        codexAppStartedTurnIds.delete(event.turnId);
-      }
       codexActiveTurnId = null;
       sending = false;
       sessionStatsRefreshSeq += 1;

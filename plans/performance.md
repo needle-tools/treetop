@@ -1487,6 +1487,100 @@ user messages their own non-collapsible group alongside agent responses. The
 real SessionView lifecycle test verifies the exchange remains visible through
 optimistic send, canonical acknowledgement, agent output, and subsequent tools.
 
+The 2026-10-14 audit of `01a12190-a469-7f31-9321-ea1b160082f0`
+found inter-agent deliveries falling back to human messages when bounded-tail
+parsing lacked session metadata. Shared normalization now emits subagent activity
+independently of that header, using the sender rather than the recipient task
+name; live input envelopes use the same conversion. All 350 recorded deliveries
+were verified to produce no human-message boundaries, including the daemon tail.
+Usage checkpoints now charge cumulative progression instead of repeatedly charging
+the last request. New `token_usage_record` rows are authoritative when present;
+legacy snapshots still update context size but do not bill the same work again.
+The final root round records 1,665,520 fresh-input-plus-output tokens. Its three
+active children separately record 3,467,542 in that time range (5,133,062 combined).
+Goal-budget notices include child work and have their own goal start/end boundary;
+they are not the root round's token counter. Live and transcript remain separate
+sources, sharing conversion/accounting functions rather than merging their data.
+Round summaries now label their token count as "this agent"; token and cost
+tooltips explicitly exclude subagent usage. Expanded rounds distinguish fresh,
+cached, output, and reasoning tokens (reasoning is included in output), and rounds
+with subagents explain the separate accounting and goal-budget scope. This does
+not invent a combined total from whole child sessions: reused children may span
+several parent rounds. The SessionView browser test covers live usage, unrelated
+child traffic, and completion while preserving the scoped round count.
+
+An Astra follow-up review found that app-server agent deliveries still polluted
+the human-message identity set even after their visible role changed; the next
+human input could therefore become phantom steering. History/live now register
+only normalized human rows. Usage decoding is shared too: explicit zero counters
+retain a reset baseline, and a handled thread checkpoint cannot fall through to
+a legacy alias and charge the last request again. Plain-text delivery envelopes
+retain the same parent relationship as structured records, and response-usage
+rows are recognized when identifying a bounded recording. The supplied session's
+4,314 response records sum to 16,806,683 fresh-input-plus-output tokens, exactly
+matching shared normalization; its final round remains 1,665,520. Round breakdowns
+also expose cache writes as part of fresh input and reasoning as part of output,
+without adding either subset twice. Parent relationship labels stay neutral when
+the recorded metadata does not establish message direction.
+
+A second Astra pass reproduced a history-to-live accounting handoff bug: parsed
+history checkpoints lived in a temporary context, so the next live notification
+could bill already observed work. History now seeds an uninitialized live usage
+baseline without rewinding a baseline already advanced by live events or newer
+pages. The full-file stats scanner also still used an independent legacy-only
+pricing parser. It now shares `codexUsageForTranscriptRecord` with transcript
+normalization, preserving cached append state, authoritative response records,
+zero-counter resets, and `thread_settings_applied` model switches. A fixed-size
+snapshot of the growing source matched all 4,331 response records exactly:
+648,588,086 reported tokens, 16,890,550 fresh-input-plus-output tokens. Two actual
+forked-child files also matched; no inherited-usage change was justified by those
+records. Parent `NEW_TASK` payloads now populate input metadata, not output;
+encrypted-task notices remain explicitly notices, and known input is never
+fabricated as a result via the display-text fallback. Browser coverage opens the
+actual parent-delivery card and verifies an Input-only section.
+
+The third Astra pass constrained inter-agent envelope recognition to a leading
+header and read sender/task metadata only before `Payload:`. Human requests
+quoting a notification therefore keep their human role. Subagent roster metadata
+now prefers later resolved model/effort settings, and paired activity completion
+and results beat pending spawn defaults; historical rounds remain unchanged.
+
+The same pass reproduced usage double-counting across item snapshots, standalone
+thread checkpoints, and canonical history reconciliation. Usage-only app-server
+rows now retain recorded cumulative bucket ranges. Stable item IDs align
+page-local reset epochs; only evidenced canonical coverage is subtracted, leaving
+partial/uncovered and later-reset work intact. Unanchored ranges cannot erase
+observed work on numeric coincidence. This does not drop visible messages or mix
+transcript data into the live source. A real SessionView lifecycle case previously
+changed 150 tokens to 200 at completion; it now remains at 150. A truncated reset
+page also retains the separate model buckets (100 before reset, 200 after).
+Coverage is indexed by turn/epoch and merged before overlap lookup, avoiding a
+full canonical-message scan for every live usage row. A Bun helper-only smoke
+with 2,000 canonical and 2,001 live rows took 2.72 ms with exact retained totals;
+this is not an end-to-end renderer timing. The fixed-size 132,664,288-byte source
+snapshot retained all 351 deliveries as agent activity and matched authoritative
+fresh-input-plus-output usage exactly at 17,018,449.
+
+The fourth Astra pass found that a newer canonical usage item could update the
+display without advancing its live baseline/owned item amount. A subsequent
+checkpoint rebilled covered work (history 100 -> refreshed 200 -> live 250 showed
+350). History adoption now uses the same stable-item epoch anchors as merge,
+advancing only aligned current-epoch cumulative vectors that do not rewind any
+bucket. Older pages, intervening live work, and pre-reset matches remain protected.
+A SessionView lifecycle test found a second caller bug: completion removed the
+observed-start identity, discarding valid final usage arriving afterward. Observed
+starts now live until the source changes; active-turn state remains separate.
+The browser case now renders 100 -> 200 -> 250, including the late final update.
+
+The whole-message envelope classifier also accepts multipart input through one
+shared path, preserving whitespace-only/character-sized text parts and attached
+images. Multipart and image-bearing agent deliveries no longer create human
+round/steering boundaries; separately-parted human quotations stay human. Finally,
+unknown child metadata/wait results no longer overwrite known completed/failed
+roster state. Explicit running still reactivates the child. Browser coverage
+checks a late timeout cannot resurrect a completed badge, and an explicit restart
+does bring it back. No transcript/app-server data was mixed by these corrections.
+
 The related lifecycle audit reproduced a stale pane on return from offscreen:
 buffered deltas reached session.messages, but synchronous catch-up inside the
 visibility reactive statement ran after the derived-message pipeline. Svelte's

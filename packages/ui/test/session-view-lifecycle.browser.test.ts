@@ -14,6 +14,8 @@ let server: ViteDevServer;
 let browser: Browser;
 let origin = "";
 let latestTurnComplete = false;
+let sessionModel = "gpt-6.1";
+let usageHistoryItems: Record<string, unknown>[] = [];
 let historicalWorkGroupCount = 0;
 let historicalTurnCount = 18;
 let historicalSubagentOnly = false;
@@ -141,6 +143,7 @@ function threadPage(complete: boolean): unknown {
           },
         ],
       },
+      ...usageHistoryItems,
       ...(complete
         ? [
             {
@@ -173,7 +176,7 @@ function threadPage(complete: boolean): unknown {
       createdAt: 1_780_000_000,
       turns: turns.reverse(),
     },
-    model: "gpt-6.1",
+    model: sessionModel,
     nextCursor: olderHistoryAvailable ? "older-page" : null,
   };
 }
@@ -772,13 +775,19 @@ describe("SessionView browser lifecycle", { concurrency: false }, () => {
     await pane
       .getByText("Review the lifecycle layout without changing it.")
       .waitFor();
+    emitCodexEvents([{ kind: "notification", method: "item/completed", threadId, turnId: latestTurnId,
+      receivedAt: "2026-10-08T00:00:09Z", params: { item: {
+        id: "latest-subagent-settings", type: "subAgentActivity", kind: "interacted", agentThreadId: "child-layout-review",
+        agentPath: "/root/layout_review", model: "gpt-6.1-sol", reasoningEffort: "medium",
+      } } }]);
+    await pane.getByText("gpt-6.1-sol · medium").waitFor();
     await pane.locator(".composer-panel-item").click();
     expect(
       await currentPage.locator("[data-opened-subagent]").textContent(),
     ).toBe("child-layout-review");
     expect(JSON.parse((await currentPage.locator("[data-opened-subagent-context]").textContent())!)).toMatchObject({
       sourceKind: "app-server",
-      subagent: { id: "child-layout-review", task: "Review the lifecycle layout without changing it.", model: "gpt-6-astra", effort: "high" },
+      subagent: { id: "child-layout-review", task: "Review the lifecycle layout without changing it.", model: "gpt-6.1-sol", effort: "medium" },
     });
     expect(
       await currentPage.locator(".messages").getByText("child-layout-review").count(),
@@ -803,6 +812,19 @@ describe("SessionView browser lifecycle", { concurrency: false }, () => {
       async () => await currentPage.getByRole("button", { name: /subagents/i }).count() === 0,
       "Completed subagent remained in the composer badge",
     );
+    emitCodexEvents([{ kind: "notification", method: "item/completed", threadId, turnId: latestTurnId,
+      receivedAt: "2026-10-08T00:00:11Z", params: { item: { id: "late-subagent-wait", type: "dynamicToolCall",
+        tool: "wait_agent", arguments: { agent_id: "child-layout-review" }, result: { status: {}, timed_out: true },
+      } } }, { kind: "notification", method: "item/completed", threadId, turnId: latestTurnId,
+      receivedAt: "2026-10-08T00:00:12Z", params: { item: { id: "after-late-wait", type: "agentMessage", text: "Late wait observed." } } }]);
+    await currentPage.locator(".messages").getByText("Late wait observed.", { exact: true }).waitFor();
+    expect(await currentPage.getByRole("button", { name: /subagents/i }).count()).toBe(0);
+    emitCodexEvents([{ kind: "notification", method: "item/completed", threadId, turnId: latestTurnId,
+      receivedAt: "2026-10-08T00:00:13Z", params: { item: { id: "subagent-restarted", type: "subAgentActivity", kind: "started",
+        agentThreadId: "child-layout-review", agentPath: "/root/layout_review",
+      } } }]);
+    await currentPage.getByRole("button", { name: "Show subagents" }).waitFor();
+    expect(await currentPage.getByRole("button", { name: "Show subagents" }).textContent()).toContain("Subagents: 1");
     expect(await currentPage.locator(".messages .work-subagent-badge").count()).toBeGreaterThan(0);
     await currentPage.close();
   }, 30_000);
@@ -1146,6 +1168,137 @@ describe("SessionView browser lifecycle", { concurrency: false }, () => {
     await currentPage.waitForTimeout(150);
     expect(await tailDistance()).toBeLessThanOrEqual(1);
     await currentPage.close();
+  }, 30_000);
+
+  test("parent deliveries do not invent an outbound message direction", async () => {
+    const currentPage = await openHarness();
+    try {
+      emitCodexEvents([{ kind: "notification", method: "turn/started", threadId, turnId: latestTurnId,
+        receivedAt: "2026-10-14T11:59:59Z", params: { threadId, turn: { id: latestTurnId } } },
+        { kind: "notification", method: "item/completed", threadId, turnId: latestTurnId,
+        receivedAt: "2026-10-14T12:00:00Z", params: { item: { id: "parent-delivery", type: "userMessage", content: [{ type: "text", text:
+          "Message Type: NEW_TASK\nTask name: /root/reviewer\nSender: /root\nPayload:\nPlease review the result." }] } } }]);
+      await waitForCondition(async () => (await currentPage.locator(".messages").innerText()).includes("Please review the result."),
+        "Parent delivery did not render");
+      expect(await currentPage.locator(".messages").innerText()).toContain("Parent root");
+      expect(await currentPage.locator('.messages [title="Message to parent root"]').count()).toBe(0);
+      const entry = currentPage.locator(".work-entry").filter({ hasText: "Please review the result." }).last();
+      await entry.locator(":scope > summary").click();
+      const card = entry.locator(".subagent-detail-card");
+      await card.waitFor();
+      expect(await card.locator(".subagent-detail-label").allTextContents()).toEqual(["Input"]);
+      expect(await card.innerText()).toContain("Please review the result.");
+    } finally {
+      await currentPage.close();
+    }
+  }, 30_000);
+
+  test("a refreshed usage item advances the baseline for subsequent live notifications", async () => {
+    const usage = (inputTokens: number) => ({ inputTokens, outputTokens: 0, totalTokens: inputTokens });
+    const item = (input: number) => ({ id: "refresh-usage", type: "tokenUsage", tokenUsage: { last: usage(input), total: usage(input) } });
+    usageHistoryItems = [item(100)];
+    const currentPage = await openHarness();
+    try {
+      const summary = currentPage.locator(".work-foldout > summary").last();
+      await waitForCondition(async () => (await summary.innerText()).includes("100 tok"), "Initial history usage did not load");
+      emitCodexEvents([{ kind: "notification", method: "turn/started", threadId, turnId: latestTurnId,
+        receivedAt: "2026-10-14T12:00:00Z", params: { turn: { id: latestTurnId } } }]);
+      usageHistoryItems = [item(200)];
+      latestTurnComplete = true;
+      const refreshed = currentPage.waitForResponse(response => new URL(response.url()).pathname === "/api/codex-app/thread");
+      emitCodexEvents([{ kind: "notification", method: "turn/completed", threadId, turnId: latestTurnId,
+        receivedAt: "2026-10-14T12:00:01Z", params: { turn: { id: latestTurnId } } }]);
+      await (await refreshed).finished();
+      await waitForCondition(async () => (await summary.innerText()).includes("200 tok"), "Refreshed history usage did not render");
+      emitCodexEvents([{ kind: "notification", method: "thread/tokenUsage/updated", threadId, turnId: latestTurnId,
+        receivedAt: "2026-10-14T12:00:02Z", params: { tokenUsage: { last: usage(250), total: usage(250) } } }]);
+      await waitForCondition(async () => (await summary.innerText()).includes("250 tok"), "Final usage for an observed turn did not render after completion");
+      expect(await summary.innerText()).toContain("250 tok (this agent)");
+    } finally {
+      usageHistoryItems = [];
+      latestTurnComplete = false;
+      await currentPage.close();
+    }
+  }, 30_000);
+
+  test("completion reconciliation does not charge overlapping item and thread usage twice", async () => {
+    const currentPage = await openHarness();
+    try {
+      const usage = (inputTokens: number) => ({ inputTokens, outputTokens: 0, totalTokens: inputTokens });
+      emitCodexEvents([{ kind: "notification", method: "turn/started", threadId, turnId: latestTurnId,
+        receivedAt: "2026-10-14T12:00:00Z", params: { turn: { id: latestTurnId } } },
+        { kind: "notification", method: "item/started", threadId, turnId: latestTurnId, receivedAt: "2026-10-14T12:00:01Z",
+          params: { item: { id: "usage-lifecycle", type: "tokenUsage", tokenUsage: { last: usage(100), total: usage(100) } } } },
+        { kind: "notification", method: "thread/tokenUsage/updated", threadId, turnId: latestTurnId, receivedAt: "2026-10-14T12:00:02Z",
+          params: { tokenUsage: { last: usage(150), total: usage(150) } } },
+        { kind: "notification", method: "item/completed", threadId, turnId: latestTurnId, receivedAt: "2026-10-14T12:00:03Z",
+          params: { item: { id: "usage-lifecycle", type: "tokenUsage", tokenUsage: { last: usage(150), total: usage(150) } } } }]);
+      const summary = currentPage.locator(".work-foldout > summary").last();
+      await waitForCondition(async () => (await summary.innerText()).includes("150 tok"), "Live usage did not reach 150 tokens");
+      usageHistoryItems = [{ id: "usage-lifecycle", type: "tokenUsage", tokenUsage: { last: usage(150), total: usage(150) } }];
+      latestTurnComplete = true;
+      const reconciled = currentPage.waitForResponse(response => new URL(response.url()).pathname === "/api/codex-app/thread");
+      emitCodexEvents([{ kind: "notification", method: "turn/completed", threadId, turnId: latestTurnId,
+        receivedAt: "2026-10-14T12:00:04Z", params: { turn: { id: latestTurnId } } }]);
+      await (await reconciled).finished();
+      await currentPage.waitForTimeout(100);
+      expect(await summary.innerText()).toContain("150 tok (this agent)");
+    } finally {
+      usageHistoryItems = [];
+      latestTurnComplete = false;
+      await currentPage.close();
+    }
+  }, 30_000);
+
+  test("round usage states its agent-only scope instead of implying a parent-plus-children total", async () => {
+    sessionModel = "gpt-5.6-terra";
+    const currentPage = await openHarness();
+    try {
+      emitCodexEvents([{ kind: "notification", method: "turn/started", threadId, turnId: latestTurnId,
+        receivedAt: "2026-10-14T12:00:00Z", params: { threadId, turn: { id: latestTurnId } } },
+        { kind: "notification", method: "thread/tokenUsage/updated", threadId, turnId: latestTurnId,
+        receivedAt: "2026-10-14T12:00:01Z", params: { threadId, turnId: latestTurnId, tokenUsage: {
+          last: { inputTokens: 1000, cachedInputTokens: 800, cacheWriteInputTokens: 20, outputTokens: 100, reasoningOutputTokens: 30, totalTokens: 1100 },
+          total: { inputTokens: 1000, cachedInputTokens: 800, cacheWriteInputTokens: 20, outputTokens: 100, reasoningOutputTokens: 30, totalTokens: 1100 },
+        } } }]);
+      const round = currentPage.locator(".work-foldout").last();
+      await waitForCondition(async () => (await round.locator(":scope > summary").innerText()).includes("300 tok"),
+        "Round did not show its own reported usage");
+      expect(await round.locator(":scope > summary").innerText()).toContain("this agent");
+      const token = round.locator(":scope > summary .work-tool-meta").filter({ hasText: "300 tok" });
+      expect(await token.getAttribute("title")).toContain("Subagent usage is not included");
+      expect(await token.getAttribute("title")).toContain("20 cache write (included in fresh input)");
+      const price = round.locator(":scope > summary .work-tool-meta[title*='estimated token cost']");
+      expect(await price.getAttribute("title")).toContain("This agent only. Subagent usage is not included");
+      const originalCost = await price.innerText();
+      if (!await round.evaluate(element => (element as HTMLDetailsElement).open)) {
+        await round.locator(":scope > summary").click();
+      }
+      expect(await round.locator(".work-overview-meta").first().innerText()).toContain("fresh input 200");
+      expect(await round.locator(".work-overview-meta").first().innerText()).toContain("cached 800");
+      expect(await round.locator(".work-overview-meta").first().innerText()).toContain("output 100");
+      expect(await round.locator(".work-overview-meta").first().innerText()).toContain("cache write 20 (included in fresh input)");
+      expect(await round.locator(".work-overview-meta").first().innerText()).toContain("reasoning 30 (included in output)");
+      expect(await round.locator(".work-overview-meta").first().innerText()).toContain("Subagent tokens and costs are separate");
+      // Child traffic must neither inflate this round nor change its scope.
+      emitCodexEvents([{ kind: "notification", method: "thread/tokenUsage/updated", threadId: "child-layout-review", turnId: "child-turn",
+        receivedAt: "2026-10-14T12:00:02Z", params: { threadId: "child-layout-review", turnId: "child-turn", tokenUsage: {
+          last: { inputTokens: 5000000, outputTokens: 5000, totalTokens: 5005000 },
+        } } }]);
+      await currentPage.waitForTimeout(100);
+      expect(await token.innerText()).toContain("300 tok");
+      expect(await price.innerText()).toBe(originalCost);
+      latestTurnComplete = true;
+      emitCodexEvents([{ kind: "notification", method: "turn/completed", threadId, turnId: latestTurnId,
+        receivedAt: "2026-10-14T12:00:03Z", params: { threadId, turn: { id: latestTurnId } } }]);
+      await waitForCondition(async () => await round.locator(".work-complete-icon").count() > 0,
+        "Round did not complete");
+      expect(await round.locator(":scope > summary").innerText()).toContain("300 tok (this agent)");
+    } finally {
+      sessionModel = "gpt-6.1";
+      latestTurnComplete = false;
+      await currentPage.close();
+    }
   }, 30_000);
 
   test("renders shared writing, review, and realtime directives in live messages", async () => {

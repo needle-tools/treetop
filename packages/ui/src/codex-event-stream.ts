@@ -43,6 +43,9 @@ import {
   codexSubagentActivityFields,
   codexCollabAgentToolCallFields,
   contextTokenSnapshotFromUsageRecord,
+  codexUsageForCheckpoint,
+  codexTokenUsageFromRecord as codexTokenUsageFromObject,
+  codexInterAgentMessageBlock,
   nicifyCommand,
   parseCodexToolScriptInvocations,
   type AgentTranscriptBlock,
@@ -509,6 +512,8 @@ export interface CodexLiveNormalizeContext {
   toolInputs?: Map<string, unknown>;
   userMessageIdsByTurn?: Map<string, Set<string>>;
   previousTotalTokenUsage?: CodexAppTokenUsage;
+  tokenUsageEpoch?: number;
+  tokenUsageByItem?: Map<string, { usage: CodexAppTokenUsage; ranges?: CodexUsageRange[] }>;
   latestContextTokens?: number;
   compactionStartedAtMs?: Map<string, number>;
   pendingCompactionMarker?: CodexLiveMarker & { timestamp?: string };
@@ -553,6 +558,8 @@ export interface CodexAppHistoryMessage {
   id?: string;
   tokensUsed?: number;
   tokenUsage?: CodexAppTokenUsage;
+  /** App-server cumulative ranges owned by this usage-only row. */
+  tokenUsageRanges?: CodexUsageRange[];
   model?: string;
   turnId?: string;
   intent?: "steer";
@@ -565,6 +572,52 @@ export interface CodexAppTokenUsage {
   output: number;
   reasoningOutput: number;
   total: number;
+}
+
+interface CodexUsageRange {
+  start: CodexAppTokenUsage;
+  end: CodexAppTokenUsage;
+  epoch?: number;
+}
+
+const codexUsageKeys = ["input", "cachedInput", "cacheWriteInput", "output", "reasoningOutput", "total"] as const;
+
+function codexUsageDifference(end: CodexAppTokenUsage, start: CodexAppTokenUsage): CodexAppTokenUsage {
+  const result = { ...end };
+  for (const key of codexUsageKeys) result[key] = Math.max(0, end[key] - start[key]);
+  return result;
+}
+
+function codexUsageRange(context: CodexLiveNormalizeContext, before: CodexAppTokenUsage | undefined, usage: CodexAppTokenUsage): CodexUsageRange[] | undefined {
+  const end = context.previousTotalTokenUsage;
+  if (!end || end === before) return undefined;
+  return [{ start: codexUsageDifference(end, usage), end, epoch: context.tokenUsageEpoch ?? 0 }];
+}
+
+function codexRememberUsageTotal(context: CodexLiveNormalizeContext, total: CodexAppTokenUsage): void {
+  if (context.previousTotalTokenUsage && total.total < context.previousTotalTokenUsage.total) {
+    context.tokenUsageEpoch = (context.tokenUsageEpoch ?? 0) + 1;
+  }
+  context.previousTotalTokenUsage = total;
+}
+
+/** Page-local reset counters need stable item identities before they can be
+ * compared with the observed stream, both for projection and future deltas. */
+function codexUsageEpochAnchors(
+  history: readonly { id?: string; turnId?: string; blocks: unknown[]; tokenUsageRanges?: CodexUsageRange[] }[],
+  observedRanges: (id: string) => readonly CodexUsageRange[] | undefined,
+): Map<string | undefined, Map<number, number | null>> {
+  const result = new Map<string | undefined, Map<number, number | null>>();
+  for (const message of history) {
+    const historical = message.tokenUsageRanges?.at(-1);
+    const observed = message.id ? observedRanges(message.id)?.at(-1) : undefined;
+    if (message.blocks.length || historical?.epoch === undefined || observed?.epoch === undefined) continue;
+    const epochs = result.get(message.turnId) ?? new Map<number, number | null>();
+    const previous = epochs.get(historical.epoch);
+    epochs.set(historical.epoch, previous === undefined || previous === observed.epoch ? observed.epoch : null);
+    result.set(message.turnId, epochs);
+  }
+  return result;
 }
 
 export type CodexEventStreamState = "connecting" | "live" | "reconnecting";
@@ -1483,15 +1536,39 @@ export function codexLiveMessagesFromEvent(
     }
     context.latestContextTokens = contextSnapshot.totalTokens;
   }
-  const tokenUsage = codexTokenUsageFromEvent(event, context);
+  const beforeUsage = context.previousTotalTokenUsage;
+  let tokenUsage = codexTokenUsageFromEvent(event, context);
   if (tokenUsage !== undefined) {
+    let tokenUsageRanges = codexUsageRange(context, beforeUsage, tokenUsage);
+    const usageItem = codexEventItem(event.params);
+    const usageItemId = usageItem && (stringField(usageItem, "id") ?? stringField(usageItem, "call_id"));
+    if (usageItemId) {
+      context.tokenUsageByItem ??= new Map();
+      const previousItem = context.tokenUsageByItem.get(usageItemId);
+      const cumulative = codexTokenUsageSources(event.params).some((source) =>
+        codexObjectField(source, "total_token_usage") ??
+        codexObjectField(source, "totalTokenUsage") ??
+        codexObjectField(codexObjectField(source, "tokenUsage") ?? {}, "total"),
+      );
+      // Thread totals yield deltas; a stable item row must retain all of its
+      // observed work when a later snapshot replaces the earlier snapshot.
+      if (previousItem && cumulative) {
+        tokenUsage = { ...tokenUsage };
+        for (const key of codexUsageKeys) {
+          tokenUsage[key] += previousItem.usage[key];
+        }
+        tokenUsageRanges = previousItem.ranges && tokenUsageRanges ? [...previousItem.ranges, ...tokenUsageRanges] : undefined;
+      }
+      context.tokenUsageByItem.set(usageItemId, { usage: tokenUsage, ranges: tokenUsageRanges });
+    }
     messages.push({
-      id: `codex-usage-${event.turnId ?? event.params.turnId ?? "turn"}-${event.seq ?? event.receivedAt}`,
+      id: usageItemId ? `codex-usage-${usageItemId}` : `codex-usage-${event.turnId ?? event.params.turnId ?? "turn"}-${event.seq ?? event.receivedAt}`,
       role: "assistant",
       timestamp,
       ...(context.model ? { model: context.model } : {}),
       tokensUsed: codexOutputTokensFromUsage(tokenUsage),
       tokenUsage,
+      ...(tokenUsageRanges ? { tokenUsageRanges } : {}),
       blocks: [],
     });
   }
@@ -1510,19 +1587,18 @@ export function codexLiveMessagesFromEvent(
       (typeof event.params.turnId === "string"
         ? event.params.turnId
         : undefined);
-    const intent = codexLiveUserMessageIntent(
-      context,
-      turnId,
-      codexEventItemId(event),
-    );
-    messages.push(
-      ...codexAppMessagesFromThreadItem(
+    const itemMessages = codexAppMessagesFromThreadItem(
         liveItem,
         turnId,
         timestamp,
         codexLiveToolNameMap(context),
         context,
-      ).map((message) =>
+      );
+    const intent = itemMessages.some((message) => message.role === "user")
+      ? codexLiveUserMessageIntent(context, turnId, codexEventItemId(event))
+      : undefined;
+    messages.push(
+      ...itemMessages.map((message) =>
         intent && message.role === "user" ? { ...message, intent } : message,
       ),
     );
@@ -1693,7 +1769,7 @@ export function codexAppHistoryMessagesFromThread(
           intent && message.role === "user" ? { ...message, intent } : message,
         ),
       );
-      if (userMessageId) userMessageIds.push(userMessageId);
+      if (userMessageId && itemMessages.some((message) => message.role === "user")) userMessageIds.push(userMessageId);
     }
     if (turnId && userMessageIds.length > 0) {
       context.userMessageIdsByTurn ??= new Map<string, Set<string>>();
@@ -1711,6 +1787,41 @@ export function codexAppHistoryMessagesFromThread(
         turnId && !message.turnId ? { ...message, turnId } : message,
       ),
     );
+  }
+  // A resumed history page may already contain the latest cumulative usage.
+  // Seed an unobserved live stream. Later refreshes may advance only a proven
+  // current epoch; older pages and pre-reset checkpoints must not rewind it.
+  if (!context.previousTotalTokenUsage) {
+    context.previousTotalTokenUsage = usageContext.previousTotalTokenUsage;
+    context.tokenUsageEpoch = usageContext.tokenUsageEpoch;
+    for (const message of messages) {
+      if (message.id?.startsWith("codex-usage-") && message.tokenUsage) {
+        context.tokenUsageByItem ??= new Map();
+        context.tokenUsageByItem.set(message.id.slice("codex-usage-".length), { usage: message.tokenUsage, ranges: message.tokenUsageRanges });
+      }
+    }
+  } else {
+    const epochs = codexUsageEpochAnchors(messages, (id) =>
+      id.startsWith("codex-usage-") ? context.tokenUsageByItem?.get(id.slice("codex-usage-".length))?.ranges : undefined,
+    );
+    for (const message of messages) {
+      if (!message.id?.startsWith("codex-usage-") || !message.tokenUsage || !message.tokenUsageRanges?.length) continue;
+      const ranges = message.tokenUsageRanges.map((range) => ({ ...range,
+        epoch: range.epoch === undefined ? undefined : epochs.get(message.turnId)?.get(range.epoch) ?? undefined,
+      }));
+      if (ranges.some((range) => range.epoch === undefined)) continue;
+      const latest = ranges.at(-1)!;
+      if (latest.epoch !== (context.tokenUsageEpoch ?? 0)) continue;
+      const itemId = message.id.slice("codex-usage-".length);
+      const previous = context.tokenUsageByItem?.get(itemId);
+      if (!previous || message.tokenUsage.total >= previous.usage.total) {
+        context.tokenUsageByItem ??= new Map();
+        context.tokenUsageByItem.set(itemId, { usage: message.tokenUsage, ranges });
+      }
+      if (codexUsageKeys.every((key) => latest.end[key] >= context.previousTotalTokenUsage![key])) {
+        context.previousTotalTokenUsage = latest.end;
+      }
+    }
   }
   return messages;
 }
@@ -1764,6 +1875,9 @@ export function mergeCodexAppHistoryMessages<
     role?: string;
     intent?: string;
     turnId?: string;
+    tokenUsage?: CodexAppTokenUsage;
+    tokenUsageRanges?: CodexUsageRange[];
+    tokensUsed?: number;
   },
 >(history: readonly M[], current: readonly M[]): M[] {
   const historyIndexById = new Map<string, number>();
@@ -1773,6 +1887,13 @@ export function mergeCodexAppHistoryMessages<
   const currentById = new Map<string, M>();
   current.forEach((message) => {
     if (message.id) currentById.set(message.id, message);
+  });
+
+  // Reset counters are local to each parsed page. A stable item observed in
+  // both sources anchors its history epoch to the live stream's epoch.
+  const usageEpochs = codexUsageEpochAnchors(history, (id) => {
+    const message = currentById.get(id);
+    return message?.blocks.length === 0 ? message.tokenUsageRanges : undefined;
   });
 
   // App-server history owns canonical item order. Keep a richer live payload
@@ -1802,8 +1923,41 @@ export function mergeCodexAppHistoryMessages<
         turnId: historyMessage.turnId ?? selected.turnId,
       };
     }
+    if (selected === historyMessage && selected.tokenUsageRanges) {
+      const epochs = usageEpochs.get(selected.turnId);
+      return { ...selected, tokenUsageRanges: selected.tokenUsageRanges.map((range) => ({
+        ...range,
+        // Without an identity anchor, retain the usage but do not use a
+        // coincidentally equal page-local counter to erase observed work.
+        epoch: range.epoch === undefined ? undefined : epochs?.get(range.epoch) ?? undefined,
+      })) };
+    }
     return selected;
   });
+  const usageCoverage = new Map<string | undefined, Map<number, CodexUsageRange[]>>();
+  for (const message of canonical) {
+    if (message.blocks.length || !message.tokenUsageRanges) continue;
+    const epochs = usageCoverage.get(message.turnId) ?? new Map<number, CodexUsageRange[]>();
+    for (const range of message.tokenUsageRanges) {
+      if (range.epoch === undefined) continue;
+      const ranges = epochs.get(range.epoch) ?? [];
+      ranges.push(range);
+      epochs.set(range.epoch, ranges);
+    }
+    usageCoverage.set(message.turnId, epochs);
+  }
+  for (const epochs of usageCoverage.values()) {
+    for (const [epoch, ranges] of epochs) {
+      const merged: CodexUsageRange[] = [];
+      for (const range of ranges.sort((a, b) => a.start.total - b.start.total)) {
+        const previous = merged.at(-1);
+        if (previous && range.start.total <= previous.end.total) {
+          if (range.end.total > previous.end.total) merged[merged.length - 1] = { ...previous, end: range.end };
+        } else merged.push(range);
+      }
+      epochs.set(epoch, merged);
+    }
+  }
   const nextCanonicalBoundary = new Array<number | undefined>(current.length);
   let nextBoundary: number | undefined;
   for (let index = current.length - 1; index >= 0; index -= 1) {
@@ -1841,7 +1995,7 @@ export function mergeCodexAppHistoryMessages<
         ? 0
         : canonical.length);
     const extras = extrasByBoundary.get(boundary) ?? [];
-    extras.push(message);
+    extras.push(...codexUncoveredUsageMessages(message, usageCoverage.get(message.turnId)));
     extrasByBoundary.set(boundary, extras);
   });
 
@@ -1851,6 +2005,48 @@ export function mergeCodexAppHistoryMessages<
     if (boundary < canonical.length) merged.push(canonical[boundary]!);
   }
   return merged;
+}
+
+/** Only usage-only app-server rows carry this provenance. Subtract canonical
+ * coverage using recorded cumulative bucket vectors, never timestamps or text.
+ */
+function codexUncoveredUsageMessages<M extends {
+  blocks: unknown[];
+  turnId?: string;
+  tokenUsage?: CodexAppTokenUsage;
+  tokenUsageRanges?: CodexUsageRange[];
+  tokensUsed?: number;
+}>(message: M, coverage: ReadonlyMap<number, readonly CodexUsageRange[]> | undefined): M[] {
+  if (message.blocks.length || !message.tokenUsage || !message.tokenUsageRanges?.length) return [message];
+  const ranges: CodexUsageRange[] = [];
+  for (const range of message.tokenUsageRanges) {
+    const owners = range.epoch === undefined ? undefined : coverage?.get(range.epoch);
+    if (!owners?.length) { ranges.push(range); continue; }
+    let low = 0;
+    let high = owners.length;
+    while (low < high) {
+      const middle = (low + high) >>> 1;
+      if (owners[middle]!.end.total <= range.start.total) low = middle + 1;
+      else high = middle;
+    }
+    let start = range.start;
+    for (let index = low; index < owners.length && start.total < range.end.total; index++) {
+      const covered = owners[index]!;
+      if (covered.start.total >= range.end.total) break;
+      if (covered.start.total > start.total) ranges.push({ ...range, start, end: covered.start });
+      start = covered.end.total < range.end.total ? covered.end : range.end;
+    }
+    if (start === range.start) ranges.push(range);
+    else if (start.total < range.end.total) ranges.push({ ...range, start });
+  }
+  if (!ranges.length) return [];
+  if (ranges.length === message.tokenUsageRanges.length && ranges.every((range, index) => range === message.tokenUsageRanges![index])) return [message];
+  const usage: CodexAppTokenUsage = { input: 0, cachedInput: 0, cacheWriteInput: 0, output: 0, reasoningOutput: 0, total: 0 };
+  for (const range of ranges) {
+    const part = codexUsageDifference(range.end, range.start);
+    for (const key of codexUsageKeys) usage[key] += part[key];
+  }
+  return [{ ...message, tokenUsage: usage, tokensUsed: usage.output, tokenUsageRanges: ranges }];
 }
 
 /** Reconcile a refreshed latest-turn page with the previous live projection.
@@ -1969,8 +2165,10 @@ function codexAppMessagesFromThreadItem(
     }
     usageContext.latestContextTokens = contextSnapshot.totalTokens;
   }
+  const beforeUsage = usageContext.previousTotalTokenUsage;
   const tokenUsage = codexTokenUsageFromPayload(item, usageContext);
   if (tokenUsage !== undefined) {
+    const tokenUsageRanges = codexUsageRange(usageContext, beforeUsage, tokenUsage);
     return [
       {
         id: `codex-usage-${itemId}`,
@@ -1979,6 +2177,7 @@ function codexAppMessagesFromThreadItem(
         ...(usageContext.model ? { model: usageContext.model } : {}),
         tokensUsed: codexOutputTokensFromUsage(tokenUsage),
         tokenUsage,
+        ...(tokenUsageRanges ? { tokenUsageRanges } : {}),
         blocks: [],
       },
     ];
@@ -1995,7 +2194,7 @@ function codexAppMessagesFromThreadItem(
       ? [
           {
             id: `codex-user-${itemId}`,
-            role: blocks.every((block) => block.type === "subagent")
+            role: blocks.some((block) => block.type === "subagent") && blocks.every((block) => block.type === "subagent" || block.type === "media")
               ? "assistant"
               : "user",
             timestamp,
@@ -2267,80 +2466,13 @@ function codexTokenUsageFromEvent(
   return codexTokenUsageFromPayload(event.params, context);
 }
 
-function codexTokenUsageFromObject(
-  usage: Record<string, unknown> | undefined,
-): CodexAppTokenUsage | undefined {
-  if (!usage) return undefined;
-  const input = finiteNumber(usage.input_tokens ?? usage.inputTokens) ?? 0;
-  const cachedInput =
-    finiteNumber(usage.cached_input_tokens ?? usage.cachedInputTokens) ?? 0;
-  const cacheWriteInput =
-    finiteNumber(
-      usage.cache_write_input_tokens ??
-        usage.cacheWriteInputTokens ??
-        usage.cache_creation_input_tokens ??
-        usage.cacheCreationInputTokens,
-    ) ?? 0;
-  const output = finiteNumber(usage.output_tokens ?? usage.outputTokens) ?? 0;
-  const reasoning =
-    finiteNumber(
-      usage.reasoning_output_tokens ?? usage.reasoningOutputTokens,
-    ) ?? 0;
-  const total =
-    finiteNumber(usage.total_tokens ?? usage.totalTokens) ?? input + output;
-  if (input + cachedInput + cacheWriteInput + output + reasoning <= 0) {
-    return undefined;
-  }
-  return {
-    input,
-    cachedInput,
-    cacheWriteInput,
-    output,
-    reasoningOutput: reasoning,
-    total,
-  };
-}
-
-function codexTokenUsageHasContent(
-  usage: CodexAppTokenUsage | undefined,
-): usage is CodexAppTokenUsage {
-  return (
-    usage !== undefined &&
-    (usage.total > 0 ||
-      usage.input > 0 ||
-      usage.output > 0 ||
-      usage.reasoningOutput > 0)
-  );
-}
-
-function codexTokenUsageDelta(
-  current: CodexAppTokenUsage,
-  previous: CodexAppTokenUsage | undefined,
-): CodexAppTokenUsage {
-  if (!previous || current.total < previous.total) return current;
-  return {
-    input: Math.max(0, current.input - previous.input),
-    cachedInput: Math.max(0, current.cachedInput - previous.cachedInput),
-    cacheWriteInput: Math.max(
-      0,
-      current.cacheWriteInput - previous.cacheWriteInput,
-    ),
-    output: Math.max(0, current.output - previous.output),
-    reasoningOutput: Math.max(
-      0,
-      current.reasoningOutput - previous.reasoningOutput,
-    ),
-    total: Math.max(0, current.total - previous.total),
-  };
-}
-
 function codexTokenUsageFromPayload(
   payload: Record<string, unknown>,
   context: CodexLiveNormalizeContext = {},
 ): CodexAppTokenUsage | undefined {
   const sources = codexTokenUsageSources(payload);
   const threadUsage = codexThreadTokenUsageFromSources(sources, context);
-  if (threadUsage) return threadUsage;
+  if (threadUsage !== undefined) return threadUsage ?? undefined;
   const lastUsage = codexTokenUsageFromSources(
     sources,
     "last_token_usage",
@@ -2352,17 +2484,9 @@ function codexTokenUsageFromPayload(
     "total_token_usage",
     "totalTokenUsage",
   );
-  if (lastUsage) {
-    if (totalUsage) context.previousTotalTokenUsage = totalUsage;
-    return lastUsage;
-  }
-  if (!totalUsage) return undefined;
-  const delta = codexTokenUsageDelta(
-    totalUsage,
-    context.previousTotalTokenUsage,
-  );
-  context.previousTotalTokenUsage = totalUsage;
-  return codexTokenUsageHasContent(delta) ? delta : undefined;
+  const usage = codexUsageForCheckpoint(lastUsage, totalUsage, context.previousTotalTokenUsage);
+  if (totalUsage) codexRememberUsageTotal(context, totalUsage);
+  return usage;
 }
 
 function codexContextSnapshotFromPayload(
@@ -2396,7 +2520,7 @@ function codexPayloadHasTokenUsage(payload: Record<string, unknown>): boolean {
 function codexThreadTokenUsageFromSources(
   sources: Record<string, unknown>[],
   context: CodexLiveNormalizeContext,
-): CodexAppTokenUsage | undefined {
+): CodexAppTokenUsage | null | undefined {
   for (const source of sources) {
     const tokenUsage = codexObjectField(source, "tokenUsage");
     if (!tokenUsage) continue;
@@ -2406,17 +2530,12 @@ function codexThreadTokenUsageFromSources(
     const totalUsage = codexTokenUsageFromObject(
       codexObjectField(tokenUsage, "total"),
     );
-    if (lastUsage) {
-      if (totalUsage) context.previousTotalTokenUsage = totalUsage;
-      return lastUsage;
-    }
-    if (!totalUsage) continue;
-    const delta = codexTokenUsageDelta(
-      totalUsage,
-      context.previousTotalTokenUsage,
-    );
-    context.previousTotalTokenUsage = totalUsage;
-    if (codexTokenUsageHasContent(delta)) return delta;
+    if (!lastUsage && !totalUsage) continue;
+    const usage = codexUsageForCheckpoint(lastUsage, totalUsage, context.previousTotalTokenUsage);
+    if (totalUsage) codexRememberUsageTotal(context, totalUsage);
+    // null means this representation was handled, with no new billable work.
+    // Do not fall through to a stale alias of the same last response.
+    return usage ?? null;
   }
   return undefined;
 }
@@ -2467,6 +2586,8 @@ function finiteNumber(value: unknown): number | undefined {
 function codexUserInputBlocks(input: unknown): CodexAppHistoryBlock[] {
   if (!Array.isArray(input)) return [];
   const blocks: CodexAppHistoryBlock[] = [];
+  const delivery = codexInterAgentMessageBlock(input);
+  if (delivery) blocks.push(delivery);
   let text = "";
   for (const raw of input) {
     if (!raw || typeof raw !== "object") continue;
@@ -2478,6 +2599,7 @@ function codexUserInputBlocks(input: unknown): CodexAppHistoryBlock[] {
     }
     const type = stringField(item, "type");
     if (type === "text" || type === "input_text" || type === "inputText") {
+      if (delivery) continue;
       const part = stringField(item, "text");
       if (part) {
         const subagent = codexSubagentNotificationBlock(part);
@@ -3107,8 +3229,10 @@ function codexLiveItemTimestamp(event: CodexAppEvent): string {
   return event.receivedAt;
 }
 
-function messagePayloadWeight(message: { blocks: unknown[] }): number {
-  let weight = 0;
+function messagePayloadWeight(message: { blocks: unknown[]; tokenUsage?: { total: number } }): number {
+  // Usage-only item snapshots have no blocks, but a completed snapshot can
+  // carry more accounted work than its earlier started snapshot.
+  let weight = message.blocks.length === 0 ? message.tokenUsage?.total ?? 0 : 0;
   for (const block of message.blocks) {
     if (!block || typeof block !== "object") continue;
     const record = block as Record<string, unknown>;

@@ -1231,7 +1231,7 @@
 
   function subagentTitle(meta: VisualSubagentMeta): string {
     const label = visualSubagentLabel(meta);
-    if (meta.isParent) return `Message to parent ${label}`;
+    if (meta.isParent) return `Parent ${label}`;
     if (meta.action === "spawn") return `Subagent ${label} started`;
     if (meta.action === "wait") return `Waiting for ${label}`;
     if (meta.status === "completed") return `${label} completed`;
@@ -1734,7 +1734,7 @@
       overview.tokens.perSecond > 0
         ? ` · ${overview.tokens.perSecond.toLocaleString()} output tok/s`
         : "";
-    return `${total} new tokens${perSecond}`;
+    return `${total} new tokens (fresh input + output, this agent)${perSecond}`;
   }
 
   function workOverviewCostLabel(overview: VisualWorkOverview): string {
@@ -1753,6 +1753,7 @@
   function workOverviewCostTitle(overview: VisualWorkOverview): string {
     const parts = [
       `${workOverviewCostLabel(overview)} estimated token cost`,
+      "This agent only. Subagent usage is not included",
       `${overview.cost.pricedCheckpoints} priced ${overview.cost.pricedCheckpoints === 1 ? "checkpoint" : "checkpoints"}`,
     ];
     if (overview.cost.models.length > 0) {
@@ -2466,13 +2467,17 @@
       {#if overview.tokens.total > 0}
         <span
           class="work-tool-meta"
-          title={`${overview.tokens.total.toLocaleString()} new tokens · ${overview.tokens.freshInput.toLocaleString()} fresh input · ${overview.tokens.input.toLocaleString()} reported input · ${overview.tokens.cachedInput.toLocaleString()} cached · ${overview.tokens.output.toLocaleString()} output${
+          title={`This agent only. Subagent usage is not included. New tokens = fresh input + output; cached input is separate. ${overview.tokens.total.toLocaleString()} new tokens · ${overview.tokens.freshInput.toLocaleString()} fresh input · ${overview.tokens.input.toLocaleString()} reported input · ${overview.tokens.cachedInput.toLocaleString()} cached${
+            overview.tokens.cacheWriteInput > 0
+              ? ` · ${overview.tokens.cacheWriteInput.toLocaleString()} cache write (included in fresh input)`
+              : ""
+          } · ${overview.tokens.output.toLocaleString()} output${
             overview.tokens.reasoningOutput > 0
-              ? ` · ${overview.tokens.reasoningOutput.toLocaleString()} reasoning`
+              ? ` · ${overview.tokens.reasoningOutput.toLocaleString()} reasoning (included in output)`
               : ""
           } · ${overview.tokens.reportedTotal.toLocaleString()} reported total`}
         >
-          {overview.tokens.total.toLocaleString()} tok
+          {overview.tokens.total.toLocaleString()} tok (this agent)
         </span>
       {/if}
       {#if overview.tokens.total > 0 && (hasCost || overview.time.elapsedMs > 0)}
@@ -3795,8 +3800,11 @@
                   {/if}
                   {#if workOverview.tokens.total > 0}
                     <span>
-                      fresh input {workOverview.tokens.freshInput.toLocaleString()} · cached {workOverview.tokens.cachedInput.toLocaleString()} · output {workOverview.tokens.output.toLocaleString()}{#if workOverview.tokens.reasoningOutput > 0} · reasoning {workOverview.tokens.reasoningOutput.toLocaleString()}{/if}
+                      This agent: fresh input {workOverview.tokens.freshInput.toLocaleString()} · cached {workOverview.tokens.cachedInput.toLocaleString()}{#if workOverview.tokens.cacheWriteInput > 0} · cache write {workOverview.tokens.cacheWriteInput.toLocaleString()} (included in fresh input){/if} · output {workOverview.tokens.output.toLocaleString()}{#if workOverview.tokens.reasoningOutput > 0} · reasoning {workOverview.tokens.reasoningOutput.toLocaleString()} (included in output){/if}
                     </span>
+                  {/if}
+                  {#if summarySubagents.length > 0}
+                    <span>Subagent tokens and costs are separate and not included above. Goal budgets may include subagents.</span>
                   {/if}
                 </div>
                 {#if workOverview.artifacts.length > 0}

@@ -9,6 +9,7 @@ import {
 } from "../../daemon/src/sessions";
 import {
   buildVisualTranscriptItems,
+  createVisualSubagentTracker,
   buildVisualWorkDisplayEntries,
   cleanVisualToolResultText,
   latestVisualGoal,
@@ -459,6 +460,73 @@ describe("visual transcript provider flow", () => {
     });
   });
 
+  test("unknown subagent metadata does not reopen a known completed or failed child", () => {
+    for (const status of ["completed", "failed"] as const) {
+      const messages: NormalizedMessage[] = [
+        { role: "user", blocks: [{ type: "text", text: "Review it." }] },
+        { role: "assistant", blocks: [{ type: "subagent", subagentId: "reviewer", subagentStatus: status, subagentResult: "Finished." }] },
+        { role: "assistant", blocks: [{ type: "subagent", subagentId: "reviewer", subagentStatus: "unknown", subagentModel: "gpt-6.1-sol" }] },
+        { role: "user", blocks: [{ type: "text", text: "Follow-up." }] },
+        { role: "assistant", blocks: [{ type: "subagent", subagentId: "reviewer", subagentStatus: "unknown" }] },
+      ];
+      const tracker = createVisualSubagentTracker();
+      const work = buildVisualTranscriptItems(messages.slice(0, 3)).find(item => item.kind === "work");
+      if (!work || work.kind !== "work") throw new Error("missing round");
+      for (const roster of [visualWorkSubagents(buildVisualWorkDisplayEntries(work.entries)),
+        tracker(messages), visualTranscriptSubagents(buildVisualTranscriptItems(messages))]) {
+        expect(roster[0]).toMatchObject({ status, model: "gpt-6.1-sol", result: "Finished." });
+      }
+      expect(tracker([...messages, { role: "assistant", blocks: [{ type: "subagent", subagentId: "reviewer", subagentStatus: "running" }] }])[0]?.status).toBe("running");
+    }
+  });
+
+  test("keeps current subagent model settings without rewriting historical rounds", () => {
+    expect(visualSubagentMetaFromBlocks(
+      { type: "tool_use", toolName: "spawn_agent", toolInput: { model: "gpt-6-sol", reasoning_effort: "high", message: "Review it." } },
+      { type: "tool_result", text: JSON.stringify({ agent_id: "reviewer" }) },
+      { type: "subagent", subagentId: "reviewer", subagentModel: "gpt-6.1-sol", subagentEffort: "medium" },
+    )).toMatchObject({ model: "gpt-6.1-sol", effort: "medium", task: "Review it." });
+    expect(visualSubagentMetaFromBlocks(
+      { type: "tool_use", toolName: "spawn_agent", toolInput: { message: "Review it." } },
+      { type: "tool_result", text: JSON.stringify({ agent_id: "reviewer" }) },
+      { type: "subagent", subagentId: "reviewer", subagentStatus: "completed", subagentResult: "Review complete." },
+    )).toMatchObject({ status: "completed", result: "Review complete.", task: "Review it." });
+    expect(visualSubagentMetaFromBlocks(
+      { type: "tool_use", toolName: "spawn_agent", toolInput: { model: "gpt-6-sol", reasoning_effort: "high", message: "Review it." } },
+      undefined,
+      { type: "subagent", subagentId: "reviewer", subagentModel: "gpt-6.1-sol", subagentEffort: "medium" },
+    )).toMatchObject({ model: "gpt-6.1-sol", effort: "medium", task: "Review it." });
+    const messages: NormalizedMessage[] = [
+      { role: "user", blocks: [{ type: "text", text: "Review the renderer." }] },
+      { role: "assistant", blocks: [{ type: "subagent", subagentId: "reviewer", subagentAction: "spawn", subagentStatus: "running",
+        subagentModel: "gpt-6-sol", subagentEffort: "high", subagentMessage: "Review the renderer." }] },
+      { role: "user", blocks: [{ type: "text", text: "Continue the review." }] },
+      { role: "assistant", blocks: [{ type: "subagent", subagentId: "reviewer", subagentAction: "notification", subagentStatus: "running",
+        subagentModel: "gpt-6.1-sol", subagentEffort: "medium" }] },
+      { role: "assistant", blocks: [{ type: "subagent", subagentId: "reviewer", subagentAction: "notification", subagentStatus: "completed",
+        subagentResult: "Review complete." }] },
+    ];
+    const tracker = createVisualSubagentTracker();
+    expect(tracker(messages.slice(0, 2))[0]?.model).toBe("gpt-6-sol");
+    const items = buildVisualTranscriptItems(messages);
+    for (const roster of [tracker(messages), visualTranscriptSubagents(items)]) {
+      expect(roster[0]).toMatchObject({ model: "gpt-6.1-sol", effort: "medium", task: "Review the renderer.", status: "completed" });
+    }
+    const firstRound = items.find(item => item.kind === "work");
+    if (!firstRound || firstRound.kind !== "work") throw new Error("missing first round");
+    expect(visualWorkSubagents(buildVisualWorkDisplayEntries(firstRound.entries))[0]?.model).toBe("gpt-6-sol");
+  });
+
+  test("does not present a subagent's known input as fabricated output", () => {
+    const task = "Review the renderer.";
+    const block = { type: "subagent" as const, text: task, subagentMessage: task };
+    expect(visualSubagentMetaFromBlock(block)).toMatchObject({ task, result: undefined });
+    expect(visualSubagentMetaFromBlock({ ...block, subagentResult: "Review complete." })).toMatchObject({
+      task, result: "Review complete.",
+    });
+    expect(visualSubagentMetaFromBlock({ type: "subagent", text: "Legacy notification." })?.result).toBe("Legacy notification.");
+  });
+
   test("keeps the parent's full plaintext task and skills without listing the parent as a child", () => {
     const task = "Inspect the rendering.\nSender: retain this payload line.\nTask name: retain this too.";
     const session = parseCodexJsonl(jsonl([
@@ -472,7 +540,14 @@ describe("visual transcript provider flow", () => {
     ]));
     expect(session.messages.flatMap(message => message.blocks).some(block =>
       block.type === "context_update" && block.text?.includes("Read the rendering skill."))).toBe(true);
-    expect(session.messages.find(message => message.role === "user")?.blocks[0]?.text).toBe(`Task from root\n${task}`);
+    // Parent deliveries are subagent activity, not human turn boundaries.
+    expect(session.messages.some(message => message.role === "user")).toBe(false);
+    expect(session.messages.flatMap(message => message.blocks).find(block =>
+      block.type === "subagent" && block.subagentMessage === task)).toMatchObject({
+        text: task, subagentIsParent: true, subagentNickname: "root",
+      });
+    const parentTask = session.messages.flatMap(message => message.blocks).find(block => block.subagentMessage === task);
+    expect(visualSubagentMetaFromBlock(parentTask)).toMatchObject({ task, result: undefined });
     expect(visualTranscriptSubagents(buildVisualTranscriptItems(session.messages))).toEqual([]);
   });
 
@@ -529,14 +604,19 @@ describe("visual transcript provider flow", () => {
 
     expect(session.messages).toHaveLength(1);
     expect(session.messages[0]).toMatchObject({
-      role: "user",
+      role: "assistant",
       blocks: [
         {
-          type: "text",
-          text: "Task from root\nheadphones_reference_02\nTask text is encrypted in this recording.",
+          type: "subagent",
+          subagentIsParent: true,
+          subagentNickname: "root",
+          text: "headphones_reference_02\nTask text is encrypted in this recording.",
         },
       ],
     });
+    const taskMeta = visualSubagentMetaFromBlock(session.messages[0]?.blocks[0]);
+    expect(taskMeta?.result).toBeUndefined();
+    expect(taskMeta?.task).toContain("Task text is encrypted in this recording.");
   });
 
   test("normalizes Codex SubAgentActivity rows and keeps one badge per child", () => {

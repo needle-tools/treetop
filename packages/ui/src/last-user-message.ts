@@ -458,6 +458,8 @@ export function visualSubagentMetaFromBlocks(
   return {
     ...direct,
     id: direct.id ?? activity?.id,
+    status: activity && activity.status !== "unknown" ? activity.status : direct.status,
+    result: activity?.result ?? direct.result,
     ...(direct.isParent || activity?.isParent ? { isParent: true } : {}),
     nickname:
       direct.nickname ??
@@ -465,10 +467,10 @@ export function visualSubagentMetaFromBlocks(
       stringFromUnknown(input?.task_name) ??
       stringFromUnknown(input?.target),
     type: direct.type ?? activity?.type ?? stringFromUnknown(input?.agent_type),
-    model: direct.model ?? activity?.model ?? stringFromUnknown(input?.model),
+    model: activity?.model ?? direct.model ?? stringFromUnknown(input?.model),
     effort:
-      direct.effort ??
       activity?.effort ??
+      direct.effort ??
       stringFromUnknown(input?.reasoning_effort),
     task: visibleSubagentText(direct.task ?? input?.message),
     ...encryptedSubagentTask(input?.message),
@@ -543,7 +545,7 @@ export function visualSubagentMetaFromBlock(
       effort: block.subagentEffort,
       task: visibleSubagentText(block.subagentMessage),
       ...encryptedSubagentTask(block.subagentMessage),
-      result: block.subagentResult ?? block.text,
+      result: block.subagentResult ?? (block.subagentMessage ? undefined : block.text),
     };
   }
   const toolName = normalizedSubagentToolName(block.toolName);
@@ -628,10 +630,11 @@ export function visualWorkSubagents<
       ...existing,
       ...meta,
       ...(id ? { id } : {}),
+      status: meta.status === "unknown" ? existing?.status ?? meta.status : meta.status,
       nickname: existing?.nickname ?? meta.nickname,
       type: existing?.type ?? meta.type,
-      model: existing?.model ?? meta.model,
-      effort: existing?.effort ?? meta.effort,
+      model: meta.model ?? existing?.model,
+      effort: meta.effort ?? existing?.effort,
       task: existing?.task ?? meta.task,
       result: meta.result ?? existing?.result,
     });
@@ -662,10 +665,11 @@ export function visualTranscriptSubagents<
       byKey.set(key, {
         ...existing,
         ...meta,
+        status: meta.status === "unknown" ? existing?.status ?? meta.status : meta.status,
         nickname: existing?.nickname ?? meta.nickname,
         type: existing?.type ?? meta.type,
-        model: existing?.model ?? meta.model,
-        effort: existing?.effort ?? meta.effort,
+        model: meta.model ?? existing?.model,
+        effort: meta.effort ?? existing?.effort,
         task: existing?.task ?? meta.task,
         result: meta.result ?? existing?.result,
       });
