@@ -1,8 +1,14 @@
+<script context="module" lang="ts">
+  import { marked } from "marked";
+  import { markdownSessionDirectiveExtension } from "./markdown-code";
+
+  marked.use(markdownSessionDirectiveExtension());
+</script>
+
 <script lang="ts">
   import { onDestroy, tick } from "svelte";
   import { flip } from "svelte/animate";
   import { scale } from "svelte/transition";
-  import { marked } from "marked";
   import DOMPurify from "dompurify";
   import { apiUrl } from "./api";
   import { isLocalFileMarkdownHref } from "./open-url";
@@ -713,21 +719,21 @@
     }
   }
 
-  function handleMarkdownCodeCopy(e: MouseEvent): void {
+  function handleMarkdownCopy(e: MouseEvent): void {
     const target = e.target as HTMLElement | null;
     const button = target?.closest<HTMLButtonElement>(".md-code-copy");
     if (!button) return;
     const frame = button.closest(".md-code-frame");
-    const code = frame?.querySelector("pre code")?.textContent ?? "";
+    const code = frame?.getAttribute("data-writing-body") ?? frame?.querySelector("pre code")?.textContent ?? "";
     if (!code) return;
     void copyToClipboard(code);
   }
 
-  function codeCopy(node: HTMLElement): { destroy: () => void } {
-    node.addEventListener("click", handleMarkdownCodeCopy);
+  function markdownCopy(node: HTMLElement): { destroy: () => void } {
+    node.addEventListener("click", handleMarkdownCopy);
     return {
       destroy() {
-        node.removeEventListener("click", handleMarkdownCodeCopy);
+        node.removeEventListener("click", handleMarkdownCopy);
       },
     };
   }
@@ -3644,7 +3650,7 @@
   on:pointerup={onMessagesPointerUp}
   on:pointercancel={onMessagesPointerUp}
   on:scroll={onMessagesScroll}
-  use:codeCopy
+  use:markdownCopy
   data-supergit-session-cwd={sessionCwd}
   data-supergit-daemon-id={daemonId}
 >
@@ -5339,7 +5345,7 @@
       "Liberation Mono", "Courier New", monospace;
     font-size: 0.7rem;
   }
-  .work-preview-path {
+  .messages :global(.work-preview-path) {
     display: inline;
     max-width: 100%;
     margin: 0 -0.06rem;
@@ -5357,8 +5363,8 @@
   .work-preview-path-trigger {
     display: inline;
   }
-  .work-preview-path:hover,
-  .work-preview-path:focus-visible {
+  .messages :global(.work-preview-path:hover),
+  .messages :global(.work-preview-path:focus-visible) {
     background: color-mix(in srgb, var(--text-muted) 10%, transparent);
     color: var(--text-1);
     outline: none;
@@ -5615,6 +5621,15 @@
     color: var(--text-muted);
     font-family: ui-monospace, monospace;
     font-size: 0.72rem;
+  }
+  .md :global(.md-directive-body) {
+    padding: 0.4rem 0.65rem 0.65rem;
+  }
+  .md :global(.md-directive-meta) {
+    padding: 0.2rem 0.65rem;
+    color: var(--text-muted);
+    font-size: 0.78em;
+    overflow-wrap: anywhere;
   }
   .md :global(.md-code-lang) {
     min-width: 0;

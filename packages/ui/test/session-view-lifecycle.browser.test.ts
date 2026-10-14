@@ -1148,6 +1148,62 @@ describe("SessionView browser lifecycle", { concurrency: false }, () => {
     await currentPage.close();
   }, 30_000);
 
+  test("renders shared writing, review, and realtime directives in live messages", async () => {
+    const currentPage = await openHarness();
+    try {
+      await currentPage.context().grantPermissions(["clipboard-read", "clipboard-write"]);
+      emitCodexEvents([{ kind: "notification", method: "item/completed", threadId, turnId: latestTurnId,
+        receivedAt: "2026-10-14T12:00:01Z", params: { item: { id: "directive-response", type: "agentMessage", text: [
+          "::codex-realtime-inline{}",
+          "The draft is ready.",
+          "",
+          ':::writing{variant="email" id="12345" subject="Review" recipient="team@example.com"}',
+          "Hello **team**.",
+          ":::" ,
+          "",
+          '::code-comment{title="[P2] Boundary" body="Use **the final row**." file="/tmp/app.ts" start=10 end=11 priority=2}',
+        ].join("\n") } } }]);
+      const draft = currentPage.locator(".md-writing-block");
+      await draft.waitFor();
+      expect(await draft.locator("strong").innerText()).toBe("team");
+      expect(await draft.innerText()).toContain("team@example.com");
+      await draft.getByRole("button", { name: "Copy email" }).click();
+      await waitForCondition(async () => await currentPage.evaluate(() => navigator.clipboard.readText()) === "Hello **team**.",
+        "Writing copy did not preserve the artifact body");
+      const review = currentPage.locator(".md-review-comment");
+      expect(await review.locator(".work-preview-path").innerText()).toBe("app.ts:10–11");
+      expect(await review.locator(".work-preview-path").getAttribute("data-supergit-file-href")).toBe("/tmp/app.ts");
+      expect(await review.locator("strong").innerText()).toBe("the final row");
+      const text = await currentPage.locator(".messages").innerText();
+      expect(text).toContain("The draft is ready.");
+      expect(text).not.toContain("::codex-realtime-inline");
+      expect(text).not.toContain(":::writing");
+      expect(text).not.toContain("::code-comment");
+    } finally { await currentPage.close(); }
+  }, 30_000);
+
+  test("renders live file citations with shared file-chip styling", async () => {
+    const currentPage = await openHarness();
+    try {
+      emitCodexEvents([
+        { kind: "notification", method: "item/completed", threadId, turnId: latestTurnId,
+          receivedAt: "2026-10-14T11:00:00Z", params: { item: { id: "citation-read", type: "commandExecution",
+            command: "cat /tmp/citation-source.pdf", status: "completed", aggregatedOutput: "Source content" } } },
+        { kind: "notification", method: "item/completed", threadId, turnId: latestTurnId,
+          receivedAt: "2026-10-14T11:00:01Z", params: { item: { id: "citation-response", type: "agentMessage",
+            text: 'Verified :codex-file-citation{path="/tmp/citation-source.pdf" purpose="source"}.\n\n:codex-file-citation{path="/tmp/citation-output.pdf" purpose="output"}' } } },
+      ]);
+      const citation = currentPage.locator('a.work-preview-path[data-supergit-file-href="/tmp/citation-source.pdf"]');
+      await citation.waitFor();
+      expect(await citation.innerText()).toBe("citation-source.pdf");
+      expect(await citation.getAttribute("title")).toBe("source · /tmp/citation-source.pdf");
+      expect(await currentPage.locator('a.work-preview-path[data-supergit-file-href="/tmp/citation-output.pdf"]').count()).toBe(1);
+      expect(await currentPage.locator(".messages").innerText()).not.toContain(":codex-file-citation");
+      expect(await citation.evaluate(el => getComputedStyle(el).borderRadius)).toBe("999px");
+      expect(await citation.evaluate(el => getComputedStyle(el).cursor)).toBe("pointer");
+    } finally { await currentPage.close(); }
+  }, 30_000);
+
   test("retains offscreen deltas received during a history refresh", async () => {
     const currentPage = await openHarness();
     try {
