@@ -1,15 +1,16 @@
-import { test } from "bun:test";
+import { test } from "node:test";
 import assert from "node:assert/strict";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { chromium } from "playwright-core";
 import { createServer } from "vite";
 
-test("returning to the app restores session input focus without stealing other focus", async () => {
+test("returning to the app restores session input focus without stealing other focus", { timeout: 30000 }, async () => {
   const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
   const server = await createServer({
     root,
     configFile: false,
+    resolve: { alias: { "@treetop/nicifier": resolve(root, "../nicifier/src/index.ts") } },
     server: { host: "127.0.0.1", port: 0 },
     logLevel: "error",
   });
@@ -107,4 +108,4 @@ test("returning to the app restores session input focus without stealing other f
     await browser?.close();
     await server.close();
   }
-}, 30000);
+});

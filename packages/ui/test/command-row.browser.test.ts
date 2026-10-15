@@ -1,4 +1,4 @@
-import { test } from "bun:test";
+import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtemp, writeFile, rm } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
@@ -7,7 +7,7 @@ import { chromium } from "playwright-core";
 import { createServer } from "vite";
 import { svelte } from "@sveltejs/vite-plugin-svelte";
 
-test("command URL hover preserves horizontal scrolling and remains clickable", async () => {
+test("command URL hover preserves horizontal scrolling and remains clickable", { timeout: 30000 }, async () => {
   const uiRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
   const fixture = await mkdtemp(join(uiRoot, "test/.command-row-"));
   const component =
@@ -130,4 +130,4 @@ test("command URL hover preserves horizontal scrolling and remains clickable", a
     await server?.close();
     await rm(fixture, { recursive: true, force: true });
   }
-}, 30000);
+});

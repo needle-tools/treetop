@@ -12,7 +12,7 @@ export default {
   app: {
     name: "Treetop",
     identifier: "tools.needle.supergit",
-    version: "0.1.0",
+    version: "0.1.1",
   },
   build: {
     bun: {

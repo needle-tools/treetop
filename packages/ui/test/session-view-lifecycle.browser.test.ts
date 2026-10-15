@@ -1,11 +1,15 @@
-import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { after, before, describe, test as nodeTest } from "node:test";
+import assert from "node:assert/strict";
 import type { ServerResponse } from "node:http";
-import { resolve } from "node:path";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { chromium, type Browser, type Page } from "playwright-core";
 import { createServer, type Plugin, type ViteDevServer } from "vite";
 import { svelte } from "@sveltejs/vite-plugin-svelte";
 
-const uiRoot = resolve(import.meta.dir, "..");
+const uiRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const test = (name: string, run: () => Promise<void>, timeout: number) =>
+  nodeTest(name, { timeout }, run);
 let server: ViteDevServer;
 let browser: Browser;
 let origin = "";
@@ -158,7 +162,7 @@ function lifecycleApiPlugin(): Plugin {
   };
 }
 
-beforeAll(async () => {
+before(async () => {
   server = await createServer({
     root: uiRoot,
     configFile: false,
@@ -182,15 +186,15 @@ beforeAll(async () => {
     channel: process.platform === "win32" ? "msedge" : "chrome",
     headless: true,
   });
-}, 30_000);
+}, { timeout: 30_000 });
 
-afterAll(async () => {
+after(async () => {
   for (const client of eventClients) client.end();
   eventClients.clear();
   await browser?.close();
   server?.httpServer?.closeAllConnections();
   await server?.close();
-}, 10_000);
+}, { timeout: 10_000 });
 
 async function openHarness(): Promise<Page> {
   latestTurnComplete = false;
@@ -250,7 +254,7 @@ function emitCodexEvents(events: readonly unknown[]): void {
   }
 }
 
-describe.serial("SessionView browser lifecycle", () => {
+describe("SessionView browser lifecycle", { concurrency: false }, () => {
   test("a terminal shown visually stays attached; failed Stop preserves it and successful Stop clears it", async () => {
     terminalStopCalls = 0;
     terminalStopStatus = 502;
@@ -260,16 +264,16 @@ describe.serial("SessionView browser lifecycle", () => {
       await currentPage.getByRole("button", { name: "Session menu", exact: true }).click();
       await currentPage.getByText("View as", { exact: true }).hover();
       await currentPage.getByText("Visual", { exact: true }).click();
-      expect(await currentPage.locator(".composer").count()).toBe(0);
+      assert.equal(await currentPage.locator(".composer").count(), 0);
       const stop = currentPage.getByRole("button", { name: "Stop Session", exact: true });
       await stop.click();
       await waitForCondition(async () => terminalStopCalls === 1, "Stop did not address the attached terminal");
       await stop.waitFor();
-      expect(await currentPage.locator("main").getAttribute("data-stopped")).toBe("false");
+      assert.equal(await currentPage.locator("main").getAttribute("data-stopped"), "false");
       terminalStopStatus = 200;
       await stop.click();
       await waitForCondition(async () => await currentPage.locator("main").getAttribute("data-stopped") === "true", "Successful stop retained the terminal attachment");
-      expect(terminalStopCalls).toBe(2);
+      assert.equal(terminalStopCalls, 2);
       await currentPage.getByRole("button", { name: "Resume", exact: true }).waitFor();
     } finally { terminalStopStatus = 200; await currentPage.close(); }
   }, 30000);
@@ -283,7 +287,7 @@ describe.serial("SessionView browser lifecycle", () => {
       await currentPage.getByText("View as", { exact: true }).hover();
       await currentPage.getByText("Terminal", { exact: true }).click();
       await waitForCondition(async () => await currentPage.locator("main").getAttribute("data-working") === "false", "Terminal transcript retained visual activity");
-      expect(await currentPage.locator(".composer").count()).toBe(0);
+      assert.equal(await currentPage.locator(".composer").count(), 0);
       await currentPage.getByRole("button", { name: "Session menu", exact: true }).click();
       await currentPage.getByText("View as", { exact: true }).hover();
       await currentPage.getByText("Visual", { exact: true }).click();
@@ -298,7 +302,7 @@ describe.serial("SessionView browser lifecycle", () => {
       await waitForCondition(async () => await currentPage.locator("main").getAttribute("data-working") === "true", "Visual turn did not start");
       await currentPage.getByRole("button", { name: "Stop", exact: true }).click();
       await waitForCondition(async () => await currentPage.locator("main").getAttribute("data-stopped") === "true", "Stop only interrupted the turn without stopping the session");
-      expect(await currentPage.locator("main").getAttribute("data-working")).toBe("false");
+      assert.equal(await currentPage.locator("main").getAttribute("data-working"), "false");
       await currentPage.getByRole("button", { name: "Resume", exact: true }).click();
       await waitForCondition(async () => await currentPage.locator("main").getAttribute("data-stopped") === "false", "Resume did not restore the visual session");
     } finally { await currentPage.close(); }
@@ -329,8 +333,8 @@ describe.serial("SessionView browser lifecycle", () => {
             getComputedStyle(question).backgroundColor,
           ];
         });
-      expect(questionColor).not.toBe(thinkingColor);
-      expect(questionBackground).not.toBe("rgba(0, 0, 0, 0)");
+      assert.notEqual(questionColor, thinkingColor);
+      assert.notEqual(questionBackground, "rgba(0, 0, 0, 0)");
 
       await questionBadge.click();
       const questionPane = currentPage.getByLabel("Codex questions");
@@ -359,9 +363,9 @@ describe.serial("SessionView browser lifecycle", () => {
         commandChip.first().boundingBox(),
       ]);
 
-      expect(thinkingBox).not.toBeNull();
-      expect(commandBox).not.toBeNull();
-      expect(Math.abs(thinkingBox!.x - commandBox!.x)).toBeLessThan(1);
+      assert.notEqual(thinkingBox, null);
+      assert.notEqual(commandBox, null);
+      assert(Math.abs(thinkingBox!.x - commandBox!.x) < 1);
       await currentPage.close();
     },
     30_000,
@@ -383,12 +387,10 @@ describe.serial("SessionView browser lifecycle", () => {
       ]);
       const openGroup = currentPage.locator(".work-action-group[open]").first();
       await openGroup.waitFor();
-      expect(
-        await openGroup.locator(".work-action-group-entries").count(),
-      ).toBeGreaterThan(0);
+      assert(await openGroup.locator(".work-action-group-entries").count() > 0);
 
       const groupId = await openGroup.getAttribute("data-work-action-group");
-      expect(groupId).not.toBeNull();
+      assert.notEqual(groupId, null);
       await openGroup.locator(":scope > summary").click();
       const stableGroup = currentPage.locator(
         `[data-work-action-group="${groupId}"]`,
@@ -429,7 +431,7 @@ describe.serial("SessionView browser lifecycle", () => {
         top: element.scrollTop,
         max: element.scrollHeight - element.clientHeight,
       }));
-      expect(before.top).toBeLessThan(before.max - 100);
+      assert(before.top < before.max - 100);
 
       await completeLatestTurn(currentPage);
       await currentPage.waitForTimeout(80);
@@ -438,8 +440,8 @@ describe.serial("SessionView browser lifecycle", () => {
         top: element.scrollTop,
         max: element.scrollHeight - element.clientHeight,
       }));
-      expect(after.top).toBeLessThan(after.max - 100);
-      expect(Math.abs(after.top - before.top)).toBeLessThan(80);
+      assert(after.top < after.max - 100);
+      assert(Math.abs(after.top - before.top) < 80);
     },
     30_000,
   );
@@ -458,11 +460,10 @@ describe.serial("SessionView browser lifecycle", () => {
 
       await completeLatestTurn(currentPage);
       const transcriptText = await currentPage.locator(".messages").innerText();
-      expect(
-        transcriptText.indexOf(
-          "The previous answer arrived during completion reconciliation.",
-        ),
-      ).toBeLessThan(transcriptText.indexOf("Start the next request"));
+      assert(
+        transcriptText.indexOf("The previous answer arrived during completion reconciliation.") <
+          transcriptText.indexOf("Start the next request"),
+      );
 
       await waitForCondition(
         async () =>
