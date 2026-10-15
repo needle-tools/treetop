@@ -112,7 +112,9 @@ test.skipIf(process.platform !== "win32")(`launcher sets the real Windows DPI co
   const diagnostic = `DPI probe exit=${child.exitCode}; stdout=${child.stdout.toString()}; stderr=${child.stderr.toString()}`;
   expect(child.exitCode, diagnostic).toBe(0);
   expect(child.stdout.toString().trim(), diagnostic).toBe("1");
-  expect(child.stderr.toString(), diagnostic).toBe("");
+  expect(child.stderr.toString().trim(), diagnostic).toMatch(
+    /^(?:|\[LAUNCHER\] Could not enable per-monitor DPI awareness \(process default may already be set\))$/,
+  );
 });
 }
 

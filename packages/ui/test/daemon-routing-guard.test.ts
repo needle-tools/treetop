@@ -92,6 +92,8 @@ const GLOBAL_ALLOWLIST: string[] = [
   // --- Running-command registry + sticky notes + attachments (board). ---
   "/api/commands",
   "/api/notes",
+  // Reminder state belongs to the local board, even when it points at a remote repo.
+  "/api/reminders",
   "/api/attach",
   // --- SSH file-view feature: a separate axis (local daemon reaching OUT to
   //     an ssh host), not daemon-routing. Always local. ---

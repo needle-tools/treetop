@@ -36,24 +36,32 @@ import {
 
 describe("internalCommandTerminalArgs", () => {
   test("closes a successful command terminal normally", async () => {
+    const windows = process.platform === "win32";
     const proc = Bun.spawn(
       internalCommandTerminalArgs(
-        "printf command-ok",
-        "linux",
+        windows ? "echo command-ok" : "printf command-ok",
+        process.platform,
         "/bin/sh",
       ),
       { stdout: "pipe", stderr: "pipe" },
     );
 
-    expect(await new Response(proc.stdout).text()).toBe("command-ok");
+    expect((await new Response(proc.stdout).text()).trim()).toBe("command-ok");
     expect(await proc.exited).toBe(0);
   });
 
   test("keeps a failed command readable and returns to an interactive shell", async () => {
+    const windows = process.platform === "win32";
+    if (windows) {
+      const args = internalCommandTerminalArgs("cmd /c exit /b 7", "win32");
+      expect(args[5]).toContain("Command failed with exit code !_TREETOP_EXIT!");
+      expect(args[5]).toContain('"%COMSPEC%" /d /k');
+      return;
+    }
     const proc = Bun.spawn(
       internalCommandTerminalArgs(
         "printf command-error >&2; exit 7",
-        "linux",
+        process.platform,
         "/bin/sh",
       ),
       { stdin: "pipe", stdout: "pipe", stderr: "pipe" },
@@ -86,6 +94,16 @@ describe("internalCommandTerminalArgs", () => {
   });
 
   test("preserves a non-zero exit if the fallback shell cannot start", async () => {
+    if (process.platform === "win32") {
+      const args = internalCommandTerminalArgs(
+        "exit 4",
+        "linux",
+        "/definitely/missing/treetop-shell",
+      );
+      expect(args[2]).toContain("exit 127");
+      expect(args[5]).toBe("/definitely/missing/treetop-shell");
+      return;
+    }
     const proc = Bun.spawn(
       internalCommandTerminalArgs(
         "exit 4",

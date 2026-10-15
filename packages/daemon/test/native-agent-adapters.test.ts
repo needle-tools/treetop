@@ -141,7 +141,7 @@ describe("CodexAppServerAdapter", () => {
 
   test("finds the Bun-installed CLI when the GUI daemon PATH only sees Homebrew", () => {
     const bundled = "/Applications/ChatGPT.app/Contents/Resources/codex";
-    const bunCli = "/Users/test/.bun/bin/codex";
+    const bunCli = join("/Users/test", ".bun", "bin", "codex");
     expect(
       resolveCodexBinary({
         env: {},
@@ -262,6 +262,7 @@ describe("CodexAppServerAdapter", () => {
       model: "gpt-5.5",
     });
     expect(fake.killed).toEqual([]);
+    await adapter.close();
   });
 
   test("starts a new Codex thread with the freshly resolved default model", async () => {
@@ -294,6 +295,7 @@ describe("CodexAppServerAdapter", () => {
       sessionId: "thr_fresh",
       model: "gpt-6.1-sol",
     });
+    await adapter.close();
   });
 
   test("restarts a silent Codex app-server after an RPC timeout", async () => {
@@ -301,8 +303,17 @@ describe("CodexAppServerAdapter", () => {
     const second = fakeCodexProcess();
     const processes = [first, second];
     let spawnCount = 0;
+    let fireTimeout!: () => void;
     const adapter = new CodexAppServerAdapter({
       requestTimeoutMs: 5,
+      scheduleRequestTimeout(callback) {
+        const timer = setTimeout(callback, 60_000);
+        fireTimeout = () => {
+          clearTimeout(timer);
+          callback();
+        };
+        return timer;
+      },
       spawn: () => processes[spawnCount++]!.proc,
     });
 
@@ -310,6 +321,7 @@ describe("CodexAppServerAdapter", () => {
     await waitFor(() => first.writes[0], "first initialize request");
     first.enqueue({ id: 0, result: {} });
     await waitFor(() => first.writes[2], "first model list request");
+    fireTimeout();
 
     await expect(stalled).rejects.toThrow(
       "codex app-server model/list timed out after 5ms",

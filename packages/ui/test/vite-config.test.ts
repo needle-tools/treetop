@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { resolve } from "node:path";
 import config from "../vite.config";
 
 async function resolveConfig(mode = "production") {
@@ -41,8 +42,8 @@ describe("Vite config", () => {
   test("emits Replay Lab as a standalone static entry page", async () => {
     const resolved = await resolveConfig();
     expect(resolved.build?.rollupOptions?.input).toEqual({
-      app: expect.stringContaining("/packages/ui/index.html"),
-      replayLab: expect.stringContaining("/packages/ui/replay-lab.html"),
+      app: resolve(import.meta.dir, "../index.html"),
+      replayLab: resolve(import.meta.dir, "../replay-lab.html"),
     });
   });
 
@@ -51,7 +52,7 @@ describe("Vite config", () => {
     expect(resolved.base).toBe("./");
     expect(resolved.build?.outDir).toBe("dist-replay-lab");
     expect(resolved.build?.rollupOptions?.input).toEqual({
-      replayLab: expect.stringContaining("/packages/ui/replay-lab.html"),
+      replayLab: resolve(import.meta.dir, "../replay-lab.html"),
     });
     expect(resolved.preview?.proxy).toEqual({});
     expect(resolved.server?.proxy).toEqual({});

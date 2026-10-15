@@ -37,6 +37,10 @@ export interface CodexAppServerAdapterOptions {
   clientInfo?: CodexClientInfo;
   mcpUrl?: () => string;
   requestTimeoutMs?: number;
+  scheduleRequestTimeout?: (
+    callback: () => void,
+    delayMs: number,
+  ) => ReturnType<typeof setTimeout>;
   autoRecord?: boolean;
   recordingFrameLimit?: number;
   recordingDir?: string;
@@ -492,6 +496,9 @@ export class CodexAppServerAdapter implements NativeAgentAdapter {
   private readonly spawnProc: (cwd: string) => CodexAppServerProcess;
   private readonly clientInfo: CodexClientInfo;
   private readonly requestTimeoutMs: number;
+  private readonly scheduleRequestTimeout: NonNullable<
+    CodexAppServerAdapterOptions["scheduleRequestTimeout"]
+  >;
   private proc: CodexAppServerProcess | null = null;
   private rpc: CodexAppServerRpc | null = null;
   private initializePromise: Promise<void> | null = null;
@@ -522,6 +529,7 @@ export class CodexAppServerAdapter implements NativeAgentAdapter {
     };
     this.requestTimeoutMs =
       opts.requestTimeoutMs ?? DEFAULT_RPC_REQUEST_TIMEOUT_MS;
+    this.scheduleRequestTimeout = opts.scheduleRequestTimeout ?? setTimeout;
     this.autoRecord = opts.autoRecord !== false;
     this.recordingFrameLimit =
       opts.recordingFrameLimit ?? DEFAULT_RECORDING_FRAME_LIMIT;
@@ -1071,6 +1079,7 @@ export class CodexAppServerAdapter implements NativeAgentAdapter {
       (frame) => this.recordRpcFrame(frame),
       this.requestTimeoutMs,
       (error) => this.resetUnresponsiveRpc(proc, rpc, error),
+      this.scheduleRequestTimeout,
     );
     this.proc = proc;
     this.rpc = rpc;
@@ -1466,6 +1475,7 @@ export class CodexAppServerRpc {
     private readonly recorder?: CodexAppServerRpcRecorder,
     private readonly requestTimeoutMs = DEFAULT_RPC_REQUEST_TIMEOUT_MS,
     private readonly onUnresponsive?: (error: Error) => void,
+    private readonly scheduleRequestTimeout = setTimeout,
   ) {
     void this.pump();
     void proc.exited.then(
@@ -1487,7 +1497,7 @@ export class CodexAppServerRpc {
     const id = this.nextId++;
     const serverFrameCountAtStart = this.serverFrameCount;
     const promise = new Promise<JsonObject>((resolve, reject) => {
-      const timer = setTimeout(() => {
+      const timer = this.scheduleRequestTimeout(() => {
         if (!this.pending.delete(id)) return;
         const error = new Error(
           `codex app-server ${method} timed out after ${this.requestTimeoutMs}ms`,
