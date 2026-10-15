@@ -50,8 +50,19 @@ jobs:
           go-version-file: packages/daemon/src/terminals/helper-go/go.mod
           cache: false
 
+      - uses: actions/setup-node@v4
+        if: matrix.os == 'macos'
+        with:
+          node-version: 24
+
       - name: Install dependencies
         run: bun install --frozen-lockfile
+
+      # The npm package fetches its platform CLI on first invocation. The
+      # launcher patcher signs that binary on macOS, so fetch it first.
+      - name: Prepare Electrobun CLI (macOS)
+        if: matrix.os == 'macos'
+        run: node node_modules/electrobun/bin/electrobun.cjs --version
 
       - name: Build Treetop
         run: bun run build
