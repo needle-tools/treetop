@@ -54,6 +54,7 @@ export interface VisualTokenUsage {
 export interface VisualToolEnvAssignment {
   name: string;
   value: string;
+  unset?: boolean;
 }
 
 export type VisualCommandSummary =

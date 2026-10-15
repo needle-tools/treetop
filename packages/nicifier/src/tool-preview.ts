@@ -2262,7 +2262,7 @@ export function visualToolEnvTooltipText(
   block: MessageBlock | undefined,
 ): string {
   return visualToolEnvAssignments(block)
-    .map((item) => `${item.name}=${item.value}`)
+    .map((item) => item.unset ? `unset ${item.name}` : `${item.name}=${item.value}`)
     .join("\n");
 }
 
@@ -3433,7 +3433,7 @@ function collectCommandLauncherFamilies(
   if (inlineScriptFromCommand(command)) return;
   const unwrapped =
     unwrappedShellPayload(tokens, head) ??
-    unwrappedSudoPayload(tokens) ??
+    unwrappedSudoPayload(tokens, command) ??
     unwrappedSshPayload(tokens) ??
     unwrappedDockerPayload(tokens);
   if (unwrapped) {
@@ -3490,7 +3490,7 @@ function normalizeLaunchedCommand(command: string): {
   for (let i = 0; i < 8; i += 1) {
     current = stripOuterShellGroup(current);
     const setup = stripInlineEnvAssignments(current);
-    if (setup.env.length > 0) {
+    if (setup.command !== current || setup.env.length > 0) {
       env.push(...setup.env);
       current = setup.command.trim();
     }
@@ -3509,10 +3509,10 @@ function normalizeLaunchedCommand(command: string): {
       | undefined =
       unwrappedRuntimeStdinPayload(current) ??
       next ??
-      unwrappedSudoPayload(tokens) ??
+      unwrappedSudoPayload(tokens, current) ??
       unwrappedSshPayload(tokens) ??
       unwrappedDockerPayload(tokens) ??
-      unwrappedWslPayload(tokens);
+      unwrappedWslPayload(tokens, current);
     if (!unwrapped) {
       return { command: current, launcher, remoteHost, env, layers };
     }
@@ -3528,7 +3528,7 @@ function normalizeLaunchedCommand(command: string): {
     current = unwrapped.command.trim();
   }
   const setup = stripInlineEnvAssignments(current);
-  if (setup.env.length > 0) {
+  if (setup.command !== current || setup.env.length > 0) {
     env.push(...setup.env);
     current = setup.command.trim();
   }
@@ -3573,6 +3573,7 @@ function stripOuterShellGroup(command: string): string {
 
 function unwrappedSudoPayload(
   tokens: string[],
+  source?: string,
 ): { command: string } | undefined {
   if (shellLauncherName(tokens[0] ?? "") !== "sudo") return undefined;
   const valueOptions = new Set([
@@ -3596,7 +3597,7 @@ function unwrappedSudoPayload(
     const option = token.slice(0, 2);
     if (!token.includes("=") && valueOptions.has(option)) index += 1;
   }
-  const command = tokens.slice(index).join(" ").trim();
+  const command = shellPayloadSuffix(tokens, index, source).trim();
   return command ? { command } : undefined;
 }
 
@@ -3620,7 +3621,8 @@ function stripInlineEnvAssignments(command: string): {
   command: string;
   env: VisualToolEnvAssignment[];
 } {
-  const tokens = shellTokens(command);
+  const tokenStarts: number[] = [];
+  const tokens = shellTokens(command, tokenStarts);
   const env: VisualToolEnvAssignment[] = [];
   const startsWithExport = tokens[0] === "export";
   const startsWithEnv = shellLauncherName(tokens[0] ?? "") === "env";
@@ -3633,18 +3635,31 @@ function stripInlineEnvAssignments(command: string): {
         break;
       }
       if (token === "-u" || token === "--unset") {
+        const name = tokens[commandStart + 1];
+        if (!name) return { command, env: [] };
+        env.push({ name, value: "", unset: true });
         commandStart += 1;
+        continue;
+      }
+      if (token.startsWith("--unset=")) {
+        env.push({ name: token.slice("--unset=".length), value: "", unset: true });
+        continue;
+      }
+      if (token.startsWith("-u") && token.length > 2) {
+        env.push({ name: token.slice(2), value: "", unset: true });
         continue;
       }
       if (
         token === "-i" ||
         token === "-0" ||
         token === "--ignore-environment" ||
-        token === "--null" ||
-        token.startsWith("--unset=")
+        token === "--null"
       ) {
         continue;
       }
+      // Unknown options can change how the payload is interpreted. Keep the
+      // original command rather than silently pretending they were absent.
+      if (token.startsWith("-")) return { command, env: [] };
       break;
     }
   }
@@ -3654,8 +3669,10 @@ function stripInlineEnvAssignments(command: string): {
     env.push({ name: match[1]!, value: match[2] ?? "" });
     commandStart += 1;
   }
-  if (env.length === 0) return { command, env };
-  return { command: tokens.slice(commandStart).join(" "), env };
+  // With no executable, env prints the environment; it is not a wrapper.
+  if (startsWithEnv && commandStart >= tokens.length) return { command, env: [] };
+  if (env.length === 0 && !startsWithEnv) return { command, env };
+  return { command: command.slice(tokenStarts[commandStart] ?? command.length), env };
 }
 
 function shellLauncherName(command: string): string {
@@ -3670,16 +3687,12 @@ function unwrappedShellPayload(
   tokens: string[],
   shell: string,
 ): { command: string; launcher: string; remoteHost?: string } | undefined {
-  if (shell === "env") {
-    const envPayload = unwrapEnvShellPayload(tokens);
-    if (envPayload) return envPayload;
-  }
   if (/^(?:bash|dash|fish|ksh|sh|zsh)$/.test(shell)) {
     const flagIndex = tokens.findIndex(
       (token, index) => index > 0 && /^-[a-zA-Z]*c[a-zA-Z]*$/.test(token),
     );
     const command =
-      flagIndex >= 0 ? tokens.slice(flagIndex + 1).join(" ") : undefined;
+      flagIndex >= 0 ? tokens[flagIndex + 1] : undefined;
     return command ? { command, launcher: shell } : undefined;
   }
   if (shell === "cmd") {
@@ -3701,22 +3714,6 @@ function unwrappedShellPayload(
       return undefined;
     }
     return { command: payload, launcher: shell };
-  }
-  return undefined;
-}
-
-function unwrapEnvShellPayload(
-  tokens: string[],
-): { command: string; launcher: string; remoteHost?: string } | undefined {
-  for (let i = 1; i < tokens.length; i += 1) {
-    const token = tokens[i]!;
-    if (token.includes("=") && !token.startsWith("-")) continue;
-    if (token.startsWith("-")) {
-      if (/^-.[^\s]*S/.test(token) || token === "-S") continue;
-      continue;
-    }
-    const shell = shellLauncherName(token);
-    return unwrappedShellPayload(tokens.slice(i), shell);
   }
   return undefined;
 }
@@ -3989,7 +3986,7 @@ function unwrappedDockerPayload(
   };
 }
 
-function unwrappedWslPayload(tokens: string[]):
+function unwrappedWslPayload(tokens: string[], source?: string):
   | { command: string; layer: VisualToolExecutionLayer }
   | undefined {
   if (shellLauncherName(tokens[0] ?? "") !== "wsl") return undefined;
@@ -3999,12 +3996,19 @@ function unwrappedWslPayload(tokens: string[]):
     valueAfterFlag(tokens.slice(0, separator), "-d") ??
     valueAfterFlag(tokens.slice(0, separator), "--distribution");
   return {
-    command: tokens.slice(separator + 1).join(" "),
+    command: shellPayloadSuffix(tokens, separator + 1, source),
     layer: {
       kind: "container",
       label: distribution ? `WSL · ${distribution}` : "WSL",
     },
   };
+}
+
+function shellPayloadSuffix(tokens: string[], index: number, source?: string): string {
+  if (source === undefined) return tokens.slice(index).join(" ");
+  const starts: number[] = [];
+  shellTokens(source, starts);
+  return source.slice(starts[index] ?? source.length);
 }
 
 function dockerExecIndex(tokens: string[], command: string): number {
@@ -4348,14 +4352,16 @@ function lsRequestsDetails(tokens: string[]): boolean {
     );
 }
 
-function shellTokens(command: string): string[] {
+function shellTokens(command: string, tokenStarts?: number[]): string[] {
   const tokens: string[] = [];
   let current = "";
   let quote: "'" | '"' | null = null;
   let escaped = false;
   let commandSubDepth = 0;
+  let tokenStart = -1;
   for (let index = 0; index < command.length; index += 1) {
     const ch = command[index]!;
+    if (tokenStart < 0 && !/\s/.test(ch)) tokenStart = index;
     if (escaped) {
       current += ch;
       escaped = false;
@@ -4402,13 +4408,18 @@ function shellTokens(command: string): string[] {
     if (/\s/.test(ch)) {
       if (current) {
         tokens.push(current);
+        tokenStarts?.push(tokenStart);
         current = "";
       }
+      tokenStart = -1;
       continue;
     }
     current += ch;
   }
-  if (current) tokens.push(current);
+  if (current) {
+    tokens.push(current);
+    tokenStarts?.push(tokenStart);
+  }
   return tokens;
 }
 

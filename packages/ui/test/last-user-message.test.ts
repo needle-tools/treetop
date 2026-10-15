@@ -3864,6 +3864,44 @@ describe("visual tool payload display helpers", () => {
     );
   });
 
+  it("unwraps unset-only env commands and preserves their environment operations", () => {
+    for (const prefix of ["env -u PYTHONPATH", "env --unset PYTHONPATH", "env --unset=PYTHONPATH", "/usr/bin/env -u PYTHONPATH --"]) {
+      expect(nicifyCommand(`${prefix} rg --files src`)).toMatchObject({
+        text: "Read directory src",
+        fullyNicified: true,
+        env: [{ name: "PYTHONPATH", value: "", unset: true }],
+      });
+    }
+    expect(nicifyCommand("env -i rg --files src").text).toBe("Read directory src");
+    expect(nicifyCommand("env -u PYTHONPATH zsh -lc 'git status --short'").text).toBe("Check git status");
+    const block = { type: "tool_use" as const, toolName: "exec_command", toolInput: { cmd: "env -u PYTHONPATH PORT=5199 rg --files src" } };
+    expect(visualToolEnvTooltipText(block)).toBe("unset PYTHONPATH\nPORT=5199");
+    const quoted = `env -u PYTHONPATH rg 'hello world' 'src folder'`;
+    expect(nicifyCommand(quoted).summaries).toEqual(nicifyCommand(`rg 'hello world' 'src folder'`).summaries);
+    const nested = `env -u PYTHONPATH zsh -lc "env -u DYLD_LIBRARY_PATH rg --files src"`;
+    expect(nicifyCommand(nested)).toMatchObject({ text: "Read directory src", fullyNicified: true,
+      env: [{ name: "PYTHONPATH", value: "", unset: true }, { name: "DYLD_LIBRARY_PATH", value: "", unset: true }] });
+  });
+
+  it("handles adjacent env wrapper forms without inventing executable payloads", () => {
+    for (const prefix of ["env", "/usr/bin/env --", "env -uPYTHONPATH", "env -i -uPYTHONPATH"]) {
+      expect(nicifyCommand(`${prefix} rg --files src`)).toMatchObject({ text: "Read directory src", fullyNicified: true });
+    }
+    for (const command of ["env", "env FOO=bar", "env -u PYTHONPATH", "env --unknown bash -lc 'git status --short'"]) {
+      expect(nicifyCommand(command)).toMatchObject({ fullyNicified: false, unnicifiedParts: [command] });
+    }
+  });
+
+  it("does not interpret shell positional arguments as additional commands", () => {
+    expect(nicifyCommand(`zsh -lc 'git status --short' 'name && git diff --stat'`)).toMatchObject({
+      text: "Check git status", summaries: [{ kind: "git" }], fullyNicified: true,
+    });
+    for (const prefix of ["sudo -u root", "wsl -d Ubuntu --"]) {
+      expect(nicifyCommand(`${prefix} sh -c 'git status --short' 'name && git diff --stat'`).text).toBe("Check git status");
+      expect(nicifyCommand(`${prefix} rg 'hello world' 'src folder'`).summaries).toEqual(nicifyCommand(`rg 'hello world' 'src folder'`).summaries);
+    }
+  });
+
   it("exposes command nicification without a transcript message wrapper", () => {
     expect(
       nicifyCommand(
