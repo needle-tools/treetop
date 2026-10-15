@@ -25,6 +25,16 @@ function artifact(
 }
 
 describe("buildSparseArtifactRows", () => {
+  test("keeps Git refs as single non-file rows alongside the filesystem tree", () => {
+    const rows = buildSparseArtifactRows([
+      artifact("/repo/src/app.ts"),
+      { id: "fetch-ref", kind: "git", action: "referenced", label: "materialx/volumes → needle/materialx/volumes", title: "fetch refs/heads/materialx/volumes:refs/remotes/needle/materialx/volumes" },
+    ], "/repo");
+    expect(rows.filter((row) => row.kind === "file")).toHaveLength(1);
+    expect(rows.find((row) => row.kind === "git")).toMatchObject({ label: "materialx/volumes → needle/materialx/volumes", depth: 0, hrefPath: "" });
+    expect(rows.some((row) => row.kind === "folder" && row.label.includes("refs"))).toBe(false);
+  });
+
   test("retains a git diff fallback carried by a nested change", () => {
     const row = buildSparseArtifactRows(
       [

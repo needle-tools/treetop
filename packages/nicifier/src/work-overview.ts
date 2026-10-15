@@ -15,6 +15,7 @@ import {
   visualToolPreviewParts,
   visualToolPreviewText,
   visualToolRemoteHostLabel,
+  visualArtifactPathKind,
 } from "./tool-preview.js";
 import {
   estimateModelTokenCost,
@@ -57,7 +58,7 @@ export interface VisualWorkTimeOverview {
 
 export interface VisualWorkArtifact {
   id: string;
-  kind: "file" | "image" | "remote" | "container" | "other";
+  kind: "file" | "image" | "remote" | "container" | "git" | "symbolic" | "other";
   action: "referenced" | "used" | "changed" | "produced";
   label: string;
   path?: string;
@@ -755,6 +756,17 @@ function addArtifact(
   artifacts: VisualWorkArtifact[],
   artifact: Omit<VisualWorkArtifact, "id">,
 ): void {
+  if (artifact.kind === "file" && artifact.path) {
+    const targetKind = visualArtifactPathKind(artifact.path);
+    if (targetKind === "stream") return;
+    if (targetKind !== "file") artifact = {
+      ...artifact,
+      kind: targetKind === "url" ? "remote" : "symbolic",
+      label: artifact.path,
+      title: `${targetKind === "url" ? "URL" : "Unresolved shell path"}: ${artifact.path}`,
+      path: undefined,
+    };
+  }
   const stablePath = artifact.path
     ? artifact.path.replace(/\\/g, "/").replace(/\/+$/, "")
     : "";
@@ -916,11 +928,21 @@ function artifactsForEntry(
     const readPreview = visualToolArtifactContentPreview(toolBlock, resultBlock);
     const editSummary = visualFileEditSummaryForBlock(toolBlock);
     const editedPaths = new Set(editSummary?.files.map((file) => file.path) ?? []);
-    const pathParts = visualToolPreviewParts(toolBlock).filter(
+    const previewParts = visualToolPreviewParts(toolBlock);
+    for (const part of previewParts) {
+      if (part.kind !== "git-ref") continue;
+      addArtifact(artifacts, {
+        kind: "git",
+        action: "referenced",
+        label: part.text,
+        title: `${part.operation}${part.remote ? ` ${part.remote}` : ""} ${part.ref}`,
+      });
+    }
+    const pathParts = previewParts.filter(
       (part) =>
-        part.kind === "path" &&
+        part.kind === "resource" || (part.kind === "path" &&
         looksLikeArtifactPath(part.path, part.text) &&
-        !editedPaths.has(part.path),
+        !editedPaths.has(part.path)),
     );
     return { readsArtifacts, readPreview, editSummary, editedPaths, pathParts };
   });
@@ -959,8 +981,9 @@ function artifactsForEntry(
       }
     }
     for (const part of pathParts) {
-      if (part.kind !== "path") continue;
-      if (editedPaths.has(part.path)) continue;
+      if (part.kind !== "path" && part.kind !== "resource") continue;
+      const path = part.kind === "resource" ? part.target : part.path;
+      if (editedPaths.has(path)) continue;
       const targetIndex = readPreview ? contentTargetIndex++ : -1;
       const contentTokenCount = readPreview
         ? allocateCapturedContent(
@@ -980,7 +1003,7 @@ function artifactsForEntry(
         kind: "file",
         action: readsArtifacts ? "used" : "referenced",
         label: part.text,
-        path: part.path,
+        path,
         preview: readPreview?.body,
         previewTitle: readPreview?.title,
         contentTokenCount,

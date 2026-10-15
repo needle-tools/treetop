@@ -122,6 +122,7 @@ export type VisualCommandSummary =
         | "ls-remote"
         | "grep";
       targets: string[];
+      revisions?: string[];
       rev?: string;
       pattern?: string;
       staged?: boolean;

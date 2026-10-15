@@ -2,6 +2,7 @@
   import Diff from "./Diff.svelte";
   import DiffLoader from "./DiffLoader.svelte";
   import FileSystemIcon from "./FileSystemIcon.svelte";
+  import ToolIcon from "./ToolIcon.svelte";
   import Tooltip from "./Tooltip.svelte";
   import { formatTokens } from "./context-tokens";
   import { isPositiveDiffCount } from "./diff";
@@ -94,14 +95,24 @@
       >
         <span class="sparse-artifact-indent" aria-hidden="true"></span>
         <span class="sparse-artifact-icon" aria-hidden="true">
-          <FileSystemIcon kind={row.kind === "folder" ? "folder" : "file"} />
+          {#if row.kind === "git"}
+            <ToolIcon name="git" />
+          {:else if row.artifacts[0]?.kind === "symbolic"}
+            <ToolIcon name="bash" />
+          {:else if row.artifacts[0]?.kind === "remote"}
+            <ToolIcon name="fetch" />
+          {:else}
+            <FileSystemIcon kind={row.kind === "folder" ? "folder" : "file"} />
+          {/if}
         </span>
         {#if row.artifacts[0]}
           {@const artifact = row.artifacts[0]}
           {@const lifecycle = sparseArtifactRowLifecycle(row)}
           {@const hasContent = sparseArtifactRowHasContent(row)}
           {@const gitDiffKind = sparseArtifactRowDiffKind(row)}
-          {#if hasContent || (row.kind === "file" && diffFallback === "git" && gitDiffKind && worktreePath)}
+          {#if row.kind === "git" || ((artifact.kind === "symbolic" || artifact.kind === "remote") && !hasContent)}
+            <span class="sparse-artifact-name" title={artifact.title}>{row.label}</span>
+          {:else if hasContent || (row.kind === "file" && diffFallback === "git" && gitDiffKind && worktreePath)}
             <Tooltip variant="wide" escapeClip onShow={() => revealContent(row.id)}>
               <button
                 slot="trigger"

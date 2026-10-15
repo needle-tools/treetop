@@ -1629,6 +1629,28 @@ work; the regular session renderer and its geometry remain mounted throughout.
 
 ### Cumulative artifact-map scaling (2026-09-11)
 
+Git fetch/pull/push ref arguments now carry a shared nicifier `git-ref` part
+instead of a filesystem-path part. Artifact extraction retains them as Git
+artifacts in the same map; the sparse tree renders one source → destination
+row with the existing Git icon, not slash-separated folders or file links.
+The tooltip retains the operation, remote and raw refspec (including force
+and exclusion markers). Actual file commands reading paths under `refs/`
+remain filesystem artifacts; there is no path-prefix blacklist.
+
+The follow-up target audit streamed 59 Codex/Claude session files (128,573
+rows, 22,035 tool invocations) from the October 12–15 Codex folders and recent
+Baker/FHIR Claude sessions. It confirmed stream sinks as preview paths (30
+`/dev/null` occurrences), unresolved shell expressions presented as filenames,
+Git identities/config values treated as files, and PHP `->post` inside heredoc
+stdin misread as shell output redirection. Shared target classification now
+keeps streams out of file artifacts, retains unresolved expressions as symbolic
+entries without local-file links, and separates URLs from filesystem paths.
+Git diff separators preserve actual file arguments, including paths under
+`refs/`; explicit revisions remain Git artifacts. Shell redirection extraction
+uses the existing heredoc ranges to avoid interpreting input code as shell
+syntax. Real content sources such as `/proc/self/status`, `/dev/shm` files and
+ordinary `dev/` directories remain represented.
+
 The first cumulative map implementation accidentally made sparse-tree folder
 detection quadratic in the number of artifact events. A synthetic 5,000-event
 session touching one file took about 755ms merely to build its tree. Folder

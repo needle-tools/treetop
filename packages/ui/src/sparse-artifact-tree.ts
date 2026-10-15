@@ -9,7 +9,7 @@ export interface SparseArtifactTreeRow {
   path: string;
   hrefPath: string;
   depth: number;
-  kind: "folder" | "file" | "other";
+  kind: "folder" | "file" | "git" | "other";
   artifacts: VisualWorkArtifact[];
 }
 
@@ -52,7 +52,7 @@ interface MutableTreeNode {
   label: string;
   path: string;
   hrefPath: string;
-  kind: "folder" | "file" | "other";
+  kind: "folder" | "file" | "git" | "other";
   artifacts: VisualWorkArtifact[];
   children: MutableTreeNode[];
   childById: Map<string, MutableTreeNode>;
@@ -300,8 +300,8 @@ export function buildSparseArtifactRows(
       id: artifact.id,
       label: artifactLabel(artifact),
       path: artifact.label,
-      hrefPath: artifact.label,
-      kind: "other",
+      hrefPath: ["git", "symbolic", "remote"].includes(artifact.kind) ? "" : artifact.label,
+      kind: artifact.kind === "git" ? "git" : "other",
     });
     node.artifacts.push(artifact);
   }

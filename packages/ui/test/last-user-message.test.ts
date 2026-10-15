@@ -1,6 +1,7 @@
 import { describe, it, expect } from "bun:test";
 import {
   nicifyCommand,
+  visualArtifactPathKind,
   visualToolArtifactContentPreview,
 } from "@treetop/nicifier";
 import {
@@ -9117,6 +9118,34 @@ describe("visualWorkOverview", () => {
     expect(visualWorkOverview(item, accounted, { model: "gpt-6-astra" }).cost).not.toBe(slow.cost);
   });
 
+  it("keeps git refspecs in the artifact map without treating them as files", () => {
+    const ref = "refs/heads/materialx/nodegraph-implementations:refs/remotes/needle/materialx/nodegraph-implementations";
+    const blocks = [{ type: "tool_use" as const, toolName: "exec_command", toolUseId: "fetch-refs", toolInput: { cmd: `git fetch needle +${ref} && cat refs/heads/notes` } }];
+    const entries = buildVisualWorkDisplayEntries([{ message: { role: "assistant", blocks }, blocks, messageIndex: 0 }]);
+    const overview = visualWorkOverview({ kind: "work", entries: [] }, entries);
+    expect(overview.artifacts).toEqual(expect.arrayContaining([
+      expect.objectContaining({ kind: "git", label: "materialx/nodegraph-implementations → needle/materialx/nodegraph-implementations", title: `fetch needle +${ref}` }),
+      expect.objectContaining({ kind: "file", path: "refs/heads/notes" }),
+    ]));
+    expect(overview.artifacts.filter((artifact) => artifact.kind === "file").map((artifact) => artifact.path)).toEqual(["refs/heads/notes"]);
+    const git = overview.artifacts.find((artifact) => artifact.kind === "git")!;
+    expect(git.path).toBeUndefined();
+    expect(git.contentTokenCount).toBeUndefined();
+    expect(git.contentLineCount).toBeUndefined();
+    expect(overview.changedFiles).toHaveLength(0);
+  });
+
+  it("preserves remote, force and exclusion details for Git refs through nested shells", () => {
+    const result = nicifyCommand("bash -lc 'git fetch --no-tags needle +refs/heads/main:refs/remotes/needle/main ^refs/heads/private/*'");
+    expect(result.parts.filter((part) => part.kind === "git-ref")).toEqual([
+      { kind: "git-ref", text: "main → needle/main", ref: "+refs/heads/main:refs/remotes/needle/main", operation: "fetch", remote: "needle" },
+      { kind: "git-ref", text: "exclude private/*", ref: "^refs/heads/private/*", operation: "fetch", remote: "needle" },
+    ]);
+    expect(result.parts.some((part) => part.kind === "path")).toBe(false);
+    expect(nicifyCommand("git push origin :refs/heads/old").parts).toContainEqual({ kind: "git-ref", text: "(delete) → old", ref: ":refs/heads/old", operation: "push", remote: "origin" });
+    expect(nicifyCommand("git pull origin main").parts).toContainEqual({ kind: "git-ref", text: "main", ref: "main", operation: "pull", remote: "origin" });
+  });
+
   it("keeps shell syntax fragments out of overview artifacts", () => {
     const cmd = [
       "sed -n '1,90p' src/conversionFamilies.ts",
@@ -9165,6 +9194,37 @@ describe("visualWorkOverview", () => {
       "conversionFamilies.ts:1-90",
       "routes/+page.svelte",
     ]);
+  });
+
+  it("distinguishes streams and unresolved shell paths from concrete files", () => {
+    for (const path of ["/dev/null", "/dev/stdin", "/dev/stdout", "/dev/stderr", "/dev/fd/3", "/dev/zero", "/dev/urandom", "/proc/self/fd/1", "/dev/tcp/localhost/80", "NUL", "NUL:"]) {
+      expect(visualArtifactPathKind(path)).toBe("stream");
+    }
+    for (const path of ["/proc/self/status", "/dev/shm/report.txt", "dev/fixtures.txt", "dev0.txt", "C:\\work\\report.txt"]) {
+      expect(visualArtifactPathKind(path)).toBe("file");
+    }
+    expect(visualArtifactPathKind("https://example.com/repo.git")).toBe("url");
+    expect(visualArtifactPathKind("$S/run.log")).toBe("symbolic");
+    const cmd = "cat /dev/null /dev/stdin /dev/fd/3 /dev/zero /proc/self/status /dev/shm/report.txt dev/fixtures.txt $S/run.log; curl -o /dev/null https://example.com";
+    const blocks = [{ type: "tool_use" as const, toolName: "exec_command", toolUseId: "targets", toolInput: { cmd } }];
+    const entries = buildVisualWorkDisplayEntries([{ message: { role: "assistant", blocks }, blocks, messageIndex: 0 }]);
+    const artifacts = visualWorkOverview({ kind: "work", entries: [] }, entries).artifacts;
+    expect(artifacts.filter((artifact) => artifact.kind === "file").map((artifact) => artifact.path)).toEqual(["/proc/self/status", "/dev/shm/report.txt", "dev/fixtures.txt"]);
+    expect(artifacts).toContainEqual(expect.objectContaining({ kind: "symbolic", label: "$S/run.log" }));
+    expect(artifacts.find((artifact) => artifact.kind === "symbolic")?.path).toBeUndefined();
+    expect(nicifyCommand("cat /dev/null").parts).toEqual([{ kind: "text", text: "Read " }, { kind: "text", text: "/dev/null" }]);
+    expect(visualFileEditSummaryForBlock({ type: "tool_use", toolName: "exec_command", toolInput: { cmd: "printf x > /dev/zero; printf x > /dev/stdin; printf x > /proc/self/fd/1" } })).toBeUndefined();
+  });
+
+  it("keeps Git identities and config values out of file artifacts while retaining explicit diff paths", () => {
+    const cmd = "git ls-remote origin refs/heads/main; git merge feature/materialx; git rebase needle/main; git config remote.origin.url https://example.com/repo.git; git diff refs/archive/before HEAD -- src/app.ts";
+    const blocks = [{ type: "tool_use" as const, toolName: "exec_command", toolUseId: "git-targets", toolInput: { cmd } }];
+    const entries = buildVisualWorkDisplayEntries([{ message: { role: "assistant", blocks }, blocks, messageIndex: 0 }]);
+    const artifacts = visualWorkOverview({ kind: "work", entries: [] }, entries).artifacts;
+    expect(artifacts.filter((artifact) => artifact.kind === "file").map((artifact) => artifact.path)).toEqual(["src/app.ts"]);
+    expect(artifacts.filter((artifact) => artifact.kind === "git").map((artifact) => artifact.title)).toEqual(expect.arrayContaining(["ls-remote origin refs/heads/main", "merge feature/materialx", "rebase needle/main", "diff refs/archive/before", "diff HEAD"]));
+    expect(nicifyCommand("git diff ../src/app.ts").parts).toContainEqual(expect.objectContaining({ kind: "path", path: "../src/app.ts" }));
+    expect(nicifyCommand("git diff -- refs/heads/main").parts).toContainEqual(expect.objectContaining({ kind: "path", path: "refs/heads/main" }));
   });
 
   it("tracks binary script arguments and files explicitly saved by command output", () => {
@@ -9874,5 +9934,14 @@ describe("visualFileEditSummaryForBlock", () => {
         },
       }),
     ).toBeUndefined();
+  });
+
+  it("does not mistake PHP member access in heredoc input for shell output redirection", () => {
+    const block = {
+      type: "tool_use", toolName: "exec_command", toolInput: {
+        cmd: "ssh host php <<'PHP'\n<?php\n$client->post('https://example.com/api', ['headers' => []]);\nPHP\nprintf done > /tmp/done.log",
+      },
+    };
+    expect(visualFileEditSummaryForBlock(block)?.files).toEqual([{ path: "/tmp/done.log", action: "written" }]);
   });
 });

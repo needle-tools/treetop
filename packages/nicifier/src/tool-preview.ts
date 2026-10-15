@@ -832,6 +832,8 @@ export interface VisualToolResultBadge {
 
 export type VisualToolPreviewPart =
   | { kind: "text"; text: string }
+  | { kind: "git-ref"; text: string; ref: string; operation: string; remote?: string }
+  | { kind: "resource"; text: string; target: string; resourceKind: "symbolic" | "url" }
   | {
       kind: "path";
       text: string;
@@ -2925,6 +2927,19 @@ interface FormattedPathTarget {
   range: string;
 }
 
+/** Classify shell targets without consulting or executing the user's shell. */
+export function visualArtifactPathKind(path: string): "file" | "stream" | "symbolic" | "url" {
+  const value = path.replace(/\\/g, "/");
+  if (/^\/dev\/(?:null|zero|random|urandom|stdin|stdout|stderr|tty|console|ptmx)$/.test(value)
+    || /^\/dev\/fd(?:\/\d+)?$/.test(value)
+    || /^\/proc\/(?:self|\d+)\/fd\/\d+$/.test(value)
+    || /^\/dev\/(?:tcp|udp)\//.test(value)
+    || /^(?:NUL|CON|CONIN\$|CONOUT\$|COM[1-9]|LPT[1-9]):?$/i.test(value)) return "stream";
+  if (/^[A-Za-z][A-Za-z0-9+.-]*:\/\//.test(value)) return "url";
+  if (/\$(?:[A-Za-z_({]|\d)|`/.test(value)) return "symbolic";
+  return "file";
+}
+
 function formatPathTargetParts(
   targets: readonly string[],
 ): FormattedPathTarget[] {
@@ -2976,7 +2991,11 @@ function interspersePathParts(
   return formatted.flatMap((target, index): VisualToolPreviewPart[] => {
     const prefix: VisualToolPreviewPart[] =
       index === 0 ? [] : [{ kind: "text", text: ", " }];
-    return [...prefix, target];
+    const kind = visualArtifactPathKind(target.path);
+    if (kind === "file") return [...prefix, target];
+    const text = `${target.path}${target.range}`;
+    return [...prefix, kind === "stream" ? { kind: "text", text }
+      : { kind: "resource", text, target: target.path, resourceKind: kind }];
   });
 }
 
@@ -4729,15 +4748,22 @@ function summarizeGit(tokens: string[]): VisualCommandSummary | undefined {
     return { kind: "git", action: "remote", targets: [] };
   }
   if (subcommand === "diff") {
-    const targets = gitPathArgs(tokens.slice(subcommandIndex + 1));
+    const args = tokens.slice(subcommandIndex + 1);
+    const separator = args.indexOf("--");
+    const before = gitPathArgs(separator < 0 ? args : args.slice(0, separator), true);
+    const revisions = separator < 0
+      ? before.filter((value) => /^(?:refs\/|HEAD(?:$|[~^])|[0-9a-f]{7,40}$)/.test(value))
+      : before;
+    const targets = separator < 0
+      ? before.filter((value) => !revisions.includes(value)) : args.slice(separator + 1);
     const staged = tokens.includes("--cached") || tokens.includes("--staged");
     if (tokens.includes("--check")) {
-      return { kind: "git", action: "diff-check", targets, staged };
+      return { kind: "git", action: "diff-check", targets, revisions, staged };
     }
     if (tokens.includes("--stat") || tokens.includes("--name-status")) {
-      return { kind: "git", action: "diff-stat", targets, staged };
+      return { kind: "git", action: "diff-stat", targets, revisions, staged };
     }
-    return { kind: "git", action: "diff", targets, staged };
+    return { kind: "git", action: "diff", targets, revisions, staged };
   }
   if (subcommand === "show") {
     const showArgs = gitPathArgs(tokens.slice(subcommandIndex + 1));
@@ -5142,7 +5168,7 @@ function gitSubcommandIndex(tokens: string[]): number {
   return 1;
 }
 
-function gitPathArgs(tokens: string[]): string[] {
+function gitPathArgs(tokens: string[], includeHead = false): string[] {
   const optionsWithValue = new Set([
     "-b",
     "-B",
@@ -5195,7 +5221,7 @@ function gitPathArgs(tokens: string[]): string[] {
     if (token.includes("|") || token.includes(">")) break;
     targets.push(token);
   }
-  return targets.filter((target) => target !== "." && target !== "HEAD");
+  return targets.filter((target) => target !== "." && (includeHead || target !== "HEAD"));
 }
 
 function summarizeTestCommand(
@@ -7708,6 +7734,33 @@ function compactJsonQueryFilter(filter: string): string {
 function gitSummaryParts(
   summary: Extract<VisualCommandSummary, { kind: "git" }>,
 ): VisualToolPreviewPart[] {
+  if (summary.revisions?.length) {
+    const base = gitSummaryParts({ ...summary, revisions: undefined });
+    return [...base, ...summary.revisions.flatMap((ref): VisualToolPreviewPart[] => [
+      { kind: "text", text: " " }, { kind: "git-ref", text: ref, ref, operation: "diff" },
+    ])];
+  }
+  if (["fetch", "push", "pull"].includes(summary.action)) {
+    const [remote, ...refs] = summary.targets;
+    const label = summary.action === "fetch" ? "Fetch git refs"
+      : summary.action === "push" ? "Push changes" : "Pull changes";
+    const parts: VisualToolPreviewPart[] = [
+      { kind: "text", text: `${label}${remote ? ` ${remote}` : ""}` },
+    ];
+    for (const ref of refs) {
+      const clean = ref.replace(/^[+^]/, "");
+      const short = (value: string) => value.replace(/^refs\/(?:heads|remotes|tags)\//, "");
+      const separator = clean.indexOf(":");
+      const text = separator < 0
+        ? short(clean)
+        : `${short(clean.slice(0, separator)) || "(delete)"} → ${short(clean.slice(separator + 1)) || "(matching)"}`;
+      parts.push(
+        { kind: "text", text: " " },
+        { kind: "git-ref", text: ref.startsWith("^") ? `exclude ${text}` : text, ref, operation: summary.action, remote },
+      );
+    }
+    return parts;
+  }
   if (summary.action === "status") {
     return [{ kind: "text", text: "Check git status" }];
   }
@@ -7856,6 +7909,18 @@ function gitSummaryParts(
   };
   const label = lessCommonLabels[summary.action];
   if (label) {
+    if (summary.action === "config" || summary.action === "stash") {
+      return [{ kind: "text", text: `${label}${summary.targets.length ? ` ${summary.targets.join(" ")}` : ""}` }];
+    }
+    if (["merge", "rebase", "switch", "cherry-pick", "tag", "symbolic-ref", "for-each-ref", "ls-tree", "ls-remote"].includes(summary.action)) {
+      const [remote, ...refs] = summary.action === "ls-remote" ? summary.targets : [undefined, ...summary.targets];
+      return [
+        { kind: "text", text: `${label}${remote ? ` ${remote}` : ""}` },
+        ...refs.flatMap((ref): VisualToolPreviewPart[] => ref ? [
+          { kind: "text", text: " " }, { kind: "git-ref", text: ref, ref, operation: summary.action, ...(remote ? { remote } : {}) },
+        ] : []),
+      ];
+    }
     return [
       { kind: "text", text: label },
       ...prefixedPathList(summary.targets),
@@ -8758,7 +8823,15 @@ function shellOutputPaths(
   }> = [];
   let quote: "'" | '"' | null = null;
   let escaped = false;
+  const heredocRanges = shellHeredocRanges(command);
+  let rangeIndex = 0;
   for (let index = 0; index < command.length; index += 1) {
+    const range = heredocRanges[rangeIndex];
+    if (range && index === range.start) {
+      index = range.end - 1;
+      rangeIndex += 1;
+      continue;
+    }
     const ch = command[index]!;
     if (escaped) {
       escaped = false;
@@ -8855,6 +8928,7 @@ function isConcreteShellOutputPath(path: string): boolean {
   const normalized = path.replace(/\\/g, "/");
   if (
     !normalized ||
+    visualArtifactPathKind(normalized) !== "file" ||
     normalized === "-" ||
     /^\d+$/.test(normalized) ||
     /[$`]/.test(normalized) ||
