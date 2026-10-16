@@ -414,18 +414,18 @@ describe("SessionView browser lifecycle", { concurrency: false }, () => {
       await composer.fill("QUEUED_FOR_ORIGINAL_SESSION");
       await composer.press("Enter");
       await currentPage.getByRole("button", { name: "Show queued messages", exact: true }).waitFor();
-      expect(turnRequestInputs.slice(requestsBefore)).toEqual([]);
+      assert.deepEqual(turnRequestInputs.slice(requestsBefore), []);
 
       await currentPage.getByRole("button", { name: "Switch session", exact: true }).click();
       await currentPage.locator(".messages").getByText("OTHER_SESSION_ANSWER", { exact: true }).waitFor();
       await currentPage.waitForTimeout(250);
-      expect(turnRequestInputs.slice(requestsBefore)).toEqual([]);
-      expect(await currentPage.getByRole("button", { name: "Show queued messages", exact: true }).count()).toBe(0);
-      expect(await currentPage.locator(".messages").innerText()).not.toContain("QUEUED_FOR_ORIGINAL_SESSION");
+      assert.deepEqual(turnRequestInputs.slice(requestsBefore), []);
+      assert.equal(await currentPage.getByRole("button", { name: "Show queued messages", exact: true }).count(), 0);
+      assert(!(await currentPage.locator(".messages").innerText()).includes("QUEUED_FOR_ORIGINAL_SESSION"));
 
       await currentPage.getByRole("button", { name: "Switch session", exact: true }).click();
       await waitForCondition(async () => turnRequestInputs.length > requestsBefore, "Original queue was not restored");
-      expect(turnRequestInputs.slice(requestsBefore)).toEqual([
+      assert.deepEqual(turnRequestInputs.slice(requestsBefore), [
         { threadId, text: "QUEUED_FOR_ORIGINAL_SESSION" },
       ]);
     } finally {
@@ -443,11 +443,11 @@ describe("SessionView browser lifecycle", { concurrency: false }, () => {
       await waitForCondition(async () => turnRequestCount > requestsBefore, "Send did not reach server");
       await currentPage.getByRole("button", { name: "Switch session", exact: true }).click();
       await currentPage.locator(".messages").getByText("OTHER_SESSION_ANSWER", { exact: true }).waitFor();
-      expect(await currentPage.locator(".messages").getByText("OLD_SESSION_PENDING", { exact: true }).count()).toBe(0);
-      expect(await currentPage.getByRole("button", { name: "Stop Codex", exact: true }).count()).toBe(0);
+      assert.equal(await currentPage.locator(".messages").getByText("OLD_SESSION_PENDING", { exact: true }).count(), 0);
+      assert.equal(await currentPage.getByRole("button", { name: "Stop Codex", exact: true }).count(), 0);
       await currentPage.waitForTimeout(900);
-      expect(await currentPage.locator(".messages").getByText("OLD_SESSION_PENDING", { exact: true }).count()).toBe(0);
-      expect(await currentPage.getByRole("button", { name: "Stop Codex", exact: true }).count()).toBe(0);
+      assert.equal(await currentPage.locator(".messages").getByText("OLD_SESSION_PENDING", { exact: true }).count(), 0);
+      assert.equal(await currentPage.getByRole("button", { name: "Stop Codex", exact: true }).count(), 0);
     } finally {
       turnRequestDelayMs = 120;
       await currentPage.close();
@@ -468,8 +468,8 @@ describe("SessionView browser lifecycle", { concurrency: false }, () => {
       await currentPage.locator(".messages").getByText("OTHER_SESSION_ANSWER", { exact: true }).waitFor();
       await currentPage.getByRole("button", { name: "Switch session", exact: true }).click();
       await currentPage.waitForTimeout(1600);
-      expect(await composer.inputValue()).toBe("");
-      expect(await currentPage.getByText("HTTP 502", { exact: true }).count()).toBe(0);
+      assert.equal(await composer.inputValue(), "");
+      assert.equal(await currentPage.getByText("HTTP 502", { exact: true }).count(), 0);
     } finally {
       turnRequestDelayMs = 120;
       turnResponseStatus = 200;
@@ -495,9 +495,9 @@ describe("SessionView browser lifecycle", { concurrency: false }, () => {
       ]);
       await currentPage.locator(".messages").getByText("CONFIRMED_ANSWER", { exact: true }).waitFor();
       await currentPage.waitForTimeout(900);
-      expect(await composer.inputValue()).toBe("");
-      expect(await currentPage.locator(".messages").innerText()).toContain("CONFIRMED_REQUEST");
-      expect(await currentPage.getByText("HTTP 502", { exact: true }).count()).toBe(0);
+      assert.equal(await composer.inputValue(), "");
+      assert((await currentPage.locator(".messages").innerText()).includes("CONFIRMED_REQUEST"));
+      assert.equal(await currentPage.getByText("HTTP 502", { exact: true }).count(), 0);
     } finally {
       turnRequestDelayMs = 120;
       turnResponseStatus = 200;
@@ -521,14 +521,14 @@ describe("SessionView browser lifecycle", { concurrency: false }, () => {
       await currentPage.locator(".composer-steer").click();
       await waitForCondition(async () => turnRequestCount === requestsBefore + 2, "Second steer did not reach server");
       const sequence = async () => (await currentPage.locator(".messages").innerText()).match(/REPEATED_STEER/g) ?? [];
-      expect(await sequence()).toEqual(["REPEATED_STEER", "REPEATED_STEER"]);
+      assert.deepEqual(await sequence(), ["REPEATED_STEER", "REPEATED_STEER"]);
       emitCodexEvents([{ kind: "notification", method: "item/completed", threadId, turnId: latestTurnId, receivedAt: "2026-10-01T10:00:11.000Z", params: { item: { id: "accepted-first-steer", type: "userMessage", content: [{ type: "text", text: "REPEATED_STEER" }] } } }]);
       await currentPage.waitForTimeout(900);
-      expect(await composer.inputValue()).toBe("");
-      expect(await sequence()).toEqual(["REPEATED_STEER", "REPEATED_STEER"]);
+      assert.equal(await composer.inputValue(), "");
+      assert.deepEqual(await sequence(), ["REPEATED_STEER", "REPEATED_STEER"]);
       await currentPage.waitForTimeout(900);
-      expect(await composer.inputValue()).toBe("REPEATED_STEER");
-      expect(await sequence()).toEqual(["REPEATED_STEER"]);
+      assert.equal(await composer.inputValue(), "REPEATED_STEER");
+      assert.deepEqual(await sequence(), ["REPEATED_STEER"]);
     } finally {
       turnRequestDelayMs = 120;
       turnResponseStatus = 200;
@@ -557,10 +557,10 @@ describe("SessionView browser lifecycle", { concurrency: false }, () => {
       await composer.press("Enter");
       await composer.fill("QUEUED_TWO");
       await composer.press("Enter");
-      expect(await sequence()).toEqual([]);
+      assert.deepEqual(await sequence(), []);
       await completeLatestTurn(currentPage);
       await waitForCondition(async () => turnRequestCount === initialRequests + 1, "First queued request was not promoted");
-      expect(await sequence()).toEqual(["QUEUED_ONE"]);
+      assert.deepEqual(await sequence(), ["QUEUED_ONE"]);
       emitCodexEvents([
         lifecycle("queued-turn-1", "turn/started"),
         item("queued-turn-1", "queued-user-1", "userMessage", "QUEUED_ONE"),
@@ -568,25 +568,25 @@ describe("SessionView browser lifecycle", { concurrency: false }, () => {
         lifecycle("queued-turn-1", "turn/completed"),
       ]);
       await waitForCondition(async () => turnRequestCount === initialRequests + 2, "Second queued request was blocked by a stale start response");
-      expect(await sequence()).toEqual(["QUEUED_ONE", "ANSWER_ONE", "QUEUED_TWO"]);
+      assert.deepEqual(await sequence(), ["QUEUED_ONE", "ANSWER_ONE", "QUEUED_TWO"]);
       emitCodexEvents([
         lifecycle("queued-turn-2", "turn/started"),
         item("queued-turn-2", "queued-answer-2", "agentMessage", "ANSWER_TWO"),
       ]);
       await waitForCondition(async () => (await sequence()).includes("ANSWER_TWO"), "Second queued response was not shown");
-      expect(await sequence()).toEqual(["QUEUED_ONE", "ANSWER_ONE", "QUEUED_TWO", "ANSWER_TWO"]);
+      assert.deepEqual(await sequence(), ["QUEUED_ONE", "ANSWER_ONE", "QUEUED_TWO", "ANSWER_TWO"]);
       emitCodexEvents([
         item("queued-turn-2", "queued-user-2", "userMessage", "QUEUED_TWO"),
         lifecycle("queued-turn-2", "turn/completed"),
       ]);
       await currentPage.waitForTimeout(650);
-      expect(await sequence()).toEqual(["QUEUED_ONE", "ANSWER_ONE", "QUEUED_TWO", "ANSWER_TWO"]);
+      assert.deepEqual(await sequence(), ["QUEUED_ONE", "ANSWER_ONE", "QUEUED_TWO", "ANSWER_TWO"]);
       const stage = currentPage.locator(".session-lifecycle-stage");
       await stage.evaluate(element => { (element as HTMLElement).style.transform = "translateX(2000px)"; });
       await waitForCondition(async () => (await currentPage.locator(".messages").count()) === 0, "Lane did not unmount");
       await stage.evaluate(element => { (element as HTMLElement).style.transform = ""; });
       await currentPage.locator(".messages").waitFor();
-      expect(await sequence()).toEqual(["QUEUED_ONE", "ANSWER_ONE", "QUEUED_TWO", "ANSWER_TWO"]);
+      assert.deepEqual(await sequence(), ["QUEUED_ONE", "ANSWER_ONE", "QUEUED_TWO", "ANSWER_TWO"]);
     } finally {
       turnRequestDelayMs = 120;
       turnResponseIds = [];
@@ -610,10 +610,10 @@ describe("SessionView browser lifecycle", { concurrency: false }, () => {
       ]);
       await currentPage.locator(".messages").getByText("FAST_ANSWER", { exact: true }).waitFor();
       const sequence = async () => (await currentPage.locator(".messages").innerText()).match(/FAST_REQUEST|FAST_ANSWER/g) ?? [];
-      expect(await sequence()).toEqual(["FAST_REQUEST", "FAST_ANSWER"]);
+      assert.deepEqual(await sequence(), ["FAST_REQUEST", "FAST_ANSWER"]);
       await currentPage.waitForTimeout(900);
-      expect(await currentPage.getByRole("button", { name: "Stop Codex", exact: true }).count()).toBe(0);
-      expect(await sequence()).toEqual(["FAST_REQUEST", "FAST_ANSWER"]);
+      assert.equal(await currentPage.getByRole("button", { name: "Stop Codex", exact: true }).count(), 0);
+      assert.deepEqual(await sequence(), ["FAST_REQUEST", "FAST_ANSWER"]);
     } finally {
       turnRequestDelayMs = 120;
       await currentPage.close();
@@ -630,25 +630,25 @@ describe("SessionView browser lifecycle", { concurrency: false }, () => {
       await currentPage.locator(".composer-steer").click();
       const textSequence = async () => (await currentPage.locator(".messages").innerText()).match(/STEER_KEEP_THIS_MESSAGE|OUTPUT_AFTER_STEER/g) ?? [];
       await waitForCondition(async () => (await textSequence()).length === 1, "Optimistic steer did not render");
-      expect(await textSequence()).toEqual(["STEER_KEEP_THIS_MESSAGE"]);
+      assert.deepEqual(await textSequence(), ["STEER_KEEP_THIS_MESSAGE"]);
       emitCodexEvents([{ kind: "notification", method: "item/completed", threadId, turnId: latestTurnId,
         receivedAt: "2026-10-01T10:00:03.000Z", params: { item: { id: "after-steer", type: "agentMessage", text: "OUTPUT_AFTER_STEER" } } }]);
       await waitForCondition(async () => (await textSequence()).length === 2, "Output after steer did not render");
-      expect(await textSequence()).toEqual(["STEER_KEEP_THIS_MESSAGE", "OUTPUT_AFTER_STEER"]);
+      assert.deepEqual(await textSequence(), ["STEER_KEEP_THIS_MESSAGE", "OUTPUT_AFTER_STEER"]);
       emitCodexEvents([{ kind: "notification", method: "item/completed", threadId, turnId: latestTurnId,
         receivedAt: "2026-10-01T10:00:04.000Z", params: { item: { id: "confirmed-steer", type: "userMessage", content: [{ type: "text", text: "STEER_KEEP_THIS_MESSAGE" }] } } }]);
       await currentPage.waitForTimeout(250);
-      expect(await textSequence()).toEqual(["STEER_KEEP_THIS_MESSAGE", "OUTPUT_AFTER_STEER"]);
+      assert.deepEqual(await textSequence(), ["STEER_KEEP_THIS_MESSAGE", "OUTPUT_AFTER_STEER"]);
       emitCodexEvents([{ kind: "notification", method: "item/completed", threadId, turnId: latestTurnId,
         receivedAt: "2026-10-01T10:00:05.000Z", params: { item: { id: "continued-command", type: "commandExecution",
           command: "/bin/zsh -lc 'pwd'", cwd: "/tmp/treetop-session-lifecycle", status: "completed",
           aggregatedOutput: "/tmp/treetop-session-lifecycle\n" } } }]);
       await waitForCondition(async () => await currentPage.locator('.work-action-group[open]').count() > 0,
         "Next action group did not open");
-      expect(await textSequence()).toEqual(["STEER_KEEP_THIS_MESSAGE", "OUTPUT_AFTER_STEER"]);
-      expect(await currentPage.locator(".work-steering-user-message").isVisible()).toBe(true);
-      expect(await currentPage.locator(".work-steering-user-message").evaluate(element =>
-        element.closest(".work-action-group") === null)).toBe(true);
+      assert.deepEqual(await textSequence(), ["STEER_KEEP_THIS_MESSAGE", "OUTPUT_AFTER_STEER"]);
+      assert.equal(await currentPage.locator(".work-steering-user-message").isVisible(), true);
+      assert.equal(await currentPage.locator(".work-steering-user-message").evaluate(element =>
+        element.closest(".work-action-group") === null), true);
     } finally {
       await currentPage.close();
     }
@@ -688,7 +688,7 @@ describe("SessionView browser lifecycle", { concurrency: false }, () => {
         const summaryPillCount = await currentPage
           .locator(".work-summary-pill-shell")
           .count();
-        expect(summaryPillCount).toBeGreaterThan(10);
+        assert((summaryPillCount) > 10);
         const liveSummaryPill = currentPage.locator(
           ".work-foldout-live > summary .work-summary-pill-shell",
         ).first();
@@ -697,16 +697,12 @@ describe("SessionView browser lifecycle", { concurrency: false }, () => {
         ).first();
         await liveSummaryPill.waitFor();
         await groupedSummaryPill.waitFor();
-        expect(
-          await liveSummaryPill.evaluate(
+        assert.equal(await liveSummaryPill.evaluate(
             (element) => getComputedStyle(element).willChange,
-          ),
-        ).toBe("transform");
-        expect(
-          await groupedSummaryPill.evaluate(
+          ), "transform");
+        assert.equal(await groupedSummaryPill.evaluate(
             (element) => getComputedStyle(element).willChange,
-          ),
-        ).toBe("auto");
+          ), "auto");
       } finally {
         historicalWorkGroupCount = 0;
         await currentPage?.close();
@@ -774,7 +770,7 @@ describe("SessionView browser lifecycle", { concurrency: false }, () => {
       name: "Show subagents",
     });
     await badge.waitFor();
-    expect(await badge.textContent()).toContain("Subagents: 1");
+    assert((await badge.textContent()).includes("Subagents: 1"));
     await badge.click();
     const pane = currentPage.getByLabel("Codex subagents");
     await pane.getByText("Kierkegaard").waitFor();
@@ -789,16 +785,12 @@ describe("SessionView browser lifecycle", { concurrency: false }, () => {
       } } }]);
     await pane.getByText("gpt-6.1-sol · medium").waitFor();
     await pane.locator(".composer-panel-item").click();
-    expect(
-      await currentPage.locator("[data-opened-subagent]").textContent(),
-    ).toBe("child-layout-review");
-    expect(JSON.parse((await currentPage.locator("[data-opened-subagent-context]").textContent())!)).toMatchObject({
+    assert.equal(await currentPage.locator("[data-opened-subagent]").textContent(), "child-layout-review");
+    assert.partialDeepStrictEqual(JSON.parse((await currentPage.locator("[data-opened-subagent-context]").textContent())!), {
       sourceKind: "app-server",
       subagent: { id: "child-layout-review", task: "Review the lifecycle layout without changing it.", model: "gpt-6.1-sol", effort: "medium" },
     });
-    expect(
-      await currentPage.locator(".messages").getByText("child-layout-review").count(),
-    ).toBe(0);
+    assert.equal(await currentPage.locator(".messages").getByText("child-layout-review").count(), 0);
     emitCodexEvents([{
       kind: "notification",
       method: "item/completed",
@@ -825,14 +817,14 @@ describe("SessionView browser lifecycle", { concurrency: false }, () => {
       } } }, { kind: "notification", method: "item/completed", threadId, turnId: latestTurnId,
       receivedAt: "2026-10-08T00:00:12Z", params: { item: { id: "after-late-wait", type: "agentMessage", text: "Late wait observed." } } }]);
     await currentPage.locator(".messages").getByText("Late wait observed.", { exact: true }).waitFor();
-    expect(await currentPage.getByRole("button", { name: /subagents/i }).count()).toBe(0);
+    assert.equal(await currentPage.getByRole("button", { name: /subagents/i }).count(), 0);
     emitCodexEvents([{ kind: "notification", method: "item/completed", threadId, turnId: latestTurnId,
       receivedAt: "2026-10-08T00:00:13Z", params: { item: { id: "subagent-restarted", type: "subAgentActivity", kind: "started",
         agentThreadId: "child-layout-review", agentPath: "/root/layout_review",
       } } }]);
     await currentPage.getByRole("button", { name: "Show subagents" }).waitFor();
-    expect(await currentPage.getByRole("button", { name: "Show subagents" }).textContent()).toContain("Subagents: 1");
-    expect(await currentPage.locator(".messages .work-subagent-badge").count()).toBeGreaterThan(0);
+    assert((await currentPage.getByRole("button", { name: "Show subagents" }).textContent()).includes("Subagents: 1"));
+    assert((await currentPage.locator(".messages .work-subagent-badge").count()) > 0);
     await currentPage.close();
   }, 30_000);
 
@@ -842,11 +834,11 @@ describe("SessionView browser lifecycle", { concurrency: false }, () => {
     let currentPage: Page | undefined;
     try {
       currentPage = await openHarness();
-      expect(await currentPage.locator(".messages .work-subagent-badge").count()).toBe(0);
+      assert.equal(await currentPage.locator(".messages .work-subagent-badge").count(), 0);
       await currentPage.getByRole("button", { name: "Show subagents" }).click();
       const panel = currentPage.getByLabel("Codex subagents");
       await panel.getByText("Review the lifecycle layout without changing it.").waitFor();
-      expect(await panel.locator(".composer-panel-item").count()).toBe(1);
+      assert.equal(await panel.locator(".composer-panel-item").count(), 1);
     } finally {
       historicalSubagentOnly = false;
       historicalTurnCount = 18;
@@ -859,8 +851,8 @@ describe("SessionView browser lifecycle", { concurrency: false }, () => {
     try {
       const context = currentPage.locator(".context-update").filter({ hasText: "Task from parent" });
       await context.waitFor();
-      expect(await context.locator("strong").textContent()).toBe("the entire renderer");
-      expect(await context.textContent()).toContain("Preserve scrolling and subscriptions.");
+      assert.equal(await context.locator("strong").textContent(), "the entire renderer");
+      assert((await context.textContent()).includes("Preserve scrolling and subscriptions."));
       await currentPage.getByRole("button", { name: "Switch session" }).click();
       await waitForCondition(async () => await context.count() === 0, "Parent context leaked to another session");
     } finally { await currentPage.close(); }
@@ -873,9 +865,7 @@ describe("SessionView browser lifecycle", { concurrency: false }, () => {
       .click();
     const subagentPanel = currentPage.getByLabel("Codex subagents");
     await subagentPanel.waitFor();
-    expect(await subagentPanel.getAttribute("data-composer-panel")).toBe(
-      "subagents",
-    );
+    assert.equal(await subagentPanel.getAttribute("data-composer-panel"), "subagents");
     const subagentItem = subagentPanel.locator(".composer-panel-item");
     await subagentItem.waitFor();
     const sharedCardStyles = async (locator: typeof subagentItem) =>
@@ -914,7 +904,7 @@ describe("SessionView browser lifecycle", { concurrency: false }, () => {
     await queueBadge.click();
 
     const queuePanel = currentPage.getByLabel("Queued Codex messages");
-    expect(await queuePanel.getAttribute("data-composer-panel")).toBe("queue");
+    assert.equal(await queuePanel.getAttribute("data-composer-panel"), "queue");
     const queueItem = queuePanel.locator(".composer-panel-item");
     await queueItem.waitFor();
     await queueItem.getByText("Next", { exact: true }).waitFor();
@@ -922,7 +912,7 @@ describe("SessionView browser lifecycle", { concurrency: false }, () => {
       .getByText("Run the focused queue regression next")
       .waitFor();
 
-    expect(await sharedCardStyles(queueItem)).toEqual(subagentCardStyles);
+    assert.deepEqual(await sharedCardStyles(queueItem), subagentCardStyles);
     await currentPage.close();
   }, 30_000);
 
@@ -1038,11 +1028,9 @@ describe("SessionView browser lifecycle", { concurrency: false }, () => {
     const liveBody = currentPage.locator(
       ".work-foldout-live > .work-foldout-body",
     );
-    expect(
-      await liveBody.evaluate(
+    assert((await liveBody.evaluate(
         (element) => element.scrollHeight - element.clientHeight,
-      ),
-    ).toBeGreaterThan(0);
+      )) > 0);
     await messages.evaluate((element) => {
       element.dispatchEvent(
         new WheelEvent("wheel", { bubbles: true, deltaY: -100 }),
@@ -1050,7 +1038,7 @@ describe("SessionView browser lifecycle", { concurrency: false }, () => {
       element.scrollTop = element.scrollHeight - element.clientHeight - 40;
       element.dispatchEvent(new Event("scroll", { bubbles: true }));
     });
-    expect(await followHandle.getAttribute("class")).not.toContain("active");
+    assert(!(await followHandle.getAttribute("class")).includes("active"));
     await followHandle.click();
     await currentPage.waitForTimeout(150);
     const tailDistance = () =>
@@ -1058,14 +1046,12 @@ describe("SessionView browser lifecycle", { concurrency: false }, () => {
         (element) =>
           element.scrollHeight - element.clientHeight - element.scrollTop,
       );
-    expect(await tailDistance()).toBeLessThanOrEqual(1);
-    expect(await followHandle.getAttribute("class")).toContain("active");
-    expect(
-      await liveBody.evaluate(
+    assert((await tailDistance()) <= 1);
+    assert((await followHandle.getAttribute("class")).includes("active"));
+    assert((await liveBody.evaluate(
         (element) =>
           element.scrollHeight - element.clientHeight - element.scrollTop,
-      ),
-    ).toBeLessThanOrEqual(1);
+      )) <= 1);
 
     emitCodexEvents([
       {
@@ -1115,8 +1101,8 @@ describe("SessionView browser lifecycle", { concurrency: false }, () => {
       .getByText("The next output is visible at the bottom.")
       .waitFor();
     await currentPage.waitForTimeout(150);
-    expect(await tailDistance()).toBeLessThanOrEqual(1);
-    expect(await followHandle.getAttribute("class")).toContain("active");
+    assert((await tailDistance()) <= 1);
+    assert((await followHandle.getAttribute("class")).includes("active"));
     await currentPage.close();
   }, 30_000);
 
@@ -1177,7 +1163,7 @@ describe("SessionView browser lifecycle", { concurrency: false }, () => {
       })
       .waitFor();
     await currentPage.waitForTimeout(150);
-    expect(await tailDistance()).toBeLessThanOrEqual(1);
+    assert((await tailDistance()) <= 1);
     await currentPage.close();
   }, 30_000);
 
@@ -1191,14 +1177,14 @@ describe("SessionView browser lifecycle", { concurrency: false }, () => {
           "Message Type: NEW_TASK\nTask name: /root/reviewer\nSender: /root\nPayload:\nPlease review the result." }] } } }]);
       await waitForCondition(async () => (await currentPage.locator(".messages").innerText()).includes("Please review the result."),
         "Parent delivery did not render");
-      expect(await currentPage.locator(".messages").innerText()).toContain("Parent root");
-      expect(await currentPage.locator('.messages [title="Message to parent root"]').count()).toBe(0);
+      assert((await currentPage.locator(".messages").innerText()).includes("Parent root"));
+      assert.equal(await currentPage.locator('.messages [title="Message to parent root"]').count(), 0);
       const entry = currentPage.locator(".work-entry").filter({ hasText: "Please review the result." }).last();
       await entry.locator(":scope > summary").click();
       const card = entry.locator(".subagent-detail-card");
       await card.waitFor();
-      expect(await card.locator(".subagent-detail-label").allTextContents()).toEqual(["Input"]);
-      expect(await card.innerText()).toContain("Please review the result.");
+      assert.deepEqual(await card.locator(".subagent-detail-label").allTextContents(), ["Input"]);
+      assert((await card.innerText()).includes("Please review the result."));
     } finally {
       await currentPage.close();
     }
@@ -1224,7 +1210,7 @@ describe("SessionView browser lifecycle", { concurrency: false }, () => {
       emitCodexEvents([{ kind: "notification", method: "thread/tokenUsage/updated", threadId, turnId: latestTurnId,
         receivedAt: "2026-10-14T12:00:02Z", params: { tokenUsage: { last: usage(250), total: usage(250) } } }]);
       await waitForCondition(async () => (await summary.innerText()).includes("250 tok"), "Final usage for an observed turn did not render after completion");
-      expect(await summary.innerText()).toContain("250 tok");
+      assert((await summary.innerText()).includes("250 tok"));
     } finally {
       usageHistoryItems = [];
       latestTurnComplete = false;
@@ -1253,7 +1239,7 @@ describe("SessionView browser lifecycle", { concurrency: false }, () => {
         receivedAt: "2026-10-14T12:00:04Z", params: { turn: { id: latestTurnId } } }]);
       await (await reconciled).finished();
       await currentPage.waitForTimeout(100);
-      expect(await summary.innerText()).toContain("150 tok");
+      assert((await summary.innerText()).includes("150 tok"));
     } finally {
       usageHistoryItems = [];
       latestTurnComplete = false;
@@ -1289,39 +1275,39 @@ describe("SessionView browser lifecycle", { concurrency: false }, () => {
       const round = currentPage.locator(".work-foldout").last();
       await waitForCondition(async () => (await round.locator(":scope > summary").innerText()).includes("900 tok"),
         "Round did not include child usage");
-      expect(await round.locator(":scope > summary").innerText()).not.toContain("this agent");
+      assert(!(await round.locator(":scope > summary").innerText()).includes("this agent"));
       const token = round.locator(":scope > summary .work-tool-meta").filter({ hasText: "900 tok" });
-      expect(await token.getAttribute("title")).toContain("300 parent + 600 children");
-      expect(await token.getAttribute("title")).toContain("20 cache write (included in fresh input)");
+      assert((await token.getAttribute("title")).includes("300 parent + 600 children"));
+      assert((await token.getAttribute("title")).includes("20 cache write (included in fresh input)"));
       const price = round.locator(":scope > summary .work-tool-meta[title*='estimated token cost']");
-      expect(await price.getAttribute("title")).toContain("parent +");
+      assert((await price.getAttribute("title")).includes("parent +"));
       const originalCost = await price.innerText();
       if (!await round.evaluate(element => (element as HTMLDetailsElement).open)) {
         await round.locator(":scope > summary").click();
       }
-      expect(await round.locator(".work-overview-meta").first().innerText()).toContain("fresh input 700");
-      expect(await round.locator(".work-overview-meta").first().innerText()).toContain("cached 1,300");
-      expect(await round.locator(".work-overview-meta").first().innerText()).toContain("output 200");
-      expect(await round.locator(".work-overview-meta").first().innerText()).toContain("cache write 20 (included in fresh input)");
-      expect(await round.locator(".work-overview-meta").first().innerText()).toContain("reasoning 30 (included in output)");
-      expect(await round.locator(".work-overview-meta").first().innerText()).toContain("300 parent + 600 children");
+      assert((await round.locator(".work-overview-meta").first().innerText()).includes("fresh input 700"));
+      assert((await round.locator(".work-overview-meta").first().innerText()).includes("cached 1,300"));
+      assert((await round.locator(".work-overview-meta").first().innerText()).includes("output 200"));
+      assert((await round.locator(".work-overview-meta").first().innerText()).includes("cache write 20 (included in fresh input)"));
+      assert((await round.locator(".work-overview-meta").first().innerText()).includes("reasoning 30 (included in output)"));
+      assert((await round.locator(".work-overview-meta").first().innerText()).includes("300 parent + 600 children"));
       const boxes = await round.locator(":scope > summary").evaluate(element => {
         const summary = element.getBoundingClientRect();
         const chips = element.querySelector(".work-summary-pills")!.getBoundingClientRect();
         const heading = element.querySelector(".work-summary-heading")!.getBoundingClientRect();
         return { width: summary.width, chips: chips.width, inside: chips.right <= summary.right, below: chips.top > heading.top, headingInset: heading.left - summary.left };
       });
-      expect(boxes.chips).toBeGreaterThan(boxes.width * 0.8);
-      expect(boxes.inside && boxes.below).toBe(true);
-      expect(boxes.headingInset).toBeLessThan(30);
+      assert((boxes.chips) > boxes.width * 0.8);
+      assert.equal(boxes.inside && boxes.below, true);
+      assert((boxes.headingInset) < 30);
       await round.locator(":scope > summary").screenshot({ path: "/tmp/treetop-round-total-layout.png" });
       await currentPage.locator(".session-lifecycle-stage").evaluate(element => { (element as HTMLElement).style.width = "360px"; });
       const narrow = await round.locator(":scope > summary").evaluate(element => {
         const box = element.getBoundingClientRect();
         return { width: box.width, overflow: element.scrollWidth > element.clientWidth + 1, chips: element.querySelector(".work-summary-pills")!.getBoundingClientRect().width };
       });
-      expect(narrow.overflow).toBe(false);
-      expect(narrow.chips).toBeGreaterThan(narrow.width * 0.8);
+      assert.equal(narrow.overflow, false);
+      assert((narrow.chips) > narrow.width * 0.8);
       await currentPage.locator(".session-lifecycle-stage").evaluate(element => { (element as HTMLElement).style.width = ""; });
       // Parent subscription must not mistake child traffic for parent usage.
       emitCodexEvents([{ kind: "notification", method: "thread/tokenUsage/updated", threadId: "child-layout-review", turnId: "child-turn",
@@ -1329,14 +1315,14 @@ describe("SessionView browser lifecycle", { concurrency: false }, () => {
           last: { inputTokens: 5000000, outputTokens: 5000, totalTokens: 5005000 },
         } } }]);
       await currentPage.waitForTimeout(100);
-      expect(await token.innerText()).toContain("900 tok");
-      expect(await price.innerText()).toBe(originalCost);
+      assert((await token.innerText()).includes("900 tok"));
+      assert.equal(await price.innerText(), originalCost);
       latestTurnComplete = true;
       emitCodexEvents([{ kind: "notification", method: "turn/completed", threadId, turnId: latestTurnId,
         receivedAt: "2026-10-14T12:00:03Z", params: { threadId, turn: { id: latestTurnId } } }]);
       await waitForCondition(async () => await round.locator(".work-complete-icon").count() > 0,
         "Round did not complete");
-      expect(await round.locator(":scope > summary").innerText()).toContain("900 tok");
+      assert((await round.locator(":scope > summary").innerText()).includes("900 tok"));
     } finally {
       sessionModel = "gpt-6.1";
       childUsageHistoryItems = [];
@@ -1366,20 +1352,20 @@ describe("SessionView browser lifecycle", { concurrency: false }, () => {
       const draft = currentPage.locator(".md-writing-block");
       await draft.waitFor();
       await waitForCondition(async () => await draft.locator("strong").innerText() === "team", "Writing block did not finish rendering its inline markup");
-      expect(await draft.locator("strong").innerText()).toBe("team");
-      expect(await draft.innerText()).toContain("team@example.com");
+      assert.equal(await draft.locator("strong").innerText(), "team");
+      assert((await draft.innerText()).includes("team@example.com"));
       await draft.getByRole("button", { name: "Copy email" }).click();
       await waitForCondition(async () => await currentPage.evaluate(() => navigator.clipboard.readText()) === "Hello **team**.",
         "Writing copy did not preserve the artifact body");
       const review = currentPage.locator(".md-review-comment");
-      expect(await review.locator(".work-preview-path").innerText()).toBe("app.ts:10–11");
-      expect(await review.locator(".work-preview-path").getAttribute("data-supergit-file-href")).toBe("/tmp/app.ts");
-      expect(await review.locator("strong").innerText()).toBe("the final row");
+      assert.equal(await review.locator(".work-preview-path").innerText(), "app.ts:10–11");
+      assert.equal(await review.locator(".work-preview-path").getAttribute("data-supergit-file-href"), "/tmp/app.ts");
+      assert.equal(await review.locator("strong").innerText(), "the final row");
       const text = await currentPage.locator(".messages").innerText();
-      expect(text).toContain("The draft is ready.");
-      expect(text).not.toContain("::codex-realtime-inline");
-      expect(text).not.toContain(":::writing");
-      expect(text).not.toContain("::code-comment");
+      assert((text).includes("The draft is ready."));
+      assert(!(text).includes("::codex-realtime-inline"));
+      assert(!(text).includes(":::writing"));
+      assert(!(text).includes("::code-comment"));
     } finally { await currentPage.close(); }
   }, 30_000);
 
@@ -1396,12 +1382,12 @@ describe("SessionView browser lifecycle", { concurrency: false }, () => {
       ]);
       const citation = currentPage.locator('a.work-preview-path[data-supergit-file-href="/tmp/citation-source.pdf"]');
       await citation.waitFor();
-      expect(await citation.innerText()).toBe("citation-source.pdf");
-      expect(await citation.getAttribute("title")).toBe("source · /tmp/citation-source.pdf");
-      expect(await currentPage.locator('a.work-preview-path[data-supergit-file-href="/tmp/citation-output.pdf"]').count()).toBe(1);
-      expect(await currentPage.locator(".messages").innerText()).not.toContain(":codex-file-citation");
-      expect(await citation.evaluate(el => getComputedStyle(el).borderRadius)).toBe("999px");
-      expect(await citation.evaluate(el => getComputedStyle(el).cursor)).toBe("pointer");
+      assert.equal(await citation.innerText(), "citation-source.pdf");
+      assert.equal(await citation.getAttribute("title"), "source · /tmp/citation-source.pdf");
+      assert.equal(await currentPage.locator('a.work-preview-path[data-supergit-file-href="/tmp/citation-output.pdf"]').count(), 1);
+      assert(!(await currentPage.locator(".messages").innerText()).includes(":codex-file-citation"));
+      assert.equal(await citation.evaluate(el => getComputedStyle(el).borderRadius), "999px");
+      assert.equal(await citation.evaluate(el => getComputedStyle(el).cursor), "pointer");
     } finally { await currentPage.close(); }
   }, 30_000);
 
@@ -1503,9 +1489,7 @@ describe("SessionView browser lifecycle", { concurrency: false }, () => {
             ),
         "Horizontal navigation lost vertical tail follow",
       );
-      expect(await handle.getAttribute("aria-label")).toBe(
-        "Following latest transcript messages",
-      );
+      assert.equal(await handle.getAttribute("aria-label"), "Following latest transcript messages");
       const endTop = await currentPage
         .locator(".messages")
         .evaluate((el) => el.scrollTop);
@@ -1550,22 +1534,19 @@ describe("SessionView browser lifecycle", { concurrency: false }, () => {
         "Output after reader pause did not render",
       );
       await currentPage.waitForTimeout(100);
-      expect(
-        Math.abs(
+      assert((Math.abs(
           (await currentPage
             .locator(".messages")
             .evaluate((el) => el.scrollTop)) - readerTop,
-        ),
-      ).toBeLessThan(3);
-      expect(await handle.getAttribute("aria-label")).toBe("Jump to latest transcript message");
+        )) < 3);
+      assert.equal(await handle.getAttribute("aria-label"), "Jump to latest transcript message");
     } finally {
       await currentPage.close();
     }
   }, 30_000);
 
-  test.each(["horizontal", "vertical", "horizontal&smooth", "vertical&smooth"])(
-    "%s lane navigation retains live work follow through offscreen tool output and the next turn",
-    async (direction) => {
+  for (const direction of ["horizontal", "vertical", "horizontal&smooth", "vertical&smooth"]) {
+    test(`${direction} lane navigation retains live work follow through offscreen tool output and the next turn`, async () => {
       historicalWorkGroupCount = 25;
       const currentPage = await openHarness({ query: `lanes=${direction}` });
       const handle = currentPage.locator(".session-tail-follow");
@@ -1767,16 +1748,13 @@ describe("SessionView browser lifecycle", { concurrency: false }, () => {
         await rendered("next-turn-returned");
         await currentPage.waitForTimeout(100);
         await following();
-        expect(await currentPage.locator(".messages").innerText()).toContain(
-          "Next request while away",
-        );
+        assert((await currentPage.locator(".messages").innerText()).includes("Next request while away"));
       } finally {
         historicalWorkGroupCount = 0;
         await currentPage.close();
       }
-    },
-    30_000,
-  );
+    }, 30_000);
+  }
 
   test("lane viewport growth does not turn a native scroll clamp into a remembered reader pause", async () => {
     const currentPage = await openHarness();
@@ -1790,17 +1768,17 @@ describe("SessionView browser lifecycle", { concurrency: false }, () => {
       await stage.evaluate(el => { (el as HTMLElement).style.height = "640px"; });
       await currentPage.waitForTimeout(150);
       const after = await currentPage.locator(".messages").evaluate(el => ({ height: el.scrollHeight, client: el.clientHeight, top: el.scrollTop }));
-      expect(after.height).toBe(before.height);
-      expect(after.client).toBeGreaterThan(before.client);
-      expect(after.top).toBeLessThan(before.top);
-      expect(await handle.getAttribute("aria-label")).toBe("Following latest transcript messages");
+      assert.equal(after.height, before.height);
+      assert((after.client) > before.client);
+      assert((after.top) < before.top);
+      assert.equal(await handle.getAttribute("aria-label"), "Following latest transcript messages");
       await stage.evaluate(el => { (el as HTMLElement).style.transform = "translateX(2000px)"; });
       await waitForCondition(async () => await currentPage.locator(".messages").count() === 0, "Lane did not suspend");
       emitCodexEvents([{ kind: "notification", method: "item/completed", threadId, turnId: latestTurnId, receivedAt: "2026-10-16T11:00:00Z",
         params: { item: { id: "resized-lane-reply", type: "agentMessage", text: "NEW_WHILE_AWAY\n\n" + "More output.\n\n".repeat(80) } } }]);
       await stage.evaluate(el => { (el as HTMLElement).style.transform = ""; });
       await waitForCondition(async () => await currentPage.locator(".messages").evaluate(el => el.scrollHeight - el.scrollTop - el.clientHeight < 3), "Resized returning lane lost follow");
-      expect(await handle.getAttribute("aria-label")).toBe("Following latest transcript messages");
+      assert.equal(await handle.getAttribute("aria-label"), "Following latest transcript messages");
     } finally { await currentPage.close(); }
   }, 30_000);
 
@@ -1863,12 +1841,12 @@ describe("SessionView browser lifecycle", { concurrency: false }, () => {
       async () => (await followHandle.getAttribute("class"))?.includes("active") === true,
       "Returning lane forgot follow after output while away",
     );
-    expect(await currentPage.locator(".messages").innerText()).toContain("ANSWER_WHILE_AWAY");
+    assert((await currentPage.locator(".messages").innerText()).includes("ANSWER_WHILE_AWAY"));
     const following = await currentPage.locator(".messages").evaluate(el => {
       const body = el.querySelector(".work-foldout-live > .work-foldout-body");
       return body ? body.scrollHeight - body.scrollTop - body.clientHeight < 3 : el.scrollHeight - el.scrollTop - el.clientHeight < 3;
     });
-    expect(following).toBe(true);
+    assert.equal(following, true);
     } finally {
       usageHistoryItems = [];
       latestTurnComplete = false;
@@ -1968,7 +1946,7 @@ describe("SessionView browser lifecycle", { concurrency: false }, () => {
           cardRadius: action.borderRadius,
         };
       });
-      expect(questionStyles).toEqual(goalStyles);
+      assert.deepEqual(questionStyles, goalStyles);
       await currentPage.close();
     },
     30_000,
@@ -2092,14 +2070,10 @@ describe("SessionView browser lifecycle", { concurrency: false }, () => {
       });
       await currentPage.waitForTimeout(80);
 
-      expect(await messages.evaluate((element) => element.scrollTop)).toBe(
-        targetTop,
-      );
-      expect(
-        await currentPage
+      assert.equal(await messages.evaluate((element) => element.scrollTop), targetTop);
+      assert(!(await currentPage
           .locator(".session-tail-follow")
-          .getAttribute("class"),
-      ).not.toContain("active");
+          .getAttribute("class")).includes("active"));
       await currentPage.close();
     },
     30_000,
@@ -2128,9 +2102,7 @@ describe("SessionView browser lifecycle", { concurrency: false }, () => {
         await currentPage
           .getByText("Older paged request that must remain in scrollback")
           .waitFor();
-        expect(
-          await messages.getByText("Loading earlier messages").count(),
-        ).toBe(0);
+        assert.equal(await messages.getByText("Loading earlier messages").count(), 0);
         await messages.evaluate((element) => {
           element.dispatchEvent(
             new WheelEvent("wheel", { bubbles: true, deltaY: -700 }),
@@ -2207,7 +2179,7 @@ describe("SessionView browser lifecycle", { concurrency: false }, () => {
             scroller.getBoundingClientRect().top
           );
         });
-        expect(Math.abs(offsetAfter - offsetBefore)).toBeLessThan(20);
+        assert((Math.abs(offsetAfter - offsetBefore)) < 20);
       } finally {
         historicalTurnCount = 18;
         await currentPage?.close();
@@ -2232,8 +2204,8 @@ describe("SessionView browser lifecycle", { concurrency: false }, () => {
       const file = currentPage.locator(".work-changed-tooltip .sparse-artifact-name").filter({ hasText: "AGENTS.md" }).last();
       await file.hover();
       await currentPage.getByText("Captured replacement content (partial file)", { exact: true }).waitFor();
-      expect(await currentPage.locator(".sparse-artifact-diff").last().innerText()).toContain("Preview/export parity: complete pipeline only.");
-      expect(diskDiffs).toBe(0);
+      assert((await currentPage.locator(".sparse-artifact-diff").last().innerText()).includes("Preview/export parity: complete pipeline only."));
+      assert.equal(diskDiffs, 0);
     } finally {
       usageHistoryItems = [];
       await currentPage.close();
@@ -2254,9 +2226,9 @@ describe("SessionView browser lifecycle", { concurrency: false }, () => {
       await currentPage.locator(".work-changed-tooltip .sparse-artifact-name").filter({ hasText: "AGENTS.md" }).last().hover();
       const diff = currentPage.locator(".sparse-artifact-diff").last();
       await diff.locator(".line.remove").filter({ hasText: "-old instructions" }).waitFor();
-      expect(await diff.locator(".line.add").innerText()).toContain("+Preview/export parity: complete pipeline only.");
-      expect(await diff.locator(".line.hunk").innerText()).toBe("@@ -10,3 +10,1 @@");
-      expect(diskDiffs).toBe(0);
+      assert((await diff.locator(".line.add").innerText()).includes("+Preview/export parity: complete pipeline only."));
+      assert.equal(await diff.locator(".line.hunk").innerText(), "@@ -10,3 +10,1 @@");
+      assert.equal(diskDiffs, 0);
       await currentPage.mouse.move(890, 10);
       await diff.waitFor({ state: "hidden" });
       const round = currentPage.locator(".work-foldout").last();
@@ -2267,8 +2239,8 @@ describe("SessionView browser lifecycle", { concurrency: false }, () => {
       if (await group.getAttribute("open") === null) await group.locator(":scope > summary").press("Enter");
       await currentPage.locator(".work-file-edit-preview .work-preview-path").last().hover({ timeout: 5000 });
       await currentPage.locator(".visual-preview-diff-tooltip .line.remove").filter({ hasText: "-old instructions" }).waitFor();
-      expect(await currentPage.locator(".visual-preview-diff-tooltip .line.add").innerText()).toContain("+Preview/export parity: complete pipeline only.");
-      expect(diskDiffs).toBe(0);
+      assert((await currentPage.locator(".visual-preview-diff-tooltip .line.add").innerText()).includes("+Preview/export parity: complete pipeline only."));
+      assert.equal(diskDiffs, 0);
     } finally {
       usageHistoryItems = [];
       await currentPage.close();
@@ -2303,10 +2275,8 @@ describe("SessionView browser lifecycle", { concurrency: false }, () => {
           `Mermaid diagram did not render (${JSON.stringify(diagramState)}; errors: ${pageErrors.join(" | ") || "none"})`,
         );
       }
-      expect(await diagram.locator("svg").count()).toBe(1);
-      expect(await currentPage.locator("code.language-mermaid").count()).toBe(
-        0,
-      );
+      assert.equal(await diagram.locator("svg").count(), 1);
+      assert.equal(await currentPage.locator("code.language-mermaid").count(), 0);
       await currentPage.close();
     },
     30_000,
