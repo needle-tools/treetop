@@ -9,6 +9,8 @@
   import { writeBrowserClipboard } from "./clipboard-write";
   import { formatByteSize, formatSessionTokens } from "./context-tokens";
   import { codexAppSource } from "./storage";
+  import { createDaemonSubagentUsageLoader, type SubagentUsageLoader } from "./session-subagent-usage";
+  import { sessionAgentUsageFromMessages, type SessionAgentUsage } from "@treetop/nicifier";
   import { installIdleTracker } from "./ui-idle";
   import { selectVisualScrollIndex } from "./visual-tail-follow";
   import {
@@ -22,6 +24,7 @@
     codexReplayProjectLabel,
     createCodexReplaySessionTransport,
     createCodexReplayViewModel,
+    codexReplayMessagesUntil,
     filterCodexReplaySessions,
     filterCodexReplaySessionsByModel,
     findCodexReplaySubagentSession,
@@ -125,6 +128,28 @@
   let directoryStatus = "";
   let directoryGeneration = 0;
   let directoryFiles = new Map<string, CodexReplayDirectoryFile>();
+  const childUsageFiles = new WeakMap<object, { size: number; modified: number; mode: "rpc" | "transcript"; usage: SessionAgentUsage }>();
+  $: daemonChildUsageLoader = createDaemonSubagentUsageLoader({ live: !!fixture, cwd: transcriptSession?.transcript?.cwd ?? fixture?.cwd ?? "", transport: transport ?? undefined });
+  const loadReplaySubagentUsage: SubagentUsageLoader = async id => {
+    const child = findCodexReplaySubagentSession(sessions, id);
+    const reference = child?.directoryKey ? directoryFiles.get(child.directoryKey) : undefined;
+    if (reference) {
+      const file = await reference.handle.getFile();
+      const cached = childUsageFiles.get(reference.handle);
+      if (cached?.size === file.size && cached.modified === file.lastModified) {
+        if (cached.mode !== (fixture ? "rpc" : "transcript")) throw new Error("Load a child file from the same source mode");
+        return cached.usage;
+      }
+      const replay = await parseCodexReplayBlobAsync(file);
+      if (replay.mode !== (fixture ? "rpc" : "transcript")) throw new Error("Load a child file from the same source mode");
+      const result = sessionAgentUsageFromMessages(codexReplayMessagesUntil(replay, replay.steps.length));
+      const usage = { ...result, startedAt: replay.startedAt, complete: result.segments.length > 0 };
+      childUsageFiles.set(reference.handle, { size: file.size, modified: file.lastModified, mode: replay.mode, usage });
+      return usage;
+    }
+    if (localFile) throw new Error(`Load the child JSONL ending in ${id}.jsonl to include its usage`);
+    return daemonChildUsageLoader(id);
+  };
   let replayNavigationStack: ReplaySessionIndexEntry[] = [];
   let subagentParentContexts = new Map<string, SubagentParentContext>();
   let subagentNavigationNotice = "";
@@ -1581,6 +1606,8 @@
                   fileLineCount={replaySourceProgress.lineCount}
                   fileStatsExact={replaySourceProgress.exact}
                   {transcriptSessionOverride}
+                  subagentUsageLoader={loadReplaySubagentUsage}
+                  subagentUsageThrough={analysisMessages.at(-1)?.timestamp}
                   renderOnly={true}
                   visualAppEnabled={false}
                   spawnReady={false}
@@ -1624,6 +1651,8 @@
                   manualTitleOverride={fileName}
                   visualAppEnabled={true}
                   codexAppTransport={transport}
+                  subagentUsageLoader={loadReplaySubagentUsage}
+                  subagentUsageThrough={analysisMessages.at(-1)?.timestamp}
                   spawnReady={false}
                   onMessagesChange={receiveSessionMessages}
                   artifactTrackingEnabled={true}

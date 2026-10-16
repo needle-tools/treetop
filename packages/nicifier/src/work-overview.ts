@@ -138,6 +138,7 @@ export interface VisualWorkTokenOverview {
 }
 
 export interface VisualWorkOverview {
+  usageScope?: import("./subagent-usage.js").VisualUsageScope;
   lines: string[];
   artifacts: VisualWorkArtifact[];
   fileEdits: ReadonlyMap<VisualWorkEntryLike, VisualFileEditSummary>;

@@ -26,6 +26,7 @@
     ContextCompactionDetails,
     ModelsDevPricingSnapshot,
   } from "@treetop/nicifier";
+  import { visualWorkWithSubagentUsage, type SessionAgentUsage } from "@treetop/nicifier";
   import {
     buildVisualWorkDisplayEntries,
     buildVisibleVisualWorkDisplayEntries,
@@ -227,6 +228,19 @@
   export let items: VisualTranscriptItem<NormalizedBlock, NormalizedMessage>[] =
     [];
   export let messageTurnIndexes: readonly number[] = [];
+  export let subagentUsage: ReadonlyMap<string, SessionAgentUsage> = new Map();
+  export let subagentUsageErrors: ReadonlyMap<string, string> = new Map();
+  export let subagentUsageThrough: string | undefined = undefined;
+  export let sessionId: string | undefined = undefined;
+  $: nextRoundStarts = (() => {
+    const starts = new Map<number, string | undefined>();
+    let next: string | undefined;
+    for (let index = items.length - 1; index >= 0; index--) {
+      const item = items[index]!;
+      if (item.kind === "work") { starts.set(index, next); next = item.startedAt; }
+    }
+    return starts;
+  })();
   export let transcriptSurface: "read" | "terminal" = "read";
   export let ollamaStreamingIdx: number | null = null;
   export let active = false;
@@ -1734,7 +1748,7 @@
       overview.tokens.perSecond > 0
         ? ` · ${overview.tokens.perSecond.toLocaleString()} output tok/s`
         : "";
-    return `${total} new tokens (fresh input + output, this agent)${perSecond}`;
+    return `${total} new tokens (fresh input + output)${perSecond}`;
   }
 
   function workOverviewCostLabel(overview: VisualWorkOverview): string {
@@ -1753,7 +1767,7 @@
   function workOverviewCostTitle(overview: VisualWorkOverview): string {
     const parts = [
       `${workOverviewCostLabel(overview)} estimated token cost`,
-      "This agent only. Subagent usage is not included",
+      overview.usageScope ? `${overview.usageScope.ownCost.toFixed(2)} parent + ${overview.usageScope.childCost.toFixed(2)} children${overview.usageScope.missingIds.length ? " · child usage incomplete" : ""}` : "This agent only. Subagent usage is not included",
       `${overview.cost.pricedCheckpoints} priced ${overview.cost.pricedCheckpoints === 1 ? "checkpoint" : "checkpoints"}`,
     ];
     if (overview.cost.models.length > 0) {
@@ -2470,7 +2484,7 @@
       {#if overview.tokens.total > 0}
         <span
           class="work-tool-meta"
-          title={`This agent only. Subagent usage is not included. New tokens = fresh input + output; cached input is separate. ${overview.tokens.total.toLocaleString()} new tokens · ${overview.tokens.freshInput.toLocaleString()} fresh input · ${overview.tokens.input.toLocaleString()} reported input · ${overview.tokens.cachedInput.toLocaleString()} cached${
+          title={`${overview.usageScope ? `${overview.usageScope.ownTokens.toLocaleString()} parent + ${overview.usageScope.childTokens.toLocaleString()} children. ${overview.usageScope.missingIds.length ? `${overview.usageScope.missingIds.length} child runs not included yet. ${overview.usageScope.missingIds.map(id => subagentUsageErrors.get(id)).filter(Boolean).join("; ")}` : "Includes child runs."}` : "This agent only. Subagent usage is not included."} New tokens = fresh input + output; cached input is separate. ${overview.tokens.total.toLocaleString()} new tokens · ${overview.tokens.freshInput.toLocaleString()} fresh input · ${overview.tokens.input.toLocaleString()} reported input · ${overview.tokens.cachedInput.toLocaleString()} cached${
             overview.tokens.cacheWriteInput > 0
               ? ` · ${overview.tokens.cacheWriteInput.toLocaleString()} cache write (included in fresh input)`
               : ""
@@ -2480,7 +2494,12 @@
               : ""
           } · ${overview.tokens.reportedTotal.toLocaleString()} reported total`}
         >
-          {overview.tokens.total.toLocaleString()} tok (this agent)
+          {overview.tokens.total.toLocaleString()} tok{overview.usageScope?.missingIds.length ? " known" : ""}
+        </span>
+      {/if}
+      {#if overview.usageScope?.missingIds.length}
+        <span class="work-usage-pending" title={overview.usageScope.missingIds.map(id => subagentUsageErrors.get(id) ?? "Loading child usage").join("\n")}>
+          +{overview.usageScope.missingIds.length} child{overview.usageScope.missingIds.length === 1 ? "" : "ren"} {overview.usageScope.missingIds.some(id => subagentUsageErrors.has(id)) ? "not loaded" : "loading"}
         </span>
       {/if}
       {#if overview.tokens.total > 0 && (hasCost || overview.time.elapsedMs > 0)}
@@ -3720,12 +3739,17 @@
         shownWorkGroups,
         item.open === true && !workDetailOpen,
       )}
-      {@const workOverview = visualWorkOverview(item, visibleWorkEntries, {
+      {@const ownWorkOverview = visualWorkOverview(item, visibleWorkEntries, {
         now: liveNowIso,
         model: pricingModel,
         modelsDev: modelsDevPricing,
       })}
       {@const summarySubagents = workSummarySubagents(visibleWorkEntries)}
+      {@const workOverview = visualWorkWithSubagentUsage(ownWorkOverview, {
+        childIds: [...subagentUsage.keys(), ...summarySubagents.filter(child => child.id && !child.isParent).map(child => child.id!)],
+        usage: subagentUsage, start: item.startedAt, end: nextRoundStarts.get(itemIndex),
+        through: subagentUsageThrough, parentId: sessionId, modelsDev: modelsDevPricing,
+      })}
       {@const countLines = visualWorkCountLines(workSummary)}
       <li
         class="work-row"
@@ -3746,6 +3770,7 @@
             on:click|capture={(event) =>
               captureDetailsScrollAnchor(event.currentTarget)}
           >
+            <span class="work-summary-heading">
             {#if item.terminalMarkerKind}
               <span class="work-summary-marker-icon" aria-hidden="true">
                 {workMarkerIcon(item.terminalMarkerKind)}
@@ -3773,8 +3798,9 @@
                 {/each}
               </span>
             {/if}
-            {@render renderWorkOverviewPills(workOverview, true, liveWorkOpen)}
+            </span>
             {@render renderWorkOverviewRightMeta(workOverview)}
+            {@render renderWorkOverviewPills(workOverview, true, liveWorkOpen)}
           </summary>
           {#if workFoldoutOpen}
             <div
@@ -3809,11 +3835,11 @@
                   {/if}
                   {#if workOverview.tokens.total > 0}
                     <span>
-                      This agent: fresh input {workOverview.tokens.freshInput.toLocaleString()} · cached {workOverview.tokens.cachedInput.toLocaleString()}{#if workOverview.tokens.cacheWriteInput > 0} · cache write {workOverview.tokens.cacheWriteInput.toLocaleString()} (included in fresh input){/if} · output {workOverview.tokens.output.toLocaleString()}{#if workOverview.tokens.reasoningOutput > 0} · reasoning {workOverview.tokens.reasoningOutput.toLocaleString()} (included in output){/if}
+                      Total: fresh input {workOverview.tokens.freshInput.toLocaleString()} · cached {workOverview.tokens.cachedInput.toLocaleString()}{#if workOverview.tokens.cacheWriteInput > 0} · cache write {workOverview.tokens.cacheWriteInput.toLocaleString()} (included in fresh input){/if} · output {workOverview.tokens.output.toLocaleString()}{#if workOverview.tokens.reasoningOutput > 0} · reasoning {workOverview.tokens.reasoningOutput.toLocaleString()} (included in output){/if}
                     </span>
                   {/if}
                   {#if summarySubagents.length > 0}
-                    <span>Subagent tokens and costs are separate and not included above. Goal budgets may include subagents.</span>
+                    <span>{workOverview.usageScope?.ownTokens.toLocaleString()} parent + {workOverview.usageScope?.childTokens.toLocaleString()} children new tokens{workOverview.usageScope?.missingIds.length ? " · child usage incomplete" : ""}</span>
                   {/if}
                 </div>
                 {#if workOverview.artifacts.length > 0}
@@ -4431,19 +4457,44 @@
     cursor: pointer;
   }
   .work-foldout > summary {
-    width: fit-content;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) fit-content(65%);
+    align-items: center;
+    width: 100%;
     max-width: 100%;
     flex-wrap: wrap;
     overflow: visible;
-    padding: 0.25rem 0.5rem;
+    padding: 0.5rem 0.65rem;
     border: 1px solid color-mix(in srgb, var(--surface-3) 65%, transparent);
-    border-radius: 999px;
+    border-radius: 1rem;
     background: color-mix(in srgb, var(--surface-1) 75%, transparent);
     font-size: 0.72rem;
     line-height: 1.2;
     font-variant-numeric: tabular-nums;
     font-feature-settings: "tnum";
   }
+  .work-summary-heading {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 0.35rem 0.5rem;
+    min-width: 0;
+  }
+  .work-foldout > summary::before { display: none; }
+  .work-foldout > summary > .work-summary-pills {
+    grid-column: 1 / -1;
+    width: 100%;
+  }
+  .work-foldout > summary > .work-summary-right-meta {
+    flex-wrap: wrap;
+    overflow: visible;
+    row-gap: 0.2rem;
+  }
+  .work-foldout > summary > .work-summary-right-meta > * {
+    overflow: visible;
+    text-overflow: clip;
+  }
+  .work-usage-pending { font-size: 0.65rem; color: var(--text-muted); }
   .work-duration-label,
   .work-count {
     display: inline-flex;
@@ -4508,7 +4559,6 @@
   .work-entry > summary::-webkit-details-marker {
     display: none;
   }
-  .work-foldout > summary::before,
   .work-entry > summary::before,
   .work-entry > .work-entry-summary::before {
     content: "";

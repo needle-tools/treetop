@@ -188,6 +188,8 @@
   } from "./note-inline-attachments";
   import { agentSupportsVisualImageAttachments } from "./display-helpers";
   import { randomUUID } from "./random-id";
+  import { createDaemonSubagentUsageLoader, createSubagentUsageTracker, type SubagentUsageLoader } from "./session-subagent-usage";
+  import type { SessionAgentUsage } from "@treetop/nicifier";
   import {
     canSaveCodexQueueEdit,
     enqueueCodexQueue,
@@ -280,6 +282,14 @@
    *  undefined and continues through the shared HTTP/SSE transport. */
   export let codexAppTransport: CodexAppSessionTransport | undefined =
     undefined;
+  export let subagentUsageLoader: SubagentUsageLoader | undefined = undefined;
+  export let subagentUsageThrough: string | undefined = undefined;
+  let childUsage = new Map<string, SessionAgentUsage>() as ReadonlyMap<string, SessionAgentUsage>;
+  let childUsageErrors = new Map<string, string>() as ReadonlyMap<string, string>;
+  let childUsageTracker: ReturnType<typeof createSubagentUsageTracker> | undefined;
+  let childUsageKey = "";
+  let childUsageRefreshKey = "";
+  let childUsageLoaderUsed: SubagentUsageLoader | undefined;
   /** Read-only observation hook used by Replay Lab diagnostics. */
   export let onMessagesChange: (
     messages: readonly CodexAppHistoryMessage[],
@@ -5630,6 +5640,33 @@
     (subagent) =>
       subagent.status !== "completed" && subagent.status !== "failed",
   );
+  $: {
+    const key = `${sessionMessageSource.kind}\0${effectiveSessionId}\0${source}\0${daemonId ?? ""}\0${effectiveSessionCwd}\0${renderOnly}`;
+    if (key !== childUsageKey || subagentUsageLoader !== childUsageLoaderUsed) {
+      childUsageTracker?.stop();
+      childUsageKey = key;
+      childUsageRefreshKey = "";
+      childUsageLoaderUsed = subagentUsageLoader;
+      childUsage = new Map();
+      childUsageErrors = new Map();
+      const loader = subagentUsageLoader ?? (!renderOnly && agent === "codex" && sessionMessageSource.kind !== "unavailable" ? createDaemonSubagentUsageLoader({ live: sessionMessageSource.kind === "app-server", cwd: effectiveSessionCwd, daemonId, transport: codexAppTransport }) : undefined);
+      childUsageTracker = loader ? createSubagentUsageTracker(loader, (usage, errors) => { childUsage = usage; childUsageErrors = errors; }, effectiveSessionId) : undefined;
+    }
+  }
+  $: if (renderReadBody && columnNearViewport && childUsageTracker) {
+    const children = codexSubagents.filter(child => child.id && !child.isParent && child.id !== effectiveSessionId);
+    const refreshKey = `${childUsageKey}\0${codexRunning}\0${children.map(child => `${child.id}:${child.status}`).join("|")}`;
+    if (refreshKey !== childUsageRefreshKey) {
+      childUsageRefreshKey = refreshKey;
+      childUsageTracker.ensure(children.map(child => child.id!), true);
+    }
+  }
+  onMount(() => {
+    const timer = setInterval(() => {
+      if (renderReadBody && columnNearViewport && (codexRunning || codexActiveSubagents.length)) childUsageTracker?.ensure([...childUsage.keys(), ...codexActiveSubagents.filter(child => child.id && !child.isParent).map(child => child.id!)], true);
+    }, 5000);
+    return () => { clearInterval(timer); childUsageTracker?.stop(); };
+  });
   $: showComposerTray =
     codexVisualAppSurface && codexQuestionSummary.otherRequests.length > 0;
   $: if (
@@ -6449,6 +6486,10 @@
         ? codexLiveDetectedModel || codexModel || undefined
         : model}
       {modelsDevPricing}
+      subagentUsage={childUsage}
+      subagentUsageErrors={childUsageErrors}
+      subagentUsageThrough={subagentUsageThrough}
+      sessionId={effectiveSessionId}
       {daemonId}
       items={visualTranscriptItems}
       messageTurnIndexes={visualSessionMessageTurnIndexes}

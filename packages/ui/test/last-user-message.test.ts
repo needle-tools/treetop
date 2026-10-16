@@ -1,6 +1,7 @@
 import { describe, it, expect } from "bun:test";
 import {
   nicifyCommand,
+  visualWorkWithSubagentUsage,
   visualArtifactPathKind,
   visualToolArtifactContentPreview,
 } from "@treetop/nicifier";
@@ -7963,6 +7964,35 @@ describe("buildVisualWorkDisplayEntries", () => {
 });
 
 describe("visualWorkOverview", () => {
+  it("counts time-scoped child and descendant usage once, without inherited history or future replay work", () => {
+    const own = visualWorkOverview({}, []);
+    const usage = (at: string, input = 100) => ({ at, model: "gpt-6.1", usage: { input, cachedInput: 50, cacheWriteInput: 0, output: 10, reasoningOutput: 5, total: input + 10 } });
+    const children = new Map([
+      ["child", { childIds: ["grandchild", "parent"], segments: [usage("2026-10-16T10:00:00Z"), usage("2026-10-16T10:01:01Z"), usage("2026-10-16T10:02:00Z")] }],
+      ["grandchild", { childIds: ["child"], segments: [usage("2026-10-16T10:01:02Z")] }],
+    ]);
+    const actual = visualWorkWithSubagentUsage(own, { childIds: ["child", "child"], parentId: "parent", usage: children, start: "2026-10-16T10:01:00Z", end: "2026-10-16T10:02:00Z" });
+    expect(actual.tokens.total).toBe(120);
+    expect(actual.tokens.cachedInput).toBe(100);
+    expect(actual.tokens.reasoningOutput).toBe(10);
+    expect(actual.usageScope).toMatchObject({ childCount: 2, childTokens: 120, missingIds: [] });
+    expect(visualWorkWithSubagentUsage(own, { childIds: ["child"], usage: children, parentId: "parent", start: "2026-10-16T10:01:00Z", through: "2026-10-16T10:01:01Z" }).tokens.total).toBe(60);
+    expect(visualWorkWithSubagentUsage(own, { childIds: ["missing"], usage: children, start: "2026-10-16T10:01:00Z" }).usageScope?.missingIds).toEqual(["missing"]);
+  });
+  it("excludes inherited child checkpoints and prices the child's actual model", () => {
+    const own = visualWorkOverview({}, []);
+    const segment = { model: "gpt-6-astra", usage: { input: 100, cachedInput: 50, cacheWriteInput: 0, output: 10, reasoningOutput: 5, total: 110 } };
+    const usage = new Map([["child", { startedAt: "2026-10-16T10:01:00Z", childIds: [], segments: [
+      { ...segment, at: "2026-10-16T10:00:00Z" }, { ...segment, at: "2026-10-16T10:01:01Z" },
+    ] }]]);
+    const options = { childIds: ["child"], usage, start: "2026-10-16T09:00:00Z" };
+    const result = visualWorkWithSubagentUsage(own, options);
+    expect(result.tokens.total).toBe(60);
+    expect(result.cost.totalUsd).toBeCloseTo(0.00105, 8);
+    expect(result.cost.models).toEqual(["gpt-6-astra"]);
+    expect(visualWorkWithSubagentUsage(own, { ...options, through: "2026-10-16T10:01:00Z" }).tokens.total).toBe(0);
+    expect(visualWorkWithSubagentUsage(own, options).tokens.total).toBe(60);
+  });
   it("summarizes a normalized work round without depending on the source", () => {
     const entries = buildVisualWorkDisplayEntries([
       {

@@ -1790,3 +1790,25 @@ explicit send-time follow, while the existing pause generation still lets a
 wheel, pointer, selection, or other reader action cancel it. The controller
 test reproduces growth between corrections, and the real SessionView browser
 test delivers ordinary assistant rows through consecutive live event frames.
+
+### 2026-10-16 — round accounting includes child runs
+
+Round headlines previously displayed only the parent's usage. Shared nicifier
+accounting now adds descendants once within each parent-round time window, with
+a replay-time cutoff, child creation boundary, and a parent/children breakdown.
+Missing child files are explicit rather than silently presenting a partial total.
+Live child accounting reads app-server only; transcript accounting reuses the
+incremental file-stats usage scanner and canonical normalizer. The supplied
+`01a13639…` session's 10:51–11:02 UTC round has 146,446 parent new tokens plus
+137,779 child new tokens (284,225 combined; cached input remains separate).
+
+Loading is opt-in on visible session surfaces, serial, and source-generation
+owned. Refreshes at completion must survive an already in-flight read. App-server
+accounting retains usage checkpoints and descendant IDs, not child tool-output
+or image bodies. Checkpoint pricing is cached per immutable child snapshot;
+replay windows use binary-search bounds. No startup corpus scan, no opening or
+resuming child runs, and no changes to scroll ownership/geometry suspension.
+Summary chips occupy a full-width second row instead of a compressed central
+column. Coverage exercises cumulative pagination, corrected turn snapshots,
+fork metadata, descendant cycles, source disposal, replay cutoffs, and actual
+SessionView token totals/layout.

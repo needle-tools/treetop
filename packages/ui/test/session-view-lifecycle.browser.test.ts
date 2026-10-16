@@ -16,6 +16,7 @@ let origin = "";
 let latestTurnComplete = false;
 let sessionModel = "gpt-6.1";
 let usageHistoryItems: Record<string, unknown>[] = [];
+let childUsageHistoryItems: Record<string, unknown>[] = [];
 let historicalWorkGroupCount = 0;
 let historicalTurnCount = 18;
 let historicalSubagentOnly = false;
@@ -240,6 +241,11 @@ function lifecycleApiPlugin(): Plugin {
           return;
         }
         if (url.pathname === "/api/codex-app/thread") {
+          if (url.searchParams.get("threadId") === "child-layout-review") {
+            response.setHeader("Content-Type", "application/json");
+            response.end(JSON.stringify({ thread: { id: "child-layout-review", createdAt: 1780000200, turns: [{ id: "child-turn", startedAt: 1780000201, items: childUsageHistoryItems }] }, model: "gpt-6.1", nextCursor: null }));
+            return;
+          }
           historyRequestCount += 1;
           if (historyRequestDelayMs) await new Promise(resolveDelay => setTimeout(resolveDelay, historyRequestDelayMs));
           response.setHeader("Content-Type", "application/json");
@@ -1213,7 +1219,7 @@ describe("SessionView browser lifecycle", { concurrency: false }, () => {
       emitCodexEvents([{ kind: "notification", method: "thread/tokenUsage/updated", threadId, turnId: latestTurnId,
         receivedAt: "2026-10-14T12:00:02Z", params: { tokenUsage: { last: usage(250), total: usage(250) } } }]);
       await waitForCondition(async () => (await summary.innerText()).includes("250 tok"), "Final usage for an observed turn did not render after completion");
-      expect(await summary.innerText()).toContain("250 tok (this agent)");
+      expect(await summary.innerText()).toContain("250 tok");
     } finally {
       usageHistoryItems = [];
       latestTurnComplete = false;
@@ -1242,7 +1248,7 @@ describe("SessionView browser lifecycle", { concurrency: false }, () => {
         receivedAt: "2026-10-14T12:00:04Z", params: { turn: { id: latestTurnId } } }]);
       await (await reconciled).finished();
       await currentPage.waitForTimeout(100);
-      expect(await summary.innerText()).toContain("150 tok (this agent)");
+      expect(await summary.innerText()).toContain("150 tok");
     } finally {
       usageHistoryItems = [];
       latestTurnComplete = false;
@@ -1250,8 +1256,22 @@ describe("SessionView browser lifecycle", { concurrency: false }, () => {
     }
   }, 30_000);
 
-  test("round usage states its agent-only scope instead of implying a parent-plus-children total", async () => {
+  test("an idle visible session loads child accounting without starting a turn", async () => {
+    usageHistoryItems = [{ id: "parent-idle-usage", type: "tokenUsage", tokenUsage: { last: { inputTokens: 100, outputTokens: 0, totalTokens: 100 } } }];
+    childUsageHistoryItems = [{ id: "child-idle-usage", type: "tokenUsage", tokenUsage: { last: { inputTokens: 600, outputTokens: 0, totalTokens: 600 } } }];
+    const currentPage = await openHarness();
+    try {
+      await waitForCondition(async () => (await currentPage.locator(".work-foldout > summary").last().innerText()).includes("700 tok"), "Idle session did not load child usage");
+    } finally {
+      usageHistoryItems = [];
+      childUsageHistoryItems = [];
+      await currentPage.close();
+    }
+  }, 30_000);
+
+  test("round usage includes child work with a parent/child breakdown and full-width activity chips", async () => {
     sessionModel = "gpt-5.6-terra";
+    childUsageHistoryItems = [{ id: "child-usage", type: "tokenUsage", tokenUsage: { last: { inputTokens: 1000, cachedInputTokens: 500, outputTokens: 100, totalTokens: 1100 } } }];
     const currentPage = await openHarness();
     try {
       emitCodexEvents([{ kind: "notification", method: "turn/started", threadId, turnId: latestTurnId,
@@ -1262,40 +1282,59 @@ describe("SessionView browser lifecycle", { concurrency: false }, () => {
           total: { inputTokens: 1000, cachedInputTokens: 800, cacheWriteInputTokens: 20, outputTokens: 100, reasoningOutputTokens: 30, totalTokens: 1100 },
         } } }]);
       const round = currentPage.locator(".work-foldout").last();
-      await waitForCondition(async () => (await round.locator(":scope > summary").innerText()).includes("300 tok"),
-        "Round did not show its own reported usage");
-      expect(await round.locator(":scope > summary").innerText()).toContain("this agent");
-      const token = round.locator(":scope > summary .work-tool-meta").filter({ hasText: "300 tok" });
-      expect(await token.getAttribute("title")).toContain("Subagent usage is not included");
+      await waitForCondition(async () => (await round.locator(":scope > summary").innerText()).includes("900 tok"),
+        "Round did not include child usage");
+      expect(await round.locator(":scope > summary").innerText()).not.toContain("this agent");
+      const token = round.locator(":scope > summary .work-tool-meta").filter({ hasText: "900 tok" });
+      expect(await token.getAttribute("title")).toContain("300 parent + 600 children");
       expect(await token.getAttribute("title")).toContain("20 cache write (included in fresh input)");
       const price = round.locator(":scope > summary .work-tool-meta[title*='estimated token cost']");
-      expect(await price.getAttribute("title")).toContain("This agent only. Subagent usage is not included");
+      expect(await price.getAttribute("title")).toContain("parent +");
       const originalCost = await price.innerText();
       if (!await round.evaluate(element => (element as HTMLDetailsElement).open)) {
         await round.locator(":scope > summary").click();
       }
-      expect(await round.locator(".work-overview-meta").first().innerText()).toContain("fresh input 200");
-      expect(await round.locator(".work-overview-meta").first().innerText()).toContain("cached 800");
-      expect(await round.locator(".work-overview-meta").first().innerText()).toContain("output 100");
+      expect(await round.locator(".work-overview-meta").first().innerText()).toContain("fresh input 700");
+      expect(await round.locator(".work-overview-meta").first().innerText()).toContain("cached 1,300");
+      expect(await round.locator(".work-overview-meta").first().innerText()).toContain("output 200");
       expect(await round.locator(".work-overview-meta").first().innerText()).toContain("cache write 20 (included in fresh input)");
       expect(await round.locator(".work-overview-meta").first().innerText()).toContain("reasoning 30 (included in output)");
-      expect(await round.locator(".work-overview-meta").first().innerText()).toContain("Subagent tokens and costs are separate");
-      // Child traffic must neither inflate this round nor change its scope.
+      expect(await round.locator(".work-overview-meta").first().innerText()).toContain("300 parent + 600 children");
+      const boxes = await round.locator(":scope > summary").evaluate(element => {
+        const summary = element.getBoundingClientRect();
+        const chips = element.querySelector(".work-summary-pills")!.getBoundingClientRect();
+        const heading = element.querySelector(".work-summary-heading")!.getBoundingClientRect();
+        return { width: summary.width, chips: chips.width, inside: chips.right <= summary.right, below: chips.top > heading.top, headingInset: heading.left - summary.left };
+      });
+      expect(boxes.chips).toBeGreaterThan(boxes.width * 0.8);
+      expect(boxes.inside && boxes.below).toBe(true);
+      expect(boxes.headingInset).toBeLessThan(30);
+      await round.locator(":scope > summary").screenshot({ path: "/tmp/treetop-round-total-layout.png" });
+      await currentPage.locator(".session-lifecycle-stage").evaluate(element => { (element as HTMLElement).style.width = "360px"; });
+      const narrow = await round.locator(":scope > summary").evaluate(element => {
+        const box = element.getBoundingClientRect();
+        return { width: box.width, overflow: element.scrollWidth > element.clientWidth + 1, chips: element.querySelector(".work-summary-pills")!.getBoundingClientRect().width };
+      });
+      expect(narrow.overflow).toBe(false);
+      expect(narrow.chips).toBeGreaterThan(narrow.width * 0.8);
+      await currentPage.locator(".session-lifecycle-stage").evaluate(element => { (element as HTMLElement).style.width = ""; });
+      // Parent subscription must not mistake child traffic for parent usage.
       emitCodexEvents([{ kind: "notification", method: "thread/tokenUsage/updated", threadId: "child-layout-review", turnId: "child-turn",
         receivedAt: "2026-10-14T12:00:02Z", params: { threadId: "child-layout-review", turnId: "child-turn", tokenUsage: {
           last: { inputTokens: 5000000, outputTokens: 5000, totalTokens: 5005000 },
         } } }]);
       await currentPage.waitForTimeout(100);
-      expect(await token.innerText()).toContain("300 tok");
+      expect(await token.innerText()).toContain("900 tok");
       expect(await price.innerText()).toBe(originalCost);
       latestTurnComplete = true;
       emitCodexEvents([{ kind: "notification", method: "turn/completed", threadId, turnId: latestTurnId,
         receivedAt: "2026-10-14T12:00:03Z", params: { threadId, turn: { id: latestTurnId } } }]);
       await waitForCondition(async () => await round.locator(".work-complete-icon").count() > 0,
         "Round did not complete");
-      expect(await round.locator(":scope > summary").innerText()).toContain("300 tok (this agent)");
+      expect(await round.locator(":scope > summary").innerText()).toContain("900 tok");
     } finally {
       sessionModel = "gpt-6.1";
+      childUsageHistoryItems = [];
       latestTurnComplete = false;
       await currentPage.close();
     }
@@ -1318,6 +1357,7 @@ describe("SessionView browser lifecycle", { concurrency: false }, () => {
         ].join("\n") } } }]);
       const draft = currentPage.locator(".md-writing-block");
       await draft.waitFor();
+      await waitForCondition(async () => await draft.locator("strong").innerText() === "team", "Writing block did not finish rendering its inline markup");
       expect(await draft.locator("strong").innerText()).toBe("team");
       expect(await draft.innerText()).toContain("team@example.com");
       await draft.getByRole("button", { name: "Copy email" }).click();

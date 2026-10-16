@@ -94,6 +94,7 @@ import {
   type BatchSessionCursor,
 } from "./sessions";
 import { diagnoseClaudeSession, repairClaudeSession } from "./session-repair";
+import { getSessionAgentUsage } from "./session-usage";
 import { serveImage } from "./images";
 import { pickFolder, pickFile } from "./picker";
 import { openIn, openDefault, detectEditors } from "./open";
@@ -4313,7 +4314,7 @@ const server = Bun.serve<TermWsData, never>({
         });
       }
 
-      if (url.pathname === "/api/session/stats" && req.method === "GET") {
+      if ((url.pathname === "/api/session/stats" || url.pathname === "/api/session/usage") && req.method === "GET") {
         const source = url.searchParams.get("source");
         if (!source) {
           return json(
@@ -4328,7 +4329,7 @@ const server = Bun.serve<TermWsData, never>({
           );
         }
         try {
-          return json(await getSessionFileStats(source));
+          return json(url.pathname === "/api/session/usage" ? await getSessionAgentUsage(source) : await getSessionFileStats(source));
         } catch (e) {
           return json(
             { error: e instanceof Error ? e.message : String(e) },

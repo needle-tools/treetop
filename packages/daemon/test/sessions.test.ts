@@ -1,5 +1,6 @@
 import { test, expect, describe, beforeEach } from "bun:test";
 import { createHash } from "node:crypto";
+import { getSessionAgentUsage } from "../src/session-usage";
 import {
   mkdir,
   mkdtemp,
@@ -373,6 +374,27 @@ describe("parseClaudeJsonl", () => {
 });
 
 describe("getSessionFileStats", () => {
+  test("loads compact child usage and descendant identities incrementally without retaining transcript content", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "treetop-child-usage-"));
+    const source = join(dir, "codex.jsonl");
+    const records = [
+      { type: "session_meta", payload: { id: "child", timestamp: "2026-10-16T10:59:00Z" } },
+      { type: "session_meta", payload: { id: "parent", timestamp: "2026-10-13T10:00:00Z" } },
+      { type: "turn_context", payload: { model: "gpt-6.1" } },
+      { timestamp: "2026-10-16T11:00:00Z", type: "token_usage_record", payload: { usage: { input_tokens: 100, cached_input_tokens: 50, output_tokens: 10, total_tokens: 110 } } },
+      { type: "response_item", payload: { type: "function_call", name: "spawn_agent", call_id: "spawn", arguments: "{}" } },
+      { type: "response_item", payload: { type: "function_call_output", call_id: "spawn", output: JSON.stringify({ agent_id: "child-thread" }) } },
+      { type: "event_msg", payload: { type: "item_completed", item: { type: "SubAgentActivity", id: "native-spawn", kind: "started", agent_thread_id: "native-child", agent_path: "/root/review" } } },
+    ];
+    await writeFile(source, records.map(row => JSON.stringify(row)).join("\n") + "\n");
+    const first = await getSessionAgentUsage(source);
+    expect(first.startedAt).toBe("2026-10-16T10:59:00Z");
+    expect(first.childIds).toEqual(["child-thread", "native-child"]);
+    expect(first.segments.map(segment => segment.usage.input)).toEqual([100]);
+    expect(await getSessionAgentUsage(source)).toEqual(first);
+    await appendFile(source, JSON.stringify({ ...records[3], timestamp: "2026-10-16T11:01:00Z" }) + "\n");
+    expect((await getSessionAgentUsage(source)).segments.map(segment => segment.usage.input)).toEqual([100, 100]);
+  });
   test("prices authoritative response records once across cached appends and model changes", async () => {
     const dir = await mkdtemp(join(tmpdir(), "treetop-response-stats-"));
     const source = join(dir, "codex.jsonl");
