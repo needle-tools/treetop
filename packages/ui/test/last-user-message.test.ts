@@ -341,6 +341,23 @@ describe("latestSessionMessageActivityIso", () => {
 });
 
 describe("lastUserMessageBurst", () => {
+  it("excludes Codex question reply control records from pinned summaries", () => {
+    const msgs = [
+      msg("user", "Fix the sitemap", ts(-120000)),
+      msg(
+        "user",
+        '<send_user_message_question_reply>\n[{"answer":"Yes, run the focused test"}]\n</send_user_message_question_reply>',
+        ts(-60000),
+      ),
+      msg("user", "commit it", ts(-5000)),
+    ];
+
+    expect(lastUserMessageBurst(msgs)).toBe("commit it");
+    expect(lastUserMessageWithContext(msgs, lastUserMessageBurst(msgs))).toBe(
+      "Fix the sitemap\n[…]\ncommit it",
+    );
+  });
+
   it("returns undefined for empty messages", () => {
     expect(lastUserMessageBurst([])).toBeUndefined();
   });

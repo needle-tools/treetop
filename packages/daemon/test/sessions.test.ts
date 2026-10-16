@@ -686,6 +686,31 @@ describe("parseClaudeJsonl with interrupt markers", () => {
 });
 
 describe("parseCodexJsonl", () => {
+  test("excludes question reply control records from user messages", () => {
+    const userRow = (text: string) =>
+      JSON.stringify({
+        type: "response_item",
+        payload: {
+          type: "message",
+          role: "user",
+          content: [{ type: "input_text", text }],
+        },
+      });
+    const transcript = [
+      userRow("Fix the sitemap"),
+      userRow(
+        '<send_user_message_question_reply>\n[{"answer":"Yes, run the focused test","question":"May I run it?","questionItemId":"call-1"}]\n</send_user_message_question_reply>',
+      ),
+      userRow("commit it"),
+    ].join("\n");
+
+    expect(
+      parseCodexJsonl(transcript).messages.map(
+        (message) => message.blocks.find((block) => block.type === "text")?.text,
+      ),
+    ).toEqual(["Fix the sitemap", "commit it"]);
+  });
+
   test("excludes injected history replay from transcript and summary input", () => {
     const text = [
       JSON.stringify({

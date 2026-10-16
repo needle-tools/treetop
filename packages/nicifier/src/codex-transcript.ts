@@ -275,6 +275,7 @@ function visibleUserText(value: string): string {
   if (/^#\s+(AGENTS|CLAUDE)\.md instructions\b/i.test(visible)) return "";
   if (/^#\s+(Instructions|Context|System)\b/i.test(visible)) return "";
   if (/^The following is the Codex agent history\b/i.test(visible)) return "";
+  if (/^<send_user_message_question_reply(?:\s|>)/.test(visible)) return "";
   return visible;
 }
 

@@ -746,7 +746,11 @@ export function latestVisualGoal(
 const BURST_GAP_MS = 30_000;
 
 function isInternalUserMessageText(text: string): boolean {
-  return text.trimStart().startsWith("<turn_aborted>");
+  const trimmed = text.trimStart();
+  return (
+    trimmed.startsWith("<turn_aborted>") ||
+    /^<send_user_message_question_reply(?:\s|>)/.test(trimmed)
+  );
 }
 
 export function extractUserText(m: Message): string {
