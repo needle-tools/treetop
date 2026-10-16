@@ -1812,3 +1812,76 @@ Summary chips occupy a full-width second row instead of a compressed central
 column. Coverage exercises cumulative pagination, corrected turn snapshots,
 fork metadata, descendant cycles, source disposal, replay cutoffs, and actual
 SessionView token totals/layout.
+
+### 2026-10-16 — lane return must preserve scroll-follow intent
+
+Reproduced a viewport-only resize turning follow into a reader pause in the real
+SessionView browser harness: the browser clamps `scrollTop` upward when the
+viewport grows, while `scrollHeight` stays unchanged. The controller tracked
+content height but not viewport height, so it classified that native layout
+adjustment as scrolling up and persisted the incorrect pause across lane visits.
+Track both heights, including programmatic restores. A viewport shrink may emit
+no scroll event; the next tail update must retain follow in that case too.
+
+An additional deterministic reproduction left the lane between a tail update
+and its animation-frame correction. The transient bottom gap was persisted as
+not-following. Save pending follow intent before retiring callbacks owned by the
+old scroll element; keep explicit outer and nested reader pauses authoritative.
+No new scroll owner, visibility policy, or observer loop is involved.
+
+The existing offscreen browser test only left and returned with no intervening
+events. It now delivers a long response while away and checks actual scroll
+geometry as well as the follow indicator. A second browser case exercises
+viewport clamping followed by offscreen output; controller tests cover both
+resize directions and departure during queued corrections. A completed turn's
+activity marker is intentionally inactive, so its CSS class alone is not proof
+that follow was lost—assert viewport position/follow intent as appropriate.
+
+An independent audit found a further, distinct failure in the bounded live-work
+body. A real SessionView test now navigates with horizontal container scrolling
+or vertical window scrolling, receives growing reasoning/tool/checkpoint groups
+while away, returns across a turn boundary, and then receives another tool item.
+Both Chromium variants failed: native anchoring left the nested body 31px from
+its new end (`779 - 558 - 190`), and its unconditional scroll handler remembered
+that layout event as a reader pause. The outer controller remained unpaused.
+The old tests exercised either unchanged content or a long assistant answer;
+contiguous tool calls also coalesce, so they did not exercise this body growth.
+
+The shared controller now records each nested body's content/viewport geometry
+after its writes and restores. A geometry-driven body scroll retains follow;
+pointer input, upward wheel input, and an already-paused body remain authoritative.
+Controller regressions fail before this change for content and viewport changes,
+and the two Chromium navigation cases pass afterward. WebKit passed those same
+navigation cases even before this additional fix: this is a demonstrated
+Chromium failure, not proof that the user's all-lane native-app failure has been
+reproduced. Native navigation/gesture behavior and the running bundle version
+still require correlation with the user's instance.
+
+The subsequent gesture audit did reproduce a failure in WebKit: a real
+horizontal wheel gesture (`deltaX=1600`, `deltaY=-1`) over the outer transcript
+navigated to another lane but also marked vertical following paused. After
+offscreen output arrived, returning stayed detached. Dominant-horizontal
+handoff already existed on nested work/code bodies, but not the outer message
+viewport. Reuse that handoff there and exclude horizontal-dominant gestures
+from vertical reader intent. This WebKit case failed before the two-line fix
+and passes afterward; it also checks that an intentional vertical wheel still
+pauses following and preserves the reader while later output arrives. The
+user's exact gesture remains unconfirmed, and their running native bundle
+(2026-10-16 09:01:35 UTC) predates the previous lane-return fixes.
+
+Coverage audit: the previous controller and lifecycle suites did run, but the
+browser harness moved a single lane with a transform and the CI browser was
+Windows Chromium. Neither exercised a real horizontal wheel gesture in WebKit.
+The existing harness now also supports real horizontal/vertical lane scrolling,
+instant/smooth return, offscreen work growth, and a turn transition followed by
+more output. `TREETOP_TEST_BROWSER=webkit` runs the same lifecycle suite with
+Playwright WebKit, and a macOS CI job now runs it alongside the existing tests.
+This tests native-engine behavior, not the exact installed WKWebView binary.
+The clipboard test requests only WebKit's supported read permission (writes use
+the real button gesture), and the artifact test waits for the hover preview to
+close before clicking the next control; assertions and real interactions remain.
+
+Final local verification: 673 related unit tests pass, and all 46 real
+SessionView lifecycle tests pass in each of Chromium and WebKit (142 assertions
+per engine). These include both new failing-before-fix paths and the reader-pause
+controls. No native rebuild or production restart was performed.

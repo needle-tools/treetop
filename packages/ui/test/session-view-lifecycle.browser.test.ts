@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import type { ServerResponse } from "node:http";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { chromium, type Browser, type Page } from "playwright-core";
+import { chromium, webkit, type Browser, type Page } from "playwright-core";
 import { createServer, type Plugin, type ViteDevServer } from "vite";
 import { svelte } from "@sveltejs/vite-plugin-svelte";
 
@@ -323,10 +323,11 @@ before(async () => {
     throw new Error("Vite lifecycle-test server did not bind a TCP port");
   }
   origin = `http://127.0.0.1:${address.port}`;
-  browser = await chromium.launch({
-    channel: process.platform === "win32" ? "msedge" : "chrome",
-    headless: true,
-  });
+  const engine = process.env.TREETOP_TEST_BROWSER ?? "chromium";
+  if (engine !== "chromium" && engine !== "webkit") throw new Error(`Unsupported TREETOP_TEST_BROWSER: ${engine}`);
+  browser = engine === "webkit"
+    ? await webkit.launch({ headless: true })
+    : await chromium.launch({ channel: process.platform === "win32" ? "msedge" : "chrome", headless: true });
 }, { timeout: 30_000 });
 
 after(async () => {
@@ -1143,7 +1144,11 @@ describe("SessionView browser lifecycle", { concurrency: false }, () => {
     await waitForCondition(
       async () => (await tailDistance()) <= 1,
       "Jump to end did not reach the completed session tail",
-    );
+    ).catch(async error => {
+      console.error("failed-follow-geometry", await messages.evaluate(el => ({ top: el.scrollTop, height: el.scrollHeight, client: el.clientHeight, live: el.querySelectorAll(".work-foldout-live").length })), await followHandle.getAttribute("aria-label"));
+      await currentPage.screenshot({ path: "/tmp/treetop-follow-failure.png" });
+      throw error;
+    });
 
     for (let index = 0; index < 12; index += 1) {
       emitCodexEvents([
@@ -1343,7 +1348,10 @@ describe("SessionView browser lifecycle", { concurrency: false }, () => {
   test("renders shared writing, review, and realtime directives in live messages", async () => {
     const currentPage = await openHarness();
     try {
-      await currentPage.context().grantPermissions(["clipboard-read", "clipboard-write"]);
+      // WebKit permits clipboard writes from the real button gesture, but its
+      // automation protocol only exposes the read permission.
+      await currentPage.context().grantPermissions(browser.browserType().name() === "webkit"
+        ? ["clipboard-read"] : ["clipboard-read", "clipboard-write"]);
       emitCodexEvents([{ kind: "notification", method: "item/completed", threadId, turnId: latestTurnId,
         receivedAt: "2026-10-14T12:00:01Z", params: { item: { id: "directive-response", type: "agentMessage", text: [
           "::codex-realtime-inline{}",
@@ -1427,10 +1435,380 @@ describe("SessionView browser lifecycle", { concurrency: false }, () => {
     }
   }, 30_000);
 
+  test("horizontal trackpad lane navigation does not pause vertical transcript follow", async () => {
+    const currentPage = await openHarness({ query: "lanes=horizontal" });
+    try {
+      const handle = currentPage.locator(".session-tail-follow");
+      await handle.click();
+      await waitForCondition(
+        async () =>
+          (await handle.getAttribute("aria-label")) ===
+          "Following latest transcript messages",
+        "Session did not start following",
+      );
+      const viewport = await currentPage.locator(".messages").boundingBox();
+      if (!viewport) throw new Error("Missing transcript viewport");
+      // A physical trackpad's horizontal gesture includes a small vertical
+      // component. Start over the outer transcript, outside the work body.
+      await currentPage.mouse.move(viewport.x + 4, viewport.y + 4);
+      await currentPage.mouse.wheel(1600, -1);
+      await waitForCondition(
+        async () => (await currentPage.locator(".messages").count()) === 0,
+        "Trackpad gesture did not navigate to the neighboring lane",
+      );
+      emitCodexEvents([
+        {
+          kind: "notification",
+          method: "item/started",
+          threadId,
+          turnId: latestTurnId,
+          receivedAt: new Date().toISOString(),
+          params: {
+            item: {
+              id: "trackpad-away-answer",
+              type: "agentMessage",
+            },
+          },
+        },
+        {
+          kind: "notification",
+          method: "item/agentMessage/delta",
+          threadId,
+          turnId: latestTurnId,
+          receivedAt: new Date().toISOString(),
+          params: {
+            itemId: "trackpad-away-answer",
+            delta: "TRACKPAD_AWAY_OUTPUT\n\n" + "New output.\n\n".repeat(80),
+          },
+        },
+      ]);
+      await currentPage.waitForTimeout(100);
+      await currentPage
+        .getByRole("button", { name: "Session lane", exact: true })
+        .click();
+      await currentPage.locator(".messages").waitFor();
+      await waitForCondition(
+        async () =>
+          (await currentPage.locator(".messages").innerText()).includes(
+            "TRACKPAD_AWAY_OUTPUT",
+          ),
+        "Offscreen output did not render",
+      );
+      await waitForCondition(
+        async () =>
+          await currentPage
+            .locator(".messages")
+            .evaluate(
+              (el) => el.scrollHeight - el.scrollTop - el.clientHeight < 3,
+            ),
+        "Horizontal navigation lost vertical tail follow",
+      );
+      expect(await handle.getAttribute("aria-label")).toBe(
+        "Following latest transcript messages",
+      );
+      const endTop = await currentPage
+        .locator(".messages")
+        .evaluate((el) => el.scrollTop);
+      await currentPage.mouse.move(viewport.x + 4, viewport.y + 4);
+      await currentPage.mouse.wheel(0, -180);
+      await waitForCondition(
+        async () =>
+          (await currentPage
+            .locator(".messages")
+            .evaluate((el) => el.scrollTop)) <
+          endTop - 20,
+        "Vertical reader gesture did not scroll history",
+      );
+      await waitForCondition(
+        async () =>
+          (await handle.getAttribute("aria-label")) ===
+          "Jump to latest transcript message",
+        "Vertical reader gesture did not pause follow",
+      );
+      await currentPage.waitForTimeout(150);
+      const readerTop = await currentPage
+        .locator(".messages")
+        .evaluate((el) => el.scrollTop);
+      emitCodexEvents([
+        {
+          kind: "notification",
+          method: "item/agentMessage/delta",
+          threadId,
+          turnId: latestTurnId,
+          receivedAt: new Date().toISOString(),
+          params: {
+            itemId: "trackpad-away-answer",
+            delta: "\n\nOUTPUT_AFTER_VERTICAL_PAUSE",
+          },
+        },
+      ]);
+      await waitForCondition(
+        async () =>
+          (await currentPage.locator(".messages").innerText()).includes(
+            "OUTPUT_AFTER_VERTICAL_PAUSE",
+          ),
+        "Output after reader pause did not render",
+      );
+      await currentPage.waitForTimeout(100);
+      expect(
+        Math.abs(
+          (await currentPage
+            .locator(".messages")
+            .evaluate((el) => el.scrollTop)) - readerTop,
+        ),
+      ).toBeLessThan(3);
+      expect(await handle.getAttribute("aria-label")).toBe("Jump to latest transcript message");
+    } finally {
+      await currentPage.close();
+    }
+  }, 30_000);
+
+  test.each(["horizontal", "vertical", "horizontal&smooth", "vertical&smooth"])(
+    "%s lane navigation retains live work follow through offscreen tool output and the next turn",
+    async (direction) => {
+      historicalWorkGroupCount = 25;
+      const currentPage = await openHarness({ query: `lanes=${direction}` });
+      const handle = currentPage.locator(".session-tail-follow");
+      const body = currentPage.locator(
+        ".work-foldout-live > .work-foldout-body",
+      );
+      const command = (id: string, turnId = latestTurnId) => ({
+        kind: "notification",
+        method: "item/completed",
+        threadId,
+        turnId,
+        receivedAt: new Date().toISOString(),
+        params: {
+          threadId,
+          turnId,
+          item: {
+            id,
+            type: "commandExecution",
+            command: `/bin/zsh -lc 'echo ${id}'`,
+            status: "completed",
+            aggregatedOutput: `${id}\n`,
+          },
+        },
+      });
+      // Consecutive commands coalesce into one display group. Interleave real
+      // reasoning and checkpoints so offscreen output grows the bounded body.
+      const workStep = (id: string, turnId = latestTurnId) => [
+        {
+          kind: "notification",
+          method: "item/completed",
+          threadId,
+          turnId,
+          receivedAt: new Date().toISOString(),
+          params: {
+            item: {
+              id: `reason-${id}`,
+              type: "reasoning",
+              summary: [{ type: "summary_text", text: `Planning ${id}` }],
+            },
+          },
+        },
+        command(id, turnId),
+        {
+          kind: "notification",
+          method: "item/completed",
+          threadId,
+          turnId,
+          receivedAt: new Date().toISOString(),
+          params: {
+            item: {
+              id: `checkpoint-${id}`,
+              type: "agentMessage",
+              text: `Checkpoint ${id}`,
+            },
+          },
+        },
+      ];
+      let phase = "initial";
+      const following = async () => {
+        try {
+          await waitForCondition(
+            async () =>
+              (await handle.getAttribute("aria-label")) ===
+              "Following latest transcript messages",
+            `Lane lost follow intent: ${phase}`,
+          );
+          await waitForCondition(
+            async () =>
+              await body.evaluate(
+                (el) => el.scrollHeight - el.scrollTop - el.clientHeight < 3,
+              ),
+            `Nested body stopped following: ${phase}`,
+          );
+        } catch (error) {
+          console.error(
+            "lane-follow-geometry",
+            phase,
+            await currentPage.locator(".messages").evaluate((el) => ({
+              top: el.scrollTop,
+              height: el.scrollHeight,
+              client: el.clientHeight,
+              bodies: [
+                ...el.querySelectorAll(
+                  ".work-foldout-live > .work-foldout-body",
+                ),
+              ].map((body) => ({
+                key: (body as HTMLElement).dataset.workKey,
+                top: body.scrollTop,
+                height: body.scrollHeight,
+                client: body.clientHeight,
+              })),
+            })),
+          );
+          throw error;
+        }
+      };
+      const rendered = (text: string) =>
+        waitForCondition(
+          async () =>
+            (await currentPage.locator(".messages").innerText()).includes(text),
+          `Live output was not rendered: ${text}`,
+        );
+      try {
+        emitCodexEvents([
+          {
+            kind: "notification",
+            method: "turn/started",
+            threadId,
+            turnId: latestTurnId,
+            receivedAt: new Date().toISOString(),
+            params: { threadId, turn: { id: latestTurnId } },
+          },
+        ]);
+        await body.waitFor();
+        emitCodexEvents([command("initial-live-work")]);
+        await following();
+        for (let visit = 0; visit < 4; visit++) {
+          phase = `visit ${visit}`;
+          await currentPage
+            .getByRole("button", { name: "Neighbor lane", exact: true })
+            .click();
+          await waitForCondition(
+            async () => (await currentPage.locator(".messages").count()) === 0,
+            "Scrolled lane did not suspend",
+          );
+          emitCodexEvents(
+            Array.from({ length: 10 }, (_, index) =>
+              workStep(`away-${visit}-${index}`),
+            ).flat(),
+          );
+          await currentPage.waitForTimeout(100);
+          await currentPage
+            .getByRole("button", { name: "Session lane", exact: true })
+            .click();
+          await body.waitFor();
+          await rendered(`Checkpoint away-${visit}-9`);
+          await currentPage.waitForTimeout(100);
+          await following();
+          emitCodexEvents(workStep(`returned-${visit}`));
+          await rendered(`Checkpoint returned-${visit}`);
+          await currentPage.waitForTimeout(100);
+          await following();
+        }
+        await currentPage
+          .getByRole("button", { name: "Neighbor lane", exact: true })
+          .click();
+        await waitForCondition(
+          async () => (await currentPage.locator(".messages").count()) === 0,
+          "Lane did not suspend before turn transition",
+        );
+        const nextTurn = "lane-next-turn";
+        phase = "next turn";
+        emitCodexEvents([
+          {
+            kind: "notification",
+            method: "turn/completed",
+            threadId,
+            turnId: latestTurnId,
+            receivedAt: new Date().toISOString(),
+            params: {
+              threadId,
+              turn: { id: latestTurnId, status: "completed" },
+            },
+          },
+          {
+            kind: "notification",
+            method: "turn/started",
+            threadId,
+            turnId: nextTurn,
+            receivedAt: new Date().toISOString(),
+            params: { threadId, turn: { id: nextTurn } },
+          },
+          {
+            kind: "notification",
+            method: "item/completed",
+            threadId,
+            turnId: nextTurn,
+            receivedAt: new Date().toISOString(),
+            params: {
+              item: {
+                id: "lane-next-user",
+                type: "userMessage",
+                content: [{ type: "text", text: "Next request while away" }],
+              },
+            },
+          },
+          ...Array.from({ length: 12 }, (_, index) =>
+            workStep(`next-turn-${index}`, nextTurn),
+          ).flat(),
+        ]);
+        await currentPage.waitForTimeout(150);
+        await currentPage
+          .getByRole("button", { name: "Session lane", exact: true })
+          .click();
+        await body.waitFor();
+        await rendered("Checkpoint next-turn-11");
+        await following();
+        emitCodexEvents([command("next-turn-returned", nextTurn)]);
+        await rendered("next-turn-returned");
+        await currentPage.waitForTimeout(100);
+        await following();
+        expect(await currentPage.locator(".messages").innerText()).toContain(
+          "Next request while away",
+        );
+      } finally {
+        historicalWorkGroupCount = 0;
+        await currentPage.close();
+      }
+    },
+    30_000,
+  );
+
+  test("lane viewport growth does not turn a native scroll clamp into a remembered reader pause", async () => {
+    const currentPage = await openHarness();
+    try {
+      const stage = currentPage.locator(".session-lifecycle-stage");
+      const handle = currentPage.locator(".session-tail-follow");
+      await currentPage.locator(".session").evaluate(el => { (el as HTMLElement).style.maxHeight = "none"; });
+      await handle.click();
+      await waitForCondition(async () => await handle.getAttribute("aria-label") === "Following latest transcript messages", "Session did not attach to latest");
+      const before = await currentPage.locator(".messages").evaluate(el => ({ height: el.scrollHeight, client: el.clientHeight, top: el.scrollTop }));
+      await stage.evaluate(el => { (el as HTMLElement).style.height = "640px"; });
+      await currentPage.waitForTimeout(150);
+      const after = await currentPage.locator(".messages").evaluate(el => ({ height: el.scrollHeight, client: el.clientHeight, top: el.scrollTop }));
+      expect(after.height).toBe(before.height);
+      expect(after.client).toBeGreaterThan(before.client);
+      expect(after.top).toBeLessThan(before.top);
+      expect(await handle.getAttribute("aria-label")).toBe("Following latest transcript messages");
+      await stage.evaluate(el => { (el as HTMLElement).style.transform = "translateX(2000px)"; });
+      await waitForCondition(async () => await currentPage.locator(".messages").count() === 0, "Lane did not suspend");
+      emitCodexEvents([{ kind: "notification", method: "item/completed", threadId, turnId: latestTurnId, receivedAt: "2026-10-16T11:00:00Z",
+        params: { item: { id: "resized-lane-reply", type: "agentMessage", text: "NEW_WHILE_AWAY\n\n" + "More output.\n\n".repeat(80) } } }]);
+      await stage.evaluate(el => { (el as HTMLElement).style.transform = ""; });
+      await waitForCondition(async () => await currentPage.locator(".messages").evaluate(el => el.scrollHeight - el.scrollTop - el.clientHeight < 3), "Resized returning lane lost follow");
+      expect(await handle.getAttribute("aria-label")).toBe("Following latest transcript messages");
+    } finally { await currentPage.close(); }
+  }, 30_000);
+
   test("keeps following a live-work lane after it leaves and re-enters the viewport", async () => {
     const currentPage = await openHarness();
     const stage = currentPage.locator(".session-lifecycle-stage");
     const followHandle = currentPage.locator(".session-tail-follow");
+    try {
     emitCodexEvents([
       {
         kind: "notification",
@@ -1472,15 +1850,30 @@ describe("SessionView browser lifecycle", { concurrency: false }, () => {
       async () => (await currentPage.locator(".messages").count()) === 0,
       "Offscreen lane did not release its transcript body",
     );
-    await stage.evaluate((element) => {
-      (element as HTMLElement).style.transform = "";
-    });
+    const awayText = "ANSWER_WHILE_AWAY\n\n" + "New output while another lane is visible.\n\n".repeat(100);
+    usageHistoryItems = [{ id: "away-answer", type: "agentMessage", text: awayText }];
+    emitCodexEvents([
+      { kind: "notification", method: "item/completed", threadId, turnId: latestTurnId,
+        receivedAt: "2026-10-07T10:02:00Z", params: { item: { id: "away-answer", type: "agentMessage", text: awayText } } },
+    ]);
+    await currentPage.waitForTimeout(150);
+    await stage.evaluate((element) => { (element as HTMLElement).style.transform = ""; });
     await currentPage.locator(".messages").waitFor();
     await waitForCondition(
       async () => (await followHandle.getAttribute("class"))?.includes("active") === true,
-      "Returning live lane forgot its tail-follow state",
+      "Returning lane forgot follow after output while away",
     );
-    await currentPage.close();
+    expect(await currentPage.locator(".messages").innerText()).toContain("ANSWER_WHILE_AWAY");
+    const following = await currentPage.locator(".messages").evaluate(el => {
+      const body = el.querySelector(".work-foldout-live > .work-foldout-body");
+      return body ? body.scrollHeight - body.scrollTop - body.clientHeight < 3 : el.scrollHeight - el.scrollTop - el.clientHeight < 3;
+    });
+    expect(following).toBe(true);
+    } finally {
+      usageHistoryItems = [];
+      latestTurnComplete = false;
+      await currentPage.close();
+    }
   }, 30_000);
 
   test(
@@ -1865,6 +2258,7 @@ describe("SessionView browser lifecycle", { concurrency: false }, () => {
       expect(await diff.locator(".line.hunk").innerText()).toBe("@@ -10,3 +10,1 @@");
       expect(diskDiffs).toBe(0);
       await currentPage.mouse.move(890, 10);
+      await diff.waitFor({ state: "hidden" });
       const round = currentPage.locator(".work-foldout").last();
       if (await round.getAttribute("open") === null) await round.locator(":scope > summary").click();
       const steps = round.locator(".work-detail-toggle");

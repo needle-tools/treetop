@@ -128,6 +128,82 @@ function fakeLiveWorkScroller(opts: { zen?: boolean } = {}): {
 }
 
 describe("session scroll controller", () => {
+  test("does not treat a horizontal trackpad gesture as vertical reader intent", () => {
+    const scheduler = new ManualScheduler();
+    const scroller = fakeScroller(() => 220);
+    let olderRequests = 0;
+    const controller = createSessionScrollController({
+      scheduler,
+      requestOlder: () => olderRequests++,
+    });
+    controller.setElement(scroller);
+    controller.updateTail("initial");
+    scheduler.flush();
+    controller.onWheel({ deltaX: 1600, deltaY: -1 } as WheelEvent);
+    expect(controller.isPaused).toBe(false);
+    expect(olderRequests).toBe(0);
+  });
+
+  test.each(["content", "viewport"])(
+    "keeps nested work following after a native %s geometry scroll",
+    (change) => {
+      const scheduler = new ManualScheduler();
+      const { scroller, workBody } = fakeLiveWorkScroller();
+      let bodyTop = 0;
+      Object.defineProperty(workBody, "scrollTop", {
+        get: () => bodyTop,
+        set: (value: number) => {
+          bodyTop = Math.max(
+            0,
+            Math.min(value, workBody.scrollHeight - workBody.clientHeight),
+          );
+        },
+      });
+      const controller = createSessionScrollController({ scheduler });
+      controller.setElement(scroller);
+      controller.updateTail("initial");
+      scheduler.flush();
+      expect(workBody.scrollTop).toBe(1544);
+      if (change === "content") workBody.scrollHeight += 100;
+      else workBody.clientHeight -= 100;
+      // Native anchoring moves the viewport when streamed layout changes, but
+      // leaves a small gap to the new end. No wheel or scrollbar input occurred.
+      workBody.scrollTop += 69;
+      controller.onLiveWorkBodyScroll("work:live", workBody);
+      controller.updateTail("output-after-return");
+      scheduler.flush();
+      expect(workBody.scrollTop).toBe(1644);
+      expect(controller.isActive).toBe(true);
+    },
+  );
+
+  test.each(["pointer", "wheel", "paused body"])(
+    "preserves nested reader intent during layout changes: %s",
+    (intent) => {
+      const scheduler = new ManualScheduler();
+      const { scroller, workBody } = fakeLiveWorkScroller();
+      const controller = createSessionScrollController({ scheduler });
+      controller.setElement(scroller);
+      controller.updateTail("initial");
+      scheduler.flush();
+      if (intent === "pointer") controller.onPointerDown();
+      else if (intent === "wheel")
+        controller.onWheel({ deltaY: -10 } as WheelEvent);
+      else {
+        workBody.scrollTop = 400;
+        controller.onLiveWorkBodyScroll("work:live", workBody);
+      }
+      workBody.scrollHeight += 100;
+      workBody.scrollTop = 500;
+      controller.onLiveWorkBodyScroll("work:live", workBody);
+      controller.onPointerUp();
+      controller.updateTail("output-during-reader-input");
+      scheduler.flush();
+      expect(workBody.scrollTop).toBe(500);
+      expect(controller.isActive).toBe(false);
+    },
+  );
+
   test("restores a paused live-work body on remount without pausing its outer viewport", () => {
     const scheduler = new ManualScheduler();
     const first = fakeLiveWorkScroller();
@@ -572,6 +648,72 @@ describe("session scroll controller", () => {
 
     expect(controller.isPaused).toBe(false);
     expect(scroller.scrollTop).toBe(1_000_000_000);
+  });
+
+  test("a viewport-height change cannot detach a followed lane", () => {
+    const scheduler = new ManualScheduler();
+    const scroller = fakeScroller(() => 220);
+    const controller = createSessionScrollController({ scheduler });
+    controller.setElement(scroller);
+    controller.updateTail("initial");
+    scheduler.flush();
+    scroller.scrollTop = 700;
+    controller.recordProgrammaticScroll();
+
+    // Header/composer or lane geometry changes clamp the native scroll position
+    // without any reader gesture and without changing the content height.
+    Object.assign(scroller, { clientHeight: 600, scrollTop: 600 });
+    controller.onScroll();
+    scheduler.flush();
+    expect(controller.isPaused).toBe(false);
+    expect(controller.isActive).toBe(true);
+  });
+
+  test("keeps following new output after the viewport shrinks without a native scroll event", () => {
+    const scheduler = new ManualScheduler();
+    const scroller = fakeScroller(() => 220);
+    const controller = createSessionScrollController({ scheduler });
+    controller.setElement(scroller);
+    controller.updateTail("initial");
+    scheduler.flush();
+    scroller.scrollTop = 700;
+    controller.recordProgrammaticScroll();
+    Object.assign(scroller, { clientHeight: 300 });
+    controller.updateTail("output-after-resize");
+    scheduler.flush();
+    expect(controller.isPaused).toBe(false);
+    expect(scroller.scrollTop).toBe(1_000_000_000);
+
+    controller.setPaused(true);
+    Object.assign(scroller, { clientHeight: 200, scrollTop: 400 });
+    controller.updateTail("output-while-reading");
+    scheduler.flush();
+    expect(controller.isPaused).toBe(true);
+    expect(scroller.scrollTop).toBe(400);
+  });
+
+  test.each(["viewport", "pending-output"])("remembers follow when leaving during %s geometry changes", change => {
+    const scheduler = new ManualScheduler();
+    const scroller = fakeScroller(() => 220);
+    const controller = createSessionScrollController({ scheduler });
+    controller.setMemoryKey(`leaving-during-${change}`);
+    controller.setElement(scroller);
+    controller.updateTail("initial");
+    scheduler.flush();
+    scroller.scrollTop = 700;
+    controller.recordProgrammaticScroll();
+    if (change === "viewport") Object.assign(scroller, { clientHeight: 300 });
+    else { controller.updateTail("next"); scroller.scrollHeight = 1800; }
+    controller.setElement(null);
+    scheduler.flush();
+    const replacement = fakeScroller(() => 220);
+    replacement.scrollHeight = 2000;
+    replacement.scrollTop = 0;
+    controller.setElement(replacement);
+    scheduler.flush();
+    expect(controller.isPaused).toBe(false);
+    expect(controller.isActive).toBe(true);
+    expect(replacement.scrollTop).toBe(1_000_000_000);
   });
 
   test("settles content that grows after the final pending tail write", () => {

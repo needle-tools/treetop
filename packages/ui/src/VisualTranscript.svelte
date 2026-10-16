@@ -3678,6 +3678,7 @@
   bind:this={messagesEl}
   on:mouseenter={onMessagesEnter}
   on:mouseleave={onMessagesLeave}
+  on:wheel|capture={handOffNestedWheel}
   on:wheel={onMessagesWheel}
   on:pointerdown={onMessagesPointerDown}
   on:pointerup={onMessagesPointerUp}
