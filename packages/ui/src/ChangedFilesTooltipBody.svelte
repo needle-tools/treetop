@@ -82,6 +82,8 @@
   /** Alternate callers with longer related path lists can use the same
    *  row/diff primitives as a sparse tree instead of three flat buckets. */
   export let layout: "columns" | "tree" = "columns";
+  /** Session-owned artifacts retain captured content and its provenance. */
+  export let artifacts: readonly VisualWorkArtifact[] | undefined = undefined;
 
   /** Per-section row cap. Past this the rest collapse into the
    *  footer message below the three columns. With horizontal
@@ -165,8 +167,9 @@
     return { columns, hiddenCount: hidden, total };
   }
 
-  function artifactsForTree(columns: readonly Column[]): VisualWorkArtifact[] {
-    const artifacts: VisualWorkArtifact[] = [];
+  function artifactsForTree(columns: readonly Column[]): readonly VisualWorkArtifact[] {
+    if (artifacts) return artifacts;
+    const result: VisualWorkArtifact[] = [];
     for (const column of columns) {
       for (const row of column.rows) {
         const diff =
@@ -176,7 +179,7 @@
               ? `${worktreePath.replace(/\/$/, "")}/${row.path}`
               : row.path
           ];
-        artifacts.push({
+        result.push({
           id: `${column.kind}:${row.path}`,
           kind: "file",
           action:
@@ -190,7 +193,7 @@
         });
       }
     }
-    return artifacts;
+    return result;
   }
 
   // --- per-row diff hover -------------------------------------------

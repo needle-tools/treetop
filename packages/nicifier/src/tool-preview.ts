@@ -378,9 +378,11 @@ export function visualFileEditTotals(
 
 export function cleanVisualToolResultText(
   text: string | undefined,
+  preserveWhitespace = false,
 ): VisualToolResultText {
   const raw = text ?? "";
   const trimmed = raw.trim();
+  const content = (value: string) => preserveWhitespace ? value : value.trim();
   if (!trimmed) {
     return {
       title: "Tool result",
@@ -390,19 +392,19 @@ export function cleanVisualToolResultText(
   }
 
   const codexChunk = trimmed.match(
-    /^Chunk ID:\s+\S+\s+Wall time:\s+([\d.]+)\s+seconds\s+Process exited with code\s+(-?\d+)(?:\s+Original token count:\s+(\d+))?\s+Output:\s*([\s\S]*)$/i,
+    /^Chunk ID:\s+\S+\s+Wall time:\s+([\d.]+)\s+seconds\s+Process exited with code\s+(-?\d+)(?:\s+Original token count:\s+(\d+))?\s+Output:[ \t]*(?:\r?\n)?([\s\S]*)$/i,
   );
   const codexRunningChunk = trimmed.match(
-    /^Chunk ID:\s+\S+\s+Wall time:\s+([\d.]+)\s+seconds\s+Process running with session ID\s+(\d+)(?:\s+Original token count:\s+(\d+))?\s+Output:\s*([\s\S]*)$/i,
+    /^Chunk ID:\s+\S+\s+Wall time:\s+([\d.]+)\s+seconds\s+Process running with session ID\s+(\d+)(?:\s+Original token count:\s+(\d+))?\s+Output:[ \t]*(?:\r?\n)?([\s\S]*)$/i,
   );
   const plainCommandResult = trimmed.match(
-    /^Exit code:\s+(-?\d+)\s+Wall time:\s+([\d.]+)\s+seconds?\s+Output:\s*([\s\S]*)$/i,
+    /^Exit code:\s+(-?\d+)\s+Wall time:\s+([\d.]+)\s+seconds?\s+Output:[ \t]*(?:\r?\n)?([\s\S]*)$/i,
   );
   const scriptCompletedResult = trimmed.match(
-    /^Script completed\s+Wall time\s+([\d.]+)\s+seconds?\s+Output:\s*([\s\S]*)$/i,
+    /^Script completed\s+Wall time\s+([\d.]+)\s+seconds?\s+Output:[ \t]*(?:\r?\n)?([\s\S]*)$/i,
   );
   const scriptRunningResult = trimmed.match(
-    /^Script running with cell ID\s+\d+\s+Wall time\s+([\d.]+)\s+seconds?\s+Output:\s*([\s\S]*)$/i,
+    /^Script running with cell ID\s+\d+\s+Wall time\s+([\d.]+)\s+seconds?\s+Output:[ \t]*(?:\r?\n)?([\s\S]*)$/i,
   );
   if (
     !codexChunk &&
@@ -413,7 +415,7 @@ export function cleanVisualToolResultText(
   ) {
     return {
       title: "Tool result",
-      body: trimmed,
+      body: content(raw),
       wrappedCodexChunk: false,
     };
   }
@@ -421,7 +423,7 @@ export function cleanVisualToolResultText(
   if (codexRunningChunk) {
     const wallTimeSeconds = Number(codexRunningChunk[1]);
     const processSessionId = Number.parseInt(codexRunningChunk[2]!, 10);
-    const output = (codexRunningChunk[4] ?? "").trim();
+    const output = content(codexRunningChunk[4] ?? "");
     return {
       title: output ? "Process output" : "Process still running",
       body: output,
@@ -441,7 +443,7 @@ export function cleanVisualToolResultText(
 
   if (scriptRunningResult) {
     const wallTimeSeconds = Number(scriptRunningResult[1]);
-    const output = (scriptRunningResult[2] ?? "").trim();
+    const output = content(scriptRunningResult[2] ?? "");
     const processSessionId = sessionIdFromResultOutput(output);
     return {
       title: output ? "Process output" : "Process still running",
@@ -457,9 +459,9 @@ export function cleanVisualToolResultText(
 
   if (scriptCompletedResult) {
     const wrapperWallTimeSeconds = Number(scriptCompletedResult[1]);
-    const rawOutput = (scriptCompletedResult[2] ?? "").trim();
+    const rawOutput = content(scriptCompletedResult[2] ?? "");
     const payload = parsedToolResultPayload(rawOutput);
-    const output = (payload?.output ?? rawOutput).trim();
+    const output = content(payload?.output ?? rawOutput);
     const processSessionId =
       payload?.processSessionId ?? sessionIdFromResultOutput(output);
     const processRunning =
@@ -483,7 +485,7 @@ export function cleanVisualToolResultText(
   const exitCode = codexChunk?.[2] ?? plainCommandResult?.[1] ?? "0";
   const parsedExitCode = Number.parseInt(exitCode, 10);
   const wallTimeSeconds = Number(codexChunk?.[1] ?? plainCommandResult?.[2]);
-  const output = (codexChunk?.[4] ?? plainCommandResult?.[3] ?? "").trim();
+  const output = content(codexChunk?.[4] ?? plainCommandResult?.[3] ?? "");
   const title = output
     ? "Command output"
     : parsedExitCode === 0
@@ -8710,6 +8712,14 @@ function shellScriptEditSummary(
   }
 
   const writes: Array<{ index: number; file: VisualFileEdit }> = [];
+  const replacements: Array<{ variable: string; startVariable: string; endVariable: string; index: number; end: number; content: string }> = [];
+  const sliceAssignment = /\b([A-Za-z_]\w*)\s*=\s*\1\s*\[\s*:\s*([A-Za-z_]\w*)\s*\]\s*\+\s*/g;
+  for (const match of command.matchAll(sliceAssignment)) {
+    const literal = pythonStringLiteralSpanAt(command, match.index + match[0].length);
+    if (!literal) continue;
+    const suffix = new RegExp(`^\\s*\\+\\s*${escapeRegExp(match[1]!)}\\s*\\[\\s*([A-Za-z_]\\w*)\\s*:\\s*\\]`).exec(command.slice(literal.end));
+    if (suffix) replacements.push({ variable: match[1]!, startVariable: match[2]!, endVariable: suffix[1]!, index: match.index, end: literal.end + suffix[0].length, content: literal.value });
+  }
   const pathWritePattern = /\b(Path\s*\(\s*['"][^'"\n]+['"]\s*\)|[A-Za-z_$][\w$]*)\s*\.\s*write_(text|bytes)\s*\(/g;
   for (const match of command.matchAll(pathWritePattern)) {
     const path = resolvePath(match[1]);
@@ -8717,11 +8727,44 @@ function shellScriptEditSummary(
     const content = match[2] === "text"
       ? pythonStringLiteralAt(command, match.index + match[0].length)
       : undefined;
+    const writtenVariable = /^\s*([A-Za-z_]\w*)\s*\)/.exec(command.slice(match.index + match[0].length))?.[1];
+    const replacement = match[2] === "text" && writtenVariable
+      ? replacements.findLast((value) => value.variable === writtenVariable && value.end < match.index!
+        && !new RegExp(`\\b${escapeRegExp(writtenVariable)}\\s*(?:[+*/%|&^-]?=|\\[)`).test(command.slice(value.end, match.index)))
+      : undefined;
+    let boundaries: VisualFileEdit["replacement"];
+    if (replacement) {
+      const prefix = command.slice(0, replacement.index);
+      const variable = escapeRegExp(replacement.variable);
+      const reads = [...prefix.matchAll(new RegExp(`\\b${variable}\\s*=\\s*(Path\\s*\\(\\s*['\"][^'\"\\n]+['\"]\\s*\\)|[A-Za-z_]\\w*)\\s*\\.read_text\\s*\\(\\s*\\)`, "g"))];
+      const read = reads.at(-1);
+      const unchanged = read && resolvePath(read[1]) === path
+        && !new RegExp(`\\b${variable}\\s*(?:[+*/%|&^-]?=|\\[)`).test(prefix.slice(read.index! + read[0].length));
+      const anchor = (name: string, startVariable?: string): string | undefined => {
+        const assignments = [...prefix.matchAll(new RegExp(`\\b${escapeRegExp(name)}\\s*=\\s*${variable}\\.index\\s*\\(\\s*`, "g"))];
+        const assignment = assignments.at(-1);
+        if (!assignment) return undefined;
+        const literal = pythonStringLiteralSpanAt(prefix, assignment.index! + assignment[0].length);
+        const tail = startVariable ? `(?:,\\s*${escapeRegExp(startVariable)})?` : "";
+        const ending = literal && new RegExp(`^\\s*${tail}\\s*\\)`).exec(prefix.slice(literal.end));
+        if (!literal || !ending || new RegExp(`\\b${escapeRegExp(name)}\\s*(?:[+*/%|&^-]?=|\\[)`).test(prefix.slice(literal.end + ending[0].length))) return undefined;
+        return literal.value;
+      };
+      const startAnchor = unchanged ? anchor(replacement.startVariable) : undefined;
+      const endAnchor = unchanged ? anchor(replacement.endVariable, replacement.startVariable) : undefined;
+      if (startAnchor && endAnchor) boundaries = { startAnchor, endAnchor };
+    }
     writes.push({
       index: match.index,
       file: {
         path,
         action: "edited",
+        ...(replacement ? {
+          preview: replacement.content,
+          previewTitle: "Captured replacement content (partial file)",
+          writtenTokenCountEstimate: estimateTextTokenCount(replacement.content),
+          ...(boundaries ? { replacement: boundaries } : {}),
+        } : {}),
         ...(content === undefined ? {} : {
           raw: fullFileContentDiff(content, "added"),
           writtenTokenCountEstimate: estimateTextTokenCount(content),
@@ -8752,6 +8795,40 @@ function shellScriptEditSummary(
 }
 
 function pythonStringLiteralAt(source: string, start: number): string | undefined {
+  return pythonStringLiteralSpanAt(source, start)?.value;
+}
+
+export interface VisualCapturedFileRead {
+  body: string;
+  startLine: number;
+}
+
+/** Reconstruct only the witnessed, line-aligned section; never read the filesystem. */
+export function visualFileEditWithCapturedRead(file: VisualFileEdit, read: VisualCapturedFileRead | undefined): VisualFileEdit {
+  if (!read || file.raw !== undefined || file.preview === undefined || !file.replacement) return file;
+  if (/(?:\[[^\]\n]*(?:truncated|omitted)[^\]\n]*\]|Warning: truncated output|<[^>\n]*truncated[^>\n]*>)/i.test(read.body)
+    || /^\s*\d+(?:\t|[|:]\s)/m.test(read.body)) return file;
+  const { startAnchor, endAnchor } = file.replacement;
+  const start = read.body.indexOf(startAnchor);
+  const end = read.body.indexOf(endAnchor, start + startAnchor.length);
+  if (start < 0 || end < 0 || read.body.indexOf(endAnchor) !== end || read.body.indexOf(startAnchor, start + startAnchor.length) >= 0
+    || read.body.indexOf(endAnchor, end + endAnchor.length) >= 0
+    || (start > 0 && read.body[start - 1] !== "\n") || read.body[end - 1] !== "\n"
+    || (file.preview.length > 0 && !file.preview.endsWith("\n"))) return file;
+  const removed = read.body.slice(start, end).split("\n").slice(0, -1);
+  const added = file.preview.length ? file.preview.split("\n").slice(0, -1) : [];
+  const line = read.startLine + read.body.slice(0, start).split("\n").length - 1;
+  return {
+    ...file,
+    additions: added.length,
+    deletions: removed.length,
+    raw: [`@@ -${line},${removed.length} +${line},${added.length} @@`, ...removed.map(value => `-${value}`), ...added.map(value => `+${value}`)].join("\n"),
+    preview: undefined,
+    previewTitle: undefined,
+  };
+}
+
+function pythonStringLiteralSpanAt(source: string, start: number): { value: string; end: number } | undefined {
   let index = start;
   while (/\s/.test(source[index] ?? "")) index += 1;
   const prefix = /^(?:r|u|ur|ru)?/i.exec(source.slice(index))?.[0] ?? "";
@@ -8763,7 +8840,7 @@ function pythonStringLiteralAt(source: string, start: number): string | undefine
   index += delimiter.length;
   let value = "";
   while (index < source.length) {
-    if (source.slice(index, index + delimiter.length) === delimiter) return value;
+    if (source.slice(index, index + delimiter.length) === delimiter) return { value, end: index + delimiter.length };
     const char = source[index]!;
     if (char !== "\\" || prefix.toLowerCase().includes("r")) {
       value += char;

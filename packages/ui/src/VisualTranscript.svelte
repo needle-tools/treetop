@@ -1899,7 +1899,7 @@
       worktreeRelativePreviewPath(file.path),
     ])[0];
     if (!target) return undefined;
-    return file.raw === undefined
+    return file.raw === undefined && file.preview === undefined
       ? {
           ...target,
           diffKind: file.action === "added" ? "untracked" : "workdir",
@@ -1928,6 +1928,8 @@
       additions: file.additions,
       deletions: file.deletions,
       diff: file.raw,
+      preview: file.preview,
+      previewTitle: file.previewTitle,
       diffKind:
         file.raw === undefined
           ? file.action === "added"
@@ -2356,6 +2358,7 @@
     <span slot="content" class="work-changed-tooltip">
       <ChangedFilesTooltipBody
         summary={workChangedSummaryForOverview(overview)}
+        artifacts={overview.artifacts.filter((artifact) => artifact.action === "changed")}
         worktreePath={sessionCwd}
         {daemonId}
         layout="tree"
@@ -2830,7 +2833,9 @@
           undefined,
           preview.file.raw !== undefined
             ? { title: preview.file.path, body: preview.file.raw }
-            : undefined,
+            : preview.file.preview !== undefined
+              ? { title: preview.file.previewTitle ?? preview.file.path, body: preview.file.preview }
+              : undefined,
         )}
       {:else}
         <span>{preview.file.path}</span>
@@ -2847,6 +2852,7 @@
       <span slot="content" class="work-changed-tooltip">
         <ChangedFilesTooltipBody
           summary={workChangedSummaryForFileEdits(preview.summary)}
+          artifacts={workArtifactsForFileEdits(preview.summary)}
           worktreePath={sessionCwd}
           {daemonId}
           layout="tree"
@@ -3053,6 +3059,7 @@
   >,
   workKey: string,
   visibleWorkEntries: VisualWorkDisplayEntry<NormalizedBlock, NormalizedMessage>[],
+  fileEdits: VisualWorkOverview["fileEdits"],
 )}
                         {@const entry = displayEntry.entry}
                         {#if isPlainAssistantWorkText(entry)}
@@ -3126,6 +3133,8 @@
                           {@const toolBlock =
                             workEntryToolUseBlock(entry) ?? pairedToolUseBlock}
                           {@const editSummary =
+                            fileEdits.get(entry) ??
+                            (displayEntry.pairedToolUse ? fileEdits.get(displayEntry.pairedToolUse) : undefined) ??
                             workEntryFileEditSummary(entry) ??
                             (displayEntry.pairedToolUse
                               ? workEntryFileEditSummary(
@@ -3867,6 +3876,7 @@
                           {
                             now: liveNowIso,
                             timeScope: "entries",
+                            fileEdits: workOverview.fileEdits,
                             model: pricingModel,
                             modelsDev: modelsDevPricing,
                           },
@@ -3920,6 +3930,7 @@
                                     item,
                                     workKey,
                                     visibleWorkEntries,
+                                    workOverview.fileEdits,
                                   )}
                                 {/each}
                               </div>
@@ -3932,6 +3943,7 @@
                               item,
                               workKey,
                               visibleWorkEntries,
+                              workOverview.fileEdits,
                             )}
                           {/each}
                           {#if groupOverview.cost.pricedCheckpoints > 0}

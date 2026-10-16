@@ -1651,6 +1651,32 @@ uses the existing heredoc ranges to avoid interpreting input code as shell
 syntax. Real content sources such as `/proc/self/status`, `/dev/shm` files and
 ordinary `dev/` directories remain represented.
 
+The October 16 tail of session `01a11346-0734-7570-abbc-ae9c35e979d0`
+reproduced another missing write preview: Python assembled a section replacement
+as `s[:start] + <literal> + s[end:]` before `p.write_text(s)`. Shared extraction
+now retains that literal as explicitly partial replacement content, not a
+fabricated full-file diff. Reassignment/augmentation before the write prevents
+using a stale literal. The changed-file tooltip accepts the existing shared
+artifacts directly so it does not discard captured previews when rebuilding
+file-only rows. A real SessionView browser test opens the changed-file chip,
+hovers AGENTS.md, and verifies both the replacement text and zero disk-diff
+requests. The actual tail record also retains its 362-character replacement
+through canonical Codex normalization.
+
+The follow-up now resolves those section boundaries against earlier captured
+reads in the shared work projection. The actual last AGENTS.md replacement
+reconstructs a `+7 −21` hunk starting at line 286. Artifact Map, the changed-file
+chip, action-group counters and the individual edit hover share the resolved
+edit; groups inherit the enclosing round's resolution rather than independently
+guessing before-state. No current-disk diff or transcript/live mixing is used.
+Missing/duplicate anchors, truncation markers, a read result received after the
+write, a different cwd/workdir, or intervening mutations retain the partial
+preview. SSH/container display labels are not sufficient identity proof, so
+those remain partial too. Captured whitespace is preserved for reconstruction
+so blank lines cannot shift hunk positions; existing display trimming remains
+the default. Browser regressions cover both fallback and real plus/minus
+previews, including the individual edit-row hover, with zero disk-diff requests.
+
 The first cumulative map implementation accidentally made sparse-tree folder
 detection quadratic in the number of artifact events. A synthetic 5,000-event
 session touching one file took about 755ms merely to build its tree. Folder

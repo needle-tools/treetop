@@ -9783,6 +9783,65 @@ describe("visualFileEditSummaryForBlock", () => {
     });
   });
 
+  it("retains Python section replacement text as a partial-file preview", () => {
+    const replacement = "### Preview/export parity (Non-Negotiable)\n\nBuilt-font previews must use the complete export pipeline.\n\n";
+    const cmd = `python3 - <<'PY'\nfrom pathlib import Path\np=Path('AGENTS.md');s=p.read_text();start=s.index('### Built-font preview must match export');end=s.index('### Required investigation before changing code',start);s=s[:start]+'''${replacement}'''+s[end:];p.write_text(s)\nPY\ngit add AGENTS.md`;
+    const block = { type: "tool_use" as const, toolName: "exec_command", toolUseId: "section-replace", toolInput: { cmd } };
+    const summary = visualFileEditSummaryForBlock(block)!;
+    expect(summary.files).toContainEqual(expect.objectContaining({ path: "AGENTS.md", preview: replacement, previewTitle: "Captured replacement content (partial file)" }));
+    expect(summary.files[0].raw).toBeUndefined();
+    const entries = buildVisualWorkDisplayEntries([{ message: { role: "assistant", blocks: [block] }, blocks: [block], messageIndex: 0 }]);
+    expect(visualWorkOverview({ kind: "work", entries: [] }, entries).artifacts).toContainEqual(expect.objectContaining({ path: "AGENTS.md", preview: replacement }));
+    const changed = { ...block, toolInput: { cmd: cmd.replace("p.write_text(s)", "s='different';p.write_text(s)") } };
+    expect(visualFileEditSummaryForBlock(changed)?.files[0]?.preview).toBeUndefined();
+    expect(visualFileEditSummaryForBlock({ ...block, toolInput: { cmd: cmd.replace("p.write_text(s)", "s+='suffix';p.write_text(s)") } })?.files[0]?.preview).toBeUndefined();
+    expect(visualFileEditSummaryForBlock({ ...block, toolInput: { cmd: cmd.replace("s=s[:start]", "start=0;s=s[:start]") } })?.files[0]?.replacement).toBeUndefined();
+    expect(visualFileEditSummaryForBlock({ ...block, toolInput: { cmd: cmd.replace("s=p.read_text()", "q=Path('OTHER.md');s=q.read_text()") } })?.files[0]?.replacement).toBeUndefined();
+  });
+
+  it("reconstructs section replacement diffs from earlier captured reads, not disk", () => {
+    const replacement = "New heading\nnew text\n\n";
+    const command = `python3 - <<'PY'\nfrom pathlib import Path\np=Path('AGENTS.md');s=p.read_text();start=s.index('Old heading');end=s.index('Next heading',start);s=s[:start]+'''${replacement}'''+s[end:];p.write_text(s)\nPY`;
+    function overview(options: { path?: string; before?: string; intervening?: string; readCwd?: string; writeCwd?: string; delayedRead?: boolean; useWorkdir?: boolean; readCommand?: string } = {}) {
+      const read = { type: "tool_use", toolName: "exec_command", toolUseId: "read-before", toolInput: { cmd: options.readCommand ?? `sed -n '10,14p' ${options.path ?? "AGENTS.md"}`, ...(options.readCwd ? { [options.useWorkdir ? "workdir" : "cwd"]: options.readCwd } : {}) } };
+      const write = { type: "tool_use", toolName: "exec_command", toolUseId: "write-after", toolInput: { cmd: command, ...(options.writeCwd ? { cwd: options.writeCwd } : {}) } };
+      const blocks = [
+        [read], [{ type: "tool_result", toolUseId: "read-before", text: options.before ?? "Old heading\nold text\n\nNext heading\ncontext\n" }],
+        ...(options.intervening ? [[{ type: "tool_use", toolName: "exec_command", toolUseId: "intervening-write", toolInput: { cmd: options.intervening } }]] : []),
+        [write],
+      ];
+      if (options.delayedRead) [blocks[1], blocks[2]] = [blocks[2], blocks[1]];
+      const entries = buildVisualWorkDisplayEntries(blocks.map((blocks, index) => ({ message: { role: blocks[0]?.type === "tool_result" ? "tool" : "assistant", blocks }, blocks, messageIndex: index })));
+      return visualWorkOverview({ kind: "work", entries: [] }, entries);
+    }
+    const actual = overview();
+    expect(actual.changedFiles.find(file => file.path === "AGENTS.md")).toMatchObject({ additions: 3, deletions: 3, diff: "@@ -10,3 +10,3 @@\n-Old heading\n-old text\n-\n+New heading\n+new text\n+" });
+    expect(actual.artifacts.find(artifact => artifact.path === "AGENTS.md")?.changes?.find(change => change.action === "changed")?.diff).toContain("-old text\n");
+    const writeEntry = [...actual.fileEdits.keys()].at(-1)!;
+    const groupEntries = [{ kind: "entry" as const, entry: writeEntry }];
+    expect(visualWorkOverview({}, groupEntries).changedFiles[0]?.diff).toBeUndefined();
+    expect(visualWorkOverview({}, groupEntries, { fileEdits: actual.fileEdits }).changedFiles).toEqual(actual.changedFiles);
+    expect(visualWorkOverview({}, groupEntries).changedFiles[0]?.diff).toBeUndefined();
+    expect(overview({ before: "\nOld heading\nold text\n\nNext heading\n" }).changedFiles[0]?.diff).toStartWith("@@ -11,3 +11,3 @@");
+    expect(overview({ before: `Script completed\nWall time 0.1 seconds\nOutput:\n${JSON.stringify({ output: "\nOld heading\nold text\n\nNext heading\n", exit_code: 0 })}` }).changedFiles[0]?.diff).toStartWith("@@ -11,3 +11,3 @@");
+    for (const options of [
+      { path: "OTHER.md" },
+      { before: "Old heading\nold text\n[truncated]\nNext heading" },
+      { before: "Old heading\nold text… [truncated by Treetop]\nNext heading" },
+      { before: "Old heading\nfirst\nOld heading\nsecond\nNext heading" },
+      { before: "Next heading\nOld heading\nold text\nNext heading" },
+      { before: "Old heading\nno ending anchor" },
+      { intervening: "cp /tmp/new AGENTS.md" },
+      { intervening: "git reset --hard HEAD" },
+      { delayedRead: true },
+      { readCwd: "/repo/one", writeCwd: "/repo/two" },
+      { readCwd: "/repo/one", writeCwd: "/repo/two", useWorkdir: true },
+      { readCommand: "ssh host sed -n '10,14p' AGENTS.md" },
+    ]) {
+      expect(overview(options).changedFiles.find(file => file.path === "AGENTS.md")?.diff).toBeUndefined();
+    }
+  });
+
   it("summarizes files mutated by inline Python and JavaScript scripts", () => {
     expect(
       visualFileEditSummaryForBlock({

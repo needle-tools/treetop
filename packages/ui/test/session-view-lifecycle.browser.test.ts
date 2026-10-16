@@ -1783,6 +1783,64 @@ describe("SessionView browser lifecycle", { concurrency: false }, () => {
     30_000,
   );
 
+  test("previews captured section writes from the changed-file chip without fetching disk diffs", async () => {
+    usageHistoryItems = [{
+      id: "section-write", type: "commandExecution", cwd: "/tmp/treetop-session-lifecycle", status: "completed", aggregatedOutput: "",
+      command: "python3 - <<'PY'\nfrom pathlib import Path\np=Path('AGENTS.md');s=p.read_text();start=s.index('Old section');end=s.index('Next section',start);s=s[:start]+'''Preview/export parity: complete pipeline only.\n'''+s[end:];p.write_text(s)\nPY",
+    }];
+    const currentPage = await openHarness();
+    let diskDiffs = 0;
+    await currentPage.route("**/api/file-diff**", async route => {
+      diskDiffs += 1;
+      await route.fulfill({ json: { diff: "WRONG_CURRENT_DISK_CONTENT" } });
+    });
+    try {
+      await currentPage.getByText("Changed 1 file", { exact: true }).last().hover();
+      const file = currentPage.locator(".work-changed-tooltip .sparse-artifact-name").filter({ hasText: "AGENTS.md" }).last();
+      await file.hover();
+      await currentPage.getByText("Captured replacement content (partial file)", { exact: true }).waitFor();
+      expect(await currentPage.locator(".sparse-artifact-diff").last().innerText()).toContain("Preview/export parity: complete pipeline only.");
+      expect(diskDiffs).toBe(0);
+    } finally {
+      usageHistoryItems = [];
+      await currentPage.close();
+    }
+  }, 30_000);
+
+  test("shows reconstructed plus/minus section diffs across action groups", async () => {
+    usageHistoryItems = [
+      { id: "section-before", type: "commandExecution", cwd: "/tmp/treetop-session-lifecycle", status: "completed", command: "sed -n '10,14p' AGENTS.md", aggregatedOutput: "Old section\nold instructions\n\nNext section\n" },
+      { id: "section-commentary", type: "agentMessage", text: "I will replace the old section with the concise rule." },
+      { id: "section-after", type: "commandExecution", cwd: "/tmp/treetop-session-lifecycle", status: "completed", aggregatedOutput: "", command: "python3 - <<'PY'\nfrom pathlib import Path\np=Path('AGENTS.md');s=p.read_text();start=s.index('Old section');end=s.index('Next section',start);s=s[:start]+'''Preview/export parity: complete pipeline only.\n'''+s[end:];p.write_text(s)\nPY" },
+    ];
+    const currentPage = await openHarness();
+    let diskDiffs = 0;
+    await currentPage.route("**/api/file-diff**", async route => { diskDiffs += 1; await route.fulfill({ json: { diff: "WRONG_CURRENT_DISK_CONTENT" } }); });
+    try {
+      await currentPage.getByText("Changed 1 file", { exact: true }).last().hover();
+      await currentPage.locator(".work-changed-tooltip .sparse-artifact-name").filter({ hasText: "AGENTS.md" }).last().hover();
+      const diff = currentPage.locator(".sparse-artifact-diff").last();
+      await diff.locator(".line.remove").filter({ hasText: "-old instructions" }).waitFor();
+      expect(await diff.locator(".line.add").innerText()).toContain("+Preview/export parity: complete pipeline only.");
+      expect(await diff.locator(".line.hunk").innerText()).toBe("@@ -10,3 +10,1 @@");
+      expect(diskDiffs).toBe(0);
+      await currentPage.mouse.move(890, 10);
+      const round = currentPage.locator(".work-foldout").last();
+      if (await round.getAttribute("open") === null) await round.locator(":scope > summary").click();
+      const steps = round.locator(".work-detail-toggle");
+      if (!(await steps.innerText()).includes("Showing all")) await steps.click();
+      const group = currentPage.locator(".work-action-group").last();
+      if (await group.getAttribute("open") === null) await group.locator(":scope > summary").press("Enter");
+      await currentPage.locator(".work-file-edit-preview .work-preview-path").last().hover({ timeout: 5000 });
+      await currentPage.locator(".visual-preview-diff-tooltip .line.remove").filter({ hasText: "-old instructions" }).waitFor();
+      expect(await currentPage.locator(".visual-preview-diff-tooltip .line.add").innerText()).toContain("+Preview/export parity: complete pipeline only.");
+      expect(diskDiffs).toBe(0);
+    } finally {
+      usageHistoryItems = [];
+      await currentPage.close();
+    }
+  }, 30_000);
+
   test(
     "renders Mermaid fences as diagrams in app-server messages",
     async () => {
