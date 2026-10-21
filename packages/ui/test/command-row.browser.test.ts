@@ -117,9 +117,13 @@ test("command URL hover preserves horizontal scrolling and remains clickable", {
     const editBounds = await screenshotRow.locator(".command-actions").evaluate((el) => ({
       clipTop: el.getBoundingClientRect().top,
       pencilTop: el.querySelector(".custom-link-edit")!.getBoundingClientRect().top,
+      clipBottom: el.getBoundingClientRect().bottom,
+      pencilBottom: el.querySelector(".custom-link-edit")!.getBoundingClientRect().bottom,
     }));
     assert(editBounds.pencilTop >= editBounds.clipTop,
       "hovered edit pencil must stay inside the command scrollport");
+    assert(editBounds.pencilBottom <= editBounds.clipBottom,
+      "hovered edit pencil must not extend below the command scrollport");
     const aligned = await screenshotRow.evaluate((el) => ({
       rowRight: el.getBoundingClientRect().right - parseFloat(getComputedStyle(el).paddingRight),
       actionsRight: el.querySelector(".row-actions")!.getBoundingClientRect().right,

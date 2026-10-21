@@ -2022,7 +2022,7 @@
     top: 0;
     right: 0;
     width: 22px;
-    height: 22px;
+    height: min(100%, 22px);
     border: none;
     padding: 6px;
     background: var(--surface-3);
