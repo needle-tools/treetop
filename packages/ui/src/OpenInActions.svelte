@@ -827,6 +827,8 @@
   let localOrder: CustomLink[] | null = null;
 
   $: displayLinks = localOrder ?? customLinks;
+  $: commandLinks = displayLinks.filter((link) => customLinkKind(link) === "command");
+  $: appLinks = displayLinks.filter((link) => customLinkKind(link) !== "command");
 
   function canReorder(): boolean {
     return onReorderCustomLinks !== null && !iconOnly && customLinks.length > 1;
@@ -1081,6 +1083,7 @@
                     bind:value={newCmd}
                     disabled={adding}
                     autocomplete="off"
+                    spellcheck="false"
                     on:focus={() => {
                       showSuggestions = true;
                       selectedSuggestionIdx = -1;
@@ -1300,7 +1303,7 @@
       {/if}
     </span>
   {/if}
-  {#each displayLinks as link (link.id)}
+  {#snippet customLinkChip(link: CustomLink)}
     {@const label = linkLabel(link)}
     {@const failed = failedFavicons.has(link.id)}
     {@const kind = customLinkKind(link)}
@@ -1322,7 +1325,6 @@
       use:bindEditAnchor={link.id}
       role="group"
       draggable={canDragLink(link)}
-      animate:flip={{ duration: 220 }}
       on:dragstart={(ev) => startDrag(link, ev)}
       on:dragover={(ev) => onDragOverLink(link, ev)}
       on:dragend={onDragEnd}
@@ -1626,6 +1628,7 @@
                     bind:value={editCmd}
                     disabled={editing}
                     autocomplete="off"
+                    spellcheck="false"
                     on:focus={() => {
                       showEditSuggestions = true;
                       selectedEditSuggestionIdx = -1;
@@ -1839,14 +1842,22 @@
         </Popover>
       {/if}
     </span>
-  {/each}
-  {#if customLinks.length > 0}
-    <!-- Extra spacer between user-defined links (left) and the
-         built-in actions (right). Only renders when there's at least
-         one custom link to separate — when the left group is empty
-         (or only has the `+` chip) the normal flex gap is enough. -->
-    <span class="action-gap" aria-hidden="true"></span>
+  {/snippet}
+  {#if commandLinks.length > 0}
+    <div class="command-actions" class:overlay-open={editingLinkId !== null}>
+      {#each commandLinks as link (link.id)}
+        <span class="custom-link-animate" animate:flip={{ duration: 220 }}>
+          {@render customLinkChip(link)}
+        </span>
+      {/each}
+    </div>
   {/if}
+  <div class="app-actions" class:overlay-open={editingLinkId !== null}>
+    {#each appLinks as link (link.id)}
+      <span class="custom-link-animate" animate:flip={{ duration: 220 }}>
+        {@render customLinkChip(link)}
+      </span>
+    {/each}
   {#if !daemonId}
     {#each editors as ed}
       <OpenInButton
@@ -1888,9 +1899,16 @@
       {iconOnly}
     />
   {/each}
+  </div>
 </div>
 
 <style>
+  .custom-link-animate {
+    display: inline-flex;
+    align-items: center;
+    flex: 0 0 auto;
+  }
+
   /* The anchor wraps the `+` chip AND the popover so the popover can
      position itself absolutely against the anchor and the outside-
      click handler can use `anchorEl.contains(target)`. */
@@ -2009,16 +2027,6 @@
     outline-color: color-mix(in srgb, var(--text-muted) 60%, transparent);
   }
 
-  /* Extra breathing room between the user-defined links group (left)
-     and the built-in actions group (right). Pure spacer — no border,
-     no background. Renders only when there's at least one custom
-     link, otherwise the normal flex gap is enough. */
-  .action-gap {
-    display: inline-block;
-    width: 0.8rem;
-    height: 1px;
-    flex: 0 0 auto;
-  }
   .custom-link-favicon {
     flex: 0 0 auto;
     width: 14px;

@@ -1374,6 +1374,15 @@ button.branch-button:hover {
   flex: 0 1 auto;
   min-width: 0;
   max-width: 100%;
+  gap: 0.55rem;
+  align-items: center;
+}
+
+.command-actions,
+.app-actions {
+  display: flex;
+  flex: 0 1 auto;
+  min-width: 0;
   gap: 0.3rem;
   overflow-x: auto;
   overflow-y: hidden;
@@ -1383,25 +1392,38 @@ button.branch-button:hover {
   scrollbar-color: auto;
 }
 
-.row-actions::-webkit-scrollbar {
+.command-actions::-webkit-scrollbar,
+.app-actions::-webkit-scrollbar {
   height: 5px;
 }
 
-.row-actions::-webkit-scrollbar-button {
+.command-actions::-webkit-scrollbar-button,
+.app-actions::-webkit-scrollbar-button {
   display: none;
 }
 
 @supports not selector(::-webkit-scrollbar) {
-  .row-actions {
+  .command-actions,
+  .app-actions {
     scrollbar-width: thin;
     scrollbar-color: var(--scrollbar-thumb) transparent;
   }
 }
 
-/* Popovers are anchored to buttons inside this strip. Temporarily let an
- * open overlay escape the scrollport; the normal closed state remains
- * width-bounded and horizontally scrollable. */
-.row-actions.overlay-open {
+/* Keep controls distinct when one group overflows. The app group stays
+ * right-aligned when both groups fit. */
+.app-actions {
+  margin-left: auto;
+}
+
+.command-actions > *,
+.app-actions > * {
+  flex: 0 0 auto;
+}
+
+/* Editing popovers need to escape their group's scrollport. */
+.command-actions.overlay-open,
+.app-actions.overlay-open {
   overflow: visible;
 }
 

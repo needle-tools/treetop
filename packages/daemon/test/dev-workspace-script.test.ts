@@ -12,6 +12,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import {
   parseDevWorkspaceArgs,
+  usage,
   seedWorkspaceIfMissing,
   waitForDevChildren,
 } from "../../../dev";
@@ -34,6 +35,10 @@ function pendingChild() {
 }
 
 describe("dev workspace arguments", () => {
+  test("help points to the Bun workspace command", () => {
+    expect(usage()).toContain("bun run dev --");
+  });
+
   test("maps a workspace name to the user's supergit workspace root", () => {
     const opts = parseDevWorkspaceArgs(["--workspace", "perf-scroll"], {});
     expect(opts.name).toBe("perf-scroll");

@@ -7,6 +7,23 @@ export function filterNpmSuggestions(
   opts: { packageManagers?: PackageManager[] } = {},
 ): string[] {
   if (scripts.length === 0) return [];
+  // Complete the last command in a chain while preserving everything before it.
+  const chainBoundary = cmd.lastIndexOf("&&");
+  if (chainBoundary >= 0) {
+    const prefix = cmd.slice(0, chainBoundary + 2);
+    const afterBoundary = cmd.slice(chainBoundary + 2);
+    const whitespace = /^\s*/.exec(afterBoundary)?.[0] ?? "";
+    const current = afterBoundary.slice(whitespace.length);
+    const managers = opts.packageManagers?.length
+      ? opts.packageManagers
+      : (["npm", "yarn", "bun"] as const);
+    const suggestions = current
+      ? filterNpmSuggestions(current, scripts, opts)
+      : managers.flatMap((manager) =>
+          filterNpmSuggestions(manager, scripts, opts),
+        );
+    return suggestions.map((suggestion) => prefix + whitespace + suggestion);
+  }
   const trimmed = cmd.trimStart();
   if (trimmed.length === 0) return [];
   const managers = opts.packageManagers?.length

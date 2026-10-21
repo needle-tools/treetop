@@ -16,6 +16,30 @@ const SCRIPTS = [
 ];
 
 describe("filterNpmSuggestions", () => {
+  test("completes only the command after &&", () => {
+    expect(filterNpmSuggestions("npm run dev && npm r", SCRIPTS)).toEqual(
+      SCRIPTS.map((s) => `npm run dev && npm run ${s}`),
+    );
+    expect(filterNpmSuggestions("npm run dev && bun run t", SCRIPTS)).toEqual([
+      "npm run dev && bun run test",
+      "npm run dev && bun run test:watch",
+      "npm run dev && bun run test:coverage",
+    ]);
+    expect(filterNpmSuggestions("echo ok && npm run dev && yarn b", SCRIPTS)).toEqual([
+      "echo ok && npm run dev && yarn build",
+      "echo ok && npm run dev && yarn run build",
+      "echo ok && npm run dev && yarn build:launch",
+      "echo ok && npm run dev && yarn run build:launch",
+    ]);
+  });
+
+  test("suggests a new command at a chaining boundary", () => {
+    expect(filterNpmSuggestions("npm run dev && ", ["test"], {
+      packageManagers: ["npm"],
+    })).toEqual(["npm run dev && npm run test"]);
+    expect(filterNpmSuggestions("npm run dev && git", SCRIPTS)).toEqual([]);
+  });
+
   test("returns empty for empty scripts list", () => {
     expect(filterNpmSuggestions("npm run ", [])).toEqual([]);
     expect(filterNpmSuggestions("npm", [])).toEqual([]);

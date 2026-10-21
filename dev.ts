@@ -141,7 +141,7 @@ export function parseDevWorkspaceArgs(
 
 export function usage(): string {
   return [
-    "usage: npm run dev -- [--workspace <name>] [options]",
+    "usage: bun run dev -- [--workspace <name>] [options]",
     "",
     "Options:",
     "  --workspace, -w <name>   Use ~/supergit/workspaces/<name> (created if missing)",

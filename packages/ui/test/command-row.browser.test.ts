@@ -31,7 +31,10 @@ test("command URL hover preserves horizontal scrolling and remains clickable", {
         import Actions from '${component}';
         import '/src/styles/tokens.css';
         import '/src/styles/worktree-row.css';
-        const links = Array.from({length: 18}, (_, i) => ({id: String(i), kind: 'command', name: 'Server command ' + i, cmd: 'npm run dev'}));
+        const links = [
+          ...Array.from({length: 18}, (_, i) => ({id: String(i), kind: 'command', name: 'Server command ' + i, cmd: 'npm run dev'})),
+          ...Array.from({length: 12}, (_, i) => ({id: 'app-' + i, kind: 'url', name: 'App ' + i, url: 'https://example.com/app/' + i})),
+        ];
       </script>
       <div style="width:500px; margin:40px">
         <Actions path="/test/project" customLinks={links}
@@ -63,8 +66,16 @@ test("command URL hover preserves horizontal scrolling and remains clickable", {
     await page.goto(
       `http://127.0.0.1:${address.port}/test/${fixture.split(/[\\/]/).pop()}/index.html`,
     );
-    const row = page.locator(".row-actions");
+    const row = page.locator(".command-actions");
+    const apps = page.locator(".app-actions");
     await row.waitFor();
+    assert.equal(await apps.locator(".custom-link-wrap").count(), 12);
+    assert.equal(await row.locator(".custom-link-wrap").count(), 18);
+    const appOverflow = await apps.evaluate((el) => el.scrollWidth > el.clientWidth);
+    assert(appOverflow, "app group should overflow independently");
+    await apps.evaluate((el) => (el.scrollLeft = 100));
+    assert.equal(await row.evaluate((el) => el.scrollLeft), 0);
+    const appsBefore = await apps.evaluate((el) => el.scrollLeft);
     for (const number of [12, 13]) {
       const icon = page
         .locator(".custom-link-wrap")
@@ -94,6 +105,7 @@ test("command URL hover preserves horizontal scrolling and remains clickable", {
         before,
         "hover must preserve scroll offset and extent",
       );
+      assert.equal(await apps.evaluate((el) => el.scrollLeft), appsBefore);
       const hovered = await icon.boundingBox();
       assert(hovered);
       assert.equal(
@@ -124,6 +136,16 @@ test("command URL hover preserves horizontal scrolling and remains clickable", {
       }
       await page.mouse.move(0, 0);
       await page.waitForTimeout(350);
+    }
+    await page.locator(".row-actions").evaluate((el) => {
+      el.parentElement!.style.width = "6000px";
+    });
+    for (const strip of [row, apps]) {
+      const size = await strip.evaluate((el) => ({
+        scrollWidth: el.scrollWidth,
+        clientWidth: el.clientWidth,
+      }));
+      assert(size.scrollWidth <= size.clientWidth, "fitting actions should have no scrollbar");
     }
   } finally {
     await browser?.close();
