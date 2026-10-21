@@ -17,6 +17,7 @@ import {
   codexRequestPresentation,
   codexRequestAllowsAction,
   codexRequestNeedsUserInteraction,
+  codexVisibleWorking,
   codexQuestionRequestSummary,
   codexQuestionRequestTarget,
   codexRequestResponseResult,
@@ -76,6 +77,13 @@ test("CLI state survives I/O animation and silence and is isolated by daemon/ses
   expect(resolveTerminalWorking("claude", true, false)).toBe(true);
   replaceCodexCliStates([]);
   expect(isCodexCliWorking(get(codexCliStates), "a.jsonl")).toBe(false);
+});
+
+test("approval waiting takes the visible working state until resolved", () => {
+  expect(codexVisibleWorking(true, false)).toBe(true);
+  expect(codexVisibleWorking(true, true)).toBe(false);
+  expect(codexVisibleWorking(false, true)).toBe(false);
+  expect(codexVisibleWorking(false, false)).toBe(false);
 });
 
 test("same-millisecond notifications retain distinct turn and item identities without sequence numbers", () => {

@@ -150,6 +150,7 @@
     codexRequestAllowsAction,
     codexRequestPresentation,
     codexRequestNeedsUserInteraction,
+    codexVisibleWorking,
     codexRequestResponseResult,
     codexRequestSupportsPersistence,
     codexToolInputQuality,
@@ -2854,9 +2855,10 @@
   $: effectiveSessionId = resumeSessionId ?? session?.sessionId;
   $: effectiveSessionCwd = session?.cwd || wtPath;
   $: codexRunning = codexAppLiveStateActive && (sending || !!codexActiveTurnId);
+  $: codexWorking = codexVisibleWorking(codexRunning, awaitingInput);
   $: codexVisualAppCanStop =
     codexVisualAppSurface && (codexRunning || !!onStopVisualApp);
-  $: visualTranscriptActive = liveCodexApp ? codexRunning : sending;
+  $: visualTranscriptActive = liveCodexApp ? codexWorking : sending;
   $: effectiveLastActivityIso = latestSessionMessageActivityIso(
     session?.messages ?? [],
     indexedLastMessageIso ?? session?.endedAt,
@@ -2877,9 +2879,9 @@
   $: {
     const nextWorking =
       mode === "terminal"
-        ? working
+        ? working && !awaitingInput
         : liveCodexApp
-          ? codexRunning
+          ? codexWorking
           : inflight.length > 0;
     const nextAwaiting = (mode === "terminal" || codexAppLiveStateActive) && awaitingInput;
     if (reportedWorking !== nextWorking) {
@@ -6108,8 +6110,8 @@
       {disposing}
       {awaitingInput}
       working={mode === "terminal"
-        ? working
-        : codexVisualAppSurface && codexRunning}
+        ? working && !awaitingInput
+        : codexVisualAppSurface && codexWorking}
       loadedMessageCount={session?.messages.length}
       {totalMessageCount}
       lineCount={sessionLineCount ?? fileLineCount}
@@ -6517,7 +6519,7 @@
       loadingOlder={visualHistoryRequestInFlight}
       hiddenMessageCount={visualHistoryHiddenMessageCount}
       active={visualTranscriptActive}
-      showLiveThinkingLine={codexVisualAppSurface && codexRunning}
+      showLiveThinkingLine={codexVisualAppSurface && codexWorking}
       messageMotionSources={composerMessageMotionSources}
       onMessageMotionDone={clearComposerMessageMotion}
       onAnswerQuestion={codexVisualAppSurface

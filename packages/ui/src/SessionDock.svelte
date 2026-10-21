@@ -915,7 +915,7 @@
         <button
           type="button"
           class="dock-dot agent-{e.agent}"
-          class:dot-working={e.working}
+          class:dot-working={e.working && !e.awaiting}
           class:dot-awaiting={e.awaiting}
           class:dot-awaiting-urgent={e.awaiting &&
             isAwaitingUrgent(e.source, nowTick)}
@@ -1143,7 +1143,7 @@
         <button
           type="button"
           class="dock-dot agent-{e.agent}"
-          class:dot-working={e.working}
+          class:dot-working={e.working && !e.awaiting}
           class:dot-awaiting={e.awaiting}
           class:dot-awaiting-urgent={e.awaiting &&
             isAwaitingUrgent(e.source, nowTick)}

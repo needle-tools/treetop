@@ -106,6 +106,15 @@ export function codexRequestNeedsUserInteraction(method: string): boolean {
   return CODEX_USER_INTERACTION_REQUESTS.has(method);
 }
 
+/** An open turn may be paused on approval; only show working motion while
+ * Codex can continue without user input. */
+export function codexVisibleWorking(
+  turnActive: boolean,
+  awaitingInput: boolean,
+): boolean {
+  return turnActive && !awaitingInput;
+}
+
 export function codexIsUserInputRequest(request: CodexAppEvent): boolean {
   return request.method === "item/tool/requestUserInput";
 }
