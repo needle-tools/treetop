@@ -17,6 +17,8 @@ import {
   codexRequestPresentation,
   codexRequestAllowsAction,
   codexRequestNeedsUserInteraction,
+  codexVisibleWorking,
+  codexEventReplayKey,
   codexQuestionRequestSummary,
   codexQuestionRequestTarget,
   codexRequestResponseResult,
@@ -71,6 +73,34 @@ test("CLI state survives I/O animation and silence and is isolated by daemon/ses
   expect(resolveTerminalWorking("claude", true, false)).toBe(true);
   replaceCodexCliStates([]);
   expect(isCodexCliWorking(get(codexCliStates), "a.jsonl")).toBe(false);
+});
+
+test("approval waiting takes the visible working state until resolved", () => {
+  expect(codexVisibleWorking(true, false)).toBe(true);
+  expect(codexVisibleWorking(true, true)).toBe(false);
+  expect(codexVisibleWorking(false, true)).toBe(false);
+  expect(codexVisibleWorking(false, false)).toBe(false);
+});
+
+test("same-millisecond notifications retain distinct turn and item identities without sequence numbers", () => {
+  const event: CodexAppEvent = {
+    kind: "notification",
+    method: "item/completed",
+    threadId: "thread",
+    turnId: "turn-1",
+    receivedAt: "2026-10-01T10:00:00.000Z",
+    params: { item: { id: "user-1", type: "userMessage" } },
+  };
+  expect(codexEventReplayKey(event)).not.toBe(
+    codexEventReplayKey({
+      ...event,
+      params: { item: { id: "answer-1", type: "agentMessage" } },
+    }),
+  );
+  expect(codexEventReplayKey(event)).not.toBe(
+    codexEventReplayKey({ ...event, turnId: "turn-2" }),
+  );
+  expect(codexEventReplayKey(event)).toBe(codexEventReplayKey({ ...event }));
 });
 import {
   buildVisualTranscriptItems,

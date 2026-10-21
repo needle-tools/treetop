@@ -483,7 +483,7 @@
     canResume={false}
     canEnd
     awaitingInput={awaiting}
-    {working}
+    working={working && !awaiting}
     {totalMessageCount}
     {fileSizeBytes}
     {contextTokens}
