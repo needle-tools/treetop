@@ -17,6 +17,8 @@ export interface FileStatus {
   /** Submodule-internal dirt (parent's recorded SHA unchanged). Shown
    *  as a muted "N submodule" trailer; never counted as parent dirty. */
   submodules?: number;
+  /** All changed submodule entries, including gitlink pointer updates. */
+  submoduleChanges?: number;
   dirtyLines?: number;
 }
 

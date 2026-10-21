@@ -230,8 +230,11 @@ In scope (v0/v1):
 - remote add/remove/set-url
 
 Out of scope (probably forever): interactive rebase UI, merge conflict resolver
-UI, submodules, blame, reflog browser, cherry-pick chooser, full branch graph
+UI, submodule mutation workflows, blame, reflog browser, cherry-pick chooser, full branch graph
 visualization.
+
+Submodule status is read-only in worktree rows: show child dirt, branch divergence,
+and gitlink pointer changes on demand; use the child repo row or Fork for edits.
 
 For all of these: an "Open in Fork" button on every worktree card, plus an
 "Open in terminal" / "Open in <detected editor>" set of escape hatches.

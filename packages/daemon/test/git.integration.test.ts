@@ -12,6 +12,7 @@ import { $ } from "bun";
 import {
   listWorktrees,
   getWorktreeDetails,
+  listSubmoduleDetails,
   listCommits,
   listCommitFiles,
   getDiff,
@@ -726,6 +727,32 @@ describe("resolveSubmoduleWorktreePaths", () => {
     }
     expect(list[0]!.path).toBe(submoduleWorkdir);
     expect(list[0]!.head.length).toBeGreaterThan(0);
+  });
+
+  test("lists child changes separately from the parent's recorded commit", async () => {
+    const parent = await tempRepo();
+    const source = await tempRepo();
+    await $`git -C ${parent} -c protocol.file.allow=always submodule add ${source} sub`.quiet();
+    await $`git -C ${parent} commit -q -m add-sub`.quiet();
+    const child = join(parent, "sub");
+    await writeFile(join(child, "new.txt"), "changed\n");
+
+    const [dirty] = await listSubmoduleDetails(parent);
+    expect(dirty?.path).toBe("sub");
+    expect(dirty?.fileStatus.untracked).toBe(1);
+    expect(dirty?.recordedCommit).toBe(dirty?.checkedOutCommit);
+
+    await $`git -C ${child} add new.txt`.quiet();
+    await $`git -C ${child} -c user.name=TestUser -c user.email=test@example.com commit -q -m change`.quiet();
+    const [advanced] = await listSubmoduleDetails(parent);
+    expect(advanced?.fileStatus.untracked).toBe(0);
+    expect(advanced?.recordedCommit).not.toBe(advanced?.checkedOutCommit);
+    expect(advanced?.indexCommit).toBe(advanced?.recordedCommit);
+
+    await $`git -C ${parent} add sub`.quiet();
+    const [staged] = await listSubmoduleDetails(parent);
+    expect(staged?.recordedCommit).not.toBe(staged?.indexCommit);
+    expect(staged?.indexCommit).toBe(staged?.checkedOutCommit);
   });
 });
 

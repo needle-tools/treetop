@@ -1161,6 +1161,47 @@ button.branch-button:hover {
   margin-top: 0.5rem;
   padding: 0 0.5rem 0 calc(22px + 0.4rem);
 }
+.submodule-toggle,
+.submodule-open,
+.submodule-retry {
+  flex: 0 0 auto;
+  border: 0;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  font: inherit;
+}
+.submodule-toggle:hover,
+.submodule-open:hover,
+.submodule-retry:hover {
+  color: var(--text-1);
+}
+.submodule-list {
+  display: grid;
+  gap: 0.35rem;
+  margin: 0.45rem 0 0 calc(22px + 0.9rem);
+  padding-left: 0.7rem;
+  border-left: 1px solid var(--border-muted);
+}
+.submodule-entry {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  flex-wrap: wrap;
+  min-width: 0;
+  font-size: 0.8rem;
+}
+.submodule-entry-name {
+  font-weight: 600;
+}
+.submodule-entry-count {
+  color: var(--text-muted);
+}
+.submodule-open {
+  margin-left: auto;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
 .status-dot {
   width: 8px;
   height: 8px;
@@ -1374,14 +1415,13 @@ button.branch-button:hover {
   flex: 0 1 auto;
   min-width: 0;
   max-width: 100%;
-  gap: 0.55rem;
-  align-items: center;
+  gap: 0.8rem;
+  align-items: start;
 }
 
 .command-actions,
 .app-actions {
   display: flex;
-  flex: 0 1 auto;
   min-width: 0;
   gap: 0.3rem;
   overflow-x: auto;
@@ -1413,7 +1453,13 @@ button.branch-button:hover {
 /* Keep controls distinct when one group overflows. The app group stays
  * right-aligned when both groups fit. */
 .app-actions {
+  flex: 1 1 auto;
   margin-left: auto;
+}
+
+.command-actions {
+  flex: 0 0 auto;
+  max-width: 100%;
 }
 
 .command-actions > *,

@@ -839,18 +839,22 @@
    *  above the viewport; this flag slides it back in. It's armed by a
    *  non-blocking pointermove listener (no overlay → nothing near the
    *  top edge is click-blocked) when the cursor reaches the top edge,
-   *  and disarms ~2s after the cursor last touched that edge. CSS
+   *  and disarms shortly after the cursor leaves the edge or pill. CSS
    *  :hover/:focus-within keep it open while you actually interact, so
    *  the timer expiring mid-use can't snap it shut. */
   let zenMenuArmed = false;
   let zenMenuDisarmTimer: ReturnType<typeof setTimeout> | null = null;
   /** Cursor must be within this many px of the top to reveal the pill. */
   const ZEN_MENU_REVEAL_PX = 6;
-  /** Linger after the cursor last touched the top edge before retracting. */
-  const ZEN_MENU_LINGER_MS = 2000;
+  /** Linger after the pointer leaves the top edge or menu. */
+  const ZEN_MENU_LINGER_MS = 300;
   function armZenMenu() {
     zenMenuArmed = true;
     if (zenMenuDisarmTimer) clearTimeout(zenMenuDisarmTimer);
+    zenMenuDisarmTimer = null;
+  }
+  function scheduleZenMenuDisarm() {
+    if (zenMenuDisarmTimer) return;
     zenMenuDisarmTimer = setTimeout(() => {
       zenMenuArmed = false;
       zenMenuDisarmTimer = null;
@@ -7060,6 +7064,48 @@
      *  HEAD). Optional for back-compat. */
     stagedStats?: Record<string, NumstatEntry>;
   }
+  interface SubmoduleDetails {
+    path: string;
+    worktreePath: string;
+    recordedCommit: string | null;
+    indexCommit: string;
+    checkedOutCommit: string | null;
+    fileStatus: FileStatus;
+    branchStatus: BranchStatus | null;
+  }
+  let submoduleExpandedByPath: Record<string, boolean> = {};
+  let submoduleDetailsByPath: Record<
+    string,
+    SubmoduleDetails[] | "loading" | "error"
+  > = {};
+
+  async function toggleSubmoduleDetails(path: string): Promise<void> {
+    const expanded = !submoduleExpandedByPath[path];
+    submoduleExpandedByPath = { ...submoduleExpandedByPath, [path]: expanded };
+    if (!expanded) return;
+    await loadSubmoduleDetails(path);
+  }
+
+  async function loadSubmoduleDetails(path: string): Promise<void> {
+    submoduleDetailsByPath = { ...submoduleDetailsByPath, [path]: "loading" };
+    try {
+      const qs = new URLSearchParams({ path });
+      const res = await fetch(
+        apiUrl(
+          `/api/wt-submodules?${qs.toString()}`,
+          daemonIdForWorktreePath(repos, path),
+        ),
+      );
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const body = (await res.json()) as { submodules: SubmoduleDetails[] };
+      submoduleDetailsByPath = {
+        ...submoduleDetailsByPath,
+        [path]: body.submodules,
+      };
+    } catch {
+      submoduleDetailsByPath = { ...submoduleDetailsByPath, [path]: "error" };
+    }
+  }
   /** Hard cap on commits rendered per tooltip. The daemon already caps at
    *  20; this trims further to keep the hover overlay glanceable. */
   const COMMIT_TOOLTIP_LIMIT = 10;
@@ -8951,7 +8997,11 @@
     // zen; otherwise the pill is always visible and this is a no-op.
     const handleZenPointer = (e: PointerEvent) => {
       if (zenRowKey === null) return;
-      if (e.clientY <= ZEN_MENU_REVEAL_PX) armZenMenu();
+      if (
+        e.clientY <= ZEN_MENU_REVEAL_PX ||
+        (e.target instanceof Element && e.target.closest(".menubar-stack"))
+      ) armZenMenu();
+      else if (zenMenuArmed) scheduleZenMenuDisarm();
     };
     window.addEventListener("pointermove", handleZenPointer, { passive: true });
     // Cmd+R / Ctrl+R / tab close — surface the browser's confirm dialog
@@ -9235,7 +9285,12 @@
        transform would become the containing block for the
        JS-positioned fixed tooltips anchored inside). Per-button
        popovers still anchor to their own `.actions-anchor`. -->
-  <div class="menubar-stack" class:zen-menu-armed={zenMenuArmed}>
+  <div
+    class="menubar-stack"
+    class:zen-menu-armed={zenMenuArmed}
+    on:mouseenter={() => { if (zenRowKey !== null) armZenMenu(); }}
+    on:mouseleave={() => { if (zenRowKey !== null) scheduleZenMenuDisarm(); }}
+  >
     {#if workspaceBadgeText && (temporaryWorkspace || sideInstance || readonlyWorkspace)}
       <div
         class="temp-workspace-badge"
@@ -11914,6 +11969,19 @@
                     />
                   {/if}
 
+                  {#if (wt.fileStatus.submoduleChanges ?? 0) > 0}
+                    <button
+                      type="button"
+                      class="submodule-toggle"
+                      aria-expanded={!!submoduleExpandedByPath[wt.path]}
+                      title="Show changes inside this worktree's submodules"
+                      on:click={() => void toggleSubmoduleDetails(wt.path)}
+                    >
+                      <span aria-hidden="true">{submoduleExpandedByPath[wt.path] ? "▾" : "▸"}</span>
+                      {wt.fileStatus.submoduleChanges} submodule{wt.fileStatus.submoduleChanges === 1 ? "" : "s"}
+                    </button>
+                  {/if}
+
                   <OpenInActions
                     path={wt.path}
                     repoId={repo.id}
@@ -11936,6 +12004,40 @@
                     daemonId={daemonIdForWorktreePath(repos, wt.path)}
                   />
                 </div>
+                {#if submoduleExpandedByPath[wt.path]}
+                  {@const submodules = submoduleDetailsByPath[wt.path]}
+                  <div class="submodule-list" aria-label="Submodules in {wt.branch}">
+                    {#if submodules === "loading" || submodules === undefined}
+                      <span class="muted small">Loading submodules…</span>
+                    {:else if submodules === "error"}
+                      <button type="button" class="submodule-retry" on:click={() => void loadSubmoduleDetails(wt.path)}>Could not load submodules · retry</button>
+                    {:else}
+                      {#each submodules as sub (sub.path)}
+                        <div class="submodule-entry">
+                          <span class="submodule-entry-name" title={sub.worktreePath}>{sub.path}</span>
+                          <span class="muted small">{sub.branchStatus?.branch ?? (sub.checkedOutCommit ? "detached" : "not initialized")}</span>
+                          {#if sub.branchStatus && (pushCount(sub.branchStatus) > 0 || sub.branchStatus.behind > 0)}
+                            <span class="submodule-entry-count">{pushCount(sub.branchStatus) > 0 ? `↑${pushCount(sub.branchStatus)}` : ""} {sub.branchStatus.behind > 0 ? `↓${sub.branchStatus.behind}` : ""}</span>
+                          {/if}
+                          {#if sub.fileStatus.staged || sub.fileStatus.unstaged || sub.fileStatus.untracked}
+                            <span class="submodule-entry-count">{statusSummary(sub.fileStatus).text}</span>
+                          {/if}
+                          {#if sub.recordedCommit && sub.recordedCommit !== sub.indexCommit}
+                            <span class="submodule-entry-count" title="Parent commit {sub.recordedCommit}; staged {sub.indexCommit}">pointer staged</span>
+                          {/if}
+                          {#if sub.checkedOutCommit && sub.indexCommit !== sub.checkedOutCommit}
+                            <span class="submodule-entry-count" title="Index commit {sub.indexCommit}; checked out {sub.checkedOutCommit}">checkout differs</span>
+                          {/if}
+                          {#if rows.some((r) => r.wt?.path === sub.worktreePath)}
+                            <button type="button" class="submodule-open" on:click={() => jumpToWorktreeRow(sub.worktreePath)}>Open row</button>
+                          {:else if !repo.daemonId && sub.checkedOutCommit}
+                            <button type="button" class="submodule-open" on:click={() => void openIn(sub.worktreePath, "fork")}>Open in Fork</button>
+                          {/if}
+                        </div>
+                      {/each}
+                    {/if}
+                  </div>
+                {/if}
               {/if}
 
               {#if wt && (newlyAddedRepoPaths.has(wt.path) || newlyAddedRepoPaths.has(repo.path) || onboardingByWt[wt.path] || walkthroughByWt[wt.path] != null)}

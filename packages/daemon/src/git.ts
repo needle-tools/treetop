@@ -146,6 +146,72 @@ export interface WorktreeDetails {
   lastCommit: LastCommit | null;
 }
 
+export interface SubmoduleDetails {
+  path: string;
+  worktreePath: string;
+  recordedCommit: string | null;
+  indexCommit: string;
+  checkedOutCommit: string | null;
+  fileStatus: FileStatus;
+  branchStatus: BranchStatus | null;
+}
+
+/** Read gitlinks from the parent's index, then inspect each checked-out child.
+ * Called only when the user expands submodule details in a worktree row. */
+export async function listSubmoduleDetails(
+  parentPath: string,
+): Promise<SubmoduleDetails[]> {
+  const [indexResult, headResult] = await Promise.all([
+    $`git -C ${parentPath} ls-files --stage -z`.quiet().nothrow(),
+    $`git -C ${parentPath} ls-tree -rz HEAD`.quiet().nothrow(),
+  ]);
+  if (indexResult.exitCode !== 0) return [];
+  const recorded = new Map<string, string>();
+  for (const entry of headResult.stdout.toString().split("\0")) {
+    const match = /^160000 commit ([0-9a-f]+)\t(.+)$/s.exec(entry);
+    if (match) recorded.set(match[2]!, match[1]!);
+  }
+  const gitlinks = indexResult.stdout.toString().split("\0").flatMap((entry) => {
+    const match = /^160000 ([0-9a-f]+) 0\t(.+)$/s.exec(entry);
+    return match ? [{ path: match[2]!, sha: match[1]! }] : [];
+  });
+  return Promise.all(
+    gitlinks.map(async ({ path, sha }) => {
+      const worktreePath = joinPath(parentPath, path);
+      const root = await $`git -C ${worktreePath} rev-parse --show-toplevel`
+        .quiet()
+        .nothrow();
+      const initialized =
+        root.exitCode === 0 &&
+        resolvePath(root.stdout.toString().trim()).toLowerCase() ===
+          resolvePath(worktreePath).toLowerCase();
+      const [head, details] = initialized
+        ? await Promise.all([
+            $`git -C ${worktreePath} rev-parse HEAD`.quiet().nothrow(),
+            getWorktreeDetails(worktreePath),
+          ])
+        : [null, null];
+      return {
+        path,
+        worktreePath,
+        recordedCommit: recorded.get(path) ?? null,
+        indexCommit: sha,
+        checkedOutCommit:
+          head && head.exitCode === 0 ? head.stdout.toString().trim() : null,
+        fileStatus: details?.fileStatus ?? {
+          staged: 0,
+          unstaged: 0,
+          untracked: 0,
+          submodules: 0,
+          submoduleChanges: 0,
+          dirtyLines: 0,
+        },
+        branchStatus: details?.branchStatus ?? null,
+      };
+    }),
+  );
+}
+
 export async function listWorktrees(repoPath: string): Promise<Worktree[]> {
   const normalRepo = resolvePath(repoPath);
   try {

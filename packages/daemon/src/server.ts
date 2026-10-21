@@ -37,6 +37,7 @@ import {
   listWorktrees,
   mainWorktreePathFor,
   getWorktreeDetails,
+  listSubmoduleDetails,
   listCommits,
   listCommitFiles,
   getDiff,
@@ -8825,6 +8826,17 @@ const server = Bun.serve<TermWsData, never>({
             ...CORS,
           },
         });
+      }
+
+      if (url.pathname === "/api/wt-submodules" && req.method === "GET") {
+        const path = url.searchParams.get("path");
+        if (!path) {
+          return json(
+            { error: "?path=<worktree-path> is required" },
+            { status: 400 },
+          );
+        }
+        return json({ submodules: await listSubmoduleDetails(path) });
       }
 
       if (url.pathname === "/api/wt-summary" && req.method === "GET") {

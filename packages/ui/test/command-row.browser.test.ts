@@ -41,6 +41,30 @@ test("command URL hover preserves horizontal scrolling and remains clickable", {
           commandUrls={{'12':['http://localhost:3000', 'http://localhost:3001'], '13':['http://localhost:4000']}}
           openIn={() => {}} openRemote={() => {}} />
       </div>
+      <div style="width:900px; margin:40px">
+        <Actions path="/test/project" customLinks={[...links.slice(0, 2), ...links.slice(18)]}
+          openIn={() => {}} openRemote={() => {}} />
+      </div>
+      <div class="row-status" style="width:510px; margin:40px; box-sizing:border-box">
+        <span style="flex:none">● 2</span>
+        <Actions path="/test/project" customLinks={[...links.slice(0, 2), ...links.slice(18)]}
+          openIn={() => {}} openRemote={() => {}} />
+      </div>
+      <div class="row-status" style="width:1380px; margin:40px; box-sizing:border-box">
+        <span style="flex:none">●</span>
+        <Actions path="/test/project" customLinks={links.slice(0, 2)}
+          editors={[{name:'VSCode', cmd:'vscode'}]}
+          remotes={[{name:'origin', provider:'github', url:'https://github.com/example/repo', webUrl:'https://github.com/example/repo'}]}
+          onAddCustomLink={() => {}} onEditCustomLink={() => {}} openIn={() => {}} openRemote={() => {}} />
+      </div>
+      <div class="row-status" style="width:613px; margin:40px; box-sizing:border-box">
+        <Actions path="/test/project" customLinks={[
+          {id:'pwa', kind:'command', name:'dev:pwa', cmd:'npm run dev:pwa'},
+          {id:'pub', kind:'command', name:'chrome:pub', cmd:'npm run chrome:pub'}
+        ]}
+          editors={[{name:'VSCode', cmd:'vscode'}]}
+          onAddCustomLink={() => {}} onEditCustomLink={() => {}} openIn={() => {}} openRemote={() => {}} />
+      </div>
       <style>:global(.custom-link-wrap) {flex-shrink:0} :global(.custom-link-btn) {white-space:nowrap}</style>
     `,
     );
@@ -66,11 +90,59 @@ test("command URL hover preserves horizontal scrolling and remains clickable", {
     await page.goto(
       `http://127.0.0.1:${address.port}/test/${fixture.split(/[\\/]/).pop()}/index.html`,
     );
-    const row = page.locator(".command-actions");
-    const apps = page.locator(".app-actions");
+    const row = page.locator(".command-actions").first();
+    const apps = page.locator(".app-actions").first();
     await row.waitFor();
+    const fittingCommands = await page.locator(".command-actions").nth(1).evaluate((el) => ({
+      scrollWidth: el.scrollWidth,
+      clientWidth: el.clientWidth,
+    }));
+    assert(fittingCommands.scrollWidth <= fittingCommands.clientWidth,
+      "commands that fit should not acquire a scrollbar when apps overflow");
+    const narrowCommands = await page.locator(".command-actions").nth(2).evaluate((el) => ({
+      scrollWidth: el.scrollWidth,
+      clientWidth: el.clientWidth,
+    }));
+    assert(narrowCommands.scrollWidth <= narrowCommands.clientWidth,
+      "commands should use the available width of a real worktree status row");
+    const screenshotRow = page.locator(".row-status").nth(1);
+    const screenshotCommands = await screenshotRow.locator(".command-actions").evaluate((el) => ({
+      scrollWidth: el.scrollWidth,
+      clientWidth: el.clientWidth,
+    }));
+    assert(screenshotCommands.scrollWidth <= screenshotCommands.clientWidth,
+      "the add button and built-in apps must leave both commands fully visible");
+    const editableChip = screenshotRow.locator(".command-actions .custom-link-wrap").last();
+    await editableChip.hover();
+    const editBounds = await screenshotRow.locator(".command-actions").evaluate((el) => ({
+      clipTop: el.getBoundingClientRect().top,
+      pencilTop: el.querySelector(".custom-link-edit")!.getBoundingClientRect().top,
+    }));
+    assert(editBounds.pencilTop >= editBounds.clipTop,
+      "hovered edit pencil must stay inside the command scrollport");
+    const aligned = await screenshotRow.evaluate((el) => ({
+      rowRight: el.getBoundingClientRect().right - parseFloat(getComputedStyle(el).paddingRight),
+      actionsRight: el.querySelector(".row-actions")!.getBoundingClientRect().right,
+    }));
+    assert(Math.abs(aligned.rowRight - aligned.actionsRight) < 1,
+      "the complete action strip should remain right-aligned");
+    const smallScreenshotCommands = await page.locator(".row-status").nth(2).locator(".command-actions").evaluate((el) => ({
+      scrollWidth: el.scrollWidth,
+      clientWidth: el.clientWidth,
+    }));
+    assert(smallScreenshotCommands.scrollWidth <= smallScreenshotCommands.clientWidth,
+      "two short commands must fit ahead of overflowing app buttons");
     assert.equal(await apps.locator(".custom-link-wrap").count(), 12);
     assert.equal(await row.locator(".custom-link-wrap").count(), 18);
+    const appShare = await apps.evaluate((el) => el.clientWidth / el.parentElement!.clientWidth);
+    assert(appShare >= 0.25,
+      "long command lists must leave useful space for app actions");
+    const tops = await page.locator(".row-actions").first().evaluate((el) => ({
+      command: el.querySelector(".command-actions")!.firstElementChild!.getBoundingClientRect().top,
+      app: el.querySelector(".app-actions")!.firstElementChild!.getBoundingClientRect().top,
+    }));
+    assert(Math.abs(tops.command - tops.app) < 1,
+      "command and app buttons should align even when their scrollbars differ");
     const appOverflow = await apps.evaluate((el) => el.scrollWidth > el.clientWidth);
     assert(appOverflow, "app group should overflow independently");
     await apps.evaluate((el) => (el.scrollLeft = 100));
@@ -137,8 +209,12 @@ test("command URL hover preserves horizontal scrolling and remains clickable", {
       await page.mouse.move(0, 0);
       await page.waitForTimeout(350);
     }
-    await page.locator(".row-actions").evaluate((el) => {
+    await page.locator(".row-actions").first().evaluate((el) => {
       el.parentElement!.style.width = "6000px";
+    });
+    await page.waitForFunction(() => {
+      const strips = document.querySelectorAll(".row-actions .command-actions, .row-actions .app-actions");
+      return [...strips].slice(0, 2).every((el) => el.scrollWidth <= el.clientWidth);
     });
     for (const strip of [row, apps]) {
       const size = await strip.evaluate((el) => ({

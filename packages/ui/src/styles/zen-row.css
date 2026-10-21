@@ -27,8 +27,8 @@ main.zen-row .row:not(.row-zen) {
    (`.zen-menu-armed`, driven by a non-blocking pointermove listener in
    App.svelte — NO overlay element, so nothing near the top edge is ever
    click-blocked), hovers the pill, or while any popover inside it is
-   open. The armed flag lingers ~2s after the cursor last touched the
-   top edge, and :hover/:focus-within keep it open while you interact —
+   open. The armed flag lingers 300ms after the cursor leaves the
+   top edge or pill, and :hover/:focus-within keep it open while you interact —
    so it never snaps shut mid-click. Revealed, it rests at its natural
    top:0.55rem — its margin from the edge. Retracted, it sits fully
    above the viewport (pointer-events stay off the empty stack), so it

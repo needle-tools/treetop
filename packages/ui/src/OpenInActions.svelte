@@ -152,6 +152,48 @@
   export let iconOnly: boolean = false;
   export let daemonId: string | undefined = undefined;
 
+  /** Reserve the measured width of one app button before letting commands
+   * scroll. This keeps both strips usable without a fixed width split. */
+  function fitActionGroups(node: HTMLElement) {
+    let frame = 0;
+    const measure = () => {
+      const commands = node.querySelector<HTMLElement>(".command-actions");
+      const apps = node.querySelector<HTMLElement>(".app-actions");
+      if (!commands || !apps) return;
+      const add = node.querySelector<HTMLElement>(".add-link-anchor");
+      const firstApp = apps.firstElementChild as HTMLElement | null;
+      const groups = 2 + (add ? 1 : 0);
+      const gap = parseFloat(getComputedStyle(node).columnGap) || 0;
+      const fixedWidth = (add?.offsetWidth ?? 0) + gap * (groups - 1);
+      const firstAppWidth = firstApp?.offsetWidth ?? 0;
+      const appWidth = commands.scrollWidth > node.clientWidth - fixedWidth - firstAppWidth
+        ? Math.min(apps.scrollWidth, Math.max(firstAppWidth, node.clientWidth / 3))
+        : firstAppWidth;
+      const width = Math.max(
+        0,
+        node.clientWidth - fixedWidth - appWidth,
+      );
+      commands.style.maxWidth = `${width}px`;
+    };
+    const schedule = () => {
+      cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(measure);
+    };
+    const resize = new ResizeObserver(schedule);
+    resize.observe(node);
+    if (node.parentElement) resize.observe(node.parentElement);
+    const mutations = new MutationObserver(schedule);
+    mutations.observe(node, { childList: true, characterData: true, subtree: true });
+    schedule();
+    return {
+      destroy() {
+        cancelAnimationFrame(frame);
+        resize.disconnect();
+        mutations.disconnect();
+      },
+    };
+  }
+
   function linkLabel(link: CustomLink): string {
     if (link.name && link.name.trim().length > 0) return link.name;
     const k = customLinkKind(link);
@@ -958,6 +1000,7 @@
 
 <div
   class="row-actions"
+  use:fitActionGroups
   class:icon-only={iconOnly}
   class:overlay-open={addOpen || editingLinkId !== null}
   on:dragover={onDragOverStrip}
@@ -1968,28 +2011,29 @@
   .custom-link-wrap.dragging :global(.open-in-icon) {
     cursor: grabbing;
   }
-  /* Edit pencil — hover-revealed at the chip's top-right. No border
-     and no chip background; just the filled glyph sitting against
-     the row. The visible glyph stays at 10px, but the button itself
-     carries enough padding to make a comfortable ~22px click target
-     (negative inset keeps the visual top-right corner aligned with
-     the chip). Reads as "tweak" rather than "remove now" — the
+  /* Edit pencil — hover-revealed at the chip's top-right. The visible
+     glyph stays at 10px, but the button itself
+     carries enough padding to make a comfortable ~22px click target.
+     Keep that hitbox inside the chip so it does not add scroll width.
+     Reads as "tweak" rather than "remove now" — the
      destructive delete lives inside the edit popover. */
   .custom-link-edit {
     position: absolute;
-    top: -8px;
-    right: -11px;
+    top: 0;
+    right: 0;
     width: 22px;
     height: 22px;
     border: none;
     padding: 6px;
-    background: transparent;
+    background: var(--surface-3);
+    border-radius: 0.35rem;
     color: var(--text-muted);
     cursor: pointer;
     opacity: 0;
     transition:
       opacity 0.12s,
-      color 0.12s;
+      color 0.12s,
+      background-color 0.12s;
     display: inline-flex;
     align-items: center;
     justify-content: center;
@@ -2005,6 +2049,7 @@
   .custom-link-edit:hover,
   .custom-link-edit:focus-visible {
     color: var(--text, inherit);
+    background: var(--chip-default-bg);
     outline: none;
   }
   .custom-link-edit svg {
