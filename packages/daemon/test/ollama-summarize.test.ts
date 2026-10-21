@@ -1,5 +1,50 @@
 import { test, expect, describe } from "bun:test";
 import { sampleSessionForSummary, cleanAiTitle } from "../src/ollama-summarize";
+import { pickSmallCodexModel, parseAgentSummary } from "../src/agent-summary";
+
+describe("agent CLI summary fallback", () => {
+  test("selects a visible small Codex model from the live catalog", () => {
+    expect(
+      pickSmallCodexModel([
+        {
+          id: "gpt-7-astra",
+          displayName: "Astra",
+          description: "most capable",
+        },
+        {
+          id: "gpt-7-luna",
+          displayName: "Luna",
+          description: "efficient model",
+        },
+        { id: "gpt-6-mini", displayName: "Mini", hidden: true },
+      ]),
+    ).toBe("gpt-7-luna");
+    expect(
+      pickSmallCodexModel([{ id: "gpt-7-astra", displayName: "Astra" }]),
+    ).toBeNull();
+    expect(
+      pickSmallCodexModel([
+        { id: "gpt-8-astra", description: "Frontier intelligence" },
+        {
+          id: "gpt-8-fable",
+          description: "Fast and affordable model for easier tasks",
+        },
+      ]),
+    ).toBe("gpt-8-fable");
+  });
+
+  test("parses a title and summary without persisting a malformed response", () => {
+    expect(
+      parseAgentSummary(
+        "TITLE: Fix session labels\nSUMMARY: You added session labels.",
+      ),
+    ).toEqual({
+      title: "Fix session labels",
+      body: "You added session labels.",
+    });
+    expect(parseAgentSummary("A bare answer")).toBeNull();
+  });
+});
 import type { NormalizedMessage } from "../src/sessions";
 
 /** Build a user/assistant text message. */
