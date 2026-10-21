@@ -12,6 +12,20 @@ start+middle+end of the conversation to a local Ollama model and
 streams the summary back into a small dialog. If no suitable model is
 installed, we ask the user before pulling one.
 
+## 2026-10-21: automatic title fallback
+
+The automatic TUI summary/title path uses Ollama when a local model is
+installed. For Claude or Codex sessions with no Ollama model, it can use
+the corresponding authenticated agent CLI. Claude's `haiku` family alias
+resolves through the installed CLI; Codex selects a visible small model
+from its current app-server catalog. If no small model is advertised,
+generation fails visibly rather than silently choosing a large model.
+Agent-generated summaries and titles use the existing summary cache;
+refresh resolves the small model again so version changes are picked up.
+The CLI run is read-only and bounded. Gemini's `flash-lite` family alias
+is supported by the backend helper for when Gemini sessions are added to
+the session scanner.
+
 ## Why this is worth building
 
 Long Claude/Codex sessions get unreadable past a few hundred turns.

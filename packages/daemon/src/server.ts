@@ -169,6 +169,7 @@ import {
   isCurrentSummary,
 } from "./summaries";
 import { sampleSessionForSummary, cleanAiTitle } from "./ollama-summarize";
+import { runAgentSummary } from "./agent-summary";
 import {
   collectRepoActivity,
   formatActivityPrompt,
@@ -6106,10 +6107,8 @@ const server = Bun.serve<TermWsData, never>({
       }
 
       if (url.pathname === "/api/sessions/summarize" && req.method === "POST") {
-        // Stream a fresh summary from a local Ollama model. Two phases:
-        //   1. sample the session into a compact prompt (pure, fast),
-        //   2. open a stream to Ollama's /api/chat and forward each
-        //      content delta to the SPA as an SSE `chunk` event.
+        // Sample the session, then generate with Ollama or the session's
+        // agent CLI. Forward the resulting text as SSE `chunk` events.
         // On `done` we persist the joined body to <workspace>/summaries.
         const body = (await req.json().catch(() => null)) as {
           source?: unknown;
@@ -6191,7 +6190,23 @@ const server = Bun.serve<TermWsData, never>({
               "Do not echo the transcript.";
 
             const fullBody: { collected: string } = { collected: "" };
+            let aiTitle: string | undefined;
+            let summaryModel = model;
             try {
+              if (model === "@agent") {
+                if (resolved.agent === "ollama")
+                  throw new Error("An Ollama session needs an installed Ollama model.");
+                const result = await runAgentSummary(
+                  resolved.agent,
+                  sampled.prompt,
+                  workspace.path,
+                  abort.signal,
+                );
+                fullBody.collected = result.body;
+                aiTitle = result.title;
+                summaryModel = result.model;
+                send("chunk", { delta: result.body });
+              } else {
               const res = await fetch("http://127.0.0.1:11434/api/chat", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
@@ -6284,9 +6299,13 @@ const server = Bun.serve<TermWsData, never>({
                   }
                 }
               }
+              }
             } catch (e) {
               const msg = e instanceof Error ? e.message : String(e);
-              send("error", { kind: "ollama_unreachable", message: msg });
+              send("error", {
+                kind: model === "@agent" ? "agent_unavailable" : "ollama_unreachable",
+                message: msg,
+              });
               try {
                 controller.close();
               } catch {}
@@ -6300,8 +6319,7 @@ const server = Bun.serve<TermWsData, never>({
             // short title. Non-streaming, thinking off. Best-effort — a
             // failure here leaves the title undefined and never blocks the
             // (already-streamed, about-to-be-saved) summary.
-            let aiTitle: string | undefined;
-            if (summaryBody.trim()) {
+            if (summaryBody.trim() && model !== "@agent") {
               try {
                 const titleRes = await fetch(`${OLLAMA_HOST}/api/chat`, {
                   method: "POST",
@@ -6346,7 +6364,7 @@ const server = Bun.serve<TermWsData, never>({
                 sessionId: parsed.sessionId || undefined,
                 title: aiTitle,
                 ...(resolved.agent === "codex" ? { parserVersion: 2 } : {}),
-                model,
+                model: summaryModel,
                 sourceMtimeMs,
                 generatedAt: new Date(startedAt).toISOString(),
                 includedMessages: sampled.includedMessages,

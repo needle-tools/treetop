@@ -805,7 +805,10 @@
     const isCloud = (n: string) =>
       /(^|[-:/])[a-z0-9.]*cloud(\b|$|:)/.test(n.toLowerCase());
     if (summaryModel && !isCloud(summaryModel)) {
-      void runSummaryStream(summaryModel, origin);
+      void runSummaryStream(
+        /^(claude|codex|gemini):/.test(summaryModel) ? "@agent" : summaryModel,
+        origin,
+      );
       return;
     }
     // First-run path: probe installed models.
@@ -827,6 +830,10 @@
       return;
     }
     if (list.length === 0) {
+      if (agent === "claude" || agent === "codex") {
+        void runSummaryStream("@agent", origin);
+        return;
+      }
       showSummarizeNotice(
         "No Ollama model installed — click to install one.",
         "install",
