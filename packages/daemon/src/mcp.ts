@@ -35,10 +35,13 @@ interface ToolDef {
   };
 }
 
+const PROJECT_COMMAND_GUIDANCE =
+  "Supply raw shell command text without extra outer quoting or escaping. Internal commands already run through cmd.exe on Windows and sh on macOS/Linux; do not add a shell wrapper unless a different shell is explicitly required. Shell operators such as && are supported. For example, use npm run build:web && npm start, not an extra cmd /c wrapper. When asked for a dev command, inspect the project scripts and prefer its dev script (for example npm run dev); use command_cwd for the package directory. Saving or editing a command does not run it.";
+
 const TOOLS: ToolDef[] = [
   {
     name: "edit_command",
-    description: "Edit a saved project command by repo_id and command_id from list_commands. Omitted fields keep their current values; null clears name or command_cwd. Preserves its id and updates the dashboard without executing the command.",
+    description: "Edit a saved project command by repo_id and command_id from list_commands. Omitted fields keep their current values; null clears name or command_cwd. Preserves its id and updates the dashboard without executing the command. " + PROJECT_COMMAND_GUIDANCE,
     inputSchema: { type: "object", properties: {
       repo_id: { type: "string" }, command_id: { type: "string" },
       command: { type: "string" }, name: { type: ["string", "null"] },
@@ -109,7 +112,7 @@ const TOOLS: ToolDef[] = [
   {
     name: "add_command",
     description:
-      "Save a command as a project's Treetop action button. Does not execute it. Use repo_id, or cwd to identify its registered project; a Treetop-launched CLI session supplies cwd automatically.",
+      "Save a command as a project's Treetop action button. Does not execute it. Use repo_id, or cwd to identify its registered project; a Treetop-launched CLI session supplies cwd automatically. " + PROJECT_COMMAND_GUIDANCE,
     inputSchema: {
       type: "object",
       properties: {
