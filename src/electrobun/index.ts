@@ -30,6 +30,8 @@ import { spawn as bunSpawn } from "bun";
 import { planLogRotation } from "../../packages/daemon/src/log-rotation";
 import { dlopen, FFIType, ptr } from "bun:ffi";
 import { restoreWindowState, captureWindowState, restoreWindowModeOnReady, type WindowState } from "./window-state";
+import { createWindowsWebviewFocus } from "./window-focus";
+import { nativeWindowFocusScript } from "../../packages/ui/src/window-focus-events";
 
 // ── Startup logger + stall watchdog ──────────────────────────────────
 // Background: we've had two recurrences where the window opens but the
@@ -549,6 +551,18 @@ const win = new BrowserWindow({
   frame: bounds,
 });
 endPhase("new BrowserWindow");
+let nativeFocus: ReturnType<typeof createWindowsWebviewFocus> | undefined;
+if (isWin) {
+  try { nativeFocus = createWindowsWebviewFocus(); }
+  catch (error) { llog(`Failed to initialize WebView keyboard focus: ${error}`); }
+}
+win.on("focus", () => {
+  if (nativeFocus && win.ptr) nativeFocus.restore(BigInt(win.ptr));
+  win.webview.executeJavascript(nativeWindowFocusScript(true));
+});
+win.on("blur", () => {
+  win.webview.executeJavascript(nativeWindowFocusScript(false));
+});
 restoreWindowModeOnReady(bounds, {
   onReady: (callback) => win.webview.on("dom-ready", callback),
   maximize: () => win.maximize(),
@@ -631,6 +645,8 @@ win.on("move", captureState);
 // "closed" event arrives after destruction completes.
 try {
   win.on("close", () => {
+    nativeFocus?.close();
+    nativeFocus = undefined;
     captureState();
     if (saveTimer) { clearTimeout(saveTimer); saveTimer = null; }
     writeWindowState(windowState);

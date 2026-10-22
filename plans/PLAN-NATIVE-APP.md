@@ -239,6 +239,30 @@ cwd-based command registration, CLI startup arguments, concurrent session opens,
 secondary-worktree visibility, and idempotent UI column merging. Deployment
 requires the user's normal rebuild/relaunch; the running daemon is untouched.
 
+### Standalone activation and typing focus (2026-10-23)
+
+The old session focus helper depended on browser blur/focus events and tried
+document.hasFocus only once. Packaged WebView2 can notify native activation
+before DOM focus is ready or omit the outgoing browser blur. The installed
+Electrobun v1.18.4-beta.3 Windows wrapper emits WM_ACTIVATE callbacks but focuses
+its outer HWND rather than explicitly restoring the WebView child.
+
+The launcher now forwards native focus/blur to the page. On Windows activation,
+it restores the visible WebView child only if this app's window is foreground
+and no child already owns native focus. Cross-thread SetFocus temporarily
+attaches input queues and always detaches them. No foreground-window activation
+is requested, so another application cannot be pulled forward by this path.
+The frontend retries document readiness for at most 30 frames and handles a
+native activation even when it missed blur. Existing visible/connected input,
+dialog and other-active-control guards still apply; restoration does not scroll.
+
+Validation: seven native/helper unit tests pass, including real Windows API
+loading; the real Edge DOM regression passes for native-only activation,
+delayed document focus, missed blur, caret selection, search/dialog preservation,
+removed inputs and disposal. Changed helper modules pass strict TypeScript.
+A native rebuild/relaunch is required; no running app or daemon was restarted,
+and actual Alt+Tab in the rebuilt package has not yet been exercised.
+
 ### Voice restart lifecycle (2026-10-22)
 
 Read-only inspection of the running daemon's log and bounded Codex App Server

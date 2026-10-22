@@ -64,6 +64,24 @@ test("returning to the app restores session input focus without stealing other f
       el("terminal").focus();
       leave();
       const terminal = await returnToApp();
+      // Packaged WebView2 can emit only native activation notifications,
+      // then report document focus a frame later than the host window.
+      el("chat").focus();
+      window.dispatchEvent(new CustomEvent("treetop:native-window-focus", { detail: { focused: false } }));
+      el("chat").blur();
+      const originalHasFocus = document.hasFocus.bind(document);
+      let focusReady = false;
+      document.hasFocus = () => focusReady;
+      window.dispatchEvent(new CustomEvent("treetop:native-window-focus", { detail: { focused: true } }));
+      await new Promise<void>(resolve => requestAnimationFrame(() => { focusReady = true; resolve(); }));
+      await new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
+      const nativeReturn = document.activeElement?.id;
+      document.hasFocus = originalHasFocus;
+      el("chat").blur();
+      // The WebView may have missed deactivation while Windows suspended it.
+      window.dispatchEvent(new CustomEvent("treetop:native-window-focus", { detail: { focused: true } }));
+      await new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
+      const nativeWithoutBlur = document.activeElement?.id;
       leave();
       el("search").focus();
       const search = await returnToApp();
@@ -87,6 +105,8 @@ test("returning to the app restores session input focus without stealing other f
         chat,
         selection,
         terminal,
+        nativeReturn,
+        nativeWithoutBlur,
         search,
         modal,
         removed,
@@ -98,6 +118,8 @@ test("returning to the app restores session input focus without stealing other f
       chat: "chat",
       selection: [2, 5],
       terminal: "terminal",
+      nativeReturn: "chat",
+      nativeWithoutBlur: "chat",
       search: "search",
       modal: "modal",
       removed: "",

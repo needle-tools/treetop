@@ -1,3 +1,5 @@
+import { NATIVE_WINDOW_FOCUS_EVENT } from "./window-focus-events";
+
 /** Keep the active session's caret across app switches, without scrolling
  * its column or taking focus from a control the user clicked on return. */
 export function installSessionWindowFocus(
@@ -7,6 +9,7 @@ export function installSessionWindowFocus(
   let previous: HTMLElement | null = null;
   let away = false;
   let frame: number | null = null;
+  let attempts = 0;
 
   function remember() {
     const active = doc.activeElement as HTMLElement | null;
@@ -29,9 +32,18 @@ export function installSessionWindowFocus(
   }
   function onFocus() {
     if (!away || frame !== null) return;
+    attempts = 0;
+    restore();
+  }
+  function restore() {
     frame = win.requestAnimationFrame(() => {
       frame = null;
-      if (doc.hidden || !doc.hasFocus()) return;
+      // The native host's activation event precedes WebView2's document
+      // focus. Retry briefly instead of losing this activation after one frame.
+      if (doc.hidden || !doc.hasFocus()) {
+        if (++attempts < 30) restore();
+        return;
+      }
       away = false;
       const active = doc.activeElement;
       if (
@@ -49,16 +61,29 @@ export function installSessionWindowFocus(
     if (doc.hidden) onBlur();
     else onFocus();
   }
+  function onNativeFocus(event: Event) {
+    const focused = (event as CustomEvent<{ focused: boolean }>).detail
+      ?.focused;
+    if (focused === false) onBlur();
+    else if (focused === true) {
+      // Native activation is authoritative even if the page missed blur.
+      // Keep any newly focused control (search, menus, dialogs) untouched.
+      if (previous && doc.activeElement === doc.body) away = true;
+      onFocus();
+    }
+  }
   remember();
   doc.addEventListener("focusin", onFocusIn);
   doc.addEventListener("visibilitychange", onVisibility);
   win.addEventListener("blur", onBlur);
   win.addEventListener("focus", onFocus);
+  win.addEventListener(NATIVE_WINDOW_FOCUS_EVENT, onNativeFocus);
   return () => {
     if (frame !== null) win.cancelAnimationFrame(frame);
     doc.removeEventListener("focusin", onFocusIn);
     doc.removeEventListener("visibilitychange", onVisibility);
     win.removeEventListener("blur", onBlur);
     win.removeEventListener("focus", onFocus);
+    win.removeEventListener(NATIVE_WINDOW_FOCUS_EVENT, onNativeFocus);
   };
 }
