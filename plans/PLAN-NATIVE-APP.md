@@ -239,6 +239,25 @@ cwd-based command registration, CLI startup arguments, concurrent session opens,
 secondary-worktree visibility, and idempotent UI column merging. Deployment
 requires the user's normal rebuild/relaunch; the running daemon is untouched.
 
+### Voice restart lifecycle (2026-10-22)
+
+Read-only inspection of the running daemon's log and bounded Codex App Server
+recording showed successful `/api/voice/start` responses, realtime started/SDP
+events, and some successful transcript events across restarts. Several later
+starts were followed immediately by client-requested stops. The browser did not
+record the failing WebRTC/SDP stage, so the exact live trigger is unconfirmed.
+
+Regression tests reproduced independent controller bugs: failure waited for
+remote cleanup before surfacing a retryable error; stop waited before enabling
+restart; old connection/subscription callbacks could mutate a replacement;
+and a canceled setRemoteDescription could restore a false listening state.
+Cleanup is now local-first and remote best-effort, asynchronous callbacks are
+generation-guarded, request operations have a 20s deadline, brief disconnected
+states get 3s to recover, and live SSE recovery clears its stale warning.
+Voice state/connection/audio failures are logged without SDP or transcript text.
+Five new lifecycle regressions plus existing voice tests pass (15 tests total).
+No production daemon restart or live voice interaction was performed.
+
 ### Agent session messages (2026-10-22)
 
 MCP now exposes `send_session_message` and `read_session_messages`. Both require

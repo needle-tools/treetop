@@ -13,13 +13,165 @@ function deferred<T>() {
   return { promise, resolve };
 }
 
+function restartHarness() {
+  const peers: any[] = [];
+  const events: Array<(event: VoiceRealtimeEvent) => void> = [];
+  const stops: string[] = [];
+  const pendingStop = deferred<Record<string, unknown>>();
+  let negotiate = async () => {};
+  const streamStates: Array<(state: "live" | "reconnecting") => void> = [];
+  let nextThread = 0;
+  const controller = new GlobalVoiceController({
+    disconnectGraceMs: 5,
+    getUserMedia: async () =>
+      ({ getTracks: () => [{ stop() {} }] }) as unknown as MediaStream,
+    createPeerConnection: () => {
+      const peer = {
+        addTrack() {},
+        createDataChannel: () => ({ close() {} }),
+        createOffer: async () => ({ type: "offer", sdp: "offer" }),
+        setLocalDescription: async () => {},
+        localDescription: { sdp: "offer" },
+        iceGatheringState: "complete",
+        connectionState: "connected",
+        addEventListener() {},
+        removeEventListener() {},
+        setRemoteDescription: () => negotiate(),
+        close() {},
+        ontrack: null,
+        onconnectionstatechange: null,
+      };
+      peers.push(peer);
+      return peer as unknown as RTCPeerConnection;
+    },
+    createAudioElement: () =>
+      ({ play: async () => {}, pause() {} }) as unknown as HTMLAudioElement,
+    request: async (path, body) => {
+      if (path === "/api/voice/start")
+        return { threadId: `voice-${++nextThread}`, sdp: "answer" };
+      stops.push((body as { threadId: string }).threadId);
+      return pendingStop.promise;
+    },
+    subscribe: (_id, handlers) => {
+      events.push(handlers.onEvent);
+      streamStates.push((state) => handlers.onState?.(state));
+      return () => {};
+    },
+  });
+  const context = {
+    product: "Treetop" as const,
+    cwd: "/repo",
+    zenMode: { active: false },
+    projects: [],
+    sessions: [],
+  };
+  return {
+    controller,
+    peers,
+    events,
+    streamStates,
+    stops,
+    pendingStop,
+    context,
+    setNegotiation: (fn: () => Promise<void>) => {
+      negotiate = fn;
+    },
+  };
+}
+
 describe("GlobalVoiceController", () => {
+  test("a connection failure releases local state immediately even if server stop hangs; stale callbacks cannot kill its replacement", async () => {
+    const h = restartHarness();
+    await h.controller.start(h.context);
+    const staleConnection = h.peers[0].onconnectionstatechange;
+    h.peers[0].connectionState = "failed";
+    staleConnection();
+    expect(h.controller.snapshot.phase).toBe("error");
+    await h.controller.start(h.context);
+    expect(h.controller.snapshot.phase).toBe("listening");
+    staleConnection();
+    h.events[0]!({
+      kind: "notification",
+      method: "thread/realtime/closed",
+      params: { threadId: "voice-1" },
+    });
+    expect(h.controller.snapshot.phase).toBe("listening");
+    expect(h.stops).toEqual(["voice-1"]);
+    h.pendingStop.resolve({ ok: true });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(h.controller.snapshot.phase).toBe("listening");
+    await h.controller.stop();
+  });
+
+  test("stop immediately permits restarting and a late stop response cannot reset the new session", async () => {
+    const h = restartHarness();
+    await h.controller.start(h.context);
+    const stopping = h.controller.stop();
+    expect(h.controller.snapshot.phase).toBe("off");
+    await h.controller.start(h.context);
+    h.pendingStop.resolve({ ok: true });
+    await stopping;
+    expect(h.controller.snapshot.phase).toBe("listening");
+    await h.controller.stop();
+  });
+
+  test("a canceled startup cannot revive itself after remote-description negotiation finishes", async () => {
+    const h = restartHarness();
+    const negotiation = deferred<void>();
+    const started = h.controller.start(h.context);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    // Start another lifecycle with a deliberately delayed SDP application.
+    h.pendingStop.resolve({ ok: true });
+    await started;
+    await h.controller.stop();
+    h.setNegotiation(() => negotiation.promise);
+    const restarting = h.controller.start(h.context);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await h.controller.stop();
+    negotiation.resolve();
+    await restarting;
+    expect(h.controller.snapshot.phase).toBe("off");
+  });
+
+  test("a transient WebRTC disconnect can recover, but a persistent disconnect becomes retryable", async () => {
+    const h = restartHarness();
+    await h.controller.start(h.context);
+    const peer = h.peers[0];
+    peer.connectionState = "disconnected";
+    peer.onconnectionstatechange();
+    expect(h.controller.snapshot.phase).toBe("listening");
+    peer.connectionState = "connected";
+    peer.onconnectionstatechange();
+    await new Promise((resolve) => setTimeout(resolve, 15));
+    expect(h.controller.snapshot.phase).toBe("listening");
+    expect(h.stops).toEqual([]);
+    peer.connectionState = "disconnected";
+    peer.onconnectionstatechange();
+    await new Promise((resolve) => setTimeout(resolve, 15));
+    expect(h.controller.snapshot.phase).toBe("error");
+    h.pendingStop.resolve({ ok: true });
+    await h.controller.stop();
+  });
+
+  test("a recovered status stream clears its warning and an old stream cannot affect the next lifecycle", async () => {
+    const h = restartHarness();
+    await h.controller.start(h.context);
+    h.streamStates[0]!("reconnecting");
+    expect(h.controller.snapshot.error).toContain("reconnecting");
+    h.streamStates[0]!("live");
+    expect(h.controller.snapshot.error).toBeUndefined();
+    await h.controller.stop();
+    await h.controller.start(h.context);
+    h.streamStates[0]!("reconnecting");
+    expect(h.controller.snapshot.error).toBeUndefined();
+    h.pendingStop.resolve({ ok: true });
+    await h.controller.stop();
+  });
   test("reports missing browser microphone capture without a raw mediaDevices crash", async () => {
     await expect(
-      getBrowserUserMedia(
-        { audio: true },
-        { mediaDevices: undefined } as unknown as Navigator,
-      ),
+      getBrowserUserMedia({ audio: true }, {
+        mediaDevices: undefined,
+      } as unknown as Navigator),
     ).rejects.toThrow("Microphone capture is not available");
   });
 

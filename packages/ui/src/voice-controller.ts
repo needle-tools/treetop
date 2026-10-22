@@ -4,6 +4,7 @@ import {
   type CodexEventStreamState,
 } from "./codex-event-stream";
 import type { TreetopVoiceContext } from "./voice-context";
+import { withRequestDeadline } from "./api";
 
 export type VoicePhase =
   | "off"
@@ -43,6 +44,8 @@ interface VoiceDependencies {
     },
   ): () => void;
   onState?(state: GlobalVoiceState): void;
+  diagnostic?(message: string, extra: Record<string, unknown>): void;
+  disconnectGraceMs?: number;
   handleTool?(
     tool: string,
     args: Record<string, unknown>,
@@ -53,29 +56,33 @@ async function defaultRequest(
   path: string,
   body: unknown,
 ): Promise<Record<string, unknown>> {
-  const response = await fetch(path, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
+  return withRequestDeadline(20_000, async (signal) => {
+    const response = await fetch(path, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+      signal,
+    });
+    const data = (await response.json().catch(() => null)) as Record<
+      string,
+      unknown
+    > | null;
+    if (!response.ok) {
+      throw new Error(
+        typeof data?.error === "string"
+          ? data.error
+          : `Treetop voice request failed (HTTP ${response.status})`,
+      );
+    }
+    return data ?? {};
   });
-  const data = (await response.json().catch(() => null)) as Record<
-    string,
-    unknown
-  > | null;
-  if (!response.ok) {
-    throw new Error(
-      typeof data?.error === "string"
-        ? data.error
-        : `Treetop voice request failed (HTTP ${response.status})`,
-    );
-  }
-  return data ?? {};
 }
 
 export async function getBrowserUserMedia(
   constraints: MediaStreamConstraints,
-  navigatorLike: Pick<Navigator, "mediaDevices"> | undefined =
-    globalThis.navigator,
+  navigatorLike:
+    | Pick<Navigator, "mediaDevices">
+    | undefined = globalThis.navigator,
 ): Promise<MediaStream> {
   const mediaDevices = navigatorLike?.mediaDevices;
   if (typeof mediaDevices?.getUserMedia !== "function") {
@@ -141,6 +148,7 @@ export class GlobalVoiceController {
   private audio: HTMLAudioElement | null = null;
   private unsubscribe: (() => void) | null = null;
   private generation = 0;
+  private disconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private readonly handledDeliveries = new Set<string>();
 
   constructor(deps: Partial<VoiceDependencies> = {}) {
@@ -183,20 +191,43 @@ export class GlobalVoiceController {
       audio.autoplay = true;
       this.audio = audio;
       peer.ontrack = (event) => {
+        if (generation !== this.generation) return;
         audio.srcObject = event.streams[0] ?? null;
-        void audio.play().catch(() => {});
+        void audio
+          .play()
+          .catch((error) =>
+            this.deps.diagnostic?.("audio playback failed", {
+              message: String(error),
+            }),
+          );
       };
       peer.onconnectionstatechange = () => {
-        if (
-          peer.connectionState === "failed" ||
-          peer.connectionState === "disconnected"
-        ) {
+        if (generation !== this.generation) return;
+        this.deps.diagnostic?.("connection state", {
+          connectionState: peer.connectionState,
+          iceConnectionState: peer.iceConnectionState,
+          signalingState: peer.signalingState,
+        });
+        this.clearDisconnectTimer();
+        if (peer.connectionState === "failed") {
           void this.fail(new Error("Realtime voice connection was lost"));
+        } else if (peer.connectionState === "disconnected") {
+          // WebRTC may recover a brief network/sleep interruption itself.
+          this.disconnectTimer = setTimeout(() => {
+            this.disconnectTimer = null;
+            if (
+              generation === this.generation &&
+              peer.connectionState === "disconnected"
+            )
+              void this.fail(new Error("Realtime voice connection was lost"));
+          }, this.deps.disconnectGraceMs ?? 3_000);
         }
       };
       const offer = await peer.createOffer();
+      if (generation !== this.generation) return;
       await peer.setLocalDescription(offer);
       await waitForIceGathering(peer);
+      if (generation !== this.generation) return;
       const sdp = peer.localDescription?.sdp;
       if (!sdp) throw new Error("Browser did not create a WebRTC offer");
 
@@ -211,9 +242,7 @@ export class GlobalVoiceController {
       const answer = typeof result.sdp === "string" ? result.sdp : "";
       if (generation !== this.generation) {
         if (threadId) {
-          void this.deps
-            .request("/api/voice/stop", { threadId })
-            .catch(() => {});
+          this.stopRemoteThread(threadId);
         }
         return;
       }
@@ -221,9 +250,12 @@ export class GlobalVoiceController {
         throw new Error("Treetop voice did not return a WebRTC answer");
       }
       this.threadId = threadId;
-      this.unsubscribe = this.deps.subscribe(threadId, {
-        onEvent: (event) => this.handleEvent(event),
+      const unsubscribe = this.deps.subscribe(threadId, {
+        onEvent: (event) => {
+          if (generation === this.generation) this.handleEvent(event);
+        },
         onState: (streamState) => {
+          if (generation !== this.generation) return;
           if (
             streamState === "reconnecting" &&
             this.state.phase !== "stopping"
@@ -232,12 +264,24 @@ export class GlobalVoiceController {
               ...this.state,
               error: "Voice status stream is reconnecting…",
             });
+          } else if (
+            streamState === "live" &&
+            this.state.error === "Voice status stream is reconnecting…"
+          ) {
+            this.setState({ ...this.state, error: undefined });
           }
         },
       });
+      if (generation !== this.generation) {
+        unsubscribe();
+        return;
+      }
+      this.unsubscribe = unsubscribe;
       await peer.setRemoteDescription({ type: "answer", sdp: answer });
+      if (generation !== this.generation) return;
       this.setState({ phase: "listening" });
     } catch (error) {
+      if (generation !== this.generation) return;
       await this.fail(error);
       throw error;
     }
@@ -248,13 +292,9 @@ export class GlobalVoiceController {
     ++this.generation;
     if (this.state.phase !== "off") this.setState({ phase: "stopping" });
     this.releaseLocalResources();
-    if (threadId) {
-      try {
-        await this.deps.request("/api/voice/stop", { threadId });
-      } catch {}
-    }
     this.threadId = null;
     this.setState({ phase: "off" });
+    if (threadId) this.stopRemoteThread(threadId);
   }
 
   private handleEvent(event: VoiceRealtimeEvent): void {
@@ -278,9 +318,7 @@ export class GlobalVoiceController {
           ? event.params.role
           : "assistant";
       const text =
-        typeof event.params.text === "string"
-          ? event.params.text.trim()
-          : "";
+        typeof event.params.text === "string" ? event.params.text.trim() : "";
       const messages = text
         ? [
             ...(this.state.messages ?? []),
@@ -309,6 +347,10 @@ export class GlobalVoiceController {
     }
     if (event.method === "thread/realtime/closed") {
       if (this.state.phase === "stopping") return;
+      this.deps.diagnostic?.("realtime closed", {
+        threadId: this.threadId,
+        reason: event.params.reason,
+      });
       void this.stop();
       return;
     }
@@ -383,6 +425,7 @@ export class GlobalVoiceController {
         { result },
       );
     } catch (error) {
+      if (generation !== this.generation) return;
       this.setState({
         ...this.state,
         error: error instanceof Error ? error.message : String(error),
@@ -395,23 +438,39 @@ export class GlobalVoiceController {
     const threadId = this.threadId;
     this.releaseLocalResources();
     this.threadId = null;
-    if (threadId) {
-      try {
-        await this.deps.request("/api/voice/stop", { threadId });
-      } catch {}
-    }
     this.setState({
       phase: "error",
       error: error instanceof Error ? error.message : String(error),
     });
+    if (threadId) this.stopRemoteThread(threadId);
+  }
+
+  private stopRemoteThread(threadId: string): void {
+    // Cleanup must never hold the microphone/button hostage or mutate the
+    // next lifecycle when an old stop request eventually resolves.
+    void this.deps.request("/api/voice/stop", { threadId }).catch((error) => {
+      this.deps.diagnostic?.("remote cleanup failed", {
+        threadId,
+        message: String(error),
+      });
+    });
+  }
+
+  private clearDisconnectTimer(): void {
+    if (this.disconnectTimer !== null) clearTimeout(this.disconnectTimer);
+    this.disconnectTimer = null;
   }
 
   private releaseLocalResources(): void {
+    this.clearDisconnectTimer();
     this.unsubscribe?.();
     this.unsubscribe = null;
     this.dataChannel?.close();
     this.dataChannel = null;
-    this.peer?.close();
+    if (this.peer) {
+      this.peer.ontrack = this.peer.onconnectionstatechange = null;
+      this.peer.close();
+    }
     this.peer = null;
     for (const track of this.stream?.getTracks() ?? []) track.stop();
     this.stream = null;
@@ -421,6 +480,12 @@ export class GlobalVoiceController {
   }
 
   private setState(state: GlobalVoiceState): void {
+    if (state.phase !== this.state.phase || state.error !== this.state.error)
+      this.deps.diagnostic?.("state", {
+        phase: state.phase,
+        error: state.error,
+        threadId: this.threadId,
+      });
     this.state = state;
     this.deps.onState?.(state);
   }

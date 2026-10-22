@@ -1196,6 +1196,7 @@
   let voiceButtonEl: HTMLButtonElement | null = null;
   const voiceController = new GlobalVoiceController({
     onState: (state) => (voiceState = state),
+    diagnostic: (message, extra) => recordBrowserDiagnostic(`voice ${message}`, extra),
     handleTool: handleVoiceTool,
   });
   function handleFocusOutForUnread(ev: FocusEvent): void {
