@@ -105,6 +105,7 @@ import {
 } from "./ollama-sessions";
 import { feedShellInput, clearShellInputBuffer } from "./shell-input";
 import { handleMcpHttp, withTreetopMcp } from "./mcp";
+import { sendTerminalSessionMessage, openCodexMessageTarget } from "./session-tools";
 import { remindersForWorkspace, startReminderScheduler, handleRemindersHttp } from "./reminders";
 import * as inflight from "./inflight";
 import { pingSubscribers } from "./sse-heartbeat";
@@ -10226,6 +10227,29 @@ const server = Bun.serve<TermWsData, never>({
         const response = await handleMcpHttp(req, {
           workspace, events,
           sessions: sharedDetectAgents,
+          sendSessionMessage: async (session, text) => {
+            if (!session.sessionId) throw new Error("Session has no provider session ID");
+            if (!["claude", "codex"].includes(session.agent))
+              throw new Error("Messaging supports Claude/Codex terminals and native Codex sessions");
+            const terminal = await sendTerminalSessionMessage(terminalBackend, session, text);
+            if (terminal) return terminal;
+            if (session.agent !== "codex") throw new Error("Session has no live terminal; open it before sending");
+            const target = openCodexMessageTarget(await workspace.getPrefs(), session);
+            if (codexAgent.activeTurn(session.sessionId)) throw new Error("Session is busy; retry after the current turn finishes");
+            const turn = await codexAgent.startTurn({
+              threadId: session.sessionId, cwd: session.cwd, text,
+              overrides: {
+                model: codexTurnString(target.codexModel),
+                effort: codexTurnString(target.codexEffort),
+                serviceTier: codexTurnString(target.codexServiceTier),
+                summary: codexTurnString(target.codexSummary),
+                approvalPolicy: codexApprovalPolicy(target.codexApproval),
+                sandboxPolicy: codexSandboxPolicy(target.codexSandbox, session.cwd),
+              },
+            });
+            void turn.completed.catch(error => recordServerError(req, 500, error));
+            return { delivery: "native", threadId: turn.threadId, turnId: turn.turnId };
+          },
           runningCommands: () => [...runningCommands.values()].map(command => ({
             linkId: command.linkId, repoId: command.repoId, pid: command.pid,
             startedAt: command.startedAt, cmd: command.cmd,

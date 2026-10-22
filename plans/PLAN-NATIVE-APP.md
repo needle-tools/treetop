@@ -239,6 +239,29 @@ cwd-based command registration, CLI startup arguments, concurrent session opens,
 secondary-worktree visibility, and idempotent UI column merging. Deployment
 requires the user's normal rebuild/relaunch; the running daemon is untouched.
 
+### Agent session messages (2026-10-22)
+
+MCP now exposes `send_session_message` and `read_session_messages`. Both require
+an exact `source` or `session_id` from discovery; optional `repo_id` narrows the
+target. Unknown, ambiguous and unregistered targets fail instead of guessing.
+Sending is only for an explicit user request, never an autonomous agent chat.
+
+Sends target a live Claude/Codex terminal (bracketed paste followed by Enter),
+or one open native Codex column, retaining its model, approval and sandbox
+settings. Busy/confirmation-waiting terminals, busy native turns, stopped native
+columns and missing live transports fail without spawning a second agent.
+The result acknowledges delivery/submission, not completion or a reply.
+Copilot, Ollama and Claude visual-only delivery are not implemented.
+
+Reads default to five chronological user/assistant messages within a combined
+6,000-character text budget. `verbosity: "verbose"` adds tool/event summaries;
+thinking blocks are excluded in either mode. `limit` (1–50), `max_chars`
+(100–32,000), and `offset` (skip newest readable messages, 0–1,000) control the
+response. Parsing reuses the bounded session cache (up to 2,000 recent normalized
+messages); pagination is within that recent window. Truncation and nextOffset
+are explicit. Tests use real temporary projects/transcripts and isolated
+transport boundaries; no messages are sent to live user sessions during tests.
+
 ### Session queries and window restoration (2026-10-07)
 
 MCP `list_sessions` and `search_sessions` reuse cached agent discovery and attach

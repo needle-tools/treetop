@@ -199,6 +199,8 @@ describe("MCP dashboard tools", () => {
         "open_session",
         "list_sessions",
         "search_sessions",
+        "read_session_messages",
+        "send_session_message",
         "schedule_reminder",
         "list_reminders",
         "cancel_reminder",

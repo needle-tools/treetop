@@ -24,6 +24,8 @@ import { NotesStore } from "./notes";
 import { detectEditors, findWindowsFork } from "./open";
 import { detectAgents, agentsForWorktree, type AgentSession } from "./agents";
 import { remindersForWorkspace } from "./reminders";
+import { getSessionResponseJson, type NormalizedSession } from "./sessions";
+import { recentSessionMessages } from "./session-tools";
 
 interface ToolDef {
   name: string;
@@ -39,6 +41,23 @@ const PROJECT_COMMAND_GUIDANCE =
   "Supply raw shell command text without extra outer quoting or escaping. Internal commands already run through cmd.exe on Windows and sh on macOS/Linux; do not add a shell wrapper unless a different shell is explicitly required. Shell operators such as && are supported. For example, use npm run build:web && npm start, not an extra cmd /c wrapper. When asked for a dev command, inspect the project scripts and prefer its dev script (for example npm run dev); use command_cwd for the package directory. Saving or editing a command does not run it.";
 
 const TOOLS: ToolDef[] = [
+  ...["send_session_message", "read_session_messages"].map((name): ToolDef => ({
+    name,
+    description: name === "send_session_message"
+      ? "Send a message to an existing Claude/Codex terminal or open native Codex session, only when the user explicitly asks. Identify the exact target with source or session_id from list_sessions/search_sessions; repo_id can disambiguate. Does not create a session, interrupt a busy agent, or run shell commands. Returns delivery acceptance, not the agent's reply; use read_session_messages later."
+      : "Read recent messages from an exact discovered session. Minimal output (default) contains only user/assistant text, excluding tool traces and reasoning. Verbose adds tool/event summaries, never private thinking. Output is bounded by limit and a total max_chars text budget. Messages are chronological; offset skips newest readable messages for paging backwards.",
+    inputSchema: { type: "object", properties: {
+      source: { type: "string", description: "Exact transcript source from list_sessions." },
+      session_id: { type: "string", description: "Exact sessionId from list_sessions; ambiguous IDs are rejected." },
+      repo_id: { type: "string" },
+      ...(name === "send_session_message" ? { text: { type: "string", minLength: 1, maxLength: 32000 } } : {
+        limit: { type: "integer", minimum: 1, maximum: 50, default: 5 },
+        offset: { type: "integer", minimum: 0, maximum: 1000, default: 0 },
+        max_chars: { type: "integer", minimum: 100, maximum: 32000, default: 6000 },
+        verbosity: { type: "string", enum: ["minimal", "verbose"], default: "minimal" },
+      }),
+    }, ...(name === "send_session_message" ? { required: ["text"] } : {}) },
+  })),
   {
     name: "edit_command",
     description: "Edit a saved project command by repo_id and command_id from list_commands. Omitted fields keep their current values; null clears name or command_cwd. Preserves its id and updates the dashboard without executing the command. " + PROJECT_COMMAND_GUIDANCE,
@@ -277,10 +296,11 @@ interface McpContext {
   runningCommands?: () => { repoId: string; [key: string]: unknown }[];
   sessionCwd?: string;
   sessions?: () => Promise<AgentSession[]>;
+  sendSessionMessage?: (session: AgentSession, text: string) => Promise<Record<string, unknown>>;
 }
 
 const SERVER_INSTRUCTIONS =
-  "Treetop is the project dashboard hosting this agent session. Read/export settings with get_settings or export_settings; inspect recorded actions with list_events. Query project commands with list_commands; save/edit project buttons with add_command/edit_command (without running them). Use schedule_reminder for timed alerts with optional repo_id/session_source links. Use the session working directory or pass your current absolute cwd to identify the project; use list_repos to confirm project ids. Tools also manage projects, colors, order, notes and session columns. Never guess another project's id. Only change Treetop state when requested by the user.";
+  "Treetop is the project dashboard hosting this agent session. Read/export settings with get_settings or export_settings; inspect recorded actions with list_events. Find sessions with list_sessions/search_sessions; read bounded recent text with read_session_messages. Only use send_session_message when the user explicitly asks to message an identified session; never start autonomous cross-session conversations. Query project commands with list_commands; save/edit project buttons with add_command/edit_command (without running them). Use schedule_reminder for timed alerts with optional repo_id/session_source links. Use the session working directory or pass your current absolute cwd to identify the project; use list_repos to confirm project ids. Tools also manage projects, colors, order, notes and session columns. Never guess another project's id. Only change Treetop state when requested by the user.";
 
 /** Add only this session's MCP connection, preserving other agent settings. */
 export function withTreetopMcp(
@@ -507,6 +527,42 @@ async function dispatchMcp(
             const reminder = await remindersForWorkspace(ctx.workspace.path).updateStatus(args.id, name === "cancel_reminder" ? "cancelled" : "dismissed");
             ctx.changed?.({ kind: "reminder_changed", id: reminder.id });
             return ok(request.id, textContent(JSON.stringify(reminder)));
+          }
+          case "send_session_message":
+          case "read_session_messages": {
+            for (const field of ["source", "session_id", "repo_id"]) {
+              if (args[field] !== undefined && (typeof args[field] !== "string" || !(args[field] as string).trim()))
+                return err(request.id, -32602, `${name}: ${field} must be a non-empty string`);
+            }
+            if (!args.source && !args.session_id) return err(request.id, -32602, `${name}: source or session_id is required`);
+            const limit = args.limit ?? 5, offset = args.offset ?? 0, maxChars = args.max_chars ?? 6000;
+            if (name === "read_session_messages" && (
+              typeof limit !== "number" || !Number.isInteger(limit) || limit < 1 || limit > 50 ||
+              typeof offset !== "number" || !Number.isInteger(offset) || offset < 0 || offset > 1000 ||
+              typeof maxChars !== "number" || !Number.isInteger(maxChars) || maxChars < 100 || maxChars > 32000 ||
+              (args.verbosity !== undefined && !["minimal", "verbose"].includes(args.verbosity as string))))
+              return err(request.id, -32602, `${name}: invalid limit, offset, max_chars or verbosity`);
+            if (name === "send_session_message" && (typeof args.text !== "string" || !args.text.trim() || args.text.length > 32000 || /[\x00-\x08\x0b-\x1f\x7f]/.test(args.text)))
+              return err(request.id, -32602, `${name}: text must be 1..32000 characters without terminal control codes (newlines and tabs allowed)`);
+            const sessions = ctx.sessions ? await ctx.sessions() : await detectAgents(ctx.workspace.path);
+            const candidates = sessions.filter(s => (!args.source || s.source === args.source) && (!args.session_id || s.sessionId === args.session_id));
+            const repos = await ctx.workspace.listRepos();
+            if (args.repo_id && !repos.some(r => r.id === args.repo_id)) return err(request.id, -32602, `${name}: project not found`);
+            const entries = await Promise.all(repos.map(async repo => ({ repo, worktrees: await listWorktrees(repo.path) })));
+            const roots = entries.flatMap(e => e.worktrees.filter(w => !w.bare).map(w => w.path));
+            const registered = candidates.filter(s => entries.some(e => (!args.repo_id || e.repo.id === args.repo_id) && e.worktrees.some(w => !w.bare && agentsForWorktree(w.path, [s], roots).length)));
+            if (registered.length !== 1) return err(request.id, -32602, `${name}: ${registered.length ? "ambiguous session; supply source" : "session not found in the registered project(s)"}`);
+            const session = registered[0]!;
+            if (name === "send_session_message") {
+              if (!ctx.sendSessionMessage) throw new Error("Session messaging is unavailable in this daemon");
+              const delivery = await ctx.sendSessionMessage(session, args.text as string);
+              await ctx.events.append({ type: "mcp_send_session_message", actor: "agent", payload: { source: session.source, sessionId: session.sessionId, characters: (args.text as string).length, ...delivery } });
+              return ok(request.id, textContent(JSON.stringify({ ok: true, source: session.source, sessionId: session.sessionId, ...delivery })));
+            }
+            const { body } = await getSessionResponseJson(session.agent, session.source, undefined, 2000);
+            const transcript = JSON.parse(body) as NormalizedSession;
+            const result = recentSessionMessages(transcript.messages, { limit: limit as number, offset: offset as number, maxChars: maxChars as number, verbose: args.verbosity === "verbose" });
+            return ok(request.id, textContent(JSON.stringify({ source: session.source, sessionId: session.sessionId, ...result, limit, offset, nextOffset: result.hasMore ? (offset as number) + (limit as number) : null })));
           }
           case "list_sessions":
           case "search_sessions": {
