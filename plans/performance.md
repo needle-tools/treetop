@@ -892,6 +892,15 @@ free) and repeated `ENOSPC` writes in daemon diagnostics. That is an independent
 startup/reliability risk and requires freeing disk space; session code must not
 silently reinterpret it as malformed transcript data.
 
+### Visible terminal recovery after sleep (2026-10-22)
+
+Visible terminal transport drops now reattach the existing PTY with exponential
+backoff (1s to 30s), also retrying immediately on focus, online, or becoming
+visible. Recovery resets the renderer before daemon backlog replay. Exit frames
+and component teardown cancel retries; automatic recovery never spawns a second
+PTY. Retry remains available while reconnecting. Scheduler behavior is covered
+in `packages/ui/test/terminal-reconnect.test.ts`.
+
 ### Offscreen exited-terminal reconnect storm (2026-09-01)
 
 A later production capture showed WebKit at 106–151% CPU, 3.1 GB RSS, and a

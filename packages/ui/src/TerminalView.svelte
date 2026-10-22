@@ -62,6 +62,7 @@
   import { settingValue, getSetting, setSetting } from "./settings-registry";
   import { msSinceScroll, SCROLL_QUIET_MS } from "./scroll-activity";
   import { shouldAutofocusOnWsOpen } from "./terminal-autofocus";
+  import { createTerminalReconnect } from "./terminal-reconnect";
 
   type PasteDebugExtra = Record<string, string | number | boolean | null>;
 
@@ -585,6 +586,17 @@
    *  `triedAttachFallback` makes the fallback one-shot. */
   let attachedThisAttempt = false;
   let triedAttachFallback = false;
+  let reconnecting = false;
+  const reconnect = createTerminalReconnect(() => {
+    if (!terminalId || sawExitFrame) return;
+    error = "";
+    wsErrored = false;
+    phase = "starting";
+    void spawnPtyAndConnect(terminalId);
+  });
+  const wakeReconnect = () => {
+    if (!document.hidden) reconnect.wake();
+  };
 
   // Working-state plumbing. `lastActivityTs` is a plain mutable held
   // outside Svelte's reactive graph (never referenced from the
@@ -887,6 +899,11 @@
    *  buffer rather than the previous attempt's garbage scrollback. */
   function retry() {
     if (phase !== "error") return;
+    if (reconnecting) {
+      reconnect.wake();
+      return;
+    }
+    reconnect.reset();
     if (ws) {
       try {
         ws.close(1000, "retry");
@@ -902,7 +919,7 @@
     void spawnPtyAndConnect();
   }
 
-  async function spawnPtyAndConnect() {
+  async function spawnPtyAndConnect(reconnectId?: string) {
     attachedThisAttempt = false;
     sawExitFrame = false;
     firstControlFrameLogged = false;
@@ -914,7 +931,9 @@
     flushTerminalStartupLog("spawn-flow-start");
     try {
       let id: string;
-      if (attachTermId && !triedAttachFallback) {
+      if (reconnectId) {
+        id = reconnectId;
+      } else if (attachTermId && !triedAttachFallback) {
         // Reattach path — daemon already has this PTY alive (see GET
         // /api/shells). Skip the spawn POST and go straight to WS. If the
         // PTY is actually gone (e.g. the daemon restarted since this
@@ -983,6 +1002,15 @@
       ws = new WebSocket(url);
       ws.binaryType = "arraybuffer";
       ws.onopen = () => {
+        reconnect.reset();
+        reconnecting = false;
+        // The daemon replays its backlog on attach. Start with a clean
+        // renderer so that replay does not duplicate the previous screen.
+        if (reconnectId) {
+          writeBuffer.flush();
+          visibleWriteQueue = [];
+          xterm?.reset();
+        }
         phase = "live";
         logTerminalStartup("ws-open", {
           wsOpenMs: roundMs(performance.now() - wsCreatedAt),
@@ -1041,6 +1069,7 @@
           try {
             const obj = JSON.parse(ev.data);
             if (obj?.type === "exit") {
+              reconnect.reset();
               sawExitFrame = true;
               exitInfo = { code: obj.code, signal: obj.signal };
               phase = "exited";
@@ -1118,6 +1147,21 @@
         });
         flushTerminalStartupLog("ws-close");
         if (phase === "exited" || phase === "error") return;
+        // A previously live PTY survives transport failures. Reattach the
+        // same id; never spawn a second process just because Wi-Fi or sleep
+        // interrupted this socket. Retry handshake failures with backoff too.
+        if (
+          !sawExitFrame &&
+          (phase === "live" || reconnectId) &&
+          [1000, 1001, 1005, 1006, 1011, 1012, 1013].includes(ev.code)
+        ) {
+          error = describeWsClose(ev.code, ev.reason);
+          phase = "error";
+          reconnecting = true;
+          reconnect.schedule();
+          return;
+        }
+        reconnecting = false;
         if (
           ev.code === 1000 &&
           !wsErrored &&
@@ -1541,7 +1585,12 @@
     // IntersectionObserver only tracks in-viewport geometry, so without this a
     // backgrounded (undrained) socket stays "visible" to the daemon and its
     // output buffer grows unbounded — see sendVisibilityState.
-    onDocVisibility = () => sendVisibilityState();
+    onDocVisibility = () => {
+      sendVisibilityState();
+      wakeReconnect();
+    };
+    window.addEventListener("online", wakeReconnect);
+    window.addEventListener("focus", wakeReconnect);
     document.addEventListener("visibilitychange", onDocVisibility);
 
     // Focus/blur on the xterm container (the inner textarea bubbles
@@ -1611,6 +1660,9 @@
   }
 
   onDestroy(() => {
+    reconnect.dispose();
+    window.removeEventListener("online", wakeReconnect);
+    window.removeEventListener("focus", wakeReconnect);
     if (workingTicker !== null) {
       clearInterval(workingTicker);
       workingTicker = null;
@@ -2143,11 +2195,14 @@
   role="presentation"
 >
   {#if phase === "starting"}
-    <LoadingOverlay text="starting terminal…" />
+    <LoadingOverlay
+      text={reconnecting ? "reconnecting terminal…" : "starting terminal…"}
+    />
   {/if}
   {#if phase === "error"}
     <div class="overlay error">
       <span class="error-msg">{error || "terminal error"}</span>
+      {#if reconnecting}<span>Reconnecting automatically…</span>{/if}
       <button type="button" class="retry-btn" on:click={retry}>Retry</button>
     </div>
   {/if}
