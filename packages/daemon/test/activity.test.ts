@@ -8,6 +8,8 @@ import {
   onActivity,
   startActivityTail,
   codexCliWorkingFromEntry,
+  markCodexCliInterrupted,
+  expireInactiveCodexCliStates,
   getCodexCliStates,
   onCodexCliState,
   type ActivityEvent,
@@ -119,7 +121,27 @@ describe("Codex CLI turn state", () => {
       await waitFor(true);
       await appendFile(source, line("turn_aborted"));
       await waitFor(false);
-      expect(snapshots).toEqual([true, false, true, false]);
+      await appendFile(source, line("task_started"));
+      await waitFor(true);
+      const afterActivity = Date.now();
+      expireInactiveCodexCliStates(afterActivity + 9 * 60_000);
+      expect(getCodexCliStates().find(state => state.source === source)?.working).toBe(true);
+      expireInactiveCodexCliStates(afterActivity + 10 * 60_000);
+      await waitFor(false);
+      await appendFile(source, line("token_count"));
+      await waitFor(true);
+      markCodexCliInterrupted("other-session");
+      expect(getCodexCliStates().find(state => state.source === source)?.working).toBe(true);
+      markCodexCliInterrupted("cli");
+      await waitFor(false);
+      await appendFile(source, line("token_count"));
+      await delay(40);
+      expect(getCodexCliStates().find(state => state.source === source)?.working).toBe(false);
+      await appendFile(source, line("task_started"));
+      await waitFor(true);
+      await appendFile(source, line("task_complete"));
+      await waitFor(false);
+      expect(snapshots).toEqual([true, false, true, false, true, false, true, false, true, false]);
     } finally {
       stop();
       unsubscribe();

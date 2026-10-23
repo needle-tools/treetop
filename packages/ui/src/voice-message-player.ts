@@ -70,6 +70,7 @@ export class VoiceMessagePlayer {
       closed = false,
       playbackStarted = false,
       finished = false;
+    let stage = "preparing the audio connection";
     let lastBytes = 0,
       lastEnergy = 0,
       lastAudioAt = Date.now(),
@@ -87,7 +88,7 @@ export class VoiceMessagePlayer {
     };
     this.cancel = () => fail("Voice message cancelled");
     const timer = setTimeout(
-      () => fail("Voice message timed out"),
+      () => fail(`Voice message timed out while ${stage}`),
       this.deps.timeoutMs ?? 90_000,
     );
     const channel = peer.createDataChannel("oai-events");
@@ -95,7 +96,15 @@ export class VoiceMessagePlayer {
     const ready = new Promise<void>((res) => {
       connected = res;
     });
-    channel.onopen = () => connected();
+    let channelOpen = false,
+      sessionStarted = false;
+    const connectWhenReady = () => {
+      if (channelOpen && sessionStarted) connected();
+    };
+    channel.onopen = () => {
+      channelOpen = true;
+      connectWhenReady();
+    };
     channel.onmessage = (event) => {
       if (typeof event.data !== "string") return;
       let message: any;
@@ -104,6 +113,12 @@ export class VoiceMessagePlayer {
       } catch {
         return;
       }
+      if (message.type === "session.started") {
+        sessionStarted = true;
+        connectWhenReady();
+      }
+      if (message.type === "output_transcript.added")
+        stage = "waiting for Codex to finish speaking";
       if (
         [
           "output_audio_buffer.stopped",
@@ -114,6 +129,7 @@ export class VoiceMessagePlayer {
         finished = true;
       if (message.type === "turn.done" && message.turn?.role === "assistant")
         finished = true;
+      if (finished) stage = "waiting for audio playback to finish";
       if (message.type === "session.closed")
         fail("Voice session closed before playback completed");
       if (message.type === "error")
@@ -211,6 +227,7 @@ export class VoiceMessagePlayer {
           done,
         ]);
       }
+      stage = "starting the Codex voice session";
       const started = await this.deps.request("/api/voice/start", {
         cwd,
         text,
@@ -223,8 +240,10 @@ export class VoiceMessagePlayer {
         throw new Error("Codex did not return a speech connection");
       if (failure) throw failure;
       await peer.setRemoteDescription({ type: "answer", sdp: started.sdp });
+      stage = "waiting for the Codex audio session to become ready";
       await Promise.race([ready, done]);
       if (failure) throw failure;
+      stage = "waiting for Codex to produce speech";
       await this.deps.request("/api/voice/speak", { threadId, text });
       await done;
     } finally {

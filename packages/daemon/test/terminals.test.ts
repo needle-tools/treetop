@@ -16,6 +16,7 @@ import {
   detectAgentLabel,
   detectConfigError,
   detectAwaitingInput,
+  CodexInterruptionTracker,
   nextStickyConfigError,
   terminalGoneReason,
   makeTerminalId,
@@ -41,6 +42,19 @@ import { tmpdir } from "node:os";
 import { join, sep } from "node:path";
 
 const isWin = process.platform === "win32";
+
+test("Codex interruption notices are explicit, survive split output and reset their carry on input", () => {
+  const tracker = new CodexInterruptionTracker();
+  const data = (text: string) => new TextEncoder().encode(text);
+  expect(tracker.observe(data("Working (10s · esc to interrupt)"))).toBe(false);
+  expect(tracker.observe(data("\n\x1b[31m■ Conversation inter"))).toBe(false);
+  expect(tracker.observe(data("rupted - use /feedback if something went wrong\x1b[0m\n"))).toBe(true);
+  expect(tracker.observe(data("\n› Ask Codex to do anything"))).toBe(false);
+  expect(tracker.observe(data("quoted: Conversation interrupted - use /feedback if something went wrong"))).toBe(false);
+  tracker.observe(data("\n■ Conversation inter"));
+  tracker.reset();
+  expect(tracker.observe(data("rupted - use /feedback if something went wrong\n"))).toBe(false);
+});
 
 test("Codex approval and question footers report waiting across ANSI and split output chunks", () => {
   const detect = (parts: string[]) => {

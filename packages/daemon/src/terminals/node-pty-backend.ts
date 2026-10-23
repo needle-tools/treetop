@@ -35,6 +35,7 @@ const REPLAY_CAP = 256 * 1024; // 256KB scrollback per terminal
 const WORKING_IDLE_MS = 1500;
 
 interface InternalTerm {
+  interruptionTracker?: CodexInterruptionTracker;
   inputRevision?: number;
   id: string;
   pid: number;
@@ -132,6 +133,18 @@ function stripAnsi(text: string): string {
       // bare ESC
       .replace(/\x1b/g, "")
   );
+}
+
+export class CodexInterruptionTracker {
+  private decoder = new TextDecoder();
+  private carry = "";
+  reset(): void { this.carry = ""; this.decoder = new TextDecoder(); }
+  observe(bytes: Uint8Array): boolean {
+    this.carry = (this.carry + this.decoder.decode(bytes, { stream: true })).slice(-4096);
+    const interrupted = /(?:^|\r|\n)\s*■\s*Conversation interrupted\s*[-–—]\s*use \/feedback if something went wrong/.test(stripAnsi(this.carry));
+    if (interrupted) this.carry = "";
+    return interrupted;
+  }
 }
 
 function getTailText(buffer: Uint8Array[], bufferBytes: number): string {
@@ -282,6 +295,11 @@ export function makeTerminalId(seq: number): string {
 }
 
 export class NodePtyBackend implements PtyBackend {
+  private codexInterruptedListeners = new Set<(sessionId: string) => void>();
+  onCodexInterrupted(listener: (sessionId: string) => void): () => void {
+    this.codexInterruptedListeners.add(listener);
+    return () => { this.codexInterruptedListeners.delete(listener); };
+  }
   private helper: Subprocess<"pipe", "pipe", "inherit"> | null = null;
   private helperReady: Promise<void> | null = null;
   private terms = new Map<string, InternalTerm>();
@@ -423,6 +441,12 @@ export class NodePtyBackend implements PtyBackend {
         // reattaching client can have them re-asserted after the scrollback
         // replay — the enable is usually older than the replayed tail.
         t.decModes.observe(buf);
+        if (t.agent === "codex" && t.ownerId) {
+          t.interruptionTracker ??= new CodexInterruptionTracker();
+          if (t.interruptionTracker.observe(buf)) {
+            for (const listener of this.codexInterruptedListeners) listener(t.ownerId);
+          }
+        }
         t.lastOutputAt = new Date().toISOString();
         this.appendBuffer(t, buf);
         for (const s of t.subs) s.onData(buf);
@@ -648,6 +672,7 @@ export class NodePtyBackend implements PtyBackend {
       },
       inputRevision: () => t.inputRevision ?? 0,
       write: (data) => {
+        t.interruptionTracker?.reset();
         t.inputRevision = (t.inputRevision ?? 0) + 1;
         const buf =
           typeof data === "string"

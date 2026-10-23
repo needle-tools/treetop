@@ -83,6 +83,7 @@ import {
   onActivity,
   getCodexCliStates,
   onCodexCliState,
+  markCodexCliInterrupted,
 } from "./activity";
 import {
   getSessionResponseJson,
@@ -10934,6 +10935,7 @@ const stopActivity = await startActivityTail({
   detectAgents: sharedDetectAgents,
 });
 onActivity((ev) => broadcast("activity", ev));
+terminalBackend.onCodexInterrupted(markCodexCliInterrupted);
 onCodexCliState(() => broadcast("codex_cli_state", getCodexCliStates()));
 console.log("supergit daemon: agent activity tail started");
 

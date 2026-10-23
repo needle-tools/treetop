@@ -285,6 +285,12 @@ guide concise observable progress, not private reasoning or per-tool narration.
 Direct subscription probe played the full requested sentence through Edge,
 with `getUserMedia` replaced by a throwing guard, then stopped its owned thread.
 
+A later recorded request accepted `appendText` at 14:07:30Z but produced no
+transcript before client cleanup at 14:08:57Z. Speech submission now waits for
+both data-channel open and the backend `session.started` event, closing a
+startup race; timeout messages identify readiness, speech, or playback stages.
+The recording establishes silent output, not the upstream reason for it.
+
 The new running build reached connected WebRTC state, but the affected sessions
 produced no transcript events. Windows default capture was unmuted at 72%.
 An isolated Edge connection using synthesized speech reproduced the silent
@@ -327,6 +333,18 @@ Five new lifecycle regressions plus existing voice tests pass (15 tests total).
 No production daemon restart or live voice interaction was performed.
 
 ### Agent session messages (2026-10-22)
+
+CLI interruption fallback: an observed session ended its JSONL activity with
+`task_started` and never persisted `turn_aborted`, despite showing Codex's
+explicit interruption banner. The PTY now recognizes that banner across ANSI
+and split chunks and clears the matching provider session's live working flag.
+Only positive interruption notices affect the fallback; quiet tools remain
+working, other sessions are untouched, and the next `task_started` resumes it.
+As a final fallback, ten minutes without new Codex transcript activity clears
+the working indicator (checked every ten seconds), without killing the session.
+Fresh activity in an unfinished turn restores it; an explicit interruption
+closes the turn so later metadata cannot reactivate it. Quiet tools can appear
+idle after the timeout until they produce another activity record.
 
 Command URL capture now subscribes until terminal exit instead of stopping
 after two minutes. Slow installs/Vite startup and later server restarts keep

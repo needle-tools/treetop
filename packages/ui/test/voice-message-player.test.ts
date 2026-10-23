@@ -26,6 +26,7 @@ test("one-shot voice plays, then closes audio and the remote thread without micr
     setRemoteDescription: async () => {
       peer.ontrack({ streams: [{}] });
       channel.onopen();
+      channel.onmessage({ data: JSON.stringify({ type: "session.started" }) });
     },
     getStats: async () =>
       new Map([
@@ -79,6 +80,55 @@ test("one-shot voice plays, then closes audio and the remote thread without micr
     key: "mcp.voiceMessage",
     default: true,
   });
+});
+
+test("speech waits for Codex session readiness after the data channel opens", async () => {
+  const channel: any = { close() {} };
+  let speechSent = false;
+  let offerSet!: () => void;
+  const remoteReady = new Promise<void>((resolve) => {
+    offerSet = resolve;
+  });
+  const player = new VoiceMessagePlayer({
+    createPeer: () =>
+      ({
+        iceGatheringState: "complete",
+        localDescription: { sdp: "offer" },
+        createDataChannel: () => channel,
+        addTrack() {},
+        createOffer: async () => ({}),
+        setLocalDescription: async () => {},
+        setRemoteDescription: async () => {
+          channel.onopen();
+          offerSet();
+        },
+        getStats: async () => new Map(),
+        close() {},
+      }) as any,
+    createAudio: () => ({ pause() {} }) as any,
+    createSilence: () => ({
+      stream: { getTracks: () => [] } as any,
+      close: async () => {},
+    }),
+    request: async (path) => {
+      if (path.endsWith("start")) return { threadId: "speech", sdp: "answer" };
+      if (path.endsWith("speak")) speechSent = true;
+      return { ok: true };
+    },
+  });
+  const playback = player.play("Hello", "/repo");
+  void playback.catch(() => {});
+  try {
+    await remoteReady;
+    await Bun.sleep(5);
+    expect(speechSent).toBe(false);
+    channel.onmessage({ data: JSON.stringify({ type: "session.started" }) });
+    await Bun.sleep(5);
+    expect(speechSent).toBe(true);
+  } finally {
+    player.stop();
+    await expect(playback).rejects.toThrow("cancelled");
+  }
 });
 
 test("voice startup errors release local resources and do not claim playback", async () => {
