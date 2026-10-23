@@ -93,6 +93,8 @@ interface InternalTerm {
  *    - Generic shell y/n confirmations. */
 const AWAITING_INPUT_PATTERNS: RegExp[] = [
   /enter to submit\s*\|\s*esc to cancel/i,
+  // Codex command/file approvals and numbered user-input questions.
+  /enter to (?:confirm|submit)\s*(?:or\s+|[·•|]\s*)(?:esc|escape) to cancel/i,
   /press enter to continue/i,
   /\(y\/n\)\s*[?:]/i,
   /\[Y\/n\]\s*$/m,
@@ -151,7 +153,7 @@ function getTailText(buffer: Uint8Array[], bufferBytes: number): string {
   return stripAnsi(new TextDecoder("utf-8", { fatal: false }).decode(tail));
 }
 
-function isAwaitingInput(buffer: Uint8Array[], bufferBytes: number): boolean {
+export function detectAwaitingInput(buffer: Uint8Array[], bufferBytes: number): boolean {
   const text = getTailText(buffer, bufferBytes);
   return text.length > 0 && AWAITING_INPUT_PATTERNS.some((re) => re.test(text));
 }
@@ -438,7 +440,7 @@ export class NodePtyBackend implements PtyBackend {
         }, WORKING_IDLE_MS);
         // Recompute awaiting-input state after each output chunk. If
         // the flag flips, notify subscribers so the UI can outline.
-        const nextAwaiting = isAwaitingInput(t.buffer, t.bufferBytes);
+        const nextAwaiting = detectAwaitingInput(t.buffer, t.bufferBytes);
         // Sticky so the pill doesn't flicker off when the modal repaints
         // and scrolls the matched text out of the scanned tail.
         const nextConfigErr = nextStickyConfigError(

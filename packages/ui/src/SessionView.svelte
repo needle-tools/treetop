@@ -1248,9 +1248,9 @@
   $: cliWorking =
     !cliExited &&
     isCodexCliWorking($codexCliStates, source, effectiveSessionId, daemonId);
-  $: if (agent === "codex" && mode === "terminal") working = cliWorking;
+  $: if (agent === "codex" && mode === "terminal") working = codexVisibleWorking(cliWorking, awaitingInput);
   function reportTerminalWorking(outputWorking: boolean): void {
-    working = resolveTerminalWorking(agent, outputWorking, cliWorking);
+    working = resolveTerminalWorking(agent, outputWorking, cliWorking, awaitingInput);
     onWorkingChange(working);
   }
 

@@ -39,6 +39,7 @@ test("command URL hover preserves horizontal scrolling and remains clickable", {
       <div style="width:500px; margin:40px">
         <Actions path="/test/project" customLinks={links}
           commandUrls={{'12':['http://localhost:3000', 'http://localhost:3001'], '13':['http://localhost:4000']}}
+          onEditCustomLink={() => {}}
           openIn={() => {}} openRemote={() => {}} />
       </div>
       <div style="width:900px; margin:40px">
@@ -114,6 +115,12 @@ test("command URL hover preserves horizontal scrolling and remains clickable", {
       "the add button and built-in apps must leave both commands fully visible");
     const editableChip = screenshotRow.locator(".command-actions .custom-link-wrap").last();
     await editableChip.hover();
+    const chipWidths = await editableChip.evaluate(el => ({
+      wrap: el.getBoundingClientRect().width,
+      button: el.querySelector(".custom-link-btn")!.getBoundingClientRect().width,
+    }));
+    assert(Math.abs(chipWidths.wrap - chipWidths.button) < 1,
+      "editing must not reserve extra space beside command buttons");
     const editBounds = await screenshotRow.locator(".command-actions").evaluate((el) => ({
       clipTop: el.getBoundingClientRect().top,
       pencilTop: el.querySelector(".custom-link-edit")!.getBoundingClientRect().top,
@@ -176,6 +183,11 @@ test("command URL hover preserves horizontal scrolling and remains clickable", {
         scroll: el.scrollLeft,
         width: el.scrollWidth,
       }));
+      const clickTarget = await icon.evaluate(el => {
+        const bounds = el.getBoundingClientRect();
+        return document.elementFromPoint(bounds.x + bounds.width / 2, bounds.y + bounds.height / 2)?.closest(".cmd-url-inner") === el;
+      });
+      assert(clickTarget, "hover-revealed edit pencil must not cover the command URL open button");
       assert.deepEqual(
         after,
         before,

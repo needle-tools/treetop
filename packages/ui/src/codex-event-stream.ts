@@ -34,8 +34,9 @@ export function resolveTerminalWorking(
   agent: string,
   outputWorking: boolean,
   cliWorking: boolean,
+  awaitingInput = false,
 ): boolean {
-  return agent === "codex" ? cliWorking : outputWorking;
+  return !awaitingInput && (agent === "codex" ? cliWorking : outputWorking);
 }
 import {
   canonicalCodexToolName,

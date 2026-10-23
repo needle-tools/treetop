@@ -920,7 +920,7 @@
           class:dot-awaiting-urgent={e.awaiting &&
             isAwaitingUrgent(e.source, nowTick)}
           class:dot-exited={e.exited}
-          class:dot-terminal-active={e.terminalActive}
+          class:dot-terminal-active={e.terminalActive && !e.awaiting}
           class:dot-pulsing={isPulsing(e, nowTick)}
           class:dock-dot-focused={focusedSource === e.source}
           class:dock-dot-repo-first={i > 0 &&

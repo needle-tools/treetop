@@ -1361,6 +1361,7 @@
         : cmdUrls?.[0]}
     <span
       class="custom-link-wrap"
+      class:editable={!!onEditCustomLink && !iconOnly}
       class:icon-only={iconOnly}
       class:draggable={canDragLink(link)}
       class:dragging={dragId === link.id}
@@ -2011,25 +2012,24 @@
   .custom-link-wrap.dragging :global(.open-in-icon) {
     cursor: grabbing;
   }
-  /* Edit pencil — hover-revealed at the chip's top-right. The visible
-     glyph stays at 10px, but the button itself
-     carries enough padding to make a comfortable ~22px click target.
-     Keep that hitbox inside the chip so it does not add scroll width.
-     Reads as "tweak" rather than "remove now" — the
-     destructive delete lives inside the edit popover. */
+  /* Swap the leading icon for a pencil on hover/focus. Keep chip geometry
+     stable and leave the command URL open button at the right unobstructed. */
   .custom-link-edit {
     position: absolute;
+    left: 0;
     top: 0;
-    right: 0;
-    width: 22px;
+    bottom: 0;
+    margin: auto 0;
+    width: 24px;
     height: min(100%, 22px);
     border: none;
-    padding: 6px;
-    background: var(--surface-3);
+    padding: 4px;
+    background: transparent;
     border-radius: 0.35rem;
     color: var(--text-muted);
     cursor: pointer;
     opacity: 0;
+    pointer-events: none;
     transition:
       opacity 0.12s,
       color 0.12s,
@@ -2045,6 +2045,12 @@
   .custom-link-edit:hover,
   .custom-link-edit:focus-visible {
     opacity: 1;
+    pointer-events: auto;
+  }
+  .custom-link-wrap.editable:hover .custom-link-btn > :is(.open-in-icon, .custom-link-favicon),
+  .custom-link-wrap.editable:focus-within .custom-link-btn > :is(.open-in-icon, .custom-link-favicon),
+  .custom-link-wrap.editing .custom-link-btn > :is(.open-in-icon, .custom-link-favicon) {
+    opacity: 0;
   }
   .custom-link-edit:hover,
   .custom-link-edit:focus-visible {

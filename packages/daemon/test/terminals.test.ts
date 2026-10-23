@@ -15,6 +15,7 @@ import {
   NodePtyBackend,
   detectAgentLabel,
   detectConfigError,
+  detectAwaitingInput,
   nextStickyConfigError,
   terminalGoneReason,
   makeTerminalId,
@@ -40,6 +41,19 @@ import { tmpdir } from "node:os";
 import { join, sep } from "node:path";
 
 const isWin = process.platform === "win32";
+
+test("Codex approval and question footers report waiting across ANSI and split output chunks", () => {
+  const detect = (parts: string[]) => {
+    const buffers = parts.map(part => new TextEncoder().encode(part));
+    return detectAwaitingInput(buffers, buffers.reduce((size, part) => size + part.length, 0));
+  };
+  expect(detect(["Would you like to run the following command?\n", "1. Yes, proceed (y)\n2. No, tell Codex what to do differently (esc)\n", "\x1b[2mPress enter to con", "firm or esc to cancel\x1b[0m"])).toBe(true);
+  expect(detect(["Would you like to make the following edits?\n1. Yes, proceed (y)\nPress Enter to confirm or Esc to cancel"])).toBe(true);
+  expect(detect(["1. First choice\n2. Second choice\nenter to submit · esc to cancel"])).toBe(true);
+  expect(detect(["Would you like to run the following command? This is an explanation, not an interactive prompt."])).toBe(false);
+  expect(detect(["Working on your request..."])).toBe(false);
+  expect(detect([])).toBe(false);
+});
 
 describe.skipIf(isWin)("NodePtyBackend integration", () => {
   const backend = new NodePtyBackend();

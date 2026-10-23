@@ -76,6 +76,8 @@ test("CLI state survives I/O animation and silence and is isolated by daemon/ses
   expect(resolveTerminalWorking("codex", true, false)).toBe(false);
   expect(resolveTerminalWorking("codex", false, true)).toBe(true);
   expect(resolveTerminalWorking("claude", true, false)).toBe(true);
+  expect(resolveTerminalWorking("codex", true, true, true)).toBe(false);
+  expect(resolveTerminalWorking("codex", false, true, false)).toBe(true);
   replaceCodexCliStates([]);
   expect(isCodexCliWorking(get(codexCliStates), "a.jsonl")).toBe(false);
 });

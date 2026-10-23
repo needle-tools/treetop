@@ -308,6 +308,17 @@ No production daemon restart or live voice interaction was performed.
 
 ### Agent session messages (2026-10-22)
 
+2026-10-23: Command-chip edit pencils replace the leading icon on hover/focus,
+adding no extra chip width and preserving access to detected-URL open buttons.
+The browser regression covers chip widths, pointer hit testing, URL clicks and
+scroll bounds with editing enabled.
+
+2026-10-23: Codex CLI approval/question footers (`enter to confirm or esc to
+cancel`, and `enter to submit · esc to cancel`) now set terminal awaiting-input
+state. Awaiting suppresses working and terminal-I/O spinner motion in the dock,
+so pending approval uses the existing waiting pulse even while the CLI turn
+remains open. Regression tests cover ANSI/split output and waiting precedence.
+
 2026-10-23: `get_ui_context` reports the focused session separately from the
 last active session, active project, viewport projects, window ID and snapshot
 age. Browser/native windows publish ephemeral presence; reports expire after
