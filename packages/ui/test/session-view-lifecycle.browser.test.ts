@@ -1299,7 +1299,9 @@ describe("SessionView browser lifecycle", { concurrency: false }, () => {
         await round.locator(":scope > summary").click();
       }
       assert((await round.locator(".work-overview-meta").first().innerText()).includes("fresh input 700"));
-      assert((await round.locator(".work-overview-meta").first().innerText()).includes("cached 1,300"));
+      const overviewText = await round.locator(".work-overview-meta").first().innerText();
+      const cachedTotal = await currentPage.evaluate(() => (1_300).toLocaleString());
+      assert(overviewText.includes(`cached ${cachedTotal}`), overviewText);
       assert((await round.locator(".work-overview-meta").first().innerText()).includes("output 200"));
       assert((await round.locator(".work-overview-meta").first().innerText()).includes("cache write 20 (included in fresh input)"));
       assert((await round.locator(".work-overview-meta").first().innerText()).includes("reasoning 30 (included in output)"));
