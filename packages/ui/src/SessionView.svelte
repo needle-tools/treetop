@@ -41,6 +41,7 @@
     codexAgentSettings,
     effortIcon,
     resolveCodexSessionModel,
+    codexSessionModelLabel,
     shouldLoadCodexModelCatalog,
     type CodexModelInfo,
   } from "./claude-session-menu";
@@ -1920,7 +1921,7 @@
 
   $: codexAgentLabel =
     agent === "codex"
-      ? codexModel || codexDetectedModel || "Codex App"
+      ? codexSessionModelLabel({ mode, selectedModel: codexModel, detectedModel: codexDetectedModel })
       : undefined;
 
   /** Pin this session as a sticky-link chip on the current

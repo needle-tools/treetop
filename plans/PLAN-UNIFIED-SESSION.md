@@ -2,6 +2,12 @@
 
 ## Problem
 
+2026-10-23: Codex terminal headers preferred the persisted launch model over
+the latest detected JSONL model, hiding switches made inside the running TUI.
+Terminal labels now prefer the detected model; visual sessions retain the
+selected next-turn model. Covered by the session-menu behavior tests and the
+existing daemon model detection tests.
+
 Two separate components render "a live TUI session":
 
 - **NewSessionCol** — fresh sessions (Claude, Codex, shell). Shows a

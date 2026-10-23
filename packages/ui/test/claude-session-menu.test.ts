@@ -7,6 +7,7 @@ import {
   codexAgentSettings,
   parseCodexAccessValue,
   resolveCodexSessionModel,
+  codexSessionModelLabel,
   effortIcon,
   shouldLoadCodexModelCatalog,
 } from "../src/claude-session-menu";
@@ -568,6 +569,12 @@ describe("shared Codex model catalog", () => {
 });
 
 describe("resolveCodexSessionModel", () => {
+  test("terminal headers follow model switches instead of the launch choice", () => {
+    expect(codexSessionModelLabel({ mode: "terminal", selectedModel: "gpt-6.1-sol", detectedModel: "gpt-6-astra" })).toBe("gpt-6-astra");
+    expect(codexSessionModelLabel({ mode: "terminal", selectedModel: "gpt-6.1-sol" })).toBe("gpt-6.1-sol");
+    expect(codexSessionModelLabel({ mode: "read", selectedModel: "gpt-6.1-sol", detectedModel: "gpt-6-astra" })).toBe("gpt-6.1-sol");
+    expect(codexSessionModelLabel({ mode: "terminal" })).toBe("Codex App");
+  });
   test("uses the detected session model before the saved app default", () => {
     expect(
       resolveCodexSessionModel({

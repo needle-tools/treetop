@@ -266,6 +266,18 @@ function cleanCodexModel(value: string | undefined): string | undefined {
   return trimmed ? trimmed : undefined;
 }
 
+/** Terminal model choices can change inside Codex independently of launch settings.
+ * Visual sessions keep showing their selected model for the next turn. */
+export function codexSessionModelLabel(opts: {
+  mode: "read" | "terminal";
+  selectedModel?: string;
+  detectedModel?: string;
+}): string {
+  const selected = cleanCodexModel(opts.selectedModel);
+  const detected = cleanCodexModel(opts.detectedModel);
+  return (opts.mode === "terminal" ? detected ?? selected : selected ?? detected) ?? "Codex App";
+}
+
 export function resolveCodexSessionModel(opts: {
   overrideModel?: string;
   detectedModel?: string;
