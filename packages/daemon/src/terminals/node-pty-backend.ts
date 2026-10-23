@@ -35,6 +35,7 @@ const REPLAY_CAP = 256 * 1024; // 256KB scrollback per terminal
 const WORKING_IDLE_MS = 1500;
 
 interface InternalTerm {
+  inputRevision?: number;
   id: string;
   pid: number;
   ownerId?: string;
@@ -643,7 +644,9 @@ export class NodePtyBackend implements PtyBackend {
       get pid() {
         return t.pid;
       },
+      inputRevision: () => t.inputRevision ?? 0,
       write: (data) => {
+        t.inputRevision = (t.inputRevision ?? 0) + 1;
         const buf =
           typeof data === "string"
             ? Buffer.from(data, "utf-8")

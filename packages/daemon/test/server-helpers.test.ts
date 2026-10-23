@@ -1183,6 +1183,8 @@ describe("read-only daemon route policy", () => {
     expect(readonlyRouteDecision("POST", "/api/exists")).toEqual({
       allowed: true,
     });
+    expect(readonlyRouteDecision("POST", "/api/ui-context")).toEqual({ allowed: true });
+    expect(readonlyRouteDecision("POST", "/api/ui-action-result")).toEqual({ allowed: true });
     expect(readonlyRouteDecision("POST", "/api/errors")).toEqual({
       allowed: true,
     });

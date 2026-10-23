@@ -140,6 +140,8 @@
   import { spawnNote, flyRestoreNote } from "./StickyNotesLayer.svelte";
   import { notesCountByAnchor, notesAll, type NoteShape } from "./notes-counts";
   import { sessionFocusRequest } from "./session-focus-store";
+  import { installUiContextPublisher, UI_CONTEXT_WINDOW_ID, applyUiAction } from "./ui-context-publisher";
+  import type { UiContextSnapshot, UiActionCommand } from "../../daemon/src/ui-context";
   import { installSessionWindowFocus } from "./session-window-focus";
   import EmojiPicker from "./EmojiPicker.svelte";
   import AnchorPicker from "./AnchorPicker.svelte";
@@ -6728,6 +6730,25 @@
             // we can't parse can't be a real mutation either.
           }
         }
+        if (payload.kind === "mcp_ui_action") {
+          void applyUiAction(payload as unknown as UiActionCommand, UI_CONTEXT_WINDOW_ID, {
+            focusSession: focusMcpSession,
+            focusProject: focusMcpProject,
+            setZenMode: setMcpZenMode,
+          }).catch(error => console.error("Treetop UI action acknowledgement failed", error));
+          return;
+        }
+        if (payload.kind === "mcp_focus_session") {
+          const request = payload as unknown as { source: string; sessionId: string; windowId: string };
+          if (request.windowId === UI_CONTEXT_WINDOW_ID) {
+            const entry = dockEntries.find(entry => entry.source === request.source || entry.transcriptSource === request.source || entry.resumeSessionId === request.sessionId);
+            if (entry) void focusVoiceSession(entry.source).then(() => {
+                const column = document.querySelector(`.session-col[data-session-source="${CSS.escape(entry.source)}"]`);
+                column?.querySelector<HTMLTextAreaElement>(".xterm-helper-textarea")?.focus({ preventScroll: true });
+              });
+          }
+          return;
+        }
         if (payload.kind === "mcp_open_session") {
           const opened = payload as unknown as { repoId: string; cwd: string; session: OpenSession };
           openSessionsByWt = mergeOpenedSession(openSessionsByWt, opened.cwd, opened.session) as typeof openSessionsByWt;
@@ -7563,6 +7584,90 @@
       return out as any;
     },
   );
+
+  async function focusMcpProject(repoId: string, cwd: string): Promise<void> {
+    let repo = repos.find(repo => !repo.daemonId && repo.id === repoId);
+    if (!repo) { await load(); repo = repos.find(repo => !repo.daemonId && repo.id === repoId); }
+    if (!repo) throw new Error("Project not found in this window");
+    const pathKey = (path: string) => {
+      const key = path.replace(/\\/g, "/").replace(/\/$/, "");
+      return /^[a-z]:/i.test(key) ? key.toLowerCase() : key;
+    };
+    const worktree = repo.worktrees?.find(wt => pathKey(wt.path) === pathKey(cwd));
+    if (!worktree) throw new Error("Worktree not loaded in this window; refresh the project and retry");
+    const key = repoPrefsKey(repo);
+    const visible = effectiveVisibleWorktrees(key, (repo.worktrees ?? []).map(wt => wt.path), visibleWorktreesByRepo);
+    if (!visible.includes(worktree.path)) visibleWorktreesByRepo = { ...visibleWorktreesByRepo, [key]: [...visible, worktree.path] };
+    const rowKey = `${repo.id}|${worktree.path}`;
+    if (zenRowKey !== null && zenRowKey !== rowKey) { zenRowKey = rowKey; notesShownInZen = false; resetZenMenu(); }
+    activeWorktreePath = worktree.path;
+    daemonDialogId = null;
+    unfoldRowIfFolded(rowKey);
+    await tick();
+    await tick();
+    const element = document.querySelector<HTMLElement>(`[data-wt-row="${CSS.escape(worktree.path)}"]`);
+    if (!element) throw new Error("Project row could not be revealed");
+    jumpToWorktreeRow(worktree.path);
+    element.tabIndex = -1;
+    element.focus({ preventScroll: true });
+  }
+
+  async function focusMcpSession(source: string, sessionId?: string): Promise<void> {
+    const entry = dockEntries.find(entry => entry.source === source || entry.transcriptSource === source || (!!sessionId && entry.resumeSessionId === sessionId));
+    if (entry) {
+      if (entry.repoId && entry.wtPath) await focusMcpProject(entry.repoId, entry.wtPath);
+      await focusVoiceSession(entry.source);
+    } else await focusSessionBySource(source);
+    const target = entry?.source ?? source;
+    const column = document.querySelector<HTMLElement>(`.session-col[data-session-source="${CSS.escape(target)}"]`);
+    if (!column) throw new Error("Session could not be revealed in this window");
+    focusedSource = target;
+    lastActiveSessionSource = target;
+    requestComposerFocus(target);
+    await tick();
+    column.querySelector<HTMLTextAreaElement>(".xterm-helper-textarea")?.focus({ preventScroll: true });
+    if (!column.contains(document.activeElement)) {
+      column.tabIndex = -1;
+      column.focus({ preventScroll: true });
+    }
+  }
+
+  async function setMcpZenMode(enabled: boolean, repoId?: string, cwd?: string): Promise<void> {
+    if (!enabled) {
+      if (zenRowKey !== null) toggleZenRow(zenRowKey);
+      await tick();
+      return;
+    }
+    if (!repoId || !cwd) throw new Error("Entering Zen requires a project and worktree");
+    await focusMcpProject(repoId, cwd);
+    const row = rows.find(row => row.repo.id === repoId && row.wt?.path === activeWorktreePath);
+    if (!row) throw new Error("Zen target row not found");
+    if (zenRowKey !== row.key) toggleZenRow(row.key);
+    await tick();
+  }
+
+  function currentUiContext(): UiContextSnapshot {
+    const session = (source: string | null | undefined) => {
+      const entry = dockEntries.find(entry => entry.source === source);
+      return entry ? { source: entry.source, ...(entry.resumeSessionId ? { sessionId: entry.resumeSessionId } : {}), agent: entry.agent, repoId: entry.repoId } : null;
+    };
+    const focusedSource = (document.activeElement?.closest(".session-col[data-session-source]") as HTMLElement | null)?.dataset.sessionSource;
+    const visibleKeys = new Set(Array.from(document.querySelectorAll<HTMLElement>("[data-wt-row]")).filter(element => {
+      if (document.hidden) return false;
+      const rect = element.getBoundingClientRect();
+      return rect.width > 0 && rect.height > 0 && rect.bottom > 0 && rect.top < window.innerHeight && rect.right > 0 && rect.left < window.innerWidth;
+    }).map(element => element.dataset.wtRow));
+    const visibleRows = rows.filter(row => visibleKeys.has(rowDomKey(row)));
+    const project = (repo: (typeof repos)[number]) => ({ id: repo.id, name: repo.name, path: repo.path, ...(repo.daemonId ? { daemonId: repo.daemonId } : {}), worktreePaths: visibleRows.filter(row => row.repo.id === repo.id).flatMap(row => row.wt ? [row.wt.path] : []) });
+    const activeRow = rows.find(row => zenRowKey ? row.key === zenRowKey : !!activeWorktreePath && row.wt?.path === activeWorktreePath);
+    return {
+      windowFocused: document.hasFocus(), visible: !document.hidden, zenMode: !!zenRowKey,
+      focusedSession: document.hasFocus() && !document.hidden ? session(focusedSource) : null,
+      lastActiveSession: session(lastActiveSessionSource),
+      activeProject: activeRow ? project(activeRow.repo) : null,
+      visibleProjects: repos.filter(repo => visibleRows.some(row => row.repo.id === repo.id)).map(project),
+    };
+  }
 
   function currentVoiceContext(): TreetopVoiceContext {
     return deriveVoiceContext({
@@ -8962,6 +9067,7 @@
     // AgentUsageChip's usage warnings) through the local stack.
     const unsubToasts = subscribeToasts((req) => addToast(req));
     const uninstallSessionWindowFocus = installSessionWindowFocus();
+    const uninstallUiContextPublisher = installUiContextPublisher(currentUiContext);
     void hydrateFromServer();
     document.addEventListener("click", handleDocClick);
     // Esc exits zen mode. We don't preventDefault — the browser's own
@@ -9161,6 +9267,7 @@
       unsubErrors();
       unsubToasts();
       uninstallSessionWindowFocus();
+      uninstallUiContextPublisher();
       unsubFocus();
       unsubResume();
       if (resumeLoadTimer) clearTimeout(resumeLoadTimer);

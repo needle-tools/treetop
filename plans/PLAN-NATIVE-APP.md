@@ -308,12 +308,41 @@ No production daemon restart or live voice interaction was performed.
 
 ### Agent session messages (2026-10-22)
 
+2026-10-23: `get_ui_context` reports the focused session separately from the
+last active session, active project, viewport projects, window ID and snapshot
+age. Browser/native windows publish ephemeral presence; reports expire after
+15 seconds and unknown focus is never inferred from the first open session.
+
+`focus_session` reveals an exact discovered transcript/open column and focuses
+its input when available; it does not resume a stopped agent. `focus_project`
+reveals and unfolds a registered project/worktree. `set_zen_mode` uses an
+explicit `enabled` boolean: entering requires `repo_id` (optional `cwd` selects
+a worktree), while exiting needs no target. Repeated calls preserve the desired
+state. All three accept `window_id` from `get_ui_context`, default to the focused
+or last active fresh reporting window, and wait for that window's application
+acknowledgement. Missing targets, UI errors and acknowledgement timeouts return
+errors rather than claiming success. These are in-app navigation controls;
+they do not activate OS windows. `list_notes` already reads full note content,
+anchors and tags; `anchor_prefix` filters repo/worktree/session-linked notes.
+
+`send_session_message` now defaults to `action: "stage"`: bracketed paste into
+a ready Claude/Codex terminal without Enter, with a request to reveal that
+column in the focused (or last active) reporting window. Review and press Enter
+manually, or explicitly call `action: "submit"` with the returned `draftId` as
+`draft_id`. Receipts expire after five minutes, are single-use, and reject any
+intervening terminal input. Stopped sessions can first be resumed through
+`open_session` with `resume_session_id`. Native Codex staging is not supported;
+`action: "send"` explicitly requests immediate terminal/native submission.
+Results distinguish `staged` from `submitted` and set `confirmed: false` rather
+than claiming transcript receipt. Verify through `read_session_messages` and
+never automatically retry an unconfirmed submission.
+
 MCP now exposes `send_session_message` and `read_session_messages`. Both require
 an exact `source` or `session_id` from discovery; optional `repo_id` narrows the
 target. Unknown, ambiguous and unregistered targets fail instead of guessing.
 Sending is only for an explicit user request, never an autonomous agent chat.
 
-Sends target a live Claude/Codex terminal (bracketed paste followed by Enter),
+Immediate sends target a live Claude/Codex terminal (bracketed paste followed by Enter),
 or one open native Codex column, retaining its model, approval and sandbox
 settings. Busy/confirmation-waiting terminals, busy native turns, stopped native
 columns and missing live transports fail without spawning a second agent.

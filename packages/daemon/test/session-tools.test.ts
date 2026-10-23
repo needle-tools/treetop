@@ -9,6 +9,7 @@ import {
   recentSessionMessages,
   sendTerminalSessionMessage,
   openCodexMessageTarget,
+  TerminalMessageDrafts,
 } from "../src/session-tools";
 
 test("native sends require one open, non-stopped Codex column and retain its execution settings", () => {
@@ -147,8 +148,13 @@ test("MCP reads a discovered transcript and sends only to an explicit registered
     workspace,
     events,
     sessions: async () => [session],
-    sendSessionMessage: async (target: unknown, text: string) => {
-      sent.push({ target, text });
+    sendSessionMessage: async (
+      target: unknown,
+      text: string,
+      action?: string,
+      draftId?: string,
+    ) => {
+      sent.push({ target, text, action, draftId });
       return { delivery: "terminal" };
     },
   };
@@ -175,7 +181,14 @@ test("MCP reads a discovered transcript and sends only to an explicit registered
     text: "Check the tests",
   });
   expect(send.error).toBeUndefined();
-  expect(sent).toEqual([{ target: session, text: "Check the tests" }]);
+  expect(sent).toEqual([
+    {
+      target: session,
+      text: "Check the tests",
+      action: "stage",
+      draftId: undefined,
+    },
+  ]);
   expect(JSON.parse(send.result.content[0].text)).toMatchObject({
     delivery: "terminal",
     sessionId: "target",
@@ -185,6 +198,8 @@ test("MCP reads a discovered transcript and sends only to an explicit registered
     { source, text: " " },
     { source: "unknown", text: "hello" },
     { source, text: "\u001b[A" },
+    { source, text: "hello", action: "bad" },
+    { source, text: "hello", action: "submit" },
   ]) {
     expect((await call("send_session_message", args)).error).toBeDefined();
   }
@@ -250,6 +265,18 @@ test("terminal delivery pastes into the identified live agent and never writes t
   } as any;
   await sendTerminalSessionMessage(backend as any, target, "one\ntwo");
   expect(writes).toEqual(["\u001b[200~one\ntwo\u001b[201~", "\r"]);
+  const staged = await sendTerminalSessionMessage(
+    backend as any,
+    target,
+    "review me",
+    false,
+  );
+  expect(staged).toMatchObject({
+    status: "staged",
+    confirmed: false,
+    terminalId: "pty",
+  });
+  expect(writes.at(-1)).toBe("\u001b[200~review me\u001b[201~");
   working = true;
   await expect(
     sendTerminalSessionMessage(backend as any, target, "hello"),
@@ -264,5 +291,39 @@ test("terminal delivery pastes into the identified live agent and never writes t
   await expect(
     sendTerminalSessionMessage(backend as any, target, "hello"),
   ).rejects.toThrow("multiple");
-  expect(writes).toHaveLength(2);
+  expect(writes).toHaveLength(3);
+});
+
+test("staged terminal drafts require explicit submission and reject edited or reused drafts", async () => {
+  const writes: string[] = [];
+  let revision = 0;
+  const handle = {
+    subscribe: (sub: any) => {
+      sub.onData(new TextEncoder().encode("\u001b[?2004h"));
+      return () => {};
+    },
+    isAlive: () => true,
+    inputRevision: () => revision,
+    write: (text: string) => {
+      writes.push(text);
+      revision++;
+    },
+  };
+  const drafts = new TerminalMessageDrafts();
+  const first = drafts.stage("source", "terminal", handle as any);
+  expect(() =>
+    drafts.assertCanStage("source", { get: () => handle } as any),
+  ).toThrow("already has a staged draft");
+  expect(writes).toEqual([]);
+  expect(drafts.submit(first, "source", handle as any).status).toBe(
+    "submitted",
+  );
+  expect(writes).toEqual(["\r"]);
+  expect(() => drafts.submit(first, "source", handle as any)).toThrow();
+  const second = drafts.stage("source", "terminal", handle as any);
+  handle.write("user edit");
+  expect(() => drafts.submit(second, "source", handle as any)).toThrow(
+    "changed",
+  );
+  expect(writes).toEqual(["\r", "user edit"]);
 });

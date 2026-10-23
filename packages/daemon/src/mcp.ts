@@ -27,6 +27,7 @@ import { detectAgents, agentsForWorktree, type AgentSession } from "./agents";
 import { remindersForWorkspace } from "./reminders";
 import { getSessionResponseJson, type NormalizedSession } from "./sessions";
 import { recentSessionMessages } from "./session-tools";
+import type { UiAction } from "./ui-context";
 
 interface ToolDef {
   name: string;
@@ -42,16 +43,36 @@ const PROJECT_COMMAND_GUIDANCE =
   "Supply raw shell command text without extra outer quoting or escaping. Internal commands already run through cmd.exe on Windows and sh on macOS/Linux; do not add a shell wrapper unless a different shell is explicitly required. Shell operators such as && are supported. For example, use npm run build:web && npm start, not an extra cmd /c wrapper. When asked for a dev command, inspect the project scripts and prefer its dev script (for example npm run dev); use command_cwd for the package directory. Saving or editing a command does not run it.";
 
 const TOOLS: ToolDef[] = [
+  {
+    name: "focus_session",
+    description: "Reveal an exact discovered session in a Treetop window and focus its input when available. Opens its transcript column if needed; does not start/resume an agent or send text. Use source or session_id from list_sessions. Waits for UI acknowledgement. This changes in-app focus, not OS window activation.",
+    inputSchema: { type: "object", properties: { source: { type: "string" }, session_id: { type: "string" }, repo_id: { type: "string" }, window_id: { type: "string", description: "Optional window ID from get_ui_context; defaults to the focused or last active fresh window." } } },
+  },
+  {
+    name: "focus_project",
+    description: "Reveal and scroll to a registered project/worktree in one Treetop window. Keeps Zen mode on the target project if already enabled. Optional cwd must be one of the project's worktrees. Waits for UI acknowledgement; does not activate the OS window.",
+    inputSchema: { type: "object", properties: { repo_id: { type: "string" }, cwd: { type: "string" }, window_id: { type: "string" } }, required: ["repo_id"] },
+  },
+  {
+    name: "set_zen_mode",
+    description: "Explicitly enter (enabled=true) or exit (enabled=false) Treetop Zen mode. Entering requires repo_id and optionally cwd for a specific worktree. Exiting needs no target. Idempotent; never toggles blindly. Waits for UI acknowledgement. Optional window_id comes from get_ui_context.",
+    inputSchema: { type: "object", properties: { enabled: { type: "boolean" }, repo_id: { type: "string" }, cwd: { type: "string" }, window_id: { type: "string" } }, required: ["enabled"] },
+  },
+  {
+    name: "get_ui_context",
+    description: "Read a compact live UI snapshot in one call: currently focused session, last-active session, active project, projects actually in the viewport, Zen mode and window focus. Includes snapshot age and window IDs. Defaults to the focused window, otherwise the last active fresh window. No transcript content. Returns unavailable rather than guessing when no UI has reported within 15 seconds.",
+    inputSchema: { type: "object", properties: { window_id: { type: "string", description: "Optional window ID from a previous get_ui_context response." } } },
+  },
   ...["send_session_message", "read_session_messages"].map((name): ToolDef => ({
     name,
     description: name === "send_session_message"
-      ? "Send a message to an existing Claude/Codex terminal or open native Codex session, only when the user explicitly asks. Identify the exact target with source or session_id from list_sessions/search_sessions; repo_id can disambiguate. Does not create a session, interrupt a busy agent, or run shell commands. Returns delivery acceptance, not the agent's reply; use read_session_messages later."
+      ? "Send a message to an existing Claude/Codex terminal or open native Codex session, only when the user explicitly asks. Identify the exact target with source or session_id from list_sessions/search_sessions; repo_id can disambiguate. Does not create a session, interrupt a busy agent, or run shell commands. Defaults to action=stage: paste a reviewable terminal draft without Enter. Then action=submit with its draft_id and the same target/text explicitly submits it, or the user presses Enter. action=send explicitly performs immediate delivery (also supports native Codex). For a stopped session use open_session with resume_session_id first, then retry once its terminal is ready. Submission is not transcript confirmation; read_session_messages to verify, never automatically resend."
       : "Read recent messages from an exact discovered session. Minimal output (default) contains only user/assistant text, excluding tool traces and reasoning. Verbose adds tool/event summaries, never private thinking. Output is bounded by limit and a total max_chars text budget. Messages are chronological; offset skips newest readable messages for paging backwards.",
     inputSchema: { type: "object", properties: {
       source: { type: "string", description: "Exact transcript source from list_sessions." },
       session_id: { type: "string", description: "Exact sessionId from list_sessions; ambiguous IDs are rejected." },
       repo_id: { type: "string" },
-      ...(name === "send_session_message" ? { text: { type: "string", minLength: 1, maxLength: 32000 } } : {
+      ...(name === "send_session_message" ? { text: { type: "string", minLength: 1, maxLength: 32000 }, action: { type: "string", enum: ["stage", "submit", "send"], default: "stage" }, draft_id: { type: "string" } } : {
         limit: { type: "integer", minimum: 1, maximum: 50, default: 5 },
         offset: { type: "integer", minimum: 0, maximum: 1000, default: 0 },
         max_chars: { type: "integer", minimum: 100, maximum: 32000, default: 6000 },
@@ -291,17 +312,19 @@ function textContent(text: string) {
 }
 
 interface McpContext {
+  uiContext?: (windowId?: string) => Record<string, unknown>;
+  uiAction?: (action: UiAction, windowId?: string) => Promise<Record<string, unknown>>;
   workspace: Workspace;
   events: EventLog;
   changed?: (change: Record<string, unknown>) => void;
   runningCommands?: () => { repoId: string; [key: string]: unknown }[];
   sessionCwd?: string;
   sessions?: () => Promise<AgentSession[]>;
-  sendSessionMessage?: (session: AgentSession, text: string) => Promise<Record<string, unknown>>;
+  sendSessionMessage?: (session: AgentSession, text: string, action?: "stage" | "submit" | "send", draftId?: string) => Promise<Record<string, unknown>>;
 }
 
 const SERVER_INSTRUCTIONS =
-  "Treetop is the project dashboard hosting this agent session. Read/export settings with get_settings or export_settings; inspect recorded actions with list_events. Find sessions with list_sessions/search_sessions; read bounded recent text with read_session_messages. Only use send_session_message when the user explicitly asks to message an identified session; never start autonomous cross-session conversations. Query project commands with list_commands; save/edit project buttons with add_command/edit_command (without running them). Use schedule_reminder for timed alerts with optional repo_id/session_source links. Use the session working directory or pass your current absolute cwd to identify the project; use list_repos to confirm project ids. Tools also manage projects, colors, order, notes and session columns. Never guess another project's id. Only change Treetop state when requested by the user.";
+  "Treetop is the project dashboard hosting this agent session. Read/export settings with get_settings or export_settings; inspect recorded actions with list_events. Use get_ui_context for the focused session and visible projects. Use focus_session/focus_project to navigate and set_zen_mode with enabled true or false to enter/exit Zen when requested. Read note content, tags and anchors with list_notes; anchor_prefix can select repo:<path>, worktree:<path> or session:<source>. Find sessions with list_sessions/search_sessions; read bounded recent text with read_session_messages. Only use send_session_message when the user explicitly asks to message an identified session; never start autonomous cross-session conversations. Query project commands with list_commands; save/edit project buttons with add_command/edit_command (without running them). Use schedule_reminder for timed alerts with optional repo_id/session_source links. Use the session working directory or pass your current absolute cwd to identify the project; use list_repos to confirm project ids. Tools also manage projects, colors, order, notes and session columns. Never guess another project's id. Only change Treetop state when requested by the user.";
 
 /** Add only this session's MCP connection, preserving other agent settings. */
 export function withTreetopMcp(
@@ -529,13 +552,37 @@ async function dispatchMcp(
             ctx.changed?.({ kind: "reminder_changed", id: reminder.id });
             return ok(request.id, textContent(JSON.stringify(reminder)));
           }
+          case "focus_project":
+          case "set_zen_mode": {
+            for (const field of ["repo_id", "cwd", "window_id"]) if (args[field] !== undefined && (typeof args[field] !== "string" || !(args[field] as string).trim())) return err(request.id, -32602, `${name}: ${field} must be a non-empty string`);
+            if (name === "set_zen_mode" && typeof args.enabled !== "boolean") return err(request.id, -32602, "set_zen_mode: enabled must be a boolean");
+            if (!ctx.uiAction) throw new Error("UI controls are unavailable in this daemon");
+            let action: UiAction;
+            if (name === "set_zen_mode" && args.enabled === false) action = { action: "set_zen_mode", enabled: false };
+            else {
+              if (!args.repo_id) return err(request.id, -32602, `${name}: repo_id is required`);
+              const repo = (await ctx.workspace.listRepos()).find(repo => repo.id === args.repo_id);
+              if (!repo) return err(request.id, -32602, `${name}: project not found`);
+              const cwd = (args.cwd as string | undefined) ?? repo.path;
+              const normalize = (path: string) => process.platform === "win32" ? resolve(path).toLowerCase() : resolve(path);
+              if (!isAbsolute(cwd) || !(await listWorktrees(repo.path)).some(wt => !wt.bare && normalize(wt.path) === normalize(cwd))) return err(request.id, -32602, `${name}: cwd must be a working tree of this project`);
+              action = name === "focus_project" ? { action: "focus_project", repoId: repo.id, cwd } : { action: "set_zen_mode", enabled: true, repoId: repo.id, cwd };
+            }
+            return ok(request.id, textContent(JSON.stringify(await ctx.uiAction(action, args.window_id as string | undefined))));
+          }
+          case "get_ui_context": {
+            if (args.window_id !== undefined && (typeof args.window_id !== "string" || !args.window_id)) return err(request.id, -32602, "get_ui_context: window_id must be a non-empty string");
+            return ok(request.id, textContent(JSON.stringify(ctx.uiContext?.(args.window_id as string | undefined) ?? { available: false, reason: "UI context reporting is unavailable in this daemon." })));
+          }
           case "send_session_message":
+          case "focus_session":
           case "read_session_messages": {
             for (const field of ["source", "session_id", "repo_id"]) {
               if (args[field] !== undefined && (typeof args[field] !== "string" || !(args[field] as string).trim()))
                 return err(request.id, -32602, `${name}: ${field} must be a non-empty string`);
             }
             if (!args.source && !args.session_id) return err(request.id, -32602, `${name}: source or session_id is required`);
+            if (name === "focus_session" && args.window_id !== undefined && (typeof args.window_id !== "string" || !args.window_id.trim())) return err(request.id, -32602, "focus_session: window_id must be a non-empty string");
             const limit = args.limit ?? 5, offset = args.offset ?? 0, maxChars = args.max_chars ?? 6000;
             if (name === "read_session_messages" && (
               typeof limit !== "number" || !Number.isInteger(limit) || limit < 1 || limit > 50 ||
@@ -554,9 +601,15 @@ async function dispatchMcp(
             const registered = candidates.filter(s => entries.some(e => (!args.repo_id || e.repo.id === args.repo_id) && e.worktrees.some(w => !w.bare && agentsForWorktree(w.path, [s], roots).length)));
             if (registered.length !== 1) return err(request.id, -32602, `${name}: ${registered.length ? "ambiguous session; supply source" : "session not found in the registered project(s)"}`);
             const session = registered[0]!;
+            if (name === "focus_session") {
+              if (!ctx.uiAction) throw new Error("UI controls are unavailable in this daemon");
+              return ok(request.id, textContent(JSON.stringify(await ctx.uiAction({ action: "focus_session", source: session.source, ...(session.sessionId ? { sessionId: session.sessionId } : {}) }, args.window_id as string | undefined))));
+            }
             if (name === "send_session_message") {
               if (!ctx.sendSessionMessage) throw new Error("Session messaging is unavailable in this daemon");
-              const delivery = await ctx.sendSessionMessage(session, args.text as string);
+              const action = args.action ?? "stage";
+              if (!["stage", "submit", "send"].includes(action as string) || (action === "submit" && (typeof args.draft_id !== "string" || !args.draft_id))) return err(request.id, -32602, "Invalid action or missing draft_id");
+              const delivery = await ctx.sendSessionMessage(session, args.text as string, action as "stage" | "submit" | "send", args.draft_id as string | undefined);
               await ctx.events.append({ type: "mcp_send_session_message", actor: "agent", payload: { source: session.source, sessionId: session.sessionId, characters: (args.text as string).length, ...delivery } });
               return ok(request.id, textContent(JSON.stringify({ ok: true, source: session.source, sessionId: session.sessionId, ...delivery })));
             }

@@ -76,6 +76,8 @@ export interface TerminalHandle {
   readonly id: string;
   readonly pid: number;
   write(data: Uint8Array | string): void;
+  /** Advances on all input, including human keyboard input. */
+  inputRevision?(): number;
   resize(size: TerminalSize): void;
   /** Pause helper-side output delivery while no client can drain it.
    *  Input and PTY state continue; output resumes on unmute without dropping

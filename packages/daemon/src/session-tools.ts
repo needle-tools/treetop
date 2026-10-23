@@ -1,8 +1,72 @@
 import { resolve } from "node:path";
 import type { AgentSession } from "./agents";
 import type { NormalizedMessage } from "./sessions";
-import type { PtyBackend } from "./terminals/types";
+import type { PtyBackend, TerminalHandle } from "./terminals/types";
 import { DecPrivateModeTracker } from "./dec-private-modes";
+
+/** Single-use receipts: intervening human input invalidates explicit submission. */
+export class TerminalMessageDrafts {
+  private drafts = new Map<
+    string,
+    { source: string; terminalId: string; revision: number; createdAt: number }
+  >();
+  assertCanStage(source: string, backend: Pick<PtyBackend, "get">): void {
+    for (const [id, draft] of this.drafts) {
+      if (draft.source !== source) continue;
+      const handle = backend.get(draft.terminalId);
+      if (handle?.isAlive() && handle.inputRevision?.() === draft.revision)
+        throw new Error(
+          "This session already has a staged draft; review or submit it instead of pasting again",
+        );
+      this.drafts.delete(id);
+    }
+  }
+  stage(source: string, terminalId: string, handle: TerminalHandle): string {
+    if (!handle.inputRevision)
+      throw new Error(
+        "Terminal does not support safe draft submission; press Enter manually",
+      );
+    for (const [id, draft] of this.drafts)
+      if (
+        Date.now() - draft.createdAt > 300_000 ||
+        draft.terminalId === terminalId
+      )
+        this.drafts.delete(id);
+    const id = crypto.randomUUID();
+    this.drafts.set(id, {
+      source,
+      terminalId,
+      revision: handle.inputRevision(),
+      createdAt: Date.now(),
+    });
+    return id;
+  }
+  terminalId(id: string): string | undefined {
+    return this.drafts.get(id)?.terminalId;
+  }
+  submit(id: string, source: string, handle: TerminalHandle) {
+    const draft = this.drafts.get(id);
+    if (!draft || draft.source !== source)
+      throw new Error("Draft not found for this session");
+    this.drafts.delete(id);
+    if (
+      Date.now() - draft.createdAt > 300_000 ||
+      !handle.isAlive() ||
+      handle.inputRevision?.() !== draft.revision
+    )
+      throw new Error(
+        "Draft expired or terminal input changed; inspect the terminal before trying again",
+      );
+    assertTerminalMessageReady(handle);
+    handle.write("\r");
+    return {
+      delivery: "terminal",
+      terminalId: draft.terminalId,
+      status: "submitted",
+      confirmed: false,
+    };
+  }
+}
 
 export function recentSessionMessages(
   messages: NormalizedMessage[],
@@ -96,7 +160,16 @@ export async function sendTerminalSessionMessage(
   backend: Pick<PtyBackend, "list" | "get">,
   session: AgentSession,
   text: string,
-): Promise<{ delivery: "terminal"; terminalId: string } | undefined> {
+  submit = true,
+): Promise<
+  | {
+      delivery: "terminal";
+      terminalId: string;
+      status: "staged" | "submitted";
+      confirmed: false;
+    }
+  | undefined
+> {
   if (!session.sessionId || !["claude", "codex"].includes(session.agent))
     return undefined;
   const matches = backend
@@ -116,6 +189,34 @@ export async function sendTerminalSessionMessage(
   const handle = backend.get(matches[0]!.id);
   if (!handle?.isAlive())
     throw new Error("Session terminal is no longer running");
+  assertTerminalMessageReady(handle);
+  handle.write(`\x1b[200~${text}\x1b[201~`);
+  if (!submit)
+    return {
+      delivery: "terminal",
+      terminalId: matches[0]!.id,
+      status: "staged",
+      confirmed: false,
+    };
+  const revision = handle.inputRevision?.();
+  // Let the TUI consume the paste before submitting it as a user message.
+  await new Promise((resolve) => setTimeout(resolve, 150));
+  if (!handle.isAlive())
+    throw new Error("Session exited before the message could be submitted");
+  if (revision !== undefined && handle.inputRevision?.() !== revision)
+    throw new Error(
+      "Terminal input changed after paste; inspect the draft before submitting",
+    );
+  handle.write("\r");
+  return {
+    delivery: "terminal",
+    terminalId: matches[0]!.id,
+    status: "submitted",
+    confirmed: false,
+  };
+}
+
+function assertTerminalMessageReady(handle: TerminalHandle): void {
   const modes = new DecPrivateModeTracker();
   let busy = false;
   let awaiting = false;
@@ -136,11 +237,4 @@ export async function sendTerminalSessionMessage(
     );
   if (modes.snapshot()[2004] !== true)
     throw new Error("Session terminal is not ready for pasted messages");
-  handle.write(`\x1b[200~${text}\x1b[201~`);
-  // Let the TUI consume the paste before submitting it as a user message.
-  await new Promise((resolve) => setTimeout(resolve, 50));
-  if (!handle.isAlive())
-    throw new Error("Session exited before the message could be submitted");
-  handle.write("\r");
-  return { delivery: "terminal", terminalId: matches[0]!.id };
 }

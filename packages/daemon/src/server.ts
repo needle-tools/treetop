@@ -108,7 +108,8 @@ import {
 } from "./ollama-sessions";
 import { feedShellInput, clearShellInputBuffer } from "./shell-input";
 import { handleMcpHttp, withTreetopMcp } from "./mcp";
-import { sendTerminalSessionMessage, openCodexMessageTarget } from "./session-tools";
+import { UiContextRegistry, UiActionRequests } from "./ui-context";
+import { sendTerminalSessionMessage, openCodexMessageTarget, TerminalMessageDrafts } from "./session-tools";
 import { remindersForWorkspace, startReminderScheduler, handleRemindersHttp } from "./reminders";
 import * as inflight from "./inflight";
 import { pingSubscribers } from "./sse-heartbeat";
@@ -517,6 +518,9 @@ process.title =
   (UI_DIR ? "supergit-daemon" : "supergit-daemon dev");
 
 const workspace = await Workspace.open(WORKSPACE_PATH);
+const uiContexts = new UiContextRegistry();
+const uiActions = new UiActionRequests();
+const messageDrafts = new TerminalMessageDrafts();
 const events = await EventLog.open(WORKSPACE_PATH);
 const reminderStore = remindersForWorkspace(workspace.path);
 let stopReminders: (() => void) | undefined;
@@ -10295,16 +10299,46 @@ const server = Bun.serve<TermWsData, never>({
         }
       }
 
+      if (url.pathname === "/api/ui-action-result" && req.method === "POST") {
+        try { uiActions.complete(await req.json()); return json({ ok: true }); }
+        catch (error) { return json({ error: error instanceof Error ? error.message : String(error) }, { status: 400 }); }
+      }
+      if (url.pathname === "/api/ui-context" && req.method === "POST") {
+        try { uiContexts.report(await req.json()); return json({ ok: true }); }
+        catch (error) { return json({ error: error instanceof Error ? error.message : String(error) }, { status: 400 }); }
+      }
       if (url.pathname === "/mcp") {
         const response = await handleMcpHttp(req, {
           workspace, events,
+          uiContext: windowId => uiContexts.read(windowId),
+          uiAction: async (action, windowId) => {
+            const context = uiContexts.read(windowId);
+            if (!context.available) throw new Error("No fresh Treetop window found; open the UI or check get_ui_context");
+            return uiActions.request(context.windowId as string, action, command => broadcast("change", { kind: "mcp_ui_action", ...command }));
+          },
           sessions: sharedDetectAgents,
-          sendSessionMessage: async (session, text) => {
+          sendSessionMessage: async (session, text, action = "stage", draftId) => {
+            if (action === "submit") {
+              const terminalId = messageDrafts.terminalId(draftId!);
+              const handle = terminalId ? terminalBackend.get(terminalId) : undefined;
+              if (!handle) throw new Error("Draft terminal no longer exists; inspect or resume the session");
+              return messageDrafts.submit(draftId!, session.source, handle);
+            }
             if (!session.sessionId) throw new Error("Session has no provider session ID");
             if (!["claude", "codex"].includes(session.agent))
               throw new Error("Messaging supports Claude/Codex terminals and native Codex sessions");
-            const terminal = await sendTerminalSessionMessage(terminalBackend, session, text);
-            if (terminal) return terminal;
+            messageDrafts.assertCanStage(session.source, terminalBackend);
+            const terminal = await sendTerminalSessionMessage(terminalBackend, session, text, action === "send");
+            if (terminal) {
+              if (action === "stage") {
+                const draftId = messageDrafts.stage(session.source, terminal.terminalId, terminalBackend.get(terminal.terminalId)!);
+                const context = uiContexts.read();
+                if (context.available) broadcast("change", { kind: "mcp_focus_session", source: session.source, sessionId: session.sessionId, windowId: context.windowId });
+                return { ...terminal, draftId, next: "Review the draft in the terminal. Press Enter yourself, or call send_session_message with action=submit and draft_id. Do not paste the text again." };
+              }
+              return terminal;
+            }
+            if (action === "stage") throw new Error("Staging needs a live Claude/Codex terminal. Use open_session with resume_session_id to open/resume the terminal, then retry. Native Codex requires explicit action=send.");
             if (session.agent !== "codex") throw new Error("Session has no live terminal; open it before sending");
             const target = openCodexMessageTarget(await workspace.getPrefs(), session);
             if (codexAgent.activeTurn(session.sessionId)) throw new Error("Session is busy; retry after the current turn finishes");
@@ -10320,7 +10354,7 @@ const server = Bun.serve<TermWsData, never>({
               },
             });
             void turn.completed.catch(error => recordServerError(req, 500, error));
-            return { delivery: "native", threadId: turn.threadId, turnId: turn.turnId };
+            return { delivery: "native", status: "submitted", confirmed: false, threadId: turn.threadId, turnId: turn.turnId };
           },
           runningCommands: () => [...runningCommands.values()].map(command => ({
             linkId: command.linkId, repoId: command.repoId, pid: command.pid,

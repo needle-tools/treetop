@@ -19,6 +19,8 @@ const READONLY_POST_ALLOWLIST = new Set([
   "/api/command/run",
   "/api/command/stop",
   "/api/errors",
+  "/api/ui-context",
+  "/api/ui-action-result",
   "/api/exists",
   "/api/sessions/batch",
   "/api/terminals",
