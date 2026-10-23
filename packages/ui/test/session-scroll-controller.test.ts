@@ -393,6 +393,23 @@ describe("session scroll controller", () => {
     expect(controller.isPaused).toBe(true);
   });
 
+  test("native wheel movement cancels an anchor captured after wheel intent", () => {
+    const scheduler = new ManualScheduler();
+    let anchorTop = 220;
+    const scroller = fakeScroller(() => anchorTop);
+    const controller = createSessionScrollController({ scheduler });
+    controller.setElement(scroller);
+    controller.onWheel({ deltaX: 0, deltaY: -180 } as WheelEvent);
+    const anchor = controller.capturePausedReaderAnchor();
+    controller.restorePausedReaderAnchor(anchor!);
+    scroller.scrollTop -= 180;
+    anchorTop -= 180;
+    controller.onScroll();
+    scheduler.flush();
+    expect(scroller.scrollTop).toBe(220);
+    expect(controller.isPaused).toBe(true);
+  });
+
   test("still restores a paused reader anchor after a layout-only scroll", () => {
     const scheduler = new ManualScheduler();
     let anchorTop = 220;

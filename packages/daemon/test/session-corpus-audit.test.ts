@@ -2,12 +2,34 @@ import { describe, expect, test } from "bun:test";
 import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { codexUsageForTranscriptRecord, type CodexTranscriptUsageState } from "@treetop/nicifier";
 import {
   auditSessionCorpora,
   sessionAuditThresholdFailures,
 } from "../../../scripts/audit-agent-sessions";
 
 describe("auditSessionCorpora", () => {
+  test("context placeholders preserve the previous billing checkpoint", () => {
+    const state: CodexTranscriptUsageState = {};
+    const record = (last: object, total: object, model_context_window?: number) => ({
+      type: "event_msg",
+      payload: { type: "token_count", info: { last_token_usage: last, total_token_usage: total, model_context_window } },
+    });
+    const checkpoint = { input_tokens: 100, output_tokens: 20, total_tokens: 120 };
+    const empty = { input_tokens: 0, output_tokens: 0, total_tokens: 0 };
+    expect(codexUsageForTranscriptRecord(record(checkpoint, checkpoint), state)?.total).toBe(120);
+    expect(codexUsageForTranscriptRecord(record(
+      empty, { ...empty, total_tokens: 258400 }, 258400,
+    ), state)).toBeUndefined();
+    expect(codexUsageForTranscriptRecord(record(
+      { ...empty, total_tokens: 19103 }, checkpoint, 258400,
+    ), state)).toBeUndefined();
+    expect(codexUsageForTranscriptRecord(record(
+      { input_tokens: 30, output_tokens: 10, total_tokens: 40 },
+      { input_tokens: 130, output_tokens: 30, total_tokens: 160 },
+    ), state)).toMatchObject({ input: 30, output: 10, total: 40 });
+  });
+
   test("measures parser, protocol, tool pairing, and nicifier coverage with bounded examples", async () => {
     const root = await mkdtemp(join(tmpdir(), "supergit-session-audit-"));
     const claudeRoot = join(root, "claude");

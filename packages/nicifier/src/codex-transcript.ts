@@ -301,6 +301,15 @@ export function codexUsageForTranscriptRecord(
   const info = object(payload.info) ?? payload;
   const last = codexTokenUsageFromRecord(response ? payload.usage : info.last_token_usage ?? payload.lastTokenUsage ?? payload.usage);
   const total = codexTokenUsageFromRecord(response ? payload.thread_token_usage : info.total_token_usage ?? payload.totalTokenUsage);
+  const contextOnly = (usage: CodexTranscriptTokenUsage | undefined) => usage &&
+    usage.input + usage.cachedInput + usage.cacheWriteInput + usage.output + usage.reasoningOutput === 0;
+  // Legacy context snapshots describe occupancy/capacity, not billing counters.
+  // In particular, a capacity placeholder must not replace the last checkpoint.
+  if (!response && (
+    (last && contextOnly(last) && last.total > 0) ||
+    (total && contextOnly(total) && total.total > 0 &&
+      total.total === number(info.model_context_window ?? info.modelContextWindow))
+  )) return undefined;
   const previous = response && !state.hasResponseUsageRecords ? undefined : state.previousTotalUsage;
   const usage = codexUsageForCheckpoint(
     !response && includeInitialLegacyTotal && !previous ? undefined : last,

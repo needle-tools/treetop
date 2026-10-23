@@ -348,6 +348,10 @@ export class SessionScrollController {
       this.el.scrollHeight === this.observedScrollHeight &&
       this.el.clientHeight === this.observedClientHeight &&
       this.el.scrollTop < this.observedScrollTop;
+    // Wheel intent arrives before native scrolling. A render in between can
+    // capture a paused anchor at the old position; retire that correction when
+    // the reader's actual movement arrives, even if already paused.
+    if (stableUpwardScroll) this.pauseSeq += 1;
     if (
       this.pendingTailFollowSeq !== 0 &&
       !this.paused &&

@@ -137,6 +137,16 @@ Run a second side workspace by choosing another port pair:
 npm run dev -- --workspace perf-images --port 17877 --ui-port 17879
 ```
 
+## CI regressions (2026-10-23)
+
+- Legacy Codex context occupancy/capacity snapshots must not replace billing
+  checkpoints. The corpus audit regression also checks the next real usage delta.
+- A native upward scroll invalidates pending reader-anchor corrections even when
+  wheel intent already paused follow. WebKit can render between those events.
+- The lifecycle harness tracks SSE lifetime on the response, not the completed
+  request. Repeated-steer tests gate HTTP failures explicitly rather than relying
+  on two response deadlines staying apart on a busy runner.
+
 ## The point
 
 The goal isn't "the AI wrote tests" — AI can write bad tests too. The goal

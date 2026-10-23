@@ -29,6 +29,7 @@ let historyRequestCount = 0;
 let turnRequestCount = 0;
 let turnResponseIds: string[] = [];
 let turnResponseStatus = 200;
+let turnResponseGates: Promise<void>[] = [];
 const turnRequestInputs: { threadId: string; text: string }[] = [];
 const eventClients = new Set<ServerResponse>();
 const threadId = "lifecycle-thread";
@@ -237,7 +238,7 @@ function lifecycleApiPlugin(): Plugin {
           });
           response.write(": connected\n\n");
           eventClients.add(response);
-          request.on("close", () => eventClients.delete(response));
+          response.on("close", () => eventClients.delete(response));
           return;
         }
         if (url.pathname === "/api/codex-app/thread") {
@@ -280,7 +281,9 @@ function lifecycleApiPlugin(): Plugin {
           const responseTurnId = input.steer ? input.expectedTurnId : (turnResponseIds.shift() ?? "turn-next");
           const responseStatus = turnResponseStatus;
           turnRequestCount += 1;
-          await new Promise((resolveDelay) => setTimeout(resolveDelay, turnRequestDelayMs));
+          const gate = turnResponseGates.shift();
+          if (gate) await gate;
+          else await new Promise((resolveDelay) => setTimeout(resolveDelay, turnRequestDelayMs));
           response.setHeader("Content-Type", "application/json");
           response.statusCode = responseStatus;
           response.end(
@@ -507,7 +510,12 @@ describe("SessionView browser lifecycle", { concurrency: false }, () => {
 
   test("accepts only the acknowledged steer when identical sends receive late HTTP failures", async () => {
     const currentPage = await openHarness();
-    turnRequestDelayMs = 750;
+    let releaseFirst!: () => void;
+    let releaseSecond!: () => void;
+    turnResponseGates = [
+      new Promise<void>(resolve => { releaseFirst = resolve; }),
+      new Promise<void>(resolve => { releaseSecond = resolve; }),
+    ];
     turnResponseStatus = 502;
     const requestsBefore = turnRequestCount;
     try {
@@ -516,20 +524,25 @@ describe("SessionView browser lifecycle", { concurrency: false }, () => {
       await composer.fill("REPEATED_STEER");
       await currentPage.locator(".composer-steer").click();
       await waitForCondition(async () => turnRequestCount === requestsBefore + 1, "First steer did not reach server");
-      turnRequestDelayMs = 1600;
       await composer.fill("REPEATED_STEER");
       await currentPage.locator(".composer-steer").click();
       await waitForCondition(async () => turnRequestCount === requestsBefore + 2, "Second steer did not reach server");
       const sequence = async () => (await currentPage.locator(".messages").innerText()).match(/REPEATED_STEER/g) ?? [];
       assert.deepEqual(await sequence(), ["REPEATED_STEER", "REPEATED_STEER"]);
       emitCodexEvents([{ kind: "notification", method: "item/completed", threadId, turnId: latestTurnId, receivedAt: "2026-10-01T10:00:11.000Z", params: { item: { id: "accepted-first-steer", type: "userMessage", content: [{ type: "text", text: "REPEATED_STEER" }] } } }]);
+      emitCodexEvents([{ kind: "notification", method: "item/completed", threadId, turnId: latestTurnId, receivedAt: "2026-10-01T10:00:12.000Z", params: { item: { id: "steer-ack-barrier", type: "agentMessage", text: "STEER_ACK_RECEIVED" } } }]);
+      await currentPage.locator(".messages").getByText("STEER_ACK_RECEIVED", { exact: true }).waitFor();
+      releaseFirst();
       await currentPage.waitForTimeout(900);
       assert.equal(await composer.inputValue(), "");
       assert.deepEqual(await sequence(), ["REPEATED_STEER", "REPEATED_STEER"]);
-      await currentPage.waitForTimeout(900);
-      assert.equal(await composer.inputValue(), "REPEATED_STEER");
+      releaseSecond();
+      await waitForCondition(async () => await composer.inputValue() === "REPEATED_STEER", "Rejected second steer did not restore its draft");
       assert.deepEqual(await sequence(), ["REPEATED_STEER"]);
     } finally {
+      releaseFirst();
+      releaseSecond();
+      turnResponseGates = [];
       turnRequestDelayMs = 120;
       turnResponseStatus = 200;
       await currentPage.close();
