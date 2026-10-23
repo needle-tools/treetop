@@ -276,6 +276,12 @@ through `thread/realtime/appendText` triggers the supplied sentence; v3
 are closed, with bounded timeouts. Existing interactive voice mode is separate.
 Background summaries now default on, while explicit saved overrides remain.
 
+Voice message eagerness (`mcp.voiceMessageEagerness`) controls the description
+returned by each MCP `tools/list`: on request, milestones (default), or frequent
+updates. Disabled voice overrides eagerness guidance. Clients that cache their
+tool catalog must reconnect/refresh to receive changed descriptions. Preferences
+guide concise observable progress, not private reasoning or per-tool narration.
+
 Direct subscription probe played the full requested sentence through Edge,
 with `getUserMedia` replaced by a throwing guard, then stopped its owned thread.
 

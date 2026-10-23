@@ -28,7 +28,7 @@ import { remindersForWorkspace } from "./reminders";
 import { getSessionResponseJson, type NormalizedSession } from "./sessions";
 import { recentSessionMessages } from "./session-tools";
 import type { UiAction } from "./ui-context";
-import { voiceMessageAllowed } from "./voice-message";
+import { voiceMessageAllowed, voiceMessageGuidance } from "./voice-message";
 
 interface ToolDef {
   name: string;
@@ -46,7 +46,7 @@ const PROJECT_COMMAND_GUIDANCE =
 const TOOLS: ToolDef[] = [
   {
     name: "speak_message",
-    description: "Speak one short message through Treetop using the user's Codex subscription voice. Only when the user asks for spoken output. No microphone, continuous voice mode, or API key. Requires an open Treetop window and Settings > MCP: Voice message (enabled by default). Waits until playback completes. Do not automatically retry an uncertain delivery. Optional window_id selects a window from get_ui_context.",
+    description: "Speak one short message through Treetop using the user's Codex subscription voice. No microphone, continuous voice mode, or API key. Requires an open Treetop window and Settings > MCP: Voice message (enabled by default). Waits until playback completes. Do not automatically retry an uncertain delivery. Optional window_id selects a window from get_ui_context.",
     inputSchema: { type: "object", properties: { text: { type: "string", minLength: 1, maxLength: 1000 }, window_id: { type: "string" } }, required: ["text"] },
   },
   {
@@ -419,8 +419,10 @@ async function dispatchMcp(
         instructions: `${SERVER_INSTRUCTIONS}${ctx.sessionCwd ? ` Session working directory: ${JSON.stringify(ctx.sessionCwd)}.` : ""}`,
       });
 
-    case "tools/list":
-      return ok(request.id, { tools: TOOLS });
+    case "tools/list": {
+      const guidance = voiceMessageGuidance(await ctx.workspace.getPrefs());
+      return ok(request.id, { tools: TOOLS.map(tool => tool.name === "speak_message" ? { ...tool, description: `${tool.description} Eagerness: ${guidance}` } : tool) });
+    }
 
     case "tools/call": {
       const params = request.params as

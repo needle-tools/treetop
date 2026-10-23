@@ -252,4 +252,14 @@ test("MCP focus and Zen controls validate exact project/session targets and forw
   await workspace.patchPrefs({ "supergit:settings": JSON.stringify({ "mcp.voiceMessage": false }) });
   expect((await call("speak_message", { text: "Should not play" })).error ?? (await call("speak_message", { text: "Should not play" })).result?.isError).toBeTruthy();
   expect(commands).toHaveLength(5);
+  const catalog = async () => {
+    const response = await handleMcp({ jsonrpc: "2.0", id: 2, method: "tools/list" }, ctx) as any;
+    return response.result.tools.find((tool: any) => tool.name === "speak_message").description as string;
+  };
+  expect(await catalog()).toContain("disabled");
+  await workspace.patchPrefs({ "supergit:settings": JSON.stringify({ "mcp.voiceMessageEagerness": "frequent" }) });
+  expect(await catalog()).toContain("frequent");
+  await workspace.patchPrefs({ "supergit:settings": JSON.stringify({ "mcp.voiceMessageEagerness": "on_request" }) });
+  expect(await catalog()).toContain("only when the user explicitly asks");
+  expect(await catalog()).not.toContain("Use frequent");
 });

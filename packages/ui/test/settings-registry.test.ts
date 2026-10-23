@@ -8,6 +8,7 @@
 import { describe, test, expect, beforeEach, mock } from "bun:test";
 import { get } from "svelte/store";
 import type { KVStore } from "../src/storage";
+import { MCP_VOICE_SETTINGS } from "../src/voice-message-player";
 import {
   registerSettings,
   settingsSections,
@@ -71,6 +72,16 @@ const appearance = {
 };
 
 describe("registerSettings", () => {
+  test("voice eagerness is a persisted enum with a milestones default", () => {
+    const kv = memKV();
+    setSettingsKV(kv);
+    registerSettings(MCP_VOICE_SETTINGS);
+    expect(getSetting("mcp.voiceMessageEagerness")).toBe("milestones");
+    const setting = MCP_VOICE_SETTINGS.settings.find(setting => setting.key === "mcp.voiceMessageEagerness");
+    expect(setting?.type).toBe("enum");
+    setSetting("mcp.voiceMessageEagerness", "frequent");
+    expect(JSON.parse(kv.data["supergit:settings"])["mcp.voiceMessageEagerness"]).toBe("frequent");
+  });
   test("background session summaries default on and can be disabled", () => {
     registerSettings(SESSION_SUMMARY_SETTINGS);
     expect(getSetting(BACKGROUND_SESSION_SUMMARIES_KEY)).toBe(true);

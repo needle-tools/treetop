@@ -1,4 +1,8 @@
 import type { SettingsSection } from "./settings-registry";
+import {
+  VOICE_MESSAGE_EAGERNESS_KEY,
+  VOICE_MESSAGE_EAGERNESS_OPTIONS,
+} from "../../daemon/src/voice-message";
 
 export const MCP_VOICE_SETTINGS: SettingsSection = {
   id: "mcp",
@@ -12,6 +16,15 @@ export const MCP_VOICE_SETTINGS: SettingsSection = {
         "Allow AI sessions to speak a single message through Codex subscription voice. Never enables the microphone or continuous voice mode.",
       type: "boolean",
       default: true,
+    },
+    {
+      key: VOICE_MESSAGE_EAGERNESS_KEY,
+      label: "Voice message eagerness",
+      description:
+        "How proactively AI should speak about its progress. Changes the MCP tool description; clients that cache tools need to reconnect or refresh their tool list.",
+      type: "enum",
+      default: "milestones",
+      options: VOICE_MESSAGE_EAGERNESS_OPTIONS.map((option) => ({ ...option })),
     },
   ],
 };
