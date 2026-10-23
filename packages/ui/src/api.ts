@@ -22,6 +22,14 @@ export function apiUrl(path: string, daemonId?: string | null): string {
   return path.replace(/^\/api/, `/api/daemons/${daemonId}`);
 }
 
+export async function bindTerminalSessionOwner(terminalId: string, sessionId: string, daemonId?: string): Promise<void> {
+  const response = await fetch(apiUrl(`/api/terminals/${encodeURIComponent(terminalId)}/owner`, daemonId), {
+    method: "PATCH", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ sessionId }),
+  });
+  if (!response.ok) throw new Error((await response.json()).error ?? `HTTP ${response.status}`);
+}
+
 /**
  * Bound an entire request operation, including response-body decoding. The
  * callback owns the signal so callers cannot accidentally clear the timeout

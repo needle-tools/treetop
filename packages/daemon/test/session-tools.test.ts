@@ -41,7 +41,7 @@ test("native sends require one open, non-stopped Codex column and retain its exe
   ).toThrow();
   expect(() =>
     openCodexMessageTarget(prefs([{ ...entry, mode: "terminal" }]), session),
-  ).toThrow();
+  ).toThrow("terminal");
   expect(() =>
     openCodexMessageTarget(prefs([{ ...entry, agent: "claude" }]), session),
   ).toThrow();

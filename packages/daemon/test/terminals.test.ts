@@ -29,6 +29,7 @@ import {
   wrapWindowsCmd,
   resolveWindowsExecutable,
 } from "../src/procs";
+import { sendTerminalSessionMessage } from "../src/session-tools";
 import {
   mkdtemp,
   writeFile,
@@ -42,6 +43,37 @@ import { tmpdir } from "node:os";
 import { join, sep } from "node:path";
 
 const isWin = process.platform === "win32";
+
+test("promoted Codex terminal ownership routes messages to the existing PTY", async () => {
+  const backend = new NodePtyBackend();
+  try {
+    const handle = await backend.spawn({
+      cmd: [process.execPath, "-e", "process.stdout.write('\\x1b[?2004h'); process.stdin.resume()"],
+      cwd: tmpdir(), size: { cols: 80, rows: 24 },
+      agent: "codex", ownerId: "__new__:codex:temporary",
+    });
+    expect(backend.list()[0]?.ownerId).toBe("__new__:codex:temporary");
+    await new Promise<void>((resolveReady, reject) => {
+      let pasteReady = false;
+      handle.subscribe({
+        onData: bytes => { pasteReady ||= new TextDecoder().decode(bytes).includes("\x1b[?2004h"); },
+        onState: state => { if (pasteReady && state.working === false) resolveReady(); },
+        onExit: () => reject(new Error("Test terminal exited before readiness")),
+      });
+    });
+    handle.bindSessionOwner!("real-session");
+    handle.bindSessionOwner!("real-session");
+    expect(backend.list()[0]?.ownerId).toBe("real-session");
+    expect(() => handle.bindSessionOwner!("different-session")).toThrow("already belongs");
+    const staged = await sendTerminalSessionMessage(backend, {
+      agent: "codex", sessionId: "real-session", source: "session.jsonl", cwd: tmpdir(),
+    } as any, "review this", false);
+    expect(staged).toMatchObject({ terminalId: handle.id, status: "staged", delivery: "terminal" });
+    expect(backend.list()).toHaveLength(1);
+  } finally {
+    backend.shutdown();
+  }
+}, 15000);
 
 test("Codex interruption notices are explicit, survive split output and reset their carry on input", () => {
   const tracker = new CodexInterruptionTracker();

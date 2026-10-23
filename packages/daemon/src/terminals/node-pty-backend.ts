@@ -664,6 +664,13 @@ export class NodePtyBackend implements PtyBackend {
 
   private handleFor(t: InternalTerm): TerminalHandle {
     return {
+      bindSessionOwner: (sessionId) => {
+        if (!sessionId || sessionId.startsWith("__")) throw new Error("A resolved session ID is required");
+        if (t.ownerId === sessionId) return;
+        if (!t.agent || !["codex", "claude"].includes(t.agent) || !t.ownerId?.startsWith(`__new__:${t.agent}:`))
+          throw new Error("Terminal already belongs to another session");
+        t.ownerId = sessionId;
+      },
       get id() {
         return t.id;
       },

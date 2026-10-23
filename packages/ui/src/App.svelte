@@ -25,7 +25,7 @@
     READ_GRACE_MS,
     MIN_WORKING_FOR_PULSE_MS,
   } from "./unread-pulse-manager";
-  import { apiUrl } from "./api";
+  import { apiUrl, bindTerminalSessionOwner } from "./api";
   import {
     daemonRepoKey,
     upsertRepo,
@@ -42,6 +42,7 @@
   import {
     loadZenRow,
     saveZenRow,
+    zenRowAfterNavigation,
     mergeOpenedSession,
     DismissedSessionsStore,
     ExpandedStore,
@@ -6751,10 +6752,10 @@
           const request = payload as unknown as { source: string; sessionId: string; windowId: string };
           if (request.windowId === UI_CONTEXT_WINDOW_ID) {
             const entry = dockEntries.find(entry => entry.source === request.source || entry.transcriptSource === request.source || entry.resumeSessionId === request.sessionId);
-            if (entry) void focusVoiceSession(entry.source).then(() => {
+            if (entry) void focusMcpSession(entry.source, request.sessionId).then(() => {
                 const column = document.querySelector(`.session-col[data-session-source="${CSS.escape(entry.source)}"]`);
                 column?.querySelector<HTMLTextAreaElement>(".xterm-helper-textarea")?.focus({ preventScroll: true });
-              });
+              }).catch(error => recordBrowserDiagnostic("MCP session focus failed", { source: request.source, error: String(error) }));
           }
           return;
         }
@@ -6766,7 +6767,11 @@
           if (!visible.includes(opened.cwd)) {
             visibleWorktreesByRepo = { ...visibleWorktreesByRepo, [opened.repoId]: [...visible, opened.cwd] };
           }
-          zenRowKey = null;
+          zenRowKey = zenRowAfterNavigation(zenRowKey, `${opened.repoId}|${opened.cwd}`);
+          if (zenRowKey !== null) {
+            notesShownInZen = false;
+            resetZenMenu();
+          }
           unfoldRowIfFolded(`${opened.repoId}|${opened.cwd}`);
           markTransientDiscovery(opened.session.source);
           scrollNewColIntoView(opened.cwd, opened.session.source);
@@ -7584,6 +7589,11 @@
     if (entry) {
       if (entry.repoId && entry.wtPath) await focusMcpProject(entry.repoId, entry.wtPath);
       await focusVoiceSession(entry.source);
+      const open = openSessionsByWt[entry.wtPath]?.find(session => session.source === entry.source);
+      const terminalId = open ? resolveTermId(open, newTermIds) ?? open.attachTermId : undefined;
+      const ownerId = sessionId ?? entry.resumeSessionId;
+      if (terminalId && liveTerminalIds.has(terminalId) && ownerId && ["codex", "claude"].includes(entry.agent))
+        await bindTerminalSessionOwner(terminalId, ownerId, daemonIdForWorktreePath(repos, entry.wtPath));
     } else await focusSessionBySource(source);
     const target = entry?.source ?? source;
     const column = document.querySelector<HTMLElement>(`.session-col[data-session-source="${CSS.escape(target)}"]`);

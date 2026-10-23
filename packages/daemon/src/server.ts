@@ -5430,6 +5430,22 @@ const server = Bun.serve<TermWsData, never>({
         );
       }
 
+      const ownerMatch = url.pathname.match(/^\/api\/terminals\/([^/]+)\/owner$/);
+      if (ownerMatch && req.method === "PATCH") {
+        const handle = terminalBackend.get(ownerMatch[1]!);
+        if (!handle?.isAlive()) return json({ error: "Terminal not found" }, { status: 404 });
+        const body = await req.json().catch(() => null);
+        if (typeof body?.sessionId !== "string" || !body.sessionId.trim() || body.sessionId.length > 256)
+          return json({ error: "sessionId required" }, { status: 400 });
+        try {
+          if (!handle.bindSessionOwner) throw new Error("Terminal ownership updates are unavailable");
+          handle.bindSessionOwner(body.sessionId);
+          return json({ ok: true });
+        } catch (error) {
+          return json({ error: error instanceof Error ? error.message : String(error) }, { status: 409 });
+        }
+      }
+
       if (url.pathname === "/api/processes" && req.method === "GET") {
         const routeStarted = Date.now();
         const records = terminalBackend.list().filter((r) => !r.exitedAt);

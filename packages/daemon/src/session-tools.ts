@@ -141,18 +141,19 @@ export function openCodexMessageTarget(
     .filter(
       (entry) =>
         entry.agent === "codex" &&
-        entry.mode !== "terminal" &&
-        entry.visualAppStopped !== true &&
         (entry.source === session.source ||
           entry.transcriptSource === session.source ||
           entry.resumeSessionId === session.sessionId ||
           entry.source === `__codex_app__:${session.sessionId}`),
     );
-  if (targets.length !== 1)
+  const native = targets.filter(entry => entry.mode !== "terminal" && entry.visualAppStopped !== true);
+  if (!native.length && targets.length)
+    throw new Error("Session is open as a terminal or stopped chat but has no matching live PTY. Resume its terminal before sending; focusing alone does not resume it.");
+  if (native.length !== 1)
     throw new Error(
       "Native session must be open in exactly one Treetop column before sending",
     );
-  return targets[0]!;
+  return native[0]!;
 }
 
 /** Returns undefined only when there is no matching live PTY. Never spawn a process. */

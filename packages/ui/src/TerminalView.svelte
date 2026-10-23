@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { apiUrl, apiWsUrl } from "./api";
+  import { apiUrl, apiWsUrl, bindTerminalSessionOwner } from "./api";
   import { onMount, onDestroy } from "svelte";
   import { fetchSshSessions, type SshSessionInfo } from "./file-browser-utils";
   import {
@@ -543,6 +543,13 @@
   let visibleWriteRaf: number | null = null;
   let hiddenFlushes = 0;
   let terminalId = "";
+  let boundSessionOwner = "";
+  $: if (terminalId && ownerId && !ownerId.startsWith("__") &&
+    ["codex", "claude"].includes(agent ?? "") && boundSessionOwner !== `${terminalId}:${ownerId}`) {
+    boundSessionOwner = `${terminalId}:${ownerId}`;
+    void bindTerminalSessionOwner(terminalId, ownerId, daemonId)
+      .catch(error => recordBrowserDiagnostic("terminal session ownership update failed", { terminalId, ownerId, error: String(error) }));
+  }
   let phase: "starting" | "live" | "exited" | "error" = "starting";
   let error = "";
   const startupTraceId = `term_${Date.now().toString(36)}_${Math.random()

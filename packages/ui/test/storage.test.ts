@@ -2,6 +2,7 @@ import { test, expect, describe } from "bun:test";
 import {
   loadZenRow,
   saveZenRow,
+  zenRowAfterNavigation,
   mergeOpenedSession,
   CommandTermStore,
   CommandUrlPickStore,
@@ -45,6 +46,12 @@ import {
   type KVStore,
   type PersistedSession,
 } from "../src/storage";
+
+test("session and project navigation preserve the current Zen mode", () => {
+  expect(zenRowAfterNavigation(null, "project|worktree")).toBeNull();
+  expect(zenRowAfterNavigation("old|worktree", "project|worktree")).toBe("project|worktree");
+  expect(zenRowAfterNavigation("project|worktree", "project|worktree")).toBe("project|worktree");
+});
 
 test("zen row is restored from shared preferences and exit clears it", () => {
   const values = new Map<string, string>();

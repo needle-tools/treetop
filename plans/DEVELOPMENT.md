@@ -147,6 +147,15 @@ npm run dev -- --workspace perf-images --port 17877 --ui-port 17879
   request. Repeated-steer tests gate HTTP failures explicitly rather than relying
   on two response deadlines staying apart on a busy runner.
 
+## Session messaging and Zen regressions (2026-10-23)
+
+Session messaging regressions: when a new terminal column resolves its provider
+session ID, bind that ID to the existing PTY owner instead of keeping the
+`__new__` tag. MCP focus waits for this metadata update before acknowledging.
+Opening/resuming a column through MCP preserves Zen and moves its row to the
+target project. The real-PTY regression stages input without submitting it and
+rejects reassignment to another established session.
+
 ## The point
 
 The goal isn't "the AI wrote tests" — AI can write bad tests too. The goal

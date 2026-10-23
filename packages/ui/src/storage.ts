@@ -24,6 +24,11 @@ export function saveZenRow(storage: KVStore, row: string | null): void {
   storage.setItem("supergit:zenRow", JSON.stringify(row));
 }
 
+/** Navigation moves the Zen viewport without entering or exiting Zen. */
+export function zenRowAfterNavigation(current: string | null, target: string): string | null {
+  return current === null ? null : target;
+}
+
 export class ExpandedStore {
   constructor(
     private readonly storage: KVStore,
