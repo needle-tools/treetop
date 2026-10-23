@@ -241,6 +241,22 @@ requires the user's normal rebuild/relaunch; the running daemon is untouched.
 
 ### Standalone activation and typing focus (2026-10-23)
 
+Follow-up: the running Windows app reported native focus on `Chrome_WidgetWin_1`
+while its visible render-widget child was `Chrome_RenderWidgetHostHWND`.
+The old helper accepted any child as success, so it skipped the input target.
+Restoration now checks/verifies the selected render widget and retries failed
+native activation briefly. Launcher logs include window/foreground/WebView/focus
+handles and the result of each attempt.
+
+DOM restoration now repairs same-input focus with a blur/focus edge on native
+activation, resolves replaced inputs/columns by session source, and allows three
+seconds for document readiness. Browser diagnostics record restored/skipped/
+not-ready outcomes without input contents. Explicit session focus also reaches
+TerminalView's xterm input, rather than stopping at the visual-chat composer.
+Edge regression covers the two previously failing cases, full column replacement,
+delayed activation, selection, other controls, dialogs and teardown. Native helper
+checks pass; actual Alt+Tab in a rebuilt WebView2 package still needs verification.
+
 The old session focus helper depended on browser blur/focus events and tried
 document.hasFocus only once. Packaged WebView2 can notify native activation
 before DOM focus is ready or omit the outgoing browser blur. The installed

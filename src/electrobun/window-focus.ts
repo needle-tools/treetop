@@ -17,10 +17,11 @@ export function restoreNativeWebviewFocus(
   api: NativeFocusApi,
 ): boolean {
   if (!window || api.foreground() !== window) return false;
-  const focused = api.focused(window);
-  if (focused && api.isChild(window, focused)) return true;
   const child = api.webviewChild(window);
   if (!child) return false;
+  const focused = api.focused(child);
+  if (focused && (focused === child || api.isChild(child, focused)))
+    return true;
   const from = api.currentThread(),
     to = api.windowThread(child);
   if (!to) return false;
@@ -29,7 +30,8 @@ export function restoreNativeWebviewFocus(
   try {
     if (api.foreground() !== window) return false;
     api.focus(child);
-    return true;
+    const restored = api.focused(child);
+    return restored === child || (!!restored && api.isChild(child, restored));
   } finally {
     if (attach) api.attach(from, to, false);
   }
@@ -106,6 +108,15 @@ export function createWindowsWebviewFocus() {
   };
   return {
     restore: (window: bigint) => restoreNativeWebviewFocus(window, api),
+    snapshot: (window: bigint) => {
+      const child = api.webviewChild(window);
+      return {
+        window: window.toString(),
+        foreground: api.foreground().toString(),
+        webview: child.toString(),
+        focused: api.focused(child || window).toString(),
+      };
+    },
     close: () => {
       user.close();
       kernel.close();

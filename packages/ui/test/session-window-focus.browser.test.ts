@@ -32,7 +32,7 @@ test("returning to the app restores session input focus without stealing other f
     );
     await page.goto(`http://127.0.0.1:${address.port}/`);
     await page.setContent(`
-      <div class="session-col"><textarea id="chat">draft text</textarea></div>
+      <div class="session-col" data-session-source="chat-session"><textarea id="chat">draft text</textarea></div>
       <div class="session-col"><textarea id="terminal" class="xterm-helper-textarea"></textarea></div>
       <input id="search"><dialog><input id="modal"></dialog>
     `);
@@ -82,6 +82,28 @@ test("returning to the app restores session input focus without stealing other f
       window.dispatchEvent(new CustomEvent("treetop:native-window-focus", { detail: { focused: true } }));
       await new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
       const nativeWithoutBlur = document.activeElement?.id;
+      let refocused = 0;
+      el("chat").addEventListener("focus", () => refocused++);
+      // WebView2 can keep DOM focus while losing its native keyboard route.
+      window.dispatchEvent(new CustomEvent("treetop:native-window-focus", { detail: { focused: true } }));
+      await new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
+      const nativeSameInput = refocused > 0 && document.activeElement?.id === "chat";
+      leave();
+      el("chat").closest(".session-col")!.setAttribute("data-session-source", "chat-session");
+      el("chat").outerHTML = '<textarea id="chat">draft text</textarea>';
+      const replacedInput = await returnToApp();
+      leave();
+      el("chat").closest(".session-col")!.outerHTML = '<div class="session-col" data-session-source="chat-session"><textarea id="chat">draft text</textarea></div>';
+      const replacedColumn = await returnToApp();
+      leave();
+      let delayedFocusReady = false;
+      document.hasFocus = () => delayedFocusReady;
+      window.dispatchEvent(new CustomEvent("treetop:native-window-focus", { detail: { focused: true } }));
+      await new Promise(resolve => setTimeout(resolve, 650));
+      delayedFocusReady = true;
+      await new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
+      const slowNativeReturn = document.activeElement?.id;
+      document.hasFocus = originalHasFocus;
       leave();
       el("search").focus();
       const search = await returnToApp();
@@ -107,6 +129,10 @@ test("returning to the app restores session input focus without stealing other f
         terminal,
         nativeReturn,
         nativeWithoutBlur,
+        nativeSameInput,
+        replacedInput,
+        replacedColumn,
+        slowNativeReturn,
         search,
         modal,
         removed,
@@ -120,6 +146,10 @@ test("returning to the app restores session input focus without stealing other f
       terminal: "terminal",
       nativeReturn: "chat",
       nativeWithoutBlur: "chat",
+      nativeSameInput: true,
+      replacedInput: "chat",
+      replacedColumn: "chat",
+      slowNativeReturn: "chat",
       search: "search",
       modal: "modal",
       removed: "",

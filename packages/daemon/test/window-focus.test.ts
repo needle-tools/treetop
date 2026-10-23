@@ -9,7 +9,7 @@ test("native activation restores keyboard input to the WebView child across UI t
   const calls: unknown[] = [];
   const api = {
     foreground: () => 1n,
-    focused: () => 1n,
+    focused: () => calls.includes(2n) ? 2n : 1n,
     isChild: (parent: bigint, child: bigint) => parent === 1n && child === 2n,
     webviewChild: () => 2n,
     currentThread: () => 10,
@@ -29,6 +29,15 @@ test("native activation restores keyboard input to the WebView child across UI t
     false,
   );
   expect(calls).toEqual([]);
+  expect(restoreNativeWebviewFocus(1n, {
+    ...api,
+    focused: () => calls.includes(2n) ? 2n : 3n,
+    isChild: (parent, child) => parent === 1n && (child === 2n || child === 3n),
+  })).toBe(true);
+  expect(calls).toEqual([[10, 20, true], 2n, [10, 20, false]]);
+  calls.length = 0;
+  expect(restoreNativeWebviewFocus(1n, { ...api, focused: () => 1n })).toBe(false);
+  calls.length = 0;
   expect(restoreNativeWebviewFocus(1n, { ...api, focused: () => 2n })).toBe(
     true,
   );

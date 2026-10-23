@@ -556,11 +556,26 @@ if (isWin) {
   try { nativeFocus = createWindowsWebviewFocus(); }
   catch (error) { llog(`Failed to initialize WebView keyboard focus: ${error}`); }
 }
+let nativeFocusRetry: ReturnType<typeof setTimeout> | undefined;
+function restoreWindowInput(attempt = 0): void {
+  nativeFocusRetry = undefined;
+  let restored = true;
+  if (nativeFocus && win.ptr) {
+    const handle = BigInt(win.ptr);
+    restored = nativeFocus.restore(handle);
+    llog(`window focus attempt=${attempt} restored=${restored} ${JSON.stringify(nativeFocus.snapshot(handle))}`);
+  }
+  if (attempt === 0 || restored) win.webview.executeJavascript(nativeWindowFocusScript(true));
+  if (!restored && attempt < 4) nativeFocusRetry = setTimeout(() => restoreWindowInput(attempt + 1), 75);
+}
 win.on("focus", () => {
-  if (nativeFocus && win.ptr) nativeFocus.restore(BigInt(win.ptr));
-  win.webview.executeJavascript(nativeWindowFocusScript(true));
+  if (nativeFocusRetry) clearTimeout(nativeFocusRetry);
+  restoreWindowInput();
 });
 win.on("blur", () => {
+  if (nativeFocusRetry) clearTimeout(nativeFocusRetry);
+  nativeFocusRetry = undefined;
+  llog("window blur");
   win.webview.executeJavascript(nativeWindowFocusScript(false));
 });
 restoreWindowModeOnReady(bounds, {
@@ -645,6 +660,8 @@ win.on("move", captureState);
 // "closed" event arrives after destruction completes.
 try {
   win.on("close", () => {
+    if (nativeFocusRetry) clearTimeout(nativeFocusRetry);
+    nativeFocusRetry = undefined;
     nativeFocus?.close();
     nativeFocus = undefined;
     captureState();

@@ -5627,6 +5627,7 @@
   $: stoppedTranscriptSurface =
     mode === "read" && !showChatComposer && !visualTranscriptActive;
   let lastFocusComposerSeq = 0;
+  let terminalInput: { focusInput(): void } | null = null;
   $: if (focusComposerSeq > 0 && focusComposerSeq !== lastFocusComposerSeq) {
     lastFocusComposerSeq = focusComposerSeq;
     void focusComposerInput();
@@ -5714,6 +5715,10 @@
       await new Promise<void>((resolve) =>
         requestAnimationFrame(() => resolve()),
       );
+    }
+    if (mode === "terminal") {
+      terminalInput?.focusInput();
+      return;
     }
     if (!showChatComposer || !composerInputEl || composerInputEl.disabled)
       return;
@@ -6418,6 +6423,7 @@
   {#if sendError && !showChatComposer}<p class="error" role="alert">{sendError}</p>{/if}
   {#if terminalMounted}
     <TerminalView
+      bind:this={terminalInput}
       cmd={agent === "codex"
         ? [
             // codex's `resume` subcommand takes a session id as a

@@ -1721,6 +1721,12 @@
     xterm?.focus();
   }
 
+  /** Explicit session selection must repair stale focus even for the same TUI. */
+  export function focusInput(): void {
+    if (xterm?.textarea === document.activeElement) xterm.blur();
+    focusTerminal();
+  }
+
   /** The autofocus-on-WS-open contract must not steal a caret the user is
    *  already using. A background column reconnecting or a new one scrolling
    *  into view opens its WS too — and that used to yank focus out of whichever

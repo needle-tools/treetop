@@ -5,12 +5,31 @@ import { NATIVE_WINDOW_FOCUS_EVENT } from "./window-focus-events";
 export function installSessionWindowFocus(
   doc: Document = document,
   win: Window = window,
+  options: {
+    diagnostic?: (message: string, extra: Record<string, unknown>) => void;
+  } = {},
 ): () => void {
   let previous: HTMLElement | null = null;
+  let previousColumn: HTMLElement | null = null;
+  let previousSource: string | undefined;
+  let nativeRepair = false;
+  let deadline = 0;
   let away = false;
   let frame: number | null = null;
   let attempts = 0;
 
+  const neutral = (element: Element | null) =>
+    !element || element === doc.body || element === doc.documentElement;
+  function report(message: string) {
+    options.diagnostic?.(`session focus ${message}`, {
+      attempts,
+      documentFocused: doc.hasFocus(),
+      visible: !doc.hidden,
+      activeTag: doc.activeElement?.tagName,
+      inputConnected: previous?.isConnected ?? false,
+      source: previousSource,
+    });
+  }
   function remember() {
     const active = doc.activeElement as HTMLElement | null;
     previous =
@@ -18,6 +37,8 @@ export function installSessionWindowFocus(
       (active.matches("textarea, input") || active.isContentEditable)
         ? active
         : null;
+    previousColumn = previous?.closest<HTMLElement>(".session-col") ?? null;
+    previousSource = previousColumn?.dataset.sessionSource;
   }
   function onFocusIn() {
     if (!away) remember();
@@ -25,14 +46,16 @@ export function installSessionWindowFocus(
   function onBlur() {
     // Some webviews clear activeElement before the window blur event.
     // In that case retain the input recorded by focusin.
-    if (doc.activeElement && doc.activeElement !== doc.body) remember();
+    if (!neutral(doc.activeElement)) remember();
     away = true;
+    report("window left");
     if (frame !== null) win.cancelAnimationFrame(frame);
     frame = null;
   }
   function onFocus() {
     if (!away || frame !== null) return;
     attempts = 0;
+    deadline = Date.now() + 3000;
     restore();
   }
   function restore() {
@@ -41,20 +64,51 @@ export function installSessionWindowFocus(
       // The native host's activation event precedes WebView2's document
       // focus. Retry briefly instead of losing this activation after one frame.
       if (doc.hidden || !doc.hasFocus()) {
-        if (++attempts < 30) restore();
+        ++attempts;
+        if (Date.now() < deadline) restore();
+        else report("document not ready");
         return;
       }
       away = false;
       const active = doc.activeElement;
+      if (!neutral(active) && active !== previous) {
+        report("kept another control");
+        nativeRepair = false;
+        return;
+      }
+      if (previous && !previous.isConnected) {
+        const column = previousColumn?.isConnected
+          ? previousColumn
+          : previousSource
+            ? doc.querySelector<HTMLElement>(
+                `.session-col[data-session-source="${CSS.escape(previousSource)}"]`,
+              )
+            : null;
+        const selector = previous.id
+          ? `#${CSS.escape(previous.id)}`
+          : previous.matches(".xterm-helper-textarea")
+            ? ".xterm-helper-textarea"
+            : previous.isContentEditable
+              ? "[contenteditable='true']"
+              : previous.tagName.toLowerCase();
+        previous = column?.querySelector<HTMLElement>(selector) ?? null;
+      }
       if (
         !previous?.isConnected ||
         previous.matches(":disabled") ||
         previous.getClientRects().length === 0 ||
-        doc.querySelector("dialog[open], [aria-modal='true']") ||
-        (active && active !== doc.body && active !== previous)
-      )
+        doc.querySelector("dialog[open], [aria-modal='true']")
+      ) {
+        report("no available session input");
+        nativeRepair = false;
         return;
+      }
+      // WebView2 may retain DOM activeElement while dropping native keyboard
+      // routing. A blur/focus edge also repairs xterm's cached focus state.
+      if (nativeRepair && doc.activeElement === previous) previous.blur();
       previous.focus({ preventScroll: true });
+      report(doc.activeElement === previous ? "restored" : "restore failed");
+      nativeRepair = false;
     });
   }
   function onVisibility() {
@@ -68,7 +122,12 @@ export function installSessionWindowFocus(
     else if (focused === true) {
       // Native activation is authoritative even if the page missed blur.
       // Keep any newly focused control (search, menus, dialogs) untouched.
-      if (previous && doc.activeElement === doc.body) away = true;
+      nativeRepair = true;
+      if (
+        previous &&
+        (neutral(doc.activeElement) || doc.activeElement === previous)
+      )
+        away = true;
       onFocus();
     }
   }

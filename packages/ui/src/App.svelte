@@ -9033,7 +9033,9 @@
     // Surface toast requests pushed by child components (e.g.
     // AgentUsageChip's usage warnings) through the local stack.
     const unsubToasts = subscribeToasts((req) => addToast(req));
-    const uninstallSessionWindowFocus = installSessionWindowFocus();
+    const uninstallSessionWindowFocus = installSessionWindowFocus(document, window, {
+      diagnostic: (message, extra) => recordBrowserDiagnostic(message, extra),
+    });
     const uninstallUiContextPublisher = installUiContextPublisher(currentUiContext);
     void hydrateFromServer();
     document.addEventListener("click", handleDocClick);
