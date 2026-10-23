@@ -311,6 +311,7 @@ before(async () => {
     root: uiRoot,
     configFile: false,
     resolve: { alias: { "@treetop/nicifier": resolve(uiRoot, "../nicifier/src/index.ts") } },
+    optimizeDeps: { entries: ["test/browser/session-view-lifecycle.html"] },
     logLevel: "error",
     plugins: [svelte(), lifecycleApiPlugin()],
     server: {
@@ -318,6 +319,7 @@ before(async () => {
       port: 0,
       strictPort: false,
       proxy: {},
+      warmup: { clientFiles: ["./test/browser/session-view-lifecycle-main.ts"] },
     },
   });
   await server.listen();
@@ -346,23 +348,36 @@ async function openHarness(options: { query?: string } = {}): Promise<Page> {
   const currentPage = await browser.newPage({
     viewport: { width: 900, height: 680 },
   });
-  await currentPage.goto(
-    `${origin}/test/browser/session-view-lifecycle.html${options.query ? `?${options.query}` : ""}`,
-    { waitUntil: "networkidle" },
+  const startupErrors: string[] = [];
+  currentPage.on("pageerror", error => startupErrors.push(error.message));
+  currentPage.on("requestfailed", request => startupErrors.push(`${request.url()}: ${request.failure()?.errorText}`));
+  // Observe this page's stream, rather than a connection left by another page.
+  // Start the deadline before navigation so cold Vite transforms share it.
+  const streamReady = currentPage.waitForResponse(response =>
+    new URL(response.url()).pathname === "/api/codex-app/events" && response.status() === 200,
+    { timeout: 20_000 },
   );
-  await currentPage.locator(".messages").waitFor();
-  await waitForCondition(
-    async () =>
-      historicalWorkGroupCount > 0
-        ? (await currentPage.locator(".work-row").count()) > 0
-        : (await currentPage.locator(".msg").count()) > 20,
-    "SessionView did not render its history",
-  );
-  await waitForCondition(
-    async () => eventClients.size > 0,
-    "SessionView did not establish its app-server event stream",
-  );
-  return currentPage;
+  // Attach immediately: navigation failures must not leave an unhandled timer.
+  void streamReady.catch(() => {});
+  try {
+    await currentPage.goto(
+      `${origin}/test/browser/session-view-lifecycle.html${options.query ? `?${options.query}` : ""}`,
+      { waitUntil: "networkidle" },
+    );
+    await currentPage.locator(".messages").waitFor();
+    await waitForCondition(
+      async () =>
+        historicalWorkGroupCount > 0
+          ? (await currentPage.locator(".work-row").count()) > 0
+          : (await currentPage.locator(".msg").count()) > 20,
+      "SessionView did not render its history",
+    );
+    await streamReady;
+    return currentPage;
+  } catch (error) {
+    await currentPage.close();
+    throw new Error(`${error instanceof Error ? error.message : error}\nBrowser startup errors: ${startupErrors.join("; ") || "none"}`, { cause: error });
+  }
 }
 
 async function waitForCondition(
@@ -530,8 +545,7 @@ describe("SessionView browser lifecycle", { concurrency: false }, () => {
       const sequence = async () => (await currentPage.locator(".messages").innerText()).match(/REPEATED_STEER/g) ?? [];
       assert.deepEqual(await sequence(), ["REPEATED_STEER", "REPEATED_STEER"]);
       emitCodexEvents([{ kind: "notification", method: "item/completed", threadId, turnId: latestTurnId, receivedAt: "2026-10-01T10:00:11.000Z", params: { item: { id: "accepted-first-steer", type: "userMessage", content: [{ type: "text", text: "REPEATED_STEER" }] } } }]);
-      emitCodexEvents([{ kind: "notification", method: "item/completed", threadId, turnId: latestTurnId, receivedAt: "2026-10-01T10:00:12.000Z", params: { item: { id: "steer-ack-barrier", type: "agentMessage", text: "STEER_ACK_RECEIVED" } } }]);
-      await currentPage.locator(".messages").getByText("STEER_ACK_RECEIVED", { exact: true }).waitFor();
+      await currentPage.locator('[data-visual-scroll-anchor*="accepted-first-steer"]').waitFor();
       releaseFirst();
       await currentPage.waitForTimeout(900);
       assert.equal(await composer.inputValue(), "");
@@ -2250,6 +2264,7 @@ describe("SessionView browser lifecycle", { concurrency: false }, () => {
       if (await round.getAttribute("open") === null) await round.locator(":scope > summary").click();
       const steps = round.locator(".work-detail-toggle");
       if (!(await steps.innerText()).includes("Showing all")) await steps.click();
+      await waitForCondition(async () => (await steps.innerText()).includes("Showing all"), "Work steps did not expand");
       const group = currentPage.locator(".work-action-group").last();
       if (await group.getAttribute("open") === null) await group.locator(":scope > summary").press("Enter");
       await currentPage.locator(".work-file-edit-preview .work-preview-path").last().hover({ timeout: 5000 });
