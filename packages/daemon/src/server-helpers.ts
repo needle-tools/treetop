@@ -344,6 +344,39 @@ export function urlPriority(url: string): number {
   return 0;
 }
 
+/** Keep discovering URLs for the terminal's lifetime, including slow starts/restarts. */
+export function watchCommandUrls(
+  handle: { subscribe(sub: { onData(chunk: Uint8Array): void; onExit(): void }): () => void },
+  publish: (urls: string[]) => void,
+  excludedPort: number,
+): () => void {
+  const decoder = new TextDecoder();
+  const seen = new Set<string>();
+  let buffer = "", exited = false;
+  let unsubscribe: (() => void) | undefined;
+  unsubscribe = handle.subscribe({
+    onData(chunk) {
+      if (exited) return;
+      buffer += decoder.decode(chunk, { stream: true });
+      const clean = buffer.replace(/\x1b\[[0-9;]*[a-zA-Z]/g, "");
+      URL_RE.lastIndex = 0;
+      let match: RegExpExecArray | null;
+      let added = false;
+      while ((match = URL_RE.exec(clean)) !== null) {
+        const url = match[0].replace(/[.,;:]+$/, "");
+        try { if (Number(new URL(url).port) === excludedPort) continue; }
+        catch { continue; }
+        if (!seen.has(url)) { seen.add(url); added = true; }
+      }
+      if (added) publish([...seen].sort((a, b) => urlPriority(b) - urlPriority(a)));
+      if (buffer.length > 8192) buffer = buffer.slice(-4096);
+    },
+    onExit() { exited = true; unsubscribe?.(); },
+  });
+  if (exited) unsubscribe();
+  return () => { exited = true; unsubscribe?.(); };
+}
+
 export interface RequestRateSnapshot {
   windowMs: number;
   elapsedMs: number;

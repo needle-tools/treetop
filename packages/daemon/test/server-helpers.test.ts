@@ -4,13 +4,14 @@
  * text inspection, no tests that pass without asserting.
  */
 
-import { test, expect, describe } from "bun:test";
+import { test, expect, describe, jest } from "bun:test";
 import { Buffer } from "node:buffer";
 import {
   stripThinkingArtifacts,
   defaultLoginShell,
   availableShells,
   URL_RE,
+  watchCommandUrls,
   urlPriority,
   sanitiseMachineId,
   parseKind,
@@ -384,6 +385,30 @@ describe("availableShells", () => {
 // ---------------------------------------------------------------------------
 // URL_RE
 // ---------------------------------------------------------------------------
+test("command URL capture survives slow startup and updates until terminal exit", () => {
+  jest.useFakeTimers();
+  try {
+    let subscriber: any;
+    let attached = true;
+    const snapshots: string[][] = [];
+    const emit = (text: string) => { if (attached) subscriber.onData(new TextEncoder().encode(text)); };
+    const dispose = watchCommandUrls({ subscribe: sub => { subscriber = sub; return () => { attached = false; }; } }, urls => snapshots.push(urls), 27787);
+    emit("[rooms] Ready on http://127.0.0.1:8787\n");
+    jest.advanceTimersByTime(180_000);
+    emit("[pwa] Local: \x1b[36mhttps://local");
+    emit("host:5174/\x1b[0m\n[pwa] Network: https://192.168.3.18:5174/\n");
+    expect(snapshots.at(-1)).toContain("https://localhost:5174/");
+    expect(snapshots.at(-1)).toContain("https://192.168.3.18:5174/");
+    expect(snapshots.at(-1)).toContain("http://127.0.0.1:8787");
+    emit("Treetop http://localhost:27787\nhttps://localhost:5174/\n");
+    expect(snapshots.at(-1)).not.toContain("http://localhost:27787");
+    expect(snapshots.at(-1)?.filter(url => url === "https://localhost:5174/")).toHaveLength(1);
+    subscriber.onExit();
+    expect(attached).toBe(false);
+    dispose();
+  } finally { jest.useRealTimers(); }
+});
+
 describe("URL_RE", () => {
   test("matches localhost URLs", () => {
     URL_RE.lastIndex = 0;

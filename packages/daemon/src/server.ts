@@ -187,8 +187,7 @@ import {
   stripThinkingArtifacts,
   defaultLoginShell,
   availableShells,
-  URL_RE,
-  urlPriority,
+  watchCommandUrls,
   sanitiseMachineId,
   parseKind,
   parseTarget,
@@ -1098,44 +1097,10 @@ function detectCommandUrl(
   linkId: string,
   repoId: string,
 ): void {
-  const decoder = new TextDecoder();
-  let buf = "";
-  const seen = new Set<string>();
-  let urls: string[] = [];
-
-  function publish() {
-    const sorted = [...urls].sort((a, b) => urlPriority(b) - urlPriority(a));
+  watchCommandUrls(handle, sorted => {
     commandDetectedUrls.set(linkId, sorted);
     broadcast("change", { kind: "command_url", linkId, repoId, urls: sorted });
-  }
-
-  const timeout = setTimeout(() => unsub(), 120_000);
-  const unsub = handle.subscribe({
-    onData(chunk: Uint8Array) {
-      buf += decoder.decode(chunk, { stream: true });
-      const clean = buf.replace(/\x1b\[[0-9;]*[a-zA-Z]/g, "");
-      let m: RegExpExecArray | null;
-      let added = false;
-      URL_RE.lastIndex = 0;
-      while ((m = URL_RE.exec(clean)) !== null) {
-        const url = m[0].replace(/[.,;:]+$/, "");
-        try {
-          if (Number(new URL(url).port) === PORT) continue;
-        } catch {
-          continue;
-        }
-        if (seen.has(url)) continue;
-        seen.add(url);
-        urls.push(url);
-        added = true;
-      }
-      if (added) publish();
-      if (buf.length > 8192) buf = buf.slice(-4096);
-    },
-    onExit() {
-      clearTimeout(timeout);
-    },
-  });
+  }, PORT);
 }
 
 /** Reused by every /api/session* route to keep ?source= from being
@@ -8257,7 +8222,7 @@ const server = Bun.serve<TermWsData, never>({
                 `supergit daemon: /api/command/run internal slow total=${Math.round(totalMs)}ms backend=${Math.round(backendMs)} linkId=${linkId} repoId=${repoId} cwd=${cwd} cmd=${JSON.stringify(cmdLink.cmd)}`,
               );
             }
-            // Scan PTY output for localhost/LAN URLs for up to 2 minutes
+            // Scan localhost/LAN URLs until the command terminal exits
             detectCommandUrl(handle, linkId, repoId);
             // Track as a shell for input capture + persistence
             shellTermIds.add(handle.id);

@@ -328,6 +328,12 @@ No production daemon restart or live voice interaction was performed.
 
 ### Agent session messages (2026-10-22)
 
+Command URL capture now subscribes until terminal exit instead of stopping
+after two minutes. Slow installs/Vite startup and later server restarts keep
+publishing URLs; the text buffer stays bounded and the observer unsubscribes
+on exit. A fake-clock regression emits colored/split HTTPS Vite output after
+three minutes, retaining the earlier HTTP service URL and excluding Treetop's port.
+
 2026-10-23: Command-chip edit pencils replace the leading icon on hover/focus,
 adding no extra chip width and preserving access to detected-URL open buttons.
 The browser regression covers chip widths, pointer hit testing, URL clicks and
