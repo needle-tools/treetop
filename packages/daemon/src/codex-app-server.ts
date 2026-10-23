@@ -943,6 +943,7 @@ export class CodexAppServerAdapter implements NativeAgentAdapter {
   subscribe(
     threadId: string | undefined,
     listener: CodexAppServerListener,
+    options: { replay?: boolean } = {},
   ): () => void {
     const filtered = (event: CodexAppServerEvent) => {
       if (!threadId || event.threadId === threadId) {
@@ -950,7 +951,9 @@ export class CodexAppServerAdapter implements NativeAgentAdapter {
       }
     };
     const replay = threadId ? this.history.get(threadId) : this.globalHistory;
-    for (const event of replay ?? []) filtered(event);
+    if (options.replay !== false) {
+      for (const event of replay ?? []) filtered(event);
+    }
     this.listeners.add(filtered);
     return () => {
       this.listeners.delete(filtered);

@@ -15,20 +15,28 @@ function deferred<T>() {
 
 function restartHarness() {
   const peers: any[] = [];
+  const channels: any[] = [];
   const events: Array<(event: VoiceRealtimeEvent) => void> = [];
   const stops: string[] = [];
   const pendingStop = deferred<Record<string, unknown>>();
   let negotiate = async () => {};
+  let stats = async () => new Map<string, Record<string, unknown>>();
   const streamStates: Array<(state: "live" | "reconnecting") => void> = [];
   let nextThread = 0;
   const controller = new GlobalVoiceController({
     disconnectGraceMs: 5,
+    audioPollMs: 5,
+    audioTimeoutMs: 20,
     getUserMedia: async () =>
       ({ getTracks: () => [{ stop() {} }] }) as unknown as MediaStream,
     createPeerConnection: () => {
       const peer = {
         addTrack() {},
-        createDataChannel: () => ({ close() {} }),
+        createDataChannel: () => {
+          const channel = { close() {}, onmessage: null };
+          channels.push(channel);
+          return channel;
+        },
         createOffer: async () => ({ type: "offer", sdp: "offer" }),
         setLocalDescription: async () => {},
         localDescription: { sdp: "offer" },
@@ -37,6 +45,7 @@ function restartHarness() {
         addEventListener() {},
         removeEventListener() {},
         setRemoteDescription: () => negotiate(),
+        getStats: () => stats(),
         close() {},
         ontrack: null,
         onconnectionstatechange: null,
@@ -68,6 +77,7 @@ function restartHarness() {
   return {
     controller,
     peers,
+    channels,
     events,
     streamStates,
     stops,
@@ -76,10 +86,112 @@ function restartHarness() {
     setNegotiation: (fn: () => Promise<void>) => {
       negotiate = fn;
     },
+    setStats: (fn: typeof stats) => {
+      stats = fn;
+    },
   };
 }
 
 describe("GlobalVoiceController", () => {
+  test("data-channel service errors are surfaced instead of leaving voice listening", async () => {
+    const h = restartHarness();
+    await h.controller.start(h.context);
+    const channel = h.channels[0];
+    channel.onmessage({
+      data: JSON.stringify({
+        type: "error",
+        error: { message: "Voice usage check failed" },
+      }),
+    });
+    expect(h.controller.snapshot).toMatchObject({
+      phase: "error",
+      error: "Voice usage check failed",
+    });
+    h.pendingStop.resolve({ ok: true });
+    await h.controller.stop();
+  });
+
+  test("speech sent without service acknowledgement retries once, then surfaces a retryable error", async () => {
+    const h = restartHarness();
+    let energy = 0;
+    h.setStats(
+      async () =>
+        new Map([
+          [
+            "mic",
+            {
+              type: "media-source",
+              kind: "audio",
+              totalAudioEnergy: (energy += 0.1),
+            },
+          ],
+          ["sent", { type: "outbound-rtp", kind: "audio", bytesSent: 5000 }],
+        ]),
+    );
+    await h.controller.start(h.context);
+    await new Promise((resolve) => setTimeout(resolve, 140));
+    expect(h.peers).toHaveLength(2);
+    expect(h.controller.snapshot.phase).toBe("error");
+    expect(h.controller.snapshot.error).toContain("acknowledge");
+    h.pendingStop.resolve({ ok: true });
+    await h.controller.stop();
+  });
+
+  test("silence does not trigger recovery and incoming transcript events acknowledge transmitted speech", async () => {
+    const h = restartHarness();
+    await h.controller.start(h.context);
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    expect(h.peers).toHaveLength(1);
+    let energy = 0;
+    h.setStats(
+      async () =>
+        new Map([
+          [
+            "mic",
+            {
+              type: "media-source",
+              kind: "audio",
+              totalAudioEnergy: (energy += 0.1),
+            },
+          ],
+          ["sent", { type: "outbound-rtp", kind: "audio", bytesSent: 5000 }],
+        ]),
+    );
+    for (let i = 0; i < 6; i++) {
+      await new Promise((resolve) => setTimeout(resolve, 8));
+      const channel = h.channels[0];
+      channel.onmessage({
+        data: JSON.stringify({ type: "input_transcript.added" }),
+      });
+    }
+    expect(h.peers).toHaveLength(1);
+    expect(h.controller.snapshot.phase).toBe("listening");
+    h.pendingStop.resolve({ ok: true });
+    await h.controller.stop();
+  });
+
+  test("stopping while an audio stats query is pending cannot reopen the microphone", async () => {
+    const h = restartHarness();
+    const sampled = deferred<Map<string, Record<string, unknown>>>();
+    const sampling = deferred<void>();
+    h.setStats(() => {
+      sampling.resolve();
+      return sampled.promise;
+    });
+    await h.controller.start(h.context);
+    await sampling.promise;
+    await h.controller.stop();
+    sampled.resolve(
+      new Map([
+        ["mic", { type: "media-source", kind: "audio", totalAudioEnergy: 10 }],
+        ["sent", { type: "outbound-rtp", kind: "audio", bytesSent: 5000 }],
+      ]),
+    );
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    expect(h.controller.snapshot.phase).toBe("off");
+    expect(h.peers).toHaveLength(1);
+    h.pendingStop.resolve({ ok: true });
+  });
   test("a connection failure releases local state immediately even if server stop hangs; stale callbacks cannot kill its replacement", async () => {
     const h = restartHarness();
     await h.controller.start(h.context);

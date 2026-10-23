@@ -96,6 +96,7 @@ export interface MessageBlock {
   compaction?: ContextCompactionDetails;
   subagentId?: string;
   subagentNickname?: string;
+  subagentIsParent?: boolean;
   subagentAction?: "spawn" | "wait" | "notification";
   subagentStatus?: "running" | "completed" | "failed" | "unknown";
   subagentType?: string;
@@ -281,6 +282,7 @@ export interface VisualWorkDisplayEntry<
   pairedResult?: VisualWorkEntry<B, M>;
   pairedMedia?: B[];
   pairedToolUse?: VisualWorkEntry<B, M>;
+  pairedSubagent?: B;
   markerBlock?: B;
   markerKind?: VisualMarkerKind;
   markerLabel?: string;
@@ -395,12 +397,14 @@ export function visualFileEditPreview(
 export interface VisualSubagentMeta {
   id?: string;
   nickname?: string;
+  isParent?: boolean;
   action: "spawn" | "wait" | "notification";
   status: "running" | "completed" | "failed" | "unknown";
   type?: string;
   model?: string;
   effort?: string;
   task?: string;
+  taskEncrypted?: boolean;
   result?: string;
 }
 
@@ -423,6 +427,10 @@ function visibleSubagentText(value: unknown): string | undefined {
   return text;
 }
 
+function encryptedSubagentTask(value: unknown): { taskEncrypted: true } | {} {
+  return stringFromUnknown(value) && !visibleSubagentText(value) ? { taskEncrypted: true } : {};
+}
+
 function normalizedSubagentToolName(
   toolName: string | undefined,
 ): "spawn_agent" | "wait_agent" | undefined {
@@ -437,23 +445,35 @@ function normalizedSubagentToolName(
 export function visualSubagentMetaFromBlocks(
   toolUseBlock: MessageBlock | undefined,
   resultBlock?: MessageBlock | undefined,
+  activityBlock?: MessageBlock | undefined,
 ): VisualSubagentMeta | undefined {
+  const activity = visualSubagentMetaFromBlock(activityBlock);
   const direct =
     visualSubagentMetaFromToolResult(toolUseBlock, resultBlock) ??
     visualSubagentMetaFromBlock(resultBlock) ??
-    visualSubagentMetaFromBlock(toolUseBlock);
+    visualSubagentMetaFromBlock(toolUseBlock) ??
+    activity;
   if (!direct) return undefined;
   const input = recordFromUnknown(toolUseBlock?.toolInput);
   return {
     ...direct,
+    id: direct.id ?? activity?.id,
+    status: activity && activity.status !== "unknown" ? activity.status : direct.status,
+    result: activity?.result ?? direct.result,
+    ...(direct.isParent || activity?.isParent ? { isParent: true } : {}),
     nickname:
       direct.nickname ??
+      activity?.nickname ??
       stringFromUnknown(input?.task_name) ??
       stringFromUnknown(input?.target),
-    type: direct.type ?? stringFromUnknown(input?.agent_type),
-    model: direct.model ?? stringFromUnknown(input?.model),
-    effort: direct.effort ?? stringFromUnknown(input?.reasoning_effort),
+    type: direct.type ?? activity?.type ?? stringFromUnknown(input?.agent_type),
+    model: activity?.model ?? direct.model ?? stringFromUnknown(input?.model),
+    effort:
+      activity?.effort ??
+      direct.effort ??
+      stringFromUnknown(input?.reasoning_effort),
     task: visibleSubagentText(direct.task ?? input?.message),
+    ...encryptedSubagentTask(input?.message),
   };
 }
 
@@ -489,11 +509,11 @@ function visualSubagentMetaFromToolResult(
   }
   const status = recordFromUnknown(record.status);
   if (!status) {
-    return { action: "wait", status: "unknown" };
+    return undefined;
   }
   const entries = Object.entries(status);
   if (entries.length !== 1) {
-    return { action: "wait", status: "unknown" };
+    return undefined;
   }
   const [id, rawState] = entries[0]!;
   const state = recordFromUnknown(rawState);
@@ -517,13 +537,15 @@ export function visualSubagentMetaFromBlock(
     return {
       id: block.subagentId,
       nickname: block.subagentNickname,
+      ...(block.subagentIsParent ? { isParent: true } : {}),
       action: block.subagentAction ?? "notification",
       status: block.subagentStatus ?? "unknown",
       type: block.subagentType,
       model: block.subagentModel,
       effort: block.subagentEffort,
       task: visibleSubagentText(block.subagentMessage),
-      result: block.subagentResult ?? block.text,
+      ...encryptedSubagentTask(block.subagentMessage),
+      result: block.subagentResult ?? (block.subagentMessage ? undefined : block.text),
     };
   }
   const toolName = normalizedSubagentToolName(block.toolName);
@@ -536,9 +558,15 @@ export function visualSubagentMetaFromBlock(
         (target): target is string => typeof target === "string",
       )
     : [];
+  const id = block.subagentId ?? stringFromUnknown(input?.agent_id) ?? targets[0];
+  if (toolName === "wait_agent" && !id) return undefined;
   return {
-    id: block.subagentId ?? stringFromUnknown(input?.agent_id) ?? targets[0],
-    nickname: block.subagentNickname,
+    id,
+    nickname:
+      block.subagentNickname ??
+      (toolName === "spawn_agent"
+        ? stringFromUnknown(input?.task_name)
+        : undefined),
     action:
       block.subagentAction ?? (toolName === "spawn_agent" ? "spawn" : "wait"),
     status:
@@ -548,6 +576,7 @@ export function visualSubagentMetaFromBlock(
     model: block.subagentModel ?? stringFromUnknown(input?.model),
     effort: block.subagentEffort ?? stringFromUnknown(input?.reasoning_effort),
     task: visibleSubagentText(block.subagentMessage ?? input?.message),
+    ...encryptedSubagentTask(block.subagentMessage ?? input?.message),
     result: block.subagentResult,
   };
 }
@@ -563,6 +592,7 @@ export function visualWorkSubagents<
     ...entry.entry.blocks,
     ...(entry.pairedToolUse?.blocks ?? []),
     ...(entry.pairedResult?.blocks ?? []),
+    ...(entry.pairedSubagent ? [entry.pairedSubagent] : []),
   ];
   for (const entry of entries) {
     for (const block of blocksFor(entry)) {
@@ -586,9 +616,9 @@ export function visualWorkSubagents<
       (block) => block.type === "subagent",
     );
     const meta =
-      visualSubagentMetaFromBlocks(toolUse, result) ??
+      visualSubagentMetaFromBlocks(toolUse, result, directBlock) ??
       visualSubagentMetaFromBlock(directBlock);
-    if (!meta) continue;
+    if (!meta || meta.isParent) continue;
     const toolUseId =
       toolUse?.toolUseId ?? result?.toolUseId ?? directBlock?.toolUseId;
     const id =
@@ -600,12 +630,103 @@ export function visualWorkSubagents<
       ...existing,
       ...meta,
       ...(id ? { id } : {}),
+      status: meta.status === "unknown" ? existing?.status ?? meta.status : meta.status,
       nickname: existing?.nickname ?? meta.nickname,
+      type: existing?.type ?? meta.type,
+      model: meta.model ?? existing?.model,
+      effort: meta.effort ?? existing?.effort,
       task: existing?.task ?? meta.task,
       result: meta.result ?? existing?.result,
     });
   }
   return [...byKey.values()];
+}
+
+/** Current child-agent roster for a rendered transcript window. Each child is
+ * represented once, with its latest lifecycle state and richest known spawn /
+ * completion metadata. */
+export function visualTranscriptSubagents<
+  B extends MessageBlock,
+  M extends Message<B>,
+>(items: readonly VisualTranscriptItem<B, M>[]): VisualSubagentMeta[] {
+  const byKey = new Map<string, VisualSubagentMeta>();
+  for (const item of items) {
+    if (item.kind !== "work") continue;
+    let workSubagents = visualTranscriptSubagentWorkCache.get(item);
+    if (!workSubagents) {
+      workSubagents = visualWorkSubagents(
+        buildVisualWorkDisplayEntries(item.entries),
+      );
+      visualTranscriptSubagentWorkCache.set(item, workSubagents);
+    }
+    for (const meta of workSubagents) {
+      const key = meta.id ?? `${meta.action}:${visualSubagentLabel(meta)}`;
+      const existing = byKey.get(key);
+      byKey.set(key, {
+        ...existing,
+        ...meta,
+        status: meta.status === "unknown" ? existing?.status ?? meta.status : meta.status,
+        nickname: existing?.nickname ?? meta.nickname,
+        type: existing?.type ?? meta.type,
+        model: meta.model ?? existing?.model,
+        effort: meta.effort ?? existing?.effort,
+        task: existing?.task ?? meta.task,
+        result: meta.result ?? existing?.result,
+      });
+    }
+  }
+  return [...byKey.values()];
+}
+
+const visualTranscriptSubagentWorkCache = new WeakMap<
+  object,
+  VisualSubagentMeta[]
+>();
+
+/** The roster belongs to the session, not its virtual render window. Only
+ * collaboration rows enter visual grouping; ordinary streamed text keeps the
+ * previous roster identity and never rebuilds offscreen transcript work.
+ * Like the visual grouping caches, this consumes immutable message snapshots:
+ * live upserts, delta patches, and transcript patches replace changed messages. */
+export function createVisualSubagentTracker() {
+  let previous: readonly Message[] = [];
+  let roster: VisualSubagentMeta[] = [];
+  const classifications = new WeakMap<Message, { relevant: boolean; callIds: string[]; pairedIds: string[] }>();
+  function classify(message: Message) {
+    let classification = classifications.get(message);
+    if (!classification) {
+      classification = { relevant: false, callIds: [], pairedIds: [] };
+      for (const block of message.blocks) {
+        if (block.type === "subagent" || normalizedSubagentToolName(block.toolName)) {
+          classification.relevant = true;
+          if (block.toolUseId) classification.callIds.push(block.toolUseId);
+        } else if (block.toolUseId) {
+          classification.pairedIds.push(block.toolUseId);
+        }
+      }
+      classifications.set(message, classification);
+    }
+    return classification;
+  }
+  return (messages: readonly Message[]): VisualSubagentMeta[] => {
+    const callIds = new Set<string>();
+    for (const message of messages) {
+      for (const id of classify(message).callIds) callIds.add(id);
+    }
+    const relevant = messages.filter((message) => {
+      const classification = classify(message);
+      return classification.relevant || classification.pairedIds.some((id) => callIds.has(id));
+    });
+    if (relevant.length === previous.length && relevant.every((message, index) => message === previous[index])) return roster;
+    previous = relevant;
+    roster = visualWorkSubagents(buildVisualWorkDisplayEntries(relevant.flatMap((message, messageIndex) => {
+      const subagents = message.blocks.filter((block) => block.type === "subagent");
+      return subagents.length > 1
+        ? subagents.map((block) => ({ message, messageIndex, blocks: [block] }))
+        : [{ message, messageIndex, blocks: message.blocks }];
+    })));
+    return roster;
+  };
 }
 
 export function visualSubagentLabel(meta: VisualSubagentMeta): string {
@@ -1287,6 +1408,7 @@ export function buildVisualWorkDisplayEntries<
   const collapsedMediaIndexes = new Set<number>();
   const collapsedResultIndexes = new Set<number>();
   const collapsedSubagentNotificationIndexes = new Set<number>();
+  const subagentActivityByToolUseIndex = new Map<number, B>();
 
   for (let index = 0; index < entries.length; index += 1) {
     const entry = entries[index]!;
@@ -1328,6 +1450,14 @@ export function buildVisualWorkDisplayEntries<
     const pairedResults = resultsByToolUse.get(pairedToolUseIndex) ?? [];
     pairedResults.push(namedResult);
     resultsByToolUse.set(pairedToolUseIndex, pairedResults);
+    const embeddedMedia = entry.blocks.filter(
+      (block) => block.type === "media",
+    );
+    if (embeddedMedia.length > 0) {
+      const media = mediaByToolUse.get(pairedToolUseIndex) ?? [];
+      media.push(...embeddedMedia);
+      mediaByToolUse.set(pairedToolUseIndex, media);
+    }
     pairedToolUses.add(pairedToolUseIndex);
     if (
       shouldCollapseToolResultPair(
@@ -1367,6 +1497,19 @@ export function buildVisualWorkDisplayEntries<
 
   for (let index = 1; index < entries.length; index += 1) {
     if (!hasBlockType(entries[index]!, "subagent")) continue;
+    const activityBlock = firstSubagentBlock(entries[index]);
+    if (
+      activityBlock?.toolUseId &&
+      toolUseById.has(activityBlock.toolUseId) &&
+      visualSubagentMetaFromBlock(activityBlock)?.action === "spawn"
+    ) {
+      subagentActivityByToolUseIndex.set(
+        toolUseById.get(activityBlock.toolUseId)!,
+        activityBlock,
+      );
+      collapsedSubagentNotificationIndexes.add(index);
+      continue;
+    }
     const previousIndex = index - 1;
     if (
       isRedundantSubagentNotification(
@@ -1429,6 +1572,11 @@ export function buildVisualWorkDisplayEntries<
       pairedResults,
       pairedResult: pairedResults?.at(-1),
       pairedMedia,
+      pairedSubagent: subagentActivityByToolUseIndex.get(
+        hasBlockType(entry, "tool_use")
+          ? index
+          : (toolUseIndexByResult.get(index) ?? -1),
+      ),
       pairedToolUse,
       previewContext: snapshotUidLabels ? { snapshotUidLabels } : undefined,
     };
@@ -1446,15 +1594,20 @@ export function buildVisualWorkDisplayEntries<
   return out;
 }
 
+// Work items are immutable snapshots, including replacement block metadata.
+const visibleWorkDisplayCache = new WeakMap<object, VisualWorkDisplayEntry[]>();
+
 export function buildVisibleVisualWorkDisplayEntries<
   B extends MessageBlock,
   M extends Message<B>,
 >(
   item: Extract<VisualTranscriptItem<B, M>, { kind: "work" }>,
 ): VisualWorkDisplayEntry<B, M>[] {
+  const cached = visibleWorkDisplayCache.get(item);
+  if (cached) return cached as VisualWorkDisplayEntry<B, M>[];
   const entries = buildVisualWorkDisplayEntries(item.entries);
 
-  return entries.filter((entry) => {
+  const visible = entries.filter((entry) => {
     if (entry.kind !== "marker") return true;
     if (terminalMarkerContinuesLater(item.entries, entry.entry)) return false;
     if (!item.terminalMarkerKind || !item.terminalMarkerLabel) return true;
@@ -1463,6 +1616,8 @@ export function buildVisibleVisualWorkDisplayEntries<
       entry.markerLabel === item.terminalMarkerLabel
     );
   });
+  visibleWorkDisplayCache.set(item, visible);
+  return visible;
 }
 
 function isResponseBlock(block: MessageBlock): boolean {
@@ -1813,6 +1968,7 @@ function canonicalUserMessageMatchesOptimistic<B extends MessageBlock>(
   message: Message<B>,
   messageIndex: number,
   optimistic: Message<B>,
+  anchorIndex = optimistic.optimisticAfterMessageIndex,
 ): boolean {
   if (isOptimisticUserMessage(message)) return false;
   if (!sameUserMessageContent(message, optimistic)) return false;
@@ -1823,10 +1979,49 @@ function canonicalUserMessageMatchesOptimistic<B extends MessageBlock>(
   ) {
     return false;
   }
-  return (
-    typeof optimistic.optimisticAfterMessageIndex !== "number" ||
-    messageIndex > optimistic.optimisticAfterMessageIndex
-  );
+  return typeof anchorIndex !== "number" || messageIndex > anchorIndex;
+}
+
+function optimisticMatchAnchorIndex<B extends MessageBlock>(
+  messages: readonly Message<B>[],
+  optimistic: Message<B>,
+): number | undefined {
+  if (optimistic.optimisticAfterMessageId) {
+    const index = messages.findIndex(
+      (message) => message.id === optimistic.optimisticAfterMessageId,
+    );
+    if (index >= 0) return index;
+  }
+  return optimistic.optimisticAfterMessageIndex;
+}
+
+function matchOptimisticUserMessages<
+  B extends MessageBlock,
+  M extends Message<B>,
+>(
+  messages: readonly M[],
+  overlays: readonly Message<B>[],
+): Map<Message<B>, number> {
+  const matches = new Map<Message<B>, number>();
+  const usedIndexes = new Set<number>();
+  for (const overlay of overlays) {
+    if (!isOptimisticUserMessage(overlay)) continue;
+    const anchorIndex = optimisticMatchAnchorIndex(messages, overlay);
+    const index = messages.findIndex(
+      (message, messageIndex) =>
+        !usedIndexes.has(messageIndex) &&
+        canonicalUserMessageMatchesOptimistic(
+          message,
+          messageIndex,
+          overlay,
+          anchorIndex,
+        ),
+    );
+    if (index < 0) continue;
+    usedIndexes.add(index);
+    matches.set(overlay, index);
+  }
+  return matches;
 }
 
 export function withoutDuplicateOptimisticUserMessages<
@@ -1839,7 +2034,8 @@ export function withoutDuplicateOptimisticUserMessages<
     if (
       previous &&
       sameUserMessageContent(previous, message) &&
-      (isOptimisticUserMessage(previous) || isOptimisticUserMessage(message))
+      isOptimisticUserMessage(previous) !== isOptimisticUserMessage(message) &&
+      (!previous.turnId || !message.turnId || previous.turnId === message.turnId)
     ) {
       if (
         isOptimisticUserMessage(previous) &&
@@ -1868,7 +2064,11 @@ export function withoutDuplicateOptimisticUserMessages<
 export function withOptimisticUserMessageIntent<
   B extends MessageBlock,
   M extends Message<B>,
->(messages: readonly M[], overlays: readonly Message<B>[]): M[] {
+>(
+  messages: readonly M[],
+  overlays: readonly Message<B>[],
+  matches = matchOptimisticUserMessages(messages, overlays),
+): M[] {
   if (overlays.length === 0) return [...messages];
   return messages.map((message, messageIndex) => {
     if (message.role !== "user" || isOptimisticUserMessage(message)) {
@@ -1878,11 +2078,7 @@ export function withOptimisticUserMessageIntent<
       (overlay) =>
         isOptimisticUserMessage(overlay) &&
         userMessageIntent(overlay) &&
-        canonicalUserMessageMatchesOptimistic(
-          message,
-          messageIndex,
-          overlay,
-        ),
+        matches.get(overlay) === messageIndex,
     );
     return withUserMessageIntent(message, userMessageIntent(optimistic));
   });
@@ -1891,15 +2087,53 @@ export function withOptimisticUserMessageIntent<
 export function hasCanonicalUserMessageMatchingOptimistic<
   B extends MessageBlock,
   M extends Message<B>,
->(messages: readonly M[], optimistic: Message<B>): boolean {
+>(
+  messages: readonly M[],
+  optimistic: Message<B>,
+  overlays: readonly Message<B>[] = [optimistic],
+): boolean {
   if (!isOptimisticUserMessage(optimistic)) return false;
-  return messages.some((message, messageIndex) =>
-    canonicalUserMessageMatchesOptimistic(
-      message,
-      messageIndex,
-      optimistic,
-    ),
+  return matchOptimisticUserMessages(messages, overlays).has(optimistic);
+}
+
+/** Replace a locally sent row at its established position when app-server
+ * acknowledges it after output has already streamed. App-server history may
+ * subsequently refine ordering using its canonical item sequence. */
+export function canonicalUserMessageInsertionIndex<
+  B extends MessageBlock,
+  M extends Message<B>,
+>(
+  messages: readonly M[],
+  incoming: M,
+  overlays: readonly M[],
+): number {
+  if (incoming.role !== "user") return messages.length;
+  const matches = matchOptimisticUserMessages(
+    [...messages, incoming],
+    overlays,
   );
+  let previousOverlayAnchor = -1;
+  for (const overlay of overlays) {
+    const match = matches.get(overlay);
+    if (match === messages.length) {
+      if (overlay.intent !== "steer" && incoming.turnId) {
+        const firstInTurn = messages.findIndex(
+          (message) => message.turnId === incoming.turnId,
+        );
+        if (firstInTurn >= 0) return firstInTurn;
+      }
+      return (
+        Math.max(
+          previousOverlayAnchor,
+          optimisticInsertionIndex(messages, overlay),
+        ) + 1
+      );
+    }
+    if (match !== undefined) {
+      previousOverlayAnchor = Math.max(previousOverlayAnchor, match);
+    }
+  }
+  return messages.length;
 }
 
 export function mergeVisualSessionMessages<
@@ -1907,22 +2141,25 @@ export function mergeVisualSessionMessages<
   M extends Message<B>,
 >(messages: readonly M[], overlays: readonly M[]): M[] {
   if (overlays.length === 0) return messages as M[];
+  const matches = matchOptimisticUserMessages(messages, overlays);
   const messagesWithIntent = withOptimisticUserMessageIntent(
     messages,
     overlays,
+    matches,
   );
-  if (overlays.length === 0)
-    return withoutDuplicateOptimisticUserMessages(messagesWithIntent);
-  const pendingOverlays = overlays.filter(
-    (overlay) =>
-      !hasCanonicalUserMessageMatchingOptimistic(messagesWithIntent, overlay),
-  );
-  if (pendingOverlays.length === 0) {
-    return withoutDuplicateOptimisticUserMessages(messagesWithIntent);
-  }
   const overlaysByAnchor = new Map<number, M[]>();
-  for (const overlay of pendingOverlays) {
-    const anchor = optimisticInsertionIndex(messagesWithIntent, overlay);
+  let previousOverlayAnchor = -1;
+  for (const overlay of overlays) {
+    const match = matches.get(overlay);
+    if (match !== undefined) {
+      previousOverlayAnchor = Math.max(previousOverlayAnchor, match);
+      continue;
+    }
+    const anchor = Math.max(
+      previousOverlayAnchor,
+      optimisticInsertionIndex(messagesWithIntent, overlay),
+    );
+    previousOverlayAnchor = anchor;
     const list = overlaysByAnchor.get(anchor) ?? [];
     list.push(overlay);
     overlaysByAnchor.set(anchor, list);
@@ -1935,7 +2172,7 @@ export function mergeVisualSessionMessages<
     const anchored = overlaysByAnchor.get(index);
     if (anchored) merged.push(...anchored);
   });
-  return withoutDuplicateOptimisticUserMessages(merged);
+  return merged;
 }
 
 function visualTranscriptTailBlockKey(block: MessageBlock): string {
@@ -2119,21 +2356,14 @@ function messageKey<B extends MessageBlock, M extends Message<B>>(
   ].join(":");
 }
 
-function blockSignature(block: MessageBlock): string {
-  const planKey =
-    block.planItems?.map((item) => `${item.status}:${item.step}`).join("\n") ??
-    "";
-  return [
-    block.type,
-    block.text ?? "",
-    block.toolUseId ?? "",
-    block.toolName ?? "",
-    stableJson(block.toolInput),
-    block.explanation ?? "",
-    block.questionId ?? "",
-    stableJson(block.questionOptions),
-    planKey,
-  ].join("\u0000");
+function sameBlockContent(a: MessageBlock, b: MessageBlock): boolean {
+  if (a === b) return true;
+  const keys = Object.keys(a) as Array<keyof MessageBlock>;
+  if (keys.length !== Object.keys(b).length) return false;
+  // Blocks are immutable. Compare every field, including media and lifecycle
+  // metadata, without hashing large patches, image URLs, or tool payloads.
+  // Replaced nested objects conservatively refresh their row.
+  return keys.every((key) => Object.hasOwn(b, key) && a[key] === b[key]);
 }
 
 function messageMetadataSignature<
@@ -2151,43 +2381,43 @@ function messageMetadataSignature<
   ].join("\u0000");
 }
 
-function entrySignature<B extends MessageBlock, M extends Message<B>>(
-  entry: VisualWorkEntry<B, M>,
-): string {
-  return [
-    getVisualWorkEntryKey(entry),
-    messageMetadataSignature(entry.message),
-    entry.blocks.map(blockSignature).join("\u0001"),
-  ].join("\u0002");
+function sameEntryContent<B extends MessageBlock, M extends Message<B>>(
+  a: VisualWorkEntry<B, M>,
+  b: VisualWorkEntry<B, M>,
+): boolean {
+  return (
+    getVisualWorkEntryKey(a) === getVisualWorkEntryKey(b) &&
+    messageMetadataSignature(a.message) === messageMetadataSignature(b.message) &&
+    a.blocks.length === b.blocks.length &&
+    a.blocks.every((block, index) => sameBlockContent(block, b.blocks[index]!))
+  );
 }
 
-function itemSignature<B extends MessageBlock, M extends Message<B>>(
-  item: VisualTranscriptItem<B, M>,
-): string {
-  if (item.kind === "message") {
-    return [
-      getVisualTranscriptItemKey(item, item.messageIndex),
-      messageMetadataSignature(item.message),
-      item.blocks.map(blockSignature).join("\u0001"),
-    ].join("\u0002");
+function sameItemContent<B extends MessageBlock, M extends Message<B>>(
+  a: VisualTranscriptItem<B, M>,
+  b: VisualTranscriptItem<B, M>,
+): boolean {
+  if (a.kind === "message" && b.kind === "message") return sameEntryContent(a, b);
+  if (a.kind === "marker" && b.kind === "marker") {
+    return (
+      sameEntryContent(a.entry, b.entry) &&
+      sameBlockContent(a.markerBlock, b.markerBlock) &&
+      a.markerKind === b.markerKind &&
+      a.markerLabel === b.markerLabel
+    );
   }
-  if (item.kind === "marker") {
-    return [
-      getVisualTranscriptItemKey(item),
-      blockSignature(item.markerBlock),
-      item.markerKind,
-      item.markerLabel,
-    ].join("\u0002");
-  }
-  return [
-    getVisualTranscriptItemKey(item),
-    item.startedAt ?? "",
-    item.endedAt ?? "",
-    item.open === true ? "open" : "closed",
-    item.terminalMarkerKind ?? "",
-    item.terminalMarkerLabel ?? "",
-    item.entries.map(entrySignature).join("\u0003"),
-  ].join("\u0002");
+  if (a.kind !== "work" || b.kind !== "work") return false;
+  return (
+    a.startedAt === b.startedAt &&
+    a.endedAt === b.endedAt &&
+    a.open === b.open &&
+    a.terminalMarkerKind === b.terminalMarkerKind &&
+    a.terminalMarkerLabel === b.terminalMarkerLabel &&
+    a.entries.length === b.entries.length &&
+    a.entries.every((entry, index) =>
+      sameEntryContent(entry, b.entries[index]!),
+    )
+  );
 }
 
 function sameBlockReferences<B extends MessageBlock>(
@@ -2319,7 +2549,7 @@ export function reuseStableVisualTranscriptItems<
     const previousItem = previousByKey.get(key);
     if (!previousItem) return item;
     if (sameItemReferences(previousItem, item)) return previousItem;
-    if (itemSignature(previousItem) === itemSignature(item)) {
+    if (sameItemContent(previousItem, item)) {
       return previousItem;
     }
     if (item.kind !== "work" || previousItem.kind !== "work") {
@@ -2338,7 +2568,7 @@ export function reuseStableVisualTranscriptItems<
       if (
         previousEntry &&
         (sameEntryReferences(previousEntry, entry) ||
-          entrySignature(previousEntry) === entrySignature(entry))
+          sameEntryContent(previousEntry, entry))
       ) {
         reusedAny = true;
         return previousEntry;
@@ -2729,7 +2959,14 @@ export function buildVisualTranscriptItems<
       });
       messageIndex += 1;
     }
+    const nextMessage = messages[messageIndex];
+    const sameTurnSteer =
+      !!userTurnId &&
+      nextMessage?.role === "user" &&
+      nextMessage.turnId === userTurnId &&
+      hasExplicitSteerIntent(nextMessage);
     const turnStillOpen: boolean =
+      sameTurnSteer ||
       ((turnWasAlreadyOpen || hasTurnMarker(turnEntries, "started")) &&
         !hasTurnMarker(turnEntries, "complete") &&
         !hasTurnMarker(turnEntries, "aborted")) ||
@@ -2740,8 +2977,8 @@ export function buildVisualTranscriptItems<
       (turnWasAlreadyOpen || hasSteeringEligibleWork(turnEntries));
     if (
       acceptsSteering &&
-      messages[messageIndex]?.role === "user" &&
-      hasExplicitSteerIntent(messages[messageIndex])
+      nextMessage?.role === "user" &&
+      hasExplicitSteerIntent(nextMessage)
     ) {
       pendingTurnPrefixEntries = turnEntries;
       pendingTurnStartedAt = turnStartedAt;
@@ -2841,6 +3078,36 @@ export function visualTranscriptMessageWindow<
     hiddenMessageCount: start,
     totalMessageCount,
   };
+}
+
+export function visualTranscriptReaderWindow<
+  B extends MessageBlock,
+  M extends Message<B>,
+>(
+  messages: readonly M[],
+  opts: {
+    minMessages: number;
+    minUserTurns?: number;
+    paused: boolean;
+    retainedStartMessage?: M;
+  },
+): VisualTranscriptMessageWindow<M> {
+  let minMessages = opts.minMessages;
+  const retained = opts.paused ? opts.retainedStartMessage : undefined;
+  if (retained) {
+    const retainedIndex = messages.findIndex(
+      (message) =>
+        message === retained ||
+        (!!retained.id && !!message.id && message.id === retained.id),
+    );
+    if (retainedIndex >= 0) {
+      minMessages = Math.max(minMessages, messages.length - retainedIndex);
+    }
+  }
+  return visualTranscriptMessageWindow(messages, {
+    minMessages,
+    minUserTurns: opts.minUserTurns,
+  });
 }
 
 function commonMessagePrefixLength<

@@ -46,6 +46,8 @@ interface VoiceDependencies {
   onState?(state: GlobalVoiceState): void;
   diagnostic?(message: string, extra: Record<string, unknown>): void;
   disconnectGraceMs?: number;
+  audioPollMs?: number;
+  audioTimeoutMs?: number;
   handleTool?(
     tool: string,
     args: Record<string, unknown>,
@@ -149,6 +151,9 @@ export class GlobalVoiceController {
   private unsubscribe: (() => void) | null = null;
   private generation = 0;
   private disconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  private audioTimer: ReturnType<typeof setInterval> | null = null;
+  private audioAcknowledgements = 0;
+  private recoveryAttempts = 0;
   private readonly handledDeliveries = new Set<string>();
 
   constructor(deps: Partial<VoiceDependencies> = {}) {
@@ -159,7 +164,7 @@ export class GlobalVoiceController {
     return this.state;
   }
 
-  async start(context: TreetopVoiceContext): Promise<void> {
+  async start(context: TreetopVoiceContext, recovering = false): Promise<void> {
     if (
       this.state.phase === "connecting" ||
       this.state.phase === "listening" ||
@@ -168,6 +173,7 @@ export class GlobalVoiceController {
       return;
     }
     const generation = ++this.generation;
+    if (!recovering) this.recoveryAttempts = 0;
     this.handledDeliveries.clear();
     this.setState({ phase: "connecting" });
     try {
@@ -187,19 +193,47 @@ export class GlobalVoiceController {
       this.peer = peer;
       for (const track of stream.getTracks()) peer.addTrack(track, stream);
       this.dataChannel = peer.createDataChannel("oai-events");
+      this.dataChannel.onmessage = (event) => {
+        if (generation !== this.generation || typeof event.data !== "string")
+          return;
+        let message: Record<string, unknown>;
+        try {
+          message = JSON.parse(event.data);
+        } catch {
+          return;
+        }
+        if (!message || typeof message !== "object") return;
+        if (
+          message.type === "input_transcript.added" ||
+          message.type === "output_transcript.added"
+        ) {
+          this.audioAcknowledgements++;
+        } else if (message.type === "error") {
+          const error = message.error as { message?: unknown } | undefined;
+          void this.fail(
+            new Error(
+              typeof error?.message === "string"
+                ? error.message
+                : "Voice service reported an error",
+            ),
+          );
+        } else if (message.type === "session.closed") {
+          void this.fail(
+            new Error("Voice service closed the audio session. Please retry."),
+          );
+        }
+      };
       const audio = this.deps.createAudioElement();
       audio.autoplay = true;
       this.audio = audio;
       peer.ontrack = (event) => {
         if (generation !== this.generation) return;
         audio.srcObject = event.streams[0] ?? null;
-        void audio
-          .play()
-          .catch((error) =>
-            this.deps.diagnostic?.("audio playback failed", {
-              message: String(error),
-            }),
-          );
+        void audio.play().catch((error) =>
+          this.deps.diagnostic?.("audio playback failed", {
+            message: String(error),
+          }),
+        );
       };
       peer.onconnectionstatechange = () => {
         if (generation !== this.generation) return;
@@ -280,6 +314,7 @@ export class GlobalVoiceController {
       await peer.setRemoteDescription({ type: "answer", sdp: answer });
       if (generation !== this.generation) return;
       this.setState({ phase: "listening" });
+      this.monitorAudio(peer, context, generation);
     } catch (error) {
       if (generation !== this.generation) return;
       await this.fail(error);
@@ -303,6 +338,7 @@ export class GlobalVoiceController {
       return;
     }
     if (event.method === "thread/realtime/transcript/delta") {
+      this.audioAcknowledgements++;
       const role =
         typeof event.params.role === "string" ? event.params.role : "";
       this.setState({
@@ -312,6 +348,7 @@ export class GlobalVoiceController {
       return;
     }
     if (event.method === "thread/realtime/transcript/done") {
+      this.audioAcknowledgements++;
       if (!this.markDeliveryHandled(event)) return;
       const role: GlobalVoiceMessage["role"] =
         event.params.role === "assistant" || event.params.role === "user"
@@ -461,11 +498,89 @@ export class GlobalVoiceController {
     this.disconnectTimer = null;
   }
 
+  private monitorAudio(
+    peer: RTCPeerConnection,
+    context: TreetopVoiceContext,
+    generation: number,
+  ): void {
+    if (typeof peer.getStats !== "function") return;
+    let energy = 0,
+      acknowledged = this.audioAcknowledgements;
+    let pendingSince: number | null = null;
+    let sampling = false;
+    this.audioTimer = setInterval(async () => {
+      if (
+        sampling ||
+        generation !== this.generation ||
+        peer.connectionState !== "connected"
+      )
+        return;
+      sampling = true;
+      try {
+        const stats = await peer.getStats();
+        if (generation !== this.generation) return;
+        let currentEnergy = 0,
+          bytesSent = 0;
+        stats.forEach((report) => {
+          if (report.kind !== "audio") return;
+          if (report.type === "media-source")
+            currentEnergy += report.totalAudioEnergy ?? 0;
+          if (report.type === "outbound-rtp")
+            bytesSent += report.bytesSent ?? 0;
+        });
+        if (acknowledged !== this.audioAcknowledgements) {
+          acknowledged = this.audioAcknowledgements;
+          pendingSince = null;
+        } else if (bytesSent > 0 && currentEnergy - energy > 0.001) {
+          pendingSince ??= Date.now();
+        }
+        energy = currentEnergy;
+        if (
+          pendingSince === null ||
+          Date.now() - pendingSince < (this.deps.audioTimeoutMs ?? 12_000)
+        )
+          return;
+        this.deps.diagnostic?.("audio acknowledgement timeout", {
+          bytesSent,
+          microphoneEnergy: currentEnergy,
+          recoveryAttempts: this.recoveryAttempts,
+        });
+        if (this.recoveryAttempts >= 1) {
+          void this.fail(
+            new Error(
+              "Microphone audio was sent, but the voice service did not acknowledge it. Please retry.",
+            ),
+          );
+          return;
+        }
+        this.recoveryAttempts++;
+        // A fresh media session recovered the reproduced silent connection.
+        // Do it once; never leave an unbounded background reconnect loop.
+        await this.stop();
+        const stoppedGeneration = generation + 1;
+        if (this.generation !== stoppedGeneration) return;
+        await this.start(context, true);
+      } catch (error) {
+        if (generation === this.generation)
+          this.deps.diagnostic?.("audio monitor failed", {
+            message: String(error),
+          });
+      } finally {
+        sampling = false;
+      }
+    }, this.deps.audioPollMs ?? 2_000);
+  }
+
   private releaseLocalResources(): void {
+    if (this.audioTimer !== null) clearInterval(this.audioTimer);
+    this.audioTimer = null;
     this.clearDisconnectTimer();
     this.unsubscribe?.();
     this.unsubscribe = null;
-    this.dataChannel?.close();
+    if (this.dataChannel) {
+      this.dataChannel.onmessage = null;
+      this.dataChannel.close();
+    }
     this.dataChannel = null;
     if (this.peer) {
       this.peer.ontrack = this.peer.onconnectionstatechange = null;

@@ -2,6 +2,7 @@ import {
   canonicalCodexToolName,
   codexPatchApplyResultText,
   codexSubagentActivityFields,
+  codexCollabAgentToolCallFields,
   parseCodexImageWrapper,
   parseCodexToolScriptInvocations,
   visualFileEditSummaryForBlock,
@@ -82,6 +83,7 @@ export interface AgentTranscriptBlock {
   compaction?: ContextCompactionDetails;
   subagentId?: string;
   subagentNickname?: string;
+  subagentIsParent?: boolean;
   subagentAction?: "spawn" | "wait" | "notification";
   subagentStatus?: "running" | "completed" | "failed" | "unknown";
   subagentType?: string;
@@ -185,6 +187,7 @@ export function isCodexTranscriptRecord(value: unknown): boolean {
     "response_item",
     "event_msg",
     "turn_context",
+    "token_usage_record",
     "compacted",
   ].includes(string(record, "type") ?? "");
 }
@@ -228,7 +231,7 @@ function containsClippedString(before: unknown, after: unknown): boolean {
   return Object.entries(before as Record<string, unknown>).some(([key, value]) => containsClippedString(value, afterRecord[key]));
 }
 
-function usageFrom(value: unknown): CodexTranscriptTokenUsage | undefined {
+export function codexTokenUsageFromRecord(value: unknown): CodexTranscriptTokenUsage | undefined {
   const usage = object(value);
   if (!usage) return undefined;
   const input = number(usage.input_tokens ?? usage.inputTokens) ?? 0;
@@ -242,7 +245,9 @@ function usageFrom(value: unknown): CodexTranscriptTokenUsage | undefined {
   const output = number(usage.output_tokens ?? usage.outputTokens) ?? 0;
   const reasoningOutput = number(usage.reasoning_output_tokens ?? usage.reasoningOutputTokens) ?? 0;
   const total = number(usage.total_tokens ?? usage.totalTokens) ?? input + output;
-  return input + cachedInput + cacheWriteInput + output + reasoningOutput > 0
+  // A zero checkpoint is still a baseline (for example after a counter reset).
+  return input + cachedInput + cacheWriteInput + output + reasoningOutput + total > 0 ||
+    [usage.input_tokens ?? usage.inputTokens, usage.output_tokens ?? usage.outputTokens, usage.total_tokens ?? usage.totalTokens].some((value) => number(value) === 0)
     ? { input, cachedInput, cacheWriteInput, output, reasoningOutput, total }
     : undefined;
 }
@@ -256,6 +261,97 @@ function usageDelta(current: CodexTranscriptTokenUsage, previous?: CodexTranscri
     output: Math.max(0, current.output - previous.output),
     reasoningOutput: Math.max(0, current.reasoningOutput - previous.reasoningOutput),
     total: Math.max(0, current.total - previous.total),
+  };
+}
+
+/** A checkpoint's cumulative progression is authoritative after the first observation.
+ * `last` describes the last request, not necessarily new work since our last observation.
+ */
+export function codexUsageForCheckpoint(
+  last: CodexTranscriptTokenUsage | undefined,
+  total: CodexTranscriptTokenUsage | undefined,
+  previous: CodexTranscriptTokenUsage | undefined,
+): CodexTranscriptTokenUsage | undefined {
+  if (total?.total === 0) return undefined;
+  const usage = total && previous && total.total >= previous.total
+    ? usageDelta(total, previous)
+    : last ?? total;
+  return usage && (usage.input || usage.output || usage.total || usage.reasoningOutput) ? usage : undefined;
+}
+
+export interface CodexTranscriptUsageState {
+  previousTotalUsage?: CodexTranscriptTokenUsage;
+  hasResponseUsageRecords?: boolean;
+}
+
+/** Shared accounting for both rendered transcript windows and full-file pricing.
+ * Legacy full scans include the first cumulative total; bounded windows bill only
+ * the last request at entry. Response records always start with their own usage.
+ */
+export function codexUsageForTranscriptRecord(
+  value: unknown,
+  state: CodexTranscriptUsageState,
+  includeInitialLegacyTotal = false,
+): CodexTranscriptTokenUsage | undefined {
+  const row = object(value);
+  const payload = object(row?.payload);
+  if (!payload) return undefined;
+  const response = row?.type === "token_usage_record";
+  if (!response && (row?.type !== "event_msg" || state.hasResponseUsageRecords)) return undefined;
+  const info = object(payload.info) ?? payload;
+  const last = codexTokenUsageFromRecord(response ? payload.usage : info.last_token_usage ?? payload.lastTokenUsage ?? payload.usage);
+  const total = codexTokenUsageFromRecord(response ? payload.thread_token_usage : info.total_token_usage ?? payload.totalTokenUsage);
+  const previous = response && !state.hasResponseUsageRecords ? undefined : state.previousTotalUsage;
+  const usage = codexUsageForCheckpoint(
+    !response && includeInitialLegacyTotal && !previous ? undefined : last,
+    total,
+    previous,
+  );
+  if (response) state.hasResponseUsageRecords = true;
+  if (total) state.previousTotalUsage = total;
+  return usage;
+}
+
+/** Inter-agent deliveries are activity, never a new human request/turn boundary.
+ * Works without session_meta, including bounded transcript tails and live envelopes.
+ */
+export function codexInterAgentMessageBlock(
+  content: string | readonly unknown[],
+  options: { author?: string; recipient?: string; subagentId?: string; encrypted?: boolean } = {},
+): CodexTranscriptBlock | undefined {
+  // Input text can be split anywhere across content parts. Classify the whole
+  // message, not a quoted envelope in one part or a header without its body.
+  const text = typeof content === "string" ? content : content.map((raw) => {
+    if (typeof raw === "string") return raw;
+    const part = object(raw);
+    if (!part) return "";
+    for (const key of ["text", "input_text", "output_text"]) {
+      if (typeof part[key] === "string") return part[key];
+    }
+    return "";
+  }).join("");
+  const envelopeType = text.match(/^\s*Message Type:[ \t]*([^\r\n]+)/i)?.[1]?.trim().toUpperCase();
+  const payloadStart = envelopeType ? /^Payload:[ \t]*\r?$/m.exec(text) : null;
+  const header = payloadStart ? text.slice(0, payloadStart.index) : "";
+  const author = options.author ?? header.match(/^Sender:[ \t]*([^\r\n]+)/im)?.[1]?.trim();
+  if (!options.author && (!envelopeType || !author || !payloadStart)) return undefined;
+  const body = (payloadStart ? text.slice(payloadStart.index + payloadStart[0].length) : text).trim();
+  const taskName = header.match(/^Task name:[ \t]*([^\r\n]+)/im)?.[1]?.trim();
+  const recipient = options.recipient ?? taskName;
+  const isParent = !!(author && recipient?.startsWith(`${author}/`));
+  const taskLabel = taskName?.split("/").filter(Boolean).pop();
+  const displayText = body || (options.encrypted
+    ? `${taskLabel ? `${taskLabel}\n` : ""}Task text is encrypted in this recording.`
+    : `Message from ${author ?? "agent"}`);
+  return {
+    type: "subagent",
+    text: displayText,
+    subagentAction: "notification",
+    subagentStatus: envelopeType === "ERROR" || envelopeType === "FAILED" ? "failed" : envelopeType === "FINAL_ANSWER" ? "completed" : "running",
+    ...(options.subagentId ? { subagentId: options.subagentId } : {}),
+    subagentNickname: author?.split("/").filter(Boolean).pop(),
+    ...(isParent ? { subagentIsParent: true } : {}),
+    ...(envelopeType === "NEW_TASK" ? { subagentMessage: displayText } : body ? { subagentResult: body } : {}),
   };
 }
 
@@ -421,10 +517,13 @@ function subagentUse(name: string, input: unknown, clip: (value: string) => stri
   if (name !== "spawn_agent" && name !== "wait_agent") return {};
   const row = object(input) ?? {};
   const targets = Array.isArray(row.targets) ? row.targets.filter((value): value is string => typeof value === "string") : [];
+  const subagentId = string(row, "agent_id") ?? (targets.length === 1 ? targets[0] : undefined);
+  if (name === "wait_agent" && !subagentId) return {};
   return {
     subagentAction: name === "spawn_agent" ? "spawn" : "wait",
     subagentStatus: name === "spawn_agent" ? "running" : "unknown",
-    subagentId: string(row, "agent_id") ?? (targets.length === 1 ? targets[0] : undefined),
+    subagentId,
+    subagentNickname: name === "spawn_agent" ? string(row, "task_name") : undefined,
     subagentType: string(row, "agent_type"),
     subagentModel: string(row, "model"),
     subagentEffort: string(row, "reasoning_effort"),
@@ -438,7 +537,13 @@ function subagentResult(name: string | undefined, output: string, clip: (value: 
   try {
     row = object(JSON.parse(output));
   } catch {
-    return {};
+    return name === "spawn_agent" && output.trim()
+      ? {
+          subagentAction: "spawn",
+          subagentStatus: "failed",
+          subagentResult: clip(output),
+        }
+      : {};
   }
   if (!row) return {};
   if (name === "spawn_agent") {
@@ -446,11 +551,11 @@ function subagentResult(name: string | undefined, output: string, clip: (value: 
       subagentAction: "spawn",
       subagentStatus: "running",
       subagentId: string(row, "agent_id"),
-      subagentNickname: string(row, "nickname"),
+      subagentNickname: string(row, "nickname") ?? string(row, "task_name")?.split("/").filter(Boolean).pop(),
     };
   }
   const entries = Object.entries(object(row.status) ?? {});
-  if (entries.length !== 1) return { subagentAction: "wait" };
+  if (entries.length !== 1) return {};
   const [subagentId, raw] = entries[0]!;
   const state = object(raw) ?? {};
   const completed = string(state, "completed");
@@ -493,6 +598,49 @@ function subagentNotification(value: string, clip: (value: string) => string): C
     subagentId: string(row, "agent_path"),
     subagentResult: result ? clip(result) : undefined,
   };
+}
+
+function subagentRosterBlocks(
+  output: string,
+  rootPath: string | undefined,
+  idByPath: ReadonlyMap<string, string>,
+  clip: (value: string) => string,
+): CodexTranscriptBlock[] {
+  let row: Record<string, unknown> | undefined;
+  try {
+    row = object(JSON.parse(output));
+  } catch {
+    return [];
+  }
+  if (!row || !Array.isArray(row.agents)) return [];
+  return row.agents.flatMap((value) => {
+    const agent = object(value);
+    const path = string(agent, "agent_name");
+    if (!agent || !path || path === rootPath) return [];
+    if (rootPath && !path.startsWith(`${rootPath}/`)) return [];
+    const rawStatus = agent.agent_status;
+    const status = object(rawStatus);
+    const completed = string(status, "completed");
+    const failed = string(status, "failed") ?? string(status, "error");
+    const statusName = typeof rawStatus === "string" ? rawStatus : undefined;
+    const result = completed ?? failed;
+    return [{
+      type: "subagent" as const,
+      text: result ? clip(result) : undefined,
+      subagentAction: "notification" as const,
+      subagentStatus: completed
+        ? "completed" as const
+        : failed
+          ? "failed" as const
+          : "running" as const,
+      subagentId: idByPath.get(path),
+      subagentNickname: path.split("/").filter(Boolean).pop(),
+      subagentResult: result ? clip(result) : undefined,
+      ...(statusName && statusName !== "running"
+        ? { text: clip(statusName) }
+        : {}),
+    }];
+  });
 }
 
 function goalBlock(output: string): CodexTranscriptBlock | undefined {
@@ -574,7 +722,7 @@ export function createCodexTranscriptNormalizer(options: CodexTranscriptNormaliz
   const clipInput = clipTranscriptValue;
   const toolNames = new Map<string, string>();
   const normalizeContext = createCodexContextUpdateNormalizer();
-  let previousTotalUsage: CodexTranscriptTokenUsage | undefined;
+  const usageState: CodexTranscriptUsageState = {};
   let latestContextTokens: number | undefined;
   let pendingCompaction: CodexTranscriptBlock | undefined;
   let model: string | undefined;
@@ -582,6 +730,8 @@ export function createCodexTranscriptNormalizer(options: CodexTranscriptNormaliz
   let sandboxPolicy: string | undefined;
   let sessionId: string | undefined;
   let agentPath: string | undefined;
+  let parentThreadId: string | undefined;
+  const subagentIdByPath = new Map<string, string>();
   let suppressForkedParent = false;
   const pendingWebSearchIds: string[] = [];
   const pendingViewedImagePaths: string[] = [];
@@ -644,8 +794,10 @@ export function createCodexTranscriptNormalizer(options: CodexTranscriptNormaliz
         const nextSessionId = string(payload, "id");
         if (!sessionId) {
           sessionId = nextSessionId;
-          agentPath = string(payload, "agent_path");
-          suppressForkedParent = !!string(payload, "forked_from_id");
+          parentThreadId = string(payload, "parent_thread_id");
+          const forkedFromId = string(payload, "forked_from_id");
+          agentPath = string(payload, "agent_path") ?? (forkedFromId ? undefined : "/root");
+          suppressForkedParent = !!forkedFromId;
         } else if (suppressForkedParent && nextSessionId !== sessionId) {
           return { recognized: true, messages: [] };
         }
@@ -671,6 +823,10 @@ export function createCodexTranscriptNormalizer(options: CodexTranscriptNormaliz
       if (rowType === "compacted" || payloadType === "compact_context") {
         return compacted(timestamp);
       }
+      if (rowType === "token_usage_record" && payload) {
+        const usage = codexUsageForTranscriptRecord(row, usageState);
+        return { recognized: true, messages: usage ? [message("assistant", [], timestamp, usage)] : [] };
+      }
       if (rowType === "event_msg" && payload) {
         if (payloadType === "item_completed") {
           const completedItem = object(payload.item);
@@ -679,8 +835,18 @@ export function createCodexTranscriptNormalizer(options: CodexTranscriptNormaliz
             if (path) pendingViewedImagePaths.push(path);
             return { recognized: true, messages: [] };
           }
-          const activity = codexSubagentActivityFields(payload.item);
-          if (activity) return { recognized: true, messages: [message("assistant", [{ type: "subagent", ...activity }], timestamp)] };
+          const collaboration = codexCollabAgentToolCallFields(payload.item, parentThreadId);
+          if (collaboration.length) {
+            return { recognized: true, messages: collaboration.map((activity) =>
+              message("assistant", [{ type: "subagent", ...activity }], timestamp),
+            ) };
+          }
+          const activity = codexSubagentActivityFields(payload.item, parentThreadId);
+          if (activity) {
+            const path = string(completedItem, "agent_path") ?? string(completedItem, "agentPath");
+            if (path) subagentIdByPath.set(path, activity.subagentId);
+            return { recognized: true, messages: [message("assistant", [{ type: "subagent", ...activity }], timestamp)] };
+          }
         }
         if (payloadType === "thread_settings_applied") {
           const settings = object(payload.thread_settings);
@@ -692,8 +858,6 @@ export function createCodexTranscriptNormalizer(options: CodexTranscriptNormaliz
         }
         const info = object(payload.info) ?? payload;
         const lastRecord = object(info.last_token_usage) ?? object(payload.lastTokenUsage) ?? object(payload.usage);
-        const lastUsage = usageFrom(lastRecord);
-        const totalUsage = usageFrom(object(info.total_token_usage) ?? object(payload.totalTokenUsage));
         if (lastRecord) {
           const snapshot = contextTokenSnapshotFromUsageRecord(lastRecord);
           if (snapshot) {
@@ -704,8 +868,9 @@ export function createCodexTranscriptNormalizer(options: CodexTranscriptNormaliz
             latestContextTokens = snapshot.totalTokens;
           }
         }
-        const usage = lastUsage ?? (totalUsage ? usageDelta(totalUsage, previousTotalUsage) : undefined);
-        if (totalUsage) previousTotalUsage = totalUsage;
+        // Newer transcripts carry authoritative per-response usage. Keep the legacy
+        // context snapshot above, but never bill both representations of that work.
+        const usage = codexUsageForTranscriptRecord(row, usageState);
         if (usage && (usage.total || usage.input || usage.output || usage.reasoningOutput)) {
           return {
             recognized: true,
@@ -783,6 +948,10 @@ export function createCodexTranscriptNormalizer(options: CodexTranscriptNormaliz
       if (rowType !== "response_item" || !payload) return { recognized: false, messages: [] };
       if (payloadType === "agent_message") {
         const contents = Array.isArray(payload.content) ? payload.content : [payload.content];
+        const hasEncryptedContent = contents.some((raw) => {
+          const part = object(raw);
+          return part && string(part, "type") === "encrypted_content";
+        });
         const visible = contents.flatMap((raw) => {
           if (typeof raw === "string") return [raw];
           const part = object(raw);
@@ -790,19 +959,20 @@ export function createCodexTranscriptNormalizer(options: CodexTranscriptNormaliz
           const text = string(part, "text") ?? string(part, "input_text") ?? string(part, "output_text");
           return text ? [text] : [];
         }).join("\n");
-        const body = visible
-          .split("\n")
-          .filter((line) => !/^(?:Message Type|Task name|Sender):\s*/i.test(line) && !/^Payload:\s*$/i.test(line))
-          .join("\n")
-          .trim();
         const author = string(payload, "author");
-        const heading = author ? `Message from ${author}` : "Inter-agent message";
+        const block = codexInterAgentMessageBlock(visible, {
+          author, recipient: string(payload, "recipient"),
+          subagentId: author ? subagentIdByPath.get(author) : undefined,
+          encrypted: hasEncryptedContent,
+        });
+        if (block) {
+          if (block.text) block.text = clip(block.text);
+          if (block.subagentMessage) block.subagentMessage = clip(block.subagentMessage);
+          if (block.subagentResult) block.subagentResult = clip(block.subagentResult);
+        }
         return {
           recognized: true,
-          messages: [message(author && author === agentPath ? "assistant" : "user", [{
-            type: "text",
-            text: clip(body ? `${heading}\n${body}` : heading),
-          }], timestamp)],
+          messages: block ? [message("assistant", [block], timestamp)] : [],
         };
       }
       if (payloadType === "message") {
@@ -821,8 +991,16 @@ export function createCodexTranscriptNormalizer(options: CodexTranscriptNormaliz
         const mentioned: { title: string; path: string }[] = [];
         let pendingImagePath: string | undefined;
         const contents = Array.isArray(payload.content) ? payload.content : [payload.content];
+        const delivery = role === "user" ? codexInterAgentMessageBlock(contents) : undefined;
+        if (delivery) {
+          if (delivery.text) delivery.text = clip(delivery.text);
+          if (delivery.subagentMessage) delivery.subagentMessage = clip(delivery.subagentMessage);
+          if (delivery.subagentResult) delivery.subagentResult = clip(delivery.subagentResult);
+          blocks.push(delivery);
+        }
         for (const raw of contents) {
           if (typeof raw === "string") {
+            if (delivery) continue;
             const text = role === "user" ? visibleUserText(raw) : raw;
             if (text) blocks.push(...protocolTextBlocks(text, clip));
             continue;
@@ -831,6 +1009,7 @@ export function createCodexTranscriptNormalizer(options: CodexTranscriptNormaliz
           if (!part) continue;
           const text = string(part, "text") ?? string(part, "input_text") ?? string(part, "output_text");
           if (text) {
+            if (delivery) continue;
             if (role === "user") {
               const envelope = text.match(/^\s*# Files mentioned by the user:\s*\n([\s\S]*?)\n## My request(?: for Codex)?:\s*\n?([\s\S]*)$/i);
               if (envelope) {
@@ -858,6 +1037,9 @@ export function createCodexTranscriptNormalizer(options: CodexTranscriptNormaliz
               }
             }
             const notification = subagentNotification(text, clip);
+            if (notification?.text) notification.text = clip(notification.text);
+            if (notification?.subagentMessage) notification.subagentMessage = clip(notification.subagentMessage);
+            if (notification?.subagentResult) notification.subagentResult = clip(notification.subagentResult);
             if (notification) blocks.push(notification);
             else {
               const visible = role === "user" ? visibleUserText(text) : text;
@@ -887,7 +1069,7 @@ export function createCodexTranscriptNormalizer(options: CodexTranscriptNormaliz
           });
         }
         if (!blocks.length) return { recognized: true, messages: [] };
-        const effectiveRole = role === "user" && blocks.every((block) => block.type === "subagent") ? "assistant" : role;
+        const effectiveRole = role === "user" && blocks.some((block) => block.type === "subagent") && blocks.every((block) => block.type === "subagent" || block.type === "media") ? "assistant" : role;
         return { recognized: true, messages: [message(effectiveRole, blocks, timestamp)] };
       }
       if (payloadType === "function_call" || payloadType === "custom_tool_call") {
@@ -973,6 +1155,9 @@ export function createCodexTranscriptNormalizer(options: CodexTranscriptNormaliz
           return { recognized: true, messages: [] };
         }
         const output = toolOutput(payload.output, options.resolveInlineData);
+        const rosterBlocks = name === "list_agents"
+          ? subagentRosterBlocks(output.text, agentPath, subagentIdByPath, clip)
+          : [];
         if (name === "view_image" && pendingViewedImagePaths.length > 0) {
           for (const media of output.mediaBlocks) {
             if (media.mediaKind !== "image") continue;
@@ -1000,7 +1185,12 @@ export function createCodexTranscriptNormalizer(options: CodexTranscriptNormaliz
         }))];
         return {
           recognized: true,
-          messages: [message("tool", blocks, timestamp)],
+          messages: [
+            message("tool", blocks, timestamp),
+            ...(rosterBlocks.length
+              ? [message("assistant", rosterBlocks, timestamp)]
+              : []),
+          ],
         };
       }
       if (payloadType === "web_search_call") {

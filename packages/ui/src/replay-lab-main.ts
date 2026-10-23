@@ -3,6 +3,7 @@ import { windowTitle } from "../../../product";
 import "./styles/tokens.css";
 import "./styles/base.css";
 import "./styles/popover.css";
+import "./styles/composer-panel.css";
 import "./styles/agent-row.css";
 import "./styles/new-session.css";
 import "./styles/source-control.css";

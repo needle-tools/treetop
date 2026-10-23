@@ -35,6 +35,8 @@ import {
   shouldMountTerminalView,
   shouldRenderSessionReadBody,
   shouldApplyTranscriptSessionOverride,
+  subagentSessionTarget,
+  visibleSubagentParentContext,
   type AgentSession,
   type ShellRecord,
   type OpenSession,
@@ -1384,6 +1386,56 @@ describe("resumeTargetForSessionSurface", () => {
         hasVisualResume: false,
       }),
     ).toBeNull();
+  });
+});
+
+describe("subagentSessionTarget", () => {
+  test("resolves legacy child paths to canonical IDs for live navigation, resume, and parent task context", () => {
+    const parentTaskContext = { sourceKind: "app-server" as const, subagent: { id: "/root/reviewer", action: "spawn" as const, status: "running" as const, task: "Review the change." } };
+    const target = subagentSessionTarget({ parentSource: "__codex_app__:parent", childId: "/root/reviewer", resolvedChildId: "canonical-child", transcriptSource: "/sessions/child.jsonl", parentTaskContext });
+    expect(target).toMatchObject({ source: "__codex_app__:canonical-child", resumeSessionId: "canonical-child", parentTaskContext: { subagent: { id: "canonical-child", task: "Review the change." } } });
+    expect(visibleSubagentParentContext(target?.parentTaskContext, "canonical-child", "app-server")?.task).toBe("Review the change.");
+    expect(parentTaskContext.subagent.id).toBe("/root/reviewer");
+    expect(subagentSessionTarget({ parentSource: "/sessions/parent.jsonl", childId: "/root/reviewer", resolvedChildId: "canonical-child", transcriptSource: "/sessions/child.jsonl", parentTaskContext: { ...parentTaskContext, sourceKind: "transcript" } })).toMatchObject({ source: "/sessions/child.jsonl", resumeSessionId: "canonical-child", parentTaskContext: { sourceKind: "transcript", subagent: { id: "canonical-child" } } });
+  });
+  test("opens a live child before its transcript is discoverable but never invents a transcript source", () => {
+    expect(subagentSessionTarget({ parentSource: "__codex_app__:parent", childId: "child" })).toMatchObject({ source: "__codex_app__:child" });
+    expect(subagentSessionTarget({ parentSource: "/sessions/parent.jsonl", childId: "child" })).toBeUndefined();
+  });
+  test("shows parent task metadata only for the matching child and data source", () => {
+    const context = { sourceKind: "app-server" as const, subagent: { id: "child", action: "spawn" as const, status: "running" as const, task: "Review renderer." } };
+    expect(visibleSubagentParentContext(context, "child", "app-server")).toBe(context.subagent);
+    expect(visibleSubagentParentContext(context, "child", "transcript")).toBeUndefined();
+    expect(visibleSubagentParentContext(context, "other-child", "app-server")).toBeUndefined();
+    expect(visibleSubagentParentContext({ ...context, subagent: { ...context.subagent, isParent: true } }, "child", "app-server")).toBeUndefined();
+  });
+  test("opens children of live app-server sessions through app-server while retaining the transcript path", () => {
+    expect(
+      subagentSessionTarget({
+        parentSource: "__codex_app__:parent-thread",
+        childId: "child-thread",
+        transcriptSource: "/sessions/child-thread.jsonl",
+      }),
+    ).toEqual({
+      source: "__codex_app__:child-thread",
+      resumeSessionId: "child-thread",
+      transcriptSource: "/sessions/child-thread.jsonl",
+      returnSource: "__codex_app__:parent-thread",
+    });
+  });
+
+  test("keeps children of saved transcripts on the transcript transport", () => {
+    expect(
+      subagentSessionTarget({
+        parentSource: "/sessions/parent.jsonl",
+        childId: "child-thread",
+        transcriptSource: "/sessions/child-thread.jsonl",
+      }),
+    ).toEqual({
+      source: "/sessions/child-thread.jsonl",
+      resumeSessionId: "child-thread",
+      returnSource: "/sessions/parent.jsonl",
+    });
   });
 });
 

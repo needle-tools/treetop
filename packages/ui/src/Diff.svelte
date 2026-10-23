@@ -1,9 +1,14 @@
 <script lang="ts">
   import {
+    diffAssetContentUrl,
+    diffAssetKind,
     parseDiff,
+    parseDiffStructured,
     withoutSingleFileDiffHeader,
+    type DiffAssetSourceKind,
     type DiffLine,
   } from "./diff";
+  import { apiUrl } from "./api";
 
   export let text: string = "";
   export let lines: DiffLine[] | null = null;
@@ -12,6 +17,17 @@
   export let copyable = false;
   export let compact = false;
   export let hideSingleFileHeader = false;
+  /** Optional git source. Supplying it upgrades browser-renderable image
+   * files from binary/text placeholders to a shared before/after preview. */
+  export let worktreePath: string | undefined = undefined;
+  export let filePath: string | undefined = undefined;
+  export let oldFilePath: string | undefined = undefined;
+  export let sourceKind: DiffAssetSourceKind | undefined = undefined;
+  export let sha: string | undefined = undefined;
+  export let daemonId: string | undefined = undefined;
+  export let assetVersion: string | number | undefined = undefined;
+  export let beforeAvailable: boolean | undefined = undefined;
+  export let afterAvailable: boolean | undefined = undefined;
   $: rawRendered = lines ?? parseDiff(text);
   $: rendered = hideSingleFileHeader
     ? withoutSingleFileDiffHeader(rawRendered)
@@ -19,6 +35,49 @@
   $: effectiveCopyText =
     copyText || (lines ? rendered.map((line) => line.text).join("\n") : text);
   $: showHead = !!label || copyable;
+  $: structuredFile = text ? parseDiffStructured(text).files[0] : undefined;
+  $: assetKind = filePath ? diffAssetKind(filePath) : null;
+  $: canShowAsset = !!(
+    assetKind &&
+    worktreePath &&
+    filePath &&
+    sourceKind
+  );
+  $: showBefore = beforeAvailable ?? !structuredFile?.isNew;
+  $: showAfter = afterAvailable ?? !structuredFile?.isDeleted;
+  $: beforeSrc =
+    canShowAsset && showBefore
+      ? apiUrl(
+          diffAssetContentUrl({
+            worktreePath: worktreePath!,
+            file: filePath!,
+            oldFile: oldFilePath,
+            kind: sourceKind!,
+            side: "before",
+            sha,
+            version: assetVersion,
+          }),
+          daemonId,
+        )
+      : null;
+  $: afterSrc =
+    canShowAsset && showAfter
+      ? apiUrl(
+          diffAssetContentUrl({
+            worktreePath: worktreePath!,
+            file: filePath!,
+            oldFile: oldFilePath,
+            kind: sourceKind!,
+            side: "after",
+            sha,
+            version: assetVersion,
+          }),
+          daemonId,
+        )
+      : null;
+  $: showText = !canShowAsset || assetKind === "svg";
+  let failedBeforeSrc: string | null = null;
+  let failedAfterSrc: string | null = null;
 
   async function copyDiff(): Promise<void> {
     if (!effectiveCopyText) return;
@@ -50,13 +109,51 @@
       {/if}
     </div>
   {/if}
-  <div class="diff-lines">
-    {#each rendered as line}
-      <div class="line {line.kind}">
-        <span class="text">{line.text || " "}</span>
-      </div>
-    {/each}
-  </div>
+  {#if canShowAsset}
+    <div class="diff-images" class:single={!beforeSrc || !afterSrc}>
+      {#if beforeSrc}
+        <figure>
+          <figcaption>Before</figcaption>
+          {#if failedBeforeSrc === beforeSrc}
+            <span class="diff-image-unavailable">Not available</span>
+          {:else}
+            <span class="image-frame image-frame-media">
+              <img
+                src={beforeSrc}
+                alt={`Before ${filePath}`}
+                on:error={() => (failedBeforeSrc = beforeSrc)}
+              />
+            </span>
+          {/if}
+        </figure>
+      {/if}
+      {#if afterSrc}
+        <figure>
+          <figcaption>After</figcaption>
+          {#if failedAfterSrc === afterSrc}
+            <span class="diff-image-unavailable">Not available</span>
+          {:else}
+            <span class="image-frame image-frame-media">
+              <img
+                src={afterSrc}
+                alt={`After ${filePath}`}
+                on:error={() => (failedAfterSrc = afterSrc)}
+              />
+            </span>
+          {/if}
+        </figure>
+      {/if}
+    </div>
+  {/if}
+  {#if showText}
+    <div class="diff-lines">
+      {#each rendered as line}
+        <div class="line {line.kind}">
+          <span class="text">{line.text || " "}</span>
+        </div>
+      {/each}
+    </div>
+  {/if}
 </div>
 
 <style>
@@ -130,6 +227,48 @@
   }
   .diff-head + .diff-lines {
     padding-top: 0.12rem;
+  }
+  .diff-images {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0.5rem;
+    padding: 0.5rem;
+    min-width: 0;
+  }
+  .diff-images.single {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .diff-images figure {
+    display: grid;
+    grid-template-rows: auto minmax(0, 1fr);
+    gap: 0.25rem;
+    min-width: 0;
+    margin: 0;
+  }
+  .diff-images figcaption {
+    color: var(--text-muted);
+    font-size: var(--fs-sm);
+  }
+  .diff-images .image-frame {
+    width: 100%;
+    max-width: none;
+  }
+  .diff-images .image-frame img {
+    width: 100%;
+    max-width: 100%;
+    max-height: min(52vh, 34rem);
+  }
+  .diff-image-unavailable {
+    display: grid;
+    place-items: center;
+    min-height: 5rem;
+    color: var(--text-muted);
+    border: 1px dashed var(--surface-3);
+    border-radius: var(--radius-sm);
+    font-size: var(--fs-sm);
+  }
+  .diff-images + .diff-lines {
+    border-top: 1px solid var(--surface-2);
   }
   .line {
     padding: 0 0.75rem;

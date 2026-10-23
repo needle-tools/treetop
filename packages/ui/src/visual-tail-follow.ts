@@ -200,6 +200,7 @@ export function replacementVisualScrollTop(opts: {
 export function visualScrollMemoryFromMetrics(opts: {
   metrics: VisualScrollMetrics;
   paused: boolean;
+  followTail?: boolean;
   nearPx?: number;
   anchorKey?: string;
   anchorOffsetTop?: number;
@@ -207,7 +208,8 @@ export function visualScrollMemoryFromMetrics(opts: {
   return {
     ...opts.metrics,
     followTail:
-      !opts.paused && isNearVisualScrollEnd(opts.metrics, opts.nearPx),
+      opts.followTail ??
+      (!opts.paused && isNearVisualScrollEnd(opts.metrics, opts.nearPx)),
     anchorKey: opts.anchorKey,
     anchorOffsetTop: opts.anchorOffsetTop,
   };
@@ -217,15 +219,11 @@ export function shouldRememberVisualScrollMemory(opts: {
   layoutUsable: boolean;
   metrics: VisualScrollMetrics;
   previous?: VisualScrollMemory;
+  restoring?: boolean;
 }): boolean {
-  if (
-    opts.previous &&
-    !opts.previous.followTail &&
-    opts.previous.scrollTop > 0 &&
-    opts.metrics.scrollTop === 0
-  ) {
-    return false;
-  }
+  // A remount has not restored its saved position yet. Zero itself is a
+  // valid reading position and must not be mistaken for remount geometry.
+  if (opts.restoring) return false;
   return (
     opts.layoutUsable &&
     opts.metrics.clientHeight > 0 &&

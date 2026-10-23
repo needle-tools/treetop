@@ -17,6 +17,7 @@ import {
   listCommitFiles,
   getDiff,
   getFileDiff,
+  getDiffFileContent,
   getCommitFileDiff,
   createWorktree,
   removeWorktree,
@@ -661,6 +662,92 @@ describe("getFileDiff against real git", () => {
     await $`git -C ${repo} commit -m add -q`.quiet();
     // No edit — diff for this file should be empty.
     expect(await getFileDiff(repo, "a.txt", "workdir")).toBe("");
+  });
+});
+
+describe("getDiffFileContent against real git", () => {
+  test("workdir returns index before and disk after bytes", async () => {
+    const repo = await tempRepo();
+    await writeFile(join(repo, "preview.png"), Buffer.from([1, 2, 3]));
+    await $`git -C ${repo} add preview.png`.quiet();
+    await $`git -C ${repo} commit -m add-preview -q`.quiet();
+    await writeFile(join(repo, "preview.png"), Buffer.from([4, 5, 6]));
+
+    expect(
+      await getDiffFileContent(repo, "preview.png", "workdir", "before"),
+    ).toEqual(Buffer.from([1, 2, 3]));
+    expect(
+      await getDiffFileContent(repo, "preview.png", "workdir", "after"),
+    ).toEqual(Buffer.from([4, 5, 6]));
+  });
+
+  test("staged returns HEAD before and index after despite a later disk edit", async () => {
+    const repo = await tempRepo();
+    await writeFile(join(repo, "preview.png"), Buffer.from([1]));
+    await $`git -C ${repo} add preview.png`.quiet();
+    await $`git -C ${repo} commit -m add-preview -q`.quiet();
+    await writeFile(join(repo, "preview.png"), Buffer.from([2]));
+    await $`git -C ${repo} add preview.png`.quiet();
+    await writeFile(join(repo, "preview.png"), Buffer.from([3]));
+
+    expect(
+      await getDiffFileContent(repo, "preview.png", "staged", "before"),
+    ).toEqual(Buffer.from([1]));
+    expect(
+      await getDiffFileContent(repo, "preview.png", "staged", "after"),
+    ).toEqual(Buffer.from([2]));
+  });
+
+  test("commit returns parent before and commit after bytes", async () => {
+    const repo = await tempRepo();
+    await writeFile(join(repo, "preview.png"), Buffer.from([1]));
+    await $`git -C ${repo} add preview.png`.quiet();
+    await $`git -C ${repo} commit -m add-preview -q`.quiet();
+    await writeFile(join(repo, "preview.png"), Buffer.from([2]));
+    await $`git -C ${repo} add preview.png`.quiet();
+    await $`git -C ${repo} commit -m update-preview -q`.quiet();
+    const sha = (await $`git -C ${repo} rev-parse HEAD`.quiet().text()).trim();
+
+    expect(
+      await getDiffFileContent(repo, "preview.png", "commit", "before", {
+        sha,
+      }),
+    ).toEqual(Buffer.from([1]));
+    expect(
+      await getDiffFileContent(repo, "preview.png", "commit", "after", {
+        sha,
+      }),
+    ).toEqual(Buffer.from([2]));
+  });
+
+  test("commit rename reads the old path from its parent", async () => {
+    const repo = await tempRepo();
+    await writeFile(join(repo, "before.png"), Buffer.from([7, 8]));
+    await $`git -C ${repo} add before.png`.quiet();
+    await $`git -C ${repo} commit -m add-preview -q`.quiet();
+    await $`git -C ${repo} mv before.png after.png`.quiet();
+    await $`git -C ${repo} commit -m rename-preview -q`.quiet();
+    const sha = (await $`git -C ${repo} rev-parse HEAD`.quiet().text()).trim();
+
+    expect(
+      await getDiffFileContent(repo, "after.png", "commit", "before", {
+        sha,
+        oldFile: "before.png",
+      }),
+    ).toEqual(Buffer.from([7, 8]));
+    expect(
+      await getDiffFileContent(repo, "after.png", "commit", "after", {
+        sha,
+        oldFile: "before.png",
+      }),
+    ).toEqual(Buffer.from([7, 8]));
+  });
+
+  test("rejects paths outside the worktree", async () => {
+    const repo = await tempRepo();
+    expect(
+      await getDiffFileContent(repo, "../secret.png", "workdir", "after"),
+    ).toBeNull();
   });
 });
 

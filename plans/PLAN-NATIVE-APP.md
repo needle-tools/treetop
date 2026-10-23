@@ -263,6 +263,30 @@ removed inputs and disposal. Changed helper modules pass strict TypeScript.
 A native rebuild/relaunch is required; no running app or daemon was restarted,
 and actual Alt+Tab in the rebuilt package has not yet been exercised.
 
+### Connected voice sessions with no speech response (2026-10-23)
+
+The new running build reached connected WebRTC state, but the affected sessions
+produced no transcript events. Windows default capture was unmuted at 72%.
+An isolated Edge connection using synthesized speech reproduced the silent
+case: nonzero microphone energy and outbound RTP, but no input transcript or
+reply audio. A fresh connection with the same client and speech then succeeded.
+The exact underlying media/service cause remains unconfirmed.
+
+The controller previously ignored all data-channel messages. It now surfaces
+service `error` / `session.closed` events and observes transcript acknowledgements
+from both that channel and App Server notifications. A bounded stats monitor
+checks whether significant microphone audio is being transmitted without any
+speech acknowledgement for 12s. That condition restarts the media session once;
+another timeout surfaces an actionable error. Silence alone never reconnects,
+and stop/cancel clears the monitor and guards in-flight stats results. Diagnostics
+contain counters and energy only, never recorded audio or transcript content.
+
+Validation: 19 voice tests pass, including service-error handling, one-retry
+limit and acknowledged/quiet-session behavior. An isolated live 32s synthetic
+speech probe received user/assistant transcripts and reply audio with the updated
+controller. Only probe-owned voice threads were created/stopped; the user's
+microphone, open sessions and daemon were not restarted or reconfigured.
+
 ### Voice restart lifecycle (2026-10-22)
 
 Read-only inspection of the running daemon's log and bounded Codex App Server

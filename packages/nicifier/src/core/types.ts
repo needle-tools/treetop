@@ -32,6 +32,11 @@ export interface VisualFileEdit {
   additions?: number;
   deletions?: number;
   raw?: string;
+  /** Captured write content when only a portion of the resulting file is known. */
+  preview?: string;
+  previewTitle?: string;
+  /** Literal boundaries of a section replacement, for correlation with captured reads. */
+  replacement?: { startAnchor: string; endAnchor: string };
   /** chars/4 estimate of literal content written by this edit payload. */
   writtenTokenCountEstimate?: number;
 }
@@ -54,6 +59,7 @@ export interface VisualTokenUsage {
 export interface VisualToolEnvAssignment {
   name: string;
   value: string;
+  unset?: boolean;
 }
 
 export type VisualCommandSummary =
@@ -121,6 +127,7 @@ export type VisualCommandSummary =
         | "ls-remote"
         | "grep";
       targets: string[];
+      revisions?: string[];
       rev?: string;
       pattern?: string;
       staged?: boolean;

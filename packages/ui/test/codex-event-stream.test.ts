@@ -28,8 +28,12 @@ import {
   codexAppHistoryRetryDelayMs,
   codexToolInputQuality,
   codexEventThreadIdForSession,
+  codexEventReplayKey,
   codexEventRequiresHistoryReconciliation,
   codexEventStreamRequiresHistoryReconciliation,
+  codexRecoverableIssueFromEvent,
+  codexEventResolvesRecoverableIssue,
+  withoutResolvedCodexRecoverableIssueMessages,
   codexEventDeltaSupersededByCompletedItem,
   codexOffscreenProjectionAction,
   codexUsageEventBelongsToObservedTurn,
@@ -56,6 +60,7 @@ import {
   type CodexEventStreamState,
 } from "../src/codex-event-stream";
 import { get } from "svelte/store";
+import { createVisualSubagentTracker } from "../src/last-user-message";
 
 test("CLI state survives I/O animation and silence and is isolated by daemon/session", () => {
   replaceCodexCliStates([{ source: "a.jsonl", sessionId: "a", working: true }]);
@@ -752,6 +757,104 @@ describe("codex event stream hub", () => {
     expect(
       codexEventStreamRequiresHistoryReconciliation("live", "reconnecting"),
     ).toBe(false);
+  });
+
+  test("resolves recoverable connection warnings once the turn resumes", () => {
+    const retrying: CodexAppEvent = {
+      kind: "notification",
+      method: "error",
+      params: {
+        error: { message: "Reconnecting... 2/5" },
+        willRetry: true,
+      },
+      threadId: "thread-1",
+      turnId: "turn-1",
+      receivedAt: "2026-08-27T12:05:15.765Z",
+      seq: 20,
+    };
+    const fallback: CodexAppEvent = {
+      kind: "notification",
+      method: "warning",
+      params: {
+        message: "Falling back from WebSockets to HTTPS transport.",
+      },
+      threadId: "thread-1",
+      turnId: "turn-1",
+      receivedAt: "2026-08-27T12:05:16.000Z",
+      seq: 21,
+    };
+    const resumed: CodexAppEvent = {
+      kind: "notification",
+      method: "item/agentMessage/delta",
+      params: { itemId: "answer", delta: "Recovered" },
+      threadId: "thread-1",
+      turnId: "turn-1",
+      receivedAt: "2026-08-27T12:05:17.000Z",
+      seq: 22,
+    };
+
+    const retryIssue = codexRecoverableIssueFromEvent(retrying);
+    const fallbackIssue = codexRecoverableIssueFromEvent(fallback);
+    expect(retryIssue).toEqual({
+      message: "Reconnecting... 2/5",
+      threadId: "thread-1",
+      turnId: "turn-1",
+    });
+    expect(fallbackIssue?.message).toBe(
+      "Falling back from WebSockets to HTTPS transport.",
+    );
+    expect(codexEventResolvesRecoverableIssue(fallbackIssue!, resumed)).toBe(
+      true,
+    );
+    expect(
+      codexRecoverableIssueFromEvent({
+        ...fallback,
+        params: { message: "This model is nearing its context limit." },
+      }),
+    ).toBeUndefined();
+    expect(
+      codexRecoverableIssueFromEvent({
+        ...retrying,
+        params: { error: { message: "The model rejected this request." } },
+      }),
+    ).toBeUndefined();
+    expect(
+      withoutResolvedCodexRecoverableIssueMessages(
+        [
+          {
+            id: "retry",
+            role: "system",
+            turnId: "turn-1",
+            blocks: [
+              { type: "marker", text: "[Retrying: Reconnecting... 2/5]" },
+            ],
+          },
+          {
+            id: "fallback",
+            role: "system",
+            turnId: "turn-1",
+            blocks: [
+              {
+                type: "marker",
+                text: "[Warning: Falling back from WebSockets to HTTPS transport.]",
+              },
+            ],
+          },
+          {
+            id: "persistent",
+            role: "system",
+            turnId: "turn-1",
+            blocks: [
+              {
+                type: "marker",
+                text: "[Warning: This model is nearing its context limit.]",
+              },
+            ],
+          },
+        ],
+        fallbackIssue!,
+      ).map((message) => message.id),
+    ).toEqual(["persistent"]);
   });
 
   test("reconciles authoritative history after every completed turn", () => {
@@ -2294,6 +2397,152 @@ describe("codex event stream hub", () => {
     ]);
   });
 
+  test("keeps later user messages in one app-server turn as steering", () => {
+    const messages = codexAppHistoryMessagesFromThread({
+      id: "thread-1",
+      turns: [
+        {
+          id: "turn-1",
+          startedAt: 1782122400,
+          status: "inProgress",
+          items: [
+            {
+              id: "user-1",
+              type: "userMessage",
+              content: [{ type: "text", text: "build the feature" }],
+            },
+            {
+              id: "agent-1",
+              type: "agentMessage",
+              text: "I’m implementing it.",
+            },
+            {
+              id: "user-2",
+              type: "userMessage",
+              content: [{ type: "text", text: "keep the API compatible" }],
+            },
+            {
+              id: "agent-2",
+              type: "agentMessage",
+              text: "I’ll preserve the API.",
+            },
+          ],
+        },
+      ],
+    });
+
+    expect(
+      messages
+        .filter((message) => message.role === "user")
+        .map((message) => message.intent),
+    ).toEqual([undefined, "steer"]);
+
+    const items = buildVisualTranscriptItems(messages, { active: true });
+    expect(items.map((item) => item.kind)).toEqual(["message", "work"]);
+    expect(items[1]?.kind === "work" ? visualWorkSummary(items[1].entries) : null)
+      .toMatchObject({ steerings: 1 });
+  });
+
+  test("uses canonical steering identity when resuming midway through a turn", () => {
+    const context = {};
+    const steer = {
+      id: "user-steer",
+      type: "userMessage",
+      content: [{ type: "text", text: "keep the API compatible" }],
+    };
+    // On reconnect, this item can arrive before the history page containing
+    // the original turn-opening message. It initially looks like turn input.
+    const live = codexLiveMessagesFromEvent(
+      {
+        kind: "notification",
+        method: "item/completed",
+        threadId: "thread",
+        turnId: "turn",
+        receivedAt: "2026-10-08T10:00:02.000Z",
+        params: { item: steer },
+      },
+      context,
+    );
+    const history = codexAppHistoryMessagesFromThread(
+      {
+        turns: [
+          {
+            id: "turn",
+            startedAt: 1791453600,
+            items: [
+              {
+                id: "user-first",
+                type: "userMessage",
+                content: [{ type: "text", text: "build it" }],
+              },
+              steer,
+            ],
+          },
+        ],
+      },
+      context,
+    );
+    const merged = reconcileCodexAppHistoryMessages(history, live, live, {
+      preserveLiveProjection: true,
+    });
+    expect(merged.map(message => message.intent)).toEqual([undefined, "steer"]);
+    expect(merged[1]?.timestamp).toBe(live[0]?.timestamp);
+  });
+
+  test("keeps prior live turns before a disjoint latest app-server page", () => {
+    const older = {
+      id: "old",
+      turnId: "old-turn",
+      timestamp: "2026-10-08T09:00:00.000Z",
+      blocks: [{ type: "text", text: "old answer" }],
+    };
+    const latest = {
+      id: "new",
+      turnId: "new-turn",
+      timestamp: "2026-10-08T10:00:00.000Z",
+      blocks: [{ type: "text", text: "new answer" }],
+    };
+    expect(
+      reconcileCodexAppHistoryMessages([latest], [older], [older], {
+        preserveLiveProjection: true,
+      }),
+    ).toEqual([older, latest]);
+    expect(mergeCodexAppHistoryMessages([older], [latest])).toEqual([older, latest]);
+  });
+
+  test("keeps live user item snapshots classified across a steer", () => {
+    const context = {};
+    const event = (id: string, text: string, method: "item/started" | "item/completed") =>
+      codexLiveMessagesFromEvent(
+        {
+          kind: "notification",
+          method,
+          params: {
+            threadId: "thread-1",
+            turnId: "turn-1",
+            item: {
+              id,
+              type: "userMessage",
+              content: [{ type: "text", text }],
+            },
+          },
+          threadId: "thread-1",
+          turnId: "turn-1",
+          receivedAt: "2026-06-22T10:00:00.000Z",
+        },
+        context,
+      );
+
+    expect(event("user-1", "build the feature", "item/started")[0]?.intent)
+      .toBeUndefined();
+    expect(event("user-1", "build the feature", "item/completed")[0]?.intent)
+      .toBeUndefined();
+    expect(event("user-2", "keep the API compatible", "item/started")[0]?.intent)
+      .toBe("steer");
+    expect(event("user-2", "keep the API compatible", "item/completed")[0]?.intent)
+      .toBe("steer");
+  });
+
   test("prepends older app-server turn pages without dropping live/newer rows", () => {
     const newer = codexAppHistoryMessagesFromTurnPage({
       turns: [
@@ -2440,6 +2689,316 @@ describe("codex event stream hub", () => {
         blocks: [{ type: "text", text: agentItem.text }],
       },
     ]);
+  });
+
+  test("live user-message envelopes retain their inter-agent identity", () => {
+    const messages = codexAppHistoryMessagesFromThread({ turns: [{ id: "turn", items: [{
+      id: "delivery", type: "userMessage", content: [{ type: "inputText", text:
+        "Message Type: MESSAGE\nSender: /root/reviewer\nPayload:\nReview finished." }],
+    }] }] });
+    expect(messages[0]?.role).toBe("assistant");
+    expect(messages[0]?.blocks[0]).toMatchObject({ type: "subagent", subagentNickname: "reviewer", subagentResult: "Review finished." });
+  });
+
+  test("live cumulative checkpoints do not repeatedly charge last usage", () => {
+    const context = {};
+    const ingest = (input: number) => codexLiveMessagesFromEvent({
+      kind: "notification", method: "thread/tokenUsage/updated", receivedAt: "2026-10-14T12:00:00Z", turnId: "turn",
+      params: { turnId: "turn", tokenUsage: {
+        last: { inputTokens: 100, cachedInputTokens: 80, outputTokens: 10, totalTokens: 110 },
+        total: { inputTokens: input, cachedInputTokens: input * .8, outputTokens: input * .1, totalTokens: input * 1.1 },
+      } },
+    }, context);
+    expect(ingest(100)[0]?.tokenUsage?.input).toBe(100);
+    expect(ingest(100).filter((message) => message.tokenUsage)).toEqual([]);
+    expect(ingest(300)[0]?.tokenUsage).toMatchObject({ input: 200, cachedInput: 160, output: 20 });
+  });
+
+  test("history seeds the live usage baseline without rewinding it on an older page", () => {
+    const context = {};
+    const usage = (input: number) => ({ inputTokens: input, outputTokens: input / 10 });
+    const history = (input: number) => codexAppHistoryMessagesFromThread({ turns: [{ id: "turn", items: [
+      { id: `usage-${input}`, type: "tokenUsage", tokenUsage: { last: usage(100), total: usage(input) } },
+    ] }] }, context);
+    const live = (input: number) => codexLiveMessagesFromEvent({ kind: "notification", method: "thread/tokenUsage/updated", turnId: "turn",
+      receivedAt: "2026-10-14T12:00:00Z", params: { tokenUsage: { last: usage(100), total: usage(input) } },
+    }, context).filter(message => message.tokenUsage);
+    expect(history(1000)[0]?.tokenUsage?.input).toBe(100);
+    expect(live(1000)).toEqual([]);
+    expect(live(1300)[0]?.tokenUsage?.input).toBe(300);
+    history(500);
+    expect(live(1400)[0]?.tokenUsage?.input).toBe(100);
+  });
+
+  test("agent deliveries do not make the first human request steering in history or live", () => {
+    const items = [
+      { id: "delivery", type: "userMessage", content: [{ type: "text", text:
+        "Message Type: NEW_TASK\nTask name: /root/reviewer\nSender: /root\nPayload:\nReview it." }] },
+      { id: "human", type: "userMessage", content: [{ type: "text", text: "Check the API too." }] },
+      { id: "steer", type: "userMessage", content: [{ type: "text", text: "Keep compatibility." }] },
+    ];
+    const history = codexAppHistoryMessagesFromThread({ turns: [{ id: "turn", items }] });
+    const context = {};
+    const live = items.flatMap(item => codexLiveMessagesFromEvent({
+      kind: "notification", method: "item/completed", turnId: "turn",
+      params: { turnId: "turn", item }, receivedAt: "2026-10-14T12:00:00Z",
+    }, context));
+    for (const messages of [history, live]) {
+      expect(messages.map(message => message.role)).toEqual(["assistant", "user", "user"]);
+      expect(messages.map(message => message.intent)).toEqual([undefined, undefined, "steer"]);
+      expect(messages[0]?.blocks[0]?.subagentIsParent).toBe(true);
+    }
+    const resumed = {};
+    codexAppHistoryMessagesFromThread({ turns: [{ id: "turn", items: items.slice(0, 1) }] }, resumed);
+    const firstHuman = codexLiveMessagesFromEvent({ kind: "notification", method: "item/completed", turnId: "turn",
+      params: { turnId: "turn", item: items[1] }, receivedAt: "2026-10-14T12:00:00Z",
+    }, resumed);
+    expect(firstHuman[0]?.intent).toBeUndefined();
+  });
+
+  test("human requests quoting delivery envelopes keep human boundaries in history and live", () => {
+    const text = "Explain this notification:\nMessage Type: MESSAGE\nSender: /root/reviewer\nPayload:\nReview finished.";
+    const item = { id: "human", type: "userMessage", content: [{ type: "text", text }] };
+    const history = codexAppHistoryMessagesFromThread({ turns: [{ id: "turn", items: [item] }] });
+    const live = codexLiveMessagesFromEvent({ kind: "notification", method: "item/completed", turnId: "turn",
+      receivedAt: "2026-10-14T12:00:00Z", params: { item },
+    });
+    for (const messages of [history, live]) {
+      expect(messages[0]?.role).toBe("user");
+      expect(messages[0]?.blocks).toEqual([{ type: "text", text }]);
+    }
+  });
+
+  test("multipart agent input and attachments retain agent identity in history and live", () => {
+    const header = "Message Type: NEW_TASK\nTask name: /root/reviewer\nSender: /root\nPayload:\n";
+    for (const parts of [[header, "Review the image."], [header + "Review the image."], [...header, ..."Review the image."]]) {
+      const items = [
+        { id: "delivery", type: "userMessage", content: [...parts.map(text => ({ type: "inputText", text })), { type: "image", url: "https://example.com/review.png" }] },
+        { id: "human", type: "userMessage", content: [{ type: "inputText", text: "Explain this notification:\n" }, { type: "inputText", text: header + "Review the image." }] },
+      ];
+      const context = {};
+      const live = items.flatMap(item => codexLiveMessagesFromEvent({ kind: "notification", method: "item/completed", turnId: "turn",
+        receivedAt: "2026-10-14T12:00:00Z", params: { item },
+      }, context));
+      const history = codexAppHistoryMessagesFromTurnPage({ turns: [{ id: "turn", items }] });
+      for (const messages of [live, history]) {
+        expect(messages.map(message => message.role)).toEqual(["assistant", "user"]);
+        expect(messages.map(message => message.intent)).toEqual([undefined, undefined]);
+        expect(messages[0]?.blocks).toHaveLength(2);
+        expect(messages[0]?.blocks.find(block => block.type === "subagent")?.subagentMessage).toBe("Review the image.");
+        expect(messages[0]?.blocks.find(block => block.type === "media")?.mediaKind).toBe("image");
+        expect(messages[1]?.blocks).toEqual([{ type: "text", text: "Explain this notification:\n" + header + "Review the image." }]);
+      }
+    }
+  });
+
+  test("item usage keeps one identity when live completion is reconciled with history", () => {
+    const item = { id: "usage-1", type: "tokenUsage", tokenUsage: {
+      last: { inputTokens: 100, outputTokens: 10 }, total: { inputTokens: 100, outputTokens: 10 },
+    } };
+    const context = {};
+    const live = codexLiveMessagesFromEvent({ kind: "notification", method: "item/completed", turnId: "turn",
+      receivedAt: "2026-10-14T12:00:00Z", params: { item },
+    }, context);
+    const history = codexAppHistoryMessagesFromThread({ turns: [{ id: "turn", items: [item] }] }, context);
+    const merged = reconcileCodexAppHistoryMessages(history, live, live, { preserveLiveProjection: true });
+    expect(merged).toHaveLength(1);
+    expect(merged[0]?.tokenUsage).toMatchObject({ input: 100, output: 10 });
+    expect(merged[0]?.timestamp).toBe("2026-10-14T12:00:00Z");
+  });
+
+  test("usage item snapshots replace their earlier amount without losing progress", () => {
+    for (const withTotal of [true, false]) {
+      const context = {};
+      const event = (input: number, method: "item/started" | "item/completed") => codexLiveMessagesFromEvent({
+        kind: "notification", method, turnId: "turn", receivedAt: "2026-10-14T12:00:00Z",
+        params: { item: { id: "usage-1", type: "tokenUsage", tokenUsage: {
+          last: { inputTokens: input, outputTokens: input / 10 },
+          ...(withTotal ? { total: { inputTokens: input, outputTokens: input / 10 } } : {}),
+        } } },
+      }, context);
+      const started = event(100, "item/started");
+      const completed = event(150, "item/completed");
+      const merged = mergeCodexAppHistoryMessages(completed, started);
+      expect(merged).toHaveLength(1);
+      expect(completed[0]?.tokenUsage).toMatchObject({ input: 150, output: 15 });
+      expect(merged[0]?.tokenUsage).toMatchObject({ input: 150, output: 15 });
+    }
+  });
+
+  test("a usage item resumed from history retains its previous amount on live completion", () => {
+    const context = {};
+    const item = (input: number) => ({ id: "usage-1", type: "tokenUsage", tokenUsage: {
+      last: { inputTokens: input, outputTokens: input / 10 }, total: { inputTokens: input, outputTokens: input / 10 },
+    } });
+    const history = codexAppHistoryMessagesFromThread({ turns: [{ id: "turn", items: [item(100)] }] }, context);
+    const completed = codexLiveMessagesFromEvent({ kind: "notification", method: "item/completed", turnId: "turn",
+      receivedAt: "2026-10-14T12:00:00Z", params: { item: item(150) },
+    }, context);
+    expect(completed[0]?.tokenUsage).toMatchObject({ input: 150, output: 15 });
+    expect(mergeCodexAppHistoryMessages(history, completed)).toHaveLength(1);
+  });
+
+  test("refreshed canonical usage advances live checkpoints and item ownership without rebilling", () => {
+    for (const nextIsItem of [false, true]) {
+      const context = {};
+      const usage = (input: number) => ({ inputTokens: input, cachedInputTokens: input / 2, outputTokens: input / 10 });
+      const item = (input: number) => ({ id: "usage-1", type: "tokenUsage", tokenUsage: { last: usage(input), total: usage(input) } });
+      const history = (input: number) => codexAppHistoryMessagesFromTurnPage({ turns: [{ id: "turn", items: [item(input)] }] }, context);
+      const initial = history(100);
+      const refreshed = reconcileCodexAppHistoryMessages(history(200), initial, initial, { preserveLiveProjection: true });
+      const live = codexLiveMessagesFromEvent({ kind: "notification", method: nextIsItem ? "item/completed" : "thread/tokenUsage/updated", turnId: "turn",
+        receivedAt: "2026-10-14T12:00:00Z", params: nextIsItem ? { item: item(250) } : { tokenUsage: item(250).tokenUsage },
+      }, context);
+      const projected = mergeCodexAppHistoryMessages(refreshed, live);
+      expect(projected.reduce((sum, message) => sum + (message.tokenUsage?.input ?? 0), 0)).toBe(250);
+      expect(projected.reduce((sum, message) => sum + (message.tokenUsage?.cachedInput ?? 0), 0)).toBe(125);
+      expect(projected.reduce((sum, message) => sum + (message.tokenUsage?.output ?? 0), 0)).toBe(25);
+      expect(live[0]?.tokenUsage?.input).toBe(nextIsItem ? 250 : 50);
+    }
+  });
+
+  test("refresh ownership follows an anchored reset epoch and cannot rewind newer live usage", () => {
+    const context = {};
+    const usage = (input: number) => ({ inputTokens: input, outputTokens: 0 });
+    const item = (input: number) => ({ id: "usage-1", type: "tokenUsage", tokenUsage: { last: usage(input), total: usage(input) } });
+    const live = (input: number, seq: number, asItem = false) => codexLiveMessagesFromEvent({ kind: "notification",
+      method: asItem ? "item/completed" : "thread/tokenUsage/updated", turnId: "turn", seq,
+      receivedAt: "2026-10-14T12:00:00Z", params: asItem ? { item: item(input) } : { tokenUsage: item(input).tokenUsage },
+    }, context);
+    const history = (input: number) => codexAppHistoryMessagesFromTurnPage({ turns: [{ id: "turn", items: [item(input)] }] }, context);
+    const initial = [...live(500, 1), ...live(0, 2), ...live(100, 3, true)];
+    const refreshed = reconcileCodexAppHistoryMessages(history(200), initial, initial, { preserveLiveProjection: true });
+    const extra = live(250, 4);
+    expect(extra[0]?.tokenUsage?.input).toBe(50);
+    const projected = mergeCodexAppHistoryMessages(refreshed, [...initial, ...extra]);
+    expect(projected.reduce((sum, message) => sum + (message.tokenUsage?.input ?? 0), 0)).toBe(750);
+    history(150);
+    expect(live(300, 5)[0]?.tokenUsage?.input).toBe(50);
+    expect(live(350, 6, true)[0]?.tokenUsage?.input).toBe(250);
+  });
+
+  test("a stale refresh updates item ownership without rewinding intervening live or pre-reset work", () => {
+    const context = {};
+    const item = (id: string, input: number) => ({ id, type: "tokenUsage", tokenUsage: {
+      last: { inputTokens: input }, total: { inputTokens: input },
+    } });
+    const history = (id: string, input: number) => codexAppHistoryMessagesFromTurnPage({ turns: [{ id: "turn", items: [item(id, input)] }] }, context);
+    const live = (input: number, seq: number, id?: string) => codexLiveMessagesFromEvent({ kind: "notification",
+      method: id ? "item/completed" : "thread/tokenUsage/updated", turnId: "turn", seq,
+      receivedAt: "2026-10-14T12:00:00Z", params: id ? { item: item(id, input) } : { tokenUsage: item("unused", input).tokenUsage },
+    }, context);
+    const initial = history("usage-1", 100);
+    const current = [...initial, ...live(300, 1)];
+    const refreshed = reconcileCodexAppHistoryMessages(history("usage-1", 200), current, initial, { preserveLiveProjection: true });
+    const completed = live(350, 2, "usage-1");
+    expect(completed[0]?.tokenUsage?.input).toBe(250);
+    expect(mergeCodexAppHistoryMessages(refreshed, completed).reduce((sum, message) => sum + (message.tokenUsage?.input ?? 0), 0)).toBe(350);
+    live(0, 3);
+    live(100, 4, "after-reset");
+    history("usage-1", 400);
+    expect(live(150, 5)[0]?.tokenUsage?.input).toBe(50);
+  });
+
+  test("canonical usage owns overlapping standalone checkpoints and preserves uncovered live work", () => {
+    const context = {};
+    const usage = (input: number) => ({ inputTokens: input, cachedInputTokens: input / 2, outputTokens: input / 10 });
+    const item = (input: number) => ({ id: "usage-1", type: "tokenUsage", tokenUsage: { last: usage(input), total: usage(input) } });
+    const started = codexLiveMessagesFromEvent({ kind: "notification", method: "item/started", turnId: "turn",
+      receivedAt: "2026-10-14T12:00:00Z", params: { item: item(100) },
+    }, context);
+    const extra = codexLiveMessagesFromEvent({ kind: "notification", method: "thread/tokenUsage/updated", turnId: "turn",
+      receivedAt: "2026-10-14T12:00:01Z", params: { tokenUsage: { last: usage(150), total: usage(150) } },
+    }, context);
+    expect(codexLiveMessagesFromEvent({ kind: "notification", method: "item/completed", turnId: "turn",
+      receivedAt: "2026-10-14T12:00:02Z", params: { item: item(150) },
+    }, context)).toEqual([]);
+    for (const canonicalInput of [130, 150]) {
+      const history = codexAppHistoryMessagesFromThread({ turns: [{ id: "turn", items: [item(canonicalInput)] }] });
+      const current = [...started, ...extra];
+      const merged = reconcileCodexAppHistoryMessages(history, current, current, { preserveLiveProjection: true });
+      expect(merged.reduce((sum, message) => sum + (message.tokenUsage?.input ?? 0), 0)).toBe(150);
+      expect(merged.reduce((sum, message) => sum + (message.tokenUsage?.cachedInput ?? 0), 0)).toBe(75);
+      expect(merged.reduce((sum, message) => sum + (message.tokenUsage?.output ?? 0), 0)).toBe(15);
+      expect(merged).toHaveLength(canonicalInput === 150 ? 1 : 2);
+    }
+  });
+
+  test("usage ownership distinguishes reset epochs with overlapping cumulative ranges", () => {
+    const context = {};
+    const usage = (input: number) => ({ inputTokens: input, outputTokens: 0 });
+    const current = [100, 0, 50].flatMap((input, seq) => codexLiveMessagesFromEvent({
+      kind: "notification", method: seq === 0 ? "item/completed" : "thread/tokenUsage/updated", turnId: "turn", seq,
+      receivedAt: "2026-10-14T12:00:00Z", params: seq === 0
+        ? { item: { id: "before", type: "tokenUsage", tokenUsage: { last: usage(input), total: usage(input) } } }
+        : { tokenUsage: { last: usage(input), total: usage(input) } },
+    }, context));
+    const history = codexAppHistoryMessagesFromThread({ turns: [{ id: "turn", items: [
+      { id: "before", type: "tokenUsage", tokenUsage: { last: usage(100), total: usage(100) } },
+    ] }] });
+    const merged = reconcileCodexAppHistoryMessages(history, current, current, { preserveLiveProjection: true });
+    expect(merged.reduce((sum, message) => sum + (message.tokenUsage?.input ?? 0), 0)).toBe(150);
+    expect(merged).toHaveLength(2);
+  });
+
+  test("an unanchored history epoch cannot suppress unrelated live usage", () => {
+    const current = codexLiveMessagesFromEvent({ kind: "notification", method: "thread/tokenUsage/updated", turnId: "turn",
+      receivedAt: "2026-10-14T12:00:00Z", params: { model: "older-model", tokenUsage: {
+        last: { inputTokens: 100 }, total: { inputTokens: 100 },
+      } },
+    });
+    const history = codexAppHistoryMessagesFromThread({ turns: [{ id: "turn", items: [
+      { id: "unknown-epoch", type: "tokenUsage", tokenUsage: { last: { inputTokens: 200 }, total: { inputTokens: 200 } } },
+    ] }] });
+    const merged = reconcileCodexAppHistoryMessages(history, current, current, { preserveLiveProjection: true });
+    expect(merged).toContain(current[0]);
+    expect(merged).toHaveLength(2);
+  });
+
+  test("a matched usage item aligns a truncated history page with the live reset epoch", () => {
+    const context = {};
+    const usage = (input: number) => ({ inputTokens: input, outputTokens: 0 });
+    const beforeReset = [100, 0].flatMap((input, seq) => codexLiveMessagesFromEvent({
+      kind: "notification", method: "thread/tokenUsage/updated", turnId: "turn", seq,
+      receivedAt: "2026-10-14T12:00:00Z", params: { model: "model-before", tokenUsage: { last: usage(input), total: usage(input) } },
+    }, context));
+    const item = (input: number) => ({ id: "after-reset", type: "tokenUsage", tokenUsage: { last: usage(input), total: usage(input) } });
+    const afterReset = codexLiveMessagesFromEvent({ kind: "notification", method: "item/completed", turnId: "turn",
+      receivedAt: "2026-10-14T12:00:01Z", params: { model: "model-after", item: item(100) },
+    }, context);
+    for (const input of [100, 200]) {
+      const history = codexAppHistoryMessagesFromThread({ model: "model-after", turns: [{ id: "turn", items: [item(input)] }] });
+      const current = [...beforeReset, ...afterReset];
+      const merged = reconcileCodexAppHistoryMessages(history, current, current, { preserveLiveProjection: true });
+      expect(merged.filter(message => message.model === "model-before").reduce((sum, message) => sum + (message.tokenUsage?.input ?? 0), 0)).toBe(100);
+      expect(merged.filter(message => message.model === "model-after").reduce((sum, message) => sum + (message.tokenUsage?.input ?? 0), 0)).toBe(input);
+      expect(merged).toHaveLength(2);
+    }
+  });
+
+  test("live zero cumulative checkpoints preserve a reset baseline", () => {
+    const context = {};
+    const ingest = (input: number) => codexLiveMessagesFromEvent({
+      kind: "notification", method: "thread/tokenUsage/updated", receivedAt: "2026-10-14T12:00:00Z", turnId: "turn",
+      params: { turnId: "turn", tokenUsage: {
+        last: { inputTokens: 100, outputTokens: 10 }, total: { inputTokens: input, outputTokens: input / 10 },
+      } },
+    }, context);
+    expect(ingest(100)[0]?.tokenUsage?.input).toBe(100);
+    expect(ingest(0).filter(message => message.tokenUsage)).toEqual([]);
+    expect(ingest(300)[0]?.tokenUsage).toMatchObject({ input: 300, output: 30 });
+  });
+
+  test("duplicate thread checkpoints do not fall through to legacy usage aliases", () => {
+    const context = {};
+    const event: CodexAppEvent = {
+      kind: "notification", method: "thread/tokenUsage/updated", receivedAt: "2026-10-14T12:00:00Z", turnId: "turn",
+      params: { turnId: "turn", tokenUsage: {
+        last: { inputTokens: 100, outputTokens: 10 }, total: { inputTokens: 100, outputTokens: 10 },
+      }, info: { last_token_usage: { input_tokens: 100, output_tokens: 10 } } },
+    };
+    expect(codexLiveMessagesFromEvent(event, context)[0]?.tokenUsage?.input).toBe(100);
+    expect(codexLiveMessagesFromEvent(event, context).filter(message => message.tokenUsage)).toEqual([]);
   });
 
   test("normalizes app-server token_count rows as assistant token usage", () => {
@@ -2695,6 +3254,11 @@ describe("codex event stream hub", () => {
         timestamp: "2026-06-22T10:00:02.000Z",
         turnId: "turn-usage",
         tokensUsed: 91,
+        tokenUsageRanges: [{
+          epoch: 0,
+          start: { input: 655, cachedInput: 500, cacheWriteInput: 0, output: 30, reasoningOutput: 5, total: 690 },
+          end: { input: 3000, cachedInput: 2500, cacheWriteInput: 12, output: 121, reasoningOutput: 22, total: 3143 },
+        }],
         tokenUsage: {
           input: 2345,
           cachedInput: 2000,
@@ -2838,6 +3402,63 @@ describe("codex event stream hub", () => {
     expect(visualContract(buildVisualTranscriptItems([user, ...live]))).toEqual(
       visualContract(buildVisualTranscriptItems([user, ...history])),
     );
+  });
+
+  test("preserves collaboration prompts and per-child results in app-server history and live events", () => {
+    const item = {
+      type: "collabAgentToolCall", id: "spawn-call", tool: "spawnAgent",
+      status: "completed", senderThreadId: "parent", receiverThreadIds: ["child"],
+      prompt: "Review rendering.\nKeep this complete task visible.",
+      model: "gpt-6-astra", reasoningEffort: "high",
+      agentsStates: { child: { status: "running", message: null } },
+    };
+    const history = codexAppHistoryMessagesFromThread({
+      id: "parent", turns: [{ id: "turn", items: [item] }],
+    });
+    const live = codexLiveMessagesFromEvent({
+      kind: "notification", method: "item/completed", threadId: "parent", turnId: "turn",
+      receivedAt: "2026-10-11T12:00:00.000Z", params: { item },
+    });
+    expect(history.flatMap(message => message.blocks)).toEqual(live.flatMap(message => message.blocks));
+    expect(history.flatMap(message => message.blocks)).toEqual([
+      expect.objectContaining({ type: "subagent", subagentId: "child", subagentAction: "spawn",
+        subagentStatus: "running", subagentMessage: item.prompt, subagentModel: item.model,
+        subagentEffort: "high" }),
+    ]);
+    const wait = { ...item, id: "wait-call", tool: "wait", prompt: null,
+      receiverThreadIds: ["child", "other"],
+      agentsStates: { child: { status: "completed", message: "Review complete." },
+        other: { status: "errored", message: "Failed to initialize." } } };
+    expect(codexAppHistoryMessagesFromThread({ turns: [{ id: "turn", items: [wait] }] })
+      .flatMap(message => message.blocks)).toEqual([
+        expect.objectContaining({ subagentId: "child", subagentStatus: "completed", subagentResult: "Review complete." }),
+        expect.objectContaining({ subagentId: "other", subagentStatus: "failed", subagentResult: "Failed to initialize." }),
+      ]);
+  });
+
+  test("retains resolved subagent model and distinguishes child-to-parent activity", () => {
+    const messages = codexAppHistoryMessagesFromThread({
+      id: "child", parentThreadId: "parent", turns: [{ id: "turn", items: [{
+        type: "subAgentActivity", id: "send-parent", kind: "interacted",
+        agentThreadId: "parent", agentPath: "/root", model: "gpt-6-astra", reasoningEffort: "high",
+      }] }],
+    });
+    expect(messages[0]?.blocks[0]).toMatchObject({
+      subagentId: "parent", subagentIsParent: true,
+      subagentModel: "gpt-6-astra", subagentEffort: "high",
+    });
+  });
+
+  test("replaces native subagent snapshots immutably so the roster observes same-ID completion", () => {
+    const track = createVisualSubagentTracker();
+    const event = { kind: "notification" as const, method: "item/started", threadId: "parent", turnId: "turn", receivedAt: "2026-10-11T12:00:00.000Z", params: { item: { type: "collabAgentToolCall", id: "wait", tool: "wait", receiverThreadIds: ["child"], agentsStates: { child: { status: "running", message: null as string | null } } } } };
+    const running = codexLiveMessagesFromEvent(event);
+    expect(track(running)).toMatchObject([{ id: "child", status: "running" }]);
+    const completed = codexLiveMessagesFromEvent({ ...event, method: "item/completed", params: { item: { ...event.params.item, agentsStates: { child: { status: "completed", message: "Reviewed" } } } } });
+    expect(completed[0]?.id).toBe(running[0]?.id);
+    expect(completed[0]).not.toBe(running[0]);
+    expect(running[0]?.blocks[0]?.subagentStatus).toBe("running");
+    expect(track(completed)).toMatchObject([{ id: "child", status: "completed", result: "Reviewed" }]);
   });
 
   test("normalizes app-server subagent history and live snapshots to the same visual contract", () => {

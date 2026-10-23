@@ -1,12 +1,16 @@
 import { describe, it, expect } from "bun:test";
 import {
   nicifyCommand,
+  visualWorkWithSubagentUsage,
+  visualArtifactPathKind,
   visualToolArtifactContentPreview,
 } from "@treetop/nicifier";
 import {
   applyVisualTranscriptDeltaPatches,
   buildVisualWorkDisplayEntries,
   buildVisualTranscriptItems,
+  createVisualSubagentTracker,
+  visualSubagentMetaFromBlock,
   buildVisibleVisualWorkDisplayEntries,
   cleanVisualUserText,
   cleanVisualToolResultText,
@@ -19,6 +23,7 @@ import {
   latestVisualGoal,
   latestVisualPlan,
   mergeVisualSessionMessages,
+  hasCanonicalUserMessageMatchingOptimistic,
   visualTranscriptTailKey,
   visualMessageTurnIndexes,
   reuseStableVisualTranscriptItems,
@@ -58,6 +63,7 @@ import {
   visualObservedProcessOwnerToolUseBlock,
   visualToolRemoteHostLabel,
   visualTranscriptMessageWindow,
+  visualTranscriptReaderWindow,
   visualWorkAutoOpenActionGroupId,
   visualWorkDetailEntries,
   visualWorkDetailGroups,
@@ -86,6 +92,40 @@ function msg(role: string, text: string, timestamp?: string): Message {
 function ts(offsetMs: number): string {
   return new Date(Date.now() + offsetMs).toISOString();
 }
+
+describe("session subagent roster", () => {
+  it("refreshes paired subagent results through the real immutable stream patcher", () => {
+    const track = createVisualSubagentTracker();
+    const use: Message = { id: "wait", role: "assistant", blocks: [{ type: "tool_use", toolName: "wait_agent", toolUseId: "wait-call", toolInput: { targets: ["child"] } }] };
+    const first = applyVisualTranscriptDeltaPatches([use], [{
+      id: "wait-result", role: "tool", type: "tool_result",
+      delta: '{"status":{"child":{"completed":',
+      blockFields: { toolUseId: "wait-call" },
+    }]);
+    const originalResult = first[1];
+    expect(track(first)).toMatchObject([{ id: "child", status: "unknown" }]);
+    const final = applyVisualTranscriptDeltaPatches(first, [{ id: "wait-result", role: "tool", type: "tool_result", delta: '"Review complete"}}}' }]);
+    expect(final[0]).toBe(use);
+    expect(final[1]).not.toBe(originalResult);
+    expect(originalResult?.blocks[0]?.text).toBe('{"status":{"child":{"completed":');
+    expect(track(final)).toMatchObject([{ id: "child", status: "completed", result: "Review complete" }]);
+  });
+  it("explains an encrypted task without displaying ciphertext", () => {
+    const encrypted = `gAAAAA${"a".repeat(100)}`;
+    expect(visualSubagentMetaFromBlock({ type: "subagent", subagentId: "child", subagentMessage: encrypted })).toMatchObject({ task: undefined, taskEncrypted: true });
+  });
+  it("retains earlier agents outside the rendered tail and ignores unrelated streaming rows", () => {
+    const track = createVisualSubagentTracker();
+    const spawn: Message = { role: "assistant", blocks: [{ type: "subagent", subagentId: "child", subagentNickname: "review", subagentAction: "spawn", subagentStatus: "running", subagentMessage: "Check the whole change." }] };
+    const messages = [spawn, ...Array.from({ length: 2000 }, () => msg("assistant", "unrelated"))];
+    const roster = track(messages);
+    expect(roster).toMatchObject([{ id: "child", task: "Check the whole change.", status: "running" }]);
+    expect(track([...messages, msg("assistant", "new streamed text")])).toBe(roster);
+    const done: Message = { role: "assistant", blocks: [{ type: "subagent", subagentId: "child", subagentStatus: "completed", subagentResult: "Reviewed." }] };
+    expect(track([...messages, done])).toMatchObject([{ id: "child", task: "Check the whole change.", status: "completed", result: "Reviewed." }]);
+    expect(track([])).toEqual([]);
+  });
+});
 
 describe("formatVisualWorkDuration", () => {
   const start = "2026-06-22T10:00:00.000Z";
@@ -1979,6 +2019,107 @@ describe("buildVisualTranscriptItems", () => {
 });
 
 describe("reuseStableVisualTranscriptItems", () => {
+  for (const [label, before, after] of [
+    [
+      "media path",
+      { type: "media", mediaKind: "image", path: "before.png" },
+      { type: "media", mediaKind: "image", path: "after.png" },
+    ],
+    [
+      "stream completion",
+      { type: "tool_result", text: "done", streaming: true },
+      { type: "tool_result", text: "done", streaming: false },
+    ],
+    [
+      "subagent completion",
+      { type: "subagent", subagentId: "child", subagentStatus: "running" },
+      {
+        type: "subagent",
+        subagentId: "child",
+        subagentStatus: "completed",
+        subagentResult: "Fixed the bug",
+      },
+    ],
+    [
+      "observed file edits",
+      { type: "tool_use", toolName: "exec_command" },
+      {
+        type: "tool_use",
+        toolName: "exec_command",
+        observedFileEdits: [
+          { path: "changed.ts", action: "edited", additions: 2 },
+        ],
+      },
+    ],
+  ] as const) {
+    it(`refreshes ${label} when the same live row receives metadata`, () => {
+      const user = msg("user", "work", "2026-10-08T10:00:00.000Z");
+      const first = { id: "live-row", role: "assistant", blocks: [before] } as Message;
+      const updated = { ...first, blocks: [after] } as Message;
+      const previous = buildVisualTranscriptItems([user, first], { active: true });
+      const next = reuseStableVisualTranscriptItems(
+        previous,
+        buildVisualTranscriptItems([user, updated], { active: true }),
+      );
+      expect(next[1]).not.toBe(previous[1]);
+      if (next[1]?.kind !== "work") throw new Error("expected work item");
+      expect(next[1].entries[0]?.message).toBe(updated);
+    });
+  }
+
+  it("refreshes compaction details without changing the marker text", () => {
+    const first: Message = {
+      id: "compact",
+      role: "system",
+      blocks: [
+        {
+          type: "marker",
+          text: "[Context compacted]",
+          compaction: { beforeTokens: 100_000 },
+        },
+      ],
+    };
+    const updated: Message = {
+      ...first,
+      blocks: [
+        {
+          ...first.blocks[0]!,
+          compaction: {
+            beforeTokens: 100_000,
+            afterTokens: 20_000,
+            durationMs: 3_000,
+          },
+        },
+      ],
+    };
+    const previous = buildVisualTranscriptItems([first]);
+    const next = reuseStableVisualTranscriptItems(previous, buildVisualTranscriptItems([updated]));
+    expect(next[0]).not.toBe(previous[0]);
+    if (next[0]?.kind !== "marker") throw new Error("expected compaction marker");
+    expect(next[0].markerBlock.compaction?.afterTokens).toBe(20_000);
+  });
+
+  it("does not serialize large unchanged payloads while comparing recreated rows", () => {
+    let serialized = 0;
+    const toolInput = {
+      patch: "x".repeat(200_000),
+      toJSON() {
+        serialized += 1;
+        return {};
+      },
+    };
+    const first: Message = {
+      id: "heavy",
+      role: "assistant",
+      blocks: [{ type: "tool_use", toolName: "apply_patch", toolInput }],
+    };
+    const recreated: Message = { ...first, blocks: [{ ...first.blocks[0]! }] };
+    const previous = buildVisualTranscriptItems([first]);
+    const next = reuseStableVisualTranscriptItems(previous, buildVisualTranscriptItems([recreated]));
+    expect(next[0]).toBe(previous[0]);
+    expect(serialized).toBe(0);
+  });
+
   it("preserves unchanged transcript item identities when the live tail grows", () => {
     const user = msg("user", "fix it", "2026-06-19T10:00:00.000Z");
     const firstAnswer = msg(
@@ -2206,6 +2347,35 @@ describe("updateVisualTranscriptItems", () => {
     expect(new Set(window.messages.map((message) => message.turnId))).toEqual(
       new Set(["turn-38", "turn-39"]),
     );
+  });
+
+  it("retains the paused reader's rendered window while live rows append", () => {
+    const previousMessages = Array.from({ length: 120 }, (_, index) => ({
+      ...msg("assistant", `message ${index}`),
+      id: `message-${index}`,
+      turnId: `turn-${index}`,
+    }));
+    const previousWindow = visualTranscriptReaderWindow(previousMessages, {
+      minMessages: 20,
+      paused: false,
+    });
+    const nextMessages = [
+      ...previousMessages.map((message) => ({ ...message })),
+      ...Array.from({ length: 30 }, (_, index) => ({
+        ...msg("assistant", `live ${index}`),
+        id: `live-${index}`,
+        turnId: `live-turn-${index}`,
+      })),
+    ];
+
+    const pausedWindow = visualTranscriptReaderWindow(nextMessages, {
+      minMessages: 20,
+      paused: true,
+      retainedStartMessage: previousWindow.messages[0],
+    });
+
+    expect(pausedWindow.messages[0]?.id).toBe(previousWindow.messages[0]?.id);
+    expect(pausedWindow.messages).toHaveLength(50);
   });
 
   it("keeps canonical message indexes when updating a visible tail window", () => {
@@ -2610,6 +2780,34 @@ describe("withoutDuplicateOptimisticUserMessages", () => {
 });
 
 describe("mergeVisualSessionMessages", () => {
+  it("preserves repeated steering sends and acknowledges them one at a time", () => {
+    const user: Message = { id: "user", role: "user", turnId: "turn", blocks: [{ type: "text", text: "work" }] };
+    const anchor: Message = { id: "anchor", role: "assistant", turnId: "turn", blocks: [{ type: "thinking", text: "working" }] };
+    const first: Message = { id: "codex-optimistic-user-steer-first", role: "user", intent: "steer", turnId: "turn", optimisticAfterMessageId: "anchor", optimisticAfterMessageIndex: 1, blocks: [{ type: "text", text: "continue" }] };
+    const second: Message = { ...first, id: "codex-optimistic-user-steer-second" };
+    const canonicalFirst: Message = { id: "canonical-first", role: "user", intent: "steer", turnId: "turn", blocks: first.blocks };
+    const canonicalSecond: Message = { ...canonicalFirst, id: "canonical-second" };
+    const ids = (messages: Message[]) => messages.map(message => message.id);
+    expect(ids(mergeVisualSessionMessages([user, anchor], [first]))).toEqual(["user", "anchor", first.id]);
+    expect(ids(mergeVisualSessionMessages([user, anchor], [first, second]))).toEqual(["user", "anchor", first.id, second.id]);
+    expect(ids(mergeVisualSessionMessages([user, anchor, canonicalFirst], [first, second]))).toEqual(["user", "anchor", canonicalFirst.id, second.id]);
+    expect(hasCanonicalUserMessageMatchingOptimistic([user, anchor, canonicalFirst], first, [first, second])).toBe(true);
+    expect(hasCanonicalUserMessageMatchingOptimistic([user, anchor, canonicalFirst], second, [first, second])).toBe(false);
+    expect(ids(mergeVisualSessionMessages([user, anchor, canonicalFirst, canonicalSecond], [first, second]))).toEqual(["user", "anchor", canonicalFirst.id, canonicalSecond.id]);
+    const canonical = [user, anchor, canonicalFirst, canonicalSecond];
+    expect(buildVisualTranscriptItems(mergeVisualSessionMessages(canonical, [first, second]), { active: true }))
+      .toEqual(buildVisualTranscriptItems(canonical, { active: true }));
+  });
+
+  it("does not acknowledge a queued request with an older identical message after pagination", () => {
+    const old: Message = { id: "old", role: "user", blocks: [{ type: "text", text: "continue" }] };
+    const anchor: Message = { id: "anchor", role: "assistant", blocks: [{ type: "text", text: "prior answer" }] };
+    const pending: Message = { id: "codex-optimistic-user-next", role: "user", optimisticAfterMessageId: "anchor", optimisticAfterMessageIndex: 0, blocks: old.blocks };
+    const prefix = [msg("user", "older"), msg("assistant", "older answer")];
+    const history = [...prefix, old, anchor];
+    expect(mergeVisualSessionMessages(history, [pending]).map(message => message.id)).toEqual([...history.map(message => message.id), pending.id]);
+  });
+
   it("reuses canonical history when there are no optimistic overlays", () => {
     const messages = [msg("user", "hello"), msg("assistant", "world")];
 
@@ -3666,6 +3864,44 @@ describe("visual tool payload display helpers", () => {
     ).toBe(
       "Run Node tests a.test.js · Evaluate Node expression · Inspect remote git refs origin",
     );
+  });
+
+  it("unwraps unset-only env commands and preserves their environment operations", () => {
+    for (const prefix of ["env -u PYTHONPATH", "env --unset PYTHONPATH", "env --unset=PYTHONPATH", "/usr/bin/env -u PYTHONPATH --"]) {
+      expect(nicifyCommand(`${prefix} rg --files src`)).toMatchObject({
+        text: "Read directory src",
+        fullyNicified: true,
+        env: [{ name: "PYTHONPATH", value: "", unset: true }],
+      });
+    }
+    expect(nicifyCommand("env -i rg --files src").text).toBe("Read directory src");
+    expect(nicifyCommand("env -u PYTHONPATH zsh -lc 'git status --short'").text).toBe("Check git status");
+    const block = { type: "tool_use" as const, toolName: "exec_command", toolInput: { cmd: "env -u PYTHONPATH PORT=5199 rg --files src" } };
+    expect(visualToolEnvTooltipText(block)).toBe("unset PYTHONPATH\nPORT=5199");
+    const quoted = `env -u PYTHONPATH rg 'hello world' 'src folder'`;
+    expect(nicifyCommand(quoted).summaries).toEqual(nicifyCommand(`rg 'hello world' 'src folder'`).summaries);
+    const nested = `env -u PYTHONPATH zsh -lc "env -u DYLD_LIBRARY_PATH rg --files src"`;
+    expect(nicifyCommand(nested)).toMatchObject({ text: "Read directory src", fullyNicified: true,
+      env: [{ name: "PYTHONPATH", value: "", unset: true }, { name: "DYLD_LIBRARY_PATH", value: "", unset: true }] });
+  });
+
+  it("handles adjacent env wrapper forms without inventing executable payloads", () => {
+    for (const prefix of ["env", "/usr/bin/env --", "env -uPYTHONPATH", "env -i -uPYTHONPATH"]) {
+      expect(nicifyCommand(`${prefix} rg --files src`)).toMatchObject({ text: "Read directory src", fullyNicified: true });
+    }
+    for (const command of ["env", "env FOO=bar", "env -u PYTHONPATH", "env --unknown bash -lc 'git status --short'"]) {
+      expect(nicifyCommand(command)).toMatchObject({ fullyNicified: false, unnicifiedParts: [command] });
+    }
+  });
+
+  it("does not interpret shell positional arguments as additional commands", () => {
+    expect(nicifyCommand(`zsh -lc 'git status --short' 'name && git diff --stat'`)).toMatchObject({
+      text: "Check git status", summaries: [{ kind: "git" }], fullyNicified: true,
+    });
+    for (const prefix of ["sudo -u root", "wsl -d Ubuntu --"]) {
+      expect(nicifyCommand(`${prefix} sh -c 'git status --short' 'name && git diff --stat'`).text).toBe("Check git status");
+      expect(nicifyCommand(`${prefix} rg 'hello world' 'src folder'`).summaries).toEqual(nicifyCommand(`rg 'hello world' 'src folder'`).summaries);
+    }
   });
 
   it("exposes command nicification without a transcript message wrapper", () => {
@@ -6927,6 +7163,67 @@ describe("buildVisualWorkDisplayEntries", () => {
     expect(entries[0]?.pairedMedia).toEqual(generatedMedia.blocks);
   });
 
+  it("attaches images embedded beside tool output to the visible tool row", () => {
+    const toolUse = {
+      message: {
+        role: "assistant",
+        blocks: [
+          {
+            type: "tool_use",
+            toolName: "exec_command",
+            toolUseId: "call-1",
+          },
+        ],
+      },
+      blocks: [
+        {
+          type: "tool_use",
+          toolName: "exec_command",
+          toolUseId: "call-1",
+        },
+      ],
+      messageIndex: 1,
+    };
+    const image = {
+      type: "media",
+      mediaKind: "image",
+      url: "/api/session/media?hash=image-1",
+      title: "Image",
+      toolName: "exec_command",
+      toolUseId: "call-1",
+    };
+    const mixedResult = {
+      message: {
+        role: "tool",
+        blocks: [
+          {
+            type: "tool_result",
+            toolName: "exec_command",
+            toolUseId: "call-1",
+            text: "Script completed",
+          },
+          image,
+        ],
+      },
+      blocks: [
+        {
+          type: "tool_result",
+          toolName: "exec_command",
+          toolUseId: "call-1",
+          text: "Script completed",
+        },
+        image,
+      ],
+      messageIndex: 2,
+    };
+
+    const entries = buildVisualWorkDisplayEntries([toolUse, mixedResult]);
+
+    expect(entries).toHaveLength(1);
+    expect(entries[0]?.entry).toBe(toolUse);
+    expect(entries[0]?.pairedMedia).toEqual([image]);
+  });
+
   it("shows read-log output at the result point without a duplicate poll-start row", () => {
     const toolUse = {
       message: {
@@ -7667,6 +7964,35 @@ describe("buildVisualWorkDisplayEntries", () => {
 });
 
 describe("visualWorkOverview", () => {
+  it("counts time-scoped child and descendant usage once, without inherited history or future replay work", () => {
+    const own = visualWorkOverview({}, []);
+    const usage = (at: string, input = 100) => ({ at, model: "gpt-6.1", usage: { input, cachedInput: 50, cacheWriteInput: 0, output: 10, reasoningOutput: 5, total: input + 10 } });
+    const children = new Map([
+      ["child", { childIds: ["grandchild", "parent"], segments: [usage("2026-10-16T10:00:00Z"), usage("2026-10-16T10:01:01Z"), usage("2026-10-16T10:02:00Z")] }],
+      ["grandchild", { childIds: ["child"], segments: [usage("2026-10-16T10:01:02Z")] }],
+    ]);
+    const actual = visualWorkWithSubagentUsage(own, { childIds: ["child", "child"], parentId: "parent", usage: children, start: "2026-10-16T10:01:00Z", end: "2026-10-16T10:02:00Z" });
+    expect(actual.tokens.total).toBe(120);
+    expect(actual.tokens.cachedInput).toBe(100);
+    expect(actual.tokens.reasoningOutput).toBe(10);
+    expect(actual.usageScope).toMatchObject({ childCount: 2, childTokens: 120, missingIds: [] });
+    expect(visualWorkWithSubagentUsage(own, { childIds: ["child"], usage: children, parentId: "parent", start: "2026-10-16T10:01:00Z", through: "2026-10-16T10:01:01Z" }).tokens.total).toBe(60);
+    expect(visualWorkWithSubagentUsage(own, { childIds: ["missing"], usage: children, start: "2026-10-16T10:01:00Z" }).usageScope?.missingIds).toEqual(["missing"]);
+  });
+  it("excludes inherited child checkpoints and prices the child's actual model", () => {
+    const own = visualWorkOverview({}, []);
+    const segment = { model: "gpt-6-astra", usage: { input: 100, cachedInput: 50, cacheWriteInput: 0, output: 10, reasoningOutput: 5, total: 110 } };
+    const usage = new Map([["child", { startedAt: "2026-10-16T10:01:00Z", childIds: [], segments: [
+      { ...segment, at: "2026-10-16T10:00:00Z" }, { ...segment, at: "2026-10-16T10:01:01Z" },
+    ] }]]);
+    const options = { childIds: ["child"], usage, start: "2026-10-16T09:00:00Z" };
+    const result = visualWorkWithSubagentUsage(own, options);
+    expect(result.tokens.total).toBe(60);
+    expect(result.cost.totalUsd).toBeCloseTo(0.00105, 8);
+    expect(result.cost.models).toEqual(["gpt-6-astra"]);
+    expect(visualWorkWithSubagentUsage(own, { ...options, through: "2026-10-16T10:01:00Z" }).tokens.total).toBe(0);
+    expect(visualWorkWithSubagentUsage(own, options).tokens.total).toBe(60);
+  });
   it("summarizes a normalized work round without depending on the source", () => {
     const entries = buildVisualWorkDisplayEntries([
       {
@@ -8229,6 +8555,48 @@ describe("visualWorkOverview", () => {
     ]);
   });
 
+  it("marks raw-less file edits for the shared git diff fallback", () => {
+    const entries = buildVisualWorkDisplayEntries([
+      {
+        message: {
+          role: "assistant",
+          blocks: [
+            {
+              type: "tool_use",
+              toolName: "exec_command",
+              toolUseId: "script-write",
+              toolInput: {
+                cmd: "python3 -c \"from pathlib import Path; Path('src/app.ts').write_text(body)\"",
+              },
+            },
+          ],
+        },
+        blocks: [
+          {
+            type: "tool_use",
+            toolName: "exec_command",
+            toolUseId: "script-write",
+            toolInput: {
+              cmd: "python3 -c \"from pathlib import Path; Path('src/app.ts').write_text(body)\"",
+            },
+          },
+        ],
+        messageIndex: 1,
+      },
+    ]);
+
+    expect(
+      visualWorkOverview({ kind: "work", entries: [] }, entries).artifacts,
+    ).toEqual([
+      expect.objectContaining({
+        action: "changed",
+        path: "src/app.ts",
+        diff: undefined,
+        diffKind: "workdir",
+      }),
+    ]);
+  });
+
   it("summarizes fresh token work without using cached context as the headline", () => {
     const entries = buildVisualWorkDisplayEntries([
       {
@@ -8738,6 +9106,76 @@ describe("visualWorkOverview", () => {
     expect(visualWorkAutoOpenActionGroupId(groups, false)).toBeUndefined();
   });
 
+  it("keeps steering exchanges outside collapsible action groups", () => {
+    const entries = buildVisualWorkDisplayEntries([
+      msg("assistant", "Before steering"),
+      { ...msg("user", "Please adjust this"), intent: "steer" as const },
+      msg("assistant", "I will adjust it"),
+      { role: "assistant", blocks: [{ type: "thinking", text: "Continuing" }] },
+    ].map((message, messageIndex) => ({ message, blocks: message.blocks, messageIndex })));
+    const groups = visualWorkDetailGroups(entries);
+    expect(groups.map(group => group.kind)).toEqual(["response", "user", "response", "actions"]);
+    expect(groups[1]?.entries[0]?.entry.message.role).toBe("user");
+    expect(visualWorkAutoOpenActionGroupId(groups, true)).toBe(groups[3]?.id);
+  });
+
+  it("reuses unchanged work projections while live clocks advance", () => {
+    const item = { kind: "work" as const, open: true, startedAt: "2026-10-14T10:00:00Z",
+      entries: [{ message: msg("assistant", "Working"), blocks: [{ type: "text", text: "Working" }], messageIndex: 0 }] };
+    const entries = buildVisibleVisualWorkDisplayEntries(item);
+    expect(buildVisibleVisualWorkDisplayEntries(item)).toBe(entries);
+    const detail = visualWorkDetailEntries(item, entries, { full: false });
+    expect(visualWorkDetailEntries(item, entries, { full: false })).toBe(detail);
+    expect(visualWorkDetailGroups(detail, entries)).toBe(visualWorkDetailGroups(detail, entries));
+    const first = visualWorkOverview(item, entries, { now: "2026-10-14T10:00:01Z" });
+    const later = visualWorkOverview(item, entries, { now: "2026-10-14T10:00:03Z" });
+    expect(later.time.elapsedMs).toBe(3000);
+    expect(later.artifacts).toBe(first.artifacts);
+    expect(later.categories).toBe(first.categories);
+    const updated = { ...item, entries: [...item.entries, { message: msg("assistant", "New output"),
+      blocks: [{ type: "text", text: "New output" }], messageIndex: 1 }] };
+    const changedEntries = buildVisibleVisualWorkDisplayEntries(updated);
+    expect(changedEntries).not.toBe(entries);
+    expect(visualWorkOverview(updated, changedEntries).responseCount).toBe(2);
+    const accounted = buildVisualWorkDisplayEntries([{ message: { ...msg("assistant", "Measured"),
+      tokenUsage: { input: 100, cachedInput: 50, cacheWriteInput: 0, output: 10, reasoningOutput: 0, total: 110 } },
+      blocks: [{ type: "text", text: "Measured" }], messageIndex: 0 }]);
+    const quick = visualWorkOverview(item, accounted, { now: "2026-10-14T10:00:01Z" });
+    const slow = visualWorkOverview(item, accounted, { now: "2026-10-14T10:00:02Z" });
+    expect(quick.tokens.perSecond).toBe(10);
+    expect(slow.tokens.perSecond).toBe(5);
+    expect(slow.tokens.total).toBe(60);
+    expect(visualWorkOverview(item, accounted, { model: "gpt-6-astra" }).cost).not.toBe(slow.cost);
+  });
+
+  it("keeps git refspecs in the artifact map without treating them as files", () => {
+    const ref = "refs/heads/materialx/nodegraph-implementations:refs/remotes/needle/materialx/nodegraph-implementations";
+    const blocks = [{ type: "tool_use" as const, toolName: "exec_command", toolUseId: "fetch-refs", toolInput: { cmd: `git fetch needle +${ref} && cat refs/heads/notes` } }];
+    const entries = buildVisualWorkDisplayEntries([{ message: { role: "assistant", blocks }, blocks, messageIndex: 0 }]);
+    const overview = visualWorkOverview({ kind: "work", entries: [] }, entries);
+    expect(overview.artifacts).toEqual(expect.arrayContaining([
+      expect.objectContaining({ kind: "git", label: "materialx/nodegraph-implementations → needle/materialx/nodegraph-implementations", title: `fetch needle +${ref}` }),
+      expect.objectContaining({ kind: "file", path: "refs/heads/notes" }),
+    ]));
+    expect(overview.artifacts.filter((artifact) => artifact.kind === "file").map((artifact) => artifact.path)).toEqual(["refs/heads/notes"]);
+    const git = overview.artifacts.find((artifact) => artifact.kind === "git")!;
+    expect(git.path).toBeUndefined();
+    expect(git.contentTokenCount).toBeUndefined();
+    expect(git.contentLineCount).toBeUndefined();
+    expect(overview.changedFiles).toHaveLength(0);
+  });
+
+  it("preserves remote, force and exclusion details for Git refs through nested shells", () => {
+    const result = nicifyCommand("bash -lc 'git fetch --no-tags needle +refs/heads/main:refs/remotes/needle/main ^refs/heads/private/*'");
+    expect(result.parts.filter((part) => part.kind === "git-ref")).toEqual([
+      { kind: "git-ref", text: "main → needle/main", ref: "+refs/heads/main:refs/remotes/needle/main", operation: "fetch", remote: "needle" },
+      { kind: "git-ref", text: "exclude private/*", ref: "^refs/heads/private/*", operation: "fetch", remote: "needle" },
+    ]);
+    expect(result.parts.some((part) => part.kind === "path")).toBe(false);
+    expect(nicifyCommand("git push origin :refs/heads/old").parts).toContainEqual({ kind: "git-ref", text: "(delete) → old", ref: ":refs/heads/old", operation: "push", remote: "origin" });
+    expect(nicifyCommand("git pull origin main").parts).toContainEqual({ kind: "git-ref", text: "main", ref: "main", operation: "pull", remote: "origin" });
+  });
+
   it("keeps shell syntax fragments out of overview artifacts", () => {
     const cmd = [
       "sed -n '1,90p' src/conversionFamilies.ts",
@@ -8786,6 +9224,37 @@ describe("visualWorkOverview", () => {
       "conversionFamilies.ts:1-90",
       "routes/+page.svelte",
     ]);
+  });
+
+  it("distinguishes streams and unresolved shell paths from concrete files", () => {
+    for (const path of ["/dev/null", "/dev/stdin", "/dev/stdout", "/dev/stderr", "/dev/fd/3", "/dev/zero", "/dev/urandom", "/proc/self/fd/1", "/dev/tcp/localhost/80", "NUL", "NUL:"]) {
+      expect(visualArtifactPathKind(path)).toBe("stream");
+    }
+    for (const path of ["/proc/self/status", "/dev/shm/report.txt", "dev/fixtures.txt", "dev0.txt", "C:\\work\\report.txt"]) {
+      expect(visualArtifactPathKind(path)).toBe("file");
+    }
+    expect(visualArtifactPathKind("https://example.com/repo.git")).toBe("url");
+    expect(visualArtifactPathKind("$S/run.log")).toBe("symbolic");
+    const cmd = "cat /dev/null /dev/stdin /dev/fd/3 /dev/zero /proc/self/status /dev/shm/report.txt dev/fixtures.txt $S/run.log; curl -o /dev/null https://example.com";
+    const blocks = [{ type: "tool_use" as const, toolName: "exec_command", toolUseId: "targets", toolInput: { cmd } }];
+    const entries = buildVisualWorkDisplayEntries([{ message: { role: "assistant", blocks }, blocks, messageIndex: 0 }]);
+    const artifacts = visualWorkOverview({ kind: "work", entries: [] }, entries).artifacts;
+    expect(artifacts.filter((artifact) => artifact.kind === "file").map((artifact) => artifact.path)).toEqual(["/proc/self/status", "/dev/shm/report.txt", "dev/fixtures.txt"]);
+    expect(artifacts).toContainEqual(expect.objectContaining({ kind: "symbolic", label: "$S/run.log" }));
+    expect(artifacts.find((artifact) => artifact.kind === "symbolic")?.path).toBeUndefined();
+    expect(nicifyCommand("cat /dev/null").parts).toEqual([{ kind: "text", text: "Read " }, { kind: "text", text: "/dev/null" }]);
+    expect(visualFileEditSummaryForBlock({ type: "tool_use", toolName: "exec_command", toolInput: { cmd: "printf x > /dev/zero; printf x > /dev/stdin; printf x > /proc/self/fd/1" } })).toBeUndefined();
+  });
+
+  it("keeps Git identities and config values out of file artifacts while retaining explicit diff paths", () => {
+    const cmd = "git ls-remote origin refs/heads/main; git merge feature/materialx; git rebase needle/main; git config remote.origin.url https://example.com/repo.git; git diff refs/archive/before HEAD -- src/app.ts";
+    const blocks = [{ type: "tool_use" as const, toolName: "exec_command", toolUseId: "git-targets", toolInput: { cmd } }];
+    const entries = buildVisualWorkDisplayEntries([{ message: { role: "assistant", blocks }, blocks, messageIndex: 0 }]);
+    const artifacts = visualWorkOverview({ kind: "work", entries: [] }, entries).artifacts;
+    expect(artifacts.filter((artifact) => artifact.kind === "file").map((artifact) => artifact.path)).toEqual(["src/app.ts"]);
+    expect(artifacts.filter((artifact) => artifact.kind === "git").map((artifact) => artifact.title)).toEqual(expect.arrayContaining(["ls-remote origin refs/heads/main", "merge feature/materialx", "rebase needle/main", "diff refs/archive/before", "diff HEAD"]));
+    expect(nicifyCommand("git diff ../src/app.ts").parts).toContainEqual(expect.objectContaining({ kind: "path", path: "../src/app.ts" }));
+    expect(nicifyCommand("git diff -- refs/heads/main").parts).toContainEqual(expect.objectContaining({ kind: "path", path: "refs/heads/main" }));
   });
 
   it("tracks binary script arguments and files explicitly saved by command output", () => {
@@ -9184,7 +9653,44 @@ describe("visualFileEditSummaryForBlock", () => {
           action: "added",
           additions: 2,
           deletions: 0,
+          raw: [
+            "@@ -0,0 +1,2 @@",
+            "+const IMAGE_EXTENSIONS = new Set(['png']);",
+            "+const VIDEO_EXTENSIONS = new Set(['mp4']);",
+          ].join("\n"),
           writtenTokenCountEstimate: 22,
+        },
+      ],
+    });
+  });
+
+  it("keeps deleted file content as a full red diff", () => {
+    expect(
+      visualFileEditSummaryForBlock({
+        type: "tool_use",
+        toolName: "file change",
+        toolInput: {
+          changes: {
+            "src/obsolete.ts": {
+              type: "delete",
+              content: "export const obsolete = true;\nsecond();\n",
+            },
+          },
+        },
+      }),
+    ).toEqual({
+      title: "Deleted obsolete.ts",
+      files: [
+        {
+          path: "src/obsolete.ts",
+          action: "deleted",
+          additions: 0,
+          deletions: 2,
+          raw: [
+            "@@ -1,2 +0,0 @@",
+            "-export const obsolete = true;",
+            "-second();",
+          ].join("\n"),
         },
       ],
     });
@@ -9283,6 +9789,89 @@ describe("visualFileEditSummaryForBlock", () => {
     });
   });
 
+  it("keeps Claude Write content as a full green diff", () => {
+    expect(
+      visualFileEditSummaryForBlock({
+        type: "tool_use",
+        toolName: "Write",
+        toolInput: {
+          file_path: "/repo/src/new.ts",
+          content: "export const value = 1;\n",
+        },
+      }),
+    ).toEqual({
+      title: "Added new.ts",
+      files: [
+        {
+          path: "/repo/src/new.ts",
+          action: "added",
+          additions: 1,
+          raw: "@@ -0,0 +1,1 @@\n+export const value = 1;",
+          writtenTokenCountEstimate: 6,
+        },
+      ],
+    });
+  });
+
+  it("retains Python section replacement text as a partial-file preview", () => {
+    const replacement = "### Preview/export parity (Non-Negotiable)\n\nBuilt-font previews must use the complete export pipeline.\n\n";
+    const cmd = `python3 - <<'PY'\nfrom pathlib import Path\np=Path('AGENTS.md');s=p.read_text();start=s.index('### Built-font preview must match export');end=s.index('### Required investigation before changing code',start);s=s[:start]+'''${replacement}'''+s[end:];p.write_text(s)\nPY\ngit add AGENTS.md`;
+    const block = { type: "tool_use" as const, toolName: "exec_command", toolUseId: "section-replace", toolInput: { cmd } };
+    const summary = visualFileEditSummaryForBlock(block)!;
+    expect(summary.files).toContainEqual(expect.objectContaining({ path: "AGENTS.md", preview: replacement, previewTitle: "Captured replacement content (partial file)" }));
+    expect(summary.files[0].raw).toBeUndefined();
+    const entries = buildVisualWorkDisplayEntries([{ message: { role: "assistant", blocks: [block] }, blocks: [block], messageIndex: 0 }]);
+    expect(visualWorkOverview({ kind: "work", entries: [] }, entries).artifacts).toContainEqual(expect.objectContaining({ path: "AGENTS.md", preview: replacement }));
+    const changed = { ...block, toolInput: { cmd: cmd.replace("p.write_text(s)", "s='different';p.write_text(s)") } };
+    expect(visualFileEditSummaryForBlock(changed)?.files[0]?.preview).toBeUndefined();
+    expect(visualFileEditSummaryForBlock({ ...block, toolInput: { cmd: cmd.replace("p.write_text(s)", "s+='suffix';p.write_text(s)") } })?.files[0]?.preview).toBeUndefined();
+    expect(visualFileEditSummaryForBlock({ ...block, toolInput: { cmd: cmd.replace("s=s[:start]", "start=0;s=s[:start]") } })?.files[0]?.replacement).toBeUndefined();
+    expect(visualFileEditSummaryForBlock({ ...block, toolInput: { cmd: cmd.replace("s=p.read_text()", "q=Path('OTHER.md');s=q.read_text()") } })?.files[0]?.replacement).toBeUndefined();
+  });
+
+  it("reconstructs section replacement diffs from earlier captured reads, not disk", () => {
+    const replacement = "New heading\nnew text\n\n";
+    const command = `python3 - <<'PY'\nfrom pathlib import Path\np=Path('AGENTS.md');s=p.read_text();start=s.index('Old heading');end=s.index('Next heading',start);s=s[:start]+'''${replacement}'''+s[end:];p.write_text(s)\nPY`;
+    function overview(options: { path?: string; before?: string; intervening?: string; readCwd?: string; writeCwd?: string; delayedRead?: boolean; useWorkdir?: boolean; readCommand?: string } = {}) {
+      const read = { type: "tool_use", toolName: "exec_command", toolUseId: "read-before", toolInput: { cmd: options.readCommand ?? `sed -n '10,14p' ${options.path ?? "AGENTS.md"}`, ...(options.readCwd ? { [options.useWorkdir ? "workdir" : "cwd"]: options.readCwd } : {}) } };
+      const write = { type: "tool_use", toolName: "exec_command", toolUseId: "write-after", toolInput: { cmd: command, ...(options.writeCwd ? { cwd: options.writeCwd } : {}) } };
+      const blocks = [
+        [read], [{ type: "tool_result", toolUseId: "read-before", text: options.before ?? "Old heading\nold text\n\nNext heading\ncontext\n" }],
+        ...(options.intervening ? [[{ type: "tool_use", toolName: "exec_command", toolUseId: "intervening-write", toolInput: { cmd: options.intervening } }]] : []),
+        [write],
+      ];
+      if (options.delayedRead) [blocks[1], blocks[2]] = [blocks[2], blocks[1]];
+      const entries = buildVisualWorkDisplayEntries(blocks.map((blocks, index) => ({ message: { role: blocks[0]?.type === "tool_result" ? "tool" : "assistant", blocks }, blocks, messageIndex: index })));
+      return visualWorkOverview({ kind: "work", entries: [] }, entries);
+    }
+    const actual = overview();
+    expect(actual.changedFiles.find(file => file.path === "AGENTS.md")).toMatchObject({ additions: 3, deletions: 3, diff: "@@ -10,3 +10,3 @@\n-Old heading\n-old text\n-\n+New heading\n+new text\n+" });
+    expect(actual.artifacts.find(artifact => artifact.path === "AGENTS.md")?.changes?.find(change => change.action === "changed")?.diff).toContain("-old text\n");
+    const writeEntry = [...actual.fileEdits.keys()].at(-1)!;
+    const groupEntries = [{ kind: "entry" as const, entry: writeEntry }];
+    expect(visualWorkOverview({}, groupEntries).changedFiles[0]?.diff).toBeUndefined();
+    expect(visualWorkOverview({}, groupEntries, { fileEdits: actual.fileEdits }).changedFiles).toEqual(actual.changedFiles);
+    expect(visualWorkOverview({}, groupEntries).changedFiles[0]?.diff).toBeUndefined();
+    expect(overview({ before: "\nOld heading\nold text\n\nNext heading\n" }).changedFiles[0]?.diff).toStartWith("@@ -11,3 +11,3 @@");
+    expect(overview({ before: `Script completed\nWall time 0.1 seconds\nOutput:\n${JSON.stringify({ output: "\nOld heading\nold text\n\nNext heading\n", exit_code: 0 })}` }).changedFiles[0]?.diff).toStartWith("@@ -11,3 +11,3 @@");
+    for (const options of [
+      { path: "OTHER.md" },
+      { before: "Old heading\nold text\n[truncated]\nNext heading" },
+      { before: "Old heading\nold text… [truncated by Treetop]\nNext heading" },
+      { before: "Old heading\nfirst\nOld heading\nsecond\nNext heading" },
+      { before: "Next heading\nOld heading\nold text\nNext heading" },
+      { before: "Old heading\nno ending anchor" },
+      { intervening: "cp /tmp/new AGENTS.md" },
+      { intervening: "git reset --hard HEAD" },
+      { delayedRead: true },
+      { readCwd: "/repo/one", writeCwd: "/repo/two" },
+      { readCwd: "/repo/one", writeCwd: "/repo/two", useWorkdir: true },
+      { readCommand: "ssh host sed -n '10,14p' AGENTS.md" },
+    ]) {
+      expect(overview(options).changedFiles.find(file => file.path === "AGENTS.md")?.diff).toBeUndefined();
+    }
+  });
+
   it("summarizes files mutated by inline Python and JavaScript scripts", () => {
     expect(
       visualFileEditSummaryForBlock({
@@ -9303,7 +9892,12 @@ describe("visualFileEditSummaryForBlock", () => {
       title: "Edited 2 files",
       files: [
         { path: "src/App.svelte", action: "edited" },
-        { path: "tests/app.test.ts", action: "edited" },
+        {
+          path: "tests/app.test.ts",
+          action: "edited",
+          raw: "@@ -0,0 +1,1 @@\n+test",
+          writtenTokenCountEstimate: 1,
+        },
       ],
     });
 
@@ -9320,6 +9914,41 @@ describe("visualFileEditSummaryForBlock", () => {
       files: [
         { path: "generated.json", action: "edited" },
         { path: "trace.log", action: "edited" },
+      ],
+    });
+  });
+
+  it("keeps literal Python write_text bodies for artifact review", () => {
+    expect(
+      visualFileEditSummaryForBlock({
+        type: "tool_use",
+        toolName: "exec_command",
+        toolInput: {
+          cmd: [
+            "python3 - <<'PY'",
+            "from pathlib import Path",
+            "Path('docs/README.md').write_text('''# Package",
+            "",
+            "Install it with npm.",
+            "''')",
+            "PY",
+          ].join("\n"),
+        },
+      }),
+    ).toEqual({
+      title: "Edited README.md",
+      files: [
+        {
+          path: "docs/README.md",
+          action: "edited",
+          raw: [
+            "@@ -0,0 +1,3 @@",
+            "+# Package",
+            "+",
+            "+Install it with npm.",
+          ].join("\n"),
+          writtenTokenCountEstimate: 8,
+        },
       ],
     });
   });
@@ -9351,7 +9980,7 @@ describe("visualFileEditSummaryForBlock", () => {
           action: "added",
           additions: 2,
           deletions: 0,
-          raw: "one\ntwo",
+          raw: "@@ -0,0 +1,2 @@\n+one\n+two",
           writtenTokenCountEstimate: 2,
         },
         { path: "src/other.ts", action: "edited" },
@@ -9394,5 +10023,14 @@ describe("visualFileEditSummaryForBlock", () => {
         },
       }),
     ).toBeUndefined();
+  });
+
+  it("does not mistake PHP member access in heredoc input for shell output redirection", () => {
+    const block = {
+      type: "tool_use", toolName: "exec_command", toolInput: {
+        cmd: "ssh host php <<'PHP'\n<?php\n$client->post('https://example.com/api', ['headers' => []]);\nPHP\nprintf done > /tmp/done.log",
+      },
+    };
+    expect(visualFileEditSummaryForBlock(block)?.files).toEqual([{ path: "/tmp/done.log", action: "written" }]);
   });
 });

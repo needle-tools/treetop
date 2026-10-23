@@ -282,7 +282,14 @@
           {#if showDiff && openCommitSha === c.sha}
             <div class="gh-diff">
               {#if commitDiff[c.sha] !== undefined}
-                <DiffViewer text={commitDiff[c.sha]} showCommitHeader={false} />
+                <DiffViewer
+                  text={commitDiff[c.sha]}
+                  showCommitHeader={false}
+                  worktreePath={wtPath}
+                  sourceKind="commit"
+                  sha={c.sha}
+                  {daemonId}
+                />
               {:else if diffLoading}
                 <div class="gh-diff-loading">
                   <LoadingSpinner size="1rem" />

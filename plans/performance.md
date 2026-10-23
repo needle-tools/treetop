@@ -1301,6 +1301,17 @@ the shared transcript scroller back to its live tail. Analysis rows navigate
 through that same controller; exact analysis-map edges map to exact transcript
 edges, while interior rows retain semantic turn-centered navigation.
 
+The follow handle had a separate end-position regression (2026-10-07): its
+forced correction still applied the live-work top alignment, which could leave
+a compact transcript 168px above its real bottom. Both handles now request an
+exact end jump. That bottom-follow choice stays armed across later output until
+the reader pauses or the session resets; automatic live-work alignment remains
+the default for other follow requests. A Chromium regression clicks the real
+handle with an overflowing live-work body and checks both scroll endpoints to
+within 1px, then verifies that later output is still followed. Controller tests
+also cover a response growing beyond the near-end threshold and upward reader
+input detaching again.
+
 Live app-server history failures were a separate blank-pane path from the
 visibility/render lifecycle bugs. `SessionView` permanently remembered a
 failed history key, so a transient timeout or socket failure could leave an
@@ -1419,6 +1430,16 @@ tail-follow stays active. This browser test runs as part of the normal
 repository `bun test` discovery, rather than living as a manual Replay Lab
 check.
 
+A 2026-10-07 question-popup review found that `AsyncQuestionCard` inherited
+16px body and option text and introduced oversized padding, rounded tiles,
+and a circled uppercase heading beside the compact composer panels. It now
+uses their existing typography, small radius, spacing, and action-button
+treatment; the question pane shares the goal/plan pane width. The amber accent
+remains, while the decorative question circles are removed from the card,
+request heading, and composer badge. The browser lifecycle test compares
+rendered question typography, panel geometry, and control radii with the
+existing goal panel so this mismatch cannot silently return.
+
 A 2026-09-23 FHIR session exposed the complementary failure after acceptance:
 the live normalizer handled `agentMessage` item snapshots but discarded the
 app-server's canonical `userMessage` snapshots. When the optimistic row was
@@ -1441,6 +1462,164 @@ send-time anchor and reject conflicting turn IDs. The browser lifecycle test
 covers the response-first/canonical-user-second delivery order; a focused
 projection test covers repeated user text across turns.
 
+A 2026-10-11 steering and queue lifecycle audit found that optimistic rows
+were still reconciled by content without one-to-one ownership. Repeated equal
+steers could therefore acknowledge each other, while a late canonical steer
+could move behind already-rendered output and conceal that output. Optimistic
+rows now match canonical app-server user items one-to-one after their stable
+message anchor, and canonical acknowledgements replace the row at its visible
+position. Turn lifecycle events also outrank late HTTP start responses, so a
+completed turn cannot be reopened and block the next queued request. Source
+epochs prevent delayed responses from mutating a reused SessionView after an
+A -> B -> A switch. Queue ownership is synchronously restored on every source
+change; queued work from A can no longer be submitted to B. Browser coverage
+asserts exact visible request/response order through fast completion, delayed
+acknowledgements and failures, queue promotion, source switches, and offscreen
+remounts. Transcript messages remain outside this app-server projection.
+
+A later adversarial audit found three remaining parity failures. A disjoint
+latest app-server page could place previously observed older live rows after
+the new page; unmatched rows older than the page now stay before it. A steer
+seen live before its history page could be classified as ordinary input and
+keep that identity forever; canonical app-server history now corrects its
+intent and turn identity without replacing richer live content. Finally, the
+stable visual-item cache compared only a subset of block fields, so media,
+stream completion, subagent results, file edits, and compaction details could
+change underneath an obsolete rendered row. Cache reuse now compares every
+immutable block field shallowly, conservatively refreshing replaced nested
+metadata without serializing large tool or media payloads.
+
+A 2026-10-14 browser reproduction exposed steering being hidden by action-group
+collapse: the user bubble belonged to the prior tool group, which closed when
+the next tool event opened another group. Shared work-detail grouping now gives
+user messages their own non-collapsible group alongside agent responses. The
+real SessionView lifecycle test verifies the exchange remains visible through
+optimistic send, canonical acknowledgement, agent output, and subsequent tools.
+
+The 2026-10-14 audit of `01a12190-a469-7f31-9321-ea1b160082f0`
+found inter-agent deliveries falling back to human messages when bounded-tail
+parsing lacked session metadata. Shared normalization now emits subagent activity
+independently of that header, using the sender rather than the recipient task
+name; live input envelopes use the same conversion. All 350 recorded deliveries
+were verified to produce no human-message boundaries, including the daemon tail.
+Usage checkpoints now charge cumulative progression instead of repeatedly charging
+the last request. New `token_usage_record` rows are authoritative when present;
+legacy snapshots still update context size but do not bill the same work again.
+The final root round records 1,665,520 fresh-input-plus-output tokens. Its three
+active children separately record 3,467,542 in that time range (5,133,062 combined).
+Goal-budget notices include child work and have their own goal start/end boundary;
+they are not the root round's token counter. Live and transcript remain separate
+sources, sharing conversion/accounting functions rather than merging their data.
+Round summaries now label their token count as "this agent"; token and cost
+tooltips explicitly exclude subagent usage. Expanded rounds distinguish fresh,
+cached, output, and reasoning tokens (reasoning is included in output), and rounds
+with subagents explain the separate accounting and goal-budget scope. This does
+not invent a combined total from whole child sessions: reused children may span
+several parent rounds. The SessionView browser test covers live usage, unrelated
+child traffic, and completion while preserving the scoped round count.
+
+An Astra follow-up review found that app-server agent deliveries still polluted
+the human-message identity set even after their visible role changed; the next
+human input could therefore become phantom steering. History/live now register
+only normalized human rows. Usage decoding is shared too: explicit zero counters
+retain a reset baseline, and a handled thread checkpoint cannot fall through to
+a legacy alias and charge the last request again. Plain-text delivery envelopes
+retain the same parent relationship as structured records, and response-usage
+rows are recognized when identifying a bounded recording. The supplied session's
+4,314 response records sum to 16,806,683 fresh-input-plus-output tokens, exactly
+matching shared normalization; its final round remains 1,665,520. Round breakdowns
+also expose cache writes as part of fresh input and reasoning as part of output,
+without adding either subset twice. Parent relationship labels stay neutral when
+the recorded metadata does not establish message direction.
+
+A second Astra pass reproduced a history-to-live accounting handoff bug: parsed
+history checkpoints lived in a temporary context, so the next live notification
+could bill already observed work. History now seeds an uninitialized live usage
+baseline without rewinding a baseline already advanced by live events or newer
+pages. The full-file stats scanner also still used an independent legacy-only
+pricing parser. It now shares `codexUsageForTranscriptRecord` with transcript
+normalization, preserving cached append state, authoritative response records,
+zero-counter resets, and `thread_settings_applied` model switches. A fixed-size
+snapshot of the growing source matched all 4,331 response records exactly:
+648,588,086 reported tokens, 16,890,550 fresh-input-plus-output tokens. Two actual
+forked-child files also matched; no inherited-usage change was justified by those
+records. Parent `NEW_TASK` payloads now populate input metadata, not output;
+encrypted-task notices remain explicitly notices, and known input is never
+fabricated as a result via the display-text fallback. Browser coverage opens the
+actual parent-delivery card and verifies an Input-only section.
+
+The third Astra pass constrained inter-agent envelope recognition to a leading
+header and read sender/task metadata only before `Payload:`. Human requests
+quoting a notification therefore keep their human role. Subagent roster metadata
+now prefers later resolved model/effort settings, and paired activity completion
+and results beat pending spawn defaults; historical rounds remain unchanged.
+
+The same pass reproduced usage double-counting across item snapshots, standalone
+thread checkpoints, and canonical history reconciliation. Usage-only app-server
+rows now retain recorded cumulative bucket ranges. Stable item IDs align
+page-local reset epochs; only evidenced canonical coverage is subtracted, leaving
+partial/uncovered and later-reset work intact. Unanchored ranges cannot erase
+observed work on numeric coincidence. This does not drop visible messages or mix
+transcript data into the live source. A real SessionView lifecycle case previously
+changed 150 tokens to 200 at completion; it now remains at 150. A truncated reset
+page also retains the separate model buckets (100 before reset, 200 after).
+Coverage is indexed by turn/epoch and merged before overlap lookup, avoiding a
+full canonical-message scan for every live usage row. A Bun helper-only smoke
+with 2,000 canonical and 2,001 live rows took 2.72 ms with exact retained totals;
+this is not an end-to-end renderer timing. The fixed-size 132,664,288-byte source
+snapshot retained all 351 deliveries as agent activity and matched authoritative
+fresh-input-plus-output usage exactly at 17,018,449.
+
+The fourth Astra pass found that a newer canonical usage item could update the
+display without advancing its live baseline/owned item amount. A subsequent
+checkpoint rebilled covered work (history 100 -> refreshed 200 -> live 250 showed
+350). History adoption now uses the same stable-item epoch anchors as merge,
+advancing only aligned current-epoch cumulative vectors that do not rewind any
+bucket. Older pages, intervening live work, and pre-reset matches remain protected.
+A SessionView lifecycle test found a second caller bug: completion removed the
+observed-start identity, discarding valid final usage arriving afterward. Observed
+starts now live until the source changes; active-turn state remains separate.
+The browser case now renders 100 -> 200 -> 250, including the late final update.
+
+The whole-message envelope classifier also accepts multipart input through one
+shared path, preserving whitespace-only/character-sized text parts and attached
+images. Multipart and image-bearing agent deliveries no longer create human
+round/steering boundaries; separately-parted human quotations stay human. Finally,
+unknown child metadata/wait results no longer overwrite known completed/failed
+roster state. Explicit running still reactivates the child. Browser coverage
+checks a late timeout cannot resurrect a completed badge, and an explicit restart
+does bring it back. No transcript/app-server data was mixed by these corrections.
+
+The related lifecycle audit reproduced a stale pane on return from offscreen:
+buffered deltas reached session.messages, but synchronous catch-up inside the
+visibility reactive statement ran after the derived-message pipeline. Svelte's
+legacy dependency graph did not propagate that indirect write in the same flush.
+Catch-up now runs in a guarded microtask after the visibility flush. A real
+SessionView test overlaps a delayed app-server history refresh with an offscreen
+new turn and streaming delta, then verifies the returned pane shows that delta.
+The history response and transcript data remain separate sources.
+
+The same audit measured repeated work-summary computation for unchanged clocks.
+Shared immutable work items, display entries, detail groups, and content summaries
+now retain their projections across ticks; timing and token rates recompute, and
+new entries or pricing/model snapshots invalidate content. A Bun comparison using
+the same 500 command entries and 20 clock updates measured 11.65 ms/update before
+and 0.08 ms/update after. This measures summary CPU only, not total browser frame
+time. Running native diagnostics before the change showed event ingestion mostly
+0–3 ms but rendering settle p95 around 100–400 ms, with maxima over one second.
+
+A 2026-10-11 subagent audit found that the composer roster was incorrectly
+derived from the virtual render window. Spawn prompts, model metadata, and even
+the child itself therefore disappeared once the originating row moved outside
+the mounted tail. The roster now incrementally projects collaboration rows from
+the complete loaded session while the expensive transcript DOM remains
+virtualized; unchanged ordinary streaming rows preserve the prior projection
+by immutable message identity. Parent-task metadata passed while opening a
+child is source-tagged navigation context, not a fabricated history row, so
+app-server and transcript data remain isolated. A live child can open from its
+authoritative app-server ID before a transcript file exists, while transcript
+navigation still requires a resolved file.
+
 The live session header had a separate source-ownership bug: synthetic
 app-server session shells assigned `Date.now()` as their start, so a reset or
 reactive recreation made an old thread say "started just now" and could move
@@ -1458,6 +1637,54 @@ Closing the map releases that store and restores the normal bounded transcript
 work; the regular session renderer and its geometry remain mounted throughout.
 
 ### Cumulative artifact-map scaling (2026-09-11)
+
+Git fetch/pull/push ref arguments now carry a shared nicifier `git-ref` part
+instead of a filesystem-path part. Artifact extraction retains them as Git
+artifacts in the same map; the sparse tree renders one source → destination
+row with the existing Git icon, not slash-separated folders or file links.
+The tooltip retains the operation, remote and raw refspec (including force
+and exclusion markers). Actual file commands reading paths under `refs/`
+remain filesystem artifacts; there is no path-prefix blacklist.
+
+The follow-up target audit streamed 59 Codex/Claude session files (128,573
+rows, 22,035 tool invocations) from the October 12–15 Codex folders and recent
+Baker/FHIR Claude sessions. It confirmed stream sinks as preview paths (30
+`/dev/null` occurrences), unresolved shell expressions presented as filenames,
+Git identities/config values treated as files, and PHP `->post` inside heredoc
+stdin misread as shell output redirection. Shared target classification now
+keeps streams out of file artifacts, retains unresolved expressions as symbolic
+entries without local-file links, and separates URLs from filesystem paths.
+Git diff separators preserve actual file arguments, including paths under
+`refs/`; explicit revisions remain Git artifacts. Shell redirection extraction
+uses the existing heredoc ranges to avoid interpreting input code as shell
+syntax. Real content sources such as `/proc/self/status`, `/dev/shm` files and
+ordinary `dev/` directories remain represented.
+
+The October 16 tail of session `01a11346-0734-7570-abbc-ae9c35e979d0`
+reproduced another missing write preview: Python assembled a section replacement
+as `s[:start] + <literal> + s[end:]` before `p.write_text(s)`. Shared extraction
+now retains that literal as explicitly partial replacement content, not a
+fabricated full-file diff. Reassignment/augmentation before the write prevents
+using a stale literal. The changed-file tooltip accepts the existing shared
+artifacts directly so it does not discard captured previews when rebuilding
+file-only rows. A real SessionView browser test opens the changed-file chip,
+hovers AGENTS.md, and verifies both the replacement text and zero disk-diff
+requests. The actual tail record also retains its 362-character replacement
+through canonical Codex normalization.
+
+The follow-up now resolves those section boundaries against earlier captured
+reads in the shared work projection. The actual last AGENTS.md replacement
+reconstructs a `+7 −21` hunk starting at line 286. Artifact Map, the changed-file
+chip, action-group counters and the individual edit hover share the resolved
+edit; groups inherit the enclosing round's resolution rather than independently
+guessing before-state. No current-disk diff or transcript/live mixing is used.
+Missing/duplicate anchors, truncation markers, a read result received after the
+write, a different cwd/workdir, or intervening mutations retain the partial
+preview. SSH/container display labels are not sufficient identity proof, so
+those remain partial too. Captured whitespace is preserved for reconstruction
+so blank lines cannot shift hunk positions; existing display trimming remains
+the default. Browser regressions cover both fallback and real plus/minus
+previews, including the individual edit-row hover, with zero disk-diff requests.
 
 The first cumulative map implementation accidentally made sparse-tree folder
 detection quadratic in the number of artifact events. A synthetic 5,000-event
@@ -1508,6 +1735,25 @@ group remounts those rows on demand. A real-browser lifecycle test closes and
 reopens the production component to cover both the cost gate and the unchanged
 interaction contract.
 
+### Static work-summary pills promoted into hundreds of layers (2026-10-11)
+
+A long-running native instance reached 8.35 GB WebContent RSS and 148% CPU while
+the daemon remained below 200 MB RSS and 1% CPU. Renderer diagnostics captured
+the discontinuity: a lane remount raised the page from 18 to 709 running
+animations, 694 of them `.work-summary-pill-shell`, and from roughly 15k to 26k
+DOM elements. FPS fell to 19 while otherwise sub-millisecond Codex event handlers
+took multiple seconds to settle through rendering.
+
+Every work-summary pill, including immutable historical and nested action-group
+summaries, carried `animate:flip`, an intro scale transition, and permanent
+`will-change: transform`. Remounting a long lane therefore promoted and animated
+hundreds of static pills at once. Only the current live round's top summary can
+actually change arrangement. Motion and transform promotion now apply solely to
+that summary; historical and nested summaries keep the same markup, chips, value
+pulses, and appearance without individual compositor layers. A Chromium lifecycle
+test moves a long live lane offscreen and back, then verifies that the live
+summary retains motion while grouped summaries are not transform-promoted.
+
 ### App-server history lost turn boundaries (2026-10-06)
 
 The same Baker lane remained slow after hidden action rows were gated. Its
@@ -1529,3 +1775,122 @@ window from 4,152 to 142 messages, 500 action groups to 6, and the measured
 normalization/window/projection/overview pass from about 2.64 seconds to about
 82 milliseconds. Transcript sources without turn IDs retain the existing
 user-boundary behavior.
+
+### Paused virtual readers drifted during live growth (2026-10-11)
+
+The bounded app-server window could advance its oldest rendered message while
+new live rows arrived. The scroll controller then had no surviving semantic
+anchor to restore, so a paused reader could move by thousands of pixels even
+though tail following was off. The shared window now retains its rendered
+start while paused and returns to the normal bounded tail when following
+resumes. The controller audit also fixed stale post-restore metrics, native
+scrolls racing queued follow work, selection and disposal races, intentional
+top-position persistence, and independent scroll memory for nested live-work
+bodies. Browser coverage appends enough live rows to cross the virtualization
+boundary while the reader remains mid-history.
+
+A subsequent basic live-follow regression came from consecutive app-server
+updates arriving in separate Svelte flushes before the first scheduled scroll
+correction. The first update correctly captured that the reader was following,
+but the newly grown DOM made the second update look far from the tail; it then
+superseded the first correction with a false "do not follow" decision. Pending
+ordinary follow intent is now sticky across coalesced updates, just like an
+explicit send-time follow, while the existing pause generation still lets a
+wheel, pointer, selection, or other reader action cancel it. The controller
+test reproduces growth between corrections, and the real SessionView browser
+test delivers ordinary assistant rows through consecutive live event frames.
+
+### 2026-10-16 — round accounting includes child runs
+
+Round headlines previously displayed only the parent's usage. Shared nicifier
+accounting now adds descendants once within each parent-round time window, with
+a replay-time cutoff, child creation boundary, and a parent/children breakdown.
+Missing child files are explicit rather than silently presenting a partial total.
+Live child accounting reads app-server only; transcript accounting reuses the
+incremental file-stats usage scanner and canonical normalizer. The supplied
+`01a13639…` session's 10:51–11:02 UTC round has 146,446 parent new tokens plus
+137,779 child new tokens (284,225 combined; cached input remains separate).
+
+Loading is opt-in on visible session surfaces, serial, and source-generation
+owned. Refreshes at completion must survive an already in-flight read. App-server
+accounting retains usage checkpoints and descendant IDs, not child tool-output
+or image bodies. Checkpoint pricing is cached per immutable child snapshot;
+replay windows use binary-search bounds. No startup corpus scan, no opening or
+resuming child runs, and no changes to scroll ownership/geometry suspension.
+Summary chips occupy a full-width second row instead of a compressed central
+column. Coverage exercises cumulative pagination, corrected turn snapshots,
+fork metadata, descendant cycles, source disposal, replay cutoffs, and actual
+SessionView token totals/layout.
+
+### 2026-10-16 — lane return must preserve scroll-follow intent
+
+Reproduced a viewport-only resize turning follow into a reader pause in the real
+SessionView browser harness: the browser clamps `scrollTop` upward when the
+viewport grows, while `scrollHeight` stays unchanged. The controller tracked
+content height but not viewport height, so it classified that native layout
+adjustment as scrolling up and persisted the incorrect pause across lane visits.
+Track both heights, including programmatic restores. A viewport shrink may emit
+no scroll event; the next tail update must retain follow in that case too.
+
+An additional deterministic reproduction left the lane between a tail update
+and its animation-frame correction. The transient bottom gap was persisted as
+not-following. Save pending follow intent before retiring callbacks owned by the
+old scroll element; keep explicit outer and nested reader pauses authoritative.
+No new scroll owner, visibility policy, or observer loop is involved.
+
+The existing offscreen browser test only left and returned with no intervening
+events. It now delivers a long response while away and checks actual scroll
+geometry as well as the follow indicator. A second browser case exercises
+viewport clamping followed by offscreen output; controller tests cover both
+resize directions and departure during queued corrections. A completed turn's
+activity marker is intentionally inactive, so its CSS class alone is not proof
+that follow was lost—assert viewport position/follow intent as appropriate.
+
+An independent audit found a further, distinct failure in the bounded live-work
+body. A real SessionView test now navigates with horizontal container scrolling
+or vertical window scrolling, receives growing reasoning/tool/checkpoint groups
+while away, returns across a turn boundary, and then receives another tool item.
+Both Chromium variants failed: native anchoring left the nested body 31px from
+its new end (`779 - 558 - 190`), and its unconditional scroll handler remembered
+that layout event as a reader pause. The outer controller remained unpaused.
+The old tests exercised either unchanged content or a long assistant answer;
+contiguous tool calls also coalesce, so they did not exercise this body growth.
+
+The shared controller now records each nested body's content/viewport geometry
+after its writes and restores. A geometry-driven body scroll retains follow;
+pointer input, upward wheel input, and an already-paused body remain authoritative.
+Controller regressions fail before this change for content and viewport changes,
+and the two Chromium navigation cases pass afterward. WebKit passed those same
+navigation cases even before this additional fix: this is a demonstrated
+Chromium failure, not proof that the user's all-lane native-app failure has been
+reproduced. Native navigation/gesture behavior and the running bundle version
+still require correlation with the user's instance.
+
+The subsequent gesture audit did reproduce a failure in WebKit: a real
+horizontal wheel gesture (`deltaX=1600`, `deltaY=-1`) over the outer transcript
+navigated to another lane but also marked vertical following paused. After
+offscreen output arrived, returning stayed detached. Dominant-horizontal
+handoff already existed on nested work/code bodies, but not the outer message
+viewport. Reuse that handoff there and exclude horizontal-dominant gestures
+from vertical reader intent. This WebKit case failed before the two-line fix
+and passes afterward; it also checks that an intentional vertical wheel still
+pauses following and preserves the reader while later output arrives. The
+user's exact gesture remains unconfirmed, and their running native bundle
+(2026-10-16 09:01:35 UTC) predates the previous lane-return fixes.
+
+Coverage audit: the previous controller and lifecycle suites did run, but the
+browser harness moved a single lane with a transform and the CI browser was
+Windows Chromium. Neither exercised a real horizontal wheel gesture in WebKit.
+The existing harness now also supports real horizontal/vertical lane scrolling,
+instant/smooth return, offscreen work growth, and a turn transition followed by
+more output. `TREETOP_TEST_BROWSER=webkit` runs the same lifecycle suite with
+Playwright WebKit, and a macOS CI job now runs it alongside the existing tests.
+This tests native-engine behavior, not the exact installed WKWebView binary.
+The clipboard test requests only WebKit's supported read permission (writes use
+the real button gesture), and the artifact test waits for the hover preview to
+close before clicking the next control; assertions and real interactions remain.
+
+Final local verification: 673 related unit tests pass, and all 46 real
+SessionView lifecycle tests pass in each of Chromium and WebKit (142 assertions
+per engine). These include both new failing-before-fix paths and the reader-pause
+controls. No native rebuild or production restart was performed.

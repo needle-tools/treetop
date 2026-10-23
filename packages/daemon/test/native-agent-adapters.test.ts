@@ -969,6 +969,42 @@ describe("CodexAppServerAdapter", () => {
     await expect(models).resolves.toEqual([]);
   });
 
+  test("fresh SSE subscriptions can skip buffered events already owned by thread history", async () => {
+    const fake = fakeCodexProcess();
+    const adapter = new CodexAppServerAdapter({ spawn: () => fake.proc });
+    const firstEvents: unknown[] = [];
+    const off = adapter.subscribe("thr_existing", (event) =>
+      firstEvents.push(event),
+    );
+
+    const models = adapter.listModels("/repo");
+    await waitFor(() => fake.writes[0], "initialize request");
+    fake.enqueue({ id: 0, result: {} });
+    await waitFor(() => fake.writes[2], "model list request");
+    fake.enqueue({
+      method: "item/agentMessage/delta",
+      params: {
+        threadId: "thr_existing",
+        turnId: "turn_existing",
+        itemId: "message_existing",
+        delta: "already represented by thread/read",
+      },
+    });
+    await waitFor(() => firstEvents[0], "buffered app-server event");
+    fake.enqueue({ id: 1, result: { data: [], nextCursor: null } });
+    await models;
+    off();
+
+    const freshEvents: unknown[] = [];
+    adapter.subscribe(
+      "thr_existing",
+      (event) => freshEvents.push(event),
+      { replay: false },
+    );
+
+    expect(freshEvents).toEqual([]);
+  });
+
   test("steers and interrupts active Codex turns over app-server RPC", async () => {
     const fake = fakeCodexProcess();
     const adapter = new CodexAppServerAdapter({ spawn: () => fake.proc });

@@ -1,0 +1,247 @@
+/* Shared composer badges, flyout shells, and rows. Queue, subagents,
+   questions, warnings, goals, and plans all compose these primitives. */
+
+.composer-panel {
+  position: absolute;
+  right: 0;
+  bottom: calc(100% + 0.4rem);
+  z-index: 5;
+  box-sizing: border-box;
+  max-height: min(16rem, 38vh);
+  padding: 0.35rem;
+  border: 1px solid color-mix(in srgb, var(--surface-3) 80%, transparent);
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--surface-2) 96%, transparent);
+  box-shadow: 0 14px 30px -22px rgba(0, 0, 0, 0.9);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.composer-panel.wide {
+  width: min(100%, 42rem);
+}
+
+.composer-panel.compact {
+  width: min(100%, 34rem);
+}
+
+.composer-panel.list {
+  display: grid;
+  gap: 0.35rem;
+}
+
+.composer-panel.question {
+  border-color: color-mix(
+    in srgb,
+    var(--warning, #e0a34b) 42%,
+    var(--surface-3)
+  );
+}
+
+.composer-panel-item {
+  box-sizing: border-box;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 0.22rem 0.45rem;
+  align-items: start;
+  min-width: 0;
+  width: 100%;
+  padding: 0.48rem 0.55rem;
+  border: 1px solid color-mix(in srgb, var(--surface-3) 86%, transparent);
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--surface-1) 82%, transparent);
+  color: var(--text-2);
+  font: inherit;
+  text-align: left;
+}
+
+.composer-panel-item.has-leading {
+  grid-template-columns: auto minmax(0, 1fr);
+}
+
+.composer-panel-item.has-actions {
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.composer-panel-item.has-leading.has-actions {
+  grid-template-columns: auto minmax(0, 1fr) auto;
+}
+
+.composer-panel-item.compact {
+  padding: 0.32rem 0.4rem;
+}
+
+button.composer-panel-item {
+  cursor: pointer;
+}
+
+button.composer-panel-item:hover:not(:disabled),
+button.composer-panel-item:focus-visible {
+  border-color: color-mix(in srgb, var(--status-clean) 62%, var(--surface-3));
+  color: var(--text-1);
+  outline: none;
+}
+
+button.composer-panel-item:disabled {
+  cursor: default;
+  opacity: 0.58;
+}
+
+.composer-panel-item.active {
+  border-color: color-mix(in srgb, var(--status-clean) 42%, var(--surface-3));
+}
+
+.composer-panel-item.danger {
+  border-color: color-mix(in srgb, var(--error-text) 34%, var(--surface-3));
+  background: color-mix(in srgb, var(--error-bg) 46%, transparent);
+  color: var(--error-text);
+}
+
+.composer-panel-item-leading,
+.composer-panel-item-actions,
+.composer-panel-item-content {
+  min-width: 0;
+}
+
+.composer-panel-item-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.28rem;
+}
+
+.composer-panel-item-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.6rem;
+  min-width: 0;
+}
+
+.composer-panel-item-title {
+  overflow: hidden;
+  color: var(--text-1);
+  font-size: 0.76rem;
+  font-weight: 700;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.composer-panel-item-meta {
+  flex: 0 0 auto;
+  color: var(--text-muted);
+  font-size: 0.68rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.composer-panel-item-copy {
+  display: -webkit-box;
+  overflow: hidden;
+  margin-top: 0.2rem;
+  color: var(--text-2);
+  font-size: 0.74rem;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  line-clamp: 3;
+}
+
+.composer-panel-item-copy.muted {
+  color: var(--text-muted);
+}
+
+.composer-badge {
+  box-sizing: border-box;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  height: 1.55rem;
+  max-width: 8rem;
+  border: 1px solid
+    color-mix(in srgb, var(--status-clean) 42%, var(--surface-3));
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--surface-1) 86%, transparent);
+  color: var(--text-2);
+  font: inherit;
+  font-size: 0.68rem;
+  font-weight: 650;
+  line-height: 1;
+  padding: 0.3rem 0.48rem;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  cursor: pointer;
+  box-shadow: 0 8px 22px -18px rgba(0, 0, 0, 0.9);
+}
+
+.composer-badge:focus {
+  outline: none;
+}
+
+.composer-badge:focus-visible {
+  outline: 1px solid color-mix(in srgb, var(--status-clean) 72%, transparent);
+  outline-offset: 2px;
+}
+
+.composer-badge:hover,
+.composer-badge.expanded {
+  color: var(--text-1);
+  border-color: color-mix(in srgb, var(--status-clean) 62%, var(--surface-3));
+  background: color-mix(in srgb, var(--surface-2) 92%, transparent);
+}
+
+.composer-badge.goal {
+  border-color: color-mix(in srgb, var(--status-dirty) 46%, var(--surface-3));
+}
+
+.composer-badge.goal:hover,
+.composer-badge.goal.expanded {
+  border-color: color-mix(in srgb, var(--status-dirty) 62%, var(--surface-3));
+}
+
+.composer-badge.subagent {
+  border-color: color-mix(in srgb, #8b9cff 52%, var(--surface-3));
+  color: color-mix(in srgb, #aab5ff 88%, var(--text-1));
+}
+
+.composer-badge.subagent:hover,
+.composer-badge.subagent.expanded {
+  border-color: color-mix(in srgb, #8b9cff 72%, var(--surface-3));
+  background: color-mix(in srgb, #7086ff 14%, var(--surface-2));
+}
+
+.composer-badge.question {
+  border-color: color-mix(
+    in srgb,
+    var(--warning, #e0a34b) 48%,
+    var(--surface-3)
+  );
+  color: var(--warning, #e0a34b);
+}
+
+.composer-badge.question:hover,
+.composer-badge.question.expanded {
+  border-color: color-mix(
+    in srgb,
+    var(--warning, #e0a34b) 68%,
+    var(--surface-3)
+  );
+  background: color-mix(
+    in srgb,
+    var(--warning, #e0a34b) 16%,
+    var(--surface-2)
+  );
+}
+
+.composer-badge.warning {
+  border-color: color-mix(in srgb, var(--error-text) 46%, var(--surface-3));
+  color: var(--error-text);
+}
+
+.composer-badge.warning:hover,
+.composer-badge.warning.expanded {
+  border-color: color-mix(in srgb, var(--error-text) 64%, var(--surface-3));
+  background: color-mix(in srgb, var(--error-bg) 38%, var(--surface-2));
+  color: var(--error-text);
+}

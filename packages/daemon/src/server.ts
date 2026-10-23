@@ -42,6 +42,7 @@ import {
   listCommitFiles,
   getDiff,
   getFileDiff,
+  getDiffFileContent,
   getCommitDiff,
   getCommitFileDiff,
   fetchAll,
@@ -59,6 +60,7 @@ import {
   parseUnpushedCommits,
   type DiffKind,
   type FileDiffKind,
+  type DiffFileContentKind,
 } from "./git";
 import { createLimiter } from "./concurrency";
 import { createStaleWhileRevalidateCache } from "./async-cache";
@@ -93,6 +95,7 @@ import {
   type BatchSessionCursor,
 } from "./sessions";
 import { diagnoseClaudeSession, repairClaudeSession } from "./session-repair";
+import { getSessionAgentUsage } from "./session-usage";
 import { serveImage } from "./images";
 import { pickFolder, pickFile } from "./picker";
 import { openIn, openDefault, detectEditors } from "./open";
@@ -3801,6 +3804,12 @@ const server = Bun.serve<TermWsData, never>({
             },
             {
               method: "GET",
+              path: "/api/diff-file-content",
+              description:
+                "exact before/after bytes for visual file diffs: ?path=<wt>&file=<rel-file>&kind=workdir|staged|untracked|commit&side=before|after, plus sha/oldFile for commit renames",
+            },
+            {
+              method: "GET",
               path: "/api/commit",
               description:
                 "git show output for one commit: ?path=<wt>&sha=<sha>",
@@ -4308,7 +4317,7 @@ const server = Bun.serve<TermWsData, never>({
         });
       }
 
-      if (url.pathname === "/api/session/stats" && req.method === "GET") {
+      if ((url.pathname === "/api/session/stats" || url.pathname === "/api/session/usage") && req.method === "GET") {
         const source = url.searchParams.get("source");
         if (!source) {
           return json(
@@ -4323,7 +4332,7 @@ const server = Bun.serve<TermWsData, never>({
           );
         }
         try {
-          return json(await getSessionFileStats(source));
+          return json(url.pathname === "/api/session/usage" ? await getSessionAgentUsage(source) : await getSessionFileStats(source));
         } catch (e) {
           return json(
             { error: e instanceof Error ? e.message : String(e) },
@@ -4624,7 +4633,14 @@ const server = Bun.serve<TermWsData, never>({
                 receivedAt: new Date().toISOString(),
               });
             }
-            unsubscribe = codexAgent.subscribe(threadId, send);
+            // The browser hydrates every visible thread through thread/read.
+            // Replaying buffered deltas here races that canonical snapshot and
+            // can append an already-represented suffix to an active item. A
+            // reconnect also triggers a thread/read reconciliation in the UI,
+            // so this transport must carry only events emitted after attach.
+            unsubscribe = codexAgent.subscribe(threadId, send, {
+              replay: false,
+            });
           },
           cancel() {
             if (flushTimer !== null) clearTimeout(flushTimer);
@@ -9032,6 +9048,44 @@ const server = Bun.serve<TermWsData, never>({
         return new Response(diff, {
           headers: {
             "Content-Type": "text/plain; charset=utf-8",
+            ...CORS,
+          },
+        });
+      }
+
+      if (url.pathname === "/api/diff-file-content" && req.method === "GET") {
+        const path = url.searchParams.get("path");
+        const file = url.searchParams.get("file");
+        const kind = url.searchParams.get("kind");
+        const side = url.searchParams.get("side");
+        const sha = url.searchParams.get("sha") ?? undefined;
+        const oldFile = url.searchParams.get("oldFile") ?? undefined;
+        if (
+          !path ||
+          !file ||
+          !["workdir", "staged", "untracked", "commit"].includes(kind ?? "") ||
+          (side !== "before" && side !== "after")
+        ) {
+          return json(
+            {
+              error:
+                "?path=<worktree-path>&file=<file>&kind=workdir|staged|untracked|commit&side=before|after required",
+            },
+            { status: 400 },
+          );
+        }
+        const content = await getDiffFileContent(
+          path,
+          file,
+          kind as DiffFileContentKind,
+          side,
+          { sha, oldFile },
+        );
+        if (!content) return json({ error: "not found" }, { status: 404 });
+        return new Response(content, {
+          headers: {
+            "Content-Type": Bun.file(file).type || "application/octet-stream",
+            "Cache-Control": "no-store",
             ...CORS,
           },
         });

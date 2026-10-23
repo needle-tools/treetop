@@ -371,7 +371,13 @@
           {#if diffLoading && workdirDiff === undefined}
             <p class="muted small nopad">Loading diff…</p>
           {:else if workdirDiff}
-            <DiffViewer text={workdirDiff} />
+            <DiffViewer
+              text={workdirDiff}
+              worktreePath={wt.path}
+              sourceKind="workdir"
+              {daemonId}
+              assetVersion={fsChangeKey}
+            />
           {:else}
             <p class="muted small nopad">Nothing unstaged.</p>
           {/if}
@@ -379,7 +385,13 @@
           {#if diffLoading && stagedDiff === undefined}
             <p class="muted small nopad">Loading diff…</p>
           {:else if stagedDiff}
-            <DiffViewer text={stagedDiff} />
+            <DiffViewer
+              text={stagedDiff}
+              worktreePath={wt.path}
+              sourceKind="staged"
+              {daemonId}
+              assetVersion={fsChangeKey}
+            />
           {:else}
             <p class="muted small nopad">Nothing staged.</p>
           {/if}
@@ -405,7 +417,13 @@
           {#if openCommitSha === c.sha}
             {#if commitDiff[c.sha] !== undefined}
               <div class="inline-commit">
-                <DiffViewer text={commitDiff[c.sha]} />
+                <DiffViewer
+                  text={commitDiff[c.sha]}
+                  worktreePath={wt.path}
+                  sourceKind="commit"
+                  sha={c.sha}
+                  {daemonId}
+                />
               </div>
             {:else}
               <p class="muted small nopad">Loading commit…</p>

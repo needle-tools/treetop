@@ -1,8 +1,14 @@
+<script context="module" lang="ts">
+  import { marked } from "marked";
+  import { markdownSessionDirectiveExtension } from "./markdown-code";
+
+  marked.use(markdownSessionDirectiveExtension());
+</script>
+
 <script lang="ts">
   import { onDestroy, tick } from "svelte";
   import { flip } from "svelte/animate";
   import { scale } from "svelte/transition";
-  import { marked } from "marked";
   import DOMPurify from "dompurify";
   import { apiUrl } from "./api";
   import { isLocalFileMarkdownHref } from "./open-url";
@@ -20,6 +26,7 @@
     ContextCompactionDetails,
     ModelsDevPricingSnapshot,
   } from "@treetop/nicifier";
+  import { visualWorkWithSubagentUsage, type SessionAgentUsage } from "@treetop/nicifier";
   import {
     buildVisualWorkDisplayEntries,
     buildVisibleVisualWorkDisplayEntries,
@@ -221,6 +228,19 @@
   export let items: VisualTranscriptItem<NormalizedBlock, NormalizedMessage>[] =
     [];
   export let messageTurnIndexes: readonly number[] = [];
+  export let subagentUsage: ReadonlyMap<string, SessionAgentUsage> = new Map();
+  export let subagentUsageErrors: ReadonlyMap<string, string> = new Map();
+  export let subagentUsageThrough: string | undefined = undefined;
+  export let sessionId: string | undefined = undefined;
+  $: nextRoundStarts = (() => {
+    const starts = new Map<number, string | undefined>();
+    let next: string | undefined;
+    for (let index = items.length - 1; index >= 0; index--) {
+      const item = items[index]!;
+      if (item.kind === "work") { starts.set(index, next); next = item.startedAt; }
+    }
+    return starts;
+  })();
   export let transcriptSurface: "read" | "terminal" = "read";
   export let ollamaStreamingIdx: number | null = null;
   export let active = false;
@@ -248,7 +268,9 @@
   export let onOpenSubagent: (
     subagentId: string,
     surface: "read" | "terminal",
+    meta: VisualSubagentMeta,
   ) => void = () => {};
+  export let parentTask: VisualSubagentMeta | undefined = undefined;
   export let onOpenRemotePath: (
     remoteHost: string,
     path: string,
@@ -549,6 +571,90 @@
     return html;
   }
 
+  let mermaidLoader:
+    | Promise<(typeof import("mermaid"))["default"]>
+    | undefined;
+  let mermaidRenderId = 0;
+
+  function loadMermaid(): Promise<(typeof import("mermaid"))["default"]> {
+    if (!mermaidLoader) {
+      mermaidLoader = import("mermaid").then(({ default: mermaid }) => {
+        mermaid.initialize({
+          startOnLoad: false,
+          securityLevel: "strict",
+          suppressErrorRendering: true,
+          theme: "dark",
+          fontFamily:
+            'ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
+          flowchart: { htmlLabels: false },
+        });
+        return mermaid;
+      });
+    }
+    return mermaidLoader;
+  }
+
+  async function hydrateMermaidDiagrams(root: HTMLElement): Promise<void> {
+    const diagrams = [...root.querySelectorAll<HTMLElement>(
+      ".mermaid-diagram",
+    )].filter((diagram) => !diagram.dataset.mermaidStatus);
+    if (diagrams.length === 0) return;
+    for (const diagram of diagrams) {
+      diagram.dataset.mermaidStatus = "rendering";
+    }
+    let mermaid: (typeof import("mermaid"))["default"];
+    try {
+      mermaid = await loadMermaid();
+    } catch {
+      for (const diagram of diagrams) {
+        diagram.dataset.mermaidStatus = "error";
+        diagram.textContent = "Couldn’t load diagram renderer";
+      }
+      return;
+    }
+    for (const diagram of diagrams) {
+      const source = diagram.textContent ?? "";
+      try {
+        const { svg, bindFunctions } = await mermaid.render(
+          `treetop-mermaid-${++mermaidRenderId}`,
+          source,
+        );
+        if (!diagram.isConnected) continue;
+        diagram.innerHTML = DOMPurify.sanitize(svg, {
+          USE_PROFILES: { svg: true, svgFilters: true },
+        });
+        diagram.dataset.mermaidStatus = "rendered";
+        bindFunctions?.(diagram);
+      } catch {
+        if (!diagram.isConnected) continue;
+        diagram.dataset.mermaidStatus = "error";
+        diagram.innerHTML = `<div class="mermaid-error">Couldn’t render diagram</div><pre><code>${escapeAttr(source)}</code></pre>`;
+      }
+    }
+  }
+
+  function mermaidDiagrams(
+    node: HTMLElement,
+    _markdown: string,
+  ): { update: (markdown: string) => void; destroy: () => void } {
+    let generation = 0;
+    const schedule = () => {
+      const scheduledGeneration = ++generation;
+      queueMicrotask(() => {
+        if (scheduledGeneration === generation) {
+          void hydrateMermaidDiagrams(node);
+        }
+      });
+    };
+    schedule();
+    return {
+      update: schedule,
+      destroy: () => {
+        generation += 1;
+      },
+    };
+  }
+
   function portal(node: HTMLElement): { destroy: () => void } {
     document.body.appendChild(node);
     return {
@@ -627,21 +733,21 @@
     }
   }
 
-  function handleMarkdownCodeCopy(e: MouseEvent): void {
+  function handleMarkdownCopy(e: MouseEvent): void {
     const target = e.target as HTMLElement | null;
     const button = target?.closest<HTMLButtonElement>(".md-code-copy");
     if (!button) return;
     const frame = button.closest(".md-code-frame");
-    const code = frame?.querySelector("pre code")?.textContent ?? "";
+    const code = frame?.getAttribute("data-writing-body") ?? frame?.querySelector("pre code")?.textContent ?? "";
     if (!code) return;
     void copyToClipboard(code);
   }
 
-  function codeCopy(node: HTMLElement): { destroy: () => void } {
-    node.addEventListener("click", handleMarkdownCodeCopy);
+  function markdownCopy(node: HTMLElement): { destroy: () => void } {
+    node.addEventListener("click", handleMarkdownCopy);
     return {
       destroy() {
-        node.removeEventListener("click", handleMarkdownCodeCopy);
+        node.removeEventListener("click", handleMarkdownCopy);
       },
     };
   }
@@ -1139,17 +1245,22 @@
 
   function subagentTitle(meta: VisualSubagentMeta): string {
     const label = visualSubagentLabel(meta);
-    if (meta.action === "spawn") return `Spawn ${label}`;
-    if (meta.action === "wait") return `Wait for ${label}`;
+    if (meta.isParent) return `Parent ${label}`;
+    if (meta.action === "spawn") return `Subagent ${label} started`;
+    if (meta.action === "wait") return `Waiting for ${label}`;
     if (meta.status === "completed") return `${label} completed`;
     if (meta.status === "failed") return `${label} failed`;
-    return `Subagent ${label}`;
+    return `${label} active`;
   }
 
   function subagentPreview(meta: VisualSubagentMeta): string {
-    return (meta.result || meta.task || meta.id || "")
+    return (meta.result || meta.task || "")
       .replace(/\s+/g, " ")
       .trim();
+  }
+
+  function subagentMetadata(meta: VisualSubagentMeta): string {
+    return [meta.model, meta.effort, meta.type].filter(Boolean).join(" · ");
   }
 
   function workSummarySubagents(
@@ -1162,7 +1273,7 @@
     event.preventDefault();
     event.stopPropagation();
     if (!meta.id) return;
-    onOpenSubagent(meta.id, transcriptSurface);
+    onOpenSubagent(meta.id, transcriptSurface, meta);
   }
 
   function resultBadgeSymbol(label: string): string | undefined {
@@ -1401,6 +1512,19 @@
   function workEntryHasExpandableContent(
     entry: VisualWorkEntry<NormalizedBlock, NormalizedMessage>,
   ): boolean {
+    const subagent = entry.blocks
+      .map((block) => visualSubagentMetaFromBlock(block))
+      .find(Boolean);
+    if (subagent) {
+      return !!(
+        subagent.task ||
+        subagent.taskEncrypted ||
+        subagent.result ||
+        subagent.model ||
+        subagent.effort ||
+        subagent.type
+      );
+    }
     if (!isThinkingWorkEntry(entry)) return true;
     return entry.blocks.some(
       (block) =>
@@ -1624,7 +1748,7 @@
       overview.tokens.perSecond > 0
         ? ` · ${overview.tokens.perSecond.toLocaleString()} output tok/s`
         : "";
-    return `${total} new tokens${perSecond}`;
+    return `${total} new tokens (fresh input + output)${perSecond}`;
   }
 
   function workOverviewCostLabel(overview: VisualWorkOverview): string {
@@ -1643,6 +1767,7 @@
   function workOverviewCostTitle(overview: VisualWorkOverview): string {
     const parts = [
       `${workOverviewCostLabel(overview)} estimated token cost`,
+      overview.usageScope ? `${overview.usageScope.ownCost.toFixed(2)} parent + ${overview.usageScope.childCost.toFixed(2)} children${overview.usageScope.missingIds.length ? " · child usage incomplete" : ""}` : "This agent only. Subagent usage is not included",
       `${overview.cost.pricedCheckpoints} priced ${overview.cost.pricedCheckpoints === 1 ? "checkpoint" : "checkpoints"}`,
     ];
     if (overview.cost.models.length > 0) {
@@ -1757,9 +1882,12 @@
   function workChangedSummaryForFileEdits(
     summary: VisualFileEditSummary,
   ): WorkChangedSummary {
-    const paths = summary.files.map((file) =>
-      worktreeRelativePreviewPath(file.path),
-    );
+    const unstaged = summary.files
+      .filter((file) => file.action !== "added")
+      .map((file) => worktreeRelativePreviewPath(file.path));
+    const untracked = summary.files
+      .filter((file) => file.action === "added")
+      .map((file) => worktreeRelativePreviewPath(file.path));
     const stats = Object.fromEntries(
       summary.files.map((file) => [
         worktreeRelativePreviewPath(file.path),
@@ -1775,7 +1903,7 @@
         .filter((file) => file.raw !== undefined)
         .map((file) => [worktreeRelativePreviewPath(file.path), file.raw!]),
     );
-    return { staged: [], unstaged: paths, untracked: [], stats, diffs };
+    return { staged: [], unstaged, untracked, stats, diffs };
   }
 
   function fileEditPathTarget(
@@ -1785,7 +1913,12 @@
       worktreeRelativePreviewPath(file.path),
     ])[0];
     if (!target) return undefined;
-    return file.raw === undefined ? { ...target, diffKind: "workdir" } : target;
+    return file.raw === undefined && file.preview === undefined
+      ? {
+          ...target,
+          diffKind: file.action === "added" ? "untracked" : "workdir",
+        }
+      : target;
   }
 
   function fileEditActionLabel(
@@ -1809,6 +1942,14 @@
       additions: file.additions,
       deletions: file.deletions,
       diff: file.raw,
+      preview: file.preview,
+      previewTitle: file.previewTitle,
+      diffKind:
+        file.raw === undefined
+          ? file.action === "added"
+            ? "untracked"
+            : "workdir"
+          : undefined,
       fileAction: file.action,
     }));
   }
@@ -2094,7 +2235,7 @@
     class:failed={meta.status === "failed"}
     class:running={meta.status === "running"}
     title={meta.id
-      ? `Open subagent ${visualSubagentLabel(meta)} (${meta.id})`
+      ? `Open ${meta.isParent ? "parent" : "subagent"} ${visualSubagentLabel(meta)} (${meta.id})`
       : subagentTitle(meta)}
     disabled={!meta.id}
     on:click={(event) => openSubagent(meta, event)}
@@ -2102,6 +2243,36 @@
     <ToolIcon name="spawn_agent" />
     <span>{visualSubagentLabel(meta)}</span>
   </button>
+{/snippet}
+
+{#snippet renderSubagentDetails(meta: VisualSubagentMeta)}
+  <div class="subagent-detail-card">
+    {#if subagentMetadata(meta)}
+      <div class="subagent-detail-meta">{subagentMetadata(meta)}</div>
+    {/if}
+    {#if meta.task}
+      <div class="subagent-detail-section">
+        <span class="subagent-detail-label">Input</span>
+        <div
+          class="md"
+          data-supergit-markdown-source={meta.task}
+          use:mermaidDiagrams={meta.task}
+        >{@html md(meta.task)}</div>
+      </div>
+    {:else if meta.taskEncrypted}
+      <div class="subagent-detail-section muted">Task text is encrypted in this recording.</div>
+    {/if}
+    {#if meta.result}
+      <div class="subagent-detail-section">
+        <span class="subagent-detail-label">Output</span>
+        <div
+          class="md"
+          data-supergit-markdown-source={meta.result}
+          use:mermaidDiagrams={meta.result}
+        >{@html md(meta.result)}</div>
+      </div>
+    {/if}
+  </div>
 {/snippet}
 
 {#snippet renderPreviewPathButton(
@@ -2201,6 +2372,7 @@
     <span slot="content" class="work-changed-tooltip">
       <ChangedFilesTooltipBody
         summary={workChangedSummaryForOverview(overview)}
+        artifacts={overview.artifacts.filter((artifact) => artifact.action === "changed")}
         worktreePath={sessionCwd}
         {daemonId}
         layout="tree"
@@ -2210,71 +2382,89 @@
   </Tooltip>
 {/snippet}
 
+{#snippet renderWorkOverviewPill(
+  overview: VisualWorkOverview,
+  pill: WorkSummaryPillItem,
+)}
+  {#if pill.kind === "changed"}
+    {@render renderWorkChangedSummary(overview)}
+  {:else if pill.kind === "response"}
+    <span
+      class="work-summary-chip"
+      title={`${overview.responseCount} agent responses`}
+    >
+      <ToolIcon name="agent_response" />
+      <span use:pulseOnValueChange={pill.pulseValue}>
+        {overview.responseCount}
+      </span>
+    </span>
+  {:else if pill.kind === "category"}
+    <span
+      class="work-summary-chip dim"
+      title={`${pill.category.count} ${pill.category.label}${
+        pill.category.count === 1 ? "" : "s"
+      }`}
+    >
+      <ToolIcon name={pill.category.iconName} />
+      <span use:pulseOnValueChange={pill.pulseValue}>
+        {pill.category.count}
+      </span>
+    </span>
+  {:else if pill.kind === "language"}
+    <span
+      class="work-summary-chip dim work-code-language-badge"
+      title={`${pill.language.count} ${pill.language.label} script${
+        pill.language.count === 1 ? "" : "s"
+      }`}
+    >
+      <span>{pill.language.label}</span>
+      {#if pill.language.count > 1}
+        <span use:pulseOnValueChange={pill.pulseValue}>
+          {pill.language.count}
+        </span>
+      {/if}
+    </span>
+  {:else if pill.kind === "remote"}
+    {@render renderRemoteHostBadge(pill.remoteHost)}
+  {:else if pill.kind === "tool-percent"}
+    <span
+      class="work-summary-chip dim numeric"
+      title={`${overview.time.toolWaitPercent}% tool wait · ${overview.time.agentPercent}% agent`}
+    >
+      <span use:pulseOnValueChange={pill.pulseValue}>
+        {overview.time.toolWaitPercent}%
+      </span>
+      <span>tools</span>
+    </span>
+  {/if}
+{/snippet}
+
 {#snippet renderWorkOverviewPills(
   overview: VisualWorkOverview,
   showInlineMeta = true,
+  animatePills = false,
 )}
-  <span class="work-summary-pills">
-    {#each workSummaryPillItems(overview, showInlineMeta) as pill (pill.key)}
-      <span
-        class="work-summary-pill-shell"
-        animate:flip={{ duration: 180 }}
-        transition:scale={{ duration: 130, start: 0.92 }}
-      >
-        {#if pill.kind === "changed"}
-          {@render renderWorkChangedSummary(overview)}
-        {:else if pill.kind === "response"}
-          <span
-            class="work-summary-chip"
-            title={`${overview.responseCount} agent responses`}
-          >
-            <ToolIcon name="agent_response" />
-            <span use:pulseOnValueChange={pill.pulseValue}>
-              {overview.responseCount}
-            </span>
-          </span>
-        {:else if pill.kind === "category"}
-          <span
-            class="work-summary-chip dim"
-            title={`${pill.category.count} ${pill.category.label}${
-              pill.category.count === 1 ? "" : "s"
-            }`}
-          >
-            <ToolIcon name={pill.category.iconName} />
-            <span use:pulseOnValueChange={pill.pulseValue}>
-              {pill.category.count}
-            </span>
-          </span>
-        {:else if pill.kind === "language"}
-          <span
-            class="work-summary-chip dim work-code-language-badge"
-            title={`${pill.language.count} ${pill.language.label} script${
-              pill.language.count === 1 ? "" : "s"
-            }`}
-          >
-            <span>{pill.language.label}</span>
-            {#if pill.language.count > 1}
-              <span use:pulseOnValueChange={pill.pulseValue}>
-                {pill.language.count}
-              </span>
-            {/if}
-          </span>
-        {:else if pill.kind === "remote"}
-          {@render renderRemoteHostBadge(pill.remoteHost)}
-        {:else if pill.kind === "tool-percent"}
-          <span
-            class="work-summary-chip dim numeric"
-            title={`${overview.time.toolWaitPercent}% tool wait · ${overview.time.agentPercent}% agent`}
-          >
-            <span use:pulseOnValueChange={pill.pulseValue}>
-              {overview.time.toolWaitPercent}%
-            </span>
-            <span>tools</span>
-          </span>
-        {/if}
-      </span>
-    {/each}
-  </span>
+  {#if animatePills}
+    <span class="work-summary-pills">
+      {#each workSummaryPillItems(overview, showInlineMeta) as pill (pill.key)}
+        <span
+          class="work-summary-pill-shell work-summary-pill-shell-motion"
+          animate:flip={{ duration: 180 }}
+          transition:scale={{ duration: 130, start: 0.92 }}
+        >
+          {@render renderWorkOverviewPill(overview, pill)}
+        </span>
+      {/each}
+    </span>
+  {:else}
+    <span class="work-summary-pills">
+      {#each workSummaryPillItems(overview, showInlineMeta) as pill (pill.key)}
+        <span class="work-summary-pill-shell">
+          {@render renderWorkOverviewPill(overview, pill)}
+        </span>
+      {/each}
+    </span>
+  {/if}
 {/snippet}
 
 {#snippet renderWorkOverviewRightMeta(overview: VisualWorkOverview)}
@@ -2294,13 +2484,22 @@
       {#if overview.tokens.total > 0}
         <span
           class="work-tool-meta"
-          title={`${overview.tokens.total.toLocaleString()} new tokens · ${overview.tokens.freshInput.toLocaleString()} fresh input · ${overview.tokens.input.toLocaleString()} reported input · ${overview.tokens.cachedInput.toLocaleString()} cached · ${overview.tokens.output.toLocaleString()} output${
+          title={`${overview.usageScope ? `${overview.usageScope.ownTokens.toLocaleString()} parent + ${overview.usageScope.childTokens.toLocaleString()} children. ${overview.usageScope.missingIds.length ? `${overview.usageScope.missingIds.length} child runs not included yet. ${overview.usageScope.missingIds.map(id => subagentUsageErrors.get(id)).filter(Boolean).join("; ")}` : "Includes child runs."}` : "This agent only. Subagent usage is not included."} New tokens = fresh input + output; cached input is separate. ${overview.tokens.total.toLocaleString()} new tokens · ${overview.tokens.freshInput.toLocaleString()} fresh input · ${overview.tokens.input.toLocaleString()} reported input · ${overview.tokens.cachedInput.toLocaleString()} cached${
+            overview.tokens.cacheWriteInput > 0
+              ? ` · ${overview.tokens.cacheWriteInput.toLocaleString()} cache write (included in fresh input)`
+              : ""
+          } · ${overview.tokens.output.toLocaleString()} output${
             overview.tokens.reasoningOutput > 0
-              ? ` · ${overview.tokens.reasoningOutput.toLocaleString()} reasoning`
+              ? ` · ${overview.tokens.reasoningOutput.toLocaleString()} reasoning (included in output)`
               : ""
           } · ${overview.tokens.reportedTotal.toLocaleString()} reported total`}
         >
-          {overview.tokens.total.toLocaleString()} tok
+          {overview.tokens.total.toLocaleString()} tok{overview.usageScope?.missingIds.length ? " known" : ""}
+        </span>
+      {/if}
+      {#if overview.usageScope?.missingIds.length}
+        <span class="work-usage-pending" title={overview.usageScope.missingIds.map(id => subagentUsageErrors.get(id) ?? "Loading child usage").join("\n")}>
+          +{overview.usageScope.missingIds.length} child{overview.usageScope.missingIds.length === 1 ? "" : "ren"} {overview.usageScope.missingIds.some(id => subagentUsageErrors.has(id)) ? "not loaded" : "loading"}
         </span>
       {/if}
       {#if overview.tokens.total > 0 && (hasCost || overview.time.elapsedMs > 0)}
@@ -2468,7 +2667,11 @@
           <LoadingSpinner size="0.9rem" label="Waiting for response" />
         </div>
       {:else if displayText}
-        <div class="block text md" data-supergit-markdown-source={displayText}>
+        <div
+          class="block text md"
+          data-supergit-markdown-source={displayText}
+          use:mermaidDiagrams={displayText}
+        >
           {@html md(displayText)}
         </div>
       {/if}
@@ -2484,6 +2687,7 @@
             <div
               class="tag-body md"
               data-supergit-markdown-source={thought.body}
+              use:mermaidDiagrams={thought.body}
             >
               {@html md(thought.body)}
             </div>
@@ -2513,6 +2717,7 @@
             <div
               class="subagent-preview md"
               data-supergit-markdown-source={subagentPreview(subagent)}
+              use:mermaidDiagrams={subagentPreview(subagent)}
             >
               {@html md(subagentPreview(subagent))}
             </div>
@@ -2647,7 +2852,9 @@
           undefined,
           preview.file.raw !== undefined
             ? { title: preview.file.path, body: preview.file.raw }
-            : undefined,
+            : preview.file.preview !== undefined
+              ? { title: preview.file.previewTitle ?? preview.file.path, body: preview.file.preview }
+              : undefined,
         )}
       {:else}
         <span>{preview.file.path}</span>
@@ -2664,6 +2871,7 @@
       <span slot="content" class="work-changed-tooltip">
         <ChangedFilesTooltipBody
           summary={workChangedSummaryForFileEdits(preview.summary)}
+          artifacts={workArtifactsForFileEdits(preview.summary)}
           worktreePath={sessionCwd}
           {daemonId}
           layout="tree"
@@ -2680,7 +2888,6 @@
       artifacts={workArtifactsForFileEdits(summary)}
       worktreePath={sessionCwd}
       {daemonId}
-      diffFallback="none"
       onOpenPath={openWorkArtifact}
     />
   </div>
@@ -2690,7 +2897,11 @@
   {#each blocks as b, blockIndex (visualBlockRenderKey(b, blockIndex))}
     {#if b.type === "text"}
       {#if b.text}
-        <div class="work-step-text md" data-supergit-markdown-source={b.text}>
+        <div
+          class="work-step-text md"
+          data-supergit-markdown-source={b.text}
+          use:mermaidDiagrams={b.text}
+        >
           {@html md(b.text)}
         </div>
       {/if}
@@ -2703,6 +2914,7 @@
             <div
               class="tag-body md"
               data-supergit-markdown-source={thought.body}
+              use:mermaidDiagrams={thought.body}
             >
               {@html md(thought.body)}
             </div>
@@ -2737,6 +2949,7 @@
             <div
               class="tag-body md"
               data-supergit-markdown-source={subagentPreview(subagent)}
+              use:mermaidDiagrams={subagentPreview(subagent)}
             >
               {@html md(subagentPreview(subagent))}
             </div>
@@ -2865,6 +3078,7 @@
   >,
   workKey: string,
   visibleWorkEntries: VisualWorkDisplayEntry<NormalizedBlock, NormalizedMessage>[],
+  fileEdits: VisualWorkOverview["fileEdits"],
 )}
                         {@const entry = displayEntry.entry}
                         {#if isPlainAssistantWorkText(entry)}
@@ -2938,6 +3152,8 @@
                           {@const toolBlock =
                             workEntryToolUseBlock(entry) ?? pairedToolUseBlock}
                           {@const editSummary =
+                            fileEdits.get(entry) ??
+                            (displayEntry.pairedToolUse ? fileEdits.get(displayEntry.pairedToolUse) : undefined) ??
                             workEntryFileEditSummary(entry) ??
                             (displayEntry.pairedToolUse
                               ? workEntryFileEditSummary(
@@ -2957,6 +3173,7 @@
                             visualSubagentMetaFromBlocks(
                               toolBlock,
                               visibleResultBlock,
+                              displayEntry.pairedSubagent,
                             ) ?? visualSubagentMetaFromBlock(entry.blocks[0])}
                           {@const observedProcessOutput =
                             visualObservedProcessOutput(
@@ -3058,17 +3275,24 @@
                               data-visual-scroll-anchor={entryRenderKey}
                             >
                               <div class="work-entry-summary">
-                                <span
-                                  class="work-tool-chip icon-only work-thinking-chip"
-                                >
-                                  {@render renderThinkingIcon()}
-                                </span>
-                                <span
-                                  class="work-tool-preview work-thinking-preview"
-                                  title={collapsedPreview || collapsedTitle}
-                                >
-                                  {collapsedPreview || collapsedTitle}
-                                </span>
+                                {#if subagentMeta}
+                                  {@render renderSubagentBadge(subagentMeta)}
+                                  <span class="work-tool-preview">
+                                    {subagentTitle(subagentMeta)}
+                                  </span>
+                                {:else}
+                                  <span
+                                    class="work-tool-chip icon-only work-thinking-chip"
+                                  >
+                                    {@render renderThinkingIcon()}
+                                  </span>
+                                  <span
+                                    class="work-tool-preview work-thinking-preview"
+                                    title={collapsedPreview || collapsedTitle}
+                                  >
+                                    {collapsedPreview || collapsedTitle}
+                                  </span>
+                                {/if}
                                 {#if entry.message.timestamp}
                                   <span
                                     class="muted small work-entry-time"
@@ -3390,7 +3614,9 @@
                                   class="work-entry-body"
                                   on:wheel|capture={handOffNestedWheel}
                                 >
-                                  {#if editSummary}
+                                  {#if subagentMeta}
+                                    {@render renderSubagentDetails(subagentMeta)}
+                                  {:else if editSummary}
                                     {@render renderFileEditSummary(editSummary)}
                                     <details
                                       class="work-raw-tool-details"
@@ -3452,12 +3678,13 @@
   bind:this={messagesEl}
   on:mouseenter={onMessagesEnter}
   on:mouseleave={onMessagesLeave}
+  on:wheel|capture={handOffNestedWheel}
   on:wheel={onMessagesWheel}
   on:pointerdown={onMessagesPointerDown}
   on:pointerup={onMessagesPointerUp}
   on:pointercancel={onMessagesPointerUp}
   on:scroll={onMessagesScroll}
-  use:codeCopy
+  use:markdownCopy
   data-supergit-session-cwd={sessionCwd}
   data-supergit-daemon-id={daemonId}
 >
@@ -3472,6 +3699,19 @@
         <span class="visual-history-skeleton-line" style={`--width:${width}%`}
         ></span>
       {/each}
+    </li>
+  {/if}
+  {#if parentTask && (parentTask.task || parentTask.taskEncrypted)}
+    <li class="msg role-system" data-visual-scroll-anchor={`parent-task:${parentTask.id}`} aria-label="Parent task">
+      <details class="context-update block sys-reminder" open>
+        <summary>
+          <span class="context-update-heading">
+            <span class="tag-label">Task from parent</span>
+            <span class="context-update-meta">{visualSubagentLabel(parentTask)}</span>
+          </span>
+        </summary>
+        {@render renderSubagentDetails({ ...parentTask, result: undefined })}
+      </details>
     </li>
   {/if}
   {#each items as item, itemIndex (getVisualTranscriptItemKey(item, itemIndex))}
@@ -3500,12 +3740,17 @@
         shownWorkGroups,
         item.open === true && !workDetailOpen,
       )}
-      {@const workOverview = visualWorkOverview(item, visibleWorkEntries, {
+      {@const ownWorkOverview = visualWorkOverview(item, visibleWorkEntries, {
         now: liveNowIso,
         model: pricingModel,
         modelsDev: modelsDevPricing,
       })}
       {@const summarySubagents = workSummarySubagents(visibleWorkEntries)}
+      {@const workOverview = visualWorkWithSubagentUsage(ownWorkOverview, {
+        childIds: [...subagentUsage.keys(), ...summarySubagents.filter(child => child.id && !child.isParent).map(child => child.id!)],
+        usage: subagentUsage, start: item.startedAt, end: nextRoundStarts.get(itemIndex),
+        through: subagentUsageThrough, parentId: sessionId, modelsDev: modelsDevPricing,
+      })}
       {@const countLines = visualWorkCountLines(workSummary)}
       <li
         class="work-row"
@@ -3526,6 +3771,7 @@
             on:click|capture={(event) =>
               captureDetailsScrollAnchor(event.currentTarget)}
           >
+            <span class="work-summary-heading">
             {#if item.terminalMarkerKind}
               <span class="work-summary-marker-icon" aria-hidden="true">
                 {workMarkerIcon(item.terminalMarkerKind)}
@@ -3553,8 +3799,9 @@
                 {/each}
               </span>
             {/if}
-            {@render renderWorkOverviewPills(workOverview)}
+            </span>
             {@render renderWorkOverviewRightMeta(workOverview)}
+            {@render renderWorkOverviewPills(workOverview, true, liveWorkOpen)}
           </summary>
           {#if workFoldoutOpen}
             <div
@@ -3589,8 +3836,11 @@
                   {/if}
                   {#if workOverview.tokens.total > 0}
                     <span>
-                      fresh input {workOverview.tokens.freshInput.toLocaleString()} · cached {workOverview.tokens.cachedInput.toLocaleString()} · output {workOverview.tokens.output.toLocaleString()}{#if workOverview.tokens.reasoningOutput > 0} · reasoning {workOverview.tokens.reasoningOutput.toLocaleString()}{/if}
+                      Total: fresh input {workOverview.tokens.freshInput.toLocaleString()} · cached {workOverview.tokens.cachedInput.toLocaleString()}{#if workOverview.tokens.cacheWriteInput > 0} · cache write {workOverview.tokens.cacheWriteInput.toLocaleString()} (included in fresh input){/if} · output {workOverview.tokens.output.toLocaleString()}{#if workOverview.tokens.reasoningOutput > 0} · reasoning {workOverview.tokens.reasoningOutput.toLocaleString()} (included in output){/if}
                     </span>
+                  {/if}
+                  {#if summarySubagents.length > 0}
+                    <span>{workOverview.usageScope?.ownTokens.toLocaleString()} parent + {workOverview.usageScope?.childTokens.toLocaleString()} children new tokens{workOverview.usageScope?.missingIds.length ? " · child usage incomplete" : ""}</span>
                   {/if}
                 </div>
                 {#if workOverview.artifacts.length > 0}
@@ -3653,6 +3903,7 @@
                           {
                             now: liveNowIso,
                             timeScope: "entries",
+                            fileEdits: workOverview.fileEdits,
                             model: pricingModel,
                             modelsDev: modelsDevPricing,
                           },
@@ -3706,6 +3957,7 @@
                                     item,
                                     workKey,
                                     visibleWorkEntries,
+                                    workOverview.fileEdits,
                                   )}
                                 {/each}
                               </div>
@@ -3718,6 +3970,7 @@
                               item,
                               workKey,
                               visibleWorkEntries,
+                              workOverview.fileEdits,
                             )}
                           {/each}
                           {#if groupOverview.cost.pricedCheckpoints > 0}
@@ -4205,19 +4458,44 @@
     cursor: pointer;
   }
   .work-foldout > summary {
-    width: fit-content;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) fit-content(65%);
+    align-items: center;
+    width: 100%;
     max-width: 100%;
     flex-wrap: wrap;
     overflow: visible;
-    padding: 0.25rem 0.5rem;
+    padding: 0.5rem 0.65rem;
     border: 1px solid color-mix(in srgb, var(--surface-3) 65%, transparent);
-    border-radius: 999px;
+    border-radius: 1rem;
     background: color-mix(in srgb, var(--surface-1) 75%, transparent);
     font-size: 0.72rem;
     line-height: 1.2;
     font-variant-numeric: tabular-nums;
     font-feature-settings: "tnum";
   }
+  .work-summary-heading {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 0.35rem 0.5rem;
+    min-width: 0;
+  }
+  .work-foldout > summary::before { display: none; }
+  .work-foldout > summary > .work-summary-pills {
+    grid-column: 1 / -1;
+    width: 100%;
+  }
+  .work-foldout > summary > .work-summary-right-meta {
+    flex-wrap: wrap;
+    overflow: visible;
+    row-gap: 0.2rem;
+  }
+  .work-foldout > summary > .work-summary-right-meta > * {
+    overflow: visible;
+    text-overflow: clip;
+  }
+  .work-usage-pending { font-size: 0.65rem; color: var(--text-muted); }
   .work-duration-label,
   .work-count {
     display: inline-flex;
@@ -4282,7 +4560,6 @@
   .work-entry > summary::-webkit-details-marker {
     display: none;
   }
-  .work-foldout > summary::before,
   .work-entry > summary::before,
   .work-entry > .work-entry-summary::before {
     content: "";
@@ -4420,6 +4697,8 @@
     flex: 0 0 auto;
     min-width: 0;
     max-width: 100%;
+  }
+  .work-summary-pill-shell-motion {
     will-change: transform;
   }
   .work-summary-chip {
@@ -4470,7 +4749,7 @@
     }
   }
   @media (prefers-reduced-motion: reduce) {
-    .work-summary-pill-shell {
+    .work-summary-pill-shell-motion {
       will-change: auto;
     }
     .work-summary-chip {
@@ -4809,6 +5088,25 @@
   .subagent-detail {
     align-items: flex-start;
   }
+  .subagent-detail-card {
+    display: grid;
+    gap: 0.55rem;
+    min-width: 0;
+  }
+  .subagent-detail-meta,
+  .subagent-detail-label {
+    color: var(--text-muted);
+    font-size: 0.68rem;
+  }
+  .subagent-detail-section {
+    display: grid;
+    gap: 0.25rem;
+    min-width: 0;
+  }
+  .subagent-detail-section :global(.md) {
+    min-width: 0;
+    color: var(--text-2);
+  }
   .work-tool-chip.icon-only {
     padding: 0.14rem 0.32rem;
   }
@@ -5118,7 +5416,7 @@
       "Liberation Mono", "Courier New", monospace;
     font-size: 0.7rem;
   }
-  .work-preview-path {
+  .messages :global(.work-preview-path) {
     display: inline;
     max-width: 100%;
     margin: 0 -0.06rem;
@@ -5136,8 +5434,8 @@
   .work-preview-path-trigger {
     display: inline;
   }
-  .work-preview-path:hover,
-  .work-preview-path:focus-visible {
+  .messages :global(.work-preview-path:hover),
+  .messages :global(.work-preview-path:focus-visible) {
     background: color-mix(in srgb, var(--text-muted) 10%, transparent);
     color: var(--text-1);
     outline: none;
@@ -5395,11 +5693,69 @@
     font-family: ui-monospace, monospace;
     font-size: 0.72rem;
   }
+  .md :global(.md-directive-body) {
+    padding: 0.4rem 0.65rem 0.65rem;
+  }
+  .md :global(.md-directive-meta) {
+    padding: 0.2rem 0.65rem;
+    color: var(--text-muted);
+    font-size: 0.78em;
+    overflow-wrap: anywhere;
+  }
   .md :global(.md-code-lang) {
     min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+  .md :global(.mermaid-diagram) {
+    box-sizing: border-box;
+    width: 100%;
+    min-height: 5rem;
+    margin: 0.65em 0;
+    padding: 0.75rem;
+    overflow: auto;
+    border: 1px solid color-mix(in srgb, var(--surface-3) 72%, transparent);
+    border-radius: 0.7rem;
+    background: color-mix(in srgb, var(--surface-2) 52%, transparent);
+  }
+  .md :global(.mermaid-diagram[data-mermaid-status="rendering"]) {
+    display: grid;
+    place-items: center;
+    color: var(--text-muted);
+    font-size: 0.78rem;
+  }
+  .md
+    :global(
+      .mermaid-diagram[data-mermaid-status="rendering"]::after
+    ) {
+    content: "Rendering diagram…";
+  }
+  .md
+    :global(
+      .mermaid-diagram[data-mermaid-status="rendering"] .mermaid-source
+    ) {
+    display: none;
+  }
+  .md :global(.mermaid-source) {
+    margin: 0;
+    white-space: pre-wrap;
+  }
+  .md :global(.mermaid-diagram svg) {
+    display: block;
+    width: auto;
+    min-width: min(100%, 24rem);
+    max-width: 100%;
+    height: auto;
+    margin: 0 auto;
+  }
+  .md :global(.mermaid-error) {
+    margin-bottom: 0.45rem;
+    color: var(--error-text);
+    font-size: 0.78rem;
+  }
+  .md :global(.mermaid-diagram pre) {
+    margin: 0;
   }
   .md :global(.md-code-copy) {
     position: relative;

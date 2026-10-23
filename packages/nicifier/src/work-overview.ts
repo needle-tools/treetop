@@ -1,5 +1,6 @@
 import type {
   VisualFileEdit,
+  VisualFileEditSummary,
   VisualMediaBlock,
   VisualTokenUsage as TokenUsage,
   VisualToolBlock as MessageBlock,
@@ -15,6 +16,11 @@ import {
   visualToolPreviewParts,
   visualToolPreviewText,
   visualToolRemoteHostLabel,
+  visualArtifactPathKind,
+  visualToolReadResultPreview,
+  visualToolExecutionLayers,
+  visualFileEditWithCapturedRead,
+  type VisualCapturedFileRead,
 } from "./tool-preview.js";
 import {
   estimateModelTokenCost,
@@ -57,7 +63,7 @@ export interface VisualWorkTimeOverview {
 
 export interface VisualWorkArtifact {
   id: string;
-  kind: "file" | "image" | "remote" | "container" | "other";
+  kind: "file" | "image" | "remote" | "container" | "git" | "symbolic" | "other";
   action: "referenced" | "used" | "changed" | "produced";
   label: string;
   path?: string;
@@ -132,8 +138,10 @@ export interface VisualWorkTokenOverview {
 }
 
 export interface VisualWorkOverview {
+  usageScope?: import("./subagent-usage.js").VisualUsageScope;
   lines: string[];
   artifacts: VisualWorkArtifact[];
+  fileEdits: ReadonlyMap<VisualWorkEntryLike, VisualFileEditSummary>;
   time: VisualWorkTimeOverview;
   tokenCount: number;
   tokens: VisualWorkTokenOverview;
@@ -164,11 +172,13 @@ export interface VisualWorkOverviewOptions {
   timeScope?: "item" | "entries";
   model?: string;
   modelsDev?: ModelsDevPricingSnapshot;
+  /** Reuse before-state resolution from the enclosing round in narrower action groups. */
+  fileEdits?: VisualWorkOverview["fileEdits"];
 }
 
 export interface VisualWorkDetailGroup<T extends VisualWorkDisplayEntryLike> {
   id: string;
-  kind: "actions" | "response";
+  kind: "actions" | "response" | "user";
   entries: T[];
   /** Includes non-rendered token checkpoints attributed to this visible step. */
   overviewEntries: T[];
@@ -755,6 +765,17 @@ function addArtifact(
   artifacts: VisualWorkArtifact[],
   artifact: Omit<VisualWorkArtifact, "id">,
 ): void {
+  if (artifact.kind === "file" && artifact.path) {
+    const targetKind = visualArtifactPathKind(artifact.path);
+    if (targetKind === "stream") return;
+    if (targetKind !== "file") artifact = {
+      ...artifact,
+      kind: targetKind === "url" ? "remote" : "symbolic",
+      label: artifact.path,
+      title: `${targetKind === "url" ? "URL" : "Unresolved shell path"}: ${artifact.path}`,
+      path: undefined,
+    };
+  }
   const stablePath = artifact.path
     ? artifact.path.replace(/\\/g, "/").replace(/\/+$/, "")
     : "";
@@ -893,8 +914,36 @@ function looksLikeArtifactPath(path: string, label: string): boolean {
   return /\.[A-Za-z0-9][A-Za-z0-9_-]{0,12}(?::\d+(?:-\d+)?)?$/.test(clean);
 }
 
+interface CapturedRead extends VisualCapturedFileRead {
+  availableAfter: number;
+}
+
+function capturedFileKey(block: MessageBlock, path: string): string | undefined {
+  const input = block.toolInput && typeof block.toolInput === "object" ? block.toolInput as Record<string, unknown> : undefined;
+  const command = typeof block.toolInput === "string" ? block.toolInput : input?.cmd ?? input?.command;
+  // A command-local cwd change cannot be resolved from the session's default cwd.
+  if (typeof command === "string" && /(?:^|[;&|\n'"])\s*cd\s/.test(command)) return undefined;
+  const suppliedCwd = input?.cwd ?? input?.workdir;
+  const cwd = typeof suppliedCwd === "string" ? suppliedCwd : "";
+  const clean = path.replace(/:\d+(?:-\d+)?$/, "").replace(/\\/g, "/");
+  const full = clean.startsWith("/") || /^[A-Za-z]:\//.test(clean) ? clean : `${cwd ? `${cwd}/` : ""}${clean}`;
+  const parts: string[] = [];
+  for (const part of full.split("/")) {
+    if (part === ".") continue;
+    if (part === ".." && parts.length && parts.at(-1) !== ".." && parts.at(-1) !== "") parts.pop();
+    else parts.push(part);
+  }
+  const containers = visualToolExecutionLayers(block).filter(layer => layer.kind === "container").map(layer => layer.label);
+  // Display labels alone do not prove identical SSH ports, container mounts, etc.
+  if (visualToolRemoteHostLabel(block) || containers.length) return undefined;
+  return parts.join("/");
+}
+
 function artifactsForEntry(
   entry: VisualWorkDisplayEntryLike,
+  capturedReads: Map<string, CapturedRead>,
+  fileEdits: Map<VisualWorkEntryLike, VisualFileEditSummary>,
+  enclosingEdits?: VisualWorkOverview["fileEdits"],
 ): VisualWorkArtifact[] {
   // Long-running results may remain as a second display row while still
   // pointing back to their original tool use. The artifact belongs to that
@@ -909,21 +958,57 @@ function artifactsForEntry(
   const artifacts: VisualWorkArtifact[] = [];
   const primaryToolBlock = toolUseBlock(entry);
   const resultBlock = toolResultBlock(entry);
-  const artifactInputs = toolUseBlocks(entry).map((toolBlock) => {
+  const toolBlocks = toolUseBlocks(entry);
+  const entryEdits: VisualFileEdit[] = [];
+  const artifactInputs = toolBlocks.map((toolBlock) => {
     const previewText = visualToolPreviewText(toolBlock);
     const icon = visualToolIconNameForPreview(toolBlock, previewText);
     const readsArtifacts = icon === "read" || icon === "search";
     const readPreview = visualToolArtifactContentPreview(toolBlock, resultBlock);
-    const editSummary = visualFileEditSummaryForBlock(toolBlock);
+    const originalEdits = visualFileEditSummaryForBlock(toolBlock);
+    const editSummary = originalEdits && { ...originalEdits, files: originalEdits.files.map(file => {
+      const key = capturedFileKey(toolBlock, file.path);
+      const before = key ? capturedReads.get(key) : undefined;
+      const resolved = enclosingEdits?.get(entry.entry)?.files.find(value => value.path === file.path)
+        ?? visualFileEditWithCapturedRead(file, before && before.availableAfter < entry.entry.messageIndex ? before : undefined);
+      if (key) capturedReads.delete(key);
+      else capturedReads.clear();
+      return resolved;
+    }) };
+    if (editSummary) entryEdits.push(...editSummary.files);
     const editedPaths = new Set(editSummary?.files.map((file) => file.path) ?? []);
-    const pathParts = visualToolPreviewParts(toolBlock).filter(
+    const previewParts = visualToolPreviewParts(toolBlock);
+    for (const part of previewParts) {
+      if (part.kind !== "git-ref") continue;
+      addArtifact(artifacts, {
+        kind: "git",
+        action: "referenced",
+        label: part.text,
+        title: `${part.operation}${part.remote ? ` ${part.remote}` : ""} ${part.ref}`,
+      });
+    }
+    const pathParts = previewParts.filter(
       (part) =>
-        part.kind === "path" &&
+        part.kind === "resource" || (part.kind === "path" &&
         looksLikeArtifactPath(part.path, part.text) &&
-        !editedPaths.has(part.path),
+        !editedPaths.has(part.path)),
     );
+    let capturedRead = false;
+    if (toolBlocks.length === 1 && pathParts.length === 1 && pathParts[0]?.kind === "path") {
+      const read = visualToolReadResultPreview(toolBlock, resultBlock);
+      const part = pathParts[0];
+      const key = capturedFileKey(toolBlock, part.path);
+      const result = resultBlock ? cleanVisualToolResultText(resultBlock.text, true) : undefined;
+      if (read && /^Read (?!logs\b)/i.test(read.title) && key && (result?.exitCode === undefined || result.exitCode === 0)) {
+        capturedReads.set(key, { body: result?.body ?? read.body, startLine: Number(part.range.match(/^:(\d+)/)?.[1] ?? 1), availableAfter: toolResultEntry(entry)?.messageIndex ?? entry.entry.messageIndex });
+        capturedRead = true;
+      }
+    }
+    // Unknown intervening commands may mutate the file (including git operations).
+    if (!editSummary && !capturedRead) capturedReads.clear();
     return { readsArtifacts, readPreview, editSummary, editedPaths, pathParts };
   });
+  if (entryEdits.length) fileEdits.set(entry.entry, visualFileEditSummaryForBlock({ type: "tool_use", observedFileEdits: entryEdits })!);
   const contentTargetCount = artifactInputs.reduce(
     (sum, input) => sum + (input.readPreview ? input.pathParts.length : 0),
     0,
@@ -945,6 +1030,14 @@ function artifactsForEntry(
           additions: file.additions,
           deletions: file.deletions,
           diff: file.raw,
+          preview: file.preview,
+          previewTitle: file.previewTitle,
+          diffKind:
+            file.raw === undefined
+              ? file.action === "added"
+                ? "untracked"
+                : "workdir"
+              : undefined,
           fileAction: file.action,
           contentTokenCount,
           contentTokenCountEstimated:
@@ -953,8 +1046,9 @@ function artifactsForEntry(
       }
     }
     for (const part of pathParts) {
-      if (part.kind !== "path") continue;
-      if (editedPaths.has(part.path)) continue;
+      if (part.kind !== "path" && part.kind !== "resource") continue;
+      const path = part.kind === "resource" ? part.target : part.path;
+      if (editedPaths.has(path)) continue;
       const targetIndex = readPreview ? contentTargetIndex++ : -1;
       const contentTokenCount = readPreview
         ? allocateCapturedContent(
@@ -974,7 +1068,7 @@ function artifactsForEntry(
         kind: "file",
         action: readsArtifacts ? "used" : "referenced",
         label: part.text,
-        path: part.path,
+        path,
         preview: readPreview?.body,
         previewTitle: readPreview?.title,
         contentTokenCount,
@@ -1089,6 +1183,7 @@ function commandSummaryLine(
 
 function changedFileSummary(
   entries: readonly VisualWorkDisplayEntryLike[],
+  fileEdits?: ReadonlyMap<VisualWorkEntryLike, VisualFileEditSummary>,
 ): VisualWorkChangedFile[] {
   const files = new Map<
     string,
@@ -1102,8 +1197,8 @@ function changedFileSummary(
     }
   >();
   for (const entry of entries) {
-    for (const toolBlock of toolUseBlocks(entry)) {
-      const summary = visualFileEditSummaryForBlock(toolBlock);
+    const resolved = fileEdits?.get(entry.entry);
+    for (const summary of resolved ? [resolved] : toolUseBlocks(entry).map(visualFileEditSummaryForBlock)) {
       if (!summary) continue;
       for (const file of summary.files) {
         const existing = files.get(file.path) ?? {
@@ -1141,8 +1236,8 @@ function changedFileSummary(
 
 function editSummaryLine(
   entries: readonly VisualWorkDisplayEntryLike[],
+  changed = changedFileSummary(entries),
 ): string | undefined {
-  const changed = changedFileSummary(entries);
   if (changed.length === 0) return undefined;
   const additions = changed.reduce(
     (sum, file) => sum + (file.additions ?? 0),
@@ -1182,8 +1277,11 @@ function remoteSummaryLine(
 
 function artifactSummary(
   entries: readonly VisualWorkDisplayEntryLike[],
-): VisualWorkArtifact[] {
-  const artifacts = entries.flatMap(artifactsForEntry);
+  enclosingEdits?: VisualWorkOverview["fileEdits"],
+): { artifacts: VisualWorkArtifact[]; fileEdits: ReadonlyMap<VisualWorkEntryLike, VisualFileEditSummary> } {
+  const capturedReads = new Map<string, CapturedRead>();
+  const fileEdits = new Map<VisualWorkEntryLike, VisualFileEditSummary>();
+  const artifacts = entries.flatMap(entry => artifactsForEntry(entry, capturedReads, fileEdits, enclosingEdits));
   const deduped = new Map<string, VisualWorkArtifact>();
   for (const artifact of artifacts) {
     const existing = deduped.get(artifact.id);
@@ -1192,10 +1290,44 @@ function artifactSummary(
       existing ? mergeArtifact(existing, artifact) : artifact,
     );
   }
-  return [...deduped.values()];
+  return { artifacts: [...deduped.values()], fileEdits };
 }
 
+// The shared visual projection replaces arrays/messages on change. Keep its
+// content summaries across clock ticks; durations and token rates stay live.
+const workOverviewCache = new WeakMap<readonly VisualWorkDisplayEntryLike[], {
+  model: string | undefined;
+  modelsDev: ModelsDevPricingSnapshot | undefined;
+  fileEdits: VisualWorkOverview["fileEdits"] | undefined;
+  overview: VisualWorkOverview;
+}>();
+
 export function visualWorkOverview(
+  item: VisualWorkItemLike,
+  entries: readonly VisualWorkDisplayEntryLike[],
+  options: VisualWorkOverviewOptions = {},
+): VisualWorkOverview {
+  const cached = workOverviewCache.get(entries);
+  if (!cached || cached.model !== options.model || cached.modelsDev !== options.modelsDev || cached.fileEdits !== options.fileEdits) {
+    const overview = computeVisualWorkOverview(item, entries, options);
+    workOverviewCache.set(entries, { model: options.model, modelsDev: options.modelsDev, fileEdits: options.fileEdits, overview });
+    return overview;
+  }
+  const now = options.now instanceof Date ? options.now.getTime()
+    : typeof options.now === "string" ? Date.parse(options.now)
+    : options.now ?? Date.now();
+  const scopedItem = options.timeScope === "entries" ? itemScopedToEntries(item, entries) : item;
+  const time = workTimeOverview(scopedItem, entries, Number.isFinite(now) ? now : Date.now());
+  const tokens = cached.overview.tokens;
+  return { ...cached.overview, time, tokens: {
+    ...tokens,
+    perSecond: tokenRate(tokens.output, time.elapsedMs),
+    agentPerSecond: tokenRate(tokens.agent, time.elapsedMs),
+    toolPerSecond: tokenRate(tokens.tool, time.elapsedMs),
+  } };
+}
+
+function computeVisualWorkOverview(
   item: VisualWorkItemLike,
   entries: readonly VisualWorkDisplayEntryLike[],
   options: VisualWorkOverviewOptions = {},
@@ -1216,16 +1348,18 @@ export function visualWorkOverview(
   const cost = costOverview(entries, options.model, options.modelsDev);
   const categories = actionCategoryCounts(entries);
   const languages = languageCounts(entries);
-  const changedFiles = changedFileSummary(entries);
+  const { artifacts, fileEdits } = artifactSummary(entries, options.fileEdits);
+  const changedFiles = changedFileSummary(entries, fileEdits);
   const hosts = remoteHosts(entries);
   const lines = [
-    editSummaryLine(entries),
+    editSummaryLine(entries, changedFiles),
     commandSummaryLine(entries),
     remoteSummaryLine(entries),
   ].filter((line): line is string => !!line);
   return {
     lines,
-    artifacts: artifactSummary(entries),
+    artifacts,
+    fileEdits,
     time,
     tokenCount: tokens.total,
     tokens,
@@ -1239,12 +1373,22 @@ export function visualWorkOverview(
   };
 }
 
+const workDetailEntriesCache = new WeakMap<readonly VisualWorkDisplayEntryLike[], VisualWorkDisplayEntryLike[]>();
+const workDetailGroupsCache = new WeakMap<readonly VisualWorkDisplayEntryLike[], {
+  allEntries: readonly VisualWorkDisplayEntryLike[];
+  groups: VisualWorkDetailGroup<VisualWorkDisplayEntryLike>[];
+}>();
+
 export function visualWorkDetailEntries<T extends VisualWorkDisplayEntryLike>(
   item: VisualWorkItemLike,
   entries: readonly T[],
   options: VisualWorkDetailOptions,
 ): T[] {
+  if (!options.full && item.open !== true) return [];
+  const cached = workDetailEntriesCache.get(entries);
+  if (cached) return cached as T[];
   const renderable = entries.filter(isRenderableDetailEntry);
+  workDetailEntriesCache.set(entries, renderable);
   if (options.full) return renderable;
   if (item.open !== true) return [];
   return renderable;
@@ -1265,6 +1409,8 @@ export function visualWorkDetailGroups<T extends VisualWorkDisplayEntryLike>(
   entries: readonly T[],
   allEntries: readonly T[] = entries,
 ): VisualWorkDetailGroup<T>[] {
+  const cached = workDetailGroupsCache.get(entries);
+  if (cached?.allEntries === allEntries) return cached.groups as VisualWorkDetailGroup<T>[];
   const groups: VisualWorkDetailGroup<T>[] = [];
   let pendingActions: T[] = [];
 
@@ -1282,14 +1428,15 @@ export function visualWorkDetailGroups<T extends VisualWorkDisplayEntryLike>(
   }
 
   for (const entry of entries) {
-    if (!isAgentResponseEntry(entry)) {
+    const userMessage = entry.entry.message.role === "user";
+    if (!userMessage && !isAgentResponseEntry(entry)) {
       pendingActions.push(entry);
       continue;
     }
     flushActions();
     groups.push({
-      id: `response:${visualWorkDisplayEntryGroupKey(entry)}`,
-      kind: "response",
+      id: `${userMessage ? "user" : "response"}:${visualWorkDisplayEntryGroupKey(entry)}`,
+      kind: userMessage ? "user" : "response",
       entries: [entry],
       overviewEntries: [entry],
     });
@@ -1311,6 +1458,7 @@ export function visualWorkDetailGroups<T extends VisualWorkDisplayEntryLike>(
       (a, b) => a.entry.messageIndex - b.entry.messageIndex,
     );
   }
+  workDetailGroupsCache.set(entries, { allEntries, groups });
   return groups;
 }
 

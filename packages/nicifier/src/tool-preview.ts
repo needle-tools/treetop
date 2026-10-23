@@ -40,14 +40,20 @@ export interface CodexSubagentActivityFields {
   toolUseId: string;
   subagentId: string;
   subagentNickname?: string;
-  subagentAction: "spawn" | "notification";
-  subagentStatus: "running" | "completed" | "failed";
+  subagentIsParent?: boolean;
+  subagentAction: "spawn" | "wait" | "notification";
+  subagentStatus: "running" | "completed" | "failed" | "unknown";
+  subagentModel?: string;
+  subagentEffort?: string;
+  subagentMessage?: string;
+  subagentResult?: string;
 }
 
 /** Normalize the same Codex subagent lifecycle item from its JSONL
  * snake_case/PascalCase representation and app-server camelCase shape. */
 export function codexSubagentActivityFields(
   value: unknown,
+  parentThreadId?: string,
 ): CodexSubagentActivityFields | undefined {
   if (!value || typeof value !== "object") return undefined;
   const item = value as Record<string, unknown>;
@@ -66,10 +72,15 @@ export function codexSubagentActivityFields(
     .split("/")
     .filter(Boolean)
     .pop();
+  const model = subagentStringField(item.model);
+  const effort = subagentStringField(item.reasoning_effort ?? item.reasoningEffort);
   return {
     toolUseId,
     subagentId,
     ...(nickname ? { subagentNickname: nickname } : {}),
+    ...(subagentId === parentThreadId ? { subagentIsParent: true } : {}),
+    ...(model ? { subagentModel: model } : {}),
+    ...(effort ? { subagentEffort: effort } : {}),
     subagentAction: kind === "started" ? "spawn" : "notification",
     subagentStatus:
       kind === "completed"
@@ -78,6 +89,50 @@ export function codexSubagentActivityFields(
           ? "failed"
           : "running",
   };
+}
+
+/** App-server and JSONL carry the same collaboration call in camel/snake case.
+ * Completion of the call is distinct from completion of each target agent. */
+export function codexCollabAgentToolCallFields(
+  value: unknown,
+  parentThreadId?: string,
+): CodexSubagentActivityFields[] {
+  if (!value || typeof value !== "object") return [];
+  const item = value as Record<string, unknown>;
+  if (item.type !== "collabAgentToolCall" && item.type !== "CollabAgentToolCall") return [];
+  const toolUseId = subagentStringField(item.id);
+  if (!toolUseId) return [];
+  const rawStates = item.agentsStates ?? item.agents_states;
+  const states = rawStates && typeof rawStates === "object"
+    ? rawStates as Record<string, unknown> : {};
+  const rawTargets = item.receiverThreadIds ?? item.receiver_thread_ids;
+  const targets = new Set([
+    ...(Array.isArray(rawTargets) ? rawTargets.filter((id): id is string => typeof id === "string") : []),
+    ...Object.keys(states),
+  ]);
+  const model = subagentStringField(item.model);
+  const effort = subagentStringField(item.reasoningEffort ?? item.reasoning_effort);
+  const prompt = subagentStringField(item.prompt);
+  return [...targets].map((id) => {
+    const state = states[id] && typeof states[id] === "object"
+      ? states[id] as Record<string, unknown> : {};
+    const status = subagentStringField(state.status);
+    const result = subagentStringField(state.message);
+    const spawn = item.tool === "spawnAgent" || item.tool === "spawn_agent";
+    return {
+      toolUseId,
+      subagentId: id,
+      ...(id === parentThreadId ? { subagentIsParent: true } : {}),
+      subagentAction: spawn ? "spawn" : item.tool === "wait" ? "wait" : "notification",
+      subagentStatus: status === "completed" ? "completed"
+        : status === "errored" || status === "interrupted" || status === "notFound" ? "failed"
+          : status === "running" || status === "pendingInit" || (spawn && !status) ? "running" : "unknown",
+      ...(model ? { subagentModel: model } : {}),
+      ...(effort ? { subagentEffort: effort } : {}),
+      ...(prompt ? { subagentMessage: prompt } : {}),
+      ...(result ? { subagentResult: result } : {}),
+    };
+  });
 }
 
 function subagentStringField(value: unknown): string | undefined {
@@ -323,9 +378,11 @@ export function visualFileEditTotals(
 
 export function cleanVisualToolResultText(
   text: string | undefined,
+  preserveWhitespace = false,
 ): VisualToolResultText {
   const raw = text ?? "";
   const trimmed = raw.trim();
+  const content = (value: string) => preserveWhitespace ? value : value.trim();
   if (!trimmed) {
     return {
       title: "Tool result",
@@ -335,19 +392,19 @@ export function cleanVisualToolResultText(
   }
 
   const codexChunk = trimmed.match(
-    /^Chunk ID:\s+\S+\s+Wall time:\s+([\d.]+)\s+seconds\s+Process exited with code\s+(-?\d+)(?:\s+Original token count:\s+(\d+))?\s+Output:\s*([\s\S]*)$/i,
+    /^Chunk ID:\s+\S+\s+Wall time:\s+([\d.]+)\s+seconds\s+Process exited with code\s+(-?\d+)(?:\s+Original token count:\s+(\d+))?\s+Output:[ \t]*(?:\r?\n)?([\s\S]*)$/i,
   );
   const codexRunningChunk = trimmed.match(
-    /^Chunk ID:\s+\S+\s+Wall time:\s+([\d.]+)\s+seconds\s+Process running with session ID\s+(\d+)(?:\s+Original token count:\s+(\d+))?\s+Output:\s*([\s\S]*)$/i,
+    /^Chunk ID:\s+\S+\s+Wall time:\s+([\d.]+)\s+seconds\s+Process running with session ID\s+(\d+)(?:\s+Original token count:\s+(\d+))?\s+Output:[ \t]*(?:\r?\n)?([\s\S]*)$/i,
   );
   const plainCommandResult = trimmed.match(
-    /^Exit code:\s+(-?\d+)\s+Wall time:\s+([\d.]+)\s+seconds?\s+Output:\s*([\s\S]*)$/i,
+    /^Exit code:\s+(-?\d+)\s+Wall time:\s+([\d.]+)\s+seconds?\s+Output:[ \t]*(?:\r?\n)?([\s\S]*)$/i,
   );
   const scriptCompletedResult = trimmed.match(
-    /^Script completed\s+Wall time\s+([\d.]+)\s+seconds?\s+Output:\s*([\s\S]*)$/i,
+    /^Script completed\s+Wall time\s+([\d.]+)\s+seconds?\s+Output:[ \t]*(?:\r?\n)?([\s\S]*)$/i,
   );
   const scriptRunningResult = trimmed.match(
-    /^Script running with cell ID\s+\d+\s+Wall time\s+([\d.]+)\s+seconds?\s+Output:\s*([\s\S]*)$/i,
+    /^Script running with cell ID\s+\d+\s+Wall time\s+([\d.]+)\s+seconds?\s+Output:[ \t]*(?:\r?\n)?([\s\S]*)$/i,
   );
   if (
     !codexChunk &&
@@ -358,7 +415,7 @@ export function cleanVisualToolResultText(
   ) {
     return {
       title: "Tool result",
-      body: trimmed,
+      body: content(raw),
       wrappedCodexChunk: false,
     };
   }
@@ -366,7 +423,7 @@ export function cleanVisualToolResultText(
   if (codexRunningChunk) {
     const wallTimeSeconds = Number(codexRunningChunk[1]);
     const processSessionId = Number.parseInt(codexRunningChunk[2]!, 10);
-    const output = (codexRunningChunk[4] ?? "").trim();
+    const output = content(codexRunningChunk[4] ?? "");
     return {
       title: output ? "Process output" : "Process still running",
       body: output,
@@ -386,7 +443,7 @@ export function cleanVisualToolResultText(
 
   if (scriptRunningResult) {
     const wallTimeSeconds = Number(scriptRunningResult[1]);
-    const output = (scriptRunningResult[2] ?? "").trim();
+    const output = content(scriptRunningResult[2] ?? "");
     const processSessionId = sessionIdFromResultOutput(output);
     return {
       title: output ? "Process output" : "Process still running",
@@ -402,9 +459,9 @@ export function cleanVisualToolResultText(
 
   if (scriptCompletedResult) {
     const wrapperWallTimeSeconds = Number(scriptCompletedResult[1]);
-    const rawOutput = (scriptCompletedResult[2] ?? "").trim();
+    const rawOutput = content(scriptCompletedResult[2] ?? "");
     const payload = parsedToolResultPayload(rawOutput);
-    const output = (payload?.output ?? rawOutput).trim();
+    const output = content(payload?.output ?? rawOutput);
     const processSessionId =
       payload?.processSessionId ?? sessionIdFromResultOutput(output);
     const processRunning =
@@ -428,7 +485,7 @@ export function cleanVisualToolResultText(
   const exitCode = codexChunk?.[2] ?? plainCommandResult?.[1] ?? "0";
   const parsedExitCode = Number.parseInt(exitCode, 10);
   const wallTimeSeconds = Number(codexChunk?.[1] ?? plainCommandResult?.[2]);
-  const output = (codexChunk?.[4] ?? plainCommandResult?.[3] ?? "").trim();
+  const output = content(codexChunk?.[4] ?? plainCommandResult?.[3] ?? "");
   const title = output
     ? "Command output"
     : parsedExitCode === 0
@@ -777,12 +834,14 @@ export interface VisualToolResultBadge {
 
 export type VisualToolPreviewPart =
   | { kind: "text"; text: string }
+  | { kind: "git-ref"; text: string; ref: string; operation: string; remote?: string }
+  | { kind: "resource"; text: string; target: string; resourceKind: "symbolic" | "url" }
   | {
       kind: "path";
       text: string;
       path: string;
       range: string;
-      diffKind?: "workdir" | "staged";
+      diffKind?: "workdir" | "staged" | "untracked";
     };
 
 export interface VisualToolPreviewContext {
@@ -2207,7 +2266,7 @@ export function visualToolEnvTooltipText(
   block: MessageBlock | undefined,
 ): string {
   return visualToolEnvAssignments(block)
-    .map((item) => `${item.name}=${item.value}`)
+    .map((item) => item.unset ? `unset ${item.name}` : `${item.name}=${item.value}`)
     .join("\n");
 }
 
@@ -2870,6 +2929,19 @@ interface FormattedPathTarget {
   range: string;
 }
 
+/** Classify shell targets without consulting or executing the user's shell. */
+export function visualArtifactPathKind(path: string): "file" | "stream" | "symbolic" | "url" {
+  const value = path.replace(/\\/g, "/");
+  if (/^\/dev\/(?:null|zero|random|urandom|stdin|stdout|stderr|tty|console|ptmx)$/.test(value)
+    || /^\/dev\/fd(?:\/\d+)?$/.test(value)
+    || /^\/proc\/(?:self|\d+)\/fd\/\d+$/.test(value)
+    || /^\/dev\/(?:tcp|udp)\//.test(value)
+    || /^(?:NUL|CON|CONIN\$|CONOUT\$|COM[1-9]|LPT[1-9]):?$/i.test(value)) return "stream";
+  if (/^[A-Za-z][A-Za-z0-9+.-]*:\/\//.test(value)) return "url";
+  if (/\$(?:[A-Za-z_({]|\d)|`/.test(value)) return "symbolic";
+  return "file";
+}
+
 function formatPathTargetParts(
   targets: readonly string[],
 ): FormattedPathTarget[] {
@@ -2921,7 +2993,11 @@ function interspersePathParts(
   return formatted.flatMap((target, index): VisualToolPreviewPart[] => {
     const prefix: VisualToolPreviewPart[] =
       index === 0 ? [] : [{ kind: "text", text: ", " }];
-    return [...prefix, target];
+    const kind = visualArtifactPathKind(target.path);
+    if (kind === "file") return [...prefix, target];
+    const text = `${target.path}${target.range}`;
+    return [...prefix, kind === "stream" ? { kind: "text", text }
+      : { kind: "resource", text, target: target.path, resourceKind: kind }];
   });
 }
 
@@ -3378,7 +3454,7 @@ function collectCommandLauncherFamilies(
   if (inlineScriptFromCommand(command)) return;
   const unwrapped =
     unwrappedShellPayload(tokens, head) ??
-    unwrappedSudoPayload(tokens) ??
+    unwrappedSudoPayload(tokens, command) ??
     unwrappedSshPayload(tokens) ??
     unwrappedDockerPayload(tokens);
   if (unwrapped) {
@@ -3435,7 +3511,7 @@ function normalizeLaunchedCommand(command: string): {
   for (let i = 0; i < 8; i += 1) {
     current = stripOuterShellGroup(current);
     const setup = stripInlineEnvAssignments(current);
-    if (setup.env.length > 0) {
+    if (setup.command !== current || setup.env.length > 0) {
       env.push(...setup.env);
       current = setup.command.trim();
     }
@@ -3454,10 +3530,10 @@ function normalizeLaunchedCommand(command: string): {
       | undefined =
       unwrappedRuntimeStdinPayload(current) ??
       next ??
-      unwrappedSudoPayload(tokens) ??
+      unwrappedSudoPayload(tokens, current) ??
       unwrappedSshPayload(tokens) ??
       unwrappedDockerPayload(tokens) ??
-      unwrappedWslPayload(tokens);
+      unwrappedWslPayload(tokens, current);
     if (!unwrapped) {
       return { command: current, launcher, remoteHost, env, layers };
     }
@@ -3473,7 +3549,7 @@ function normalizeLaunchedCommand(command: string): {
     current = unwrapped.command.trim();
   }
   const setup = stripInlineEnvAssignments(current);
-  if (setup.env.length > 0) {
+  if (setup.command !== current || setup.env.length > 0) {
     env.push(...setup.env);
     current = setup.command.trim();
   }
@@ -3518,6 +3594,7 @@ function stripOuterShellGroup(command: string): string {
 
 function unwrappedSudoPayload(
   tokens: string[],
+  source?: string,
 ): { command: string } | undefined {
   if (shellLauncherName(tokens[0] ?? "") !== "sudo") return undefined;
   const valueOptions = new Set([
@@ -3541,7 +3618,7 @@ function unwrappedSudoPayload(
     const option = token.slice(0, 2);
     if (!token.includes("=") && valueOptions.has(option)) index += 1;
   }
-  const command = tokens.slice(index).join(" ").trim();
+  const command = shellPayloadSuffix(tokens, index, source).trim();
   return command ? { command } : undefined;
 }
 
@@ -3565,7 +3642,8 @@ function stripInlineEnvAssignments(command: string): {
   command: string;
   env: VisualToolEnvAssignment[];
 } {
-  const tokens = shellTokens(command);
+  const tokenStarts: number[] = [];
+  const tokens = shellTokens(command, tokenStarts);
   const env: VisualToolEnvAssignment[] = [];
   const startsWithExport = tokens[0] === "export";
   const startsWithEnv = shellLauncherName(tokens[0] ?? "") === "env";
@@ -3578,18 +3656,31 @@ function stripInlineEnvAssignments(command: string): {
         break;
       }
       if (token === "-u" || token === "--unset") {
+        const name = tokens[commandStart + 1];
+        if (!name) return { command, env: [] };
+        env.push({ name, value: "", unset: true });
         commandStart += 1;
+        continue;
+      }
+      if (token.startsWith("--unset=")) {
+        env.push({ name: token.slice("--unset=".length), value: "", unset: true });
+        continue;
+      }
+      if (token.startsWith("-u") && token.length > 2) {
+        env.push({ name: token.slice(2), value: "", unset: true });
         continue;
       }
       if (
         token === "-i" ||
         token === "-0" ||
         token === "--ignore-environment" ||
-        token === "--null" ||
-        token.startsWith("--unset=")
+        token === "--null"
       ) {
         continue;
       }
+      // Unknown options can change how the payload is interpreted. Keep the
+      // original command rather than silently pretending they were absent.
+      if (token.startsWith("-")) return { command, env: [] };
       break;
     }
   }
@@ -3599,8 +3690,10 @@ function stripInlineEnvAssignments(command: string): {
     env.push({ name: match[1]!, value: match[2] ?? "" });
     commandStart += 1;
   }
-  if (env.length === 0) return { command, env };
-  return { command: tokens.slice(commandStart).join(" "), env };
+  // With no executable, env prints the environment; it is not a wrapper.
+  if (startsWithEnv && commandStart >= tokens.length) return { command, env: [] };
+  if (env.length === 0 && !startsWithEnv) return { command, env };
+  return { command: command.slice(tokenStarts[commandStart] ?? command.length), env };
 }
 
 function shellLauncherName(command: string): string {
@@ -3615,16 +3708,12 @@ function unwrappedShellPayload(
   tokens: string[],
   shell: string,
 ): { command: string; launcher: string; remoteHost?: string } | undefined {
-  if (shell === "env") {
-    const envPayload = unwrapEnvShellPayload(tokens);
-    if (envPayload) return envPayload;
-  }
   if (/^(?:bash|dash|fish|ksh|sh|zsh)$/.test(shell)) {
     const flagIndex = tokens.findIndex(
       (token, index) => index > 0 && /^-[a-zA-Z]*c[a-zA-Z]*$/.test(token),
     );
     const command =
-      flagIndex >= 0 ? tokens.slice(flagIndex + 1).join(" ") : undefined;
+      flagIndex >= 0 ? tokens[flagIndex + 1] : undefined;
     return command ? { command, launcher: shell } : undefined;
   }
   if (shell === "cmd") {
@@ -3646,22 +3735,6 @@ function unwrappedShellPayload(
       return undefined;
     }
     return { command: payload, launcher: shell };
-  }
-  return undefined;
-}
-
-function unwrapEnvShellPayload(
-  tokens: string[],
-): { command: string; launcher: string; remoteHost?: string } | undefined {
-  for (let i = 1; i < tokens.length; i += 1) {
-    const token = tokens[i]!;
-    if (token.includes("=") && !token.startsWith("-")) continue;
-    if (token.startsWith("-")) {
-      if (/^-.[^\s]*S/.test(token) || token === "-S") continue;
-      continue;
-    }
-    const shell = shellLauncherName(token);
-    return unwrappedShellPayload(tokens.slice(i), shell);
   }
   return undefined;
 }
@@ -3934,7 +4007,7 @@ function unwrappedDockerPayload(
   };
 }
 
-function unwrappedWslPayload(tokens: string[]):
+function unwrappedWslPayload(tokens: string[], source?: string):
   | { command: string; layer: VisualToolExecutionLayer }
   | undefined {
   if (shellLauncherName(tokens[0] ?? "") !== "wsl") return undefined;
@@ -3944,12 +4017,19 @@ function unwrappedWslPayload(tokens: string[]):
     valueAfterFlag(tokens.slice(0, separator), "-d") ??
     valueAfterFlag(tokens.slice(0, separator), "--distribution");
   return {
-    command: tokens.slice(separator + 1).join(" "),
+    command: shellPayloadSuffix(tokens, separator + 1, source),
     layer: {
       kind: "container",
       label: distribution ? `WSL · ${distribution}` : "WSL",
     },
   };
+}
+
+function shellPayloadSuffix(tokens: string[], index: number, source?: string): string {
+  if (source === undefined) return tokens.slice(index).join(" ");
+  const starts: number[] = [];
+  shellTokens(source, starts);
+  return source.slice(starts[index] ?? source.length);
 }
 
 function dockerExecIndex(tokens: string[], command: string): number {
@@ -4293,14 +4373,16 @@ function lsRequestsDetails(tokens: string[]): boolean {
     );
 }
 
-function shellTokens(command: string): string[] {
+function shellTokens(command: string, tokenStarts?: number[]): string[] {
   const tokens: string[] = [];
   let current = "";
   let quote: "'" | '"' | null = null;
   let escaped = false;
   let commandSubDepth = 0;
+  let tokenStart = -1;
   for (let index = 0; index < command.length; index += 1) {
     const ch = command[index]!;
+    if (tokenStart < 0 && !/\s/.test(ch)) tokenStart = index;
     if (escaped) {
       current += ch;
       escaped = false;
@@ -4347,13 +4429,18 @@ function shellTokens(command: string): string[] {
     if (/\s/.test(ch)) {
       if (current) {
         tokens.push(current);
+        tokenStarts?.push(tokenStart);
         current = "";
       }
+      tokenStart = -1;
       continue;
     }
     current += ch;
   }
-  if (current) tokens.push(current);
+  if (current) {
+    tokens.push(current);
+    tokenStarts?.push(tokenStart);
+  }
   return tokens;
 }
 
@@ -4663,15 +4750,22 @@ function summarizeGit(tokens: string[]): VisualCommandSummary | undefined {
     return { kind: "git", action: "remote", targets: [] };
   }
   if (subcommand === "diff") {
-    const targets = gitPathArgs(tokens.slice(subcommandIndex + 1));
+    const args = tokens.slice(subcommandIndex + 1);
+    const separator = args.indexOf("--");
+    const before = gitPathArgs(separator < 0 ? args : args.slice(0, separator), true);
+    const revisions = separator < 0
+      ? before.filter((value) => /^(?:refs\/|HEAD(?:$|[~^])|[0-9a-f]{7,40}$)/.test(value))
+      : before;
+    const targets = separator < 0
+      ? before.filter((value) => !revisions.includes(value)) : args.slice(separator + 1);
     const staged = tokens.includes("--cached") || tokens.includes("--staged");
     if (tokens.includes("--check")) {
-      return { kind: "git", action: "diff-check", targets, staged };
+      return { kind: "git", action: "diff-check", targets, revisions, staged };
     }
     if (tokens.includes("--stat") || tokens.includes("--name-status")) {
-      return { kind: "git", action: "diff-stat", targets, staged };
+      return { kind: "git", action: "diff-stat", targets, revisions, staged };
     }
-    return { kind: "git", action: "diff", targets, staged };
+    return { kind: "git", action: "diff", targets, revisions, staged };
   }
   if (subcommand === "show") {
     const showArgs = gitPathArgs(tokens.slice(subcommandIndex + 1));
@@ -5076,7 +5170,7 @@ function gitSubcommandIndex(tokens: string[]): number {
   return 1;
 }
 
-function gitPathArgs(tokens: string[]): string[] {
+function gitPathArgs(tokens: string[], includeHead = false): string[] {
   const optionsWithValue = new Set([
     "-b",
     "-B",
@@ -5129,7 +5223,7 @@ function gitPathArgs(tokens: string[]): string[] {
     if (token.includes("|") || token.includes(">")) break;
     targets.push(token);
   }
-  return targets.filter((target) => target !== "." && target !== "HEAD");
+  return targets.filter((target) => target !== "." && (includeHead || target !== "HEAD"));
 }
 
 function summarizeTestCommand(
@@ -7642,6 +7736,33 @@ function compactJsonQueryFilter(filter: string): string {
 function gitSummaryParts(
   summary: Extract<VisualCommandSummary, { kind: "git" }>,
 ): VisualToolPreviewPart[] {
+  if (summary.revisions?.length) {
+    const base = gitSummaryParts({ ...summary, revisions: undefined });
+    return [...base, ...summary.revisions.flatMap((ref): VisualToolPreviewPart[] => [
+      { kind: "text", text: " " }, { kind: "git-ref", text: ref, ref, operation: "diff" },
+    ])];
+  }
+  if (["fetch", "push", "pull"].includes(summary.action)) {
+    const [remote, ...refs] = summary.targets;
+    const label = summary.action === "fetch" ? "Fetch git refs"
+      : summary.action === "push" ? "Push changes" : "Pull changes";
+    const parts: VisualToolPreviewPart[] = [
+      { kind: "text", text: `${label}${remote ? ` ${remote}` : ""}` },
+    ];
+    for (const ref of refs) {
+      const clean = ref.replace(/^[+^]/, "");
+      const short = (value: string) => value.replace(/^refs\/(?:heads|remotes|tags)\//, "");
+      const separator = clean.indexOf(":");
+      const text = separator < 0
+        ? short(clean)
+        : `${short(clean.slice(0, separator)) || "(delete)"} → ${short(clean.slice(separator + 1)) || "(matching)"}`;
+      parts.push(
+        { kind: "text", text: " " },
+        { kind: "git-ref", text: ref.startsWith("^") ? `exclude ${text}` : text, ref, operation: summary.action, remote },
+      );
+    }
+    return parts;
+  }
   if (summary.action === "status") {
     return [{ kind: "text", text: "Check git status" }];
   }
@@ -7790,6 +7911,18 @@ function gitSummaryParts(
   };
   const label = lessCommonLabels[summary.action];
   if (label) {
+    if (summary.action === "config" || summary.action === "stash") {
+      return [{ kind: "text", text: `${label}${summary.targets.length ? ` ${summary.targets.join(" ")}` : ""}` }];
+    }
+    if (["merge", "rebase", "switch", "cherry-pick", "tag", "symbolic-ref", "for-each-ref", "ls-tree", "ls-remote"].includes(summary.action)) {
+      const [remote, ...refs] = summary.action === "ls-remote" ? summary.targets : [undefined, ...summary.targets];
+      return [
+        { kind: "text", text: `${label}${remote ? ` ${remote}` : ""}` },
+        ...refs.flatMap((ref): VisualToolPreviewPart[] => ref ? [
+          { kind: "text", text: " " }, { kind: "git-ref", text: ref, ref, operation: summary.action, ...(remote ? { remote } : {}) },
+        ] : []),
+      ];
+    }
     return [
       { kind: "text", text: label },
       ...prefixedPathList(summary.targets),
@@ -8333,6 +8466,21 @@ function changedLineCount(value: unknown): number | undefined {
     : value.split("\n").length;
 }
 
+function fullFileContentDiff(
+  content: string,
+  action: "added" | "deleted",
+): string {
+  const lines = content ? content.split(/\r?\n/) : [];
+  if (content.endsWith("\n")) lines.pop();
+  const count = lines.length;
+  const header =
+    action === "added"
+      ? `@@ -0,0 +1,${count} @@`
+      : `@@ -1,${count} +0,0 @@`;
+  const prefix = action === "added" ? "+" : "-";
+  return [header, ...lines.map((line) => `${prefix}${line}`)].join("\n");
+}
+
 function countUnifiedDiffLines(
   diff: unknown,
 ): { additions: number; deletions: number } | undefined {
@@ -8385,11 +8533,17 @@ function lineCountsFromChange(
         : undefined,
     };
   }
-  if (typeof item.content === "string" && action === "added") {
+  if (
+    typeof item.content === "string" &&
+    (action === "added" || action === "deleted")
+  ) {
+    const lineCount = changedLineCount(item.content) ?? 0;
     return {
-      additions: changedLineCount(item.content),
-      deletions: 0,
-      writtenTokenCountEstimate: estimateTextTokenCount(item.content),
+      additions: action === "added" ? lineCount : 0,
+      deletions: action === "deleted" ? lineCount : 0,
+      raw: fullFileContentDiff(item.content, action),
+      writtenTokenCountEstimate:
+        action === "added" ? estimateTextTokenCount(item.content) : undefined,
     };
   }
   return {
@@ -8492,6 +8646,10 @@ function claudeEditSummary(
         path,
         action: "added",
         additions: changedLineCount(input.content),
+        raw:
+          typeof input.content === "string"
+            ? fullFileContentDiff(input.content, "added")
+            : undefined,
         writtenTokenCountEstimate:
           typeof input.content === "string"
             ? estimateTextTokenCount(input.content)
@@ -8522,7 +8680,10 @@ function shellHeredocEditSummary(
       action: opener[1] === ">>" ? "edited" : "added",
       additions: body ? body.split(/\r?\n/).length : 0,
       deletions: 0,
-      raw: body,
+      raw:
+        opener[1] === ">>"
+          ? body
+          : fullFileContentDiff(body, "added"),
       writtenTokenCountEstimate: estimateTextTokenCount(body),
     },
   ]);
@@ -8550,26 +8711,149 @@ function shellScriptEditSummary(
     return literalPaths.get(value);
   }
 
-  const writes: Array<{ index: number; path: string }> = [];
+  const writes: Array<{ index: number; file: VisualFileEdit }> = [];
+  const replacements: Array<{ variable: string; startVariable: string; endVariable: string; index: number; end: number; content: string }> = [];
+  const sliceAssignment = /\b([A-Za-z_]\w*)\s*=\s*\1\s*\[\s*:\s*([A-Za-z_]\w*)\s*\]\s*\+\s*/g;
+  for (const match of command.matchAll(sliceAssignment)) {
+    const literal = pythonStringLiteralSpanAt(command, match.index + match[0].length);
+    if (!literal) continue;
+    const suffix = new RegExp(`^\\s*\\+\\s*${escapeRegExp(match[1]!)}\\s*\\[\\s*([A-Za-z_]\\w*)\\s*:\\s*\\]`).exec(command.slice(literal.end));
+    if (suffix) replacements.push({ variable: match[1]!, startVariable: match[2]!, endVariable: suffix[1]!, index: match.index, end: literal.end + suffix[0].length, content: literal.value });
+  }
+  const pathWritePattern = /\b(Path\s*\(\s*['"][^'"\n]+['"]\s*\)|[A-Za-z_$][\w$]*)\s*\.\s*write_(text|bytes)\s*\(/g;
+  for (const match of command.matchAll(pathWritePattern)) {
+    const path = resolvePath(match[1]);
+    if (!path || match.index === undefined) continue;
+    const content = match[2] === "text"
+      ? pythonStringLiteralAt(command, match.index + match[0].length)
+      : undefined;
+    const writtenVariable = /^\s*([A-Za-z_]\w*)\s*\)/.exec(command.slice(match.index + match[0].length))?.[1];
+    const replacement = match[2] === "text" && writtenVariable
+      ? replacements.findLast((value) => value.variable === writtenVariable && value.end < match.index!
+        && !new RegExp(`\\b${escapeRegExp(writtenVariable)}\\s*(?:[+*/%|&^-]?=|\\[)`).test(command.slice(value.end, match.index)))
+      : undefined;
+    let boundaries: VisualFileEdit["replacement"];
+    if (replacement) {
+      const prefix = command.slice(0, replacement.index);
+      const variable = escapeRegExp(replacement.variable);
+      const reads = [...prefix.matchAll(new RegExp(`\\b${variable}\\s*=\\s*(Path\\s*\\(\\s*['\"][^'\"\\n]+['\"]\\s*\\)|[A-Za-z_]\\w*)\\s*\\.read_text\\s*\\(\\s*\\)`, "g"))];
+      const read = reads.at(-1);
+      const unchanged = read && resolvePath(read[1]) === path
+        && !new RegExp(`\\b${variable}\\s*(?:[+*/%|&^-]?=|\\[)`).test(prefix.slice(read.index! + read[0].length));
+      const anchor = (name: string, startVariable?: string): string | undefined => {
+        const assignments = [...prefix.matchAll(new RegExp(`\\b${escapeRegExp(name)}\\s*=\\s*${variable}\\.index\\s*\\(\\s*`, "g"))];
+        const assignment = assignments.at(-1);
+        if (!assignment) return undefined;
+        const literal = pythonStringLiteralSpanAt(prefix, assignment.index! + assignment[0].length);
+        const tail = startVariable ? `(?:,\\s*${escapeRegExp(startVariable)})?` : "";
+        const ending = literal && new RegExp(`^\\s*${tail}\\s*\\)`).exec(prefix.slice(literal.end));
+        if (!literal || !ending || new RegExp(`\\b${escapeRegExp(name)}\\s*(?:[+*/%|&^-]?=|\\[)`).test(prefix.slice(literal.end + ending[0].length))) return undefined;
+        return literal.value;
+      };
+      const startAnchor = unchanged ? anchor(replacement.startVariable) : undefined;
+      const endAnchor = unchanged ? anchor(replacement.endVariable, replacement.startVariable) : undefined;
+      if (startAnchor && endAnchor) boundaries = { startAnchor, endAnchor };
+    }
+    writes.push({
+      index: match.index,
+      file: {
+        path,
+        action: "edited",
+        ...(replacement ? {
+          preview: replacement.content,
+          previewTitle: "Captured replacement content (partial file)",
+          writtenTokenCountEstimate: estimateTextTokenCount(replacement.content),
+          ...(boundaries ? { replacement: boundaries } : {}),
+        } : {}),
+        ...(content === undefined ? {} : {
+          raw: fullFileContentDiff(content, "added"),
+          writtenTokenCountEstimate: estimateTextTokenCount(content),
+        }),
+      },
+    });
+  }
   const patterns = [
     /\bopen\s*\(\s*([^,\n]+)\s*,\s*(['"])[wa][+b]?\2/g,
-    /\b(Path\s*\(\s*['"][^'"\n]+['"]\s*\)|[A-Za-z_$][\w$]*)\s*\.\s*write_(?:text|bytes)\s*\(/g,
     /\b(?:writeFileSync|appendFileSync|writeFile|appendFile|Bun\.write)\s*\(\s*([^,\n]+)/g,
   ];
   for (const pattern of patterns) {
     for (const match of command.matchAll(pattern)) {
       const path = resolvePath(match[1]);
-      if (path && match.index !== undefined) writes.push({ index: match.index, path });
+      if (path && match.index !== undefined) {
+        writes.push({ index: match.index, file: { path, action: "edited" } });
+      }
     }
   }
   writes.sort((a, b) => a.index - b.index);
   const seen = new Set<string>();
-  const files = writes.flatMap(({ path }) => {
-    if (seen.has(path)) return [];
-    seen.add(path);
-    return [{ path, action: "edited" as const }];
+  const files = writes.flatMap(({ file }) => {
+    if (seen.has(file.path)) return [];
+    seen.add(file.path);
+    return [file];
   });
   return files.length > 0 ? summarizeFileEdits(files) : undefined;
+}
+
+function pythonStringLiteralAt(source: string, start: number): string | undefined {
+  return pythonStringLiteralSpanAt(source, start)?.value;
+}
+
+export interface VisualCapturedFileRead {
+  body: string;
+  startLine: number;
+}
+
+/** Reconstruct only the witnessed, line-aligned section; never read the filesystem. */
+export function visualFileEditWithCapturedRead(file: VisualFileEdit, read: VisualCapturedFileRead | undefined): VisualFileEdit {
+  if (!read || file.raw !== undefined || file.preview === undefined || !file.replacement) return file;
+  if (/(?:\[[^\]\n]*(?:truncated|omitted)[^\]\n]*\]|Warning: truncated output|<[^>\n]*truncated[^>\n]*>)/i.test(read.body)
+    || /^\s*\d+(?:\t|[|:]\s)/m.test(read.body)) return file;
+  const { startAnchor, endAnchor } = file.replacement;
+  const start = read.body.indexOf(startAnchor);
+  const end = read.body.indexOf(endAnchor, start + startAnchor.length);
+  if (start < 0 || end < 0 || read.body.indexOf(endAnchor) !== end || read.body.indexOf(startAnchor, start + startAnchor.length) >= 0
+    || read.body.indexOf(endAnchor, end + endAnchor.length) >= 0
+    || (start > 0 && read.body[start - 1] !== "\n") || read.body[end - 1] !== "\n"
+    || (file.preview.length > 0 && !file.preview.endsWith("\n"))) return file;
+  const removed = read.body.slice(start, end).split("\n").slice(0, -1);
+  const added = file.preview.length ? file.preview.split("\n").slice(0, -1) : [];
+  const line = read.startLine + read.body.slice(0, start).split("\n").length - 1;
+  return {
+    ...file,
+    additions: added.length,
+    deletions: removed.length,
+    raw: [`@@ -${line},${removed.length} +${line},${added.length} @@`, ...removed.map(value => `-${value}`), ...added.map(value => `+${value}`)].join("\n"),
+    preview: undefined,
+    previewTitle: undefined,
+  };
+}
+
+function pythonStringLiteralSpanAt(source: string, start: number): { value: string; end: number } | undefined {
+  let index = start;
+  while (/\s/.test(source[index] ?? "")) index += 1;
+  const prefix = /^(?:r|u|ur|ru)?/i.exec(source.slice(index))?.[0] ?? "";
+  index += prefix.length;
+  const quote = source[index];
+  if (quote !== "'" && quote !== '"') return undefined;
+  const triple = source.slice(index, index + 3) === quote.repeat(3);
+  const delimiter = triple ? quote.repeat(3) : quote;
+  index += delimiter.length;
+  let value = "";
+  while (index < source.length) {
+    if (source.slice(index, index + delimiter.length) === delimiter) return { value, end: index + delimiter.length };
+    const char = source[index]!;
+    if (char !== "\\" || prefix.toLowerCase().includes("r")) {
+      value += char;
+      index += 1;
+      continue;
+    }
+    const escaped = source[index + 1];
+    if (escaped === undefined) return undefined;
+    const decoded = { n: "\n", r: "\r", t: "\t" }[escaped];
+    value += decoded ?? (escaped === quote || escaped === "\\" ? escaped : `\\${escaped}`);
+    index += 2;
+  }
+  return undefined;
 }
 
 function shellFilesystemEditSummary(
@@ -8616,7 +8900,15 @@ function shellOutputPaths(
   }> = [];
   let quote: "'" | '"' | null = null;
   let escaped = false;
+  const heredocRanges = shellHeredocRanges(command);
+  let rangeIndex = 0;
   for (let index = 0; index < command.length; index += 1) {
+    const range = heredocRanges[rangeIndex];
+    if (range && index === range.start) {
+      index = range.end - 1;
+      rangeIndex += 1;
+      continue;
+    }
     const ch = command[index]!;
     if (escaped) {
       escaped = false;
@@ -8713,6 +9005,7 @@ function isConcreteShellOutputPath(path: string): boolean {
   const normalized = path.replace(/\\/g, "/");
   if (
     !normalized ||
+    visualArtifactPathKind(normalized) !== "file" ||
     normalized === "-" ||
     /^\d+$/.test(normalized) ||
     /[$`]/.test(normalized) ||

@@ -1,5 +1,6 @@
 import { test, expect, describe, beforeEach } from "bun:test";
 import { createHash } from "node:crypto";
+import { getSessionAgentUsage } from "../src/session-usage";
 import {
   mkdir,
   mkdtemp,
@@ -373,6 +374,62 @@ describe("parseClaudeJsonl", () => {
 });
 
 describe("getSessionFileStats", () => {
+  test("loads compact child usage and descendant identities incrementally without retaining transcript content", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "treetop-child-usage-"));
+    const source = join(dir, "codex.jsonl");
+    const records = [
+      { type: "session_meta", payload: { id: "child", timestamp: "2026-10-16T10:59:00Z" } },
+      { type: "session_meta", payload: { id: "parent", timestamp: "2026-10-13T10:00:00Z" } },
+      { type: "turn_context", payload: { model: "gpt-6.1" } },
+      { timestamp: "2026-10-16T11:00:00Z", type: "token_usage_record", payload: { usage: { input_tokens: 100, cached_input_tokens: 50, output_tokens: 10, total_tokens: 110 } } },
+      { type: "response_item", payload: { type: "function_call", name: "spawn_agent", call_id: "spawn", arguments: "{}" } },
+      { type: "response_item", payload: { type: "function_call_output", call_id: "spawn", output: JSON.stringify({ agent_id: "child-thread" }) } },
+      { type: "event_msg", payload: { type: "item_completed", item: { type: "SubAgentActivity", id: "native-spawn", kind: "started", agent_thread_id: "native-child", agent_path: "/root/review" } } },
+    ];
+    await writeFile(source, records.map(row => JSON.stringify(row)).join("\n") + "\n");
+    const first = await getSessionAgentUsage(source);
+    expect(first.startedAt).toBe("2026-10-16T10:59:00Z");
+    expect(first.childIds).toEqual(["child-thread", "native-child"]);
+    expect(first.segments.map(segment => segment.usage.input)).toEqual([100]);
+    expect(await getSessionAgentUsage(source)).toEqual(first);
+    await appendFile(source, JSON.stringify({ ...records[3], timestamp: "2026-10-16T11:01:00Z" }) + "\n");
+    expect((await getSessionAgentUsage(source)).segments.map(segment => segment.usage.input)).toEqual([100, 100]);
+  });
+  test("prices authoritative response records once across cached appends and model changes", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "treetop-response-stats-"));
+    const source = join(dir, "codex.jsonl");
+    const usage = (input: number) => ({ input_tokens: input, cached_input_tokens: input / 2, output_tokens: input / 10, total_tokens: input * 1.1 });
+    const response = (total: number) => ({ type: "token_usage_record", payload: { usage: usage(100), thread_token_usage: usage(total) } });
+    const legacy = (total: number) => ({ type: "event_msg", payload: { type: "token_count", info: { last_token_usage: usage(100), total_token_usage: usage(total) } } });
+    const lines = [
+      { type: "turn_context", payload: { model: "model-a" } },
+      response(100), legacy(100), response(200), legacy(150),
+    ];
+    await writeFile(source, lines.map(line => JSON.stringify(line)).join("\n") + "\n");
+    const first = await getSessionFileStats(source);
+    expect(first.pricingUsage?.map(segment => [segment.model, segment.usage.input])).toEqual([["model-a", 100], ["model-a", 100]]);
+    const appended = [
+      { type: "event_msg", payload: { type: "thread_settings_applied", thread_settings: { model: "model-b" } } },
+      response(300), response(300), legacy(250),
+    ];
+    await appendFile(source, appended.map(line => JSON.stringify(line)).join("\n") + "\n");
+    const stats = await getSessionFileStats(source);
+    expect(stats.model).toBe("model-b");
+    expect(stats.pricingUsage?.map(segment => [segment.model, segment.usage.input])).toEqual([["model-a", 100], ["model-a", 100], ["model-b", 100]]);
+    const parsed = parseCodexJsonl([...lines, ...appended].map(line => JSON.stringify(line)).join("\n"));
+    expect(stats.pricingUsage?.map(segment => segment.usage)).toEqual(parsed.messages.flatMap(message => message.tokenUsage ? [message.tokenUsage] : []));
+  });
+
+  test("full legacy pricing includes the initial cumulative total and retains zero reset checkpoints", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "treetop-legacy-stats-"));
+    const source = join(dir, "codex.jsonl");
+    const lines = [1000, 0, 300].map(input => JSON.stringify({ type: "event_msg", payload: { type: "token_count", info: {
+      total_token_usage: { input_tokens: input }, last_token_usage: { input_tokens: 100 },
+    } } }));
+    await writeFile(source, lines.join("\n") + "\n");
+    expect((await getSessionFileStats(source)).pricingUsage?.map(segment => segment.usage.input)).toEqual([1000, 300]);
+  });
+
   test("clamps context-stream offsets to the current file", () => {
     expect(sessionSourceOffset(100, undefined)).toBe(0);
     expect(sessionSourceOffset(100, "25")).toBe(25);

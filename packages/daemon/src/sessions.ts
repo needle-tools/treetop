@@ -16,6 +16,8 @@ import type { AgentKind } from "./agents";
 import { createLimiter } from "./concurrency";
 import {
   createCodexTranscriptNormalizer,
+  codexUsageForTranscriptRecord,
+  type CodexTranscriptUsageState,
   contextCompactionDetailsFromMetadata,
   type AgentTranscriptBlock,
 } from "@treetop/nicifier";
@@ -1366,9 +1368,8 @@ interface SessionPricingUsageSegment {
   usage: SessionPricingUsage;
 }
 
-interface CodexPricingScanState {
+interface CodexPricingScanState extends CodexTranscriptUsageState {
   model?: string;
-  previousTotal?: SessionPricingUsage;
   segments: SessionPricingUsageSegment[];
 }
 
@@ -1384,55 +1385,6 @@ const sessionFileStatsCache = new Map<string, SessionFileStatsCacheEntry>();
 const sessionFileStatsInflight = new Map<string, Promise<SessionFileStats>>();
 const MAX_SESSION_FILE_STATS_CACHE = 512;
 const sessionFileStatsLimit = createLimiter(1);
-
-function codexPricingUsage(value: unknown): SessionPricingUsage | undefined {
-  if (!value || typeof value !== "object") return undefined;
-  const record = value as Record<string, unknown>;
-  const number = (key: string): number => {
-    const candidate = record[key];
-    return typeof candidate === "number" && Number.isFinite(candidate)
-      ? Math.max(0, candidate)
-      : 0;
-  };
-  const input = number("input_tokens");
-  const cachedInput = number("cached_input_tokens");
-  const cacheWriteInput = number("cache_write_input_tokens");
-  const output = number("output_tokens");
-  const reasoningOutput = number("reasoning_output_tokens");
-  const total = number("total_tokens") || input + output;
-  if (total <= 0 && cachedInput <= 0 && reasoningOutput <= 0) return undefined;
-  return {
-    input,
-    cachedInput,
-    cacheWriteInput,
-    output,
-    reasoningOutput,
-    total,
-  };
-}
-
-function codexPricingDelta(
-  current: SessionPricingUsage,
-  previous: SessionPricingUsage | undefined,
-  last: SessionPricingUsage | undefined,
-): SessionPricingUsage {
-  if (!previous) return current;
-  if (current.total < previous.total) return last ?? current;
-  return {
-    input: Math.max(0, current.input - previous.input),
-    cachedInput: Math.max(0, current.cachedInput - previous.cachedInput),
-    cacheWriteInput: Math.max(
-      0,
-      current.cacheWriteInput - previous.cacheWriteInput,
-    ),
-    output: Math.max(0, current.output - previous.output),
-    reasoningOutput: Math.max(
-      0,
-      current.reasoningOutput - previous.reasoningOutput,
-    ),
-    total: Math.max(0, current.total - previous.total),
-  };
-}
 
 function ingestCodexPricingLine(
   line: string,
@@ -1463,26 +1415,23 @@ function ingestCodexPricingLine(
     if (typeof model === "string" && model.trim()) state.model = model.trim();
     return;
   }
-  if (record.type !== "event_msg" || payload?.type !== "token_count") return;
+  if (record.type === "event_msg" && payload?.type === "thread_settings_applied") {
+    const settings = payload.thread_settings as Record<string, unknown> | undefined;
+    if (typeof settings?.model === "string" && settings.model.trim()) state.model = settings.model.trim();
+    return;
+  }
+  if (!payload || (record.type !== "token_usage_record" && (record.type !== "event_msg" || payload.type !== "token_count"))) return;
   const info =
     payload.info && typeof payload.info === "object"
       ? (payload.info as Record<string, unknown>)
       : undefined;
-  if (!info) return;
   const eventModel =
-    info.model ?? info.model_name ?? payload.model ?? record.model;
+    info?.model ?? info?.model_name ?? payload.model ?? record.model;
   if (!state.model && typeof eventModel === "string" && eventModel.trim()) {
     state.model = eventModel.trim();
   }
-  const total = codexPricingUsage(info.total_token_usage);
-  if (!total) return;
-  const delta = codexPricingDelta(
-    total,
-    state.previousTotal,
-    codexPricingUsage(info.last_token_usage),
-  );
-  state.previousTotal = total;
-  if (delta.total <= 0) return;
+  const delta = codexUsageForTranscriptRecord(record, state, true);
+  if (!delta) return;
   state.segments.push({
     model: state.model,
     at: typeof record.timestamp === "string" ? record.timestamp : undefined,
@@ -1496,8 +1445,9 @@ function cloneCodexPricingState(
   return state
     ? {
         model: state.model,
-        previousTotal: state.previousTotal
-          ? { ...state.previousTotal }
+        hasResponseUsageRecords: state.hasResponseUsageRecords,
+        previousTotalUsage: state.previousTotalUsage
+          ? { ...state.previousTotalUsage }
           : undefined,
         segments: [...state.segments],
       }
@@ -1531,8 +1481,9 @@ async function scanSessionStatsRange(
   const MAX_RELEVANT_LINE = 512 * 1024;
   const looksRelevant = (value: string) =>
     /"type"\s*:\s*"turn_context"/.test(value) ||
+    /"type"\s*:\s*"token_usage_record"/.test(value) ||
     (/"type"\s*:\s*"event_msg"/.test(value) &&
-      /"type"\s*:\s*"token_count"/.test(value));
+      /"type"\s*:\s*"(?:token_count|thread_settings_applied)"/.test(value));
   const captureOversizedTurnContext = () => {
     if (!/"type"\s*:\s*"turn_context"/.test(lineProbe)) return;
     const match = /"model"\s*:\s*("(?:\\.|[^"\\])*")/.exec(lineProbe);

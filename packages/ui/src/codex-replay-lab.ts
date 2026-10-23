@@ -170,6 +170,26 @@ export type CodexReplaySessionSelection =
   | CodexReplaySessionSort
   | `model:${string}`;
 
+export interface CodexReplaySubagentSessionEntry {
+  threadId: string;
+  sessionId?: string;
+  directoryKey?: string;
+  transcript?: { path?: string };
+}
+
+/** Resolve a separately persisted Codex child transcript from a Replay Lab
+ * folder/drop index. Child JSONL filenames end in their thread UUID. */
+export function findCodexReplaySubagentSession<
+  T extends CodexReplaySubagentSessionEntry,
+>(sessions: readonly T[], childId: string): T | undefined {
+  const needle = childId.trim().toLowerCase();
+  if (!needle) return undefined;
+  return sessions.find((session) => session.threadId.toLowerCase() === needle)
+    ?? sessions.find((session) => [session.threadId, session.directoryKey, session.transcript?.path]
+      .some((value) => value?.toLowerCase().endsWith(`${needle}.jsonl`)))
+    ?? sessions.find((session) => session.sessionId?.toLowerCase() === needle);
+}
+
 export function replayLabHasDaemon(mode: string): boolean {
   return mode !== "replay-lab-static";
 }

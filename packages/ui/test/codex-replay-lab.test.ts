@@ -13,6 +13,7 @@ import {
   filterCodexReplayTextForThread,
   filterCodexReplaySessions,
   filterCodexReplaySessionsByModel,
+  findCodexReplaySubagentSession,
   formatReplayClock,
   formatReplayStepPosition,
   summarizeCodexReplaySessions,
@@ -67,6 +68,33 @@ test("standalone Replay Lab never probes Treetop daemon routes", () => {
   expect(replayLabHasDaemon("replay-lab-static")).toBe(false);
   expect(replayLabHasDaemon("development")).toBe(true);
   expect(replayLabHasDaemon("production")).toBe(true);
+});
+
+test("finds a Codex child transcript in a folder index by its thread id", () => {
+  const childId = "01a115d7-d6d0-7970-a07c-8a63d1364f94";
+  const sessions = [
+    {
+      threadId: "directory:2026/10/07/parent.jsonl",
+      directoryKey: "2026/10/07/parent.jsonl",
+    },
+    {
+      threadId: "directory:2026/10/07/child.jsonl",
+      sessionId: childId,
+      directoryKey: `2026/10/07/rollout-2026-10-07T12-10-29-${childId}.jsonl`,
+    },
+  ];
+
+  expect(findCodexReplaySubagentSession(sessions, childId)).toBe(sessions[1]);
+  expect(findCodexReplaySubagentSession(sessions, "missing")).toBeUndefined();
+});
+
+test("prefers the child's own transcript identity over inherited parent session metadata", () => {
+  const parentId = "01a11360-b1b6-70d1-9321-30283c795dc0";
+  const sessions = [
+    { threadId: "directory:child", sessionId: parentId, directoryKey: "rollout-child.jsonl" },
+    { threadId: "directory:parent", directoryKey: `rollout-${parentId}.jsonl` },
+  ];
+  expect(findCodexReplaySubagentSession(sessions, parentId)).toBe(sessions[1]);
 });
 
 describe("Replay Lab juice effects", () => {

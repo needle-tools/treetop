@@ -152,6 +152,7 @@
   export let onCancelInflight: () => void = () => {};
   export let onFind: () => void = () => {};
   export let onClose: () => void = () => {};
+  export let onNavigateBack: (() => void) | undefined = undefined;
   export let onDragStart: (e: DragEvent) => void = () => {};
 
   /** Tooltip strings for the Stop Session / Terminal switch buttons. Default
@@ -647,6 +648,15 @@
     {/if}
   </div>
   <div class="hdr-col col-actions">
+    {#if onNavigateBack}
+      <button
+        class="session-back-btn"
+        type="button"
+        on:click={onNavigateBack}
+        title="Back to parent session"
+        aria-label="Back to parent session"
+      >←</button>
+    {/if}
     {#if showReadResume}
       <button class="resume-btn" on:click={onResume} title={resumeTitle}
         >Resume</button
@@ -837,6 +847,28 @@
     border-radius: var(--radius-sm);
     font-size: 0.7rem;
     cursor: pointer;
+  }
+  .session-back-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex: 0 0 auto;
+    width: 1.65rem;
+    height: 1.65rem;
+    padding: 0;
+    border: 1px solid var(--surface-3);
+    border-radius: var(--radius-sm);
+    background: transparent;
+    color: var(--text-muted);
+    font: inherit;
+    font-size: 0.9rem;
+    cursor: pointer;
+  }
+  .session-back-btn:hover,
+  .session-back-btn:focus-visible {
+    color: var(--text-1);
+    border-color: var(--text-faint);
+    outline: none;
   }
   .resume-btn:hover {
     color: var(--text-1);

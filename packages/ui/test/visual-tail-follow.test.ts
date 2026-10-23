@@ -430,6 +430,7 @@ describe("visual transcript tail following", () => {
       shouldRememberVisualScrollMemory({
         layoutUsable: true,
         previous,
+        restoring: true,
         metrics: {
           scrollHeight: 6_200,
           scrollTop: 0,

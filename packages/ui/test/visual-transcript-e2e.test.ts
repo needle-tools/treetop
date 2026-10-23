@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { codexAppHistoryMessagesFromThread } from "../src/codex-event-stream";
 import {
   parseClaudeJsonl,
   parseCodexJsonl,
@@ -8,12 +9,14 @@ import {
 } from "../../daemon/src/sessions";
 import {
   buildVisualTranscriptItems,
+  createVisualSubagentTracker,
   buildVisualWorkDisplayEntries,
   cleanVisualToolResultText,
   latestVisualGoal,
   latestVisualPlan,
   visualSubagentMetaFromBlock,
   visualSubagentMetaFromBlocks,
+  visualTranscriptSubagents,
   visualWorkSubagents,
 } from "../src/last-user-message";
 
@@ -457,6 +460,165 @@ describe("visual transcript provider flow", () => {
     });
   });
 
+  test("unknown subagent metadata does not reopen a known completed or failed child", () => {
+    for (const status of ["completed", "failed"] as const) {
+      const messages: NormalizedMessage[] = [
+        { role: "user", blocks: [{ type: "text", text: "Review it." }] },
+        { role: "assistant", blocks: [{ type: "subagent", subagentId: "reviewer", subagentStatus: status, subagentResult: "Finished." }] },
+        { role: "assistant", blocks: [{ type: "subagent", subagentId: "reviewer", subagentStatus: "unknown", subagentModel: "gpt-6.1-sol" }] },
+        { role: "user", blocks: [{ type: "text", text: "Follow-up." }] },
+        { role: "assistant", blocks: [{ type: "subagent", subagentId: "reviewer", subagentStatus: "unknown" }] },
+      ];
+      const tracker = createVisualSubagentTracker();
+      const work = buildVisualTranscriptItems(messages.slice(0, 3)).find(item => item.kind === "work");
+      if (!work || work.kind !== "work") throw new Error("missing round");
+      for (const roster of [visualWorkSubagents(buildVisualWorkDisplayEntries(work.entries)),
+        tracker(messages), visualTranscriptSubagents(buildVisualTranscriptItems(messages))]) {
+        expect(roster[0]).toMatchObject({ status, model: "gpt-6.1-sol", result: "Finished." });
+      }
+      expect(tracker([...messages, { role: "assistant", blocks: [{ type: "subagent", subagentId: "reviewer", subagentStatus: "running" }] }])[0]?.status).toBe("running");
+    }
+  });
+
+  test("keeps current subagent model settings without rewriting historical rounds", () => {
+    expect(visualSubagentMetaFromBlocks(
+      { type: "tool_use", toolName: "spawn_agent", toolInput: { model: "gpt-6-sol", reasoning_effort: "high", message: "Review it." } },
+      { type: "tool_result", text: JSON.stringify({ agent_id: "reviewer" }) },
+      { type: "subagent", subagentId: "reviewer", subagentModel: "gpt-6.1-sol", subagentEffort: "medium" },
+    )).toMatchObject({ model: "gpt-6.1-sol", effort: "medium", task: "Review it." });
+    expect(visualSubagentMetaFromBlocks(
+      { type: "tool_use", toolName: "spawn_agent", toolInput: { message: "Review it." } },
+      { type: "tool_result", text: JSON.stringify({ agent_id: "reviewer" }) },
+      { type: "subagent", subagentId: "reviewer", subagentStatus: "completed", subagentResult: "Review complete." },
+    )).toMatchObject({ status: "completed", result: "Review complete.", task: "Review it." });
+    expect(visualSubagentMetaFromBlocks(
+      { type: "tool_use", toolName: "spawn_agent", toolInput: { model: "gpt-6-sol", reasoning_effort: "high", message: "Review it." } },
+      undefined,
+      { type: "subagent", subagentId: "reviewer", subagentModel: "gpt-6.1-sol", subagentEffort: "medium" },
+    )).toMatchObject({ model: "gpt-6.1-sol", effort: "medium", task: "Review it." });
+    const messages: NormalizedMessage[] = [
+      { role: "user", blocks: [{ type: "text", text: "Review the renderer." }] },
+      { role: "assistant", blocks: [{ type: "subagent", subagentId: "reviewer", subagentAction: "spawn", subagentStatus: "running",
+        subagentModel: "gpt-6-sol", subagentEffort: "high", subagentMessage: "Review the renderer." }] },
+      { role: "user", blocks: [{ type: "text", text: "Continue the review." }] },
+      { role: "assistant", blocks: [{ type: "subagent", subagentId: "reviewer", subagentAction: "notification", subagentStatus: "running",
+        subagentModel: "gpt-6.1-sol", subagentEffort: "medium" }] },
+      { role: "assistant", blocks: [{ type: "subagent", subagentId: "reviewer", subagentAction: "notification", subagentStatus: "completed",
+        subagentResult: "Review complete." }] },
+    ];
+    const tracker = createVisualSubagentTracker();
+    expect(tracker(messages.slice(0, 2))[0]?.model).toBe("gpt-6-sol");
+    const items = buildVisualTranscriptItems(messages);
+    for (const roster of [tracker(messages), visualTranscriptSubagents(items)]) {
+      expect(roster[0]).toMatchObject({ model: "gpt-6.1-sol", effort: "medium", task: "Review the renderer.", status: "completed" });
+    }
+    const firstRound = items.find(item => item.kind === "work");
+    if (!firstRound || firstRound.kind !== "work") throw new Error("missing first round");
+    expect(visualWorkSubagents(buildVisualWorkDisplayEntries(firstRound.entries))[0]?.model).toBe("gpt-6-sol");
+  });
+
+  test("does not present a subagent's known input as fabricated output", () => {
+    const task = "Review the renderer.";
+    const block = { type: "subagent" as const, text: task, subagentMessage: task };
+    expect(visualSubagentMetaFromBlock(block)).toMatchObject({ task, result: undefined });
+    expect(visualSubagentMetaFromBlock({ ...block, subagentResult: "Review complete." })).toMatchObject({
+      task, result: "Review complete.",
+    });
+    expect(visualSubagentMetaFromBlock({ type: "subagent", text: "Legacy notification." })?.result).toBe("Legacy notification.");
+  });
+
+  test("keeps the parent's full plaintext task and skills without listing the parent as a child", () => {
+    const task = "Inspect the rendering.\nSender: retain this payload line.\nTask name: retain this too.";
+    const session = parseCodexJsonl(jsonl([
+      { type: "session_meta", payload: { id: "child", parent_thread_id: "parent", agent_path: "/root/reviewer" } },
+      { type: "response_item", payload: { type: "message", role: "developer",
+        content: [{ type: "input_text", text: "<skills_instructions>Read the rendering skill.</skills_instructions>" }] } },
+      { type: "response_item", payload: { type: "agent_message", author: "/root", recipient: "/root/reviewer",
+        content: [{ type: "input_text", text: `Message Type: NEW_TASK\nTask name: /root/reviewer\nSender: /root\nPayload:\n${task}` }] } },
+      { type: "event_msg", payload: { type: "item_completed", item: { type: "SubAgentActivity", id: "send-parent",
+        kind: "interacted", agent_thread_id: "parent", agent_path: "/root" } } },
+    ]));
+    expect(session.messages.flatMap(message => message.blocks).some(block =>
+      block.type === "context_update" && block.text?.includes("Read the rendering skill."))).toBe(true);
+    // Parent deliveries are subagent activity, not human turn boundaries.
+    expect(session.messages.some(message => message.role === "user")).toBe(false);
+    expect(session.messages.flatMap(message => message.blocks).find(block =>
+      block.type === "subagent" && block.subagentMessage === task)).toMatchObject({
+        text: task, subagentIsParent: true, subagentNickname: "root",
+      });
+    const parentTask = session.messages.flatMap(message => message.blocks).find(block => block.subagentMessage === task);
+    expect(visualSubagentMetaFromBlock(parentTask)).toMatchObject({ task, result: undefined });
+    expect(visualTranscriptSubagents(buildVisualTranscriptItems(session.messages))).toEqual([]);
+  });
+
+  test("renders every native collaboration receiver with the same metadata as app-server history", () => {
+    const item = { type: "collabAgentToolCall", id: "wait", tool: "wait", status: "completed", receiverThreadIds: ["a", "b"], prompt: null,
+      agentsStates: { a: { status: "completed", message: "A complete" }, b: { status: "running", message: null } } };
+    const user = { role: "user", blocks: [{ type: "text", text: "Review" }] };
+    const session = parseCodexJsonl(jsonl([
+      { type: "response_item", payload: { type: "message", role: "user", content: [{ type: "input_text", text: "Review" }] } },
+      { type: "event_msg", payload: { type: "item_completed", item: { ...item, type: "CollabAgentToolCall", receiver_thread_ids: item.receiverThreadIds, agents_states: item.agentsStates } } },
+    ]));
+    const live = codexAppHistoryMessagesFromThread({ turns: [{ id: "turn", items: [item] }] });
+    const transcriptRoster = visualTranscriptSubagents(buildVisualTranscriptItems(session.messages));
+    const liveRoster = visualTranscriptSubagents(buildVisualTranscriptItems([user, ...live]));
+    expect(transcriptRoster.map(agent => agent.id)).toEqual(["a", "b"]);
+    expect(transcriptRoster).toEqual(liveRoster);
+  });
+
+  test("keeps readable task metadata when a child task body is encrypted", () => {
+    const session = parseCodexJsonl(
+      jsonl([
+        {
+          timestamp: "2026-10-08T08:58:24.000Z",
+          type: "session_meta",
+          payload: {
+            id: "01a11a4e-5a46-7ee1-81d8-560f780287ce",
+            agent_path: "/root/headphones_reference_02",
+            parent_thread_id: "parent-thread",
+          },
+        },
+        {
+          timestamp: "2026-10-08T08:58:25.000Z",
+          type: "response_item",
+          payload: {
+            type: "agent_message",
+            author: "/root",
+            recipient: "/root/headphones_reference_02",
+            content: [
+              {
+                type: "input_text",
+                text: [
+                  "Message Type: NEW_TASK",
+                  "Task name: /root/headphones_reference_02",
+                  "Sender: /root",
+                  "Payload:",
+                ].join("\n"),
+              },
+              { type: "encrypted_content", data: "gAAAAA-encrypted-task" },
+            ],
+          },
+        },
+      ]),
+    );
+
+    expect(session.messages).toHaveLength(1);
+    expect(session.messages[0]).toMatchObject({
+      role: "assistant",
+      blocks: [
+        {
+          type: "subagent",
+          subagentIsParent: true,
+          subagentNickname: "root",
+          text: "headphones_reference_02\nTask text is encrypted in this recording.",
+        },
+      ],
+    });
+    const taskMeta = visualSubagentMetaFromBlock(session.messages[0]?.blocks[0]);
+    expect(taskMeta?.result).toBeUndefined();
+    expect(taskMeta?.task).toContain("Task text is encrypted in this recording.");
+  });
+
   test("normalizes Codex SubAgentActivity rows and keeps one badge per child", () => {
     const childId = "01a0874c-317f-7b63-ad0d-3b22af3faa93";
     const session = parseCodexJsonl(
@@ -535,9 +697,8 @@ describe("visual transcript provider flow", () => {
     });
 
     const { work } = onlyWorkItem(session.messages);
-    const agents = visualWorkSubagents(
-      buildVisualWorkDisplayEntries(work.entries),
-    );
+    const displayEntries = buildVisualWorkDisplayEntries(work.entries);
+    const agents = visualWorkSubagents(displayEntries);
     expect(agents).toEqual([
       expect.objectContaining({
         id: childId,
@@ -546,6 +707,198 @@ describe("visual transcript provider flow", () => {
       }),
     ]);
     expect(agents[0]?.task).toBeUndefined();
+    expect(
+      displayEntries.filter(
+        (entry) => entry.entry.blocks[0]?.type === "subagent",
+      ),
+    ).toHaveLength(1);
+    expect(visualTranscriptSubagents(onlyWorkItem(session.messages).items)).toEqual([
+      expect.objectContaining({
+        id: childId,
+        nickname: "audio_types",
+        model: "gpt-5.6-luna",
+        status: "completed",
+      }),
+    ]);
+  });
+
+  test("joins current Codex collaboration rows without inventing wait agents", () => {
+    const childId = "01a115d7-d6d0-7970-a07c-8a63d1364f94";
+    const session = parseCodexJsonl(
+      jsonl([
+        {
+          timestamp: "2026-10-07T12:10:00.000Z",
+          type: "session_meta",
+          payload: { id: "parent" },
+        },
+        {
+          timestamp: "2026-10-07T12:10:01.000Z",
+          type: "response_item",
+          payload: {
+            type: "message",
+            role: "user",
+            content: [{ type: "input_text", text: "Review the implementation." }],
+          },
+        },
+        {
+          timestamp: "2026-10-07T12:10:02.000Z",
+          type: "response_item",
+          payload: {
+            type: "function_call",
+            name: "spawn_agent",
+            call_id: "call-spawn-review",
+            arguments: JSON.stringify({
+              task_name: "implementation_review",
+              model: "gpt-6-astra",
+              reasoning_effort: "high",
+              message: `gAAAAABq${"x".repeat(120)}`,
+            }),
+          },
+        },
+        {
+          timestamp: "2026-10-07T12:10:02.100Z",
+          type: "event_msg",
+          payload: {
+            type: "item_completed",
+            item: {
+              type: "SubAgentActivity",
+              id: "call-spawn-review",
+              kind: "started",
+              agent_thread_id: childId,
+              agent_path: "/root/implementation_review",
+            },
+          },
+        },
+        {
+          timestamp: "2026-10-07T12:10:02.200Z",
+          type: "response_item",
+          payload: {
+            type: "function_call_output",
+            call_id: "call-spawn-review",
+            output: JSON.stringify({ task_name: "/root/implementation_review" }),
+          },
+        },
+        {
+          timestamp: "2026-10-07T12:10:03.000Z",
+          type: "response_item",
+          payload: {
+            type: "function_call",
+            name: "wait_agent",
+            call_id: "call-wait-any",
+            arguments: JSON.stringify({ timeout_ms: 30_000 }),
+          },
+        },
+        {
+          timestamp: "2026-10-07T12:10:33.000Z",
+          type: "response_item",
+          payload: {
+            type: "function_call_output",
+            call_id: "call-wait-any",
+            output: JSON.stringify({ timed_out: true }),
+          },
+        },
+        {
+          timestamp: "2026-10-07T12:10:34.000Z",
+          type: "response_item",
+          payload: {
+            type: "agent_message",
+            author: "/root/implementation_review",
+            recipient: "/root",
+            content: [
+              {
+                type: "output_text",
+                text:
+                  "Message Type: FINAL_ANSWER\n" +
+                  "Task name: implementation_review\n" +
+                  "Sender: /root/implementation_review\n" +
+                  "Payload:\nThe implementation is sound.",
+              },
+            ],
+          },
+        },
+        {
+          timestamp: "2026-10-07T12:10:34.100Z",
+          type: "response_item",
+          payload: {
+            type: "function_call",
+            name: "list_agents",
+            call_id: "call-list",
+            arguments: "{}",
+          },
+        },
+        {
+          timestamp: "2026-10-07T12:10:34.200Z",
+          type: "response_item",
+          payload: {
+            type: "function_call_output",
+            call_id: "call-list",
+            output: JSON.stringify({
+              agents: [
+                { agent_name: "/root", agent_status: "running" },
+                {
+                  agent_name: "/root/implementation_review",
+                  agent_status: { completed: "The implementation is sound." },
+                },
+              ],
+            }),
+          },
+        },
+        {
+          timestamp: "2026-10-07T12:10:35.000Z",
+          type: "response_item",
+          payload: {
+            type: "function_call",
+            name: "spawn_agent",
+            call_id: "call-spawn-full",
+            arguments: JSON.stringify({
+              task_name: "extra_review",
+              message: `gAAAAABq${"y".repeat(120)}`,
+            }),
+          },
+        },
+        {
+          timestamp: "2026-10-07T12:10:35.100Z",
+          type: "response_item",
+          payload: {
+            type: "function_call_output",
+            call_id: "call-spawn-full",
+            output: "collab spawn failed: agent thread limit reached",
+          },
+        },
+      ]),
+    );
+
+    const agents = visualTranscriptSubagents(onlyWorkItem(session.messages).items);
+    expect(agents).toHaveLength(2);
+    expect(agents).toContainEqual(
+      expect.objectContaining({
+        id: childId,
+        nickname: "implementation_review",
+        model: "gpt-6-astra",
+        effort: "high",
+        status: "completed",
+        result: "The implementation is sound.",
+      }),
+    );
+    expect(agents).toContainEqual(
+      expect.objectContaining({
+        nickname: "extra_review",
+        status: "failed",
+        result: "collab spawn failed: agent thread limit reached",
+      }),
+    );
+    expect(agents.every((agent) => agent.action !== "wait")).toBe(true);
+    expect(agents.every((agent) => agent.task === undefined)).toBe(true);
+    expect(
+      session.messages
+        .flatMap((message) => message.blocks)
+        .filter(
+          (block) =>
+            block.type === "subagent" &&
+            block.subagentId === childId &&
+            block.subagentResult === "The implementation is sound.",
+        ),
+    ).toHaveLength(2);
   });
 
   test("attaches Codex turn approval context to command tools", () => {

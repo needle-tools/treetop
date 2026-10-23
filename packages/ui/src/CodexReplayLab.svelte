@@ -5,9 +5,12 @@
   import SessionContextView from "./SessionContextView.svelte";
   import InspectorPanelHeader from "./InspectorPanelHeader.svelte";
   import type { VisualTranscriptItem } from "./last-user-message";
+  import type { SubagentParentContext } from "./session-source-routing";
   import { writeBrowserClipboard } from "./clipboard-write";
   import { formatByteSize, formatSessionTokens } from "./context-tokens";
   import { codexAppSource } from "./storage";
+  import { createDaemonSubagentUsageLoader, type SubagentUsageLoader } from "./session-subagent-usage";
+  import { sessionAgentUsageFromMessages, type SessionAgentUsage } from "@treetop/nicifier";
   import { installIdleTracker } from "./ui-idle";
   import { selectVisualScrollIndex } from "./visual-tail-follow";
   import {
@@ -21,8 +24,10 @@
     codexReplayProjectLabel,
     createCodexReplaySessionTransport,
     createCodexReplayViewModel,
+    codexReplayMessagesUntil,
     filterCodexReplaySessions,
     filterCodexReplaySessionsByModel,
+    findCodexReplaySubagentSession,
     formatReplayCost,
     formatReplayClock,
     formatReplayDuration,
@@ -123,6 +128,31 @@
   let directoryStatus = "";
   let directoryGeneration = 0;
   let directoryFiles = new Map<string, CodexReplayDirectoryFile>();
+  const childUsageFiles = new WeakMap<object, { size: number; modified: number; mode: "rpc" | "transcript"; usage: SessionAgentUsage }>();
+  $: daemonChildUsageLoader = createDaemonSubagentUsageLoader({ live: !!fixture, cwd: transcriptSession?.transcript?.cwd ?? fixture?.cwd ?? "", transport: transport ?? undefined });
+  const loadReplaySubagentUsage: SubagentUsageLoader = async id => {
+    const child = findCodexReplaySubagentSession(sessions, id);
+    const reference = child?.directoryKey ? directoryFiles.get(child.directoryKey) : undefined;
+    if (reference) {
+      const file = await reference.handle.getFile();
+      const cached = childUsageFiles.get(reference.handle);
+      if (cached?.size === file.size && cached.modified === file.lastModified) {
+        if (cached.mode !== (fixture ? "rpc" : "transcript")) throw new Error("Load a child file from the same source mode");
+        return cached.usage;
+      }
+      const replay = await parseCodexReplayBlobAsync(file);
+      if (replay.mode !== (fixture ? "rpc" : "transcript")) throw new Error("Load a child file from the same source mode");
+      const result = sessionAgentUsageFromMessages(codexReplayMessagesUntil(replay, replay.steps.length));
+      const usage = { ...result, startedAt: replay.startedAt, complete: result.segments.length > 0 };
+      childUsageFiles.set(reference.handle, { size: file.size, modified: file.lastModified, mode: replay.mode, usage });
+      return usage;
+    }
+    if (localFile) throw new Error(`Load the child JSONL ending in ${id}.jsonl to include its usage`);
+    return daemonChildUsageLoader(id);
+  };
+  let replayNavigationStack: ReplaySessionIndexEntry[] = [];
+  let subagentParentContexts = new Map<string, SubagentParentContext>();
+  let subagentNavigationNotice = "";
   let juiceEnabled = false;
   let juiceImpactCount = 0;
   let juiceMoneyImpactCount = 0;
@@ -282,7 +312,12 @@
     }
   }
 
-  async function loadSession(entry: ReplaySessionIndexEntry): Promise<void> {
+  async function loadSession(
+    entry: ReplaySessionIndexEntry,
+    options: { preserveNavigation?: boolean } = {},
+  ): Promise<void> {
+    if (!options.preserveNavigation) replayNavigationStack = [];
+    subagentNavigationNotice = "";
     if (entry.directoryKey) {
       const reference = directoryFiles.get(entry.directoryKey);
       if (!reference) return;
@@ -434,9 +469,33 @@
 
   function onFileInput(event: Event): void {
     const input = event.currentTarget as HTMLInputElement;
-    const file = input.files?.[0];
+    const files = Array.from(input.files ?? []).filter((file) =>
+      file.name.toLowerCase().endsWith(".jsonl"),
+    );
     input.value = "";
-    if (file) void loadDroppedFile(file);
+    if (files.length) void loadDroppedFiles(files);
+  }
+
+  async function loadDroppedFiles(files: File[]): Promise<void> {
+    replayNavigationStack = [];
+    subagentNavigationNotice = "";
+    if (files.length === 1) {
+      await loadDroppedFile(files[0]!);
+      return;
+    }
+    const references = files.map((file, index) => ({
+      relativePath: `dropped/${index}/${file.name}`,
+      handle: {
+        kind: "file" as const,
+        name: file.name,
+        getFile: async () => file,
+      },
+    }));
+    const entries = await loadDirectory("Dropped files", references);
+    const first = entries.find(
+      (entry) => entry.directoryKey === references[0]?.relativePath,
+    );
+    if (first) await loadSession(first);
   }
 
   async function chooseFolder(): Promise<void> {
@@ -485,7 +544,7 @@
   async function loadDirectory(
     label: string,
     references: CodexReplayDirectoryFile[],
-  ): Promise<void> {
+  ): Promise<ReplaySessionIndexEntry[]> {
     const generation = ++directoryGeneration;
     sessionListMode = "directory";
     sessionFilter = "all";
@@ -524,12 +583,13 @@
       },
     );
     await Promise.all(workers);
-    if (generation !== directoryGeneration) return;
+    if (generation !== directoryGeneration) return [];
     sessions = entries.sort(
       (a, b) => b.mtimeMs - a.mtimeMs || a.title.localeCompare(b.title),
     );
     directoryStatus = `Finding names · 0/${entries.length.toLocaleString()}`;
     void enrichDirectoryNames(generation, entries);
+    return entries;
   }
 
   async function enrichDirectoryNames(
@@ -565,6 +625,9 @@
               updates.set(reference.relativePath, {
                 agent: overview.agent,
                 models: overview.models,
+                ...(overview.sessionId
+                  ? { sessionId: overview.sessionId }
+                  : {}),
                 ...(overview.title ? { title: overview.title } : {}),
                 transcript: {
                   ...entry.transcript!,
@@ -607,8 +670,37 @@
   function onDrop(event: DragEvent): void {
     event.preventDefault();
     dragActive = false;
-    const file = event.dataTransfer?.files[0];
-    if (file) void loadDroppedFile(file);
+    const files = Array.from(event.dataTransfer?.files ?? []).filter((file) =>
+      file.name.toLowerCase().endsWith(".jsonl"),
+    );
+    if (files.length) void loadDroppedFiles(files);
+  }
+
+  async function openReplaySubagent(
+    childId: string,
+    _surface: "read" | "terminal",
+    context: SubagentParentContext,
+  ): Promise<void> {
+    const child = findCodexReplaySubagentSession(sessions, childId);
+    if (!child) {
+      subagentNavigationNotice =
+        `Child transcript not loaded. Open the containing sessions folder, ` +
+        `or also drop the JSONL file ending in ${childId}.jsonl.`;
+      return;
+    }
+    const current = sessions.find((entry) => entry.threadId === selectedThreadId);
+    subagentParentContexts = new Map(subagentParentContexts).set(child.threadId, context);
+    if (current && current.threadId !== child.threadId) {
+      replayNavigationStack = [...replayNavigationStack, current];
+    }
+    await loadSession(child, { preserveNavigation: true });
+  }
+
+  async function navigateReplayBack(): Promise<void> {
+    const parent = replayNavigationStack.at(-1);
+    if (!parent) return;
+    replayNavigationStack = replayNavigationStack.slice(0, -1);
+    await loadSession(parent, { preserveNavigation: true });
   }
 
   function clearReplay(): void {
@@ -636,6 +728,8 @@
     loadingLabel = "";
     localFile = false;
     localWarnings = [];
+    replayNavigationStack = [];
+    subagentNavigationNotice = "";
   }
 
   function togglePlay(): void {
@@ -959,6 +1053,7 @@
     agent?: "codex" | "claude";
     models?: string[];
     threadId: string;
+    sessionId?: string;
     title: string;
     mtimeMs: number;
     rpcRecordingCount: number;
@@ -1112,6 +1207,16 @@
         Drop a Codex or Claude JSONL file, open a session folder, or inspect an
         available recorded session.
       </p>
+      {#if subagentNavigationNotice}
+        <div class="replay-navigation-notice" role="status">
+          <span>{subagentNavigationNotice}</span>
+          <button
+            type="button"
+            aria-label="Dismiss child transcript notice"
+            on:click={() => (subagentNavigationNotice = "")}>×</button
+          >
+        </div>
+      {/if}
     </div>
     <div class="replay-actions">
       {#if localWarnings.length}
@@ -1124,6 +1229,7 @@
         bind:this={fileInput}
         class="replay-file-input"
         type="file"
+        multiple
         accept=".jsonl,.json,application/json,application/x-ndjson"
         on:change={onFileInput}
       />
@@ -1173,7 +1279,10 @@
       <div>
         <h2>Finding session files</h2>
         <p>
-          Choose any session JSONL below, then open or drop it into Replay Lab.
+          Open the top-level sessions folder to browse parent and subagent
+          transcripts together. If you drop files instead, select the parent
+          JSONL and every child JSONL you want to review. A child filename ends
+          in the thread ID shown in the Subagents list.
         </p>
       </div>
       <button
@@ -1497,6 +1606,8 @@
                   fileLineCount={replaySourceProgress.lineCount}
                   fileStatsExact={replaySourceProgress.exact}
                   {transcriptSessionOverride}
+                  subagentUsageLoader={loadReplaySubagentUsage}
+                  subagentUsageThrough={analysisMessages.at(-1)?.timestamp}
                   renderOnly={true}
                   visualAppEnabled={false}
                   spawnReady={false}
@@ -1505,6 +1616,11 @@
                   artifactTrackingEnabled={true}
                   onArtifactItemsChange={(items) => (artifactItems = items)}
                   {onTranscriptTurnChange}
+                  onOpenSubagent={openReplaySubagent}
+                  parentTaskContext={subagentParentContexts.get(selectedThreadId)}
+                  onNavigateBack={replayNavigationStack.length
+                    ? () => void navigateReplayBack()
+                    : undefined}
                 />
               {/key}
             </div>
@@ -1535,11 +1651,18 @@
                   manualTitleOverride={fileName}
                   visualAppEnabled={true}
                   codexAppTransport={transport}
+                  subagentUsageLoader={loadReplaySubagentUsage}
+                  subagentUsageThrough={analysisMessages.at(-1)?.timestamp}
                   spawnReady={false}
                   onMessagesChange={receiveSessionMessages}
                   artifactTrackingEnabled={true}
                   onArtifactItemsChange={(items) => (artifactItems = items)}
                   {onTranscriptTurnChange}
+                  onOpenSubagent={openReplaySubagent}
+                  parentTaskContext={subagentParentContexts.get(selectedThreadId)}
+                  onNavigateBack={replayNavigationStack.length
+                    ? () => void navigateReplayBack()
+                    : undefined}
                 />
               {/key}
             </div>
@@ -1717,6 +1840,24 @@
   .replay-warning {
     color: var(--warning, #fbbf24);
     font-size: 12px;
+  }
+
+  .replay-navigation-notice {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-top: 6px;
+    color: var(--warning, #fbbf24);
+    font-size: 12px;
+  }
+
+  .replay-navigation-notice button {
+    padding: 0;
+    border: 0;
+    color: inherit;
+    background: transparent;
+    font: inherit;
+    cursor: pointer;
   }
 
   .replay-clear,

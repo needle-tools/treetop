@@ -24,6 +24,42 @@ export interface DiffLine {
   text: string;
 }
 
+export type DiffAssetKind = "raster" | "svg";
+export type DiffAssetSourceKind = "workdir" | "staged" | "untracked" | "commit";
+
+const RASTER_DIFF_EXT_RE = /\.(?:png|jpe?g|gif|webp|bmp|ico|avif)$/i;
+
+/** Browser-renderable formats that get a visual before/after diff. SVG also
+ * keeps its textual diff because its source is useful review information. */
+export function diffAssetKind(path: string): DiffAssetKind | null {
+  if (/\.svg$/i.test(path)) return "svg";
+  if (RASTER_DIFF_EXT_RE.test(path)) return "raster";
+  return null;
+}
+
+export function diffAssetContentUrl(options: {
+  worktreePath: string;
+  file: string;
+  oldFile?: string;
+  kind: DiffAssetSourceKind;
+  side: "before" | "after";
+  sha?: string;
+  version?: string | number;
+}): string {
+  const params = new URLSearchParams({
+    path: options.worktreePath,
+    file: options.file,
+    kind: options.kind,
+    side: options.side,
+  });
+  if (options.sha) params.set("sha", options.sha);
+  if (options.oldFile && options.oldFile !== options.file)
+    params.set("oldFile", options.oldFile);
+  if (options.version !== undefined)
+    params.set("v", String(options.version));
+  return `/api/diff-file-content?${params.toString()}`;
+}
+
 /** Diff counters are visual evidence, not placeholders: zero carries no
  * information and should not render as a coloured `+0` / `−0` badge. */
 export function isPositiveDiffCount(value: number | null | undefined): value is number {

@@ -5,6 +5,7 @@ import {
   sparseArtifactRowActionSummary,
   sparseArtifactRowChanges,
   sparseArtifactRowLifecycle,
+  sparseArtifactRowDiffKind,
   sparseArtifactRowPreviewChanges,
 } from "../src/sparse-artifact-tree";
 import type { VisualWorkArtifact } from "../src/last-user-message";
@@ -24,6 +25,37 @@ function artifact(
 }
 
 describe("buildSparseArtifactRows", () => {
+  test("keeps Git refs as single non-file rows alongside the filesystem tree", () => {
+    const rows = buildSparseArtifactRows([
+      artifact("/repo/src/app.ts"),
+      { id: "fetch-ref", kind: "git", action: "referenced", label: "materialx/volumes → needle/materialx/volumes", title: "fetch refs/heads/materialx/volumes:refs/remotes/needle/materialx/volumes" },
+    ], "/repo");
+    expect(rows.filter((row) => row.kind === "file")).toHaveLength(1);
+    expect(rows.find((row) => row.kind === "git")).toMatchObject({ label: "materialx/volumes → needle/materialx/volumes", depth: 0, hrefPath: "" });
+    expect(rows.some((row) => row.kind === "folder" && row.label.includes("refs"))).toBe(false);
+  });
+
+  test("retains a git diff fallback carried by a nested change", () => {
+    const row = buildSparseArtifactRows(
+      [
+        artifact("/repo/src/app.ts", {
+          action: "changed",
+          changes: [
+            {
+              action: "changed",
+              label: "app.ts",
+              path: "/repo/src/app.ts",
+              diffKind: "workdir",
+              fileAction: "edited",
+            },
+          ],
+        }),
+      ],
+      "/repo",
+    ).find((entry) => entry.kind === "file")!;
+
+    expect(sparseArtifactRowDiffKind(row)).toBe("workdir");
+  });
   test("reuses rows from immutable artifact identities without reading payload text", () => {
     const first = artifact("/repo/src/app.ts", { preview: "x".repeat(50_000) });
     expect(sameSparseArtifactInputs([first], "/repo", [first], "/repo")).toBe(true);

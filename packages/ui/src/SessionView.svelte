@@ -12,6 +12,9 @@
   import TerminalView from "./TerminalView.svelte";
   import VisualTranscript from "./VisualTranscript.svelte";
   import AsyncQuestionCard from "./AsyncQuestionCard.svelte";
+  import ComposerBadge from "./ComposerBadge.svelte";
+  import ComposerPanel from "./ComposerPanel.svelte";
+  import ComposerPanelItem from "./ComposerPanelItem.svelte";
   import {
     canRequestOlderTranscriptMessages,
     shouldPrefetchOlderVisualHistory,
@@ -69,6 +72,7 @@
     applyVisualTranscriptDeltaPatches,
     formatVisualWorkDuration,
     hasCanonicalUserMessageMatchingOptimistic,
+    canonicalUserMessageInsertionIndex,
     lastUserMessageBurst,
     lastUserMessageWithContext as buildLastUserMessageWithContext,
     latestSessionMessageActivityIso,
@@ -78,7 +82,9 @@
     updateVisualTranscriptItems,
     visualMessageTurnIndexes,
     visualPendingQuestions,
-    visualTranscriptMessageWindow,
+    visualSubagentLabel,
+    createVisualSubagentTracker,
+    visualTranscriptReaderWindow,
     visualTranscriptTailKey,
     visualPlanFromPayload,
     withOptimisticUserMessageIntent,
@@ -87,6 +93,7 @@
     type VisualPlanItem,
     type VisualTranscriptDeltaPatch,
     type VisualTranscriptItem,
+    type VisualSubagentMeta,
   } from "./last-user-message";
   import {
     applySessionMessagePatchToMessages,
@@ -100,6 +107,8 @@
     shouldApplyTranscriptSessionOverride,
     shouldMountTerminalView,
     shouldRenderSessionReadBody,
+    visibleSubagentParentContext,
+    type SubagentParentContext,
   } from "./session-source-routing";
   import { apiWsUrl } from "./api";
   import { createTerminalHold, type HoldSocket } from "./terminal-hold";
@@ -116,6 +125,8 @@
     codexEventReplayKey,
     codexEventRequiresHistoryReconciliation,
     codexEventStreamRequiresHistoryReconciliation,
+    codexRecoverableIssueFromEvent,
+    codexEventResolvesRecoverableIssue,
     codexEventDeltaSupersededByCompletedItem,
     codexOffscreenProjectionAction,
     codexUsageEventBelongsToObservedTurn,
@@ -152,12 +163,14 @@
     shouldSubscribeCodexAppLiveState,
     shouldUseCodexAppHistorySource,
     subscribeCodexEvents,
+    withoutResolvedCodexRecoverableIssueMessages,
     type CodexAppEvent,
     type CodexAppHistoryMessage,
     type CodexAppSessionTransport,
     type CodexAppThreadPage,
     type CodexEventStreamState,
     type CodexLiveNormalizeContext,
+    type CodexRecoverableIssue,
   } from "./codex-event-stream";
   import { record, time } from "./timings";
   import { splitParent } from "./file-browser-utils";
@@ -176,6 +189,8 @@
   } from "./note-inline-attachments";
   import { agentSupportsVisualImageAttachments } from "./display-helpers";
   import { randomUUID } from "./random-id";
+  import { createDaemonSubagentUsageLoader, createSubagentUsageTracker, type SubagentUsageLoader } from "./session-subagent-usage";
+  import type { SessionAgentUsage } from "@treetop/nicifier";
   import {
     canSaveCodexQueueEdit,
     enqueueCodexQueue,
@@ -209,6 +224,8 @@
    *  then. */
   export let wtPath: string = "";
   export let onClose: () => void = () => {};
+  /** Navigate back to the parent lane that opened this subagent. */
+  export let onNavigateBack: (() => void) | undefined = undefined;
   export let onDragStart: (e: DragEvent) => void = () => {};
   /** Overrides the header's Resume button behavior. By default the
    *  Resume action flips this column to terminal mode (which then
@@ -266,6 +283,14 @@
    *  undefined and continues through the shared HTTP/SSE transport. */
   export let codexAppTransport: CodexAppSessionTransport | undefined =
     undefined;
+  export let subagentUsageLoader: SubagentUsageLoader | undefined = undefined;
+  export let subagentUsageThrough: string | undefined = undefined;
+  let childUsage = new Map<string, SessionAgentUsage>() as ReadonlyMap<string, SessionAgentUsage>;
+  let childUsageErrors = new Map<string, string>() as ReadonlyMap<string, string>;
+  let childUsageTracker: ReturnType<typeof createSubagentUsageTracker> | undefined;
+  let childUsageKey = "";
+  let childUsageRefreshKey = "";
+  let childUsageLoaderUsed: SubagentUsageLoader | undefined;
   /** Read-only observation hook used by Replay Lab diagnostics. */
   export let onMessagesChange: (
     messages: readonly CodexAppHistoryMessage[],
@@ -287,7 +312,14 @@
   export let onOpenSubagent: (
     subagentId: string,
     surface: "read" | "terminal",
+    context: SubagentParentContext,
   ) => void = () => {};
+  export let parentTaskContext: SubagentParentContext | undefined = undefined;
+
+  function openSubagentWithContext(id: string, surface: "read" | "terminal", meta: VisualSubagentMeta): void {
+    const subagent = codexSubagents.find((entry) => entry.id === id) ?? meta;
+    onOpenSubagent(id, surface, { sourceKind: sessionMessageSource.kind, subagent });
+  }
   export let onOpenRemotePath: (
     remoteHost: string,
     path: string,
@@ -636,6 +668,7 @@
   const VISUAL_HISTORY_MESSAGES_STEP = 100;
   const MAX_VISUAL_HISTORY_MESSAGES = 2_000;
   let visualHistoryMinMessages = DEFAULT_VISUAL_HISTORY_MESSAGES;
+  let visualTailFollowPaused = false;
   let visualHistoryRequestInFlight = false;
   let visualHistorySourceKey = "";
   let codexAppHistoryLoadedKey = "";
@@ -648,7 +681,12 @@
   let codexAppHistoryRetryTimer: ReturnType<typeof setTimeout> | null = null;
   let codexAppHistoryNextCursor: string | null = null;
   let codexAppLiveTurnIds = new Set<string>();
+  // Ever observed starts for this mounted source, not active turns: final usage
+  // can arrive after completion. Active state belongs to codexActiveTurnId.
   let codexAppStartedTurnIds = new Set<string>();
+  let codexTurnLifecycleSeq = 0;
+  let codexTurnSourceEpoch = 0;
+  let codexPendingTurnStartOptimisticId: string | null = null;
   let codexCompletedLiveItemIds = new Set<string>();
   const codexDeferredVisualEvents = new CodexDeferredEventBuffer();
   let codexHasDeferredVisualEvents = false;
@@ -661,8 +699,9 @@
   let sending = false;
   let archiving = false;
   let sendError = "";
+  let codexRecoverableIssue: CodexRecoverableIssue | null = null;
   let composerMotionSourceEl: HTMLElement | null = null;
-  let composerQueueTargetEl: HTMLElement | null = null;
+  let composerQueueTargetEl: HTMLButtonElement | undefined = undefined;
   let composerInputEl: HTMLTextAreaElement | null = null;
   type ComposerMotionRect = {
     x: number;
@@ -1336,16 +1375,32 @@
    *  rapid-fire "5 quick messages" sequence shows the whole thread
    *  of intent rather than only the last fragment. */
   let codexOptimisticUserMessages: NormalizedMessage[] = [];
+  let retainedVisualWindowStartMessage: NormalizedMessage | undefined;
+  function currentVisualRenderWindow(
+    messages: NormalizedMessage[],
+    minMessages: number,
+    paused: boolean,
+  ) {
+    const window = visualTranscriptReaderWindow(messages, {
+      minMessages,
+      minUserTurns: 2,
+      paused,
+      retainedStartMessage: retainedVisualWindowStartMessage,
+    });
+    retainedVisualWindowStartMessage = window.messages[0];
+    return window;
+  }
   $: visualSessionMessages = mergeVisualSessionMessages(
     transcriptSessionOverride?.messages ?? session?.messages ?? [],
     codexOptimisticUserMessages,
   );
   $: visualSessionMessageTurnIndexes =
     visualMessageTurnIndexes(visualSessionMessages);
-  $: visualRenderWindow = visualTranscriptMessageWindow(visualSessionMessages, {
-    minMessages: visualHistoryMinMessages,
-    minUserTurns: 2,
-  });
+  $: visualRenderWindow = currentVisualRenderWindow(
+    visualSessionMessages,
+    visualHistoryMinMessages,
+    visualTailFollowPaused,
+  );
   $: visualHistoryHiddenMessageCount = Math.max(
     visualRenderWindow.hiddenMessageCount,
     Math.max(
@@ -1940,6 +1995,9 @@
     onActiveChange(active) {
       visualTailFollowActive = active;
     },
+    onPausedChange(paused) {
+      visualTailFollowPaused = paused;
+    },
   });
   let transcriptTurnNavigationSeq = 0;
   let transcriptTurnNavigationTarget: number | undefined;
@@ -2024,6 +2082,7 @@
 
   function resetVisualHistoryWindow(): void {
     visualHistoryMinMessages = DEFAULT_VISUAL_HISTORY_MESSAGES;
+    retainedVisualWindowStartMessage = undefined;
     visualHistoryRequestInFlight = false;
     visualHistoryScrollAnchor = null;
     codexAppHistoryNextCursor = null;
@@ -2074,6 +2133,9 @@
       });
     }
     if (codexAppHistorySourceActive) {
+      if (visualRenderWindow.messages.length < session.messages.length) {
+        return true;
+      }
       const threadId = effectiveSessionId;
       return canRequestOlderCodexAppThreadHistory({
         threadId,
@@ -2105,11 +2167,10 @@
       return;
     }
     const loadedMessageCount = session?.messages.length ?? 0;
-    const loadedHistoryMax = Math.min(
-      maxVisualHistoryMessages(),
-      loadedMessageCount,
-    );
-    if (visualHistoryMinMessages < loadedHistoryMax) {
+    const loadedHistoryMax = codexAppHistorySourceActive
+      ? loadedMessageCount
+      : Math.min(maxVisualHistoryMessages(), loadedMessageCount);
+    if (visualRenderWindow.messages.length < loadedHistoryMax) {
       visualHistoryMinMessages = Math.min(
         loadedHistoryMax,
         Math.max(
@@ -2223,6 +2284,29 @@
       codexAppLiveTurnIds = new Set();
       codexAppStartedTurnIds = new Set();
       codexCompletedLiveItemIds = new Set();
+      codexTurnLifecycleSeq += 1;
+      codexTurnSourceEpoch += 1;
+      codexPendingTurnStartOptimisticId = null;
+      codexOptimisticUserMessages = [];
+      codexActiveTurnId = null;
+      codexQueueDraining = false;
+      // Hydrate the new owner's queue before clearing running state can
+      // promote work. A live-to-live switch need not change liveCodexApp.
+      const queueKey =
+        agent === "codex" && !codexAppTransport
+          ? codexQueueStorageKey()
+          : undefined;
+      if (queueKey) {
+        restoreCodexQueue(queueKey);
+      } else {
+        codexQueueHydratedKey = "";
+        codexQueuedMessages = [];
+        codexQueueBlocked = false;
+      }
+      if (agent === "codex") {
+        sending = false;
+        sendError = "";
+      }
       codexLiveDetectedModel = "";
       if (!codexAppHistorySourceActive) codexAppSessionKey = "";
       resetToCodexAppSession();
@@ -2304,6 +2388,7 @@
     const targetHistoryKey = codexAppHistoryKey(threadId, cwd);
     const invalidationSeqAtReadStart = codexAppHistoryInvalidationSeq;
     const messagesAtReadStart = session.messages;
+    const renderedMessagesAtReadStart = visualRenderWindow.messages.length;
     const historySnapshotCapturedDuringActiveTurn =
       sending || codexActiveTurnId !== null;
     const targetStillOwned = () =>
@@ -2389,6 +2474,15 @@
               },
             )
       ) as NormalizedMessage[];
+      if (cursor && mergedMessages.length > messagesAtReadStart.length) {
+        visualHistoryMinMessages = Math.min(
+          mergedMessages.length,
+          Math.max(
+            visualHistoryMinMessages,
+            renderedMessagesAtReadStart + VISUAL_HISTORY_MESSAGES_STEP,
+          ),
+        );
+      }
       if (!sameMessageReferences(session.messages, mergedMessages)) {
         noteVisualTranscriptChangedFrom(0);
         session = {
@@ -2604,6 +2698,10 @@
   let codexQueueBlocked = false;
   let codexQueueExpanded = false;
   let codexQuestionsExpanded = false;
+  let codexSubagentsExpanded = false;
+  let codexSubagents: VisualSubagentMeta[] = [];
+  let codexActiveSubagents: VisualSubagentMeta[] = [];
+  const trackSessionSubagents = createVisualSubagentTracker();
   let codexGoalExpanded = false;
   let codexPlanExpanded = false;
   let codexWarningsExpanded = false;
@@ -2695,7 +2793,13 @@
   $: codexAppHistoryFetchActive =
     codexAppHistorySourceActive && columnNearViewport;
   $: if (codexAppLiveSurfaceActive && codexHasDeferredVisualEvents) {
-    catchUpDeferredCodexVisualEvents();
+    // Run after this visibility flush: synchronous replay mutates session
+    // behind already-evaluated derived messages in Svelte's legacy graph.
+    queueMicrotask(() => {
+      if (codexAppLiveSurfaceActive && codexHasDeferredVisualEvents) {
+        catchUpDeferredCodexVisualEvents();
+      }
+    });
   }
   $: sessionFileSource = liveCodexApp ? (transcriptSource ?? "") : source;
   $: sessionMessageSource = resolveSessionMessageSource({
@@ -3386,6 +3490,7 @@
     unsubscribeCodexEvents = null;
     codexEventsThreadId = null;
     codexEventStreamState = "closed";
+    codexRecoverableIssue = null;
     codexLiveNormalizeContext = { toolNames: new Map(), toolInputs: new Map() };
   }
 
@@ -3515,7 +3620,26 @@
     scheduleCodexDeltaFlush();
   }
 
+  function bindPendingCodexTurn(turnId: string | undefined): void {
+    if (!turnId || !codexPendingTurnStartOptimisticId) return;
+    const optimisticId = codexPendingTurnStartOptimisticId;
+    codexPendingTurnStartOptimisticId = null;
+    codexOptimisticUserMessages = codexOptimisticUserMessages.map((message) =>
+      message.id === optimisticId && !message.turnId
+        ? { ...message, turnId }
+        : message,
+    );
+  }
+
   function applyCodexEventStateOnly(event: CodexAppEvent): void {
+    updateCodexRecoverableIssue(event);
+    if (
+      event.method === "turn/started" ||
+      event.method === "turn/completed" ||
+      event.method === "turn/status"
+    ) {
+      codexTurnLifecycleSeq += 1;
+    }
     if (event.kind === "request") {
       if (codexRequestNeedsUserInteraction(event.method)) {
         codexRequests = [
@@ -3527,6 +3651,7 @@
       return;
     }
     if (event.method === "turn/started") {
+      bindPendingCodexTurn(event.turnId);
       if (event.turnId) {
         codexAppLiveTurnIds = new Set(codexAppLiveTurnIds).add(event.turnId);
         codexAppStartedTurnIds.add(event.turnId);
@@ -3550,7 +3675,6 @@
     if (event.method === "turn/completed") {
       if (event.turnId) {
         codexAppLiveTurnIds = new Set(codexAppLiveTurnIds).add(event.turnId);
-        codexAppStartedTurnIds.delete(event.turnId);
       }
       invalidateCodexAppHistoryForReconciliation();
       codexActiveTurnId = null;
@@ -3588,6 +3712,38 @@
     }
   }
 
+  function updateCodexRecoverableIssue(event: CodexAppEvent): void {
+    const nextIssue = codexRecoverableIssueFromEvent(event);
+    if (nextIssue) {
+      codexRecoverableIssue = nextIssue;
+      return;
+    }
+    const resolved = codexRecoverableIssue;
+    if (!resolved || !codexEventResolvesRecoverableIssue(resolved, event)) {
+      return;
+    }
+    codexRecoverableIssue = null;
+    if (sendError === resolved.message) sendError = "";
+    if (!session) return;
+    const messages = withoutResolvedCodexRecoverableIssueMessages(
+      session.messages,
+      resolved,
+    );
+    if (
+      messages.length === session.messages.length &&
+      messages.every((message, index) => message === session?.messages[index])
+    ) {
+      return;
+    }
+    const changedIndex = session.messages.findIndex(
+      (message, index) => message !== messages[index],
+    );
+    noteVisualTranscriptChangedFrom(
+      changedIndex >= 0 ? changedIndex : messages.length,
+    );
+    session = { ...session, messages };
+  }
+
   function applyCodexEvent(
     event: CodexAppEvent,
     lifecycleAlreadyApplied = false,
@@ -3597,6 +3753,7 @@
     const key = codexEventReplayKey(event);
     if (codexSeenEvents.has(key)) return;
     codexSeenEvents.add(key);
+    updateCodexRecoverableIssue(event);
     if (codexSeenEvents.size > 1000) {
       const first = codexSeenEvents.values().next().value;
       if (first) codexSeenEvents.delete(first);
@@ -3628,6 +3785,14 @@
     }
     const skipLifecycle =
       lifecycleAlreadyApplied && codexEventLifecycleHandledStateOnly(event);
+    if (
+      !skipLifecycle &&
+      (event.method === "turn/started" ||
+        event.method === "turn/completed" ||
+        event.method === "turn/status")
+    ) {
+      codexTurnLifecycleSeq += 1;
+    }
     const eventTurnId =
       event.turnId ??
       (typeof event.params.turnId === "string"
@@ -3709,6 +3874,7 @@
 
     if (event.method === "turn/started") {
       if (skipLifecycle) return;
+      bindPendingCodexTurn(event.turnId);
       codexActiveTurnId = event.turnId ?? codexActiveTurnId;
       sending = true;
       sendError = "";
@@ -3733,9 +3899,6 @@
         invalidateCodexAppHistoryForReconciliation();
       }
       if (skipLifecycle) return;
-      if (event.turnId) {
-        codexAppStartedTurnIds.delete(event.turnId);
-      }
       codexActiveTurnId = null;
       sending = false;
       sessionStatsRefreshSeq += 1;
@@ -3929,25 +4092,11 @@
         messages[existingIndex] = message;
         firstChangedIndex = Math.min(firstChangedIndex, existingIndex);
       } else {
-        const matchingNewTurnUser =
-          message.role === "user" && message.turnId
-            ? codexOptimisticUserMessages.find(
-                (optimistic) =>
-                  optimistic.intent !== "steer" &&
-                  optimistic.turnId === message.turnId &&
-                  hasCanonicalUserMessageMatchingOptimistic(
-                    [...messages, message],
-                    optimistic,
-                  ),
-              )
-            : undefined;
-        const firstMessageInTurn = matchingNewTurnUser
-          ? messages.findIndex(
-              (candidate) => candidate.turnId === message.turnId,
-            )
-          : -1;
-        const insertionIndex =
-          firstMessageInTurn >= 0 ? firstMessageInTurn : messages.length;
+        const insertionIndex = canonicalUserMessageInsertionIndex(
+          messages,
+          message,
+          codexOptimisticUserMessages,
+        );
         firstChangedIndex = Math.min(firstChangedIndex, insertionIndex);
         messages.splice(insertionIndex, 0, message);
       }
@@ -4377,6 +4526,9 @@
         role: "user",
         timestamp: new Date().toISOString(),
         intent,
+        ...(intent === "steer" && codexActiveTurnId
+          ? { turnId: codexActiveTurnId }
+          : {}),
         optimisticAfterMessageId: anchorId,
         optimisticAfterMessageIndex: anchorIndex,
         blocks,
@@ -4918,12 +5070,15 @@
     if (!opts.steer && sending) return false;
     sending = true;
     sendError = "";
+    const lifecycleSeqAtSend = codexTurnLifecycleSeq;
+    const sourceEpochAtSend = codexTurnSourceEpoch;
     const optimisticId = optimisticCodexUser(
       payload.text,
       payload.attachments,
       opts.sourceRect ?? null,
       opts.steer ? "steer" : undefined,
     );
+    if (!opts.steer) codexPendingTurnStartOptimisticId = optimisticId;
     try {
       const { res, body } = await withRequestDeadline(
         CODEX_TURN_REQUEST_TIMEOUT_MS,
@@ -4960,8 +5115,13 @@
         },
       );
       if (!res.ok) throw new Error(body?.error ?? `HTTP ${res.status}`);
+      if (codexTurnSourceEpoch !== sourceEpochAtSend) return true;
       if (typeof body?.turnId === "string") {
-        codexActiveTurnId = body.turnId;
+        // SSE can finish this turn (and promote the next queued turn) before
+        // the request response arrives. Its lifecycle state is already newer.
+        if (codexTurnLifecycleSeq === lifecycleSeqAtSend) {
+          codexActiveTurnId = body.turnId;
+        }
         codexOptimisticUserMessages = codexOptimisticUserMessages.map(
           (message) =>
             message.id === optimisticId
@@ -4971,9 +5131,29 @@
       }
       return true;
     } catch (e) {
+      if (codexTurnSourceEpoch !== sourceEpochAtSend) return false;
+      const optimistic = codexOptimisticUserMessages.find(
+        (message) => message.id === optimisticId,
+      );
+      // A failed HTTP response cannot undo a send the app-server has already
+      // accepted over SSE. A steer needs its own user-item acknowledgment:
+      // its turn was already running before this request.
+      if (
+        optimistic &&
+        ((!opts.steer &&
+          optimistic.turnId &&
+          codexAppLiveTurnIds.has(optimistic.turnId)) ||
+          hasCanonicalUserMessageMatchingOptimistic(
+            session?.messages ?? [],
+            optimistic,
+            codexOptimisticUserMessages,
+          ))
+      ) {
+        return true;
+      }
       removeOptimisticCodexUser(optimisticId);
       sendError = e instanceof Error ? e.message : String(e);
-      sending = opts.steer ? true : false;
+      if (codexTurnLifecycleSeq === lifecycleSeqAtSend) sending = opts.steer;
       if (opts.fromQueue) {
         codexQueuedMessages = [opts.fromQueue, ...codexQueuedMessages];
       } else if (!inputText.trim() && composerAttachments.length === 0) {
@@ -4981,6 +5161,10 @@
         composerAttachments = payload.attachments;
       }
       return false;
+    } finally {
+      if (codexPendingTurnStartOptimisticId === optimisticId) {
+        codexPendingTurnStartOptimisticId = null;
+      }
     }
   }
 
@@ -5076,12 +5260,17 @@
     const [next, ...rest] = codexQueuedMessages;
     if (!next) return;
     codexQueueDraining = true;
+    const sourceEpochAtSend = codexTurnSourceEpoch;
     codexQueuedMessages = rest;
     try {
       const ok = await startCodexTurn(next, { steer: false, fromQueue: next });
-      if (!ok) codexQueueBlocked = true;
+      if (!ok && codexTurnSourceEpoch === sourceEpochAtSend) {
+        codexQueueBlocked = true;
+      }
     } finally {
-      codexQueueDraining = false;
+      if (codexTurnSourceEpoch === sourceEpochAtSend) {
+        codexQueueDraining = false;
+      }
     }
   }
 
@@ -5455,6 +5644,38 @@
   );
   $: codexPendingQuestionCount =
     codexQuestionSummary.questionCount + codexPendingTranscriptQuestions.length;
+  $: codexSubagents = trackSessionSubagents(visualSessionMessages);
+  $: codexActiveSubagents = codexSubagents.filter(
+    (subagent) =>
+      subagent.status !== "completed" && subagent.status !== "failed",
+  );
+  $: {
+    const key = `${sessionMessageSource.kind}\0${effectiveSessionId}\0${source}\0${daemonId ?? ""}\0${effectiveSessionCwd}\0${renderOnly}`;
+    if (key !== childUsageKey || subagentUsageLoader !== childUsageLoaderUsed) {
+      childUsageTracker?.stop();
+      childUsageKey = key;
+      childUsageRefreshKey = "";
+      childUsageLoaderUsed = subagentUsageLoader;
+      childUsage = new Map();
+      childUsageErrors = new Map();
+      const loader = subagentUsageLoader ?? (!renderOnly && agent === "codex" && sessionMessageSource.kind !== "unavailable" ? createDaemonSubagentUsageLoader({ live: sessionMessageSource.kind === "app-server", cwd: effectiveSessionCwd, daemonId, transport: codexAppTransport }) : undefined);
+      childUsageTracker = loader ? createSubagentUsageTracker(loader, (usage, errors) => { childUsage = usage; childUsageErrors = errors; }, effectiveSessionId) : undefined;
+    }
+  }
+  $: if (renderReadBody && columnNearViewport && childUsageTracker) {
+    const children = codexSubagents.filter(child => child.id && !child.isParent && child.id !== effectiveSessionId);
+    const refreshKey = `${childUsageKey}\0${codexRunning}\0${children.map(child => `${child.id}:${child.status}`).join("|")}`;
+    if (refreshKey !== childUsageRefreshKey) {
+      childUsageRefreshKey = refreshKey;
+      childUsageTracker.ensure(children.map(child => child.id!), true);
+    }
+  }
+  onMount(() => {
+    const timer = setInterval(() => {
+      if (renderReadBody && columnNearViewport && (codexRunning || codexActiveSubagents.length)) childUsageTracker?.ensure([...childUsage.keys(), ...codexActiveSubagents.filter(child => child.id && !child.isParent).map(child => child.id!)], true);
+    }, 5000);
+    return () => { clearInterval(timer); childUsageTracker?.stop(); };
+  });
   $: showComposerTray =
     codexVisualAppSurface && codexQuestionSummary.otherRequests.length > 0;
   $: if (
@@ -5462,6 +5683,9 @@
     codexQuestionsExpanded
   ) {
     codexQuestionsExpanded = false;
+  }
+  $: if (codexActiveSubagents.length === 0 && codexSubagentsExpanded) {
+    codexSubagentsExpanded = false;
   }
   $: if (codexQueuedMessages.length === 0 && codexQueueExpanded) {
     codexQueueExpanded = false;
@@ -5564,6 +5788,7 @@
       codexQueueExpanded = false;
       codexQuestionsExpanded = false;
       codexWarningsExpanded = false;
+      codexSubagentsExpanded = false;
     }
   }
 
@@ -5574,6 +5799,7 @@
       codexQueueExpanded = false;
       codexQuestionsExpanded = false;
       codexWarningsExpanded = false;
+      codexSubagentsExpanded = false;
     } else {
       cancelCodexGoalEdit();
     }
@@ -5586,6 +5812,7 @@
       codexPlanExpanded = false;
       codexQuestionsExpanded = false;
       codexWarningsExpanded = false;
+      codexSubagentsExpanded = false;
     }
   }
 
@@ -5595,6 +5822,18 @@
       codexGoalExpanded = false;
       codexPlanExpanded = false;
       codexQueueExpanded = false;
+      codexWarningsExpanded = false;
+      codexSubagentsExpanded = false;
+    }
+  }
+
+  function toggleCodexSubagentsPane(): void {
+    codexSubagentsExpanded = !codexSubagentsExpanded;
+    if (codexSubagentsExpanded) {
+      codexGoalExpanded = false;
+      codexPlanExpanded = false;
+      codexQueueExpanded = false;
+      codexQuestionsExpanded = false;
       codexWarningsExpanded = false;
     }
   }
@@ -5606,6 +5845,7 @@
       codexPlanExpanded = false;
       codexQueueExpanded = false;
       codexQuestionsExpanded = false;
+      codexSubagentsExpanded = false;
     }
   }
 
@@ -5909,6 +6149,7 @@
       onCancelInflight={cancelAllInflight}
       onFind={openSessionFind}
       {onClose}
+      {onNavigateBack}
       {onDragStart}
       resumeTitle={resumeTitleForAgent(sessionResumeTarget)}
       endSessionTitle={mode === "read" && codexVisualAppSurface
@@ -6254,6 +6495,10 @@
         ? codexLiveDetectedModel || codexModel || undefined
         : model}
       {modelsDevPricing}
+      subagentUsage={childUsage}
+      subagentUsageErrors={childUsageErrors}
+      subagentUsageThrough={subagentUsageThrough}
+      sessionId={effectiveSessionId}
       {daemonId}
       items={visualTranscriptItems}
       messageTurnIndexes={visualSessionMessageTurnIndexes}
@@ -6281,7 +6526,8 @@
         ? answerCodexAsyncQuestion
         : undefined}
       {answeredAsyncQuestionIds}
-      {onOpenSubagent}
+      onOpenSubagent={openSubagentWithContext}
+      parentTask={visibleSubagentParentContext(parentTaskContext, effectiveSessionId, sessionMessageSource.kind)}
       {onOpenRemotePath}
     />
   {/if}
@@ -6302,7 +6548,7 @@
       type="button"
       class="session-tail-follow"
       class:active={visualTailFollowActive}
-      on:click={forceVisualTailFollow}
+      on:click={() => scrollTranscriptToEdge("end")}
       title={visualTailFollowActive ? "Following latest" : "Jump to latest"}
       aria-label={visualTailFollowActive
         ? "Following latest transcript messages"
@@ -6419,14 +6665,66 @@
           </div>
         </div>
       {/if}
+      {#if agent === "codex" && codexActiveSubagents.length && codexSubagentsExpanded}
+        <ComposerPanel
+          kind="subagents"
+          ariaLabel="Codex subagents"
+          list={true}
+        >
+          {#each codexActiveSubagents as subagent (subagent.id ?? visualSubagentLabel(subagent))}
+            <ComposerPanelItem
+              interactive={true}
+              disabled={!subagent.id}
+              tone={subagent.status === "running"
+                ? "active"
+                : subagent.status === "failed"
+                  ? "danger"
+                  : "default"}
+              title={subagent.id
+                ? `Open ${visualSubagentLabel(subagent)} · ${subagent.id}`
+                : "This subagent has no resolvable session id"}
+              onActivate={() => {
+                if (subagent.id) openSubagentWithContext(subagent.id, transcriptSurface, subagent);
+              }}
+            >
+              <div class="composer-panel-item-head">
+                <strong class="composer-panel-item-title">
+                  {visualSubagentLabel(subagent)}
+                </strong>
+                <span class="composer-panel-item-meta">{subagent.status}</span>
+              </div>
+              {#if subagent.model || subagent.effort || subagent.type}
+                <div class="composer-panel-item-meta">
+                  {[subagent.model, subagent.effort, subagent.type]
+                    .filter(Boolean)
+                    .join(" · ")}
+                </div>
+              {/if}
+              {#if subagent.task}
+                <div class="composer-panel-item-copy">{subagent.task}</div>
+              {:else if subagent.taskEncrypted}
+                <div class="composer-panel-item-copy muted">Task text is encrypted in this recording.</div>
+              {/if}
+              {#if subagent.result}
+                <div class="composer-panel-item-copy muted">
+                  {subagent.result}
+                </div>
+              {/if}
+            </ComposerPanelItem>
+          {/each}
+        </ComposerPanel>
+      {/if}
       {#if agent === "codex" && codexPendingQuestionCount && codexQuestionsExpanded}
-        <div class="codex-question-pane" aria-label="Codex questions">
+        <ComposerPanel
+          kind="questions"
+          ariaLabel="Codex questions"
+          tone="question"
+        >
           <div class="codex-requests">
             {#each codexQuestionSummary.questionRequests as req (req.id)}
               <div class="codex-request question-request">
                 <div class="codex-request-main">
                   <div class="codex-request-heading question-request-heading">
-                    <span class="question-request-symbol" aria-hidden="true">?</span>
                     <span class="codex-request-title">Question</span>
                   </div>
                   <div class="codex-request-questions">
@@ -6495,17 +6793,19 @@
               />
             {/each}
           </div>
-        </div>
+        </ComposerPanel>
       {/if}
       {#if agent === "codex" && composerWarnings.length && codexWarningsExpanded}
-        <div class="codex-warning-pane" aria-label="Codex warnings">
+        <ComposerPanel kind="warnings" ariaLabel="Codex warnings" list={true}>
           {#each composerWarnings as warning, i (`${i}:${warning}`)}
-            <div class="codex-warning-item">{warning}</div>
+            <ComposerPanelItem tone="danger" density="compact">
+              <div class="composer-panel-item-copy">{warning}</div>
+            </ComposerPanelItem>
           {/each}
-        </div>
+        </ComposerPanel>
       {/if}
       {#if agent === "codex" && codexLatestGoal && codexGoalExpanded}
-        <div class="codex-goal-pane" aria-label="Codex goal">
+        <ComposerPanel kind="goal" ariaLabel="Codex goal">
           <div class="codex-goal-head">
             <span
               class="codex-goal-status"
@@ -6612,10 +6912,10 @@
               >
             {/if}
           </div>
-        </div>
+        </ComposerPanel>
       {/if}
       {#if agent === "codex" && codexLatestPlan && codexPlanExpanded}
-        <div class="codex-plan-pane" aria-label="Codex plan">
+        <ComposerPanel kind="plan" ariaLabel="Codex plan">
           {#if codexLatestPlan.explanation}
             <div class="codex-plan-explanation">
               {codexLatestPlan.explanation}
@@ -6623,27 +6923,33 @@
           {/if}
           <div class="codex-plan-items">
             {#each codexLatestPlan.items as item, i (`${item.status}:${item.step}:${i}`)}
-              <div
-                class="codex-plan-item"
-                class:active={item.status === "in_progress"}
+              <ComposerPanelItem
+                density="compact"
+                tone={item.status === "in_progress" ? "active" : "default"}
               >
-                <span
-                  class="codex-plan-status"
-                  class:done={item.status === "completed"}
-                  class:active={item.status === "in_progress"}
-                  title={codexPlanStatusLabel(item.status)}
-                  aria-label={codexPlanStatusLabel(item.status)}
-                >
-                  {codexPlanStatusIcon(item.status)}
-                </span>
-                <span class="codex-plan-step">{item.step}</span>
-              </div>
+                <div class="codex-plan-item-layout">
+                  <span
+                    class="codex-plan-status"
+                    class:done={item.status === "completed"}
+                    class:active={item.status === "in_progress"}
+                    title={codexPlanStatusLabel(item.status)}
+                    aria-label={codexPlanStatusLabel(item.status)}
+                  >
+                    {codexPlanStatusIcon(item.status)}
+                  </span>
+                  <span class="codex-plan-step">{item.step}</span>
+                </div>
+              </ComposerPanelItem>
             {/each}
           </div>
-        </div>
+        </ComposerPanel>
       {/if}
       {#if agent === "codex" && codexQueuedMessages.length && codexQueueExpanded}
-        <div class="codex-queue-pane" aria-label="Queued Codex messages">
+        <ComposerPanel
+          kind="queue"
+          ariaLabel="Queued Codex messages"
+          size="wide"
+        >
           <div
             class="codex-queue"
             class:drop-at-end={codexQueueDropAtEnd}
@@ -6654,7 +6960,7 @@
             {#each codexQueuedMessages as item, itemIndex (item.id)}
               {@const queueAttachments = item.attachments}
               <div
-                class="codex-queue-item"
+                class="codex-queue-motion"
                 class:editing={editingCodexQueueId === item.id}
                 class:dragging={draggingCodexQueueId === item.id}
                 class:drop-before={codexQueueDropBeforeId === item.id}
@@ -6668,25 +6974,35 @@
                 on:drop|stopPropagation={(e) => onCodexQueueDrop(e, item.id)}
                 animate:flip={{ duration: 180 }}
               >
-                <button
-                  type="button"
-                  class="codex-queue-drag"
-                  draggable={!editingCodexQueueId}
-                  disabled={!!editingCodexQueueId}
-                  on:dragstart={(e) => onCodexQueueDragStart(e, item)}
-                  on:dragend={clearCodexQueueDragState}
-                  title="Drag to reorder queued message"
-                  aria-label="Drag to reorder queued message"
+                <ComposerPanelItem
+                  extraClass="queue"
+                  tone={editingCodexQueueId === item.id ? "active" : "default"}
                 >
-                  ⋮⋮
-                </button>
-                <div
-                  class="codex-queue-main"
-                  class:editing={editingCodexQueueId === item.id}
-                  class:hasAttachments={queueAttachments.length > 0}
-                >
-                  <span class="codex-queue-label">queued</span>
-                  <div class="codex-queue-preview" title={item.text}>
+                  <svelte:fragment slot="leading">
+                    <button
+                      type="button"
+                      class="codex-queue-drag"
+                      draggable={!editingCodexQueueId}
+                      disabled={!!editingCodexQueueId}
+                      on:dragstart={(e) => onCodexQueueDragStart(e, item)}
+                      on:dragend={clearCodexQueueDragState}
+                      title="Drag to reorder queued message"
+                      aria-label="Drag to reorder queued message"
+                    >
+                      ⋮⋮
+                    </button>
+                  </svelte:fragment>
+                  <div class="composer-panel-item-head">
+                    <strong class="composer-panel-item-title">
+                      {itemIndex === 0 ? "Next" : `Queued #${itemIndex + 1}`}
+                    </strong>
+                    <span class="composer-panel-item-meta">
+                      {queueAttachments.length
+                        ? `${queueAttachments.length} ${queueAttachments.length === 1 ? "attachment" : "attachments"}`
+                        : "Waiting"}
+                    </span>
+                  </div>
+                  <div class="composer-panel-item-copy" title={item.text}>
                     {item.text || "(attachments only)"}
                   </div>
                   {#if queueAttachments.length}
@@ -6703,66 +7019,68 @@
                       {/each}
                     </div>
                   {/if}
-                </div>
-                <div class="codex-queue-actions">
-                  {#if editingCodexQueueId === item.id}
-                    <span class="codex-queue-editing">editing</span>
-                  {:else}
-                    <button
-                      type="button"
-                      on:click={() =>
-                        mergeCodexQueuedMessageIntoPrevious(item.id)}
-                      disabled={itemIndex === 0 || !!editingCodexQueueId}
-                      title="Merge into previous queued message"
-                      aria-label="Merge into previous queued message"
-                    >
-                      {@render composerActionIcon("merge-up")}
-                    </button>
-                    <button
-                      type="button"
-                      on:click={() => beginEditCodexQueuedMessage(item)}
-                      disabled={!!editingCodexQueueId}
-                      title="Edit queued message"
-                      aria-label="Edit queued message"
-                    >
-                      {@render composerActionIcon("edit")}
-                    </button>
-                    {#if codexActiveTurnId}
-                      <button
-                        type="button"
-                        on:click={() => void steerCodexQueuedMessage(item)}
-                        disabled={!!editingCodexQueueId}
-                        title="Send this queued message as steering now"
-                        aria-label="Steer queued message"
-                      >
-                        {@render composerActionIcon("steer")}
-                      </button>
-                    {:else}
-                      <button
-                        type="button"
-                        on:click={() => void runCodexQueuedMessage(item)}
-                        disabled={!!editingCodexQueueId}
-                        title="Run this queued message now"
-                        aria-label="Run queued message"
-                      >
-                        {@render composerActionIcon("run")}
-                      </button>
-                    {/if}
-                    <button
-                      type="button"
-                      on:click={() => removeCodexQueuedMessage(item.id)}
-                      disabled={!!editingCodexQueueId}
-                      title="Remove queued message"
-                      aria-label="Remove queued message"
-                    >
-                      {@render composerActionIcon("remove")}
-                    </button>
-                  {/if}
-                </div>
+                  <svelte:fragment slot="actions">
+                    <div class="codex-queue-actions">
+                      {#if editingCodexQueueId === item.id}
+                        <span class="codex-queue-editing">editing</span>
+                      {:else}
+                        <button
+                          type="button"
+                          on:click={() =>
+                            mergeCodexQueuedMessageIntoPrevious(item.id)}
+                          disabled={itemIndex === 0 || !!editingCodexQueueId}
+                          title="Merge into previous queued message"
+                          aria-label="Merge into previous queued message"
+                        >
+                          {@render composerActionIcon("merge-up")}
+                        </button>
+                        <button
+                          type="button"
+                          on:click={() => beginEditCodexQueuedMessage(item)}
+                          disabled={!!editingCodexQueueId}
+                          title="Edit queued message"
+                          aria-label="Edit queued message"
+                        >
+                          {@render composerActionIcon("edit")}
+                        </button>
+                        {#if codexActiveTurnId}
+                          <button
+                            type="button"
+                            on:click={() => void steerCodexQueuedMessage(item)}
+                            disabled={!!editingCodexQueueId}
+                            title="Send this queued message as steering now"
+                            aria-label="Steer queued message"
+                          >
+                            {@render composerActionIcon("steer")}
+                          </button>
+                        {:else}
+                          <button
+                            type="button"
+                            on:click={() => void runCodexQueuedMessage(item)}
+                            disabled={!!editingCodexQueueId}
+                            title="Run this queued message now"
+                            aria-label="Run queued message"
+                          >
+                            {@render composerActionIcon("run")}
+                          </button>
+                        {/if}
+                        <button
+                          type="button"
+                          on:click={() => removeCodexQueuedMessage(item.id)}
+                          disabled={!!editingCodexQueueId}
+                          title="Remove queued message"
+                          aria-label="Remove queued message"
+                        >
+                          {@render composerActionIcon("remove")}
+                        </button>
+                      {/if}
+                    </div>
+                  </svelte:fragment>
+                </ComposerPanelItem>
               </div>
             {/each}
           </div>
-        </div>
+        </ComposerPanel>
       {/if}
       <div
         class="composer"
@@ -6773,7 +7091,7 @@
           type="button"
           class="session-tail-follow composer-tail-follow"
           class:active={visualTranscriptActive && visualTailFollowActive}
-          on:click={forceVisualTailFollow}
+          on:click={() => scrollTranscriptToEdge("end")}
           title={visualTailFollowActive ? "Following latest" : "Jump to latest"}
           aria-label={visualTailFollowActive
             ? "Following latest transcript messages"
@@ -6850,83 +7168,84 @@
             disabled={sending && agent !== "codex" && !ollamaAbort}
           ></textarea>
         </div>
-        {#if agent === "codex" && (codexLatestGoal || codexLatestPlan || codexQueuedMessages.length || codexPendingQuestionCount || composerWarnings.length)}
+        {#if agent === "codex" && (codexLatestGoal || codexLatestPlan || codexQueuedMessages.length || codexActiveSubagents.length || codexPendingQuestionCount || composerWarnings.length)}
           <div class="composer-indicators">
             {#if codexLatestGoal}
-              <button
-                type="button"
-                class="codex-composer-badge goal"
-                class:expanded={codexGoalExpanded}
-                on:click={toggleCodexGoalPane}
+              <ComposerBadge
+                label={codexGoalBadgeLabel(codexLatestGoal)}
+                tone="goal"
+                expanded={codexGoalExpanded}
+                onToggle={toggleCodexGoalPane}
                 title={codexGoalExpanded ? "Collapse goal" : "Show goal"}
-                aria-label={codexGoalExpanded ? "Collapse goal" : "Show goal"}
-              >
-                {codexGoalBadgeLabel(codexLatestGoal)}
-              </button>
+                ariaLabel={codexGoalExpanded ? "Collapse goal" : "Show goal"}
+              />
             {/if}
             {#if codexLatestPlan}
-              <button
-                type="button"
-                class="codex-composer-badge"
-                class:expanded={codexPlanExpanded}
-                on:click={toggleCodexPlanPane}
+              <ComposerBadge
+                label={codexPlanBadgeLabel(codexLatestPlan)}
+                expanded={codexPlanExpanded}
+                onToggle={toggleCodexPlanPane}
                 title={codexPlanExpanded ? "Collapse todo" : "Show todo"}
-                aria-label={codexPlanExpanded ? "Collapse todo" : "Show todo"}
-              >
-                {codexPlanBadgeLabel(codexLatestPlan)}
-              </button>
+                ariaLabel={codexPlanExpanded ? "Collapse todo" : "Show todo"}
+              />
             {/if}
             {#if codexQueuedMessages.length}
-              <button
-                type="button"
-                class="codex-composer-badge"
-                class:expanded={codexQueueExpanded}
-                bind:this={composerQueueTargetEl}
-                on:click={toggleCodexQueuePane}
+              <ComposerBadge
+                label={`Queue: ${codexQueuedMessages.length}`}
+                expanded={codexQueueExpanded}
+                bind:element={composerQueueTargetEl}
+                onToggle={toggleCodexQueuePane}
                 title={codexQueueExpanded
                   ? "Collapse queued messages"
                   : "Show queued messages"}
-                aria-label={codexQueueExpanded
+                ariaLabel={codexQueueExpanded
                   ? "Collapse queued messages"
                   : "Show queued messages"}
-              >
-                Queue: {codexQueuedMessages.length}
-              </button>
+              />
+            {/if}
+            {#if codexActiveSubagents.length}
+              <ComposerBadge
+                label={`Subagents: ${codexActiveSubagents.length}`}
+                tone="subagent"
+                expanded={codexSubagentsExpanded}
+                onToggle={toggleCodexSubagentsPane}
+                title={codexSubagentsExpanded
+                  ? "Collapse subagents"
+                  : "Show subagents"}
+                ariaLabel={codexSubagentsExpanded
+                  ? "Collapse subagents"
+                  : "Show subagents"}
+              />
             {/if}
             {#if codexPendingQuestionCount}
-              <button
-                type="button"
-                class="codex-composer-badge question"
-                class:expanded={codexQuestionsExpanded}
-                on:click={toggleCodexQuestionsPane}
+              <ComposerBadge
+                label={codexPendingQuestionCount === 1
+                  ? "Question"
+                  : `Questions: ${codexPendingQuestionCount}`}
+                tone="question"
+                expanded={codexQuestionsExpanded}
+                onToggle={toggleCodexQuestionsPane}
                 title={codexQuestionsExpanded
                   ? "Collapse questions"
                   : "Show questions"}
-                aria-label={codexQuestionsExpanded
+                ariaLabel={codexQuestionsExpanded
                   ? "Collapse pending questions"
                   : "Show pending questions"}
-              >
-                <span aria-hidden="true">?</span>
-                {codexPendingQuestionCount === 1
-                  ? "Question"
-                  : `Questions: ${codexPendingQuestionCount}`}
-              </button>
+              />
             {/if}
             {#if composerWarnings.length}
-              <button
-                type="button"
-                class="codex-composer-badge warning"
-                class:expanded={codexWarningsExpanded}
-                on:click={toggleCodexWarningsPane}
+              <ComposerBadge
+                label={`Warnings: ${composerWarnings.length}`}
+                tone="warning"
+                expanded={codexWarningsExpanded}
+                onToggle={toggleCodexWarningsPane}
                 title={codexWarningsExpanded
                   ? "Collapse warnings"
                   : "Show warnings"}
-                aria-label={codexWarningsExpanded
+                ariaLabel={codexWarningsExpanded
                   ? "Collapse warnings"
                   : "Show warnings"}
-              >
-                Warnings: {composerWarnings.length}
-              </button>
+              />
             {/if}
           </div>
         {/if}
@@ -7485,46 +7804,6 @@
     overflow-y: auto;
     overscroll-behavior: contain;
   }
-  .codex-queue-pane,
-  .codex-question-pane,
-  .codex-warning-pane,
-  .codex-goal-pane,
-  .codex-plan-pane {
-    position: absolute;
-    right: 0;
-    bottom: calc(100% + 0.4rem);
-    z-index: 5;
-    width: min(100%, 42rem);
-    max-height: min(16rem, 38vh);
-    padding: 0.35rem;
-    border: 1px solid color-mix(in srgb, var(--surface-3) 80%, transparent);
-    border-radius: var(--radius-md);
-    background: color-mix(in srgb, var(--surface-2) 96%, transparent);
-    box-shadow: 0 14px 30px -22px rgba(0, 0, 0, 0.9);
-    overflow-y: auto;
-    overscroll-behavior: contain;
-  }
-  .codex-plan-pane {
-    left: auto;
-    width: min(100%, 34rem);
-  }
-  .codex-goal-pane {
-    left: auto;
-    width: min(100%, 34rem);
-  }
-  .codex-warning-pane {
-    left: auto;
-    width: min(100%, 34rem);
-  }
-  .codex-question-pane {
-    left: auto;
-    width: min(100%, 42rem);
-    border-color: color-mix(
-      in srgb,
-      var(--warning, #e0a34b) 42%,
-      var(--surface-3)
-    );
-  }
   .codex-goal-head {
     display: flex;
     align-items: center;
@@ -7683,21 +7962,8 @@
     align-items: center;
     gap: 0.4rem;
   }
-  .question-request-heading {
+  .question-request-heading .codex-request-title {
     color: var(--warning, #e0a34b);
-  }
-  .question-request-symbol {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    width: 1.15rem;
-    height: 1.15rem;
-    border: 1px solid currentColor;
-    border-radius: 999px;
-    color: var(--warning, #e0a34b);
-    font-size: 0.72rem;
-    font-weight: 800;
-    line-height: 1;
   }
   .codex-request-risk {
     border: 1px solid var(--surface-3);
@@ -7793,34 +8059,19 @@
     font-size: 0.72rem;
     line-height: 1.25;
   }
-  .codex-warning-item {
-    padding: 0.36rem 0.42rem;
-    border-radius: var(--radius-sm);
-    background: color-mix(in srgb, var(--error-bg) 46%, transparent);
-    color: var(--error-text);
-    font-size: 0.72rem;
-    line-height: 1.28;
-    overflow-wrap: anywhere;
-  }
   .codex-plan-items {
     display: grid;
     gap: 0.2rem;
   }
-  .codex-plan-item {
+  .codex-plan-item-layout {
     display: grid;
     grid-template-columns: auto minmax(0, 1fr);
     gap: 0.42rem;
     align-items: start;
     min-width: 0;
-    padding: 0.28rem 0.32rem;
-    border-radius: var(--radius-sm);
     color: var(--text-2);
     font-size: 0.76rem;
     line-height: 1.28;
-  }
-  .codex-plan-item.active {
-    background: color-mix(in srgb, var(--surface-1) 70%, transparent);
-    color: var(--text-1);
   }
   .codex-plan-status {
     display: inline-flex;
@@ -7841,18 +8092,10 @@
     min-width: 0;
     overflow-wrap: anywhere;
   }
-  .codex-queue-item {
+  .codex-queue-motion {
     position: relative;
-    display: grid;
-    grid-template-columns: auto minmax(0, 1fr) auto;
-    gap: 0.45rem;
-    align-items: start;
-    padding: 0.4rem 0.45rem;
-    border: 1px solid var(--surface-3);
-    border-radius: var(--radius-sm);
-    background: color-mix(in srgb, var(--surface-1) 82%, transparent);
   }
-  .codex-queue-item.drop-before::before {
+  .codex-queue-motion.drop-before::before {
     content: "";
     position: absolute;
     left: 0.22rem;
@@ -7865,20 +8108,8 @@
     box-shadow: 0 0 0 1px
       color-mix(in srgb, var(--accent, #6aa9ff) 35%, transparent);
   }
-  .codex-queue-item.dragging {
+  .codex-queue-motion.dragging {
     opacity: 0.52;
-  }
-  .codex-queue-item.editing {
-    border-color: color-mix(
-      in srgb,
-      var(--accent, #6aa9ff) 55%,
-      var(--surface-3)
-    );
-    background: color-mix(
-      in srgb,
-      var(--surface-1) 92%,
-      var(--accent, #6aa9ff) 8%
-    );
   }
   .codex-queue-drag {
     display: inline-flex;
@@ -7905,37 +8136,10 @@
     color: color-mix(in srgb, var(--text-faint) 55%, transparent);
     cursor: default;
   }
-  .codex-queue-main {
-    min-width: 0;
-    display: flex;
-    align-items: center;
-    gap: 0.42rem;
-  }
-  .codex-queue-main.editing,
-  .codex-queue-main.hasAttachments {
-    align-items: flex-start;
-    flex-wrap: wrap;
-  }
-  .codex-queue-label {
-    flex: 0 0 auto;
-    color: var(--text-faint);
-    font-size: 0.64rem;
-    line-height: 1;
-    text-transform: uppercase;
-  }
-  .codex-queue-preview {
-    min-width: 0;
-    overflow: hidden;
-    color: var(--text-2);
-    font-size: 0.76rem;
-    line-height: 1.25;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
   .codex-queue-attachments {
-    flex: 1 0 100%;
     display: flex;
     gap: 0.3rem;
+    margin-top: 0.35rem;
     overflow-x: auto;
   }
   .codex-queue-attachment {
@@ -7949,10 +8153,7 @@
     max-height: 2.7rem;
   }
   .codex-queue-actions {
-    display: flex;
-    flex-wrap: wrap;
-    justify-content: flex-end;
-    gap: 0.28rem;
+    display: contents;
   }
   .codex-queue-actions button {
     display: inline-flex;
@@ -8209,93 +8410,6 @@
   }
   .composer.wide-actions .composer-indicators {
     right: 0.7rem;
-  }
-  .codex-composer-badge {
-    box-sizing: border-box;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    flex: 0 0 auto;
-    height: 1.55rem;
-    max-width: 8rem;
-    border: 1px solid
-      color-mix(in srgb, var(--status-clean) 42%, var(--surface-3));
-    border-radius: 999px;
-    background: color-mix(in srgb, var(--surface-1) 86%, transparent);
-    color: var(--text-2);
-    font: inherit;
-    font-size: 0.68rem;
-    font-weight: 650;
-    line-height: 1;
-    padding: 0.3rem 0.48rem;
-    font-variant-numeric: tabular-nums;
-    white-space: nowrap;
-    cursor: pointer;
-    box-shadow: 0 8px 22px -18px rgba(0, 0, 0, 0.9);
-  }
-  .codex-composer-badge:focus {
-    outline: none;
-  }
-  .codex-composer-badge:focus-visible {
-    outline: 1px solid color-mix(in srgb, var(--status-clean) 72%, transparent);
-    outline-offset: 2px;
-  }
-  .codex-composer-badge:hover,
-  .codex-composer-badge.expanded {
-    color: var(--text-1);
-    border-color: color-mix(in srgb, var(--status-clean) 62%, var(--surface-3));
-    background: color-mix(in srgb, var(--surface-2) 92%, transparent);
-  }
-  .codex-composer-badge.warning {
-    border-color: color-mix(in srgb, var(--error-text) 46%, var(--surface-3));
-    color: var(--error-text);
-  }
-  .codex-composer-badge.question {
-    gap: 0.28rem;
-    border-color: color-mix(
-      in srgb,
-      var(--warning, #e0a34b) 48%,
-      var(--surface-3)
-    );
-    color: var(--warning, #e0a34b);
-  }
-  .codex-composer-badge.question > span {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    width: 0.92rem;
-    height: 0.92rem;
-    border: 1px solid currentColor;
-    border-radius: 999px;
-    font-size: 0.62rem;
-    font-weight: 800;
-  }
-  .codex-composer-badge.goal {
-    border-color: color-mix(in srgb, var(--status-dirty) 46%, var(--surface-3));
-  }
-  .codex-composer-badge.goal:hover,
-  .codex-composer-badge.goal.expanded {
-    border-color: color-mix(in srgb, var(--status-dirty) 62%, var(--surface-3));
-  }
-  .codex-composer-badge.warning:hover,
-  .codex-composer-badge.warning.expanded {
-    border-color: color-mix(in srgb, var(--error-text) 64%, var(--surface-3));
-    background: color-mix(in srgb, var(--error-bg) 38%, var(--surface-2));
-    color: var(--error-text);
-  }
-  .codex-composer-badge.question:hover,
-  .codex-composer-badge.question.expanded {
-    border-color: color-mix(
-      in srgb,
-      var(--warning, #e0a34b) 68%,
-      var(--surface-3)
-    );
-    background: color-mix(
-      in srgb,
-      var(--warning, #e0a34b) 16%,
-      var(--surface-2)
-    );
-    color: var(--warning, #e0a34b);
   }
   .composer-send {
     display: inline-flex;
