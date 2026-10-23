@@ -265,6 +265,20 @@ and actual Alt+Tab in the rebuilt package has not yet been exercised.
 
 ### Connected voice sessions with no speech response (2026-10-23)
 
+One-shot MCP speech: `speak_message` accepts up to 1,000 characters and a window
+ID, checks `mcp.voiceMessage` in daemon prefs and the UI, and waits for playback
+acknowledgement. Settings > MCP: Voice message defaults on. Each call uses an
+ephemeral Codex subscription WebRTC v3 thread with no tools and a synthetic
+silent audio clock; microphone capture is never requested. Explicit user text
+through `thread/realtime/appendText` triggers the supplied sentence; v3
+`appendSpeech` only added context in live testing. Completion uses assistant
+`turn.done` plus drained incoming audio; local resources and the remote thread
+are closed, with bounded timeouts. Existing interactive voice mode is separate.
+Background summaries now default on, while explicit saved overrides remain.
+
+Direct subscription probe played the full requested sentence through Edge,
+with `getUserMedia` replaced by a throwing guard, then stopped its owned thread.
+
 The new running build reached connected WebRTC state, but the affected sessions
 produced no transcript events. Windows default capture was unmuted at 72%.
 An isolated Edge connection using synthesized speech reproduced the silent

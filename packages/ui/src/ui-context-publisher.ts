@@ -12,6 +12,7 @@ export async function applyUiAction(
   windowId: string,
   adapter: {
     focusSession: (source: string, sessionId?: string) => Promise<void>;
+    voiceMessage?: (text: string, cwd: string) => Promise<void>;
     focusProject: (repoId: string, cwd: string) => Promise<void>;
     setZenMode: (
       enabled: boolean,
@@ -41,6 +42,10 @@ export async function applyUiAction(
   let error: string | undefined;
   try {
     switch (command.action) {
+      case "voice_message":
+        if (!adapter.voiceMessage) throw new Error("Voice messages are unavailable in this window");
+        await adapter.voiceMessage(command.text, command.cwd);
+        break;
       case "focus_session":
         await adapter.focusSession(command.source, command.sessionId);
         break;

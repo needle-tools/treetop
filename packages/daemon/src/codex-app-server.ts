@@ -582,14 +582,15 @@ export class CodexAppServerAdapter implements NativeAgentAdapter {
     sdp: string;
     prompt?: string;
     voice?: string;
+    speechOnly?: boolean;
   }): Promise<CodexRealtimeVoiceStart> {
     const rpc = await this.ensureRpc(req.cwd);
     const thread = await rpc.request("thread/start", {
       cwd: req.cwd,
       ephemeral: true,
       serviceName: "voice",
-      developerInstructions: VOICE_INSTRUCTIONS,
-      dynamicTools: VOICE_TOOLS,
+      developerInstructions: req.speechOnly ? "Read supplied speech aloud. Do not start a conversation or call tools." : VOICE_INSTRUCTIONS,
+      dynamicTools: req.speechOnly ? [] : VOICE_TOOLS,
     });
     const threadId = nestedString(thread, ["thread", "id"]);
     if (!threadId) {
@@ -623,12 +624,12 @@ export class CodexAppServerAdapter implements NativeAgentAdapter {
       const [, sdp] = await Promise.all([
         rpc.request(
           "thread/realtime/start",
-          realtimeVoiceStartParams({
+          { ...realtimeVoiceStartParams({
             threadId,
             prompt: cleanString(req.prompt),
             sdp: req.sdp,
             voice: cleanString(req.voice),
-          }),
+          }), ...(req.speechOnly ? { includeStartupContext: false } : {}) },
         ),
         answer,
       ]);
@@ -637,6 +638,11 @@ export class CodexAppServerAdapter implements NativeAgentAdapter {
       if (timer) clearTimeout(timer);
       unsubscribe();
     }
+  }
+
+  async appendRealtimeSpeech(threadId: string, text: string): Promise<void> {
+    const rpc = await this.ensureRpc(process.cwd());
+    await rpc.request("thread/realtime/appendText", { threadId, role: "user", text: "Please say exactly this message aloud now, without adding any words: " + text });
   }
 
   async stopRealtimeVoice(threadId: string): Promise<void> {

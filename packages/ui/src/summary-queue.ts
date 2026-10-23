@@ -34,7 +34,7 @@ export const SESSION_SUMMARY_SETTINGS: SettingsSection = {
       description:
         "Load cached summaries for session columns and periodically update summaries for active terminal sessions.",
       type: "boolean",
-      default: false,
+      default: true,
     },
   ],
 };

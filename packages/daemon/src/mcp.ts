@@ -28,6 +28,7 @@ import { remindersForWorkspace } from "./reminders";
 import { getSessionResponseJson, type NormalizedSession } from "./sessions";
 import { recentSessionMessages } from "./session-tools";
 import type { UiAction } from "./ui-context";
+import { voiceMessageAllowed } from "./voice-message";
 
 interface ToolDef {
   name: string;
@@ -43,6 +44,11 @@ const PROJECT_COMMAND_GUIDANCE =
   "Supply raw shell command text without extra outer quoting or escaping. Internal commands already run through cmd.exe on Windows and sh on macOS/Linux; do not add a shell wrapper unless a different shell is explicitly required. Shell operators such as && are supported. For example, use npm run build:web && npm start, not an extra cmd /c wrapper. When asked for a dev command, inspect the project scripts and prefer its dev script (for example npm run dev); use command_cwd for the package directory. Saving or editing a command does not run it.";
 
 const TOOLS: ToolDef[] = [
+  {
+    name: "speak_message",
+    description: "Speak one short message through Treetop using the user's Codex subscription voice. Only when the user asks for spoken output. No microphone, continuous voice mode, or API key. Requires an open Treetop window and Settings > MCP: Voice message (enabled by default). Waits until playback completes. Do not automatically retry an uncertain delivery. Optional window_id selects a window from get_ui_context.",
+    inputSchema: { type: "object", properties: { text: { type: "string", minLength: 1, maxLength: 1000 }, window_id: { type: "string" } }, required: ["text"] },
+  },
   {
     name: "focus_session",
     description: "Reveal an exact discovered session in a Treetop window and focus its input when available. Opens its transcript column if needed; does not start/resume an agent or send text. Use source or session_id from list_sessions. Waits for UI acknowledgement. This changes in-app focus, not OS window activation.",
@@ -551,6 +557,14 @@ async function dispatchMcp(
             const reminder = await remindersForWorkspace(ctx.workspace.path).updateStatus(args.id, name === "cancel_reminder" ? "cancelled" : "dismissed");
             ctx.changed?.({ kind: "reminder_changed", id: reminder.id });
             return ok(request.id, textContent(JSON.stringify(reminder)));
+          }
+          case "speak_message": {
+            if (typeof args.text !== "string" || !args.text.trim() || args.text.length > 1000 || /[\x00-\x08\x0b-\x1f\x7f]/.test(args.text)) return err(request.id, -32602, "speak_message: text must be 1..1000 characters without control codes");
+            if (args.window_id !== undefined && (typeof args.window_id !== "string" || !args.window_id.trim())) return err(request.id, -32602, "speak_message: invalid window_id");
+            if (!voiceMessageAllowed(await ctx.workspace.getPrefs())) throw new Error("MCP: Voice message is disabled in Settings");
+            if (!ctx.uiAction) throw new Error("Treetop voice messages are unavailable");
+            const delivery = await ctx.uiAction({ action: "voice_message", text: args.text, cwd: ctx.sessionCwd ?? ctx.workspace.path }, args.window_id as string | undefined);
+            return ok(request.id, textContent(JSON.stringify({ ...delivery, status: "played", microphone: false })));
           }
           case "focus_project":
           case "set_zen_mode": {

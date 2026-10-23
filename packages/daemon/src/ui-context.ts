@@ -28,6 +28,7 @@ export interface UiContextReport {
 }
 
 export type UiAction =
+  | { action: "voice_message"; text: string; cwd: string }
   | { action: "focus_session"; source: string; sessionId?: string }
   | { action: "focus_project"; repoId: string; cwd: string }
   | { action: "set_zen_mode"; enabled: boolean; repoId?: string; cwd?: string };

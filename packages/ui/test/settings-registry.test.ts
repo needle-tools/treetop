@@ -71,8 +71,10 @@ const appearance = {
 };
 
 describe("registerSettings", () => {
-  test("background session summaries are an opt-in Sessions setting", () => {
+  test("background session summaries default on and can be disabled", () => {
     registerSettings(SESSION_SUMMARY_SETTINGS);
+    expect(getSetting(BACKGROUND_SESSION_SUMMARIES_KEY)).toBe(true);
+    setSetting(BACKGROUND_SESSION_SUMMARIES_KEY, false);
     expect(getSetting(BACKGROUND_SESSION_SUMMARIES_KEY)).toBe(false);
   });
 

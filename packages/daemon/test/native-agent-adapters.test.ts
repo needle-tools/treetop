@@ -338,6 +338,26 @@ describe("CodexAppServerAdapter", () => {
     expect(spawnCount).toBe(2);
   });
 
+  test("speech-only threads expose no tools and send explicit text without any audio-input RPC", async () => {
+    const fake = fakeCodexProcess();
+    const adapter = new CodexAppServerAdapter({ spawn: () => fake.proc });
+    const started = adapter.startRealtimeVoice({ cwd: "/repo", sdp: "offer", speechOnly: true, prompt: "Read this message aloud" });
+    await waitFor(() => fake.writes[0], "initialize"); fake.enqueue({ id: 0, result: {} });
+    await waitFor(() => fake.writes[2], "thread start");
+    expect(parseWrite(fake.writes, 2).params).toMatchObject({ ephemeral: true, serviceName: "voice", dynamicTools: [] });
+    fake.enqueue({ id: 1, result: { thread: { id: "one-shot" } } });
+    await waitFor(() => fake.writes[3], "realtime start");
+    expect(parseWrite(fake.writes, 3).params).toMatchObject({ includeStartupContext: false, version: "v3", transport: { type: "webrtc", sdp: "offer" } });
+    fake.enqueue({ method: "thread/realtime/sdp", params: { threadId: "one-shot", sdp: "answer" } });
+    fake.enqueue({ id: 2, result: {} });
+    expect(await started).toEqual({ threadId: "one-shot", sdp: "answer" });
+    const speech = adapter.appendRealtimeSpeech("one-shot", "Tests finished");
+    await waitFor(() => fake.writes[4], "speech request");
+    expect(parseWrite(fake.writes, 4)).toMatchObject({ method: "thread/realtime/appendText", params: { threadId: "one-shot", role: "user", text: "Please say exactly this message aloud now, without adding any words: Tests finished" } });
+    fake.enqueue({ id: 3, result: {} }); await speech;
+    fake.close();
+  });
+
   test("starts and stops an ephemeral global realtime voice thread over WebRTC", async () => {
     const fake = fakeCodexProcess();
     const adapter = new CodexAppServerAdapter({ spawn: () => fake.proc });

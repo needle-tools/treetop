@@ -246,4 +246,10 @@ test("MCP focus and Zen controls validate exact project/session targets and forw
   ] as const)
     expect((await call(name, args)).error).toBeDefined();
   expect(commands).toHaveLength(4);
+  const spoken = await call("speak_message", { text: "Tests finished", window_id: "chosen" });
+  expect(JSON.parse(spoken.result.content[0].text)).toMatchObject({ status: "played", microphone: false });
+  expect(commands.at(-1)).toMatchObject({ action: { action: "voice_message", text: "Tests finished" }, windowId: "chosen" });
+  await workspace.patchPrefs({ "supergit:settings": JSON.stringify({ "mcp.voiceMessage": false }) });
+  expect((await call("speak_message", { text: "Should not play" })).error ?? (await call("speak_message", { text: "Should not play" })).result?.isError).toBeTruthy();
+  expect(commands).toHaveLength(5);
 });

@@ -141,6 +141,7 @@
   import { notesCountByAnchor, notesAll, type NoteShape } from "./notes-counts";
   import { sessionFocusRequest } from "./session-focus-store";
   import { installUiContextPublisher, UI_CONTEXT_WINDOW_ID, applyUiAction } from "./ui-context-publisher";
+  import { MCP_VOICE_SETTINGS, VoiceMessagePlayer } from "./voice-message-player";
   import type { UiContextSnapshot, UiActionCommand } from "../../daemon/src/ui-context";
   import { installSessionWindowFocus } from "./session-window-focus";
   import EmojiPicker from "./EmojiPicker.svelte";
@@ -615,6 +616,10 @@
     ],
   });
   registerSettings(SESSION_SUMMARY_SETTINGS);
+  registerSettings(MCP_VOICE_SETTINGS);
+  const mcpVoiceAllowed = settingValue("mcp.voiceMessage");
+  const voiceMessagePlayer = new VoiceMessagePlayer();
+  $: if ($mcpVoiceAllowed === false) voiceMessagePlayer.stop();
   registerSettings({
     id: "terminal",
     title: "Terminal",
@@ -6735,6 +6740,10 @@
             focusSession: focusMcpSession,
             focusProject: focusMcpProject,
             setZenMode: setMcpZenMode,
+            voiceMessage: async (text, cwd) => {
+              if ($mcpVoiceAllowed === false) throw new Error("MCP: Voice message is disabled in Settings");
+              await voiceMessagePlayer.play(text, cwd);
+            },
           }).catch(error => console.error("Treetop UI action acknowledgement failed", error));
           return;
         }
@@ -9226,6 +9235,7 @@
       unsubToasts();
       uninstallSessionWindowFocus();
       uninstallUiContextPublisher();
+      voiceMessagePlayer.stop();
       unsubFocus();
       unsubResume();
       if (resumeLoadTimer) clearTimeout(resumeLoadTimer);
