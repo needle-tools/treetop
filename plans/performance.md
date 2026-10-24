@@ -1999,3 +1999,23 @@ opt-in skips, zero failures; the strengthened compiled editor-discovery probe
 also passed independently. Rebuilt artifacts/stable-win-x64-Treetop-Setup.zip
 and verified the daemon, broker and helper PE GUI headers inside the packaged
 archive itself. The production app was not installed or restarted.
+
+2026-10-24 Windows native refocus: production launcher logs reported a focused
+Chrome_RenderWidgetHostHWND while browser diagnostics timed out with
+documentFocused=false. Reproduced this with two isolated Electrobun/WebView2
+windows and a plain textarea: the renderer-targeted repair returned true but
+actual SendInput characters never arrived. Select the visible, in-process
+Chrome_WidgetWin_0 controller host instead; its focus handler activates the
+WebView document. Read focus from that host's thread, not Chromium's separately
+cached renderer input queue. Preserve the already-restored fast path to avoid
+resetting working focus on duplicate activation notifications. Attach all needed
+host/target input queues and detach them even if a later attachment fails.
+Native diagnostics now include worker/host/WebView thread IDs.
+
+With the production adapter, the isolated native fixture accepted Windows
+keyboard input after three consecutive returns without a mouse click (k, kk,
+kkk), with documentFocused=true after each return. Separate local app-data and
+loopback fixture servers kept production sessions and WebView profiles untouched;
+keyboard injection was guarded by the fixture's foreground HWND. Regression
+tests cover controller-host selection and queue cleanup, and the existing real
+browser test still covers last-input restoration, selection, dialogs and search.

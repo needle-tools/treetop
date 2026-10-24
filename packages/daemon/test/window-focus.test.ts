@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import {
   restoreNativeWebviewFocus,
   createWindowsWebviewFocus,
+  nativeWebviewFocusTarget,
 } from "../../../src/electrobun/window-focus";
 import { nativeWindowFocusScript } from "../../ui/src/window-focus-events";
 
@@ -85,6 +86,42 @@ test("native activation and deactivation dispatch the frontend's real focus cont
   ]);
 });
 
+test("native focus joins both the foreground host and the separate WebView input queue", () => {
+  const attached = new Set<number>();
+  const calls: unknown[] = [];
+  let focused = 1n;
+  const api = {
+    foreground: () => 1n,
+    focused: () => focused,
+    isChild: () => false,
+    webviewChild: () => 2n,
+    currentThread: () => 10,
+    windowThread: (window: bigint) => window === 1n ? 30 : 20,
+    attach: (_from: number, to: number, enabled: boolean) => {
+      calls.push([to, enabled]);
+      if (enabled) attached.add(to); else attached.delete(to);
+      return true;
+    },
+    focus: () => {
+      if (attached.has(30) && attached.has(20)) focused = 2n;
+    },
+  };
+  expect(restoreNativeWebviewFocus(1n, api)).toBe(true);
+  expect(calls).toEqual([[30, true], [20, true], [20, false], [30, false]]);
+  expect(attached.size).toBe(0);
+  calls.length = 0;
+  focused = 1n;
+  expect(restoreNativeWebviewFocus(1n, {
+    ...api,
+    attach: (from, to, enabled) => {
+      if (enabled && to === 20) { calls.push([to, enabled]); return false; }
+      return api.attach(from, to, enabled);
+    },
+  })).toBe(false);
+  expect(calls).toEqual([[30, true], [20, true], [30, false]]);
+  expect(attached.size).toBe(0);
+});
+
 test.skipIf(process.platform !== "win32")(
   "Windows focus adapter loads real APIs and refuses to activate an absent window",
   () => {
@@ -96,3 +133,16 @@ test.skipIf(process.platform !== "win32")(
     }
   },
 );
+
+test("native activation targets WebView2's local controller host, not its focused renderer", () => {
+  const windows = [
+    { window: 2n, className: "Static", visible: true, processId: 10 },
+    { window: 3n, className: "Chrome_WidgetWin_0", visible: true, processId: 10 },
+    { window: 4n, className: "Chrome_WidgetWin_1", visible: true, processId: 20 },
+    { window: 5n, className: "Chrome_RenderWidgetHostHWND", visible: true, processId: 20 },
+  ];
+  expect(nativeWebviewFocusTarget(windows, 10)).toBe(3n);
+  expect(nativeWebviewFocusTarget(windows.slice(2), 10)).toBe(0n);
+  expect(nativeWebviewFocusTarget([{ ...windows[1]!, visible: false }], 10)).toBe(0n);
+  expect(nativeWebviewFocusTarget([{ ...windows[1]!, processId: 20 }], 10)).toBe(0n);
+});
