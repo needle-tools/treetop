@@ -187,12 +187,21 @@ const TOOLS: ToolDef[] = [
   {
     name: "list_commands",
     description:
-      "Query saved project commands and currently running project commands. Saved commands include name, cmd, runMode, configured cwd (null means the project/worktree directory), and defaultCwd resolved against repoPath. When run from a different worktree, relative cwd uses that worktree instead. Optionally filter by repo_id. Does not execute commands.",
+      "Query saved project commands and monitored running commands, including internal PTYs. External terminal launches are reported separately as untracked, not claimed to be running. Saved commands include name, cmd, runMode, configured cwd (null means the project/worktree directory), and defaultCwd resolved against repoPath. When run from a different worktree, relative cwd uses that worktree instead. Optionally filter by repo_id. Does not execute commands.",
     inputSchema: {
       type: "object",
       properties: { repo_id: { type: "string" } },
     },
   },
+  ...["start_command", "stop_command", "restart_command"].map((name): ToolDef => ({
+    name,
+    description: `${name === "start_command" ? "Start" : name === "stop_command" ? "Stop" : "Restart"} an existing saved project command ONLY when the user explicitly authorizes this action on this command. Obtain verified repo_id and command_id from list_repos/list_commands; never guess IDs. Uses the saved command text, cwd and run mode, without overrides. Managed internal PTYs and background commands are tracked; duplicate starts return the existing process. Stop waits for confirmed process exit, and restart cannot launch a replacement until exit is confirmed. External OS terminals have no tracked process: start reports external_untracked; stop/restart are unavailable. Never execute commands just to inspect, list, configure, test, or proactively recover them.`,
+    inputSchema: { type: "object", properties: {
+      repo_id: { type: "string", description: "Verified project ID from list_repos/list_commands." },
+      command_id: { type: "string", description: "Saved command ID from list_commands." },
+      worktree_path: { type: "string", description: "Optional registered worktree for start; relative saved cwd is resolved against it. Restart preserves a running command's original directory and mode." },
+    }, required: ["repo_id", "command_id"] },
+  })),
   {
     name: "list_connected_apps",
     description:
@@ -323,14 +332,16 @@ interface McpContext {
   workspace: Workspace;
   events: EventLog;
   changed?: (change: Record<string, unknown>) => void;
-  runningCommands?: () => { repoId: string; [key: string]: unknown }[];
+  runningCommands?: () => { repoId: string }[];
+  untrackedCommands?: () => { repoId: string }[];
+  commandControl?: (action: "start" | "stop" | "restart", repoId: string, commandId: string, worktreePath?: string) => Promise<Record<string, unknown>>;
   sessionCwd?: string;
   sessions?: () => Promise<AgentSession[]>;
   sendSessionMessage?: (session: AgentSession, text: string, action?: "stage" | "submit" | "send", draftId?: string) => Promise<Record<string, unknown>>;
 }
 
 const SERVER_INSTRUCTIONS =
-  "Treetop is the project dashboard hosting this agent session. Read/export settings with get_settings or export_settings; inspect recorded actions with list_events. Use get_ui_context for the focused session and visible projects. Use focus_session/focus_project to navigate and set_zen_mode with enabled true or false to enter/exit Zen when requested. Read note content, tags and anchors with list_notes; anchor_prefix can select repo:<path>, worktree:<path> or session:<source>. Find sessions with list_sessions/search_sessions; read bounded recent text with read_session_messages. Only use send_session_message when the user explicitly asks to message an identified session; never start autonomous cross-session conversations. Query project commands with list_commands; save/edit project buttons with add_command/edit_command (without running them). Use schedule_reminder for timed alerts with optional repo_id/session_source links. Use the session working directory or pass your current absolute cwd to identify the project; use list_repos to confirm project ids. Tools also manage projects, colors, order, notes and session columns. Never guess another project's id. Only change Treetop state when requested by the user.";
+  "Treetop is the project dashboard hosting this agent session. Read/export settings with get_settings or export_settings; inspect recorded actions with list_events. Use get_ui_context for the focused session and visible projects. Use focus_session/focus_project to navigate and set_zen_mode with enabled true or false to enter/exit Zen when requested. Read note content, tags and anchors with list_notes; anchor_prefix can select repo:<path>, worktree:<path> or session:<source>. Find sessions with list_sessions/search_sessions; read bounded recent text with read_session_messages. Only use send_session_message when the user explicitly asks to message an identified session; never start autonomous cross-session conversations. Query project commands with list_commands; save/edit project buttons with add_command/edit_command (without running them). ONLY when the user explicitly authorizes execution, use start_command, stop_command or restart_command with verified repo_id and command_id. Never start or restart services as a side effect of inspecting or editing them. Use schedule_reminder for timed alerts with optional repo_id/session_source links. Use the session working directory or pass your current absolute cwd to identify the project; use list_repos to confirm project ids. Tools also manage projects, colors, order, notes and session columns. Never guess another project's id. Only change Treetop state when requested by the user.";
 
 /** Add only this session's MCP connection, preserving other agent settings. */
 export function withTreetopMcp(
@@ -782,6 +793,24 @@ async function dispatchMcp(
               textContent(JSON.stringify({ repoId: repo.id, link })),
             );
           }
+          case "start_command":
+          case "stop_command":
+          case "restart_command": {
+            if (Object.keys(args).some(key => !["repo_id", "command_id", "worktree_path"].includes(key)) ||
+              typeof args.repo_id !== "string" || !args.repo_id.trim() ||
+              typeof args.command_id !== "string" || !args.command_id.trim() ||
+              (args.worktree_path !== undefined && (typeof args.worktree_path !== "string" || !args.worktree_path.trim())))
+              return err(request.id, -32602, `${name}: verified repo_id and command_id are required; only worktree_path may also be supplied`);
+            const repo = (await ctx.workspace.listRepos()).find(repo => repo.id === args.repo_id);
+            if (!repo) return err(request.id, -32602, `${name}: project not found`);
+            if (!repo.customLinks?.some(link => link.id === args.command_id && link.kind === "command"))
+              return err(request.id, -32602, `${name}: saved command not found in this project`);
+            if (!ctx.commandControl) throw new Error("Saved command controls are unavailable in this daemon");
+            const action = name === "start_command" ? "start" : name === "stop_command" ? "stop" : "restart";
+            const result = await ctx.commandControl(action, args.repo_id, args.command_id, args.worktree_path as string | undefined);
+            await ctx.events.append({ type: `mcp_${name}`, actor: "agent", payload: { repoId: args.repo_id, commandId: args.command_id, ...result } });
+            return ok(request.id, textContent(JSON.stringify(result)));
+          }
           case "list_commands":
           case "list_connected_apps": {
             if (args.repo_id !== undefined && typeof args.repo_id !== "string")
@@ -814,6 +843,7 @@ async function dispatchMcp(
                         args.repo_id === undefined ||
                         command.repoId === args.repo_id,
                     ),
+                    untracked: (ctx.untrackedCommands?.() ?? []).filter(command => args.repo_id === undefined || command.repoId === args.repo_id),
                   }),
                 ),
               );

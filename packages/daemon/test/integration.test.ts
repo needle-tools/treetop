@@ -17,8 +17,39 @@ import { Workspace, type Repo } from "../src/workspace";
 import { EventLog } from "../src/events";
 import { handleMcp, handleMcpHttp, withTreetopMcp } from "../src/mcp";
 import { remindersForWorkspace } from "../src/reminders";
+import { ProjectCommands } from "../src/project-commands";
 
 describe("MCP dashboard tools", () => {
+  test("MCP command controls validate saved IDs, share internal PTY tracking, and never launch during listing", async () => {
+    const ctx = await setup();
+    const repo = await ctx.workspace.addRepo(await mkdtemp(join(tmpdir(), "mcp-command-control-")));
+    const command = await ctx.workspace.addCustomLink(repo.id, { kind: "command", cmd: "fixture only", cwd: "app", runMode: "internal" });
+    const url = await ctx.workspace.addCustomLink(repo.id, { kind: "url", url: "https://example.com" });
+    let launches = 0;
+    let finish!: () => void;
+    const commands = new ProjectCommands({ workspace: ctx.workspace, launch: async () => {
+      launches++;
+      return { pid: 42, termId: "test-pty", exited: new Promise<void>(resolve => { finish = resolve; }), stop: async () => { finish(); } };
+    } });
+    const call = async (name: string, args: Record<string, unknown>) => await handleMcp({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name, arguments: args } }, {
+      ...ctx, runningCommands: () => commands.list(),
+      commandControl: (action, repoId, commandId, worktreePath) => commands.control(action, repoId, commandId, worktreePath),
+    }) as any;
+    expect(JSON.parse((await call("list_commands", { repo_id: repo.id })).result.content[0].text).running).toEqual([]);
+    expect(launches).toBe(0);
+    for (const args of [{ command_id: command.id }, { repo_id: "wrong", command_id: command.id }, { repo_id: repo.id, command_id: url.id }, { repo_id: repo.id, command_id: command.id, command: "override" }])
+      expect((await call("start_command", args)).error).toBeDefined();
+    expect(launches).toBe(0);
+    expect((await call("start_command", { repo_id: repo.id, command_id: command.id })).error).toBeUndefined();
+    const list = JSON.parse((await call("list_commands", { repo_id: repo.id })).result.content[0].text);
+    expect(list.running).toMatchObject([{ linkId: command.id, repoId: repo.id, termId: "test-pty", pid: 42, runMode: "internal", cwd: join(repo.path, "app") }]);
+    await call("start_command", { repo_id: repo.id, command_id: command.id });
+    expect(launches).toBe(1);
+    expect((await call("restart_command", { repo_id: repo.id, command_id: command.id })).error).toBeUndefined();
+    expect(launches).toBe(2);
+    expect(JSON.parse((await call("stop_command", { repo_id: repo.id, command_id: command.id })).result.content[0].text)).toMatchObject({ status: "stopped", confirmed: true });
+    expect(JSON.parse((await call("list_commands", { repo_id: repo.id })).result.content[0].text).running).toEqual([]);
+  });
   test("command queries expose configured cwd, resolved project-default cwd and run mode", async () => {
     const ctx = await setup();
     const repo = await ctx.workspace.addRepo(await mkdtemp(join(tmpdir(), "mcp-command-settings-")));
@@ -208,6 +239,9 @@ describe("MCP dashboard tools", () => {
         "get_settings",
         "export_settings",
         "list_commands",
+        "start_command",
+        "stop_command",
+        "restart_command",
         "add_command",
         "edit_command",
         "list_events",

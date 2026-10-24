@@ -207,7 +207,6 @@ import {
   rewriteTempWorkspaceAttachmentRefs,
   invalidateReposCacheRuntime,
   worktreeDetailsChanged,
-  internalCommandTerminalArgs,
 } from "./server-helpers";
 import {
   normalizeRemote,
@@ -968,24 +967,64 @@ const orphanCleaner = new OrphanCleaner({
   log: (msg) => console.log(`supergit daemon: ${msg}`),
 });
 
-import type { Subprocess } from "bun";
-import { customLinkKind, type CommandRunMode } from "./workspace";
+import { ProjectCommands, createCommandLauncher } from "./project-commands";
 
-interface RunningCommand {
-  proc: Subprocess;
-  linkId: string;
-  repoId: string;
-  pid: number;
-  startedAt: string;
-  cmd: string;
-}
-const runningCommands = new Map<string, RunningCommand>();
+const projectCommands = new ProjectCommands({
+  workspace,
+  changed: change => broadcast("change", change),
+  launch: createCommandLauncher({
+    terminalBackend,
+    openExternal: (cwd, command) => openIn(cwd, "terminal", command),
+    terminalEnv: terminalSpawnEnv,
+    backgroundEnv: backgroundCommandEnv,
+    onInternalSpawn(handle, definition, spawnCmd) {
+      terminalSpawnPendingWs.set(handle.id, performance.now());
+      terminalSpawnFinishedAt.set(handle.id, performance.now());
+      console.log(`supergit daemon: command internal spawn termId=${handle.id} linkId=${definition.linkId} repoId=${definition.repoId} pid=${handle.pid} cwd=${definition.cwd}`);
+      detectCommandUrl(handle, definition.linkId, definition.repoId);
+      shellTermIds.add(handle.id);
+      void terminalPersist.save({
+        termId: handle.id, cmd: spawnCmd, cwd: definition.cwd,
+        wtPath: definition.repoPath, title: definition.name || definition.cmd, lastCmd: definition.cmd,
+      }).catch(error => console.error("command terminal persistence failed", error));
+      let unsubscribe = () => {};
+      let exited = false;
+      unsubscribe = handle.subscribe({
+        onData() {},
+        onExit() {
+          exited = true;
+          shellTermIds.delete(handle.id);
+          clearShellInputBuffer(handle.id);
+          void terminalPersist.remove(handle.id).catch(error => console.error("command terminal cleanup failed", error));
+          unsubscribe();
+        },
+      });
+      if (exited) unsubscribe();
+    },
+  }),
+});
 
-/** Wrap a raw command string for execution via the platform's shell. */
-function shellExec(cmd: string): string[] {
-  return process.platform === "win32"
-    ? [process.env.COMSPEC ?? "cmd.exe", "/c", cmd]
-    : ["sh", "-c", cmd];
+async function revealMcpCommand(result: Record<string, unknown>): Promise<void> {
+  if (result.mode !== "internal" || typeof result.termId !== "string") return;
+  const repoPath = result.repoPath as string;
+  const repoId = result.repoId as string;
+  const commandId = result.linkId as string;
+  const source = `__attached__:shell:${result.termId}`;
+  const prefs = await workspace.getPrefs();
+  const sessions = JSON.parse(prefs["supergit:openSessions"] ?? "{}");
+  const commands = JSON.parse(prefs["supergit:commandTermSources"] ?? "{}");
+  const previous = commands[commandId];
+  if (previous && previous.source !== source && Array.isArray(sessions[previous.wtPath]))
+    sessions[previous.wtPath] = sessions[previous.wtPath].filter((session: { source: string }) => session.source !== previous.source);
+  const session = { agent: "shell", source };
+  if (!(sessions[repoPath] ?? []).some((entry: { source: string }) => entry.source === source))
+    sessions[repoPath] = [session, ...(sessions[repoPath] ?? [])];
+  commands[commandId] = { wtPath: repoPath, source };
+  await workspace.patchPrefs({
+    "supergit:openSessions": JSON.stringify(sessions),
+    "supergit:commandTermSources": JSON.stringify(commands),
+  });
+  broadcast("change", { kind: "mcp_open_session", repoId, cwd: repoPath, session, commandId });
 }
 
 // GUI launchers can give the daemon a minimal system PATH. Sample the user's
@@ -8150,207 +8189,21 @@ const server = Bun.serve<TermWsData, never>({
       }
 
       // ── Command execution routes ──────────────────────────────────
-      // POST /api/command/run   — spawn a command-kind custom link
-      // POST /api/command/stop  — SIGTERM → 2s grace → SIGKILL
-      // GET  /api/commands/running — list running command link ids
-
-      if (url.pathname === "/api/command/run" && req.method === "POST") {
-        const body = (await req.json().catch(() => null)) as {
-          linkId?: string;
-          repoId?: string;
-          repoPath?: string;
-        } | null;
-        const linkId = body?.linkId;
-        const repoId = body?.repoId;
-        const repoPath = body?.repoPath;
-        if (!linkId || typeof linkId !== "string") {
-          return json({ error: "linkId required" }, { status: 400 });
-        }
-        if (!repoId || typeof repoId !== "string") {
-          return json({ error: "repoId required" }, { status: 400 });
-        }
-        if (runningCommands.has(linkId)) {
-          return json(
-            { error: "already running", pid: runningCommands.get(linkId)!.pid },
-            { status: 409 },
-          );
-        }
-        const repos = await workspace.listRepos();
-        const repo = repos.find((r) => r.id === repoId);
-        if (!repo) return json({ error: "repo not found" }, { status: 404 });
-        const link = (repo.customLinks ?? []).find((l) => l.id === linkId);
-        if (!link || customLinkKind(link) !== "command") {
-          return json({ error: "command link not found" }, { status: 404 });
-        }
-        const cmdLink = link as {
-          cmd: string;
-          cwd?: string;
-          runMode: CommandRunMode;
-        };
-        const baseDir = typeof repoPath === "string" ? repoPath : repo.path;
-        const linkCwd = cmdLink.cwd;
-        let cwd: string;
-        if (!linkCwd) {
-          cwd = baseDir;
-        } else if (linkCwd.startsWith("/") || /^[a-zA-Z]:[\\/]/.test(linkCwd)) {
-          cwd = linkCwd;
-        } else {
-          cwd = join(baseDir, linkCwd);
-        }
-        const runMode = cmdLink.runMode;
-
-        if (runMode === "external") {
-          try {
-            const result = await openIn(cwd, "terminal", cmdLink.cmd);
-            return json({ ok: true, mode: "external", via: result.via });
-          } catch (e) {
-            return json(
-              { error: e instanceof Error ? e.message : String(e) },
-              { status: 500 },
-            );
-          }
-        }
-
-        if (runMode === "internal") {
-          try {
-            const routeStarted = performance.now();
-            const spawnCmd = internalCommandTerminalArgs(
-              cmdLink.cmd,
-              process.platform,
-              process.env.SHELL || "/bin/sh",
-              process.env.COMSPEC ?? "cmd.exe",
-            );
-            const spawnStarted = performance.now();
-            const handle = await terminalBackend.spawn({
-              cmd: spawnCmd,
-              cwd,
-              size: { cols: 120, rows: 30 },
-              env: terminalSpawnEnv(),
-            });
-            const backendMs = performance.now() - spawnStarted;
-            const totalMs = performance.now() - routeStarted;
-            record("command-run-internal-spawn-backend", backendMs);
-            record("command-run-internal-post", totalMs);
-            terminalSpawnPendingWs.set(handle.id, performance.now());
-            terminalSpawnFinishedAt.set(handle.id, performance.now());
-            console.log(
-              `supergit daemon: command internal spawn termId=${handle.id} linkId=${linkId} repoId=${repoId} pid=${handle.pid} totalMs=${Math.round(totalMs)} backendMs=${Math.round(backendMs)} cwd=${cwd} cmd=${JSON.stringify(cmdLink.cmd)}`,
-            );
-            if (totalMs > TERMINAL_SPAWN_SLOW_MS) {
-              console.warn(
-                `supergit daemon: /api/command/run internal slow total=${Math.round(totalMs)}ms backend=${Math.round(backendMs)} linkId=${linkId} repoId=${repoId} cwd=${cwd} cmd=${JSON.stringify(cmdLink.cmd)}`,
-              );
-            }
-            // Scan localhost/LAN URLs until the command terminal exits
-            detectCommandUrl(handle, linkId, repoId);
-            // Track as a shell for input capture + persistence
-            shellTermIds.add(handle.id);
-            void terminalPersist
-              .save({
-                termId: handle.id,
-                cmd: spawnCmd,
-                cwd,
-                wtPath: cwd,
-                title: (link as { name?: string }).name || cmdLink.cmd,
-                lastCmd: cmdLink.cmd,
-              })
-              .catch(() => {});
-            const cmdCleanup = handle.subscribe({
-              onData() {},
-              onExit() {
-                shellTermIds.delete(handle.id);
-                clearShellInputBuffer(handle.id);
-                void terminalPersist.remove(handle.id).catch(() => {});
-                cmdCleanup();
-              },
-            });
-            return json({
-              ok: true,
-              mode: "internal",
-              termId: handle.id,
-              pid: handle.pid,
-            });
-          } catch (e) {
-            return json(
-              { error: e instanceof Error ? e.message : String(e) },
-              { status: 500 },
-            );
-          }
-        }
-
-        // runMode === "shell" — background child process
+      // Dashboard and MCP share verified saved-command execution and tracking.
+      if (["/api/command/run", "/api/command/stop", "/api/command/restart"].includes(url.pathname) && req.method === "POST") {
+        const body = await req.json().catch(() => null);
+        if (typeof body?.repoId !== "string" || !body.repoId.trim() || typeof body?.linkId !== "string" || !body.linkId.trim() ||
+          (body.repoPath !== undefined && (typeof body.repoPath !== "string" || !body.repoPath.trim())))
+          return json({ error: "repoId and linkId required; repoPath must be a worktree path" }, { status: 400 });
         try {
-          const proc = Bun.spawn(shellExec(cmdLink.cmd), {
-            cwd,
-            stdout: "ignore",
-            stderr: "ignore",
-            stdin: "ignore",
-            env: backgroundCommandEnv(),
-          });
-          const entry: RunningCommand = {
-            proc,
-            linkId,
-            repoId,
-            pid: proc.pid,
-            startedAt: new Date().toISOString(),
-            cmd: cmdLink.cmd,
-          };
-          runningCommands.set(linkId, entry);
-          // Auto-clean when the process exits
-          void proc.exited.then(() => {
-            runningCommands.delete(linkId);
-            broadcast("change", { kind: "command_exit", linkId, repoId });
-          });
-          broadcast("change", {
-            kind: "command_start",
-            linkId,
-            repoId,
-            pid: proc.pid,
-          });
-          return json({ ok: true, mode: "shell", pid: proc.pid });
-        } catch (e) {
-          return json(
-            { error: e instanceof Error ? e.message : String(e) },
-            { status: 500 },
-          );
+          const action = url.pathname.endsWith("/stop") ? "stop" : url.pathname.endsWith("/restart") ? "restart" : "start";
+          return json(await projectCommands.control(action, body.repoId, body.linkId, body.repoPath));
+        } catch (error) {
+          return json({ error: error instanceof Error ? error.message : String(error) }, { status: 409 });
         }
       }
-
-      if (url.pathname === "/api/command/stop" && req.method === "POST") {
-        const body = (await req.json().catch(() => null)) as {
-          linkId?: string;
-        } | null;
-        const linkId = body?.linkId;
-        if (!linkId || typeof linkId !== "string") {
-          return json({ error: "linkId required" }, { status: 400 });
-        }
-        const entry = runningCommands.get(linkId);
-        if (!entry) {
-          return json({ error: "not running" }, { status: 404 });
-        }
-        try {
-          entry.proc.kill("SIGTERM");
-        } catch {}
-        // Grace period: SIGKILL after 2 seconds if still alive
-        setTimeout(() => {
-          try {
-            if (runningCommands.has(linkId)) {
-              entry.proc.kill("SIGKILL");
-            }
-          } catch {}
-        }, 2000);
-        return json({ ok: true, pid: entry.pid });
-      }
-
       if (url.pathname === "/api/commands/running" && req.method === "GET") {
-        const list = [...runningCommands.values()].map((e) => ({
-          linkId: e.linkId,
-          repoId: e.repoId,
-          pid: e.pid,
-          startedAt: e.startedAt,
-          cmd: e.cmd,
-        }));
-        return json({ running: list });
+        return json({ running: projectCommands.list(), untracked: projectCommands.untracked() });
       }
 
       if (url.pathname === "/api/commands/urls" && req.method === "GET") {
@@ -10362,10 +10215,11 @@ const server = Bun.serve<TermWsData, never>({
             void turn.completed.catch(error => recordServerError(req, 500, error));
             return { delivery: "native", status: "submitted", confirmed: false, threadId: turn.threadId, turnId: turn.turnId };
           },
-          runningCommands: () => [...runningCommands.values()].map(command => ({
-            linkId: command.linkId, repoId: command.repoId, pid: command.pid,
-            startedAt: command.startedAt, cmd: command.cmd,
-          })),
+          runningCommands: () => projectCommands.list(),
+          untrackedCommands: () => projectCommands.untracked(),
+          commandControl: async (action, repoId, commandId, worktreePath) => {
+            return projectCommands.control(action, repoId, commandId, worktreePath, action === "stop" ? undefined : revealMcpCommand);
+          },
           changed: (change) => {
             broadcast("change", change);
             if (change.kind === "add_repo" || change.kind === "remove_repo") void reconcileWorktreeWatchers();

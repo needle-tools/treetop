@@ -6760,7 +6760,15 @@
           return;
         }
         if (payload.kind === "mcp_open_session") {
-          const opened = payload as unknown as { repoId: string; cwd: string; session: OpenSession };
+          const opened = payload as unknown as { repoId: string; cwd: string; session: OpenSession; commandId?: string };
+          if (opened.commandId) {
+            const previous = commandTermSources.get(opened.commandId);
+            if (previous && previous.source !== opened.session.source) {
+              openSessionsByWt = { ...openSessionsByWt, [previous.wtPath]: (openSessionsByWt[previous.wtPath] ?? []).filter(session => session.source !== previous.source) };
+            }
+            commandTermSources.set(opened.commandId, { wtPath: opened.cwd, source: opened.session.source });
+            persistCommandTermSources();
+          }
           openSessionsByWt = mergeOpenedSession(openSessionsByWt, opened.cwd, opened.session) as typeof openSessionsByWt;
           const repo = repos.find(repo => !repo.daemonId && repo.id === opened.repoId);
           const visible = visibleWorktreesByRepo[opened.repoId] ?? (repo?.worktrees?.[0] ? [repo.worktrees[0].path] : []);

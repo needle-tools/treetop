@@ -156,6 +156,29 @@ Opening/resuming a column through MCP preserves Zen and moves its row to the
 target project. The real-PTY regression stages input without submitting it and
 rejects reassignment to another established session.
 
+## Saved command MCP lifecycle (2026-10-24)
+
+Needle Cloud's `node tools/dev.mjs dev` was active in an internal command PTY
+while `list_commands.running` was empty. The old daemon registry only recorded
+`runMode: shell`; internal commands lived in the UI's `commandTermSources` map.
+The HTTP launch route also checked duplicates before asynchronous project lookup,
+so concurrent launches could both pass that check.
+
+HTTP and MCP now share `ProjectCommands`: verified project/command IDs, a lock
+covering launch/stop/restart and UI publication, one registry for internal PTYs
+and background children, saved cwd/run mode, and confirmed exit before restart.
+The existing internal command wrapper, terminal persistence, URL scanning and
+embedded-column reveal path are retained. MCP exposes `start_command`,
+`stop_command` and `restart_command`; descriptions and server instructions require
+explicit user authorization. Listing/saving/editing never executes commands.
+
+External OS-terminal launches still have no monitored PID in `openIn`. They are
+reported separately as `external_untracked`; repeat launches are suppressed and
+stop/restart fails explicitly rather than claiming exit or changing run mode.
+Regression tests use temporary projects, real test-only PTYs/background process
+trees, concurrent starts, failed launches, stop timeouts, and gated exit promises.
+No user project command is run while validating this feature.
+
 ## The point
 
 The goal isn't "the AI wrote tests" — AI can write bad tests too. The goal
