@@ -17,8 +17,91 @@
     <!-- Replaced at build/dev time from the shared product module
          (see vite.config.ts → product-title plugin). -->
     <title>%PRODUCT_NAME%</title>
+    <style>
+      /* Available before the application bundle and preferences finish loading. */
+      #startup-splash {
+        position: fixed;
+        inset: 0;
+        z-index: 100000;
+        display: grid;
+        place-items: center;
+        padding: 24px;
+        box-sizing: border-box;
+        background: #111a18;
+        color: #f3f5f1;
+        font-family: "Nunito Sans", system-ui, sans-serif;
+      }
+      #startup-splash .startup-scene {
+        width: min(960px, 100%);
+        margin: 0;
+        animation:
+          startup-reveal 600ms ease-out both,
+          startup-rise 2s cubic-bezier(0.22, 1, 0.36, 1) both;
+      }
+      #startup-splash img {
+        display: block;
+        width: 100%;
+        max-height: 68vh;
+        object-fit: cover;
+        aspect-ratio: 16 / 9;
+        border-radius: 18px;
+      }
+      #startup-splash figcaption {
+        display: grid;
+        gap: 6px;
+        padding-top: 16px;
+        text-align: center;
+      }
+      #startup-status { font-size: 13px; line-height: 1.5; color: #b7c1b5; }
+      #startup-splash .startup-status-row {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 8px;
+      }
+      #startup-splash .startup-spinner {
+        width: 12px;
+        height: 12px;
+        flex: 0 0 12px;
+        box-sizing: border-box;
+        border: 1.5px solid #465348;
+        border-top-color: #b7c1b5;
+        border-radius: 50%;
+        animation: startup-spin 550ms linear infinite;
+      }
+      @keyframes startup-spin { to { transform: rotate(360deg); } }
+      @keyframes startup-reveal {
+        from { opacity: 0; }
+        to { opacity: 1; }
+      }
+      @keyframes startup-rise {
+        from { transform: translateY(5px); }
+        to { transform: translateY(0); }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        #startup-splash .startup-spinner,
+        #startup-splash .startup-scene { animation: none; }
+      }
+      #startup-build { font-size: 11px; line-height: 1.5; color: #929d93; }
+      @media (max-width: 480px) {
+        #startup-splash { padding: 16px; }
+      }
+    </style>
   </head>
   <body>
+    <div id="startup-splash" role="status" aria-live="polite" aria-label="Starting %PRODUCT_NAME%">
+      <figure class="startup-scene">
+        <img src="/treetop-splash.png" width="1672" height="941" alt="" fetchpriority="high" />
+        <figcaption>
+          <span class="startup-status-row">
+            <span class="startup-spinner" aria-hidden="true"></span>
+            <span id="startup-status">A little light in the canopy…</span>
+          </span>
+          <span id="startup-build">%SPLASH_BUILD%</span>
+        </figcaption>
+        <noscript>Enable JavaScript to open your workspace.</noscript>
+      </figure>
+    </div>
     <div id="app"></div>
     <script type="module" src="/src/main.ts"></script>
   </body>

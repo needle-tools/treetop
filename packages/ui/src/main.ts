@@ -1,5 +1,5 @@
 import { refreshBackgroundStatus } from "./background-state";
-import { mount } from "svelte";
+import { mount, tick } from "svelte";
 import { initDaemonKV } from "./daemon-kv";
 import {
   openUrl,
@@ -109,8 +109,17 @@ if (!target) throw new Error("#app element missing in index.html");
 
 // Seed localStorage from daemon prefs before mounting so all store
 // constructors see shared state (native app inherits browser layout).
-await initDaemonKV();
-await refreshBackgroundStatus(true);
+const startupStatus = document.getElementById("startup-status");
+try {
+  if (startupStatus) startupStatus.textContent = "Finding where you left off…";
+  await initDaemonKV();
+  if (startupStatus) startupStatus.textContent = "Checking on your agents…";
+  await refreshBackgroundStatus(true);
+} catch (error) {
+  const status = document.getElementById("startup-status");
+  if (status) status.textContent = "Could not open your workspace. Reload to try again.";
+  throw error;
+}
 
 configure(DEFAULT_MAPPINGS);
 installGestureListener();
@@ -128,7 +137,27 @@ window.addEventListener(CREATE_NOTE_EVENT, (event) => {
   });
 });
 
+if (startupStatus) startupStatus.textContent = "Opening the canopy…";
 const app = mount(App, { target });
+// Reveal the rendered workspace in two stages: artwork first, then its backdrop.
+await tick();
+const startupSplash = document.getElementById("startup-splash");
+if (startupSplash) {
+  if (!window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+    const scene = startupSplash.querySelector<HTMLElement>(".startup-scene");
+    if (scene) {
+      await scene.animate(
+        [{ opacity: getComputedStyle(scene).opacity }, { opacity: 0 }],
+        { duration: 350, easing: "ease-in-out", fill: "forwards" },
+      ).finished.catch(() => {}); // A cancelled animation must not strand the overlay.
+    }
+    await startupSplash.animate(
+      [{ opacity: 1 }, { opacity: 0 }],
+      { duration: 550, easing: "ease-in-out", fill: "forwards" },
+    ).finished.catch(() => {});
+  }
+  startupSplash.remove();
+}
 
 // The vines overlay (./vines) is mounted by App.svelte, driven by the
 // "Show vines" setting (Appearance). Demo URL params ?vinesgrow /

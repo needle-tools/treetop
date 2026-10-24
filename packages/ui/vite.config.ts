@@ -2,6 +2,10 @@ import { defineConfig, type Plugin } from "vite";
 import { svelte } from "@sveltejs/vite-plugin-svelte";
 import { fileURLToPath } from "node:url";
 import { PRODUCT_NAME } from "../../product";
+import nativeConfig from "../../electrobun.config";
+
+// Captured once per frontend build, rather than once per page request.
+const frontendBuildTime = new Date().toISOString().replace("T", " ").replace(/\.\d{3}Z$/, " UTC");
 
 function envFlag(value: string | undefined): boolean {
   if (value === undefined) return false;
@@ -23,7 +27,7 @@ function replayLabDevRoutePlugin(): Plugin {
   };
 }
 
-export default defineConfig(({ mode }) => ({
+export default defineConfig(({ mode, command }) => ({
   base: mode === "replay-lab-static" ? "./" : undefined,
   resolve: {
     alias: {
@@ -39,7 +43,10 @@ export default defineConfig(({ mode }) => ({
     {
       name: "product-title",
       transformIndexHtml(html) {
-        return html.replace(/%PRODUCT_NAME%/g, PRODUCT_NAME);
+        const build = command === "serve" ? "Development" : frontendBuildTime;
+        return html
+          .replace(/%PRODUCT_NAME%/g, PRODUCT_NAME)
+          .replace(/%SPLASH_BUILD%/g, `v${nativeConfig.app.version} · ${build}`);
       },
     },
     replayLabDevRoutePlugin(),
