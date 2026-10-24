@@ -12,7 +12,7 @@
  * the time we reach here, the WebView2 profile is unlocked and ready.
  */
 
-import { BrowserWindow, ApplicationMenu, Tray, Utils } from "electrobun/bun";
+import { BrowserWindow, ApplicationMenu, Tray, Utils, BuildConfig } from "electrobun/bun";
 import { PRODUCT_NAME } from "../../product";
 import { resolve, dirname, join } from "node:path";
 import {
@@ -556,6 +556,7 @@ const trayAssetPath = [
   resolve(process.cwd(), isWin ? "icon.ico" : "icon.iconset/icon_32x32.png"),
 ].find(path => existsSync(path));
 const tray = new Tray({ title: PRODUCT_NAME, image: trayAssetPath ?? "", template: false });
+llog(`background runtime exitOnLastWindowClosed=${BuildConfig.getSync().runtime?.exitOnLastWindowClosed ?? true}`);
 llog(`background tray visible=${tray.visible} image=${trayAssetPath ?? "missing"}`);
 if (!tray.visible) llog("WARNING: tray unavailable; closing the window will stop managed resources");
 async function backgroundRequest(path: string, body?: unknown) {

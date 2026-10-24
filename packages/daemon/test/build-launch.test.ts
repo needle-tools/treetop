@@ -3,6 +3,14 @@ import { resolve } from "node:path";
 import { mkdtemp, writeFile, readFile, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { DAEMON_BUILD_EXTERNALS, NATIVE_BACKGROUND_COMPILE_ARGS, setWindowsGuiSubsystem } from "../../../scripts/build-native-options";
+import nativeConfig from "../../../electrobun.config";
+
+test("native packaging keeps the tray owner alive after the last window closes", () => {
+  // Electrobun serializes the top-level runtime into Resources/build.json.
+  // A setting under build.runtime is silently omitted from the installed app.
+  const packaged = JSON.parse(JSON.stringify({ runtime: nativeConfig.runtime ?? {} }));
+  expect(packaged.runtime.exitOnLastWindowClosed ?? true).toBe(false);
+});
 
 test("daemon bundles SSH without requiring its optional native CPU detector", async () => {
   const directory = await mkdtemp(resolve(tmpdir(), "treetop-ssh-bundle-"));

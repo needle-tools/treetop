@@ -2019,3 +2019,20 @@ loopback fixture servers kept production sessions and WebView profiles untouched
 keyboard injection was guarded by the fixture's foreground HWND. Regression
 tests cover controller-host selection and queue cleanup, and the existing real
 browser test still covers last-input restoration, selection, dialogs and search.
+
+2026-10-24 tray lifetime correction: exitOnLastWindowClosed was mistakenly nested
+under build.runtime. Electrobun's CLI serializes config.runtime at the top level;
+the installed Resources/build.json therefore contained runtime:{} and the SDK
+quit the native tray owner on the final window close. Move runtime to the top
+level, validate the config with ElectrobunConfig, and log the packaged runtime
+value at native startup. The broker owns the actual sessions/processes; the
+native launcher owns the tray/menu-bar icon and now stays alive after closing
+its last window. Existing bounded lease/shutdown behavior remains in control.
+
+The regression failed before the move and passed afterward. An isolated real
+Windows SDK lifecycle test read the corrected runtime configuration, closed its
+last window, verified the OS still recognized its tray icon using
+Shell_NotifyIconGetRect, and delivered a native tray callback to reopen a window
+in the same process. Explicit quit removed the tray icon and exited. All windows
+and profiles belonged to the fixture; production sessions were not touched.
+No Treetop/installer build was run for this correction: the user now builds.

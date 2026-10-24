@@ -5,6 +5,8 @@
 // We branch the copy: map accordingly and keep .exe files out of the asar
 // (asarUnpack) so the daemon can spawn pty-helper.exe as a child process.
 
+import type { ElectrobunConfig } from "electrobun";
+
 const isWin = process.platform === "win32";
 const exe = isWin ? ".exe" : "";
 
@@ -14,8 +16,10 @@ export default {
     identifier: "tools.needle.supergit",
     version: "0.1.1",
   },
+  // Runtime is top-level: Electrobun copies this into Resources/build.json.
+  // The native tray/menu-bar owner must survive closing the last window.
+  runtime: { exitOnLastWindowClosed: false },
   build: {
-    runtime: { exitOnLastWindowClosed: false },
     bun: {
       entrypoint: "src/electrobun/index.ts",
     },
@@ -68,4 +72,4 @@ export default {
       "build/supergit-native/install-payload": "install-payload",
     },
   },
-};
+} satisfies ElectrobunConfig;
