@@ -130,7 +130,7 @@ import {
   detectSshFromCmd,
   type SshSession,
 } from "./ssh-detect";
-import { OrphanCleaner } from "./orphan-cleanup";
+import { OrphanCleaner, scheduleReconnectCleanup } from "./orphan-cleanup";
 import { IdleReaper, selectStaleUnattachedSpawns } from "./idle-reaper";
 import { trimTerminalBacklog } from "./terminal-backlog";
 import { TerminalPersist } from "./terminal-persist";
@@ -2478,7 +2478,7 @@ async function recordServerError(
 // could attach. 60s is generous; a column the user actually closed
 // will linger for that long but cost nothing.
 const GRACE_MS = 60_000;
-const graceTimers = new Map<string, ReturnType<typeof setTimeout>>();
+const graceTimers = new Map<string, () => void>();
 
 // A PTY that spawns but never has a WebSocket attach (the user ×-closed the
 // column before the TerminalView connected) keeps a permanent cleanup-only
@@ -2526,7 +2526,7 @@ const terminalViewers = new Map<string, number>();
 function cancelGrace(termId: string) {
   const t = graceTimers.get(termId);
   if (!t) return;
-  clearTimeout(t);
+  t();
   graceTimers.delete(termId);
 }
 
@@ -2538,7 +2538,7 @@ function startGraceIfIdle(termId: string) {
   console.log(
     `supergit daemon: terminal grace scheduled id=${termId} pid=${handle.pid} delay=${GRACE_MS}ms`,
   );
-  const timer = setTimeout(() => {
+  const timer = scheduleReconnectCleanup(() => {
     graceTimers.delete(termId);
     const h = terminalBackend.get(termId);
     if (!h) return;
@@ -2548,7 +2548,9 @@ function startGraceIfIdle(termId: string) {
       );
       void h.kill();
     }
-  }, GRACE_MS);
+  }, GRACE_MS, undefined, () => {
+    console.log(`supergit daemon: terminal wake/pause detected id=${termId}, restarted reconnect grace`);
+  });
   graceTimers.set(termId, timer);
 }
 

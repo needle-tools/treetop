@@ -901,6 +901,24 @@ and component teardown cancel retries; automatic recovery never spawns a second
 PTY. Retry remains available while reconnecting. Scheduler behavior is covered
 in `packages/ui/test/terminal-reconnect.test.ts`.
 
+### Sleep/wake terminal cleanup (2026-10-24)
+
+Windows standby at 03:41 local suspended the renderer and daemon after sockets
+disconnected. A maintenance wake at 04:39 delivered overdue per-terminal grace
+and orphan cleanup timers together: both paths killed the same 15 live PTYs,
+about 0.8 seconds before the renderer reconnected. This was actual termination,
+not a stale activity indicator. Windows Kernel-Power events corroborated the
+standby/wake times in the workspace daemon log.
+
+Both cleanup paths now use the same reconnect-aware timeout. While cleanup is
+pending it checks once per second; a gap over five seconds (or a backwards clock
+jump) restarts the full original grace period. Each callback detects the pause
+itself, so timer delivery order on wake cannot bypass protection. Reconnection
+cancels the timer, and uninterrupted abandonment still expires normally. The
+tests simulate the observed 3,441-second pause, both 60-second/five-minute
+deadlines, repeated standby, and reconnection 800 ms after wake. No timers run
+for this protection while cleanup is not pending.
+
 ### Offscreen exited-terminal reconnect storm (2026-09-01)
 
 A later production capture showed WebKit at 106–151% CPU, 3.1 GB RSS, and a

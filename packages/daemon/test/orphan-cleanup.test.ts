@@ -1,5 +1,89 @@
 import { test, expect, describe } from "bun:test";
-import { OrphanCleaner } from "../src/orphan-cleanup";
+import { OrphanCleaner, scheduleReconnectCleanup } from "../src/orphan-cleanup";
+
+function cleanupClock() {
+  let now = 0;
+  let nextId = 0;
+  const pending = new Map<number, { at: number; run: () => void }>();
+  const timers = {
+    now: () => now,
+    schedule: (run: () => void, delay: number) => {
+      const id = nextId++;
+      pending.set(id, { at: now + delay, run });
+      return () => { pending.delete(id); };
+    },
+  };
+  return {
+    timers,
+    sleep(ms: number) { now += ms; },
+    advance(ms: number) {
+      const end = now + ms;
+      while (true) {
+        const entry = [...pending.entries()].sort((a, b) => a[1].at - b[1].at)[0];
+        if (!entry || entry[1].at > end) break;
+        now = Math.max(now, entry[1].at);
+        pending.delete(entry[0]);
+        entry[1].run();
+      }
+      now = end;
+    },
+    get pending() { return pending.size; },
+  };
+}
+
+describe("sleep-aware terminal cleanup", () => {
+  test.each([60_000, 300_000])("restarts the full %ims reconnect grace when an overdue timer runs first on wake", graceMs => {
+    const clock = cleanupClock();
+    let killed = 0;
+    const cancel = scheduleReconnectCleanup(() => { killed++; }, graceMs, clock.timers);
+    clock.advance(graceMs - 1000);
+    clock.sleep(3_441_000);
+    clock.advance(0);
+    expect(killed).toBe(0);
+    clock.advance(graceMs - 1);
+    expect(killed).toBe(0);
+    clock.advance(1);
+    expect(killed).toBe(1);
+    expect(clock.pending).toBe(0);
+    cancel();
+  });
+
+  test("reconnection cancels deferred cleanup after repeated standby cycles", () => {
+    const clock = cleanupClock();
+    let killed = 0;
+    const cancel = scheduleReconnectCleanup(() => { killed++; }, 60_000, clock.timers);
+    for (let i = 0; i < 3; i++) {
+      clock.sleep(3_600_000);
+      clock.advance(0);
+      expect(killed).toBe(0);
+    }
+    cancel();
+    clock.advance(300_000);
+    expect(killed).toBe(0);
+    expect(clock.pending).toBe(0);
+  });
+
+  test("orphan cleanup allows a frontend to reconnect after standby", () => {
+    const clock = cleanupClock();
+    const killed: string[] = [];
+    const cleaner = new OrphanCleaner({
+      cleanupTimers: clock.timers,
+      getTerminals: () => [{ id: "t1", pid: 1, isAlive: true }],
+      killTerminal: async id => { killed.push(id); }, log: () => {},
+    });
+    cleaner.onFrontendConnected();
+    cleaner.onFrontendDisconnected();
+    clock.sleep(3_441_000);
+    clock.advance(0);
+    expect(killed).toEqual([]);
+    clock.advance(800);
+    cleaner.onFrontendConnected();
+    clock.advance(600_000);
+    expect(killed).toEqual([]);
+    expect(clock.pending).toBe(0);
+    cleaner.dispose();
+  });
+});
 
 describe("OrphanCleaner", () => {
   test("does not fire when frontends are connected", async () => {
