@@ -559,6 +559,7 @@ describe("CodexAppServerAdapter", () => {
         serviceTier: "priority",
         summary: "auto",
         approvalPolicy: "on-request",
+        approvalsReviewer: "auto_review",
         sandboxPolicy: {
           type: "workspaceWrite",
           writableRoots: ["/repo"],
@@ -592,6 +593,7 @@ describe("CodexAppServerAdapter", () => {
         serviceTier: "priority",
         summary: "auto",
         approvalPolicy: "on-request",
+        approvalsReviewer: "auto_review",
         sandboxPolicy: {
           type: "workspaceWrite",
           writableRoots: ["/repo"],

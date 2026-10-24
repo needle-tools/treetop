@@ -28,6 +28,7 @@
 
 import { spawn as ptySpawn } from "node-pty";
 import readline from "node:readline";
+import { spawn as spawnProcess } from "node:child_process";
 
 const terms = new Map(); // id → { term, muted }
 
@@ -152,7 +153,9 @@ rl.on("line", (line) => {
             dataB64: Buffer.from(d, "utf-8").toString("base64"),
           });
         });
-        term.onExit(({ exitCode, signal }) => {
+        term.onExit(async ({ exitCode, signal }) => {
+          // Exit must follow confirmed tree termination, not merely cmd.exe's exit.
+          if (entry.treeKill && !await entry.treeKill) return;
           terms.delete(id);
           emit({
             ev: "exit",
@@ -195,7 +198,17 @@ rl.on("line", (line) => {
       const entry = terms.get(msg.id);
       if (!entry) return;
       try {
-        entry.term.kill(msg.signal || "SIGTERM");
+        // node-pty's synchronous ClosePseudoConsole can block this command
+        // loop while its client is still alive, preventing a later hard kill.
+        // The fallback cannot soft-close a Windows console. Reap the owned
+        // tree asynchronously: killing just cmd.exe strands watcher children.
+        if (process.platform === "win32") {
+          entry.treeKill ??= new Promise(resolve => {
+            const killer = spawnProcess("taskkill", ["/PID", String(entry.term.pid), "/T", "/F"], { windowsHide: true, stdio: "ignore" });
+            killer.on("error", error => { fail("tree kill failed: " + error.message, msg.id); resolve(false); });
+            killer.on("exit", code => { if (code) fail("tree kill failed with code " + code, msg.id); resolve(code === 0); });
+          });
+        } else entry.term.kill(msg.signal || "SIGTERM");
       } catch (e) {
         fail("kill failed: " + e.message, msg.id);
       }

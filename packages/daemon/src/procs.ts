@@ -24,6 +24,18 @@ import { join, win32 } from "node:path";
 /** Absolute path to cmd.exe — see open.ts for why bare "cmd" breaks. */
 const CMD_EXE = process.env.COMSPEC ?? "cmd.exe";
 
+/** Process discovery also runs in the console-free installed application. */
+export async function runWindowsPowerShell(script: string) {
+  const child = Bun.spawn(["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script], {
+    windowsHide: true,
+    stdin: "ignore", stdout: "pipe", stderr: "pipe",
+  });
+  const [stdout, stderr, exitCode] = await Promise.all([
+    new Response(child.stdout).arrayBuffer(), new Response(child.stderr).arrayBuffer(), child.exited,
+  ]);
+  return { stdout: Buffer.from(stdout), stderr: Buffer.from(stderr), exitCode };
+}
+
 /**
  * Find the best on-disk binary for an agent CLI name.
  *
@@ -453,9 +465,7 @@ async function discoverRepoProcessesWindows(
     `}`;
   const matches: { pid: number; cwd: string; exe: string; args: string }[] = [];
   try {
-    const result = await $`powershell -NoProfile -Command ${ps}`
-      .quiet()
-      .nothrow();
+    const result = await runWindowsPowerShell(ps);
     for (const line of result.stdout.toString().split(/\r?\n/)) {
       if (!line) continue;
       const parts = line.split(RS);
@@ -538,9 +548,7 @@ export async function sampleProcs(
         // block → no output → every pid fell back to zeros (no CPU/mem on
         // Windows).
         `foreach ($procId in $m.Keys) { $cpu = if ($c.ContainsKey($procId)) { $c[$procId] } else { 0 }; "$procId $($m[$procId]) $cpu" }`;
-      const result = await $`powershell -NoProfile -Command ${ps}`
-        .quiet()
-        .nothrow();
+      const result = await runWindowsPowerShell(ps);
       const text = result.stdout.toString();
       for (const line of text.split(/\r?\n/)) {
         const trimmed = line.trim();

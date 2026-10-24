@@ -242,7 +242,7 @@ export class TunnelManager {
   constructor(opts: TunnelManagerOptions = {}) {
     this.spawn =
       opts.spawn ??
-      ((argv) => bunSpawn(["ssh", ...argv], { stdout: "ignore", stderr: "pipe" }));
+      ((argv) => bunSpawn(["ssh", ...argv], { windowsHide: true, stdout: "ignore", stderr: "pipe" }));
     this.allocatePort = opts.allocatePort ?? allocateEphemeralPort;
     this.waitForPort = opts.waitForPort ?? defaultWaitForPort;
     this.readyTimeoutMs = opts.readyTimeoutMs ?? 15000;

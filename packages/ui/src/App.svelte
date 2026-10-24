@@ -1,7 +1,10 @@
 <script lang="ts">
+  import BackgroundSessions from "./BackgroundSessions.svelte";
+  import { backgroundRestorePending } from "./background-state";
   import { replaceCodexCliStates } from "./codex-event-stream";
   import {
     resolveTermId,
+    applyBackgroundRestoreDecision,
     normalizeSessionForOpen,
     shellToSession,
     shellSourceToDismiss,
@@ -1057,6 +1060,7 @@
   let transientWorking: Record<string, boolean> = {};
   let liveTerminalIds: ReadonlySet<string> = new Set();
   let initialTerminalSnapshotReady = false;
+  $: if (initialTerminalSnapshotReady && !$backgroundRestorePending) ensureBackgroundTuiSpawn();
   function markTerminalLive(id: string): void {
     liveTerminalIds = new Set([...liveTerminalIds, id]);
   }
@@ -2933,6 +2937,7 @@
       codexServiceTier?: string;
       codexSandbox?: string;
       codexApproval?: string;
+      codexReviewer?: string;
       codexSummary?: string;
     },
   ) {
@@ -2940,6 +2945,12 @@
     if (!list) return;
     const idx = list.findIndex((s) => s.source === source);
     if (idx === -1) return;
+    if (patch.codexReviewer !== undefined) {
+      let saved: Record<string, unknown> = {};
+      try { saved = JSON.parse(getDaemonKV().getItem(CODEX_TURN_SETTINGS_KEY) ?? "{}"); }
+      catch (error) { console.warn("Invalid saved Codex settings; keeping the selected reviewer", error); }
+      getDaemonKV().setItem(CODEX_TURN_SETTINGS_KEY, JSON.stringify({ ...saved, reviewer: patch.codexReviewer }));
+    }
     const next = list.slice();
     next[idx] = {
       ...next[idx]!,
@@ -2964,6 +2975,7 @@
       ...(patch.codexSandbox !== undefined
         ? { codexSandbox: patch.codexSandbox }
         : {}),
+      ...(patch.codexReviewer !== undefined ? { codexReviewer: patch.codexReviewer } : {}),
       ...(patch.codexApproval !== undefined
         ? { codexApproval: patch.codexApproval }
         : {}),
@@ -3224,7 +3236,7 @@
   /** Kick off the staggered background spawner once, after the initial
    *  load. Idempotent — safe to call from every `load("mount")` resolve. */
   function ensureBackgroundTuiSpawn(): void {
-    if (bgSpawnStarted) return;
+    if (bgSpawnStarted || $backgroundRestorePending) return;
     bgSpawnStarted = true;
     // Classify BEFORE the drain starts: the policy ranks over the full
     // restorable set, and computing it once keeps the always-live slots from
@@ -3257,6 +3269,7 @@
   }
 
   function spawnNextBackgroundTui(): void {
+    if ($backgroundRestorePending) return;
     const candidates = selectSessionsForBackgroundSpawn(openSessionsByWt, {
       liveTerminalIds,
       inFlight: bgSpawnInFlight,
@@ -3292,6 +3305,7 @@
                     `model_reasoning_effort=${JSON.stringify(c.codexEffort)}`,
                   ]
                 : []),
+              ...(c.codexReviewer ? ["-c", `approvals_reviewer=${JSON.stringify(c.codexReviewer)}`] : []),
               ...(c.codexServiceTier
                 ? [
                     "-c",
@@ -3730,12 +3744,34 @@
     if (src) dismissShellSource(src);
   }
 
+  async function reconcileBackgroundRestore(event: any) {
+    const { candidates, results, done } = event.detail;
+    try {
+      const applied = applyBackgroundRestoreDecision(openSessionsByWt, candidates, results, newTermIds);
+      openSessionsByWt = applied.byWt;
+      newTermIds = applied.newTermIds;
+      const openSources = new Set(Object.values(openSessionsByWt).flat().map(session => session.source));
+      for (const [commandId, entry] of commandTermSources) {
+        const source = applied.sourceChanges[entry.source] ?? entry.source;
+        if (!openSources.has(source)) commandTermSources.delete(commandId);
+        else if (source !== entry.source) commandTermSources.set(commandId, {...entry, source});
+      }
+      persistCommandTermSources();
+      openSessionsPersistence.save(openSessionsByWt);
+      const persisted = await fetch(apiUrl("/api/prefs"), {method:"PATCH", headers:{"Content-Type":"application/json"}, body:JSON.stringify({"supergit:openSessions":JSON.stringify(openSessionsByWt)})});
+      if (!persisted.ok) throw new Error("Could not save the restore selection; retry before resuming");
+      await load("mount");
+      done();
+    } catch (error) { done(error); }
+  }
   function closeSessionInWt(wtPath: string, s: OpenSession): void {
     // X-ing a column with a live PTY (resolveTermId returns a termId
     // for `__new__:` and `__attached__:` sources) feels like
     // "stopping" the session to the user — play the stop sound. The
     // swoosh stays for read-only transcript columns and other
     // already-dead sessions.
+    const releasedTerminalId = resolveTermId(s, newTermIds) ?? s.attachTermId;
+    if (releasedTerminalId) void fetch(apiUrl("/api/background/release-terminal", daemonIdForWorktreePath(repos, wtPath)), { method: "POST", headers: {"Content-Type":"application/json"}, body: JSON.stringify({id:releasedTerminalId}) }).catch(error => console.warn("Terminal release failed", error));
     play(resolveTermId(s, newTermIds) ? "session-stop" : "session-close");
     dismissIfShell(s);
     const artifactOwner = artifactMapOwnerSource(s.source);
@@ -12544,7 +12580,7 @@
                                       s.source)}
                                   attachTermId={resolveTermId(s, newTermIds) ??
                                     s.attachTermId}
-                                  spawnReady={initialTerminalSnapshotReady}
+                                  spawnReady={initialTerminalSnapshotReady && !$backgroundRestorePending}
                                   resumeFromTermId={shellResumeFromTermId[
                                     s.source
                                   ]}
@@ -12566,6 +12602,8 @@
                                   codexModel={s.codexModel}
                                   codexEffort={s.codexEffort}
                                   codexServiceTier={s.codexServiceTier}
+                                  codexReviewer={s.codexReviewer}
+                                  on:setCodexReviewer={(e) => setAgentSessionFlag(wt.path, s.source, { codexReviewer: e.detail.reviewer })}
                                   lastActivityIso={newAgentMeta?.lastMessageTs ??
                                     newAgentMeta?.lastActive}
                                   lastUserMessage={newAgentMeta?.lastUserMessage}
@@ -12884,6 +12922,8 @@
                                   codexEffortOverride={s.codexEffort}
                                   codexServiceTierOverride={s.codexServiceTier}
                                   codexSandboxOverride={s.codexSandbox}
+                                  codexReviewerOverride={s.codexReviewer}
+                                  onSetCodexReviewer={(reviewer) => setAgentSessionFlag(wt.path, s.source, { codexReviewer: reviewer })}
                                   codexApprovalOverride={s.codexApproval}
                                   codexSummaryOverride={s.codexSummary}
                                   onSetClaudeModel={(m) =>
@@ -12919,7 +12959,7 @@
                                       codexSummary: summary,
                                     })}
                                   attachTermId={s.attachTermId}
-                                  spawnReady={initialTerminalSnapshotReady}
+                                  spawnReady={initialTerminalSnapshotReady && !$backgroundRestorePending}
                                   dormant={dormantTuiSources.has(s.source)}
                                   manualTitleOverride={agentMeta?.manualTitle ??
                                     newSessionTitles[titleSource] ??
@@ -13417,6 +13457,7 @@
 <DebugPanel />
 
 <ConfirmDialog />
+<BackgroundSessions on:restored={reconcileBackgroundRestore} />
 <SettingsDialog bind:open={settingsDialogOpen} />
 <SummarizeDialog />
 <ShareSessionDialog />

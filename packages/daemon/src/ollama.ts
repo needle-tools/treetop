@@ -150,7 +150,7 @@ export async function fetchModelsFromCli(): Promise<OllamaModel[]> {
   const bin = await resolveAgentBinary("ollama");
   if (!bin) return [];
   try {
-    const proc = Bun.spawn([bin, "list"], { stdout: "pipe", stderr: "pipe" });
+    const proc = Bun.spawn([bin, "list"], { windowsHide: true, stdout: "pipe", stderr: "pipe" });
     const stdout = await new Response(proc.stdout).text();
     const exit = await proc.exited;
     if (exit !== 0) return [];

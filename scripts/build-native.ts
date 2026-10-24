@@ -23,7 +23,7 @@ import { existsSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { installPayloadPathspec } from "../packages/daemon/src/provision";
-import { DAEMON_BUILD_EXTERNALS } from "./build-native-options";
+import { DAEMON_BUILD_EXTERNALS, NATIVE_BACKGROUND_COMPILE_ARGS, setWindowsGuiSubsystem } from "./build-native-options";
 
 const ROOT = resolve(import.meta.dir, "..");
 const BUILD = resolve(ROOT, "build");
@@ -83,9 +83,14 @@ await mkdir(FLAT, { recursive: true });
 const binaryPath = join(FLAT, `supergit${exe}`);
 const buildTime = new Date().toISOString();
 const externalArgs = DAEMON_BUILD_EXTERNALS.flatMap(name => ["--external", name]);
-await $`bun build --compile ${resolve(ROOT, "packages/daemon/src/server.ts")} --outfile ${join(FLAT, "supergit")} ${externalArgs} --define process.env.SUPERGIT_BUILD_TIME='"${buildTime}"'`.quiet();
+await $`bun build --compile ${resolve(ROOT, "packages/daemon/src/server.ts")} --outfile ${join(FLAT, "supergit")} ${externalArgs} ${NATIVE_BACKGROUND_COMPILE_ARGS} --define process.env.SUPERGIT_BUILD_TIME='"${buildTime}"'`.quiet();
 // Write build-info.json so the Electrobun entry script knows our version.
 await writeFile(join(FLAT, "build-info.json"), JSON.stringify({ buildTime }));
+await $`bun build --compile ${resolve(ROOT, "packages/daemon/src/terminal-broker.ts")} --outfile ${join(FLAT, "terminal-broker")} ${externalArgs} ${NATIVE_BACKGROUND_COMPILE_ARGS}`.quiet();
+if (isWin) {
+  await setWindowsGuiSubsystem(binaryPath);
+  await setWindowsGuiSubsystem(join(FLAT, "terminal-broker.exe"));
+}
 console.log("     ✓ Daemon binary compiled");
 
 // ── 3. Build Go PTY helper + copy support files ─────────────────────
@@ -97,7 +102,8 @@ await cp(distDir, join(FLAT, "ui"), { recursive: true });
 // Explicit `.exe` on Windows; `go build` doesn't add it when -o has no extension.
 const goHelperDir = resolve(ROOT, "packages/daemon/src/terminals/helper-go");
 const ptyHelperPath = join(FLAT, `pty-helper${exe}`);
-await $`cd ${goHelperDir} && go build -o ${ptyHelperPath} .`.quiet();
+const helperLinkerArgs = isWin ? ["-ldflags=-H=windowsgui"] : [];
+await $`cd ${goHelperDir} && go build ${helperLinkerArgs} -o ${ptyHelperPath} .`.quiet();
 
 console.log("     ✓ Go helper + support files copied");
 

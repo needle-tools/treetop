@@ -100,7 +100,7 @@ export function fallbackEditorForFailedFileManagerOpen(args: {
 
 async function which(cmd: string): Promise<boolean> {
   const bin = process.platform === "win32" ? "where" : "which";
-  const proc = Bun.spawn([bin, cmd], { stdout: "pipe", stderr: "pipe" });
+  const proc = Bun.spawn([bin, cmd], { windowsHide: true, stdout: "pipe", stderr: "pipe" });
   return (await proc.exited) === 0;
 }
 
@@ -202,7 +202,7 @@ export async function detectEditors(): Promise<EditorDescriptor[]> {
 export async function openDefault(path: string): Promise<{ via: string }> {
   console.log(`openDefault: path=${path}`);
   if (process.platform === "darwin") {
-    const proc = Bun.spawn(["open", path], { stdout: "pipe", stderr: "pipe" });
+    const proc = Bun.spawn(["open", path], { windowsHide: true, stdout: "pipe", stderr: "pipe" });
     const exit = await proc.exited;
     if (exit !== 0) throw new Error(`open exited ${exit}`);
     return { via: "default app" };
@@ -211,7 +211,7 @@ export async function openDefault(path: string): Promise<{ via: string }> {
     if (!(await which("xdg-open"))) {
       throw new Error("xdg-open not available — cannot open default app");
     }
-    Bun.spawn(["xdg-open", path], { stdout: "ignore", stderr: "ignore" });
+    Bun.spawn(["xdg-open", path], { windowsHide: true, stdout: "ignore", stderr: "ignore" });
     return { via: "xdg-open" };
   }
   if (process.platform === "win32") {
@@ -233,7 +233,7 @@ export async function openDefault(path: string): Promise<{ via: string }> {
       isRegularFile,
     });
     const cmd = windowsOpenCommand(path, useNotepad);
-    Bun.spawn(cmd, { stdout: "ignore", stderr: "ignore", stdin: "ignore" });
+    Bun.spawn(cmd, { windowsHide: true, stdout: "ignore", stderr: "ignore", stdin: "ignore" });
     return { via: useNotepad ? "notepad" : "default app" };
   }
   throw new Error(
@@ -288,12 +288,14 @@ export function windowsOpensWithNotepad(opts: {
  */
 async function hasFileAssociation(ext: string): Promise<boolean> {
   const assocProc = Bun.spawn([CMD_EXE, "/c", "assoc", ext], {
+    windowsHide: true,
     stdout: "ignore",
     stderr: "ignore",
   });
   if ((await assocProc.exited) === 0) return true;
   const userChoiceKey = `HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\FileExts\\${ext}\\UserChoice`;
   const regProc = Bun.spawn(["reg", "query", userChoiceKey, "/v", "ProgId"], {
+    windowsHide: true,
     stdout: "ignore",
     stderr: "ignore",
   });
@@ -370,7 +372,7 @@ function restoreWindowsWindow(processName: string): void {
       "-Command",
       buildRestoreWindowScript(processName),
     ],
-    { stdout: "ignore", stderr: "ignore", stdin: "ignore" },
+    { windowsHide: true, stdout: "ignore", stderr: "ignore", stdin: "ignore" },
   );
 }
 
@@ -393,6 +395,7 @@ export async function openIn(
   if (app === "fork") {
     if (process.platform === "darwin") {
       const proc = Bun.spawn(["open", "-a", "Fork", path], {
+        windowsHide: true,
         stdout: "pipe",
         stderr: "pipe",
       });
@@ -406,6 +409,7 @@ export async function openIn(
       const forkExe = await findWindowsFork();
       if (!forkExe) throw new Error("Fork not found in the local Fork installation");
       Bun.spawn([forkExe, path], {
+        windowsHide: true,
         stdout: "ignore",
         stderr: "ignore",
       });
@@ -426,6 +430,7 @@ export async function openIn(
           isDirectory: !!st?.isDirectory(),
         }),
         {
+          windowsHide: true,
           stdout: "ignore",
           stderr: "ignore",
         },
@@ -447,11 +452,11 @@ export async function openIn(
       if (!(await which("xdg-open"))) {
         throw new Error("xdg-open not available — cannot open file manager");
       }
-      Bun.spawn(["xdg-open", path], { stdout: "ignore", stderr: "ignore" });
+      Bun.spawn(["xdg-open", path], { windowsHide: true, stdout: "ignore", stderr: "ignore" });
       return { via: "Files" };
     }
     if (process.platform === "win32") {
-      Bun.spawn(["explorer", path], { stdout: "ignore", stderr: "ignore" });
+      Bun.spawn(["explorer", path], { windowsHide: true, stdout: "ignore", stderr: "ignore" });
       return { via: "Explorer" };
     }
     throw new Error(
@@ -480,10 +485,11 @@ export async function openIn(
             "-e",
             `tell application "Terminal" to activate`,
           ],
-          { stdout: "ignore", stderr: "ignore" },
+          { windowsHide: true, stdout: "ignore", stderr: "ignore" },
         );
       } else {
         Bun.spawn(["open", "-a", "Terminal", path], {
+          windowsHide: true,
           stdout: "ignore",
           stderr: "ignore",
         });
@@ -509,11 +515,13 @@ export async function openIn(
             // across the whole detection list.
             const inner = `cd ${shellQuote(path)} && ${command}; exec bash`;
             Bun.spawn([t, "-e", "bash", "-c", inner], {
+              windowsHide: true,
               stdout: "ignore",
               stderr: "ignore",
             });
           } else {
             Bun.spawn([t], {
+              windowsHide: true,
               cwd: path,
               stdout: "ignore",
               stderr: "ignore",
@@ -545,10 +553,11 @@ export async function openIn(
               "-Command",
               command,
             ],
-            { stdout: "ignore", stderr: "ignore" },
+            { windowsHide: true, stdout: "ignore", stderr: "ignore" },
           );
         } else {
           Bun.spawn([CMD_EXE, "/c", "wt", "-d", path], {
+            windowsHide: true,
             stdout: "ignore",
             stderr: "ignore",
           });
@@ -568,7 +577,7 @@ export async function openIn(
             "-Command",
             `Set-Location '${psPath}'; ${command}`,
           ],
-          { stdout: "ignore", stderr: "ignore" },
+          { windowsHide: true, stdout: "ignore", stderr: "ignore" },
         );
       } else {
         Bun.spawn(
@@ -581,7 +590,7 @@ export async function openIn(
             "-Command",
             `Set-Location '${psPath}'`,
           ],
-          { stdout: "ignore", stderr: "ignore" },
+          { windowsHide: true, stdout: "ignore", stderr: "ignore" },
         );
       }
       return { via: "PowerShell" };
@@ -607,6 +616,7 @@ export async function openIn(
 
   if (await which(spec.cmd)) {
     Bun.spawn([spec.cmd, target], {
+      windowsHide: true,
       stdout: "ignore",
       stderr: "ignore",
       stdin: "ignore",
@@ -619,6 +629,7 @@ export async function openIn(
 
   if (spec.app && (await macAppExists(spec.app))) {
     Bun.spawn(["open", "-a", spec.app, target], {
+      windowsHide: true,
       stdout: "ignore",
       stderr: "ignore",
     });

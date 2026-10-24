@@ -290,6 +290,7 @@ export interface PersistedSession {
    *  a global fallback cannot represent differently-trusted worktrees. */
   codexSandbox?: string;
   codexApproval?: string;
+  codexReviewer?: string;
   codexSummary?: string;
   /** Optional. Stamped onto `__new__:claude:` / `__new__:codex:` entries
    *  the first time the daemon's activity-tail surfaces a real agent-side
@@ -356,6 +357,7 @@ export function codexSessionDefaults(
   | "codexServiceTier"
   | "codexSandbox"
   | "codexApproval"
+  | "codexReviewer"
   | "codexSummary"
 > {
   let parsed: Record<string, unknown> = {};
@@ -377,6 +379,7 @@ export function codexSessionDefaults(
     codexServiceTier: stringValue("serviceTier"),
     codexSandbox: stringValue("sandbox") ?? "workspaceWrite",
     codexApproval: stringValue("approval") ?? "on-request",
+    codexReviewer: ["user", "auto_review"].includes(stringValue("reviewer") ?? "") ? stringValue("reviewer") : undefined,
     codexSummary: stringValue("summary") ?? "auto",
   };
 }
@@ -401,6 +404,7 @@ export function migrateCodexSessionSettings(
           session.codexServiceTier ?? defaults.codexServiceTier,
         codexSandbox: session.codexSandbox ?? defaults.codexSandbox,
         codexApproval: session.codexApproval ?? defaults.codexApproval,
+        ...(session.codexReviewer || defaults.codexReviewer ? { codexReviewer: session.codexReviewer ?? defaults.codexReviewer } : {}),
         codexSummary: session.codexSummary ?? defaults.codexSummary,
       };
       if (
@@ -409,6 +413,7 @@ export function migrateCodexSessionSettings(
         next.codexServiceTier === session.codexServiceTier &&
         next.codexSandbox === session.codexSandbox &&
         next.codexApproval === session.codexApproval &&
+        next.codexReviewer === session.codexReviewer &&
         next.codexSummary === session.codexSummary
       ) {
         continue;
@@ -681,6 +686,9 @@ function sanitizeSession(item: unknown): PersistedSession | null {
   }
   if (typeof o.codexSandbox === "string" && o.codexSandbox.length > 0) {
     out.codexSandbox = o.codexSandbox;
+  }
+  if (o.codexReviewer === "user" || o.codexReviewer === "auto_review") {
+    out.codexReviewer = o.codexReviewer;
   }
   if (typeof o.codexApproval === "string" && o.codexApproval.length > 0) {
     out.codexApproval = o.codexApproval;
@@ -1014,6 +1022,7 @@ export function cmdForOpenSession(
     codexServiceTier?: string;
     codexSandbox?: string;
     codexApproval?: string;
+    codexReviewer?: string;
     codexSummary?: string;
     shellCmd?: string[];
   },
@@ -1073,6 +1082,9 @@ export function cmdForOpenSession(
         "-c",
         `service_tier=${JSON.stringify(s.codexServiceTier)}`,
       );
+    }
+    if (s.codexReviewer === "user" || s.codexReviewer === "auto_review") {
+      codexFlags.push("-c", `approvals_reviewer=${JSON.stringify(s.codexReviewer)}`);
     }
     const sandbox =
       s.codexSandbox === "readOnly"

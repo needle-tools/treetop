@@ -24,6 +24,7 @@ export async function pickFolder(
       : "";
     const script = `POSIX path of (choose folder with prompt "${escapedPrompt}"${defaultLoc})`;
     const proc = Bun.spawn(["osascript", "-e", script], {
+      windowsHide: true,
       stdout: "pipe",
       stderr: "pipe",
     });
@@ -37,6 +38,7 @@ export async function pickFolder(
     const args = ["--file-selection", "--directory", `--title=${prompt}`];
     if (startDir) args.push(`--filename=${startDir}/`);
     const proc = Bun.spawn(["zenity", ...args], {
+      windowsHide: true,
       stdout: "pipe",
       stderr: "pipe",
     });
@@ -128,7 +130,7 @@ public class FolderPicker {
       const ps = `Add-Type -Path '${csPath.replace(/'/g, "''")}'; $r = [FolderPicker]::Pick('${escapedTitle}', '${escapedDir}'); if ($r) { Write-Output $r }`;
       const proc = Bun.spawn(
         ["powershell", "-NoProfile", "-STA", "-Command", ps],
-        { stdout: "pipe", stderr: "pipe" },
+        { windowsHide: true, stdout: "pipe", stderr: "pipe" },
       );
       const stdout = await new Response(proc.stdout).text();
       await proc.exited;
@@ -169,6 +171,7 @@ export async function pickFile(
       : "";
     const script = `POSIX path of (choose file with prompt "${escapedPrompt}"${defaultLoc})`;
     const proc = Bun.spawn(["osascript", "-e", script], {
+      windowsHide: true,
       stdout: "pipe",
       stderr: "pipe",
     });
@@ -182,6 +185,7 @@ export async function pickFile(
     const args = ["--file-selection", `--title=${prompt}`];
     if (startDir) args.push(`--filename=${startDir}/`);
     const proc = Bun.spawn(["zenity", ...args], {
+      windowsHide: true,
       stdout: "pipe",
       stderr: "pipe",
     });
@@ -204,7 +208,7 @@ export async function pickFile(
     ].join(" ");
     const proc = Bun.spawn(
       ["powershell", "-NoProfile", "-NonInteractive", "-Command", ps],
-      { stdout: "pipe", stderr: "pipe" },
+      { windowsHide: true, stdout: "pipe", stderr: "pipe" },
     );
     const stdout = await new Response(proc.stdout).text();
     const exit = await proc.exited;

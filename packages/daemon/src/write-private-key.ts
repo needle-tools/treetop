@@ -67,6 +67,7 @@ export async function writePrivateKey(
     deps.runAcl ??
     (async (exe, args) => {
       const proc = Bun.spawn([exe, ...args], {
+        windowsHide: true,
         stdout: "ignore",
         stderr: "ignore",
       });

@@ -393,6 +393,17 @@ describe("codexAgentSettings", () => {
     ]);
   });
 
+  test("exposes a separate remembered approval reviewer without changing sandbox or policy", () => {
+    let picked = "";
+    const groups = build({ currentReviewer: "auto_review", onPickReviewer: value => { picked = value; } });
+    const reviewer = groups.find(group => group.key === "codex-reviewer")!;
+    expect(reviewer.options.find(option => option.selected)?.label).toBe("Approve for me");
+    reviewer.onPick("user");
+    expect(picked).toBe("user");
+    expect(groups.find(group => group.key === "codex-sandbox")!.options.find(option => option.selected)?.value).toBe("workspaceWrite");
+    expect(groups.find(group => group.key === "codex-approval")!.options.find(option => option.selected)?.value).toBe("on-request");
+  });
+
   test("model options include Default plus app-server models and preserve the active model", () => {
     const [model] = build({ currentModel: "gpt-5.6-luna" });
     expect(model!.options.map((o) => o.value)).toEqual([

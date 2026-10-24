@@ -97,6 +97,7 @@ export interface OpenSession {
   codexModel?: string;
   codexEffort?: string;
   codexServiceTier?: string;
+  codexReviewer?: string;
   /** Explicit shell command for a plain terminal column, stamped by the
    *  new-session picker when the box offers >1 shell (Windows: PowerShell
    *  vs CMD). Overrides the daemon's default shell in cmdForOpenSession. */
@@ -275,6 +276,55 @@ export function resolveTermId(
   if (s.source.startsWith("__attached__:")) return s.source.split(":").pop();
   if (s.source.startsWith("__new__:")) return newTermIds[s.source];
   return undefined;
+}
+
+/** Apply only the broker's canonical selection. IDs can match across command
+ * subdirectories; missing owner IDs must never match unrelated new sessions. */
+export function applyBackgroundRestoreDecision<T extends OpenSession>(
+  byWt: Record<string, T[]>,
+  candidates: {
+    id: string;
+    cwd: string;
+    ownerId?: string;
+    terminalId?: string;
+  }[],
+  results: { id: string; ok: boolean; termId?: string }[],
+  newTermIds: Record<string, string>,
+) {
+  const restored = new Map(
+    results.filter((result) => result.ok).map((result) => [result.id, result]),
+  );
+  const nextTermIds = { ...newTermIds };
+  const sourceChanges: Record<string, string> = {};
+  const nextByWt: Record<string, T[]> = {};
+  for (const [wtPath, sessions] of Object.entries(byWt)) {
+    nextByWt[wtPath] = sessions.flatMap((session) => {
+      const row = candidates.find(
+        (row) =>
+          (!!row.terminalId &&
+            (row.terminalId === session.attachTermId ||
+              row.terminalId === resolveTermId(session, newTermIds))) ||
+          (!!row.ownerId &&
+            row.cwd === wtPath &&
+            (row.ownerId === session.resumeSessionId ||
+              row.ownerId === session.source)),
+      );
+      if (!row) return [session];
+      const result = restored.get(row.id);
+      if (!result) return [];
+      if (!result.termId) return [session];
+      const source =
+        session.agent === "shell" &&
+        /^__(attached|new)__:shell:/.test(session.source)
+          ? `__attached__:shell:${result.termId}`
+          : session.source;
+      if (source !== session.source) sourceChanges[session.source] = source;
+      if (session.source.startsWith("__new__:"))
+        nextTermIds[session.source] = result.termId;
+      return [{ ...session, source, attachTermId: result.termId }];
+    });
+  }
+  return { byWt: nextByWt, newTermIds: nextTermIds, sourceChanges };
 }
 
 // ---------------------------------------------------------------------------
@@ -590,6 +640,7 @@ export interface BackgroundSpawnCandidate {
   codexModel?: string;
   codexEffort?: string;
   codexServiceTier?: string;
+  codexReviewer?: string;
 }
 
 export function selectSessionsForBackgroundSpawn(
@@ -625,6 +676,7 @@ export function selectSessionsForBackgroundSpawn(
         ...(s.claudeEffort ? { claudeEffort: s.claudeEffort } : {}),
         ...(s.codexModel ? { codexModel: s.codexModel } : {}),
         ...(s.codexEffort ? { codexEffort: s.codexEffort } : {}),
+        ...(s.codexReviewer ? { codexReviewer: s.codexReviewer } : {}),
         ...(s.codexServiceTier
           ? { codexServiceTier: s.codexServiceTier }
           : {}),

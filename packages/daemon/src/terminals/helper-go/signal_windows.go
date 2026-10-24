@@ -16,7 +16,9 @@ func sendSignal(t *term, hard bool) {
 		_ = t.cmd.Process.Kill()
 		return
 	}
-	t.close()
+	// ClosePseudoConsole may wait for the client. Keep reading commands so a
+	// subsequent SIGKILL can terminate a client that will not close gracefully.
+	go t.close()
 }
 
 // exitSignal returns "" on Windows — there's no signal concept; an

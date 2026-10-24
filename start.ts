@@ -5,6 +5,7 @@ import { resolve } from "path";
 import { $ } from "bun";
 
 const port = process.env.SUPERGIT_PORT ?? "27787";
+process.env.TREETOP_TERMINAL_BROKER ??= "1";
 const uiDir = process.env.SUPERGIT_UI_DIR ?? resolve("packages/ui/dist");
 const url = `http://localhost:${port}`;
 

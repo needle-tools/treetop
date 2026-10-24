@@ -1,3 +1,4 @@
+import { refreshBackgroundStatus } from "./background-state";
 import { mount } from "svelte";
 import { initDaemonKV } from "./daemon-kv";
 import {
@@ -109,6 +110,7 @@ if (!target) throw new Error("#app element missing in index.html");
 // Seed localStorage from daemon prefs before mounting so all store
 // constructors see shared state (native app inherits browser layout).
 await initDaemonKV();
+await refreshBackgroundStatus(true);
 
 configure(DEFAULT_MAPPINGS);
 installGestureListener();

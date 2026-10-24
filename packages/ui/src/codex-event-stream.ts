@@ -2863,6 +2863,7 @@ function codexToolUseMessage(opts: {
   toolInput: unknown;
   toolUseId: string;
   approvalPolicy?: string;
+  approvalsReviewer?: string;
   approvalDecision?: string;
   sandboxPolicy?: string;
   extraFields?: Partial<CodexAppHistoryBlock>;
@@ -2879,6 +2880,7 @@ function codexToolUseMessage(opts: {
         toolInput: opts.toolInput,
         toolUseId: opts.toolUseId,
         ...(opts.approvalPolicy ? { approvalPolicy: opts.approvalPolicy } : {}),
+        ...(opts.approvalsReviewer ? { approvalsReviewer: opts.approvalsReviewer } : {}),
         ...(opts.approvalDecision
           ? { approvalDecision: opts.approvalDecision }
           : {}),

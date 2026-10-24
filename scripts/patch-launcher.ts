@@ -178,6 +178,7 @@ const PARTITION_RESOLVE = `
 // rare and acceptable trade.
 const KILL_WEBVIEW2 = `
     _spawnSync({
+      windowsHide: true,
       cmd: [
         "powershell.exe", "-NoProfile", "-NonInteractive", "-Command",
         "Get-Process msedgewebview2 -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue",

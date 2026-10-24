@@ -1326,6 +1326,12 @@ describe("temporary workspace copy policy", () => {
     );
   });
 
+  test("never clones broker credentials or a recovery manifest that could launch real project commands", () => {
+    for (const path of ["terminal-broker.json", "terminal-broker.lock", "terminal-broker.log", "terminal-broker.log.prev", "terminal-broker-launch.log", "terminal-broker-launch.log.prev", "background-snapshot.json", "runtime/brokers/1-123-456/terminal-broker.exe", "runtime\\brokers\\1-123-456\\pty-helper.exe"]) {
+      expect(shouldCopyTempWorkspaceRelativePath(path)).toBe(false);
+    }
+  });
+
   test("skips live runtime, logs, peer identity, and local secret/cache state", () => {
     expect(shouldCopyTempWorkspaceRelativePath("active-terminals.json")).toBe(
       false,

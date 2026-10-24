@@ -130,6 +130,7 @@ export function makeProvisionSpawner(): (
           queue.push(`[supergit] uninstalling on ${host}…\n`);
           console.log(`provision ${host}: uninstall ssh ${plan.run.ssh.join(" ")}`);
           const run = Bun.spawn([sshPath, ...plan.run.ssh], {
+            windowsHide: true,
             stdin: "ignore",
             stdout: "pipe",
             stderr: "pipe",
@@ -152,6 +153,7 @@ export function makeProvisionSpawner(): (
           `provision ${host}: archive ${shipCmd.bin} ${shipCmd.args.join(" ")} → ${tmpArchive}`,
         );
         const archive = Bun.spawn([shipCmd.bin, ...shipCmd.args], {
+          windowsHide: true,
           stdin: "ignore",
           stdout: Bun.file(tmpArchive),
           stderr: "pipe",
@@ -182,6 +184,7 @@ export function makeProvisionSpawner(): (
         );
         console.log(`provision ${host}: ship ssh ${plan.ship.ssh.join(" ")}`);
         const shipSsh = Bun.spawn([sshPath, ...plan.ship.ssh], {
+          windowsHide: true,
           stdin: "pipe",
           stdout: "pipe",
           stderr: "pipe",
@@ -335,6 +338,7 @@ export function makeProvisionSpawner(): (
         queue.push(`[supergit] running installer on ${host}…\n`);
         console.log(`provision ${host}: run ssh ${plan.run.ssh.join(" ")}`);
         const run = Bun.spawn([sshPath, ...plan.run.ssh], {
+          windowsHide: true,
           stdin: "ignore",
           stdout: "pipe",
           stderr: "pipe",

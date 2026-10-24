@@ -156,6 +156,7 @@ export interface CodexModelInfo {
 export interface CodexTurnOverrides {
   model?: string;
   approvalPolicy?: unknown;
+  approvalsReviewer?: "user" | "auto_review";
   sandboxPolicy?: JsonObject;
   effort?: string;
   serviceTier?: string;
@@ -421,6 +422,7 @@ const VOICE_TOOLS: JsonObject[] = [
 
 function defaultSpawn(cwd: string, mcpUrl?: string): CodexAppServerProcess {
   const proc = Bun.spawn({
+    windowsHide: true,
     cmd: mcpUrl
       ? withTreetopMcp(codexAppServerCommand(), mcpUrl)
       : codexAppServerCommand(),
@@ -500,7 +502,9 @@ export class CodexAppServerAdapter implements NativeAgentAdapter {
     CodexAppServerAdapterOptions["scheduleRequestTimeout"]
   >;
   private proc: CodexAppServerProcess | null = null;
+  private processGeneration = 0;
   private rpc: CodexAppServerRpc | null = null;
+  private closing: Promise<void> | null = null;
   private initializePromise: Promise<void> | null = null;
   private readonly loadedThreads = new Set<string>();
   private readonly activeTurns = new Map<string, string>();
@@ -694,6 +698,7 @@ export class CodexAppServerAdapter implements NativeAgentAdapter {
       input: req.input ?? textInput(req.text ?? ""),
       model: cleanString(req.overrides?.model),
       approvalPolicy: req.overrides?.approvalPolicy,
+      approvalsReviewer: req.overrides?.approvalsReviewer,
       sandboxPolicy: req.overrides?.sandboxPolicy,
       effort: cleanString(req.overrides?.effort),
       serviceTier: cleanString(req.overrides?.serviceTier),
@@ -966,6 +971,8 @@ export class CodexAppServerAdapter implements NativeAgentAdapter {
     };
   }
 
+  backgroundState() { return { pid: this.proc?.pid, processGeneration: this.processGeneration, activeTurns: [...this.activeTurns] }; }
+
   activeTurn(threadId: string): string | undefined {
     return this.activeTurns.get(threadId);
   }
@@ -1038,17 +1045,37 @@ export class CodexAppServerAdapter implements NativeAgentAdapter {
   }
 
   async close(): Promise<void> {
+    if (this.closing) return this.closing;
     const proc = this.proc;
-    const rpc = this.rpc;
-    this.proc = null;
+    if (!proc) return;
+    this.rpc?.close();
     this.rpc = null;
     this.initializePromise = null;
-    this.loadedThreads.clear();
+    const closing = (async () => {
+      const confirmed = async (delay: number) => {
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        try { return await Promise.race([proc.exited.then(() => true, () => true), new Promise<false>(resolve => { timer = setTimeout(() => resolve(false), delay); })]); }
+        finally { if (timer) clearTimeout(timer); }
+      };
+      proc.kill("SIGTERM");
+      if (!await confirmed(2000)) {
+        proc.kill("SIGKILL");
+        if (!await confirmed(3000)) throw new Error("Codex app-server exit was not confirmed");
+      }
+      if (this.proc === proc) this.proc = null;
+      this.loadedThreads.clear();
+      this.activeTurns.clear();
+    })();
+    this.closing = closing;
+    try { await closing; } finally { if (this.closing === closing) this.closing = null; }
+  }
+
+  private markActiveTurnsStopped(): void {
+    for (const [threadId, turnId] of this.activeTurns) {
+      this.emit({ kind: "notification", method: "turn/status", threadId, turnId,
+        params: {threadId, turnId, active: false}, receivedAt: new Date().toISOString() });
+    }
     this.activeTurns.clear();
-    rpc?.close();
-    if (!proc) return;
-    proc.kill("SIGTERM");
-    await proc.exited.catch(() => {});
   }
 
   private observeTurnLifecycle(event: CodexAppServerEvent): void {
@@ -1081,8 +1108,11 @@ export class CodexAppServerAdapter implements NativeAgentAdapter {
   }
 
   private async ensureRpc(cwd: string): Promise<CodexAppServerRpc> {
+    if (this.closing) await this.closing;
+    if (this.proc && !this.rpc) throw new Error("Previous Codex app-server exit is unconfirmed; no replacement started");
     if (this.rpc && this.proc) return this.rpc;
     const proc = this.spawnProc(cwd);
+    this.processGeneration++;
     const rpc = new CodexAppServerRpc(
       proc,
       (frame) => this.recordRpcFrame(frame),
@@ -1100,7 +1130,7 @@ export class CodexAppServerAdapter implements NativeAgentAdapter {
         this.rpc = null;
         this.initializePromise = null;
         this.loadedThreads.clear();
-        this.activeTurns.clear();
+        this.markActiveTurnsStopped();
       }
     });
     await this.initializePromise;
@@ -1120,7 +1150,7 @@ export class CodexAppServerAdapter implements NativeAgentAdapter {
     this.rpc = null;
     this.initializePromise = null;
     this.loadedThreads.clear();
-    this.activeTurns.clear();
+    this.markActiveTurnsStopped();
     rpc.close(error);
     proc.kill("SIGTERM");
   }

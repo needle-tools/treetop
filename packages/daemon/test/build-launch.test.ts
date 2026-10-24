@@ -1,8 +1,8 @@
 import { expect, test } from "bun:test";
 import { resolve } from "node:path";
-import { mkdtemp, writeFile } from "node:fs/promises";
+import { mkdtemp, writeFile, readFile, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { DAEMON_BUILD_EXTERNALS } from "../../../scripts/build-native-options";
+import { DAEMON_BUILD_EXTERNALS, NATIVE_BACKGROUND_COMPILE_ARGS, setWindowsGuiSubsystem } from "../../../scripts/build-native-options";
 
 test("daemon bundles SSH without requiring its optional native CPU detector", async () => {
   const directory = await mkdtemp(resolve(tmpdir(), "treetop-ssh-bundle-"));
@@ -183,3 +183,68 @@ for (const entry of [
     expect(run(moveCleanupBeforeWorker(fixed))).toEqual(run(fixed));
   });
 }
+
+
+if (process.platform === "win32") test("compiled background processes have no Windows console even when launched detached", async () => {
+  const directory = await mkdtemp(resolve(tmpdir(), "treetop-hidden-background-"));
+  const entrypoint = resolve(directory, "entry.ts");
+  const binary = resolve(directory, "background.exe");
+  const report = resolve(directory, "console.json");
+  let child: ReturnType<typeof Bun.spawn> | undefined;
+  try {
+    await writeFile(entrypoint, `import {dlopen} from 'bun:ffi'; const api=dlopen('kernel32.dll',{GetConsoleWindow:{args:[],returns:'u64'}}); await Bun.write(process.env.TREETOP_CONSOLE_TEST_REPORT!,JSON.stringify({console:Number(api.symbols.GetConsoleWindow()),pid:process.pid}));setInterval(()=>{},1000);`);
+    const compile = Bun.spawn([process.execPath,"build","--compile",entrypoint,"--outfile",binary,...NATIVE_BACKGROUND_COMPILE_ARGS],{stdout:"ignore",stderr:"pipe"});
+    const errors = await new Response(compile.stderr).text();
+    expect(await compile.exited,errors).toBe(0);
+    await setWindowsGuiSubsystem(binary);
+    const pe = await readFile(binary);
+    // Fail before launch if the build would create the unwanted visible window.
+    expect(pe.readUInt16LE(pe.readUInt32LE(0x3c)+4+20+68)).toBe(2);
+    child = Bun.spawn([binary], {detached:true,windowsHide:true,stdin:"ignore",stdout:"ignore",stderr:"ignore",env:{...process.env,TREETOP_CONSOLE_TEST_REPORT:report}});
+    let result: any;
+    for(let i=0;i<100;i++){try{result=JSON.parse(await readFile(report,"utf8"));break;}catch{await Bun.sleep(30);}}
+    expect(result).toMatchObject({console:0,pid:child.pid});
+  } finally {
+    if(child && child.exitCode===null){child.kill("SIGKILL");await child.exited;}
+    if (!directory.startsWith(resolve(tmpdir()) + (process.platform === "win32" ? "\\" : "/"))) throw new Error("Unexpected fixture directory");
+    await rm(directory,{recursive:true,force:true});
+  }
+},30_000);
+
+if (process.platform === "win32") test("packaged process checks do not allocate a visible console", async () => {
+  const directory = await mkdtemp(resolve(tmpdir(), "treetop-hidden-poll-"));
+  const binary = resolve(directory, "poll.exe");
+  const entrypoint = resolve(directory, "poll.ts");
+  const locatorEntry = resolve(directory, "where.ts");
+  const locatorBinary = resolve(directory, "where.exe");
+  const probe = `Add-Type -TypeDefinition 'using System; using System.Runtime.InteropServices; public class WindowProbe { [DllImport("kernel32.dll")] public static extern IntPtr GetConsoleWindow(); [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr window); }'; [WindowProbe]::IsWindowVisible([WindowProbe]::GetConsoleWindow()); Write-Error 'stderr captured'; exit 7`;
+  try {
+    // A real console-subsystem locator lets the real editor discovery code
+    // report its window visibility without depending on installed editors.
+    await writeFile(locatorEntry, `import {dlopen} from 'bun:ffi'; const k=dlopen('kernel32.dll',{GetConsoleWindow:{args:[],returns:'u64'}}); const u=dlopen('user32.dll',{IsWindowVisible:{args:['u64'],returns:'i32'}}); await Bun.write(${JSON.stringify(directory)}+'/'+process.pid+'.visibility.json',JSON.stringify({visible:!!u.symbols.IsWindowVisible(k.symbols.GetConsoleWindow())}));process.exit(1);`);
+    const locatorCompile = Bun.spawn([process.execPath,"build","--compile",locatorEntry,"--outfile",locatorBinary],{windowsHide:true,stdout:"ignore",stderr:"pipe"});
+    const locatorErrors = await new Response(locatorCompile.stderr).text();
+    expect(await locatorCompile.exited,locatorErrors).toBe(0);
+    const locatorPe = await readFile(locatorBinary);
+    expect(locatorPe.readUInt16LE(locatorPe.readUInt32LE(0x3c)+4+20+68)).toBe(3);
+    await writeFile(entrypoint, `import {runWindowsPowerShell} from ${JSON.stringify(resolve(import.meta.dir,"../src/procs.ts"))}; import {detectEditors} from ${JSON.stringify(resolve(import.meta.dir,"../src/open.ts"))}; await detectEditors(); const result=await runWindowsPowerShell(${JSON.stringify(probe)}); console.log(JSON.stringify({stdout:result.stdout.toString().trim(),stderr:result.stderr.toString(),exitCode:result.exitCode}));`);
+    const compile = Bun.spawn([process.execPath,"build","--compile",entrypoint,"--outfile",binary],{stdout:"ignore",stderr:"pipe"});
+    const errors = await new Response(compile.stderr).text();
+    expect(await compile.exited,errors).toBe(0);
+    await setWindowsGuiSubsystem(binary);
+    const child = Bun.spawn([binary],{windowsHide:true,stdin:"ignore",stdout:"pipe",stderr:"pipe",env:{...process.env,PATH:directory+';'+process.env.PATH}});
+    const output = await new Response(child.stdout).text();
+    const diagnostic = await new Response(child.stderr).text();
+    expect(await child.exited,diagnostic).toBe(0);
+    const result=JSON.parse(output);
+    expect(result.stdout).toBe("False");
+    expect(result.stderr).toContain("stderr captured");
+    expect(result.exitCode).toBe(7);
+    const reports = (await readdir(directory)).filter(path=>path.endsWith('.visibility.json'));
+    expect(reports.length).toBeGreaterThan(1);
+    for (const report of reports) expect(JSON.parse(await readFile(resolve(directory,report),'utf8')).visible).toBe(false);
+  } finally {
+    if (!directory.startsWith(resolve(tmpdir())+"\\")) throw new Error("Unexpected fixture directory");
+    await rm(directory,{recursive:true,force:true});
+  }
+},30_000);

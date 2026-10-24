@@ -41,6 +41,7 @@ interface InternalTerm {
   pid: number;
   ownerId?: string;
   cmd: string[];
+  resumeCmd?: string[];
   cwd: string;
   agent?: string;
   size: TerminalSize;
@@ -344,6 +345,7 @@ export class NodePtyBackend implements PtyBackend {
       }
       const proc = bunSpawn({
         cmd,
+        windowsHide: true,
         stdin: "pipe",
         stdout: "pipe",
         stderr: "inherit",
@@ -558,6 +560,7 @@ export class NodePtyBackend implements PtyBackend {
       pid: 0,
       ownerId: opts.ownerId,
       cmd: opts.cmd,
+      resumeCmd: opts.resumeCmd,
       cwd: opts.cwd,
       agent: opts.agent ?? detectAgent(opts.cmd),
       size: opts.size,
@@ -782,6 +785,7 @@ export class NodePtyBackend implements PtyBackend {
       id: t.id,
       ownerId: t.ownerId,
       cmd: t.cmd,
+      ...(t.resumeCmd ? { resumeCmd: t.resumeCmd } : {}),
       cwd: t.cwd,
       agent: t.agent,
       pid: t.pid,
@@ -911,4 +915,6 @@ export function terminalGoneReason(exit: ExitInfo | undefined): string {
 
 /** Module-level singleton. server.ts imports this and re-exports as
  *  the daemon-wide terminal manager. */
-export const terminalBackend = new NodePtyBackend();
+export const terminalBackend = process.env.TREETOP_TERMINAL_BROKER === "1"
+  ? await (await import("./broker-runtime")).connectPersistentBroker()
+  : new NodePtyBackend();

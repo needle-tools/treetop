@@ -17,6 +17,8 @@ export interface TerminalRecord {
    *  doesn't interpret this; it's a tag for the UI. */
   ownerId?: string;
   cmd: string[];
+  /** Original argv before display-name wrapping, for reviewed crash recovery. */
+  resumeCmd?: string[];
   cwd: string;
   /** Inferred agent name (claude / codex / shell), best-effort. */
   agent?: string;
@@ -35,6 +37,8 @@ export interface TerminalRecord {
 
 export interface SpawnOptions {
   cmd: string[];
+  /** Original argv before display-name wrapping, for reviewed crash recovery. */
+  resumeCmd?: string[];
   cwd: string;
   size: TerminalSize;
   ownerId?: string;
@@ -79,7 +83,7 @@ export interface TerminalHandle {
   /** Advances on all input, including human keyboard input. */
   inputRevision?(): number;
   /** Replace a new-column owner tag once its provider session is discovered. */
-  bindSessionOwner?(sessionId: string): void;
+  bindSessionOwner?(sessionId: string): void | Promise<void>;
   resize(size: TerminalSize): void;
   /** Pause helper-side output delivery while no client can drain it.
    *  Input and PTY state continue; output resumes on unmute without dropping

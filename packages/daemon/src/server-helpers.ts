@@ -216,6 +216,13 @@ const TEMP_WORKSPACE_EXCLUDED_NAMES = new Set([
   ".debugging",
   ".remote-cache",
   "active-terminals.json",
+  "terminal-broker.json",
+  "terminal-broker.lock",
+  "terminal-broker.log",
+  "terminal-broker.log.prev",
+  "terminal-broker-launch.log",
+  "terminal-broker-launch.log.prev",
+  "background-snapshot.json",
   "daemon.log",
   "daemon.log.prev",
   "errors.jsonl",
@@ -227,6 +234,7 @@ const TEMP_WORKSPACE_EXCLUDED_NAMES = new Set([
 
 export function shouldCopyTempWorkspaceRelativePath(path: string): boolean {
   if (!path || path === ".") return true;
+  if (/^runtime[/\\]brokers(?:[/\\]|$)/.test(path)) return false;
   const first = path.split(/[\\/]/, 1)[0] ?? path;
   if (TEMP_WORKSPACE_EXCLUDED_NAMES.has(first)) return false;
   if (first.endsWith(".tmp")) return false;

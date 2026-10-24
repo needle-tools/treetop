@@ -1,3 +1,4 @@
+import { BrokerCodexAdapter } from "./broker-codex";
 import {
   join,
   resolve,
@@ -530,11 +531,14 @@ const shells = await ShellsLog.open(
   READONLY_MODE ? INSTANCE_RUNTIME_PATH : WORKSPACE_PATH,
 );
 const ollamaSessions = await OllamaSessionsLog.open(WORKSPACE_PATH);
-const codexAgent = new CodexAppServerAdapter({
+const codexAgent = terminalBackend instanceof BrokerBackend ? new BrokerCodexAdapter(terminalBackend) : new CodexAppServerAdapter({
   mcpUrl: treetopMcpUrl,
   recordingDir: join(workspace.path, ".debugging", "codex-app-recordings"),
 });
-const nativeAgents = createNativeAgentRegistry({
+const nativeAgents = terminalBackend instanceof BrokerBackend ? {
+  startSession: (req: any) => req.agent === "codex" ? codexAgent.startSession(req) : Promise.reject(new Error(`starting ${req.agent} not supported yet`)),
+  sendTurn: (req: any) => req.agent === "codex" ? codexAgent.sendTurn(req) : (terminalBackend as BrokerBackend).sendNative(req),
+} : createNativeAgentRegistry({
   claude: new ClaudeCliAdapter({ mcpUrl: treetopMcpUrl }),
   codex: codexAgent,
 });
@@ -968,8 +972,10 @@ const orphanCleaner = new OrphanCleaner({
 });
 
 import { ProjectCommands, createCommandLauncher } from "./project-commands";
+import { BrokerBackend } from "./terminals/broker-backend";
+const backgroundBackend = terminalBackend instanceof BrokerBackend ? terminalBackend : undefined;
 
-const projectCommands = new ProjectCommands({
+const localProjectCommands = new ProjectCommands({
   workspace,
   changed: change => broadcast("change", change),
   launch: createCommandLauncher({
@@ -977,8 +983,13 @@ const projectCommands = new ProjectCommands({
     openExternal: (cwd, command) => openIn(cwd, "terminal", command),
     terminalEnv: terminalSpawnEnv,
     backgroundEnv: backgroundCommandEnv,
-    onInternalSpawn(handle, definition, spawnCmd) {
-      terminalSpawnPendingWs.set(handle.id, performance.now());
+    onInternalSpawn: registerInternalCommand,
+  }),
+});
+
+const registeredBrokerCommands = new Set<string>();
+function registerInternalCommand(handle: any, definition: any, spawnCmd: string[]) {
+      if (!backgroundBackend) terminalSpawnPendingWs.set(handle.id, performance.now());
       terminalSpawnFinishedAt.set(handle.id, performance.now());
       console.log(`supergit daemon: command internal spawn termId=${handle.id} linkId=${definition.linkId} repoId=${definition.repoId} pid=${handle.pid} cwd=${definition.cwd}`);
       detectCommandUrl(handle, definition.linkId, definition.repoId);
@@ -1000,9 +1011,19 @@ const projectCommands = new ProjectCommands({
         },
       });
       if (exited) unsubscribe();
-    },
-  }),
-});
+}
+const projectCommands = backgroundBackend ? {
+  list: () => [...backgroundBackend.projectCommands.list(), ...localProjectCommands.list()],
+  untracked: () => [...backgroundBackend.projectCommands.untracked(), ...localProjectCommands.untracked()],
+  async control(action: "start" | "stop" | "restart", repoId: string, commandId: string, repoPath?: string, onReady?: (result: Record<string, unknown>) => Promise<void>) {
+    const tracked = backgroundBackend.projectCommands.list().some(command => command.repoId === repoId && command.linkId === commandId);
+    const repo = (await workspace.listRepos()).find(repo => repo.id === repoId);
+    const command = repo?.customLinks?.find(link => link.id === commandId);
+    if (!tracked && command?.kind === "command" && command.runMode === "external")
+      return localProjectCommands.control(action, repoId, commandId, repoPath, onReady);
+    return backgroundBackend.projectCommands.control(action, repoId, commandId, repoPath, onReady);
+  },
+} : localProjectCommands;
 
 async function revealMcpCommand(result: Record<string, unknown>): Promise<void> {
   if (result.mode !== "internal" || typeof result.termId !== "string") return;
@@ -1036,6 +1057,7 @@ async function readInteractiveShellPath(): Promise<string | undefined> {
     const proc = Bun.spawn(
       [shell, "-lic", "printf '\\n__SUPERGIT_PATH__%s\\n' \"$PATH\""],
       {
+        windowsHide: true,
         stdin: "ignore",
         stdout: "pipe",
         stderr: "ignore",
@@ -2570,6 +2592,7 @@ function cancelGrace(termId: string) {
 }
 
 function startGraceIfIdle(termId: string) {
+  if (backgroundBackend) return; // The broker owns bounded retention across daemon handoff.
   const handle = terminalBackend.get(termId);
   if (!handle) return;
   if ((terminalViewers.get(termId) ?? 0) > 0) return; // a viewer is still attached
@@ -4576,7 +4599,7 @@ const server = Bun.serve<TermWsData, never>({
             voice: typeof body?.voice === "string" ? body.voice : undefined,
             speechOnly,
           });
-          if (speechOnly) speechOnlyThreads.set(started.threadId, setTimeout(() => {
+          if (speechOnly && !backgroundBackend) speechOnlyThreads.set(started.threadId, setTimeout(() => {
             speechOnlyThreads.delete(started.threadId);
             void codexAgent.stopRealtimeVoice(started.threadId).catch(error => console.warn("Voice message timeout cleanup failed", error));
           }, 100_000));
@@ -4695,13 +4718,13 @@ const server = Bun.serve<TermWsData, never>({
       }
 
       if (url.pathname === "/api/codex-app/recording" && req.method === "POST") {
-        return json({ ok: true, recording: codexAgent.startRecording() });
+        return json({ ok: true, recording: await codexAgent.startRecording() });
       }
 
       if (url.pathname === "/api/codex-app/recording" && req.method === "GET") {
         return json({
           ok: true,
-          recording: codexAgent.recordingSnapshot(),
+          recording: await codexAgent.recordingSnapshot(),
         });
       }
 
@@ -4709,7 +4732,7 @@ const server = Bun.serve<TermWsData, never>({
         url.pathname === "/api/codex-app/recording" &&
         req.method === "DELETE"
       ) {
-        const recording = codexAgent.stopRecording();
+        const recording = await codexAgent.stopRecording();
         if (!recording) return json({ ok: true, recording: null });
         const recordingDir = join(
           workspace.path,
@@ -4719,7 +4742,7 @@ const server = Bun.serve<TermWsData, never>({
         await fsMkdir(recordingDir, { recursive: true });
         const file = join(recordingDir, `${recording.id}.json`);
         await fsWriteFile(file, JSON.stringify(recording, null, 2));
-        codexAgent.enforceRecordingRetention();
+        await codexAgent.enforceRecordingRetention();
         return json({ ok: true, recording, path: file });
       }
 
@@ -4967,6 +4990,7 @@ const server = Bun.serve<TermWsData, never>({
           expectedTurnId?: unknown;
           model?: unknown;
           approvalPolicy?: unknown;
+          approvalsReviewer?: string;
           sandboxPolicy?: unknown;
           effort?: unknown;
           serviceTier?: unknown;
@@ -5015,6 +5039,7 @@ const server = Bun.serve<TermWsData, never>({
             overrides: {
               model: codexTurnString(body?.model),
               approvalPolicy: codexApprovalPolicy(body?.approvalPolicy),
+              approvalsReviewer: body?.approvalsReviewer === "auto_review" || body?.approvalsReviewer === "user" ? body.approvalsReviewer : undefined,
               sandboxPolicy: codexSandboxPolicy(body?.sandboxPolicy, cwd),
               effort: codexTurnString(body?.effort),
               serviceTier: codexTurnString(body?.serviceTier),
@@ -5082,19 +5107,19 @@ const server = Bun.serve<TermWsData, never>({
             typeof body.error === "object" &&
             typeof (body.error as { message?: unknown }).message === "string"
           ) {
-            codexAgent.respondToRequest(requestId, {
+            await codexAgent.respondToRequest(requestId, {
               error: body.error as { message: string },
             });
           } else if (body?.result && typeof body.result === "object") {
-            codexAgent.respondToRequest(requestId, {
+            await codexAgent.respondToRequest(requestId, {
               result: body.result as Record<string, unknown>,
             });
           } else if (typeof body?.decision === "string") {
-            codexAgent.respondToRequest(requestId, {
+            await codexAgent.respondToRequest(requestId, {
               result: { decision: body.decision },
             });
           } else if (body?.answers && typeof body.answers === "object") {
-            codexAgent.respondToRequest(requestId, {
+            await codexAgent.respondToRequest(requestId, {
               result: { answers: body.answers as Record<string, unknown> },
             });
           } else {
@@ -5133,7 +5158,7 @@ const server = Bun.serve<TermWsData, never>({
           return json({ error: "agent, cwd, text required" }, { status: 400 });
         }
         try {
-          const proc = nativeAgents.sendTurn({
+          const proc = await nativeAgents.sendTurn({
             agent,
             sessionId,
             cwd,
@@ -5253,6 +5278,7 @@ const server = Bun.serve<TermWsData, never>({
           const terminalSpawnBackendStarted = performance.now();
           const handle = await terminalBackend.spawn({
             cmd,
+            resumeCmd: body.cmd.slice(),
             cwd: body.cwd,
             ownerId: body.ownerId,
             agent: agentHint,
@@ -5480,7 +5506,7 @@ const server = Bun.serve<TermWsData, never>({
           return json({ error: "sessionId required" }, { status: 400 });
         try {
           if (!handle.bindSessionOwner) throw new Error("Terminal ownership updates are unavailable");
-          handle.bindSessionOwner(body.sessionId);
+          await handle.bindSessionOwner(body.sessionId);
           return json({ ok: true });
         } catch (error) {
           return json({ error: error instanceof Error ? error.message : String(error) }, { status: 409 });
@@ -6091,7 +6117,7 @@ const server = Bun.serve<TermWsData, never>({
                   (await resolveAgentBinary("claude")) ?? "claude";
                 const proc = Bun.spawn(
                   [claudeBin, "-p", "--output-format", "text", prompt],
-                  { cwd: resolved, stdout: "pipe", stderr: "ignore" },
+                  { windowsHide: true, cwd: resolved, stdout: "pipe", stderr: "ignore" },
                 );
                 const reader = proc.stdout.getReader();
                 const dec = new TextDecoder();
@@ -7544,6 +7570,7 @@ const server = Bun.serve<TermWsData, never>({
           return json({ error: "ollama not installed" }, { status: 503 });
         }
         const proc = Bun.spawn([ollamaBin, "pull", model], {
+          windowsHide: true,
           stdout: "pipe",
           stderr: "pipe",
         });
@@ -9014,7 +9041,7 @@ const server = Bun.serve<TermWsData, never>({
           start(controller) {
             myController = controller;
             sseSubscribers.add(controller);
-            orphanCleaner.onFrontendConnected();
+            if (!backgroundBackend) orphanCleaner.onFrontendConnected();
             controller.enqueue(sseEncoder.encode(`: connected\n\n`));
             controller.enqueue(
               sseEncoder.encode(
@@ -9023,7 +9050,7 @@ const server = Bun.serve<TermWsData, never>({
             );
           },
           cancel() {
-            orphanCleaner.onFrontendDisconnected();
+            if (!backgroundBackend) orphanCleaner.onFrontendDisconnected();
             if (myController) sseSubscribers.delete(myController);
           },
         });
@@ -10158,12 +10185,58 @@ const server = Bun.serve<TermWsData, never>({
         }
       }
 
+      if (url.pathname === "/api/background/reconnect" && req.method === "POST") {
+        if (!backgroundBackend) return json({ enabled: false });
+        if (!backgroundBackend.status().connected) {
+          const { connectPersistentBroker } = await import("./terminals/broker-runtime");
+          await connectPersistentBroker(workspace.path, backgroundBackend);
+        }
+        const acquired = await backgroundBackend.request("acquire", { windowId: `bootstrap:${crypto.randomUUID()}`, sequence: 0 });
+        return json({ ...acquired, enabled: true, connected: true });
+      }
+      if (url.pathname === "/api/background/restore-ack" && req.method === "POST") {
+        if (!backgroundBackend) return json({ error: "Background sessions unavailable" }, { status: 409 });
+        return json(await backgroundBackend.request("restoreAck", await req.json()));
+      }
+      if (url.pathname === "/api/background/restore" && req.method === "POST") {
+        if (!backgroundBackend) return json({ error: "Background sessions unavailable" }, { status: 409 });
+        return json(await backgroundBackend.request("restore", await req.json()));
+      }
+      if (url.pathname === "/api/background/shutdown" && req.method === "POST") {
+        srv.timeout(req, 130);
+        if (!backgroundBackend) return json({ error: "Background sessions unavailable" }, { status: 409 });
+        return json(await backgroundBackend.request("shutdown"));
+      }
+      if (url.pathname === "/api/background/status" && req.method === "GET") {
+        return json(backgroundBackend ? await backgroundBackend.request("status").then(status => ({ ...status, enabled: true, connected: true })).catch(() => backgroundBackend.status()) : { enabled: false });
+      }
+      if (url.pathname === "/api/background/lease" && req.method === "POST") {
+        if (!backgroundBackend) return json({ enabled: false });
+        const body = await req.json().catch(() => null);
+        if (typeof body?.windowId !== "string" || !Number.isSafeInteger(body.sequence)) return json({ error: "windowId and sequence required" }, { status: 400 });
+        return json(await backgroundBackend.renew(`native:${body.windowId}`, body.sequence));
+      }
+      if (url.pathname === "/api/background/release-terminal" && req.method === "POST") {
+        const body = await req.json().catch(() => null);
+        if (typeof body?.id !== "string") return json({ error: "id required" }, { status: 400 });
+        return json(backgroundBackend ? await backgroundBackend.releaseTerminal(body.id) : { enabled: false });
+      }
+      if (url.pathname === "/api/background/stop-all" && req.method === "POST") {
+        srv.timeout(req, 130);
+        if (!backgroundBackend) return json({ error: "Persistent background sessions are unavailable" }, { status: 409 });
+        return json(await backgroundBackend.stopAll());
+      }
       if (url.pathname === "/api/ui-action-result" && req.method === "POST") {
         try { uiActions.complete(await req.json()); return json({ ok: true }); }
         catch (error) { return json({ error: error instanceof Error ? error.message : String(error) }, { status: 400 }); }
       }
       if (url.pathname === "/api/ui-context" && req.method === "POST") {
-        try { uiContexts.report(await req.json()); return json({ ok: true }); }
+        try {
+          const report = await req.json();
+          uiContexts.report(report);
+          if (backgroundBackend) void backgroundBackend.renew(report.windowId, report.sequence).catch(error => console.warn("background UI lease report failed", String(error)));
+          return json({ ok: true });
+        }
         catch (error) { return json({ error: error instanceof Error ? error.message : String(error) }, { status: 400 }); }
       }
       if (url.pathname === "/mcp") {
@@ -10209,6 +10282,7 @@ const server = Bun.serve<TermWsData, never>({
                 serviceTier: codexTurnString(target.codexServiceTier),
                 summary: codexTurnString(target.codexSummary),
                 approvalPolicy: codexApprovalPolicy(target.codexApproval),
+                approvalsReviewer: target.codexReviewer === "auto_review" || target.codexReviewer === "user" ? target.codexReviewer : undefined,
                 sandboxPolicy: codexSandboxPolicy(target.codexSandbox, session.cwd),
               },
             });
@@ -10482,7 +10556,7 @@ const server = Bun.serve<TermWsData, never>({
         return;
       }
       cancelGrace(termId);
-      orphanCleaner.onFrontendConnected();
+      if (!backgroundBackend) orphanCleaner.onFrontendConnected();
       const pendingSpawnAt = terminalSpawnPendingWs.get(termId);
       const openAfterSpawnMs =
         pendingSpawnAt === undefined
@@ -10582,6 +10656,7 @@ const server = Bun.serve<TermWsData, never>({
       };
       ws.data.unsubscribe = handle.subscribe(sub);
       addCount(terminalViewers, termId);
+      backgroundBackend?.setViewers(termId, terminalViewers.get(termId) ?? 0);
     },
 
     drain(ws) {
@@ -10699,13 +10774,30 @@ const server = Bun.serve<TermWsData, never>({
       } catch {}
       ws.data.unsubscribe = null;
       if (wasSubscribed) removeCount(terminalViewers, termId);
-      orphanCleaner.onFrontendDisconnected();
+      backgroundBackend?.setViewers(termId, terminalViewers.get(termId) ?? 0);
+      if (!backgroundBackend) orphanCleaner.onFrontendDisconnected();
       // If this was the last viewer, schedule a grace-then-dispose. (Keys off
       // terminalViewers, not subscriberCount — see the map's declaration.)
       startGraceIfIdle(termId);
     },
   },
 });
+
+if (backgroundBackend) {
+  void backgroundBackend.request("mcpUrl", { url: treetopMcpUrl() }).catch(error => console.warn("Broker MCP endpoint update failed", error));
+  const reconcileCommands = () => {
+    for (const command of backgroundBackend.projectCommands.list()) {
+      if (command.runMode !== "internal" || !command.termId || registeredBrokerCommands.has(command.termId)) continue;
+      const handle = terminalBackend.get(command.termId);
+      const record = terminalBackend.list().find(record => record.id === command.termId);
+      if (!handle || !record) continue;
+      registeredBrokerCommands.add(command.termId);
+      registerInternalCommand(handle, command, record.cmd);
+    }
+  };
+  backgroundBackend.onCommandChange(change => { reconcileCommands(); broadcast("change", change); });
+  reconcileCommands();
+}
 
 // Release the port cleanly when --watch restarts us, or on Ctrl-C.
 if (!READONLY_MODE) stopReminders = startReminderScheduler(reminderStore,
@@ -10929,6 +11021,7 @@ if (IDLE_REAP_MS > 0) {
 // Reap orphaned spawns: PTYs that were created but never had a WebSocket
 // attach (column ×-closed before connect). See SPAWN_ATTACH_GRACE_MS.
 function sweepUnattachedSpawns(): void {
+  if (backgroundBackend) return; // Broker checks never-attached resources without crossing handoffs.
   if (SPAWN_ATTACH_GRACE_MS <= 0 || terminalSpawnPendingWs.size === 0) return;
   const due = selectStaleUnattachedSpawns(
     [...terminalSpawnPendingWs.entries()].map(([id, spawnedAt]) => ({

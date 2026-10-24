@@ -1322,6 +1322,23 @@ describe("cmdForOpenSession", () => {
     ]);
   });
 
+  test("remembers the reviewer and applies it to both new and resumed CLI sessions", () => {
+    const defaults = codexSessionDefaults(JSON.stringify({ reviewer: "auto_review" }));
+    expect(defaults.codexReviewer).toBe("auto_review");
+    for (const resumeSessionId of [undefined, "ses_42"]) {
+      const command = cmdForOpenSession({ agent: "codex", codexReviewer: "auto_review", codexSandbox: "workspaceWrite", codexApproval: "on-request", resumeSessionId }, "/bin/zsh");
+      expect(command).toContain('approvals_reviewer="auto_review"');
+      expect(command).toContain("workspace-write");
+      expect(command).toContain("on-request");
+      if (resumeSessionId) expect(command.at(-1)).toBe(resumeSessionId);
+    }
+    const memory = new MemStore();
+    const store = new OpenSessionsStore(memory, KEY);
+    store.save({ "/a": [{ agent: "codex", source: "one.jsonl", codexReviewer: "user" }] });
+    expect(store.load()["/a"]![0]!.codexReviewer).toBe("user");
+    expect(cmdForOpenSession({ agent: "codex" }, "/bin/zsh")).toEqual(["codex"]);
+  });
+
   test("brand-new codex column with codexModel appends `--model <id>`", () => {
     expect(
       cmdForOpenSession({ agent: "codex", codexModel: "gpt-5.4" }, "/bin/zsh"),

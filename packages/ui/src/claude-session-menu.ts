@@ -454,6 +454,7 @@ export function parseCodexAccessValue(
 export function codexAccessOptions(opts: {
   currentSandbox: string;
   currentApproval: string;
+  currentReviewer?: string;
 }): AgentSettingOption[] {
   const current = codexAccessValue(opts.currentSandbox, opts.currentApproval);
   const presets = CODEX_ACCESS_PRESETS.map((preset) => ({
@@ -483,12 +484,14 @@ export function codexAgentSettings(opts: {
   currentSummary: string;
   currentSandbox: string;
   currentApproval: string;
+  currentReviewer?: string;
   onPickModel: (model: string) => void;
   onPickEffort: (effort: string) => void;
   onPickServiceTier: (serviceTier: string) => void;
   onPickSummary: (summary: string) => void;
   onPickSandbox: (sandbox: string) => void;
   onPickApproval: (approval: string) => void;
+  onPickReviewer?: (reviewer: string) => void;
 }): AgentSettingGroup[] {
   const defaultModel = defaultCodexModel(opts.models);
   const defaultModelLabel = defaultModel ? codexModelLabel(defaultModel) : "";
@@ -597,5 +600,15 @@ export function codexAgentSettings(opts: {
         selected: opts.currentApproval === opt.value,
       })),
     },
+    ...(opts.onPickReviewer ? [{
+      key: "codex-reviewer",
+      label: "Approval reviewer",
+      onPick: opts.onPickReviewer,
+      options: [
+        { value: "", label: "Default", title: "Use the Codex configuration" },
+        { value: "user", label: "Ask me", title: "Send approval requests to you" },
+        { value: "auto_review", label: "Approve for me", title: "Codex reviews eligible approval requests; sandbox restrictions still apply" },
+      ].map(option => ({ ...option, selected: (opts.currentReviewer ?? "") === option.value })),
+    }] : []),
   ];
 }

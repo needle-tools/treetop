@@ -27,6 +27,7 @@ export interface ClaudeCliAdapterOptions {
 
 function defaultSpawn(opts: ClaudeSpawnOptions): ClaudeSpawnedProcess {
   const proc = Bun.spawn({
+    windowsHide: true,
     cmd: opts.cmd,
     cwd: opts.cwd,
     stdout: "ignore",

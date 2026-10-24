@@ -23,11 +23,20 @@ jobs:
       - name: Install dependencies
         run: bun install --frozen-lockfile
 
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: packages/daemon/src/terminals/helper-go/go.mod
+          cache: false
+
+      - name: Native terminal helper tests
+        working-directory: packages/daemon/src/terminals/helper-go
+        run: go test ./...
+
       - name: Run tests and report coverage
         run: bun test --coverage --timeout 20000 packages/daemon/test packages/ui/test --path-ignore-patterns='**/*.browser.test.ts' --path-ignore-patterns='**/build/**'
 
       - name: Browser tests
-        run: node --test packages/ui/test/command-row.browser.test.ts packages/ui/test/session-window-focus.browser.test.ts packages/ui/test/session-view-lifecycle.browser.test.ts
+        run: node --test packages/ui/test/background-sessions.browser.test.ts packages/ui/test/command-row.browser.test.ts packages/ui/test/session-window-focus.browser.test.ts packages/ui/test/session-view-lifecycle.browser.test.ts
 
   native-scroll:
     runs-on: macos-latest

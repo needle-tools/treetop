@@ -103,6 +103,7 @@ export async function runAgentSummary(
 
   if (signal.aborted) throw new Error("Summary cancelled.");
   const proc = Bun.spawn([bin, ...args], {
+    windowsHide: true,
     cwd,
     stdin: "pipe",
     stdout: "pipe",

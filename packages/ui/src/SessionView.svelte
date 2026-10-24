@@ -415,6 +415,7 @@
   export let codexEffortOverride: string | undefined = undefined;
   export let codexServiceTierOverride: string | undefined = undefined;
   export let codexSandboxOverride: string | undefined = undefined;
+  export let codexReviewerOverride: string | undefined = undefined;
   export let codexApprovalOverride: string | undefined = undefined;
   export let codexSummaryOverride: string | undefined = undefined;
   /** Called when the user picks a model/effort from the header menu.
@@ -426,6 +427,7 @@
   export let onSetCodexEffort: (effort: string) => void = () => {};
   export let onSetCodexServiceTier: (serviceTier: string) => void = () => {};
   export let onSetCodexSandbox: (sandbox: string) => void = () => {};
+  export let onSetCodexReviewer: (reviewer: string) => void = () => {};
   export let onSetCodexApproval: (approval: string) => void = () => {};
   export let onSetCodexSummary: (summary: string) => void = () => {};
 
@@ -2749,6 +2751,7 @@
   });
   let codexSandbox =
     codexSandboxOverride ?? codexSavedSettings.sandbox ?? "workspaceWrite";
+  let codexReviewer = codexReviewerOverride ?? codexSavedSettings.reviewer ?? "";
   let codexApproval =
     codexApprovalOverride ?? codexSavedSettings.approval ?? "on-request";
   let codexEffort = codexEffortOverride ?? codexSavedSettings.effort ?? "";
@@ -2960,6 +2963,7 @@
     model?: string;
     sandbox?: string;
     approval?: string;
+    reviewer?: string;
     effort?: string;
     serviceTier?: string;
     summary?: string;
@@ -2974,6 +2978,7 @@
           typeof parsed.sandbox === "string" ? parsed.sandbox : undefined,
         approval:
           typeof parsed.approval === "string" ? parsed.approval : undefined,
+        reviewer: parsed.reviewer === "user" || parsed.reviewer === "auto_review" ? parsed.reviewer : undefined,
         effort: typeof parsed.effort === "string" ? parsed.effort : undefined,
         serviceTier:
           typeof parsed.serviceTier === "string"
@@ -2994,6 +2999,7 @@
         model: codexModel,
         sandbox: codexSandbox,
         approval: codexApproval,
+        reviewer: codexReviewer,
         effort: codexEffort,
         serviceTier: codexServiceTier,
         summary: codexSummary,
@@ -3040,6 +3046,11 @@
     persistCodexSettings();
     onSetCodexSandbox(value);
   }
+  function pickCodexReviewer(value: string): void {
+    codexReviewer = value;
+    persistCodexSettings();
+    onSetCodexReviewer(value);
+  }
   function pickCodexApproval(value: string): void {
     codexApproval = value;
     persistCodexSettings();
@@ -3063,6 +3074,7 @@
 
   function codexTerminalConfigFlags(): string[] {
     const flags: string[] = [];
+    if (codexReviewer) flags.push("-c", `approvals_reviewer=${JSON.stringify(codexReviewer)}`);
     if (codexEffort) {
       flags.push("-c", `model_reasoning_effort=${JSON.stringify(codexEffort)}`);
     }
@@ -3083,6 +3095,8 @@
     currentSummary: codexSummary,
     currentSandbox: codexSandbox,
     currentApproval: codexApproval,
+    currentReviewer: codexReviewer,
+    onPickReviewer: pickCodexReviewer,
     onPickModel: pickCodexModel,
     onPickEffort: pickCodexEffort,
     onPickServiceTier: pickCodexServiceTier,
@@ -5105,6 +5119,7 @@
                 summary: codexSummary || undefined,
                 sandboxPolicy: codexSandbox,
                 approvalPolicy: codexApproval,
+                approvalsReviewer: codexReviewer || undefined,
               }),
               signal,
             },

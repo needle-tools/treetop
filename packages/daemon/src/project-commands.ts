@@ -224,6 +224,8 @@ export function createCommandLauncher(options: {
   terminalBackend: Pick<PtyBackend, "spawn">;
   openExternal: (cwd: string, command: string) => Promise<{ via: string }>;
   terminalEnv: () => SpawnOptions["env"];
+  /** Persistent brokers keep hidden commands under the same PTY/helper owner. */
+  backgroundViaPty?: boolean;
   backgroundEnv: () => Record<string, string | undefined>;
   onInternalSpawn?: (
     handle: Awaited<ReturnType<PtyBackend["spawn"]>>,
@@ -234,7 +236,7 @@ export function createCommandLauncher(options: {
   return async (definition: CommandDefinition): Promise<CommandLaunch> => {
     if (definition.runMode === "external")
       return options.openExternal(definition.cwd, definition.cmd);
-    if (definition.runMode === "internal") {
+    if (definition.runMode === "internal" || options.backgroundViaPty) {
       const spawnCmd = internalCommandTerminalArgs(
         definition.cmd,
         process.platform,
@@ -282,6 +284,7 @@ export function createCommandLauncher(options: {
         ? [process.env.COMSPEC ?? "cmd.exe", "/c", definition.cmd]
         : ["sh", "-c", definition.cmd],
       {
+        windowsHide: true,
         cwd: definition.cwd,
         stdin: "ignore",
         stdout: "ignore",
@@ -298,7 +301,7 @@ export function createCommandLauncher(options: {
         if (process.platform === "win32") {
           const killed = Bun.spawn(
             ["taskkill", "/PID", String(proc.pid), "/T", "/F"],
-            { stdout: "ignore", stderr: "ignore" },
+            { windowsHide: true, stdout: "ignore", stderr: "ignore" },
           );
           if ((await killed.exited) !== 0 && proc.exitCode === null)
             throw new Error("Failed to stop command process tree");

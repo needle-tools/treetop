@@ -1912,3 +1912,90 @@ Final local verification: 673 related unit tests pass, and all 46 real
 SessionView lifecycle tests pass in each of Chromium and WebKit (142 assertions
 per engine). These include both new failing-before-fix paths and the reader-pause
 controls. No native rebuild or production restart was performed.
+
+
+### 2026-10-24: bounded process ownership across desktop relaunch
+
+The desktop/source launcher now enables a separate loopback-authenticated process
+broker. Daemon replacement detaches its transport rather than terminating live
+PTYs, saved internal/shell commands, or the native Codex app-server. The native
+tray/menu bar exposes counts, reopen, and confirmed Stop all and quit. Closing
+the last desktop window leaves the tray visible; browser/native UI heartbeats
+renew the lease, while daemon sockets and tray status polls cannot renew it.
+
+Retention expires after 15 awake minutes without a UI. Sleep/long event-loop
+pauses restart the full grace period. Generations fence cleanup decisions and
+are checked before each resource; a returning UI acquires its lease before
+mounting/restoring sessions. Closed-column cleanup additionally checks aggregate
+viewers across daemon controllers. Windows kernel job ownership reaps descendants
+on broker crash; Unix uses a pipe-EOF process-group guard. Background saved
+commands use hidden broker-owned PTYs while retaining their saved run-mode label.
+External application/terminal launches remain explicitly untracked.
+
+Recovery snapshots offer an explicit compact checkbox list when processes were
+lost: agent sessions selected, project commands and plain terminals unselected.
+No command is restored before that decision. Broker logs rotate at 2 MiB and
+record identities, leases, pause detection, cleanup proposals/cancellation,
+confirmed exits, and failures without terminal output or environment secrets.
+Versioned executable copies permit replacing the app bundle while the broker
+runs, and retain at most three generated versions. Protocol/identity mismatch
+fails closed rather than starting a second owner.
+
+Regression checks cover real daemon replacement with the same broker/PTY/PID,
+forced broker crash cleanup, native Codex turn reattachment, saved command
+registration, explicit/idempotent recovery, pending-expiry cancellation, sleep,
+and multiple active viewers. A headless browser checks the restore selection,
+Skip all, and a 390px window. Native tray/menu-bar interaction still needs manual
+verification on each target OS; do not restart the production daemon to test it.
+
+Recovery remains gated until the canonical selection has been reconciled into
+shared preferences and explicitly acknowledged. Recovery matches defined owner
+or terminal IDs (never two missing IDs), and replaces shell attachment sources
+with the restored PTY ID. Temporary workspace copies exclude broker credentials,
+locks, recovery manifests, logs, and generated executables.
+
+Additional safety regressions confirm that Stop all waits for in-flight launches,
+a watcher ignoring Ctrl+C is reaped as a tree, and native Codex failure cannot
+terminate another broker terminal or leave its own turn marked active. One-shot
+speech cleanup belongs to the broker and checks its original process generation
+before stopping a thread, so a delayed timer cannot start a replacement process.
+Validation: CI-style unit run 4,437 passed (69 existing opt-in skips), all 49 Node
+browser cases passed, subsequent focused ownership/recovery tests passed, and
+Windows Go helper tests passed against a real ConPTY watcher. Existing repository
+type-check errors remain outside this change; new broker modules compile without
+new reported type errors. No application bundle or production restart was run.
+
+
+2026-10-24 Windows console follow-up: remove the unrequested application-toolbar
+process counter; recovery UI remains outside the toolbar. Bun 1.3.14's
+--windows-hide-console still produced a console-subsystem PE, so native builds
+also set our daemon and broker artifacts to IMAGE_SUBSYSTEM_WINDOWS_GUI before
+packaging. The Go helper uses -H=windowsgui; background child spawns request
+windowsHide. A compiled fixture checks the PE and GetConsoleWindow() == 0.
+The rebuilt real daemon/broker/helper all have GUI subsystem headers; an isolated
+built-broker run logged consoleAttached=false, and forced broker termination
+reaped its fixture session. Task Manager kill cleanup remains intentional.
+Windows installer rebuilt at artifacts/stable-win-x64-Treetop-Setup.zip; production
+app/daemon and existing sessions were not restarted or replaced.
+
+Follow-up after installing: the daemon was the new GUI executable, but the
+preserved live broker and helper were still the older console-subsystem binaries.
+Do not kill those just to pick up an update; they own active sessions. Broker
+connection logging now records reuse (PID/generation) versus a fresh executable.
+A separate compiled-GUI fixture reproduced raw Bun.spawn opening a visible
+PowerShell console; windowsHide made it pass, including stderr/nonzero exit
+handling. Audit background utility launches (Git fetch, application discovery,
+focus helpers, SSH, project commands, picker wrappers and native startup cleanup)
+to request windowsHide explicitly. Bun's shell already hid its children in an
+independent compiled-GUI probe. Merely seeing OpenConsole and a Codex-owned
+PowerShell in the process tree was not evidence of a visible window: direct
+checks of both normal and unsandboxed diagnostic PowerShell processes returned
+GetConsoleWindow()==0 and Visible=false. The editor-discovery regression also
+runs real detection from a GUI executable against console-subsystem locator
+fixtures and verifies every launched locator remains invisible. No live
+broker/helper/session was stopped during diagnosis.
+Validation after the utility-launch audit: 4,443 unit tests passed, 69 existing
+opt-in skips, zero failures; the strengthened compiled editor-discovery probe
+also passed independently. Rebuilt artifacts/stable-win-x64-Treetop-Setup.zip
+and verified the daemon, broker and helper PE GUI headers inside the packaged
+archive itself. The production app was not installed or restarted.

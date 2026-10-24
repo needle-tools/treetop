@@ -400,6 +400,7 @@ export async function createWorktree(
     ? ["git", "-C", repoPath, "worktree", "add", wtPath, branch]
     : ["git", "-C", repoPath, "worktree", "add", wtPath, "-b", branch, base];
   const proc = Bun.spawn(args, {
+    windowsHide: true,
     stdout: "pipe",
     stderr: "pipe",
     stdin: "ignore",
@@ -426,6 +427,7 @@ export async function removeWorktree(
   if (options.force) args.push("--force");
   args.push(worktreePath);
   const proc = Bun.spawn(args, {
+    windowsHide: true,
     stdout: "pipe",
     stderr: "pipe",
     stdin: "ignore",
@@ -540,6 +542,7 @@ export async function checkoutBranch(
   if (isRemote) args.push("-t");
   args.push(branch);
   const proc = Bun.spawn(args, {
+    windowsHide: true,
     stdout: "pipe",
     stderr: "pipe",
     stdin: "ignore",
@@ -991,7 +994,7 @@ export async function fetchAll(repoPath: string): Promise<boolean> {
   try {
     const proc = Bun.spawn(
       ["git", "-C", repoPath, "fetch", "--all", "--prune", "--quiet"],
-      { stdout: "pipe", stderr: "pipe", stdin: "ignore" },
+      { windowsHide: true, stdout: "pipe", stderr: "pipe", stdin: "ignore" },
     );
     const exit = await proc.exited;
     return exit === 0;

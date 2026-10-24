@@ -14,6 +14,7 @@
 import { test, expect, describe } from "bun:test";
 import {
   resolveTermId,
+  applyBackgroundRestoreDecision,
   isOpenInWt,
   isInspectorSessionSource,
   normalizeSessionForOpen,
@@ -1751,4 +1752,26 @@ describe("selectDormantTuiSources", () => {
     expect(shouldMountTerminalView(args)).toBe(true);
     expect(shouldMountTerminalView({ ...args, dormant: true })).toBe(false);
   });
+});
+
+
+test("background recovery matches real identities and replaces shell attachment IDs without spawning duplicates", () => {
+  const original={"/repo":[
+    {agent:"shell",source:"__attached__:shell:old-shell",attachTermId:"old-shell"},
+    {agent:"codex",source:"unrelated-new-session"},
+    {agent:"codex",source:"kept.jsonl",resumeSessionId:"keep"},
+    {agent:"codex",source:"skipped.jsonl",resumeSessionId:"skip"}
+  ]} as any;
+  const decision=applyBackgroundRestoreDecision(original,[
+    {id:"command:r:dev",cwd:"/repo/package",terminalId:"old-shell"},
+    {id:"terminal:agent",cwd:"/repo",ownerId:"keep"},
+    {id:"terminal:skip",cwd:"/repo",ownerId:"skip"}
+  ],[{id:"command:r:dev",ok:true,termId:"new-shell"},{id:"terminal:agent",ok:true,termId:"new-agent"}],{});
+  expect(decision.byWt["/repo"]).toEqual([
+    {agent:"shell",source:"__attached__:shell:new-shell",attachTermId:"new-shell"},
+    original["/repo"][1],
+    {...original["/repo"][2],attachTermId:"new-agent"}
+  ]);
+  expect(resolveTermId(decision.byWt["/repo"]![0]!,decision.newTermIds)).toBe("new-shell");
+  expect(decision.sourceChanges).toEqual({"__attached__:shell:old-shell":"__attached__:shell:new-shell"});
 });

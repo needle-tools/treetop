@@ -118,6 +118,7 @@
   export let claudeEffort: string | undefined = undefined;
   export let codexModel: string | undefined = undefined;
   export let codexEffort: string | undefined = undefined;
+  export let codexReviewer: string | undefined = undefined;
   export let codexServiceTier: string | undefined = undefined;
   export let lastActivityIso: string | undefined = undefined;
   /** Text of the user's most recent message in this session — fed
@@ -147,6 +148,7 @@
     setCodexModel: { model: string };
     setCodexEffort: { effort: string };
     setCodexServiceTier: { serviceTier: string };
+    setCodexReviewer: { reviewer: string };
     spawn: { id: string };
     awaitingChange: { awaiting: boolean };
     workingChange: { working: boolean };
@@ -282,6 +284,8 @@
             currentSummary: "auto",
             currentSandbox: "workspaceWrite",
             currentApproval: "on-request",
+            currentReviewer: codexReviewer,
+            onPickReviewer: reviewer => dispatch("setCodexReviewer", { reviewer }),
             onPickModel: (m) => dispatch("setCodexModel", { model: m }),
             onPickEffort: (e) => dispatch("setCodexEffort", { effort: e }),
             onPickServiceTier: (serviceTier) =>

@@ -91,6 +91,8 @@ const GLOBAL_ALLOWLIST: string[] = [
   "/api/messages",
   // --- Running-command registry + sticky notes + attachments (board). ---
   "/api/commands",
+  // Persistent owner status/recovery belongs to this local desktop workspace.
+  "/api/background",
   "/api/notes",
   // Reminder state belongs to the local board, even when it points at a remote repo.
   "/api/reminders",
