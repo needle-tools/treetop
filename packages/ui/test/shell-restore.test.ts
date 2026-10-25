@@ -4,13 +4,38 @@ import {
   mergeLiveShells,
   mergePersistedTerminals,
   restoreTermId,
+  restoreLiveShellSnapshot,
   type LiveShell,
   type OpenSessionRef,
   type PersistedTerminalEntry,
 } from "../src/shell-restore";
+import { openSessionHasDockActivity } from "../src/session-source-routing";
 
 const WT = "C:\\git\\supergit";
 const OTHER_WT = "C:\\git\\other";
+
+test("restored shells appear active before a terminal view mounts", () => {
+  const result = restoreLiveShellSnapshot(
+    { [WT]: [{ agent: "shell", source: "__restore__:t1" }] },
+    [{ termId: "t1", wt: WT, alive: true }],
+    new Set(), new Set(["agent-terminal"]),
+  );
+  expect(result.sessions[WT]).toEqual([{ agent: "shell", source: "__attached__:shell:t1" }]);
+  expect(result.liveTerminalIds.has("agent-terminal")).toBe(true);
+  expect(openSessionHasDockActivity(result.sessions[WT]![0]! as any, {
+    liveTerminalIds: result.liveTerminalIds, newTermIds: {},
+  })).toBe(true);
+});
+
+test("shell snapshot removes exited liveness without reviving dismissed columns", () => {
+  const result = restoreLiveShellSnapshot({}, [
+    { termId: "dead", wt: WT, alive: false },
+    { termId: "hidden", wt: WT, alive: true },
+  ], new Set(["__attached__:shell:hidden"]), new Set(["dead", "agent-terminal"]));
+  expect(result.liveTerminalIds.has("dead")).toBe(false);
+  expect(result.liveTerminalIds.has("agent-terminal")).toBe(true);
+  expect(result.sessions[WT] ?? []).toEqual([]);
+});
 
 describe("attachedShellTermId / restoreTermId", () => {
   test("attachedShellTermId extracts termId from __attached__:shell:<id>", () => {

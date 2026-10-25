@@ -2036,3 +2036,17 @@ Shell_NotifyIconGetRect, and delivered a native tray callback to reopen a window
 in the same process. Explicit quit removed the tray icon and exited. All windows
 and profiles belonged to the fixture; production sessions were not touched.
 No Treetop/installer build was run for this correction: the user now builds.
+
+### 2026-10-25: restored terminal sidebar state and quarter-turn squares
+
+Shell restoration previously merged columns without publishing the same live IDs
+used by the dock. An early terminal snapshot or remote terminal could therefore
+leave a surviving server hidden until its view mounted. Restore now publishes
+columns and live IDs together, preserving unrelated agent IDs and clearing known
+exited shells. Live shells also remove stale persisted Resume cards for the same
+terminal. Regression coverage exercises restoration followed by dock eligibility
+without mounting a terminal view; 176 focused tests pass.
+
+Live shell squares now turn 90 degrees every 1.5 seconds, with pauses between
+turns, even when the server is quiet. Exited terminals remain static; reduced
+motion disables the animation. No app build or production restart performed.

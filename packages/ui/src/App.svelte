@@ -218,7 +218,7 @@
     syncAttention,
     dueForChime,
   } from "./attention-chime";
-  import { mergeLiveShells, mergePersistedTerminals } from "./shell-restore";
+  import { restoreLiveShellSnapshot, mergePersistedTerminals } from "./shell-restore";
   import {
     OpenSessionsStore,
     SessionSurfaceStore,
@@ -2709,11 +2709,14 @@
         // columns aren't restored; local + other daemons still work.
       }
     }
-    openSessionsByWt = mergeLiveShells(
+    const restored = restoreLiveShellSnapshot(
       openSessionsByWt,
       all,
       dismissedShells,
-    ) as typeof openSessionsByWt;
+      liveTerminalIds,
+    );
+    liveTerminalIds = restored.liveTerminalIds;
+    openSessionsByWt = restored.sessions as typeof openSessionsByWt;
   }
 
   /** Persisted terminal info for __restore__: columns. */
@@ -7570,8 +7573,7 @@
             // Shells emit output continuously (log tails, dev-server
             // streams, REPLs) — none of that is "thinking", so we
             // never surface a working/awaiting state for them in the
-            // dock. The shell dot stays static; its live-PTY state
-            // is conveyed by its dedicated terminal-style square
+            // dock. Its live-PTY state is conveyed by the rotating square
             // (vs. the round agent dot).
             working:
               s.agent === "shell" ? false : !!transientWorking[s.source],

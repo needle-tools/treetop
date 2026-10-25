@@ -1797,13 +1797,16 @@
   /* Shell sessions render as a small terminal-styled square instead
      of the agent's round dot: dark center + repo-coloured border,
      2px rounded corners. Reads as "this is a literal terminal, not
-     a conversational agent" at a glance. Active terminals keep the
-     square still and animate a square path around it. */
+     a conversational agent" at a glance. Live terminals turn a quarter
+     turn every 1.5 seconds, including when a server is quiet. */
   .dock-dot.agent-shell .dock-dot-inner {
     background: var(--surface-0, #1a1a1a);
     border: 2px solid var(--dot-fill);
     border-radius: 2px;
     box-sizing: border-box;
+  }
+  .dock-dot.agent-shell:not(.dot-exited) .dock-dot-inner {
+    animation: dock-shell-turn 6s ease-in-out infinite;
   }
   /* Focused row: small triangle pointing right at the dot, painted in
      the button's left padding area so it doesn't push the dot
@@ -2182,23 +2185,23 @@
     stroke-linecap: round;
     stroke-dasharray: 26 74;
   }
+  .dock-dot.agent-shell .dock-dot-spinner,
   .dock-dot.dot-terminal-active.agent-shell .dock-dot-spinner {
-    /* Shell terminals should not rotate the terminal square or the SVG
-       viewport. The motion is the dash travelling around the square path. */
+    /* The square itself carries activity; no travelling outline. */
+    display: none;
     animation: none;
-  }
-  .dock-dot.dot-terminal-active.agent-shell .dock-dot-spinner-rect {
-    animation: dock-shell-dash 0.9s linear infinite;
   }
   @keyframes dock-spin {
     to {
       transform: rotate(360deg);
     }
   }
-  @keyframes dock-shell-dash {
-    to {
-      stroke-dashoffset: -100;
-    }
+  @keyframes dock-shell-turn {
+    0%, 19% { transform: rotate(0deg); }
+    25%, 44% { transform: rotate(90deg); }
+    50%, 69% { transform: rotate(180deg); }
+    75%, 94% { transform: rotate(270deg); }
+    100% { transform: rotate(360deg); }
   }
 
   /* Idle (PTY alive, nothing streaming, no prompt): no outline at
@@ -2270,6 +2273,7 @@
     }
   }
   @media (prefers-reduced-motion: reduce) {
+    .dock-dot.agent-shell:not(.dot-exited) .dock-dot-inner,
     .dock-dot-spinner,
     .dock-dot-spinner-rect,
     .dock-dot.dot-awaiting .dock-dot-inner,

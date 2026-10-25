@@ -84,6 +84,8 @@ export function mergeLiveShells(
   for (const wt of Object.keys(next)) {
     const before = next[wt] ?? [];
     const after = before.filter((s) => {
+      const restoredId = restoreTermId(s.source);
+      if (restoredId !== null && liveTermIds.has(restoredId)) return false;
       const termId = attachedShellTermId(s.source);
       if (termId === null) return true; // not an attached-shell row
       return liveTermIds.has(termId);
@@ -99,6 +101,23 @@ export function mergeLiveShells(
     next[sh.wt] = [{ agent: "shell", source }, ...existing];
   }
   return next;
+}
+
+/** Publish the same authoritative shell snapshot to columns and the dock.
+ * Offscreen terminals have not mounted yet and cannot report liveness themselves.
+ * Only update IDs covered by this snapshot; retain other agents/daemons. */
+export function restoreLiveShellSnapshot(
+  current: Record<string, OpenSessionRef[]>,
+  shells: readonly LiveShell[],
+  dismissed: ReadonlySet<string>,
+  knownLiveIds: ReadonlySet<string>,
+): { sessions: Record<string, OpenSessionRef[]>; liveTerminalIds: ReadonlySet<string> } {
+  const liveTerminalIds = new Set(knownLiveIds);
+  for (const shell of shells) {
+    if (shell.alive) liveTerminalIds.add(shell.termId);
+    else liveTerminalIds.delete(shell.termId);
+  }
+  return { sessions: mergeLiveShells(current, shells, dismissed), liveTerminalIds };
 }
 
 /**
