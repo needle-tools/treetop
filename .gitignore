@@ -10,4 +10,6 @@ packages/ui/dist-replay-lab/
 .claude/*.lock
 build/
 artifacts/
+/output/
+/.cache/
 packages/daemon/src/terminals/helper-go/pty-helper

@@ -192,6 +192,8 @@ export async function connectPersistentBroker(
     let child: ReturnType<typeof Bun.spawn>;
     try {
       child = Bun.spawn(cmd, {
+        // Persistent owners must not lock the installed app directory on Windows.
+        cwd: workspace,
         detached: true,
         windowsHide: true,
         stdin: "ignore",
@@ -208,7 +210,7 @@ export async function connectPersistentBroker(
       await startupLog.close();
     }
     child.unref();
-    console.info(`[background] launched broker pid=${child.pid} executable=${cmd[0]} windowsHide=true`);
+    console.info(`[background] launched broker pid=${child.pid} executable=${cmd[0]} cwd=${workspace} windowsHide=true`);
     for (let attempt = 0; attempt < 100; attempt++) {
       if (child.exitCode !== null)
         throw new Error(

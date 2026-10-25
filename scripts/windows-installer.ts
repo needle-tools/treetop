@@ -1,7 +1,7 @@
 import { appendFile, mkdir, open, readFile, rename, rm, lstat, readdir } from "node:fs/promises";
 import { join, resolve, relative, isAbsolute } from "node:path";
 import { dlopen, ptr } from "bun:ffi";
-import { replaceInstallation } from "./windows-installer-core";
+import { replaceInstallation, InstallationRecoveryError } from "./windows-installer-core";
 
 async function command(args: string[], env = process.env): Promise<string> {
   const child = Bun.spawn(args, {env,windowsHide:true,stdin:"ignore",stdout:"pipe",stderr:"pipe"});
@@ -108,7 +108,7 @@ export async function runInstaller(payload:string,expectedHash:string) {
     await log(`Validated staged build ${buildTime}`);
     handoffStarted=true;
     await handoffInstallation(parent,app,id,log);
-    await replaceInstallation({app,staged,backup,
+    await replaceInstallation({app,staged,backup,log,
       assertStopped:async()=>{if((await installedProcesses(app)).length)throw Error("Treetop relaunched during installation; update cancelled");},
       verify:async()=>{if(await validateBundle(app)!==buildTime)throw Error("Installed build verification failed");},
     });
@@ -132,14 +132,14 @@ export async function runInstaller(payload:string,expectedHash:string) {
   } catch(error) {
     if(lock) await rm(join(parent,"update-request.json"),{force:true});
     await log(`ERROR installed=${installed}: ${error}`);
-    if(handoffStarted) {
+    if(handoffStarted && !(error instanceof InstallationRecoveryError)) {
       try {
         if(!(await installedProcesses(app)).some(p=>["bun","launcher"].includes(p.name.toLowerCase()))) {
           await validateBundle(app); launch(); await log("Reopened the available installation after update failure");
         }
       } catch(recoveryError) {await log(`Could not reopen installation: ${recoveryError}`);}
     }
-    if(lock) await removeOwned(parent,stage).catch(cleanupError=>log(`Staging cleanup deferred: ${cleanupError}`));
+    if(lock && !(error instanceof InstallationRecoveryError)) await removeOwned(parent,stage).catch(cleanupError=>log(`Staging cleanup deferred: ${cleanupError}`));
     dialog(`${installed?"The new build was installed, but a finishing step failed.":"Treetop update did not complete."}\n\n${error}\n\nLog: ${logPath}`,true);
     process.exitCode=1;
   } finally {

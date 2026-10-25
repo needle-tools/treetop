@@ -67,3 +67,27 @@ test("installation leaves locked app intact, replaces atomically, and rolls back
     expect(await readFile(join(backup,"version"),"utf8")).toBe("old");
   } finally { await rm(root,{recursive:true,force:true}); }
 });
+
+if (process.platform === "win32") {
+  for (const failVerification of [false, true]) {
+    test(`installation preserves a helper holding app/bin as cwd; rollback=${failVerification}`, async () => {
+      const root = await mkdtemp(join(tmpdir(), "treetop-update-cwd-"));
+      const app=join(root,"app"), staged=join(root,"staged"), backup=join(root,"previous");
+      await mkdir(join(app,"bin"),{recursive:true});
+      await mkdir(join(staged,"bin"),{recursive:true});
+      await writeFile(join(app,"bin","version"),"old");
+      await writeFile(join(staged,"bin","version"),"new");
+      const holder=Bun.spawn([process.execPath,"-e","console.log('ready');setInterval(()=>{},1000)"],{cwd:join(app,"bin"),stdout:"pipe",stderr:"pipe",windowsHide:true});
+      try {
+        const reader=holder.stdout.getReader();
+        await reader.read(); reader.releaseLock();
+        const transaction=replaceInstallation({app,staged,backup,assertStopped:async()=>{},verify:async()=>{if(failVerification)throw Error("invalid build");}});
+        if(failVerification)await expect(transaction).rejects.toThrow("invalid build");
+        else await transaction;
+        expect(await readFile(join(app,"bin","version"),"utf8")).toBe(failVerification?"old":"new");
+        if(!failVerification)expect(await readFile(join(backup,"bin","version"),"utf8")).toBe("old");
+        expect(holder.exitCode).toBeNull();
+      } finally { holder.kill();await holder.exited;await rm(root,{recursive:true,force:true}); }
+    });
+  }
+}
