@@ -972,7 +972,7 @@ const orphanCleaner = new OrphanCleaner({
   log: (msg) => console.log(`supergit daemon: ${msg}`),
 });
 
-import { ProjectCommands, createCommandLauncher } from "./project-commands";
+import { ProjectCommands, createCommandLauncher, commandShellHeaders } from "./project-commands";
 import { BrokerBackend } from "./terminals/broker-backend";
 const backgroundBackend = terminalBackend instanceof BrokerBackend ? terminalBackend : undefined;
 
@@ -5432,6 +5432,14 @@ const server = Bun.serve<TermWsData, never>({
       // on mount to repopulate Terminal columns after a reload.
       if (url.pathname === "/api/shells" && req.method === "GET") {
         const headers = await shells.listHeaders();
+        const recordedIds = new Set(headers.map(header => header.termId));
+        const liveIds = new Set(terminalBackend.list().filter(record => !record.exitedAt).map(record => record.id));
+        for (const header of commandShellHeaders(projectCommands.list(), liveIds)) {
+          if (!recordedIds.has(header.termId)) {
+            headers.push(header);
+            recordedIds.add(header.termId);
+          }
+        }
         // Pull manual titles keyed by `shell:<termId>` so past-shell columns
         // can show / edit a user-set name (same workspace storage the AI
         // session titles use, just a different key prefix).

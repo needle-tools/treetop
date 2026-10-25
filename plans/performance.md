@@ -2164,3 +2164,14 @@ moved the window; the live resize automation was inconclusive and was stopped
 when the user questioned the movement. No further window manipulation was done.
 The daemon and broker retained PIDs 50816 and 37192 throughout the shell updates;
 the broker remained connected and subsequently reported nine live terminals.
+
+### 2026-10-25: missing saved-command sidebar squares after reconnect
+
+Verified dev:pwa was present in the running command registry but absent from
+/api/shells. Internal command registration persists terminal metadata without a
+shell transcript header; the sidebar restore endpoint previously enumerated only
+transcript headers. Merge live internal command headers into /api/shells using
+broker terminal liveness, retaining saved project/worktree path and actual cwd.
+Deduplicate by terminal ID and exclude external or exited commands. Existing
+sidebar restore logic then sees these terminals before their columns mount.
+28 command lifecycle and shell restoration tests pass. No build or restart.

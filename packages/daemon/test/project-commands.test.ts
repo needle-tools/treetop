@@ -304,3 +304,13 @@ test.each(["internal", "shell"] as const)(
   },
   20_000,
 );
+import { commandShellHeaders } from "../src/project-commands";
+
+test("live internal commands restore shell markers without a recorded shell transcript", () => {
+  const base = { repoId: "repo", linkId: "dev", repoPath: "C:/project", cwd: "C:/project/app", cmd: "npm run dev", runMode: "internal" as const, startedAt: "2026-10-25T12:00:00Z", status: "running" as const, termId: "live" };
+  expect(commandShellHeaders([base], new Set(["live"]))).toEqual([{
+    kind: "header", termId: "live", wt: "C:/project", spawnCwd: "C:/project/app", createdAt: base.startedAt,
+  }]);
+  expect(commandShellHeaders([base], new Set())).toEqual([]);
+  expect(commandShellHeaders([{...base, runMode: "external"}], new Set(["live"]))).toEqual([]);
+});

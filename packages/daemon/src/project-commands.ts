@@ -28,6 +28,15 @@ interface RunningCommand extends CommandDefinition {
 }
 type CommandAction = "start" | "stop" | "restart";
 
+/** Broker-owned commands can outlive the daemon without a shell transcript. */
+export function commandShellHeaders(commands: readonly RunningCommand[], liveIds: ReadonlySet<string>) {
+  return commands.flatMap(command =>
+    command.runMode === "internal" && command.termId && liveIds.has(command.termId)
+      ? [{ kind: "header" as const, termId: command.termId, wt: command.repoPath,
+          spawnCwd: command.cwd, createdAt: command.startedAt }]
+      : []);
+}
+
 async function waitForExit(
   exited: Promise<unknown>,
   timeoutMs: number,
