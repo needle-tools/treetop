@@ -31,6 +31,7 @@ import { planLogRotation } from "../../packages/daemon/src/log-rotation";
 import { dlopen, FFIType, ptr } from "bun:ffi";
 import { restoreWindowState, captureWindowState, restoreWindowModeOnReady, type WindowState } from "./window-state";
 import { createWindowsWebviewFocus } from "./window-focus";
+import { createWindowsWindowIcons, trayImageSize } from "./window-icons";
 import { nativeWindowFocusScript } from "../../packages/ui/src/window-focus-events";
 
 // ── Startup logger + stall watchdog ──────────────────────────────────
@@ -553,9 +554,9 @@ const trayAssetPath = [
   resolve(dirname(process.execPath), "..", "Resources", "app", trayAsset),
   resolve(dirname(process.execPath), "..", "Resources", "app.asar.unpacked", "app", trayAsset),
   resolve(dirname(process.execPath), "..", "Resources", "app.asar.unpacked", trayAsset),
-  resolve(process.cwd(), isWin ? "icon.ico" : "icon.iconset/icon_32x32.png"),
+  resolve(process.cwd(), isWin ? "icon.ico" : "icon.iconset/icon_32x32@2x.png"),
 ].find(path => existsSync(path));
-const tray = new Tray({ title: PRODUCT_NAME, image: trayAssetPath ?? "", template: false });
+const tray = new Tray({ title: PRODUCT_NAME, image: trayAssetPath ?? "", template: false, ...trayImageSize(process.platform) });
 llog(`background runtime exitOnLastWindowClosed=${BuildConfig.getSync().runtime?.exitOnLastWindowClosed ?? true}`);
 llog(`background tray visible=${tray.visible} image=${trayAssetPath ?? "missing"}`);
 if (!tray.visible) llog("WARNING: tray unavailable; closing the window will stop managed resources");
@@ -647,6 +648,12 @@ async function openTreetopWindow() {
   activeWindow = win; openingWindow = false;
   void updateTray();
   let nativeFocus: ReturnType<typeof createWindowsWebviewFocus> | undefined;
+  let nativeIcons: ReturnType<typeof createWindowsWindowIcons> | undefined;
+  function refreshWindowIcons() {
+    if (!nativeIcons || !win.ptr) return;
+    try { nativeIcons.refresh(BigInt(win.ptr)); }
+    catch (error) { llog(`Failed to refresh window icons: ${error}`); }
+  }
   if (isWin) {
     try { nativeFocus = createWindowsWebviewFocus(); }
     catch (error) { llog(`Failed to initialize WebView keyboard focus: ${error}`); }
@@ -664,6 +671,7 @@ async function openTreetopWindow() {
     if (!restored && attempt < 4) nativeFocusRetry = setTimeout(() => restoreWindowInput(attempt + 1), 75);
   }
   win.on("focus", () => {
+    refreshWindowIcons();
     if (nativeFocusRetry) clearTimeout(nativeFocusRetry);
     restoreWindowInput();
   });
@@ -690,25 +698,19 @@ async function openTreetopWindow() {
       // for handle-shaped values to avoid CFG fast-fails from ABI mismatch.
       const user32 = dlopen("user32.dll", {
         FindWindowW:  { args: [FFIType.u64, FFIType.u64], returns: FFIType.u64 },
-        SendMessageW: { args: [FFIType.u64, FFIType.u32, FFIType.u64, FFIType.u64], returns: FFIType.u64 },
-        LoadImageW:   { args: [FFIType.u64, FFIType.u64, FFIType.u32, FFIType.i32, FFIType.i32, FFIType.u32], returns: FFIType.u64 },
       });
       // Must match the BrowserWindow title above (PRODUCT_NAME). If this
       // string drifts from the real window title, FindWindowW returns 0 and
       // the dark caption / icon below are silently skipped — the title bar
       // reverts to default light Windows chrome.
       const title16 = new Uint8Array(Buffer.from(`${PRODUCT_NAME}\0`, "utf-16le"));
-      const hwnd = user32.symbols.FindWindowW(0n, BigInt(ptr(title16)));
+      const hwnd = win.ptr ? BigInt(win.ptr) : user32.symbols.FindWindowW(0n, BigInt(ptr(title16)));
       if (hwnd && hwnd !== 0n) {
         // ── Icon ──
         const icoPath = resolve(dirname(process.execPath), "..", "Resources", "app.ico");
         if (existsSync(icoPath)) {
-          const ico16 = new Uint8Array(Buffer.from(icoPath + "\0", "utf-16le"));
-          const hIcon = user32.symbols.LoadImageW(0n, BigInt(ptr(ico16)), 1, 0, 0, 0x0010 | 0x0040);
-          if (hIcon && hIcon !== 0n) {
-            user32.symbols.SendMessageW(hwnd, 0x0080, 0n, hIcon);
-            user32.symbols.SendMessageW(hwnd, 0x0080, 1n, hIcon);
-          }
+          nativeIcons = createWindowsWindowIcons(icoPath);
+          nativeIcons.refresh(BigInt(hwnd));
         }
 
         // ── Dark title bar matching --surface-0: #23261d ──
@@ -748,6 +750,8 @@ async function openTreetopWindow() {
   }
   win.on("resize", captureState);
   win.on("move", captureState);
+  win.on("resize", refreshWindowIcons);
+  win.on("move", refreshWindowIcons);
 
   // Window lifecycle events. "close" fires when the user clicks X / Alt+F4 /
   // menu Quit — useful to confirm in the log whether a hang is "process
@@ -759,6 +763,8 @@ async function openTreetopWindow() {
       nativeFocusRetry = undefined;
       nativeFocus?.close();
       nativeFocus = undefined;
+      nativeIcons?.close();
+      nativeIcons = undefined;
       captureState();
       if (saveTimer) { clearTimeout(saveTimer); saveTimer = null; }
       writeWindowState(windowState);

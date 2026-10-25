@@ -533,6 +533,33 @@ pass; the changed Svelte components compile. The repository-wide Svelte check
 still reports 49 errors in existing type definitions/usages outside these changes.
 The production app has not been rebuilt or restarted.
 
+### Native icon DPI (2026-10-25)
+
+The ICO already contained multiple sizes, but the window loaded one default-size
+HICON and assigned it to both ICON_SMALL and ICON_BIG. Electrobun's Tray defaults
+also requested a 16x16 source bitmap on Windows. Scaling those handles produced
+blur even after replacing the SVG artwork.
+
+Windows now loads the small window icon using GetDpiForWindow and
+GetSystemMetricsForDpi, and supplies a separate 256px large icon for Explorer to
+downsample. Move, resize, and focus refresh the small icon when DPI changes;
+owned handles are released on replacement and window close. The Windows tray
+requests a 256px source (the native wrapper uses width/height as LoadImageW pixel
+dimensions, not notification-area layout dimensions). ICO generation includes
+20/28/40/56/80/96px frames for fractional scaling and synchronizes the browser ICO.
+
+macOS retains a 16-point tray layout but now bundles a 64px source PNG. Its app
+iconset already includes all Retina representations through 1024px. No macOS
+rendering defect is confirmed; these assets were checked from Windows.
+
+Validation: 10 icon/focus tests pass, including real Win32 GetIconInfo raster-size
+checks and a hidden test-owned window verifying distinct handles, reuse, and
+cleanup. Packaged macOS Retina source dimensions are checked too. No production
+process was touched and no application build was run.
+
+References: [Windows icon sizes](https://learn.microsoft.com/en-us/windows/win32/menurc/about-icons),
+[LoadImageW](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-loadimagew).
+
 ### Earlier packaging questions
 
 - Does Electrobun's process model let us keep the daemon as a

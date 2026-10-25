@@ -25,7 +25,7 @@ const ICONSET_DIR = join(ROOT, "icon.iconset");
 const ICONSET_SIZES = [16, 32, 64, 128, 256, 512];
 
 // --- Windows ICO sizes ------------------------------------------------
-const ICO_SIZES = [16, 24, 32, 48, 64, 128, 256];
+const ICO_SIZES = [16, 20, 24, 28, 32, 40, 48, 56, 64, 80, 96, 128, 256];
 
 const MAC_ICON_BG = "#2d2d28";
 
@@ -36,7 +36,7 @@ async function renderPng(svgBuf, size, { background } = {}) {
   return pipeline.png().toBuffer();
 }
 
-// ---- ICO encoder (BMP-in-ICO for ≤48px, embedded PNG for larger) -----
+// ---- ICO encoder (32-bit PNG frames at every size) ------------------
 
 function buildIco(entries) {
   // ICO header: 3 × uint16 (reserved=0, type=1, count)
@@ -107,6 +107,7 @@ async function main() {
   );
   const ico = buildIco(icoEntries);
   await writeFile(ICO_PATH, ico);
+  await writeFile(join(ROOT, "packages/ui/public/favicon.ico"), ico);
   console.log(`  icon.ico       ${ICO_SIZES.join(", ")}px`);
 
   console.log("Done.");
