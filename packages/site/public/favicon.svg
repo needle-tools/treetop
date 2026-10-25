@@ -1,11 +1,37 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">
-  <rect width="24" height="24" rx="6" fill="#3a5c33" />
-  <path
-    d="M12 19V10c0-2.6 1.8-5 6.5-5.8C17.6 8.2 15 11 12 11m0 .5C11.6 9.4 10 7.8 7 7.2 7.4 9.7 9 11.3 12 11.5"
-    fill="none"
-    stroke="#c7e08a"
-    stroke-width="1.4"
-    stroke-linecap="round"
-    stroke-linejoin="round"
-  />
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256" fill="none">
+  <title>Treetop — three folded leaves</title>
+  <defs>
+    <linearGradient id="tile" x1="32" y1="8" x2="224" y2="256" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#292C29"/><stop offset="1" stop-color="#1D201E"/>
+    </linearGradient>
+    <linearGradient id="crown" x1="108" y1="40" x2="145" y2="139" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#B8DB42"/><stop offset=".55" stop-color="#86C64B"/><stop offset="1" stop-color="#25A674"/>
+    </linearGradient>
+    <linearGradient id="left" x1="35" y1="98" x2="119" y2="181" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#C9E448"/><stop offset=".5" stop-color="#91CC42"/><stop offset="1" stop-color="#36AE72"/>
+    </linearGradient>
+    <linearGradient id="leftFold" x1="60" y1="117" x2="115" y2="187" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#79BE43"/><stop offset="1" stop-color="#07816D"/>
+    </linearGradient>
+    <linearGradient id="right" x1="220" y1="98" x2="139" y2="182" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#C5DF43"/><stop offset=".55" stop-color="#86C443"/><stop offset="1" stop-color="#21A475"/>
+    </linearGradient>
+    <linearGradient id="rightFold" x1="207" y1="117" x2="147" y2="184" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#85C64B"/><stop offset="1" stop-color="#15996D"/>
+    </linearGradient>
+    <linearGradient id="stem" x1="117" y1="111" x2="136" y2="220" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#108B71"/><stop offset="1" stop-color="#65D69B"/>
+    </linearGradient>
+  </defs>
+  <rect width="256" height="256" rx="40" fill="url(#tile)"/>
+  <!-- A compact crown, with the fold continuing into the central stem. -->
+  <path d="M128 34C116 50 96 72 96 93C96 114 114 125 128 142C141 124 160 113 160 93C160 72 140 50 128 34Z" fill="url(#crown)"/>
+  <path d="M128 106C142 120 143 129 134 146L134 220H123L125 145Z" fill="url(#stem)"/>
+  <!-- Broad outer leaves; the shared curves create folded faces without strokes. -->
+  <path d="M28 91C79 96 112 121 119 179C105 169 93 167 80 161C50 149 35 121 28 91Z" fill="url(#left)"/>
+  <path d="M28 91C71 116 101 142 119 179C105 169 93 167 80 161C50 149 35 121 28 91Z" fill="url(#leftFold)"/>
+  <path d="M228 91C177 96 144 121 137 179C151 169 163 167 176 161C206 149 221 121 228 91Z" fill="url(#right)"/>
+  <path d="M228 91C185 116 155 142 137 179C151 169 163 167 176 161C206 149 221 121 228 91Z" fill="url(#rightFold)"/>
+  <path d="M81 139C106 156 122 185 123 220H115C116 190 102 163 81 139Z" fill="#55CC8C"/>
+  <path d="M175 139C150 156 134 185 133 220H141C140 190 154 163 175 139Z" fill="#92D448"/>
 </svg>
