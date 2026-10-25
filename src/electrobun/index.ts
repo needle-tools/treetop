@@ -13,6 +13,7 @@
  */
 
 import { BrowserWindow, ApplicationMenu, Tray, Utils, BuildConfig } from "electrobun/bun";
+import { updateInstallParent, watchForUpdate } from "./update-handoff";
 import { PRODUCT_NAME } from "../../product";
 import { resolve, dirname, join } from "node:path";
 import {
@@ -28,8 +29,7 @@ import {
 import { homedir } from "node:os";
 import { spawn as bunSpawn } from "bun";
 import { planLogRotation } from "../../packages/daemon/src/log-rotation";
-import { dlopen, FFIType, ptr } from "bun:ffi";
-import { restoreWindowState, captureWindowState, restoreWindowModeOnReady, type WindowState } from "./window-state";
+import { nativeTitleBarStyle, restoreWindowState, captureWindowState, restoreWindowModeOnReady, type WindowState } from "./window-state";
 import { createWindowsWebviewFocus } from "./window-focus";
 import { createWindowsWindowIcons, trayImageSize } from "./window-icons";
 import { nativeWindowFocusScript } from "../../packages/ui/src/window-focus-events";
@@ -600,11 +600,16 @@ async function updateTray() {
     tray.setTitle(isWin ? `Treetop: ${title}` : PRODUCT_NAME);
     const remaining = Math.max(0, Math.ceil((status.remainingMs ?? 0) / 60_000));
     tray.setMenu([
-      { label: trayError || `Treetop: ${title}`, enabled: false },
-      ...(!activeWindow && status.connected ? [{ label: `Stops after ${remaining} min without an open Treetop window`, enabled: false }] : []),
-      { label: "Open Treetop", action: "open" },
+      { type: "normal" as const, label: trayError || `Treetop: ${title}`, enabled: false },
+      ...(!activeWindow && status.connected ? [{ type: "normal" as const, label: `Stops after ${remaining} min without an open Treetop window`, enabled: false }] : []),
+      { type: "normal" as const, label: "Open Treetop", action: "open" },
+      ...(isWin && activeWindow ? [
+        { type: "normal" as const, label: "Minimize window", action: "minimize-window" },
+        { type: "normal" as const, label: activeWindow.isMaximized() ? "Restore window" : "Maximize window", action: "maximize-window" },
+        { type: "normal" as const, label: "Close window (keep sessions running)", action: "close-window" },
+      ] : []),
       { type: "separator" },
-      { label: "Stop all and quit", action: "stop-and-quit" },
+      { type: "normal" as const, label: "Stop all and quit", action: "stop-and-quit" },
     ]);
     // A vanished broker must not leave an invisible desktop launcher forever.
     // Require a previous successful connection and its expired lease.
@@ -616,6 +621,13 @@ async function updateTray() {
 }
 tray.on("tray-clicked", (event: any) => {
   if (event.data?.action === "stop-and-quit") void stopAndQuit();
+  else if (event.data?.action === "minimize-window") activeWindow?.minimize();
+  else if (event.data?.action === "maximize-window" && activeWindow) {
+    if (activeWindow.isMaximized()) activeWindow.unmaximize();
+    else activeWindow.maximize();
+    void updateTray();
+  }
+  else if (event.data?.action === "close-window") activeWindow?.close();
   else if (event.data?.action === "open" || (isWin && !event.data?.action)) void openTreetopWindow();
 });
 ApplicationMenu.on("application-menu-clicked", (event: any) => {
@@ -641,6 +653,7 @@ async function openTreetopWindow() {
     // Pre-load title; the page's <title>/document.title (same source) takes
     // over once the UI loads. Name from the shared product module.
     title: PRODUCT_NAME,
+    titleBarStyle: nativeTitleBarStyle(process.platform),
     url: DAEMON_URL,
     frame: bounds,
   });
@@ -671,7 +684,7 @@ async function openTreetopWindow() {
     if (!restored && attempt < 4) nativeFocusRetry = setTimeout(() => restoreWindowInput(attempt + 1), 75);
   }
   win.on("focus", () => {
-    refreshWindowIcons();
+    refreshWindowAppearance();
     if (nativeFocusRetry) clearTimeout(nativeFocusRetry);
     restoreWindowInput();
   });
@@ -687,57 +700,38 @@ async function openTreetopWindow() {
     setFullScreen: (enabled) => win.setFullScreen(enabled),
   });
 
-  // Windows: set taskbar icon + dark title bar via Win32 API.
-  // Electrobun doesn't call setWindowIcon or DwmSetWindowAttribute,
-  // so we do it ourselves via bun:ffi after the window is created.
-  if (isWin) {
-    beginPhase("win32 FFI (icon + dark caption)");
+  // Icons use this exact SDK window, independent of its page title.
+  function refreshWindowAppearance() {
+    if (!isWin) return;
     try {
-      // Win32 ABI on x64: HWND/HINSTANCE/HICON are 64-bit handles, WPARAM/LPARAM
-      // are uintptr_t. Bun's `ptr` maps to u64 on x64; `u64` is the safe choice
-      // for handle-shaped values to avoid CFG fast-fails from ABI mismatch.
-      const user32 = dlopen("user32.dll", {
-        FindWindowW:  { args: [FFIType.u64, FFIType.u64], returns: FFIType.u64 },
-      });
-      // Must match the BrowserWindow title above (PRODUCT_NAME). If this
-      // string drifts from the real window title, FindWindowW returns 0 and
-      // the dark caption / icon below are silently skipped — the title bar
-      // reverts to default light Windows chrome.
-      const title16 = new Uint8Array(Buffer.from(`${PRODUCT_NAME}\0`, "utf-16le"));
-      const hwnd = win.ptr ? BigInt(win.ptr) : user32.symbols.FindWindowW(0n, BigInt(ptr(title16)));
-      if (hwnd && hwnd !== 0n) {
-        // ── Icon ──
-        const icoPath = resolve(dirname(process.execPath), "..", "Resources", "app.ico");
-        if (existsSync(icoPath)) {
-          nativeIcons = createWindowsWindowIcons(icoPath);
-          nativeIcons.refresh(BigInt(hwnd));
-        }
+      const handle = win.ptr;
+      if (!handle) throw new Error("Native window handle is not ready");
 
-        // ── Dark title bar matching --surface-0: #23261d ──
-        // Uses DwmSetWindowAttribute with DWMWA_USE_IMMERSIVE_DARK_MODE (20),
-        // DWMWA_CAPTION_COLOR (35), and DWMWA_TEXT_COLOR (36).
-        // COLORREF is 0x00BBGGRR (little-endian BGR).
-        try {
-          const dwmapi = dlopen("dwmapi.dll", {
-            DwmSetWindowAttribute: {
-              args: [FFIType.u64, FFIType.u32, FFIType.u64, FFIType.u32],
-              returns: FFIType.i32,
-            },
-          });
-          const setAttr = (attr: number, value: number) => {
-            const buf = new Uint32Array([value]);
-            dwmapi.symbols.DwmSetWindowAttribute(hwnd, attr, BigInt(ptr(buf)), 4);
-          };
-          setAttr(20, 1);          // DWMWA_USE_IMMERSIVE_DARK_MODE = true
-          setAttr(35, 0x001d2623); // DWMWA_CAPTION_COLOR = #23261d as BGR
-          setAttr(36, 0x00e8e8e8); // DWMWA_TEXT_COLOR = #e8e8e8 (--text-1)
-        } catch {}
-      }
-    } catch (e) {
-      console.warn("Failed to set window icon/style:", e);
-      llog(`WIN32 ERROR: ${e instanceof Error ? e.message : String(e)}`);
-    }
-    endPhase("win32 FFI (icon + dark caption)");
+      refreshWindowIcons();
+      llog(`window appearance applied hwnd=${handle}`);
+    } catch (error) { llog(`Window appearance failed: ${error}`); }
+  }
+  if (isWin) {
+    const icoPath = resolve(dirname(process.execPath), "..", "Resources", "app.ico");
+    try {
+      if (existsSync(icoPath)) nativeIcons = createWindowsWindowIcons(icoPath);
+      else llog(`Window icon missing: ${icoPath}`);
+    } catch (error) { llog(`Window icon initialization failed: ${error}`); }
+    refreshWindowAppearance();
+    win.webview.on("dom-ready", () => {
+      refreshWindowAppearance();
+      // A transparent grip overlays only the top padding; no replacement
+      // title bar or extra row. The SDK handles native dragging for this class.
+      win.webview.executeJavascript(`(() => {
+        if (document.getElementById("treetop-window-grip")) return;
+        const grip = document.createElement("div");
+        grip.id = "treetop-window-grip";
+        grip.className = "electrobun-webkit-app-region-drag";
+        grip.title = "Drag to move window";
+        grip.style.cssText = "position:fixed;top:0;left:8px;right:8px;height:6px;z-index:2147483646;cursor:move";
+        document.body.appendChild(grip);
+      })()`);
+    });
   }
 
   llog(`boot complete (total ${Date.now() - LAUNCHER_START}ms)`);
@@ -779,3 +773,21 @@ async function openTreetopWindow() {
 
 }
 await openTreetopWindow();
+const updateParent = isWin ? updateInstallParent(process.execPath, "ui") : undefined;
+if (updateParent) watchForUpdate(updateParent, {
+  log: llog,
+  prepare: async () => {
+    if (quitting) throw new Error("Treetop is already quitting");
+    const status = await backgroundRequest("status");
+    if (!status.connected) throw new Error("Cannot preserve sessions: broker is not connected");
+    await backgroundRequest("lease", { windowId: nativeWindowId, sequence: ++heartbeatSequence });
+    llog("update handoff prepared; broker retains sessions under its bounded lease");
+  },
+  exit: () => {
+    llog("update handoff: exiting window/tray host without stopping broker");
+    quitting = true;
+    activeWindow?.close();
+    tray.remove();
+    Utils.quit();
+  },
+});

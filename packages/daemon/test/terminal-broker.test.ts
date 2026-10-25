@@ -7,6 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { startTerminalBroker } from "../src/terminal-broker";
 import { BrokerBackend } from "../src/terminals/broker-backend";
+import { UpdateHandoff } from "../../../src/electrobun/update-handoff";
 
 test("broker survives daemon disconnection and reattaches the same PTY without duplicating its process", async () => {
   const workspace = await mkdtemp(join(tmpdir(), "treetop-broker-"));
@@ -31,7 +32,12 @@ test("broker survives daemon disconnection and reattaches the same PTY without d
       size: { cols: 80, rows: 24 },
     });
     const originalPid = terminal.pid;
-    await first.gracefulShutdown();
+    const handoff = new UpdateHandoff(process.pid,
+      () => first!.request("acquire", {windowId:"installer-test",sequence:0}),
+      () => first!.gracefulShutdown());
+    const request = {id:"installer-test",expiresAt:Date.now()+30_000,pids:[process.pid],phase:"prepare"};
+    expect(await handoff.handle(request)).toBe("ready");
+    expect(await handoff.handle({...request,phase:"exit"})).toBe("exiting");
     expect(broker.backend.get(terminal.id)?.isAlive()).toBe(true);
     second = await BrokerBackend.connect(broker.url, "test-secret");
     expect(second.list()).toHaveLength(1);

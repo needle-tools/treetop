@@ -22,7 +22,13 @@ test("daemon bundles SSH without requiring its optional native CPU detector", as
   expect(typeof bundled.Client).toBe("function");
   expect(typeof bundled.Server).toBe("function");
 });
-import { restoreWindowState, captureWindowState, restoreWindowModeOnReady } from "../../../src/electrobun/window-state";
+import { nativeTitleBarStyle, restoreWindowState, captureWindowState, restoreWindowModeOnReady } from "../../../src/electrobun/window-state";
+
+test("Windows uses a captionless resizable window without changing macOS chrome", () => {
+  expect(nativeTitleBarStyle("win32")).toBe("hiddenInset");
+  expect(nativeTitleBarStyle("darwin")).toBe("default");
+  expect(nativeTitleBarStyle("linux")).toBe("default");
+});
 
 test("startup fullscreen waits for the inner webview and restores only once", () => {
   let ready: (() => void) | undefined;

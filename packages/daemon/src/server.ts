@@ -1,4 +1,5 @@
 import { BrokerCodexAdapter } from "./broker-codex";
+import { updateInstallParent, watchForUpdate } from "../../../src/electrobun/update-handoff";
 import {
   join,
   resolve,
@@ -10854,6 +10855,17 @@ const shutdown = async (signal: string) => {
 process.on("SIGTERM", () => shutdown("SIGTERM"));
 process.on("SIGINT", () => shutdown("SIGINT"));
 process.on("SIGHUP", () => shutdown("SIGHUP"));
+const updateParent = process.platform === "win32" ? updateInstallParent(process.execPath, "daemon") : undefined;
+if (updateParent) watchForUpdate(updateParent, {
+  log: message => console.log(`supergit daemon: ${message}`),
+  prepare: async () => {
+    if (!backgroundBackend?.status().connected) throw new Error("Persistent broker is unavailable; refusing update shutdown");
+    if (localProjectCommands.list().length) throw new Error("External project commands are still running; stop them before updating");
+    await backgroundBackend.request("acquire", {windowId:`installer:${process.pid}`,sequence:0});
+    console.log("supergit daemon: update prepared; broker owns preserved resources");
+  },
+  exit: () => shutdown("installer handoff (preserve broker)"),
+});
 
 // Periodic auto-fetch so ahead/behind stays accurate. Disable with
 // SUPERGIT_FETCH_INTERVAL_MS=0.

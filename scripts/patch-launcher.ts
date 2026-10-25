@@ -1,24 +1,7 @@
 #!/usr/bin/env bun
-/**
- * Patch electrobun's launcher main.js with two hooks:
- *
- * 1. PRE-INIT cleanup (before starting the app Worker):
- *    Kill orphan msedgewebview2.exe from a previous crash that are
- *    holding the WebView2 profile lockfile (HRESULT 0x800700AA).
- *
- * 2. POST-CLOSE cleanup (between startEventLoop and forceExit):
- *    When the user closes the window, startEventLoop returns but
- *    forceExit immediately hard-kills the process — so the Worker's
- *    process.on("exit") never fires. We inject cleanup here to:
- *    - Kill our own msedgewebview2.exe children
- *    - Delete the lockfile
- *    The daemon (Worker inside bun) dies with the bun process via
- *    forceExit, so no separate HTTP shutdown call is needed.
- *
- * Electrobun copies main.js from node_modules/electrobun/dist/ into
- * the built bundle. We patch that source template before `electrobun
- * build` runs. Idempotent: a marker comment prevents re-patching.
- */
+/** Patch the SDK launcher for DPI/thread initialization and migrate old
+ * templates away from global WebView2 termination. Native hosts own their
+ * WebViews; daemon and broker lifetimes are managed separately. */
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
@@ -160,35 +143,14 @@ const PARTITION_RESOLVE = `
       _appdata, "Electrobun", "default", "WebView2", "Partitions", "default", "EBWebView",
     );`;
 
-// Kill ALL msedgewebview2.exe processes via Get-Process | Stop-Process.
-//
-// We used to filter to only our partition via Get-CimInstance + Where-Object
-// on CommandLine, but on a busy Windows 11 box Get-CimInstance Win32_Process
-// regularly takes 30–60s because it enumerates every process plus WMI joins.
-// This runs on the LAUNCHER MAIN THREAD between Worker spawn and
-// electrobun_core_run_main_thread, so during that time the WebView2 message
-// loop can't pump → the window appears but is frozen. Switching to
-// Get-Process (PSAPI, not WMI) is sub-second.
-//
-// Side-effect of dropping the filter: we kill every msedgewebview2.exe on
-// the system, not just our partition's. msedgewebview2.exe is ONLY the
-// WebView2 runtime — it is NOT Edge browser, Outlook, Teams, etc. (those
-// have other process names). The only collateral damage is any other
-// WebView2-hosted app a user happens to be running at launch; that's a
-// rare and acceptable trade.
-const KILL_WEBVIEW2 = `
-    _spawnSync({
-      windowsHide: true,
-      cmd: [
-        "powershell.exe", "-NoProfile", "-NonInteractive", "-Command",
-        "Get-Process msedgewebview2 -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue",
-      ],
-      stdout: "ignore", stderr: "ignore", stdin: "ignore",
-    });
-    const _lock = _path.join(_partition, "lockfile");
-    if (_fs.existsSync(_lock)) { try { _fs.unlinkSync(_lock); } catch {} }`;
+// WebView2 belongs to its native host. Never kill other hosts during an
+// installer handoff (or a second-window launch). The SDK tears down its views.
+const LEGACY_GLOBAL_CLEANUP = "Get-Process msedgewebview2 -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue";
+const KILL_WEBVIEW2 = "";
+export function removeGlobalWebviewCleanup(source: string): string {
+  return source.split(LEGACY_GLOBAL_CLEANUP).join("Write-Verbose 'Native host owns WebView2 lifetime'");
+}
 
-// ── Snippet 1: pre-init (before startEventLoop) ─────────────────────
 const PRE_INIT = `
   ${MARKER}
   // Pre-init: kill orphan WebView2 from previous crashes so the
@@ -230,7 +192,7 @@ if (import.meta.main) for (const path of targets) {
   }
   const src = readFileSync(path, "utf8");
   if (src.includes(MARKER)) {
-    const migrated = addDpiAwarenessBeforeWorker(moveCleanupBeforeWorker(src));
+    const migrated = removeGlobalWebviewCleanup(addDpiAwarenessBeforeWorker(moveCleanupBeforeWorker(src)));
     if (migrated !== src) writeFileSync(path, migrated);
     console.log(`  ${migrated !== src ? "moved cleanup before Worker" : "already patched"}: ${path}`);
     continue;

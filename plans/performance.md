@@ -2050,3 +2050,45 @@ without mounting a terminal view; 176 focused tests pass.
 Live shell squares now turn 90 degrees every 1.5 seconds, with pauses between
 turns, even when the server is quiet. Exited terminals remain static; reduced
 motion disables the animation. No app build or production restart performed.
+
+### 2026-10-25: Windows borderless window
+
+User clarified that the native caption must be absent, not merely dark.
+Windows now selects Electrobun hiddenInset: it removes the caption area while
+retaining native resizing. Other platforms retain their existing window style.
+A six-pixel transparent top grip uses the SDK drag-region behavior without
+adding a visible bar. Windows tray controls expose minimize, maximize/restore,
+and close-window (existing bounded session retention), separately from Stop all.
+Removed the obsolete caption-color code and title-based window lookup; icon
+setup uses the SDK HWND, retries on DOM readiness/focus, and logs failures.
+
+A hidden isolated native SDK fixture measured the real client-area top inset:
+default was 31px; hiddenInset was 0px, with resizing retained. Fixture exited
+cleanly and did not connect to production. Platform selection and fullscreen
+restoration tests pass. No Treetop/installer build or production restart.
+
+### 2026-10-25: checked Windows installer and broker-preserving handoff
+
+Replace the SDK's delete-in-place extractor during build-summary with a standalone
+GUI setup executable embedding the checked app archive. Stage and validate before
+requesting any exits; serialize installers with a lock. Install-local, expiring
+PID-targeted prepare/exit requests require all installed UI/daemon workers to
+acknowledge broker availability. UIs exit first and save window state; the daemon
+then detaches from the broker. No forced process termination and no broker stop.
+Dev builds/workspace brokers never participate. External daemon-owned commands
+block handoff. A missing/old responder fails visibly before any exit requests.
+
+After confirming no installed executable is running, rename the old installation
+to a rollback directory, move staged files into place, and verify build metadata.
+Failure rolls back; successful installs recreate shortcuts and relaunch before
+showing confirmation so a modal dialog cannot consume the broker absence lease.
+Errors show a persistent dialog and append to stable/installer.log. Old rollback
+copies are pruned only when no executable runs there. SDK launcher templates no
+longer globally terminate other WebView2 hosts during startup/shutdown.
+
+30 installer/launcher/broker tests pass, including the real surviving terminal PID
+across production handoff state transitions, plus 15 focused native/update tests.
+First migration from an already-running pre-handoff version is intentionally
+blocked with an explicit message: it cannot be remotely taught to detach safely.
+The user requested the saved Treetop build command after validation; installation
+and production restart remain user actions.
