@@ -125,10 +125,8 @@ export async function runInstaller(payload:string,expectedHash:string) {
     }
     await removeOwned(parent,stage);
     await rm(join(parent,"update-request.json"),{force:true});
-    // Reconnect before a modal success dialog: leaving that dialog open must
-    // not consume the broker's fifteen-minute absence lease.
+    // Reopen immediately; successful installation needs no confirmation dialog.
     launch();
-    dialog(`Treetop updated successfully.\nBuild: ${buildTime}\n\nYour background broker was not stopped. Treetop is reopening.\n\nLog: ${logPath}`);
   } catch(error) {
     if(lock) await rm(join(parent,"update-request.json"),{force:true});
     await log(`ERROR installed=${installed}: ${error}`);
