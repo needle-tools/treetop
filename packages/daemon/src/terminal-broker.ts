@@ -17,6 +17,31 @@ import {
   BROKER_SNAPSHOT,
 } from "./background-protocol";
 
+/** Replay one terminal at a time without overflowing the live-stream limit. */
+export async function replayBrokerTerminals(
+  ws: { readyState: number; getBufferedAmount(): number; close(code: number, reason: string): void },
+  ids: string[],
+  attach: (id: string) => void,
+): Promise<boolean> {
+  const deadline = Date.now() + 8_000;
+  const drained = async () => {
+    do {
+      await Bun.sleep(1);
+      if (ws.readyState !== 1) return false;
+      if (Date.now() >= deadline) {
+        ws.close(1013, "reconnect for replay");
+        return false;
+      }
+    } while (ws.getBufferedAmount() > 0);
+    return true;
+  };
+  for (const id of ids) {
+    if (!(await drained())) return false;
+    attach(id);
+  }
+  return drained();
+}
+
 export async function startTerminalBroker(options: {
   workspace: string;
   token: string;
@@ -506,7 +531,7 @@ export async function startTerminalBroker(options: {
     },
     websocket: {
       maxPayloadLength: 1024 * 1024,
-      open(ws) {
+      async open(ws) {
         clients.add(ws);
         log(`controller connected id=${ws.data.client} total=${clients.size}`);
         send(ws, {
@@ -518,7 +543,12 @@ export async function startTerminalBroker(options: {
           untracked: commands.untracked(),
           native: nativeState(),
         });
-        for (const record of backend.list()) attach(ws, record.id);
+        // Each terminal can replay 256 KiB (larger after base64 encoding).
+        // Yield between terminals so the socket can drain before the next
+        // replay. Otherwise a healthy reconnect trips send's 1 MiB limit
+        // before "ready", and every subsequent reconnect repeats the burst.
+        if (!(await replayBrokerTerminals(ws, backend.list().map((record) => record.id),
+          (id) => attach(ws, id)))) return;
         send(ws, { event: "ready", status: status() });
       },
       async message(ws, message) {

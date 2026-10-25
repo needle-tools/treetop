@@ -1,8 +1,9 @@
 export type WindowBounds = { x: number; y: number; width: number; height: number };
-/** On Windows hiddenInset removes the caption but retains native resize edges. */
-export function nativeTitleBarStyle(platform: string): "hiddenInset" | "default" {
-  return platform === "win32" ? "hiddenInset" : "default";
+/** Keep the native caption and controls; Windows colors are applied through DWM. */
+export function nativeTitleBarStyle(_platform: string): "default" {
+  return "default";
 }
+
 export type WindowState = WindowBounds & { fullscreen: boolean; maximized: boolean };
 
 /** WebView2 creates its controller asynchronously. Restore native window mode

@@ -1,5 +1,23 @@
 import { dlopen, ptr } from "bun:ffi";
 
+/** Original Treetop native caption colors, applied to the SDK's exact HWND.
+ * Never look up by title: multiple tray-owned windows can have the same title. */
+export function createWindowsCaptionStyle() {
+  const dwm = dlopen("dwmapi.dll", {
+    DwmSetWindowAttribute: { args: ["u64", "u32", "u64", "u32"], returns: "i32" },
+  });
+  return {
+    refresh(hwnd: bigint) {
+      for (const [attribute, color] of [[20, 1], [35, 0x001d2623], [36, 0x00e8e8e8]] as const) {
+        const value = new Uint32Array([color]);
+        const result = dwm.symbols.DwmSetWindowAttribute(hwnd, attribute, BigInt(ptr(value)), 4);
+        if (result !== 0) throw new Error(`Native caption attribute ${attribute} failed: HRESULT ${result}`);
+      }
+    },
+    close() { dwm.close(); },
+  };
+}
+
 /** Windows interprets these as source bitmap pixels, not tray layout dimensions.
  * Give Explorer a source it can downsample at any normal display scale. macOS
  * interprets the same options as points; its bundled PNG supplies Retina pixels. */

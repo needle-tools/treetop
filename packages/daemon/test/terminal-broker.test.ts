@@ -2,12 +2,147 @@ import { CodexAppServerAdapter } from "../src/codex-app-server";
 import { BrokerCodexAdapter } from "../src/broker-codex";
 import { Workspace } from "../src/workspace";
 import { expect, test } from "bun:test";
-import { mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, writeFile, mkdir, rename } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { startTerminalBroker } from "../src/terminal-broker";
+import { startTerminalBroker, replayBrokerTerminals } from "../src/terminal-broker";
 import { BrokerBackend } from "../src/terminals/broker-backend";
 import { UpdateHandoff } from "../../../src/electrobun/update-handoff";
+
+test("broker replays full scrollback for many surviving terminals before ready", async () => {
+  const workspace = await mkdtemp(join(tmpdir(), "treetop-broker-replay-"));
+  const logs: string[] = [];
+  const broker = await startTerminalBroker({ workspace, token: "replay-secret", log: (line) => logs.push(line) });
+  let client: BrokerBackend | undefined;
+  const terminals: { id: string; pid: number; marker: string }[] = [];
+  try {
+    for (let i = 0; i < 12; i++) {
+      const marker = `REPLAY_COMPLETE_${i}`;
+      const handle = await broker.backend.spawn({
+        cmd: ["node", "-e", `process.stdout.write(('x'.repeat(120)+'\\n').repeat(2600)+'${marker}');setInterval(()=>{},1000)`],
+        cwd: workspace, size: { cols: 120, rows: 24 },
+      });
+      await new Promise<void>((resolve, reject) => {
+        const timeout = setTimeout(() => reject(new Error(`Missing ${marker}`)), 8000);
+        let tail = "";
+        handle.subscribe({ onData(bytes) {
+          tail = (tail + new TextDecoder().decode(bytes)).slice(-1000);
+          if (tail.includes(marker)) { clearTimeout(timeout); resolve(); }
+        }, onExit() {} });
+      });
+      terminals.push({ id: handle.id, pid: handle.pid, marker });
+    }
+    client = await BrokerBackend.connect(broker.url, "replay-secret");
+    expect(client.status().connected).toBe(true);
+    expect(client.list()).toHaveLength(terminals.length);
+    for (const original of terminals) {
+      const attached = client.get(original.id)!;
+      expect(attached.pid).toBe(original.pid);
+      expect(attached.isAlive()).toBe(true);
+      let output = "";
+      const unsubscribe = attached.subscribe({ onData(bytes) { output += new TextDecoder().decode(bytes); }, onExit() {} });
+      unsubscribe();
+      expect(output.length).toBeGreaterThan(200_000);
+      expect(output).toContain(original.marker);
+    }
+    expect(logs.some((line) => line.includes("backpressure"))).toBe(false);
+  } finally {
+    await client?.shutdown();
+    await broker.stop();
+  }
+}, 60_000);
+
+test("an interrupted initial broker handshake keeps the backend available for reconnect", async () => {
+  let connections = 0;
+  const server = Bun.serve({
+    hostname: "127.0.0.1", port: 0,
+    fetch(req, server) { if (server.upgrade(req)) return; return new Response("Not found", { status: 404 }); },
+    websocket: {
+      open(ws) {
+        if (++connections === 1) { ws.close(1013, "reconnect for replay"); return; }
+        ws.send(JSON.stringify({ event: "hello", protocol: 1, recordIds: [], running: [], untracked: [] }));
+        ws.send(JSON.stringify({ event: "ready", status: { generation: "same-owner" } }));
+      },
+      message() {},
+    },
+  });
+  let client: BrokerBackend | undefined;
+  try {
+    client = await BrokerBackend.connect(`http://127.0.0.1:${server.port}`, "test-secret");
+    expect(client.status().connected).toBe(false);
+    const error = await client.request("status").catch((error) => error.message);
+    expect(error).toContain("offline");
+    for (let i = 0; i < 100 && !client.status().connected; i++) await Bun.sleep(20);
+    expect(client.status().connected).toBe(true);
+    expect(client.status().generation).toBe("same-owner");
+    expect(connections).toBe(2);
+  } finally {
+    await client?.shutdown();
+    server.stop(true);
+  }
+});
+
+test("broker replay drains a multi-megabyte burst over a real socket before ready", async () => {
+  const ids = Array.from({ length: 24 }, (_, i) => String(i));
+  const body = Buffer.alloc(256 * 1024, "x").toString("base64");
+  let overflow = false;
+  const server = Bun.serve({
+    hostname: "127.0.0.1", port: 0,
+    fetch(req, server) { if (server.upgrade(req)) return; return new Response("Not found", { status: 404 }); },
+    websocket: {
+      async open(ws) {
+        const complete = await replayBrokerTerminals(ws, ids, (id) => {
+          if (ws.getBufferedAmount() > 1024 * 1024) {
+            overflow = true;
+            ws.close(1013, "reconnect for replay");
+            return;
+          }
+          ws.send(JSON.stringify({ id, body }));
+        });
+        if (complete) ws.send("ready");
+      },
+      message() {},
+    },
+  });
+  const socket = new WebSocket(`ws://127.0.0.1:${server.port}`);
+  const received: string[] = [];
+  try {
+    await new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error("Replay timed out")), 10_000);
+      socket.onmessage = (event) => {
+        if (event.data === "ready") { clearTimeout(timer); resolve(); return; }
+        const message = JSON.parse(String(event.data));
+        expect(message.body).toBe(body);
+        received.push(message.id);
+      };
+      socket.onclose = () => { clearTimeout(timer); reject(new Error("Replay disconnected before ready")); };
+      socket.onerror = () => { clearTimeout(timer); reject(new Error("Replay connection failed")); };
+    });
+    expect(received).toEqual(ids);
+    expect(overflow).toBe(false);
+  } finally {
+    socket.close();
+    server.stop(true);
+  }
+});
+
+test("an incompatible broker still rejects startup instead of pretending to reconnect", async () => {
+  const server = Bun.serve({
+    hostname: "127.0.0.1", port: 0,
+    fetch(req, server) { if (server.upgrade(req)) return; return new Response("Not found", { status: 404 }); },
+    websocket: {
+      open(ws) { ws.send(JSON.stringify({ event: "hello", protocol: -1 })); },
+      message() {},
+    },
+  });
+  try {
+    const error = await BrokerBackend.connect(`http://127.0.0.1:${server.port}`, "test-secret")
+      .then((backend) => { void backend.shutdown(); return "unexpected success"; }, (error) => error.message);
+    expect(error).toContain("protocol is incompatible");
+  } finally {
+    server.stop(true);
+  }
+});
 
 test("broker survives daemon disconnection and reattaches the same PTY without duplicating its process", async () => {
   const workspace = await mkdtemp(join(tmpdir(), "treetop-broker-"));
@@ -354,6 +489,8 @@ test("native Codex turn ownership and events survive a daemon disconnect", async
 test("real daemon replacement reconnects to the same broker, terminal and PID", async () => {
   const root = await mkdtemp(join(tmpdir(), "treetop-daemon-handoff-"));
   const workspace = join(root, "workspace");
+  const launchDirectory = join(root, "installed-bin");
+  await mkdir(launchDirectory);
   const reserve = Bun.serve({
     hostname: "127.0.0.1",
     port: 0,
@@ -378,7 +515,7 @@ test("real daemon replacement reconnects to the same broker, terminal and PID", 
   const launch = () =>
     Bun.spawn(
       [process.execPath, "run", join(import.meta.dir, "../src/server.ts")],
-      { env, stdin: "ignore", stdout: "ignore", stderr: "inherit" },
+      { env, cwd: launchDirectory, windowsHide: true, stdin: "ignore", stdout: "ignore", stderr: "inherit" },
     );
   let daemon = launch();
   let brokerClient: BrokerBackend | undefined;
@@ -421,6 +558,9 @@ test("real daemon replacement reconnects to the same broker, terminal and PID", 
     expect(before.connected).toBe(true);
     daemon.kill("SIGTERM");
     await daemon.exited;
+    // Neither the persistent broker nor its helper may retain the UI/daemon cwd.
+    await rename(launchDirectory, launchDirectory + "-old");
+    await mkdir(launchDirectory);
     daemon = launch();
     await healthy();
     const after = (await (

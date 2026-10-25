@@ -19,6 +19,8 @@ interface CachedTerminal {
   subscribers: Set<TerminalSubscriber>;
 }
 
+class BrokerReplayInterruptedError extends Error {}
+
 /** Detaching a daemon only closes this transport. The broker owns the PTYs. */
 export class BrokerBackend implements PtyBackend {
   readonly persistent = true;
@@ -87,7 +89,18 @@ export class BrokerBackend implements PtyBackend {
     log?: (event: string) => void,
   ) {
     const backend = new BrokerBackend(url, token, log);
-    await backend.open();
+    try {
+      await backend.open();
+    } catch (error) {
+      if (!(error instanceof BrokerReplayInterruptedError)) {
+        await backend.shutdown();
+        throw error;
+      }
+      // Older live brokers can close during replay. Keep the HTTP daemon
+      // available and let the scheduled reconnect run; never replace the
+      // broker or its PTYs just because its initial replay was interrupted.
+      backend.log("initial replay interrupted; sessions retained while reconnecting");
+    }
     return backend;
   }
   private async open() {
@@ -118,12 +131,13 @@ export class BrokerBackend implements PtyBackend {
           if (message.event === "hello") {
             if (message.protocol !== BROKER_PROTOCOL) {
               clearTimeout(timeout);
-              ws.close();
+              this.disposed = true;
               rejectReady(
                 new Error(
                   "Broker protocol is incompatible; live sessions were left untouched",
                 ),
               );
+              ws.close();
               return;
             }
             const present = new Set(message.recordIds);
@@ -247,7 +261,9 @@ export class BrokerBackend implements PtyBackend {
       ws.onclose = (event) => {
         clearTimeout(timeout);
         this.ready = false;
-        rejectReady(new Error("Broker disconnected before ready"));
+        rejectReady(event.code === 1013
+          ? new BrokerReplayInterruptedError("Broker replay interrupted before ready")
+          : new Error("Broker disconnected before ready"));
         for (const pending of this.pending.values()) {
           clearTimeout(pending.timer);
           pending.reject(

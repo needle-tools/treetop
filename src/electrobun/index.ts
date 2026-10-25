@@ -31,7 +31,7 @@ import { spawn as bunSpawn } from "bun";
 import { planLogRotation } from "../../packages/daemon/src/log-rotation";
 import { nativeTitleBarStyle, restoreWindowState, captureWindowState, restoreWindowModeOnReady, type WindowState } from "./window-state";
 import { createWindowsWebviewFocus } from "./window-focus";
-import { createWindowsWindowIcons, trayImageSize } from "./window-icons";
+import { createWindowsWindowIcons, createWindowsCaptionStyle, trayImageSize } from "./window-icons";
 import { nativeWindowFocusScript } from "../../packages/ui/src/window-focus-events";
 
 // ── Startup logger + stall watchdog ──────────────────────────────────
@@ -662,6 +662,7 @@ async function openTreetopWindow() {
   void updateTray();
   let nativeFocus: ReturnType<typeof createWindowsWebviewFocus> | undefined;
   let nativeIcons: ReturnType<typeof createWindowsWindowIcons> | undefined;
+  let nativeCaption: ReturnType<typeof createWindowsCaptionStyle> | undefined;
   function refreshWindowIcons() {
     if (!nativeIcons || !win.ptr) return;
     try { nativeIcons.refresh(BigInt(win.ptr)); }
@@ -708,10 +709,13 @@ async function openTreetopWindow() {
       if (!handle) throw new Error("Native window handle is not ready");
 
       refreshWindowIcons();
+      nativeCaption?.refresh(BigInt(handle));
       llog(`window appearance applied hwnd=${handle}`);
     } catch (error) { llog(`Window appearance failed: ${error}`); }
   }
   if (isWin) {
+    try { nativeCaption = createWindowsCaptionStyle(); }
+    catch (error) { llog(`Window caption initialization failed: ${error}`); }
     const icoPath = resolve(dirname(process.execPath), "..", "Resources", "app.ico");
     try {
       if (existsSync(icoPath)) nativeIcons = createWindowsWindowIcons(icoPath);
@@ -720,17 +724,6 @@ async function openTreetopWindow() {
     refreshWindowAppearance();
     win.webview.on("dom-ready", () => {
       refreshWindowAppearance();
-      // A transparent grip overlays only the top padding; no replacement
-      // title bar or extra row. The SDK handles native dragging for this class.
-      win.webview.executeJavascript(`(() => {
-        if (document.getElementById("treetop-window-grip")) return;
-        const grip = document.createElement("div");
-        grip.id = "treetop-window-grip";
-        grip.className = "electrobun-webkit-app-region-drag";
-        grip.title = "Drag to move window";
-        grip.style.cssText = "position:fixed;top:0;left:8px;right:8px;height:6px;z-index:2147483646;cursor:move";
-        document.body.appendChild(grip);
-      })()`);
     });
   }
 
@@ -759,6 +752,8 @@ async function openTreetopWindow() {
       nativeFocus = undefined;
       nativeIcons?.close();
       nativeIcons = undefined;
+      nativeCaption?.close();
+      nativeCaption = undefined;
       captureState();
       if (saveTimer) { clearTimeout(saveTimer); saveTimer = null; }
       writeWindowState(windowState);

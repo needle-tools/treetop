@@ -2092,3 +2092,75 @@ First migration from an already-running pre-handoff version is intentionally
 blocked with an explicit message: it cannot be remotely taught to detach safely.
 The user requested the saved Treetop build command after validation; installation
 and production restart remain user actions.
+
+Follow-up: the first live update failed with EPERM renaming app. Read-only PEB
+inspection confirmed the workspace-copy broker (44700) and PTY helper (61852)
+both retained installed app/bin as cwd. Executable-path preflight cannot detect
+that directory lock. Spawn new brokers with workspace cwd (logged explicitly).
+For existing owners, a Windows directory-rename failure uses a file-by-file
+transaction, leaving directories in place, retaining old files in the rollback
+folder, and reversing completed moves on failure. Log this fallback; if rollback
+itself fails, retain staging and backup and do not reopen a mixed installation.
+No broker/helper termination is needed. The installer failure had reopened the
+old app, so its visible caption did not test the staged borderless change.
+
+18 focused tests pass, including real Windows cwd-lock update and verification
+rollback fixtures (helper remains alive), and a real daemon replacement that
+renames its old launch directory while preserving the same terminal PID.
+Focused installer TypeScript check passes. No rebuild or production restart.
+
+### 2026-10-25: broker startup replay backpressure
+
+The running broker repeatedly closed new controllers with code 1013 while
+replaying terminal scrollback before its ready message. The daemon treated the
+interrupted handshake as fatal, so the desktop reached an unavailable local page.
+Replay now yields and drains the socket between terminal snapshots, retaining
+the live-stream 1 MiB limit and an eight-second startup bound. The daemon remains
+available and reconnects after an initial 1013 from an older live broker; it does
+not kill or replace that owner. Incompatible protocol handshakes still fail closed.
+
+A real WebSocket regression transfers 24 full 256 KiB terminal payloads in order:
+the unpaced implementation disconnects before ready, the paced implementation
+passes. Initial-disconnect recovery and protocol rejection also pass. Six lease/
+restore checks and five installer handoff checks pass. Real PTY replay and two
+process-lock installer tests cannot execute in the restricted environment because
+Bun child-process creation fails with EPERM. Both the normal build and direct UI
+build fail with the same process permission restriction. No installer was run and
+no production broker, helper, daemon, or session was restarted by this work.
+The existing in-memory broker requires a later user-authorized restart to load
+the replay fix; installing a new executable cannot patch a live broker's code.
+
+Follow-up validation outside the restricted sandbox: all 22 broker/installer
+tests and six lease/restore tests passed; the Windows installer built and its
+embedded payload verified. Production broker 44700 had already expired its lease
+at 11:52:26 UTC and completed cleanup at 11:52:32. No agent-issued stop caused
+that exit. The stranded window initially refused the installer handoff because
+its daemon was unavailable. Starting the fixed flat-build daemon restored the
+page; the next cooperative handoff installed successfully at 11:59:20 UTC.
+The installed window reopened, browser verification rendered session history
+without JS errors, and seven stopped sessions remained offered for explicit
+resume. Daemon 50816 runs from build/supergit-native; broker 37192 runs from its
+workspace copy. Neither is restarted for the subsequent window-control repair.
+
+### 2026-10-25: restore the original styled native window
+
+History identifies f9be39d as the original dark native caption implementation:
+default Windows chrome with DWM dark mode, caption #23261d and text #e8e8e8.
+October 24's a605327/9cc99eb retained it; October 25's 94e456d explicitly removed
+the DWM styling and selected hiddenInset, leaving only an invisible drag strip.
+The exact earlier styling failure reported by the user is not established by
+the logs: the original title-based HWND lookup and DWM failures were silent.
+Restore default native chrome and the original DWM colors, targeting the SDK's
+exact HWND, refreshing on readiness/focus, reporting HRESULT failures, and
+releasing the DWM library on window close. An attempted HTML replacement was
+rejected by the user and removed; no injected title bar or drag strip remains.
+Windows owns title dragging, resize edges, minimize/maximize/close, and snap.
+
+All 20 native icon/caption/launcher tests pass, including actual DWM set calls,
+invalid-HWND error reporting, and default native caption/resize hit testing.
+The shell-only rebuild and installer completed at 12:17:31 UTC. The installed
+caption visibly matches the original dark olive styling. Real mouse dragging
+moved the window; the live resize automation was inconclusive and was stopped
+when the user questioned the movement. No further window manipulation was done.
+The daemon and broker retained PIDs 50816 and 37192 throughout the shell updates;
+the broker remained connected and subsequently reported nine live terminals.

@@ -2,8 +2,37 @@ import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import sharp from "sharp";
-import { createWindowsWindowIcons, trayImageSize } from "../../../src/electrobun/window-icons";
+import { createWindowsWindowIcons, createWindowsCaptionStyle, trayImageSize } from "../../../src/electrobun/window-icons";
 import nativeConfig from "../../../electrobun.config";
+
+test.skipIf(process.platform !== "win32")("original caption styling succeeds on a native window and retains dragging and resizing", async () => {
+  const { dlopen, ptr } = await import("bun:ffi");
+  const user = dlopen("user32.dll", {
+    CreateWindowExW: { args: ["u32", "u64", "u64", "u32", "i32", "i32", "i32", "i32", "u64", "u64", "u64", "u64"], returns: "u64" },
+    DestroyWindow: { args: ["u64"], returns: "i32" },
+    DefWindowProcW: { args: ["u64", "u32", "u64", "u64"], returns: "i64" },
+    GetWindowLongW: { args: ["u64", "i32"], returns: "i32" },
+  });
+  const cls = Buffer.from("STATIC\0", "utf16le"), title = Buffer.from("caption test\0", "utf16le");
+  const create = () => BigInt(user.symbols.CreateWindowExW(0, BigInt(ptr(cls)), BigInt(ptr(title)), 0x00cf0000, 100, 100, 800, 600, 0n, 0n, 0n, 0n));
+  const window = create();
+  const appearance = createWindowsCaptionStyle();
+  try {
+    expect(window).not.toBe(0n);
+    // DWM accepts these attributes for setting but does not expose them through
+    // DwmGetWindowAttribute. Assert real HRESULTs via the helper, not fake reads.
+    expect(() => appearance.refresh(window)).not.toThrow();
+    expect(() => appearance.refresh(0n)).toThrow("Native caption attribute");
+    expect(user.symbols.GetWindowLongW(window, -16) & 0x00cf0000).toBe(0x00cf0000);
+    // STATIC handles WM_NCHITTEST as HTTRANSPARENT; exercise the OS frame
+    // handler directly rather than that control-specific client handler.
+    const hit = (x: number, y: number) => Number(user.symbols.DefWindowProcW(window, 0x84, 0n, BigInt((y << 16) | x)));
+    expect(hit(300, 120)).toBe(2); // HTCAPTION: OS dragging, not HTML.
+    expect(hit(101, 300)).toBe(10); // HTLEFT: OS resizing.
+  } finally {
+    appearance.close(); user.symbols.DestroyWindow(window); user.close();
+  }
+});
 
 test("Windows tray gets a large raster source while macOS keeps point-sized layout", () => {
   expect(trayImageSize("win32")).toEqual({ width: 256, height: 256 });

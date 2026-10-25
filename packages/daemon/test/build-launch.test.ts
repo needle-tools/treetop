@@ -24,8 +24,8 @@ test("daemon bundles SSH without requiring its optional native CPU detector", as
 });
 import { nativeTitleBarStyle, restoreWindowState, captureWindowState, restoreWindowModeOnReady } from "../../../src/electrobun/window-state";
 
-test("Windows uses a captionless resizable window without changing macOS chrome", () => {
-  expect(nativeTitleBarStyle("win32")).toBe("hiddenInset");
+test("Windows retains its native draggable caption and window controls", () => {
+  expect(nativeTitleBarStyle("win32")).toBe("default");
   expect(nativeTitleBarStyle("darwin")).toBe("default");
   expect(nativeTitleBarStyle("linux")).toBe("default");
 });
