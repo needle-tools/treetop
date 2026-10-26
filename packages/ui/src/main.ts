@@ -148,17 +148,19 @@ if (startupStatus) startupStatus.textContent = "Opening the canopy…";
 await tick();
 const startupSplash = document.getElementById("startup-splash");
 if (startupSplash) {
-  if (!window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+  // A slow project-list request must not add another full fade past the cap.
+  const fadeBudget = Math.min(900, Math.max(0, 10000 - (performance.now() - startupStartedAt)));
+  if (fadeBudget > 0 && !window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
     const scene = startupSplash.querySelector<HTMLElement>(".startup-scene");
     if (scene) {
       await scene.animate(
         [{ opacity: getComputedStyle(scene).opacity }, { opacity: 0 }],
-        { duration: 350, easing: "ease-in-out", fill: "forwards" },
+        { duration: fadeBudget * 350 / 900, easing: "ease-in-out", fill: "forwards" },
       ).finished.catch(() => {}); // A cancelled animation must not strand the overlay.
     }
     await startupSplash.animate(
       [{ opacity: 1 }, { opacity: 0 }],
-      { duration: 550, easing: "ease-in-out", fill: "forwards" },
+      { duration: fadeBudget * 550 / 900, easing: "ease-in-out", fill: "forwards" },
     ).finished.catch(() => {});
   }
   startupSplash.remove();

@@ -1,5 +1,14 @@
 # performance.md — frontend perf findings + open work
 
+### 2026-10-27: bounded splash and early project-list reveal
+
+Reveal after the local project manifest rather than waiting for every git scan
+and remote project to finish. Keep the two-second minimum and cap project-list
+waiting at ten seconds; reduce/skip the fade when the cap is reached. The initial
+load's existing completion callback remains an error/legacy-response fallback.
+Three timing tests cover fast readiness, slower readiness, and a missing list.
+Prepare native version 0.1.3 using the existing release-branch workflow.
+
 ### 2026-10-26: startup splash waits for project loading
 
 main.ts previously removed the splash after mount/tick, before App's initial

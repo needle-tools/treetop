@@ -4781,6 +4781,9 @@
                 savedRepoOrder,
               );
               loading = false;
+              // Reveal after the local manifest, not after every project's git
+              // enrichment and remote-daemon scan have completed.
+              if (!daemonId) onInitialLoad();
             });
           },
           onRepo: (full: Repo) => {
