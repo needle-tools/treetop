@@ -1,28 +1,35 @@
+<img src="./icon.svg" alt="Treetop layered paper canopy logo" width="96" height="96" />
+
 # Treetop
 
 [![tests](https://github.com/needle-tools/treetop/actions/workflows/test.yml/badge.svg)](https://github.com/needle-tools/treetop/actions/workflows/test.yml) [![release](https://github.com/needle-tools/treetop/actions/workflows/release.yml/badge.svg)](https://github.com/needle-tools/treetop/actions/workflows/release.yml)
 
 ### You were built for this jungle.
 
-<img width="1536" height="1024" alt="image" src="https://github.com/user-attachments/assets/01a3ce2f-1c09-44b1-acab-d478a6a4226e" />
-
-
 Mission control for your AI coding agents — across every repo, branch, and worktree. Stay on top.
 
-A multi-repo, multi-agent, worktree-first git dashboard. One pane of glass for every repo you're juggling, every worktree you've spun up, and every agent you've let loose — without losing your mind to terminal tab soup.
+Treetop brings agent conversations, terminals, and Git changes into one workspace. Follow parallel sessions, review what changed, and pick up work across local and remote machines.
+
+## Download
+
+**[Download Treetop from GitHub Releases](https://github.com/needle-tools/treetop/releases).** Download the installer for your platform and run it.
 
 ## Features
 
-- **Multi-repo dashboard** — track all your repos side by side, with live status, branch and commit info.
-- **Worktree-first** — create, browse, and switch between worktrees as first-class citizens, not an afterthought.
-- **Agent-aware** — detect and manage AI coding agents running across your projects. Claude Code and Codex today, more on the way.
-- **Embedded terminals** — host TUI sessions right in the dashboard; they survive across reloads.
-- **Format-aware diffs** — readable diffs for text and known binary/3D formats, never a useless "binary file changed."
-- **Remote sessions & sharing** — share a workspace, reconnect through self-healing tunnels, collaborate live.
-- **Local-first, pluggable backends** — local disk always works; cloud backends are optional, never required.
-- **Open in your editor** — editor-agnostic, shells out to whatever you already use. Deep git ops escape to Fork.
+- **MCP support** — connect AI agents to control Treetop through the Model Context Protocol.
+- **Agent sessions** — work with Claude Code and Codex, follow conversations and tool activity, and track which sessions need your attention.
+- **Multi-repo workspaces** — keep repositories, branches, and worktrees together with live Git status.
+- **Session dock** — arrange sessions side by side and move between active and background work.
+- **Persistent terminals** — run shells and terminal agents with broker-backed sessions that survive UI reloads and daemon reconnects.
+- **Code review** — inspect changed files, text diffs, and Git history alongside the agent doing the work.
+- **Search and context** — find sessions and files, browse session context, and navigate tool output.
+- **Remote work** — connect remote daemons and folders, and share sessions through links.
+- **Native desktop app** — Windows and macOS packaging with tray/menu-bar access, plus a browser-based UI.
+- **Local-first workflow** — keep workspace state on disk and open projects in your preferred editor.
 
-## Quick start
+## Development
+
+To run Treetop from source:
 
 ```sh
 bun install        # once, at the root
@@ -37,8 +44,6 @@ For a production build serving the bundled SPA:
 bun run start      # builds the UI, serves on :27787
 ```
 
-## Development
-
 - `bun test` — run all tests (daemon + UI). Fast inner loop, TDD encouraged.
 - `bun run test:watch` — re-run on change.
 - `bun run format` — Prettier across the workspace.
@@ -47,4 +52,6 @@ The daemon is **Bun + TypeScript**; the UI is **Svelte + Vite**. State lives in 
 
 ---
 
-Made with 🦍 by [needle.tools](https://needle.tools)
+Made by [Needle](https://needle.tools).
+
+Copyright © 2026 Needle.
