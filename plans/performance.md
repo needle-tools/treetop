@@ -2175,3 +2175,20 @@ broker terminal liveness, retaining saved project/worktree path and actual cwd.
 Deduplicate by terminal ID and exclude external or exited commands. Existing
 sidebar restore logic then sees these terminals before their columns mount.
 28 command lifecycle and shell restoration tests pass. No build or restart.
+
+### 2026-10-26: diagnose installer auto-launch disappearance
+
+Installed metadata matches the latest 00:36 local build. At 06:51 UTC the
+installer-created UI reached window creation then disappeared without a close,
+handoff, or crash record; the manual desktop launch 14 seconds later survived.
+No Windows Application Error/WER event or crash dump was found. Both plain and
+compiled GUI installer-parent fixtures successfully launched the real SDK native
+launcher with a hidden isolated WebView and survived parent exit. Thus parent
+exit alone is not established as the cause; the original failure remains unknown.
+
+Setup previously discarded all native launcher/Worker stdout and stderr. Capture
+it in stable/installer-launch.log and observe the launcher for five seconds;
+report early exit with PID, code, and log path, without blindly launching again.
+Success stays silent and does not wait for the application's full lifetime.
+Nine installer tests pass, covering early failure output and healthy survival.
+No production restart, installer rebuild, or claim that the root cause is fixed.

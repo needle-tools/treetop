@@ -91,3 +91,26 @@ if (process.platform === "win32") {
     });
   }
 }
+
+test("installer launch reports early exit and retains native stderr", async () => {
+  const { launchInstallerApp } = await import("../../../scripts/windows-installer-core");
+  const root = await mkdtemp(join(tmpdir(), "treetop-launch-test-"));
+  try {
+    const log = join(root,"launch.log");
+    await expect(launchInstallerApp(process.execPath, root, log, ["-e", "console.error('fixture startup error');process.exit(7)"], 1000)).rejects.toThrow("7");
+    expect(await readFile(log,"utf8")).toContain("fixture startup error");
+  } finally { await rm(root,{recursive:true,force:true}); }
+});
+
+test("installer launch returns after observation without stopping a healthy app", async () => {
+  const { launchInstallerApp } = await import("../../../scripts/windows-installer-core");
+  const root = await mkdtemp(join(tmpdir(), "treetop-launch-live-"));
+  try {
+    const marker=join(root,"finished");
+    const pid=await launchInstallerApp(process.execPath,root,join(root,"launch.log"),["-e",`setTimeout(()=>require('fs').writeFileSync(${JSON.stringify(marker)},'alive'),500)`],100);
+    expect(pid).toBeGreaterThan(0);
+    for(let i=0;i<30;i++){try{await readFile(marker);break;}catch{await Bun.sleep(100);}}
+    expect(await readFile(marker,"utf8")).toBe("alive");
+    await Bun.sleep(200);
+  } finally {await rm(root,{recursive:true,force:true});}
+});

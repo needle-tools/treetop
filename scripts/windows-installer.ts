@@ -1,7 +1,7 @@
 import { appendFile, mkdir, open, readFile, rename, rm, lstat, readdir } from "node:fs/promises";
 import { join, resolve, relative, isAbsolute } from "node:path";
 import { dlopen, ptr } from "bun:ffi";
-import { replaceInstallation, InstallationRecoveryError } from "./windows-installer-core";
+import { replaceInstallation, InstallationRecoveryError, launchInstallerApp } from "./windows-installer-core";
 
 async function command(args: string[], env = process.env): Promise<string> {
   const child = Bun.spawn(args, {env,windowsHide:true,stdin:"ignore",stdout:"pipe",stderr:"pipe"});
@@ -85,10 +85,14 @@ export async function runInstaller(payload:string,expectedHash:string) {
   await mkdir(parent,{recursive:true});
   const log=async(s:string)=>{await appendFile(logPath,`[${new Date().toISOString()}] ${s}\n`);};
   let lock:Awaited<ReturnType<typeof open>>|undefined,installed=false,handoffStarted=false;
-  const launch=()=>{
-    const child=Bun.spawn([join(app,"bin/launcher.exe")],{cwd:join(app,"bin"),detached:true,windowsHide:true,stdin:"ignore",stdout:"ignore",stderr:"ignore"});
-    child.unref();
-    return child;
+  let launchAttempted=false;
+  const launch=async()=>{
+    launchAttempted=true;
+    const launchLog=join(parent,"installer-launch.log");
+    await log(`Launching installed app; native output: ${launchLog}`);
+    await appendFile(launchLog,`\n[${new Date().toISOString()}] Installer launch ${id}\n`);
+    const pid=await launchInstallerApp(join(app,"bin/launcher.exe"),join(app,"bin"),launchLog);
+    await log(`Launcher PID ${pid} remained running through startup observation`);
   };
   try {
     // Fail closed on a crashed installer's lock; never guess its ownership.
@@ -126,14 +130,14 @@ export async function runInstaller(payload:string,expectedHash:string) {
     await removeOwned(parent,stage);
     await rm(join(parent,"update-request.json"),{force:true});
     // Reopen immediately; successful installation needs no confirmation dialog.
-    launch();
+    await launch();
   } catch(error) {
     if(lock) await rm(join(parent,"update-request.json"),{force:true});
     await log(`ERROR installed=${installed}: ${error}`);
-    if(handoffStarted && !(error instanceof InstallationRecoveryError)) {
+    if(handoffStarted && !launchAttempted && !(error instanceof InstallationRecoveryError)) {
       try {
         if(!(await installedProcesses(app)).some(p=>["bun","launcher"].includes(p.name.toLowerCase()))) {
-          await validateBundle(app); launch(); await log("Reopened the available installation after update failure");
+          await validateBundle(app); await launch(); await log("Reopened the available installation after update failure");
         }
       } catch(recoveryError) {await log(`Could not reopen installation: ${recoveryError}`);}
     }

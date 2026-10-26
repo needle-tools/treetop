@@ -1,7 +1,26 @@
-import { access, rename, mkdir, readdir } from "node:fs/promises";
+import { access, rename, mkdir, readdir, open } from "node:fs/promises";
 import { dirname, resolve, join } from "node:path";
 
 export class InstallationRecoveryError extends Error {}
+
+/** Keep native launcher/Worker errors after setup exits instead of discarding them. */
+export async function launchInstallerApp(executable: string, cwd: string, logPath: string, args: string[] = [], startupMs = 5000) {
+  const output = await open(logPath, "a");
+  let child: ReturnType<typeof Bun.spawn>;
+  try {
+    child = Bun.spawn([executable, ...args], { cwd, detached: true, windowsHide: true,
+      stdin: "ignore", stdout: output.fd, stderr: output.fd });
+  } finally { await output.close(); }
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const result = await Promise.race([
+      child.exited.then(code => ({ code })),
+      new Promise<null>(resolve => { timer = setTimeout(() => resolve(null), startupMs); }),
+    ]);
+    if (result) throw Error(`Treetop launcher exited during startup (PID ${child.pid}, code ${result.code}). Launch log: ${logPath}`);
+    return child.pid;
+  } finally { if (timer) clearTimeout(timer); child.unref(); }
+}
 
 // Legacy brokers inherited app/bin as cwd. Windows locks that directory even
 // though their executable is elsewhere. Leave directories in place and move
