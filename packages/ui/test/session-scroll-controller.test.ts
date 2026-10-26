@@ -467,7 +467,7 @@ describe("session scroll controller", () => {
       controller.updateTail("live-output:1");
       scheduler.flush();
 
-      expect(workBody.scrollTop).toBe(1_000_000_000);
+      expect(workBody.scrollTop).toBe(workBody.scrollHeight);
       expect(scroller.scrollTop).toBe(1_712);
     });
   }
@@ -489,7 +489,7 @@ describe("session scroll controller", () => {
 
     controller.forceTailFollow();
     scheduler.flush();
-    expect(workBody.scrollTop).toBe(1_000_000_000);
+    expect(workBody.scrollTop).toBe(workBody.scrollHeight);
   });
 
   test("remembers live-work follow intent while the lane is offscreen", () => {
@@ -539,7 +539,7 @@ describe("session scroll controller", () => {
     expect(controller.isPaused).toBe(false);
     scheduler.flush();
     expect(controller.isActive).toBe(true);
-    expect(next.workBody.scrollTop).toBe(1_000_000_000);
+    expect(next.workBody.scrollTop).toBe(next.workBody.scrollHeight);
   });
 
   test("keeps a paused reader in place when a new transcript step arrives", () => {
@@ -576,7 +576,7 @@ describe("session scroll controller", () => {
     scheduler.flush();
 
     expect(scrollWrites()).toBe(2);
-    expect(scroller.scrollTop).toBe(1_000_000_000);
+    expect(scroller.scrollTop).toBe(scroller.scrollHeight);
   });
 
   test("keeps following when ordinary live updates grow between scheduled corrections", () => {
@@ -600,7 +600,7 @@ describe("session scroll controller", () => {
     scheduler.flush();
 
     expect(controller.isPaused).toBe(false);
-    expect(scroller.scrollTop).toBe(1_000_000_000);
+    expect(scroller.scrollTop).toBe(scroller.scrollHeight);
   });
 
   test("keeps an explicit send-time follow when the optimistic tail update supersedes it", () => {
@@ -623,7 +623,7 @@ describe("session scroll controller", () => {
     scheduler.flush();
 
     expect(controller.isPaused).toBe(false);
-    expect(scroller.scrollTop).toBe(1_000_000_000);
+    expect(scroller.scrollTop).toBe(scroller.scrollHeight);
   });
 
   test("does not mistake a turn-boundary relayout for reader scroll intent", () => {
@@ -647,7 +647,7 @@ describe("session scroll controller", () => {
     scheduler.flush();
 
     expect(controller.isPaused).toBe(false);
-    expect(scroller.scrollTop).toBe(1_000_000_000);
+    expect(scroller.scrollTop).toBe(scroller.scrollHeight);
   });
 
   test("does not mistake late content layout for reader scroll intent", () => {
@@ -664,7 +664,7 @@ describe("session scroll controller", () => {
     scheduler.flush();
 
     expect(controller.isPaused).toBe(false);
-    expect(scroller.scrollTop).toBe(1_000_000_000);
+    expect(scroller.scrollTop).toBe(scroller.scrollHeight);
   });
 
   test("a viewport-height change cannot detach a followed lane", () => {
@@ -699,7 +699,7 @@ describe("session scroll controller", () => {
     controller.updateTail("output-after-resize");
     scheduler.flush();
     expect(controller.isPaused).toBe(false);
-    expect(scroller.scrollTop).toBe(1_000_000_000);
+    expect(scroller.scrollTop).toBe(scroller.scrollHeight);
 
     controller.setPaused(true);
     Object.assign(scroller, { clientHeight: 200, scrollTop: 400 });
@@ -730,7 +730,7 @@ describe("session scroll controller", () => {
     scheduler.flush();
     expect(controller.isPaused).toBe(false);
     expect(controller.isActive).toBe(true);
-    expect(replacement.scrollTop).toBe(1_000_000_000);
+    expect(replacement.scrollTop).toBe(replacement.scrollHeight);
   });
 
   test("settles content that grows after the final pending tail write", () => {
@@ -749,7 +749,7 @@ describe("session scroll controller", () => {
     scheduler.flush();
 
     expect(controller.isPaused).toBe(false);
-    expect(scroller.scrollTop).toBe(1_000_000_000);
+    expect(scroller.scrollTop).toBe(scroller.scrollHeight);
   });
 
   test("still detaches when a pointer gesture scrolls away from the tail", () => {
@@ -950,7 +950,7 @@ describe("session scroll controller", () => {
 
     controller.scrollToEdge("end");
     scheduler.flush();
-    expect(scroller.scrollTop).toBe(1_000_000_000);
+    expect(scroller.scrollTop).toBe(scroller.scrollHeight);
     expect(controller.isPaused).toBe(false);
   });
 
@@ -965,8 +965,8 @@ describe("session scroll controller", () => {
 
     controller.scrollToEdge("end");
     scheduler.flush();
-    expect(scroller.scrollTop).toBe(1_000_000_000);
-    expect(workBody.scrollTop).toBe(1_000_000_000);
+    expect(scroller.scrollTop).toBe(scroller.scrollHeight);
+    expect(workBody.scrollTop).toBe(workBody.scrollHeight);
 
     // A new response can grow by more than the near-end threshold in one
     // render, before a browser scroll event has a chance to correct it.
@@ -975,7 +975,7 @@ describe("session scroll controller", () => {
     scroller.scrollHeight += 300;
     controller.updateTail("later-live-output");
     scheduler.flush();
-    expect(scroller.scrollTop).toBe(1_000_000_000);
+    expect(scroller.scrollTop).toBe(scroller.scrollHeight);
     expect(controller.isActive).toBe(true);
 
     controller.onWheel({ deltaY: -100 } as WheelEvent);

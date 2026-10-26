@@ -84,9 +84,9 @@ function usableLayout(el: HTMLElement): boolean {
 }
 
 function scrollToEnd(el: HTMLElement): void {
-  // Let the browser clamp to the real end. Reading scrollHeight here forces
-  // layout across large transcripts during startup.
-  el.scrollTop = 1_000_000_000;
+  // Use a bounded offset. An oversized sentinel can lose precision in native
+  // scrolling; the actual height lets the browser clamp to the exact end.
+  el.scrollTop = el.scrollHeight;
 }
 
 function escapedAttribute(value: string): string {
@@ -111,6 +111,7 @@ export class SessionScrollController {
   private pendingTailFollowForced = false;
   private pendingTailFollowShouldStick = false;
   private layoutObserver: ResizeObserver | null = null;
+  private viewportObserver: ResizeObserver | null = null;
   private cursorSettled = false;
   private pointerScrollIntent = false;
   private settleTimer: ReturnType<typeof setTimeout> | null = null;
@@ -203,6 +204,8 @@ export class SessionScrollController {
 
   setElement(next: HTMLElement | null): void {
     if (next === this.el) return;
+    this.viewportObserver?.disconnect();
+    this.viewportObserver = null;
     this.pointerScrollIntent = false;
     const previous = this.el;
     if (previous && this.renderedOnce) this.saveMemory(previous);
@@ -224,6 +227,17 @@ export class SessionScrollController {
     this.observedScrollHeight = next.scrollHeight;
     this.observedClientHeight = next.clientHeight;
     this.observedScrollTop = next.scrollTop;
+    if (typeof ResizeObserver !== "undefined") {
+      this.viewportObserver = new ResizeObserver(() => {
+        // WebKit can shrink the viewport (including for a scrollbar) without
+        // emitting scroll or receiving a new transcript tail. Preserve follow
+        // independently of those events, but never move a paused reader.
+        if (this.el !== next || this.paused || this.pendingMemoryRestore ||
+            next.clientHeight === this.observedClientHeight || !usableLayout(next)) return;
+        this.scheduleTailFollow();
+      });
+      this.viewportObserver.observe(next);
+    }
     if (this.restoreMemory(next)) return;
     if (previous && this.renderedOnce) {
       this.preserveReplacement(previous, next);
@@ -258,6 +272,8 @@ export class SessionScrollController {
   }
 
   dispose(): void {
+    this.viewportObserver?.disconnect();
+    this.viewportObserver = null;
     this.pendingMemoryRestore = null;
     this.tailFollowSeq += 1;
     this.pendingTailFollowSeq = 0;

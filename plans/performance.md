@@ -1,5 +1,18 @@
 # performance.md — frontend perf findings + open work
 
+### 2026-10-26: browser CI tail-follow and preview synchronization
+
+The failed CI run left WebKit 15px short of the completed transcript tail.
+A regression shrinking the viewport without new output reproduced the failure.
+Use the actual scroll height instead of an oversized offset and observe viewport
+resizes while following; disconnect the observer on replacement/disposal and
+leave paused readers alone. This adds a layout read only when scrolling to end.
+The Windows diff-preview test also raced native details toggles against Svelte's
+lazy group body; wait for those states to agree before opening and hovering.
+All 47 lifecycle cases pass in both WebKit and Chromium on Windows, alongside
+64 scroll unit tests. Prepare version 0.1.2 as a draft; no native build or
+production restart was performed.
+
 Living notes on the supergit dashboard renderer-process performance.
 Started after Chrome Helper sat at 70-100% CPU with the tab in focus
 and a few sessions/worktrees on screen. Updated as we apply fixes and

@@ -1133,6 +1133,22 @@ describe("SessionView browser lifecycle", { concurrency: false }, () => {
     await currentPage.close();
   }, 30_000);
 
+  test("keeps the completed tail pinned when the viewport shrinks without new output", async () => {
+    const currentPage = await openHarness();
+    try {
+      await completeLatestTurn(currentPage);
+      await currentPage.locator(".session-tail-follow").click();
+      const distance = () => currentPage.locator(".messages").evaluate(el => el.scrollHeight - el.clientHeight - el.scrollTop);
+      await waitForCondition(async () => await distance() <= 1, "Initial tail not reached");
+      await currentPage.waitForTimeout(150);
+      await currentPage.locator(".session-lifecycle-stage").evaluate(el => {
+        (el as HTMLElement).style.height = `${el.getBoundingClientRect().height - 15}px`;
+      });
+      await currentPage.waitForTimeout(100);
+      await waitForCondition(async () => await distance() <= 1, "Viewport resize left followed tail above the end");
+    } finally { await currentPage.close(); }
+  }, 30_000);
+
   test("keeps following ordinary live rows that arrive across consecutive frames", async () => {
     const currentPage = await openHarness();
     await currentPage
@@ -2266,7 +2282,14 @@ describe("SessionView browser lifecycle", { concurrency: false }, () => {
       if (!(await steps.innerText()).includes("Showing all")) await steps.click();
       await waitForCondition(async () => (await steps.innerText()).includes("Showing all"), "Work steps did not expand");
       const group = currentPage.locator(".work-action-group").last();
-      if (await group.getAttribute("open") === null) await group.locator(":scope > summary").press("Enter");
+      // Showing all steps changes auto-open state. Wait for the native details
+      // toggle and Svelte's lazy body to agree before toggling it ourselves.
+      await waitForCondition(async () =>
+        (await group.getAttribute("open") !== null) ===
+        (await group.locator(":scope > .work-action-group-entries").count() > 0),
+        "Action group did not settle after expanding work steps");
+      if (await group.getAttribute("open") === null) await group.locator(":scope > summary").click();
+      await group.locator(":scope > .work-action-group-entries").waitFor();
       await currentPage.locator(".work-file-edit-preview .work-preview-path").last().hover({ timeout: 5000 });
       await currentPage.locator(".visual-preview-diff-tooltip .line.remove").filter({ hasText: "-old instructions" }).waitFor();
       assert((await currentPage.locator(".visual-preview-diff-tooltip .line.add").innerText()).includes("+Preview/export parity: complete pipeline only."));
