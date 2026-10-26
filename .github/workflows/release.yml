@@ -112,7 +112,8 @@ jobs:
   # ── Gather both platforms' assets into a single GitHub Release ───────
   release:
     needs: build
-    runs-on: ["self-hosted", "Windows", "X64", "playwright", "general"]
+    # Publishing needs no native tools; keep artifact transfers on GitHub's network.
+    runs-on: ubuntu-latest
     timeout-minutes: 10
     outputs:
       tag: ${{ steps.tag.outputs.tag }}
