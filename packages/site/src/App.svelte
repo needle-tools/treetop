@@ -1,6 +1,25 @@
 <script lang="ts">
   const github = "https://github.com/needle-tools/treetop";
   const releases = `${github}/releases`;
+
+  function reveal(node: HTMLElement) {
+    node.classList.add("reveal-ready");
+    const observer = new IntersectionObserver(
+      ([entry]) => {
+        if (entry.isIntersecting) {
+          node.classList.add("is-visible");
+          observer.disconnect();
+        }
+      },
+      { rootMargin: "0px 0px -8% 0px", threshold: 0.15 },
+    );
+    observer.observe(node);
+    return {
+      destroy() {
+        observer.disconnect();
+      },
+    };
+  }
 </script>
 
 {#snippet platforms()}
@@ -47,8 +66,8 @@
       <div class="intro">
         <h1 id="headline">A little perspective.<br />For a lot of agents.</h1>
         <p class="description">
-          Your AI coding sessions, repositories, and terminals. Together in one
-          calm workspace.
+          <span>Your AI coding sessions, repositories, and terminals.</span>
+          <span>One workspace to keep it all in view.</span>
         </p>
         <div class="download">
           <a class="button" href={releases}
@@ -77,7 +96,7 @@
       </div>
     </section>
     <section class="features" aria-label="What you can do with Treetop">
-      <article>
+      <article use:reveal>
         <div class="feature-copy">
           <h2>Keep your bearings.</h2>
           <p>
@@ -87,7 +106,7 @@
         </div>
         <div class="feature-art sessions" aria-hidden="true"></div>
       </article>
-      <article>
+      <article use:reveal>
         <div class="feature-copy">
           <h2>Stay close to the work.</h2>
           <p>
@@ -104,7 +123,7 @@
           alt="A paper repository card branching into feature/search and fix/login worktrees, each with its own changes and terminal status"
         />
       </article>
-      <article>
+      <article use:reveal>
         <div class="feature-copy">
           <h2>Let your agents take part.</h2>
           <p>
@@ -142,4 +161,9 @@
       >&copy; {new Date().getFullYear()} Needle</span
     >
   </footer>
+  <div
+    class="closing-vista"
+    role="img"
+    aria-label="Sunlit treetops seen from just above the forest canopy"
+  ></div>
 </div>
