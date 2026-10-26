@@ -91,6 +91,20 @@ export class ReminderStore {
       return item;
     });
   }
+  snooze(id: string, now = Date.now()): Promise<Reminder> {
+    return this.serialized(async () => {
+      const items = await this.read();
+      const item = items.find(item => item.id === id);
+      if (!item) throw new Error("Reminder not found");
+      if (item.status !== "due") throw new Error("Only due reminders can be snoozed");
+      item.status = "scheduled";
+      item.dueAt = new Date(now + 2 * 60 * 60 * 1000).toISOString();
+      delete item.deliveredAt;
+      delete item.dismissedAt;
+      await this.write(items);
+      return item;
+    });
+  }
   takeDue(now = Date.now()): Promise<Reminder[]> {
     return this.serialized(async () => {
       const items = await this.read();
@@ -125,11 +139,13 @@ export function startReminderScheduler(store: ReminderStore, deliver: (reminder:
 export async function handleRemindersHttp(request: Request, store: ReminderStore, changed: (change: Record<string, unknown>) => void): Promise<Response> {
   const path = new URL(request.url).pathname;
   if (request.method === "GET" && path === "/api/reminders") return Response.json(await store.list());
-  const match = /^\/api\/reminders\/([^/]+)\/(dismiss|cancel)$/.exec(path);
+  const match = /^\/api\/reminders\/([^/]+)\/(dismiss|cancel|snooze)$/.exec(path);
   if (!match) return Response.json({ error: "Reminder route not found" }, { status: 404 });
   if (request.method !== "POST") return Response.json({ error: "POST required" }, { status: 405 });
   try {
-    const reminder = await store.updateStatus(decodeURIComponent(match[1]!), match[2] === "dismiss" ? "dismissed" : "cancelled");
+    const id = decodeURIComponent(match[1]!);
+    const reminder = match[2] === "snooze" ? await store.snooze(id)
+      : await store.updateStatus(id, match[2] === "dismiss" ? "dismissed" : "cancelled");
     changed({ kind: "reminder_changed", id: reminder.id });
     return Response.json(reminder);
   } catch (error) {

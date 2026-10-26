@@ -16,6 +16,7 @@
   const alerts = createReminderAlerts({
     showToast: options => addToast(options), dismissToast: id => dismissToast(id),
     dismissReminder: id => change(id, "dismiss"), openReminder: showDetails,
+    snoozeReminder: id => change(id, "snooze"),
     onError: reportError,
   });
   function reportError(reason: unknown) {
@@ -43,7 +44,7 @@
       if (mounted && sequence === requestSequence) error = reason instanceof Error ? reason.message : String(reason);
     }
   }
-  async function change(id: string, action: "dismiss" | "cancel"): Promise<void> {
+  async function change(id: string, action: "dismiss" | "cancel" | "snooze"): Promise<void> {
     const response = await fetch(apiUrl(`/api/reminders/${encodeURIComponent(id)}/${action}`), { method: "POST" });
     if (!response.ok) {
       const body = await response.json();

@@ -495,11 +495,19 @@ Reminders are listed in Inbox, using its compact message-list styles and unread
 badge (including an accessible reminder/message count breakdown). There is no
 separate Reminders header menu; upcoming/cancelled items remain queryable through
 MCP. Due reminders show persistent
-bottom-right toasts, removed only by clicking or dismissing. Clicking opens a
+bottom-right toasts, removed by clicking, dismissing, or snoozing. Clicking opens a
 details dialog and focuses the optional linked project/session; the dialog also
 offers a Go to project/session action. Acknowledgement propagates across windows.
 SSE changes trigger refresh, with periodic reconciliation for missed events.
 MCP initialization instructions advertise reminders to supported agent clients.
+
+2026-10-26: reminder toasts include a bottom-left "Remind me later · 2 hours"
+button aligned with the message. POST `/api/reminders/:id/snooze` atomically
+reschedules the same due reminder from server time, clears delivery metadata,
+and broadcasts the change. Content and navigation links survive restarts.
+The action stops click propagation, deduplicates pending clicks, and retains
+the toast on request failure. 42 store/alert/toast tests pass; App and Reminders
+compile. No production build or restart.
 
 Reminder delivery also appears in Inbox. `/api/messages` includes a reminders
 section derived from the durable store; it includes every due reminder and keeps

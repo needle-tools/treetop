@@ -5,11 +5,13 @@ export function createReminderAlerts(deps: {
   showToast: (options: AddToastOpts) => number;
   dismissToast: (id: number) => void;
   dismissReminder: (id: string) => Promise<void>;
+  snoozeReminder: (id: string) => Promise<void>;
   openReminder: (reminder: Reminder) => void;
   onError: (error: unknown) => void;
 }) {
   const alerts = new Map<string, number>();
   const acknowledging = new Set<string>();
+  const snoozing = new Set<string>();
   return {
     sync(reminders: Reminder[]): void {
       const due = new Set(reminders.filter(item => item.status === "due").map(item => item.id));
@@ -22,9 +24,25 @@ export function createReminderAlerts(deps: {
         const toast = deps.showToast({
           kind: "info", title: item.title, message: item.message, persist: true,
           onClick: () => deps.openReminder(item),
+          action: {
+            label: "Remind me later · 2 hours",
+            onClick: async () => {
+              if (snoozing.has(item.id)) return;
+              snoozing.add(item.id);
+              try {
+                await deps.snoozeReminder(item.id);
+                const toastId = alerts.get(item.id);
+                alerts.delete(item.id);
+                acknowledging.add(item.id);
+                if (toastId !== undefined) deps.dismissToast(toastId);
+              } catch (error) { deps.onError(error); }
+              finally { snoozing.delete(item.id); }
+            },
+          },
           onDismiss: () => {
             if (!alerts.has(item.id)) return;
             alerts.delete(item.id);
+            if (snoozing.has(item.id)) return;
             acknowledging.add(item.id);
             void deps.dismissReminder(item.id).catch(error => {
               acknowledging.delete(item.id);

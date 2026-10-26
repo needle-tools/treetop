@@ -4,6 +4,29 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { ReminderStore, handleRemindersHttp, startReminderScheduler } from "../src/reminders";
 
+test("snooze persists the same reminder for two hours and delivers it once again", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "treetop-reminders-"));
+  const store = new ReminderStore(directory);
+  const now = Date.now();
+  const item = await store.schedule({ title: "Review", message: "Logs", details: "Details", repoId: "cloud", sessionSource: "session", dueAt: new Date(now - 1000).toISOString() }, now - 2000);
+  await store.takeDue(now);
+  const changes: unknown[] = [];
+  const before = Date.now();
+  const response = await handleRemindersHttp(new Request(`http://localhost/api/reminders/${item.id}/snooze`, { method: "POST" }), store, change => changes.push(change));
+  expect(response.status).toBe(200);
+  const snoozed = await response.json();
+  expect(snoozed).toMatchObject({ ...item, status: "scheduled", dueAt: snoozed.dueAt });
+  expect(snoozed.deliveredAt).toBeUndefined();
+  expect(Date.parse(snoozed.dueAt)).toBeGreaterThanOrEqual(before + 7200000);
+  expect(Date.parse(snoozed.dueAt)).toBeLessThanOrEqual(Date.now() + 7200000);
+  const reopened = new ReminderStore(directory);
+  expect(await reopened.listInbox()).toEqual([]);
+  expect(await reopened.takeDue(Date.parse(snoozed.dueAt) - 1)).toEqual([]);
+  expect((await reopened.takeDue(Date.parse(snoozed.dueAt))).map(r => r.id)).toEqual([item.id]);
+  expect(await reopened.takeDue(Date.parse(snoozed.dueAt))).toEqual([]);
+  expect(changes).toEqual([{ kind: "reminder_changed", id: item.id }]);
+});
+
 test("reminders survive reopening, become due once, and stay until acknowledged", async () => {
   const directory = await mkdtemp(join(tmpdir(), "treetop-reminders-"));
   const store = new ReminderStore(directory);

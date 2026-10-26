@@ -116,6 +116,12 @@
 .toast-message-italic {
   font-style: italic;
 }
+.toast-action {
+  align-self: flex-start;
+  margin-top: 8px;
+  padding: 4px 8px;
+  font-size: 0.8rem;
+}
 .toast-close {
   background: transparent;
   color: var(--text-muted);

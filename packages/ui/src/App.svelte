@@ -13562,6 +13562,9 @@
             class="toast-message"
             class:toast-message-italic={t.messageItalic}>{t.message}</span
           >
+          {#if t.action}
+            <button class="toast-action" on:click|stopPropagation={() => t.action?.onClick()}>{t.action.label}</button>
+          {/if}
         </div>
         <button
           class="toast-close"
