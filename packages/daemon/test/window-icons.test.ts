@@ -36,7 +36,7 @@ test.skipIf(process.platform !== "win32")("original caption styling succeeds on 
 
 test("Windows tray gets a large raster source while macOS keeps point-sized layout", () => {
   expect(trayImageSize("win32")).toEqual({ width: 256, height: 256 });
-  expect(trayImageSize("darwin")).toEqual({ width: 16, height: 16 });
+  expect(trayImageSize("darwin")).toEqual({ width: 24, height: 18 });
 });
 
 test("ICO contains directly rendered images for fractional Windows scale factors", async () => {
@@ -60,6 +60,19 @@ test("macOS packages a Retina tray source and full-resolution Retina app icons",
   const tray = await sharp(resolve(root, source)).metadata();
   expect(tray.width).toBeGreaterThanOrEqual(trayImageSize("darwin").width * 2);
   expect(tray.height).toBeGreaterThanOrEqual(trayImageSize("darwin").height * 2);
+  const { data, info } = await sharp(resolve(root, source)).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
+  expect(info.channels).toBe(4);
+  expect(data[3]).toBe(0); // No app-icon background in the menu bar.
+  let opaque = 0;
+  for (let i = 0; i < data.length; i += 4) {
+    if (!data[i + 3]) continue;
+    opaque++;
+    expect(data[i]).toBe(0);
+    expect(data[i + 1]).toBe(0);
+    expect(data[i + 2]).toBe(0);
+  }
+  expect(opaque).toBeGreaterThan(info.width * info.height * 0.2);
+  expect(opaque).toBeLessThan(info.width * info.height * 0.8);
   for (const size of [16, 32, 64, 128, 256, 512]) {
     const retina = await sharp(resolve(root, `icon.iconset/icon_${size}x${size}@2x.png`)).metadata();
     expect(retina.width).toBe(size * 2);

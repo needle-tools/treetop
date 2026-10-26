@@ -554,9 +554,10 @@ const trayAssetPath = [
   resolve(dirname(process.execPath), "..", "Resources", "app", trayAsset),
   resolve(dirname(process.execPath), "..", "Resources", "app.asar.unpacked", "app", trayAsset),
   resolve(dirname(process.execPath), "..", "Resources", "app.asar.unpacked", trayAsset),
-  resolve(process.cwd(), isWin ? "icon.ico" : "icon.iconset/icon_32x32@2x.png"),
+  resolve(process.cwd(), isWin ? "icon.ico" : "tray.png"),
 ].find(path => existsSync(path));
-const tray = new Tray({ title: PRODUCT_NAME, image: trayAssetPath ?? "", template: false, ...trayImageSize(process.platform) });
+const macTemplateTray = process.platform === "darwin" && !!trayAssetPath;
+const tray = new Tray({ title: macTemplateTray ? "" : PRODUCT_NAME, image: trayAssetPath ?? "", template: macTemplateTray, ...trayImageSize(process.platform) });
 llog(`background runtime exitOnLastWindowClosed=${BuildConfig.getSync().runtime?.exitOnLastWindowClosed ?? true}`);
 llog(`background tray visible=${tray.visible} image=${trayAssetPath ?? "missing"}`);
 if (!tray.visible) llog("WARNING: tray unavailable; closing the window will stop managed resources");
@@ -597,7 +598,7 @@ async function updateTray() {
     backgroundWasConnected ||= status.connected === true;
     const sessions = status.sessions ?? 0, commands = status.commands ?? 0, terminals = status.shells ?? 0;
     const title = status.connected ? `${sessions} sessions, ${terminals} terminals, ${commands} commands` : "Background connection unavailable";
-    tray.setTitle(isWin ? `Treetop: ${title}` : PRODUCT_NAME);
+    tray.setTitle(isWin ? `Treetop: ${title}` : macTemplateTray ? "" : PRODUCT_NAME);
     const remaining = Math.max(0, Math.ceil((status.remainingMs ?? 0) / 60_000));
     tray.setMenu([
       { type: "normal" as const, label: trayError || `Treetop: ${title}`, enabled: false },

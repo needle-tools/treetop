@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="24" height="18" viewBox="12 54 228 152" fill="none">
+  <title>Treetop menu bar template</title>
+  <defs>
+    <mask id="canopy" maskUnits="userSpaceOnUse" x="12" y="54" width="228" height="152">
+      <g fill="white" stroke="black" stroke-width="8" stroke-linejoin="round">
+        <path d="M26 160C57 126 87 116 116 126C151 137 182 166 228 197C205 198 188 188 166 178C112 154 71 144 26 160Z"/>
+        <path d="M26 129C61 93 91 86 122 98C163 114 195 157 228 197C190 173 158 146 122 133C85 119 54 121 26 129Z"/>
+        <path d="M41 98C72 77 104 61 134 67C174 74 188 121 228 197C194 164 170 139 140 120C103 96 76 91 41 98Z"/>
+      </g>
+    </mask>
+  </defs>
+  <path fill="black" mask="url(#canopy)" d="M12 54h228v152H12z"/>
+</svg>

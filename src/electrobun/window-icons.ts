@@ -22,6 +22,7 @@ export function createWindowsCaptionStyle() {
  * Give Explorer a source it can downsample at any normal display scale. macOS
  * interprets the same options as points; its bundled PNG supplies Retina pixels. */
 export function trayImageSize(platform: string) {
+  if (platform === "darwin") return { width: 24, height: 18 };
   const size = platform === "win32" ? 256 : 16;
   return { width: size, height: size };
 }

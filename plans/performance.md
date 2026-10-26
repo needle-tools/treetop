@@ -1,5 +1,15 @@
 # performance.md — frontend perf findings + open work
 
+### 2026-10-26: native macOS menu-bar icon
+
+The menu bar reused the opaque square app icon at 16 points with template mode
+disabled. Package a separate transparent SVG-derived canopy mask as tray.png,
+use macOS template rendering and a 24x18-point icon-only layout. Windows retains
+its existing ICO and title. Generate only this asset with
+`node scripts/generate-icons.mjs --tray-only`. All six icon tests pass, including
+transparent monochrome pixels and Retina dimensions; native macOS appearance
+still needs confirmation on a Mac. No installer build or app restart performed.
+
 ### 2026-10-26: browser CI tail-follow and preview synchronization
 
 The failed CI run left WebKit 15px short of the completed transcript tail.

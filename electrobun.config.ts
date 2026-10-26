@@ -62,8 +62,8 @@ export default {
       "install-payload/**",
     ],
     copy: {
-      // 64 source pixels; the native macOS tray remains 16 logical points.
-      "icon.iconset/icon_32x32@2x.png": "tray.png",
+      // SVG-derived transparent template at 4x the menu-bar point size.
+      "tray.png": "tray.png",
       "icon.ico": "tray.ico",
       [`build/supergit-native/supergit${exe}`]: `supergit${exe}`,
       [`build/supergit-native/pty-helper${exe}`]: `pty-helper${exe}`,

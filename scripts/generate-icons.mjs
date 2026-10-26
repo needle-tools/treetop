@@ -77,6 +77,10 @@ function buildIco(entries) {
 // ----------------------------------------------------------------------
 
 async function main() {
+  // A dedicated transparent alpha template, not the square app icon.
+  await sharp(await readFile(join(ROOT, "tray.svg")), { density: 288 })
+    .resize(96, 72).png().toFile(join(ROOT, "tray.png"));
+  if (process.argv.includes("--tray-only")) return;
   const svgBuf = await readFile(SVG_PATH);
   console.log(`Source: ${SVG_PATH}`);
 
