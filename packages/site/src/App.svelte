@@ -125,10 +125,10 @@
       </article>
       <article use:reveal>
         <div class="feature-copy">
-          <h2>Let your agents take part.</h2>
+          <h2>Make it your own.</h2>
           <p>
-            Control Treetop through MCP. Give your agents access to the
-            workspace you use together.
+            Use MCP to let agents run project commands, read sessions, and send
+            messages. Build your own workflows around Treetop.
           </p>
         </div>
         <div class="feature-art agents" aria-hidden="true"></div>
