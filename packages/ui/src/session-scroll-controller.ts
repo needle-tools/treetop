@@ -112,6 +112,7 @@ export class SessionScrollController {
   private pendingTailFollowShouldStick = false;
   private layoutObserver: ResizeObserver | null = null;
   private viewportObserver: ResizeObserver | null = null;
+  private rowObserver: MutationObserver | null = null;
   private cursorSettled = false;
   private pointerScrollIntent = false;
   private settleTimer: ReturnType<typeof setTimeout> | null = null;
@@ -206,6 +207,8 @@ export class SessionScrollController {
     if (next === this.el) return;
     this.viewportObserver?.disconnect();
     this.viewportObserver = null;
+    this.rowObserver?.disconnect();
+    this.rowObserver = null;
     this.pointerScrollIntent = false;
     const previous = this.el;
     if (previous && this.renderedOnce) this.saveMemory(previous);
@@ -233,10 +236,30 @@ export class SessionScrollController {
         // emitting scroll or receiving a new transcript tail. Preserve follow
         // independently of those events, but never move a paused reader.
         if (this.el !== next || this.paused || this.pendingMemoryRestore ||
-            next.clientHeight === this.observedClientHeight || !usableLayout(next)) return;
+            (next.clientHeight === this.observedClientHeight && next.scrollHeight === this.observedScrollHeight) ||
+            !usableLayout(next)) return;
         this.scheduleTailFollow();
       });
-      this.viewportObserver.observe(next);
+      this.viewportObserver.observe(next, { box: "border-box" });
+      // Text reflow and late assets can change the extent without resizing the
+      // viewport. Watch only mounted rows, and release removed rows immediately.
+      const rows = new Set<Element>();
+      const syncRows = () => {
+        for (const row of rows) {
+          if (row.parentElement !== next) {
+            this.viewportObserver?.unobserve(row);
+            rows.delete(row);
+          }
+        }
+        for (const row of Array.from(next.children)) {
+          if (rows.has(row)) continue;
+          rows.add(row);
+          this.viewportObserver?.observe(row, { box: "border-box" });
+        }
+      };
+      syncRows();
+      this.rowObserver = new MutationObserver(syncRows);
+      this.rowObserver.observe(next, { childList: true });
     }
     if (this.restoreMemory(next)) return;
     if (previous && this.renderedOnce) {
@@ -272,6 +295,8 @@ export class SessionScrollController {
   }
 
   dispose(): void {
+    this.rowObserver?.disconnect();
+    this.rowObserver = null;
     this.viewportObserver?.disconnect();
     this.viewportObserver = null;
     this.pendingMemoryRestore = null;
@@ -395,7 +420,7 @@ export class SessionScrollController {
         // without a new transcript tail key. Preserve follow only when the
         // content geometry actually changed; a quiet bare scroll is reader
         // intent (scrollbar, keyboard, and some WebKit gestures).
-        if (!isNearVisualScrollEnd(el, VISUAL_TAIL_FOLLOW_RESUME_PX)) {
+        if (!isNearVisualScrollEnd(el, this.followExactEnd ? 1 : VISUAL_TAIL_FOLLOW_RESUME_PX)) {
           this.settleTailFollow(el);
         } else {
           this.observedScrollTop = el.scrollTop;

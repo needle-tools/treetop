@@ -128,6 +128,26 @@ function fakeLiveWorkScroller(opts: { zen?: boolean } = {}): {
 }
 
 describe("session scroll controller", () => {
+  test("keeps exact-end follow after a small viewport resize emits scroll first", () => {
+    const scheduler = new ManualScheduler();
+    const scroller = fakeScroller(() => 220);
+    let top = 700;
+    Object.defineProperty(scroller, "scrollTop", {
+      get: () => top,
+      set: (value: number) => { top = Math.min(value, scroller.scrollHeight - scroller.clientHeight); },
+    });
+    const controller = createSessionScrollController({ scheduler });
+    controller.setElement(scroller);
+    controller.scrollToEdge("end");
+    scheduler.flush();
+    Object.defineProperty(scroller, "clientHeight", { value: 497 });
+    controller.onScroll();
+    scheduler.flush();
+    expect(scroller.scrollTop).toBe(703);
+    expect(controller.isPaused).toBe(false);
+    controller.dispose();
+  });
+
   test("does not treat a horizontal trackpad gesture as vertical reader intent", () => {
     const scheduler = new ManualScheduler();
     const scroller = fakeScroller(() => 220);

@@ -13,6 +13,14 @@ All 47 lifecycle cases pass in both WebKit and Chromium on Windows, alongside
 64 scroll unit tests. Prepare version 0.1.2 as a draft; no native build or
 production restart was performed.
 
+The subsequent macOS CI run exposed late row reflow with unchanged viewport
+height (Windows CI passed). Observe mounted row sizes as well as the viewport,
+refresh that bounded observer set on direct-child changes, and disconnect both
+observers on replacement/disposal. The browser regression now verifies that the
+viewport really shrinks and also grows a row without new transcript output.
+An additional unit regression covers a small resize scroll arriving before the
+observer: exact-end following must not accept the ordinary four-pixel tolerance.
+
 Living notes on the supergit dashboard renderer-process performance.
 Started after Chrome Helper sat at 70-100% CPU with the tab in focus
 and a few sessions/worktrees on screen. Updated as we apply fixes and

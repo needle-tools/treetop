@@ -1141,11 +1141,24 @@ describe("SessionView browser lifecycle", { concurrency: false }, () => {
       const distance = () => currentPage.locator(".messages").evaluate(el => el.scrollHeight - el.clientHeight - el.scrollTop);
       await waitForCondition(async () => await distance() <= 1, "Initial tail not reached");
       await currentPage.waitForTimeout(150);
-      await currentPage.locator(".session-lifecycle-stage").evaluate(el => {
-        (el as HTMLElement).style.height = `${el.getBoundingClientRect().height - 15}px`;
+      const previousHeight = await currentPage.locator(".messages").evaluate(el => el.clientHeight);
+      await currentPage.locator(".messages").evaluate(el => {
+        const height = el.getBoundingClientRect().height;
+        (el as HTMLElement).style.flex = "none";
+        (el as HTMLElement).style.boxSizing = "border-box";
+        (el as HTMLElement).style.height = `${height - 15}px`;
       });
+      await waitForCondition(async () => await currentPage.locator(".messages").evaluate(el => el.clientHeight) < previousHeight, "Viewport did not shrink");
       await currentPage.waitForTimeout(100);
-      await waitForCondition(async () => await distance() <= 1, "Viewport resize left followed tail above the end");
+      try {
+        await waitForCondition(async () => await distance() <= 1, "Viewport resize left followed tail above the end");
+      } catch (error) {
+        const state = await currentPage.locator(".messages").evaluate(el => ({ top: el.scrollTop, height: el.scrollHeight, client: el.clientHeight }));
+        throw new Error(`${String(error)} ${JSON.stringify(state)} ${await currentPage.locator(".session-tail-follow").getAttribute("title")}`);
+      }
+      // Reflow can also grow content while the viewport itself stays fixed.
+      await currentPage.locator(".messages > li").last().evaluate(el => { (el as HTMLElement).style.paddingBottom = "70px"; });
+      await waitForCondition(async () => await distance() <= 1, "Late row resize left followed tail above the end");
     } finally { await currentPage.close(); }
   }, 30_000);
 
