@@ -1,4 +1,5 @@
 import { refreshBackgroundStatus } from "./background-state";
+import { waitForStartup } from "./startup-ready";
 import { mount, tick } from "svelte";
 import { initDaemonKV } from "./daemon-kv";
 import {
@@ -105,6 +106,7 @@ syncTabVisibilityClass();
 document.addEventListener("visibilitychange", syncTabVisibilityClass);
 
 const target = document.getElementById("app");
+const startupStartedAt = performance.now();
 if (!target) throw new Error("#app element missing in index.html");
 
 // Seed localStorage from daemon prefs before mounting so all store
@@ -137,8 +139,11 @@ window.addEventListener(CREATE_NOTE_EVENT, (event) => {
   });
 });
 
+if (startupStatus) startupStatus.textContent = "Loading your projects…";
+const workspaceReady = Promise.withResolvers<void>();
+const app = mount(App, { target, props: { onInitialLoad: () => workspaceReady.resolve() } });
+await waitForStartup(workspaceReady.promise, { startedAt: startupStartedAt });
 if (startupStatus) startupStatus.textContent = "Opening the canopy…";
-const app = mount(App, { target });
 // Reveal the rendered workspace in two stages: artwork first, then its backdrop.
 await tick();
 const startupSplash = document.getElementById("startup-splash");

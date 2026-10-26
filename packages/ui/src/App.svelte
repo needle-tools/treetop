@@ -1,4 +1,5 @@
 <script lang="ts">
+  export let onInitialLoad: () => void = () => {};
   import BackgroundSessions from "./BackgroundSessions.svelte";
   import { backgroundRestorePending } from "./background-state";
   import { replaceCodexCliStates } from "./codex-event-stream";
@@ -9066,6 +9067,9 @@
     // once the initial load's repos have streamed in (see SCROLL_KEY).
     window.addEventListener("scroll", scrollSaver.trigger, { passive: true });
     void load("mount").then(() => {
+      // load handles request errors too: reveal its error/retry UI rather
+      // than leaving the startup overlay covering it indefinitely.
+      onInitialLoad();
       if (zenRowKey && !rows.some(row => row.key === zenRowKey)) zenRowKey = null;
       restoreScrollPosition();
       // Re-spawn live PTYs for restored terminal-mode sessions in the

@@ -1,5 +1,14 @@
 # performance.md — frontend perf findings + open work
 
+### 2026-10-26: startup splash waits for project loading
+
+main.ts previously removed the splash after mount/tick, before App's initial
+project stream finished. App now signals when its initial load settles (including
+handled errors); main waits for that signal and a concurrent two-second minimum
+before the existing artwork/backdrop fade. Projects continue loading during the
+minimum interval. Two timing regressions pass and App compiles; no native build
+or running-app restart performed.
+
 ### 2026-10-26: native macOS menu-bar icon
 
 The menu bar reused the opaque square app icon at 16 points with template mode
