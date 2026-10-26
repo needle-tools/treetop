@@ -29,8 +29,9 @@ jobs:
         with:
           bun-version-file: .bun-version
 
-      - name: Install dependencies
-        run: bun install --frozen-lockfile
+      # The static site does not need the daemon's native terminal bindings.
+      - name: Install site dependencies
+        run: bun install --frozen-lockfile --filter '@supergit/site'
 
       - name: Build site
         run: bun run build:site
