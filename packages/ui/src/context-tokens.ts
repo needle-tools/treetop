@@ -213,3 +213,15 @@ export function contextChip(input: ContextChipInput): ContextChip | null {
     exact: isExact,
   };
 }
+
+
+/** Whole-unit totals for the sidebar; keep the more precise header format unchanged. */
+export function formatSidebarTokens(n: number): string {
+  const value = Number.isFinite(n) && n > 0 ? Math.round(n) : 0;
+  if (value < 1000) return `${value} tok`;
+  const thousands = Math.round(value / 1000);
+  if (thousands < 1000) return `${thousands}k tok`;
+  const millions = Math.round(value / 1_000_000);
+  if (millions < 1000) return `${millions}M tok`;
+  return `${Math.round(value / 1_000_000_000)}B tok`;
+}

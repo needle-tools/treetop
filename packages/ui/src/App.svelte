@@ -7573,6 +7573,10 @@
             lastUserMessages: meta?.lastUserMessages,
             messageCount: meta?.messageCount,
             fileSizeBytes: meta?.fileSizeBytes,
+            totalTokens: meta?.pricingUsage?.length
+              ? meta.pricingUsage.reduce((sum, segment) => sum + segment.usage.total, 0)
+              : undefined,
+            totalTokensPartial: meta?.pricingUsageExact === false,
             lastActive: meta?.lastActive,
             lastMessageTs: meta?.lastMessageTs,
             recentMessageCount: meta?.recentMessageCount,

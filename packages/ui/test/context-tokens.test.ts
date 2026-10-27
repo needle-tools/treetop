@@ -5,6 +5,7 @@ import {
   formatSessionTranscriptStats,
   formatSessionTokens,
   formatTokens,
+  formatSidebarTokens,
   modelContextCap,
 } from "../src/context-tokens";
 
@@ -265,5 +266,18 @@ describe("contextChip", () => {
     // Estimate prefix carries through into the absolute part.
     expect(codex!.absolute).toBe("~12.3k");
     expect(codex!.capText).toBeUndefined();
+  });
+});
+
+
+describe("formatSidebarTokens", () => {
+  test("rounds compact session totals and promotes rounded unit boundaries", () => {
+    expect(formatSidebarTokens(10432)).toBe("10k tok");
+    expect(formatSidebarTokens(1040000)).toBe("1M tok");
+    expect(formatSidebarTokens(1580000)).toBe("2M tok");
+    expect(formatSidebarTokens(999600)).toBe("1M tok");
+    expect(formatSidebarTokens(999.9)).toBe("1k tok");
+    expect(formatSidebarTokens(452)).toBe("452 tok");
+    expect(formatSidebarTokens(0)).toBe("0 tok");
   });
 });

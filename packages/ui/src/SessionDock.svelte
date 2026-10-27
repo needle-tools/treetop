@@ -37,6 +37,8 @@
      *  preview (shells, fresh `__new__:` columns). */
     transcriptSource?: string;
     fileSizeBytes?: number;
+    totalTokens?: number;
+    totalTokensPartial?: boolean;
     working: boolean;
     awaiting: boolean;
     /** True once the column has no live PTY transport. The row stays in
@@ -108,7 +110,7 @@
     splitDockEntries,
   } from "./dock-split";
   import { GIT_AHEAD, GIT_BEHIND } from "./icons";
-  import { formatByteSize } from "./context-tokens";
+  import { formatByteSize, formatSidebarTokens } from "./context-tokens";
   import {
     fetchPreviewItems,
     type PreviewAction,
@@ -1056,12 +1058,14 @@
                 </span>
               {/if}
             {/if}
-            {#if e.fileSizeBytes !== undefined}
-              <span
-                class="dock-label-size"
-                title="Transcript file size"
-              >{formatByteSize(e.fileSizeBytes)}</span>
-            {/if}
+            <span class="dock-label-size" title={e.fileSizeBytes !== undefined ? "Transcript file size" : undefined}>
+              {e.fileSizeBytes !== undefined ? formatByteSize(e.fileSizeBytes) : ""}
+            </span>
+            <span class="dock-label-tokens" title={e.totalTokens !== undefined
+              ? `${e.totalTokens.toLocaleString()} total session tokens, including cached input${e.totalTokensPartial ? " (partial transcript usage)" : ""}`
+              : undefined}>
+              {e.totalTokens !== undefined ? `${e.totalTokensPartial ? "~" : ""}${formatSidebarTokens(e.totalTokens)}` : ""}
+            </span>
             <span class="dock-label-activity">
               {#if (e.recentMessageCount ?? 0) >= recentThreshold}
                 <span
@@ -1284,12 +1288,14 @@
                 </span>
               {/if}
             {/if}
-            {#if e.fileSizeBytes !== undefined}
-              <span
-                class="dock-label-size"
-                title="Transcript file size"
-              >{formatByteSize(e.fileSizeBytes)}</span>
-            {/if}
+            <span class="dock-label-size" title={e.fileSizeBytes !== undefined ? "Transcript file size" : undefined}>
+              {e.fileSizeBytes !== undefined ? formatByteSize(e.fileSizeBytes) : ""}
+            </span>
+            <span class="dock-label-tokens" title={e.totalTokens !== undefined
+              ? `${e.totalTokens.toLocaleString()} total session tokens, including cached input${e.totalTokensPartial ? " (partial transcript usage)" : ""}`
+              : undefined}>
+              {e.totalTokens !== undefined ? `${e.totalTokensPartial ? "~" : ""}${formatSidebarTokens(e.totalTokens)}` : ""}
+            </span>
             <span class="dock-label-activity">
               {#if (e.recentMessageCount ?? 0) >= recentThreshold}
                 <span
@@ -2017,7 +2023,13 @@
     vertical-align: baseline;
     flex: 0 0 auto;
   }
-  .dock-label-size {
+  .dock-label-size,
+  .dock-label-tokens {
+    display: inline-block;
+    flex: 0 0 9ch;
+    width: 9ch;
+    text-align: right;
+    margin-left: 0.6em;
     color: var(--text-muted, #9a9aa0);
     font-size: 0.58rem;
     font-variant-numeric: tabular-nums;
