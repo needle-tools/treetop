@@ -2241,3 +2241,23 @@ report early exit with PID, code, and log path, without blindly launching again.
 Success stays silent and does not wait for the application's full lifetime.
 Nine installer tests pass, covering early failure output and healthy survival.
 No production restart, installer rebuild, or claim that the root cause is fixed.
+
+
+### 2026-10-27 Windows post-install startup failures
+
+Installer logs now confirm that the 14:28 UTC installation verified correctly,
+but native Bun PID 134200 exited with 3221226505 (0xC0000409). The first manual
+launch (14:30:52) also stops logging before WebView readiness; the 14:31:06 launch
+survives. No normal close event or matching Windows application error/dump was
+available. Four isolated hidden SDK launches did not reproduce the crash, so
+its underlying native cause is not established.
+
+Remove the early focus/scripting window: defer native input restoration and
+frontend focus scripts until dom-ready, cancel on close, and log that readiness.
+Installer launch now requires a per-attempt WebView-ready receipt plus a short
+survival interval, instead of merely observing a living launcher for five seconds.
+Retry up to twice only after a confirmed launcher exit before readiness. Never
+retry a still-living timed-out app or an app that fails after observed readiness.
+Log retries and final readiness. This provides bounded recovery from the observed
+transient startup failure without touching the daemon, broker, or session PTYs;
+it is not evidence that the native crash cause has been eliminated.

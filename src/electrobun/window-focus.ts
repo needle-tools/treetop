@@ -138,3 +138,15 @@ export function createWindowsWebviewFocus() {
     },
   };
 }
+
+
+/** Native focus events can arrive before WebView2 has created its controller. */
+export function createWindowFocusReadiness(actions: { focus: () => void; blur: () => void; cancel: () => void }) {
+  let ready = false, focused = false, closed = false;
+  return {
+    focus() { if (closed) return; focused = true; if (ready) actions.focus(); },
+    blur() { if (closed) return; focused = false; actions.cancel(); if (ready) actions.blur(); },
+    ready() { if (closed) return; ready = true; if (focused) actions.focus(); },
+    close() { if (closed) return; closed = true; actions.cancel(); },
+  };
+}

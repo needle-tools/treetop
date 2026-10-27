@@ -3,6 +3,7 @@ import {
   restoreNativeWebviewFocus,
   createWindowsWebviewFocus,
   nativeWebviewFocusTarget,
+  createWindowFocusReadiness,
 } from "../../../src/electrobun/window-focus";
 import { nativeWindowFocusScript } from "../../ui/src/window-focus-events";
 
@@ -145,4 +146,21 @@ test("native activation targets WebView2's local controller host, not its focuse
   expect(nativeWebviewFocusTarget(windows.slice(2), 10)).toBe(0n);
   expect(nativeWebviewFocusTarget([{ ...windows[1]!, visible: false }], 10)).toBe(0n);
   expect(nativeWebviewFocusTarget([{ ...windows[1]!, processId: 20 }], 10)).toBe(0n);
+});
+
+
+test("focus scripting waits for WebView readiness and stops after close", () => {
+  const calls: string[] = [];
+  const lifecycle = createWindowFocusReadiness({ focus: () => calls.push("focus"), blur: () => calls.push("blur"), cancel: () => calls.push("cancel") });
+  lifecycle.focus();
+  expect(calls).toEqual([]);
+  lifecycle.ready();
+  expect(calls).toEqual(["focus"]);
+  lifecycle.blur();
+  expect(calls).toEqual(["focus", "cancel", "blur"]);
+  lifecycle.focus();
+  lifecycle.close();
+  const stopped = [...calls];
+  lifecycle.ready(); lifecycle.focus(); lifecycle.blur();
+  expect(calls).toEqual(stopped);
 });

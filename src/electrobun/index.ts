@@ -30,7 +30,7 @@ import { homedir } from "node:os";
 import { spawn as bunSpawn } from "bun";
 import { planLogRotation } from "../../packages/daemon/src/log-rotation";
 import { nativeTitleBarStyle, restoreWindowState, captureWindowState, restoreWindowModeOnReady, type WindowState } from "./window-state";
-import { createWindowsWebviewFocus } from "./window-focus";
+import { createWindowsWebviewFocus, createWindowFocusReadiness } from "./window-focus";
 import { createWindowsWindowIcons, createWindowsCaptionStyle, trayImageSize } from "./window-icons";
 import { nativeWindowFocusScript } from "../../packages/ui/src/window-focus-events";
 
@@ -685,16 +685,29 @@ async function openTreetopWindow() {
     if (attempt === 0 || restored) win.webview.executeJavascript(nativeWindowFocusScript(true));
     if (!restored && attempt < 4) nativeFocusRetry = setTimeout(() => restoreWindowInput(attempt + 1), 75);
   }
-  win.on("focus", () => {
-    refreshWindowAppearance();
-    if (nativeFocusRetry) clearTimeout(nativeFocusRetry);
-    restoreWindowInput();
+  const focusReadiness = createWindowFocusReadiness({
+    focus: () => {
+      refreshWindowAppearance();
+      if (nativeFocusRetry) clearTimeout(nativeFocusRetry);
+      restoreWindowInput();
+    },
+    cancel: () => {
+      if (nativeFocusRetry) clearTimeout(nativeFocusRetry);
+      nativeFocusRetry = undefined;
+    },
+    blur: () => win.webview.executeJavascript(nativeWindowFocusScript(false)),
   });
-  win.on("blur", () => {
-    if (nativeFocusRetry) clearTimeout(nativeFocusRetry);
-    nativeFocusRetry = undefined;
-    llog("window blur");
-    win.webview.executeJavascript(nativeWindowFocusScript(false));
+  win.on("focus", () => { llog("window focus event"); focusReadiness.focus(); });
+  win.on("blur", () => { llog("window blur"); focusReadiness.blur(); });
+  const installerReadyPath = process.env.TREETOP_INSTALLER_READY;
+  delete process.env.TREETOP_INSTALLER_READY;
+  win.webview.on("dom-ready", () => {
+    llog(`window WebView DOM ready hwnd=${win.ptr}`);
+    focusReadiness.ready();
+    if (installerReadyPath) {
+      try { writeFileSync(installerReadyPath, JSON.stringify({ pid: process.pid })); llog("installer UI readiness acknowledged"); }
+      catch (error) { llog(`installer UI readiness acknowledgement failed: ${error}`); }
+    }
   });
   restoreWindowModeOnReady(bounds, {
     onReady: (callback) => win.webview.on("dom-ready", callback),
@@ -747,6 +760,7 @@ async function openTreetopWindow() {
   // "closed" event arrives after destruction completes.
   try {
     win.on("close", () => {
+      focusReadiness.close();
       if (nativeFocusRetry) clearTimeout(nativeFocusRetry);
       nativeFocusRetry = undefined;
       nativeFocus?.close();

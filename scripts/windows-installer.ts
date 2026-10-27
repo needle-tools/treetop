@@ -91,8 +91,11 @@ export async function runInstaller(payload:string,expectedHash:string) {
     const launchLog=join(parent,"installer-launch.log");
     await log(`Launching installed app; native output: ${launchLog}`);
     await appendFile(launchLog,`\n[${new Date().toISOString()}] Installer launch ${id}\n`);
-    const pid=await launchInstallerApp(join(app,"bin/launcher.exe"),join(app,"bin"),launchLog);
-    await log(`Launcher PID ${pid} remained running through startup observation`);
+    const readyPath=join(parent,`installer-ready-${id}.json`);
+    try {
+      const pid=await launchInstallerApp(join(app,"bin/launcher.exe"),join(app,"bin"),launchLog,[],30_000,{readyPath,retries:2,log});
+      await log(`Launcher PID ${pid} confirmed WebView readiness and survived startup observation`);
+    } finally { await rm(readyPath,{force:true}); }
   };
   try {
     // Fail closed on a crashed installer's lock; never guess its ownership.

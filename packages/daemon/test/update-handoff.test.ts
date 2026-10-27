@@ -114,3 +114,43 @@ test("installer launch returns after observation without stopping a healthy app"
     await Bun.sleep(200);
   } finally {await rm(root,{recursive:true,force:true});}
 });
+
+
+test("installer waits for readiness and retries only confirmed pre-ready exits", async () => {
+  const { launchInstallerApp } = await import("../../../scripts/windows-installer-core");
+  const root = await mkdtemp(join(tmpdir(), "treetop-ready-test-"));
+  try {
+    const counter = join(root,"attempts"), ready = join(root,"ready");
+    const code = `const fs=require('fs');const counter=${JSON.stringify(counter)};const n=Number(fs.existsSync(counter)?fs.readFileSync(counter,'utf8'):0)+1;fs.writeFileSync(counter,String(n));if(n<3)process.exit(7);setTimeout(()=>fs.writeFileSync(process.env.TREETOP_INSTALLER_READY,JSON.stringify({pid:process.pid})),100);setTimeout(()=>process.exit(0),1200);`;
+    const pid = await launchInstallerApp(process.execPath, root, join(root,"launch.log"), ["-e",code], 2000, { readyPath: ready, retries: 2, settleMs: 20, retryDelayMs: 10 });
+    expect(pid).toBeGreaterThan(0);
+    expect(await readFile(counter,"utf8")).toBe("3");
+    await Bun.sleep(1300);
+  } finally { await rm(root,{recursive:true,force:true}); }
+});
+
+test("installer does not duplicate a living app that never signals readiness", async () => {
+  const { launchInstallerApp } = await import("../../../scripts/windows-installer-core");
+  const root = await mkdtemp(join(tmpdir(), "treetop-no-ready-"));
+  try {
+    const counter=join(root,"attempts");
+    const code=`require('fs').appendFileSync(${JSON.stringify(counter)},'x');setTimeout(()=>process.exit(0),4000);`;
+    await expect(launchInstallerApp(process.execPath,root,join(root,"launch.log"),["-e",code],2000,{readyPath:join(root,"ready"),retries:2,settleMs:20,retryDelayMs:10})).rejects.toThrow("did not signal");
+    expect(await readFile(counter,"utf8")).toBe("x");
+    await Bun.sleep(4500);
+  } finally {await rm(root,{recursive:true,force:true});}
+}, 10_000);
+
+for (const signalsReady of [false, true]) {
+  test(`installer bounds failed launch retries; signalsReady=${signalsReady}`, async () => {
+    const { launchInstallerApp } = await import("../../../scripts/windows-installer-core");
+    const root = await mkdtemp(join(tmpdir(), "treetop-retry-limit-"));
+    try {
+      const counter = join(root, "attempts");
+      const code = `const fs=require('fs');fs.appendFileSync(${JSON.stringify(counter)},'x');if(${signalsReady})fs.writeFileSync(process.env.TREETOP_INSTALLER_READY,JSON.stringify({pid:process.pid}));setTimeout(()=>process.exit(7),250);`;
+      await expect(launchInstallerApp(process.execPath, root, join(root, "launch.log"), ["-e", code], 2000,
+        { readyPath: join(root, "ready"), retries: 2, settleMs: 1000, retryDelayMs: 10 })).rejects.toThrow("exited during startup");
+      expect(await readFile(counter, "utf8")).toBe(signalsReady ? "x" : "xxx");
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+}

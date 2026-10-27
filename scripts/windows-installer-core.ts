@@ -1,25 +1,55 @@
-import { access, rename, mkdir, readdir, open } from "node:fs/promises";
+import { access, rename, mkdir, readdir, open, readFile, rm } from "node:fs/promises";
 import { dirname, resolve, join } from "node:path";
 
 export class InstallationRecoveryError extends Error {}
 
-/** Keep native launcher/Worker errors after setup exits instead of discarding them. */
-export async function launchInstallerApp(executable: string, cwd: string, logPath: string, args: string[] = [], startupMs = 5000) {
-  const output = await open(logPath, "a");
-  let child: ReturnType<typeof Bun.spawn>;
-  try {
-    child = Bun.spawn([executable, ...args], { cwd, detached: true, windowsHide: true,
-      stdin: "ignore", stdout: output.fd, stderr: output.fd });
-  } finally { await output.close(); }
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  try {
-    const result = await Promise.race([
-      child.exited.then(code => ({ code })),
-      new Promise<null>(resolve => { timer = setTimeout(() => resolve(null), startupMs); }),
-    ]);
-    if (result) throw Error(`Treetop launcher exited during startup (PID ${child.pid}, code ${result.code}). Launch log: ${logPath}`);
-    return child.pid;
-  } finally { if (timer) clearTimeout(timer); child.unref(); }
+/** Observe UI readiness, retrying only a confirmed process exit before readiness. */
+export async function launchInstallerApp(executable: string, cwd: string, logPath: string, args: string[] = [], startupMs = 5000,
+  readiness?: { readyPath: string; retries?: number; settleMs?: number; retryDelayMs?: number; log?: (message: string) => Promise<void> }) {
+  for (let attempt = 0; ; attempt++) {
+    if (readiness) await rm(readiness.readyPath, { force: true });
+    const output = await open(logPath, "a");
+    let child: ReturnType<typeof Bun.spawn>;
+    try {
+      child = Bun.spawn([executable, ...args], { cwd, detached: true, windowsHide: true,
+        env: readiness ? { ...process.env, TREETOP_INSTALLER_READY: readiness.readyPath } : process.env,
+        stdin: "ignore", stdout: output.fd, stderr: output.fd });
+    } finally { await output.close(); }
+    let exit: { code: number } | undefined;
+    void child.exited.then(code => { exit = { code }; });
+    let readyAt: number | undefined;
+    const started = Date.now();
+    try {
+      for (;;) {
+        // Read a final receipt even if the launcher exited between polls.
+        // A post-ready failure must not trigger another launch.
+        if (readiness && readyAt === undefined) {
+          try {
+            const receipt = JSON.parse(await readFile(readiness.readyPath, "utf8"));
+            if (Number.isSafeInteger(receipt.pid) && receipt.pid > 0) readyAt = Date.now();
+          } catch (error) {
+            if (!(error instanceof SyntaxError) && (error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+          }
+        }
+        if (exit) {
+          const failure = `Treetop launcher exited during startup (PID ${child.pid}, code ${exit.code}). Launch log: ${logPath}`;
+          if (readiness && readyAt === undefined && attempt < (readiness.retries ?? 0)) {
+            await readiness.log?.(`${failure}; retrying after confirmed exit (${attempt + 1}/${readiness.retries})`);
+            await Bun.sleep(readiness.retryDelayMs ?? 1000);
+            break;
+          }
+          throw Error(failure);
+        }
+        if (readyAt !== undefined && Date.now() - readyAt >= (readiness?.settleMs ?? 2000)) return child.pid;
+        if (Date.now() - started >= startupMs) {
+          if (!readiness) return child.pid;
+          if (readyAt !== undefined) { await Bun.sleep(50); continue; }
+          throw Error(`Treetop launcher PID ${child.pid} is running but did not signal WebView readiness. No duplicate launch attempted. Launch log: ${logPath}`);
+        }
+        await Bun.sleep(50);
+      }
+    } finally { child.unref(); }
+  }
 }
 
 // Legacy brokers inherited app/bin as cwd. Windows locks that directory even
