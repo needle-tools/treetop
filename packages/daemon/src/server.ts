@@ -111,9 +111,9 @@ import {
 } from "./ollama-sessions";
 import { feedShellInput, clearShellInputBuffer } from "./shell-input";
 import { handleMcpHttp, withTreetopMcp } from "./mcp";
+import { TerminalMessageDrafts } from "./session-tools";
 import { UiContextRegistry, UiActionRequests } from "./ui-context";
 import { voiceMessageAllowed } from "./voice-message";
-import { sendTerminalSessionMessage, openCodexMessageTarget, TerminalMessageDrafts } from "./session-tools";
 import { remindersForWorkspace, startReminderScheduler, handleRemindersHttp } from "./reminders";
 import * as inflight from "./inflight";
 import { pingSubscribers } from "./sse-heartbeat";
@@ -522,8 +522,8 @@ process.title =
 const workspace = await Workspace.open(WORKSPACE_PATH);
 const uiContexts = new UiContextRegistry();
 const uiActions = new UiActionRequests();
-const speechOnlyThreads = new Map<string, ReturnType<typeof setTimeout>>();
 const messageDrafts = new TerminalMessageDrafts();
+const speechOnlyThreads = new Map<string, ReturnType<typeof setTimeout>>();
 const events = await EventLog.open(WORKSPACE_PATH);
 const reminderStore = remindersForWorkspace(workspace.path);
 let stopReminders: (() => void) | undefined;
@@ -10258,45 +10258,20 @@ const server = Bun.serve<TermWsData, never>({
             return uiActions.request(context.windowId as string, action, command => broadcast("change", { kind: "mcp_ui_action", ...command }), action.action === "voice_message" ? 115_000 : 8000);
           },
           sessions: sharedDetectAgents,
+          readSessionInput: async (session, maxChars) => messageDrafts.inspect(terminalBackend, session, maxChars),
           sendSessionMessage: async (session, text, action = "stage", draftId) => {
-            if (action === "submit") {
-              const terminalId = messageDrafts.terminalId(draftId!);
-              const handle = terminalId ? terminalBackend.get(terminalId) : undefined;
-              if (!handle) throw new Error("Draft terminal no longer exists; inspect or resume the session");
-              return messageDrafts.submit(draftId!, session.source, handle);
-            }
-            if (!session.sessionId) throw new Error("Session has no provider session ID");
-            if (!["claude", "codex"].includes(session.agent))
-              throw new Error("Messaging supports Claude/Codex terminals and native Codex sessions");
-            messageDrafts.assertCanStage(session.source, terminalBackend);
-            const terminal = await sendTerminalSessionMessage(terminalBackend, session, text, action === "send");
+            const terminal = await messageDrafts.deliver(terminalBackend, session, text, action, draftId);
             if (terminal) {
-              if (action === "stage") {
-                const draftId = messageDrafts.stage(session.source, terminal.terminalId, terminalBackend.get(terminal.terminalId)!);
-                const context = uiContexts.read();
-                if (context.available) broadcast("change", { kind: "mcp_focus_session", source: session.source, sessionId: session.sessionId, windowId: context.windowId });
-                return { ...terminal, draftId, next: "Review the draft in the terminal. Press Enter yourself, or call send_session_message with action=submit and draft_id. Do not paste the text again." };
-              }
+              broadcast("change", { kind: "mcp_terminal_message", source: session.source, status: terminal.status });
               return terminal;
             }
-            if (action === "stage") throw new Error("Staging needs a live Claude/Codex terminal. Use open_session with resume_session_id to open/resume the terminal, then retry. Native Codex requires explicit action=send.");
-            if (session.agent !== "codex") throw new Error("Session has no live terminal; open it before sending");
-            const target = openCodexMessageTarget(await workspace.getPrefs(), session);
-            if (codexAgent.activeTurn(session.sessionId)) throw new Error("Session is busy; retry after the current turn finishes");
-            const turn = await codexAgent.startTurn({
-              threadId: session.sessionId, cwd: session.cwd, text,
-              overrides: {
-                model: codexTurnString(target.codexModel),
-                effort: codexTurnString(target.codexEffort),
-                serviceTier: codexTurnString(target.codexServiceTier),
-                summary: codexTurnString(target.codexSummary),
-                approvalPolicy: codexApprovalPolicy(target.codexApproval),
-                approvalsReviewer: target.codexReviewer === "auto_review" || target.codexReviewer === "user" ? target.codexReviewer : undefined,
-                sandboxPolicy: codexSandboxPolicy(target.codexSandbox, session.cwd),
-              },
-            });
-            void turn.completed.catch(error => recordServerError(req, 500, error));
-            return { delivery: "native", status: "submitted", confirmed: false, threadId: turn.threadId, turnId: turn.turnId };
+            const context = uiContexts.read();
+            if (!context.available) throw new Error("Open the target session in a Treetop window before messaging");
+            const response = await uiActions.request(context.windowId as string, {
+              action: "session_input", source: session.source, sessionId: session.sessionId,
+              operation: action, text, draftId,
+            }, command => broadcast("change", { kind: "mcp_ui_action", ...command }), action === "stage" ? 8000 : 45_000);
+            return response.result as Record<string, unknown>;
           },
           runningCommands: () => projectCommands.list(),
           untrackedCommands: () => projectCommands.untracked(),

@@ -581,3 +581,31 @@ References: [Windows icon sizes](https://learn.microsoft.com/en-us/windows/win32
 - How do we handle the "user already has supergit dev running" case
   inside a packaged app? Today's port-claiming dance assumes one
   daemon; a desktop app may want a stricter single-instance lock.
+
+
+### MCP pending input (2026-10-27)
+
+`read_session_input` resolves an exact registered session and inspects its mounted
+native composer plus up to 20 queued messages with a shared text budget. Drafts
+and queue entries report user/AI provenance. `send_session_message` now routes
+through that same UI owner: stage fills only an empty composer; submit requires
+an unchanged draft receipt; explicit send queues when busy or awaiting approval.
+None of these actions changes focus or Zen mode or responds to approval prompts.
+AI-filled drafts and queue entries carry a visible label; queue provenance is
+persisted with the existing queue. Event logging records status/IDs, not draft text.
+
+CLI/TUI input and its provider-owned queue remain **unknown**, but this does not
+block explicit injection. Claude and Codex CLI terminals use bracketed paste at
+the current cursor (never clear/replace user text). Stage omits Enter; explicit
+send/submit presses Enter after checking input revision and confirmation state.
+Working state alone is not a blocker: the CLI can accept a follow-up draft or
+queue it. Confirmation prompts still block, including a prompt appearing between
+paste and Enter. Per-terminal serialization prevents overlapping MCP injections.
+`read_session_input` reports the tracked AI-injected text separately from unknown
+CLI-owned input, with input-changed/expiry flags. A toast labels staged CLI input
+as AI-filled. No focus or Zen-mode change is needed. Receipt submission also
+requires the same target and text, and expires after five minutes.
+
+Validation covers controller overwrite/concurrency checks, bounded reads,
+registered-target resolution, UI acknowledgements, provenance persistence and
+an isolated SessionView browser regression exercising stage/edit/submit/queue.

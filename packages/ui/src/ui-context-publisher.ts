@@ -11,6 +11,7 @@ export async function applyUiAction(
   command: UiActionCommand,
   windowId: string,
   adapter: {
+    sessionInput?: (command: Extract<UiActionCommand, { action: "session_input" }>) => Promise<Record<string, unknown>>;
     focusSession: (source: string, sessionId?: string) => Promise<void>;
     voiceMessage?: (text: string, cwd: string) => Promise<void>;
     focusProject: (repoId: string, cwd: string) => Promise<void>;
@@ -25,6 +26,7 @@ export async function applyUiAction(
     windowId: string;
     ok: boolean;
     error?: string;
+    result?: Record<string, unknown>;
   }) => Promise<void> = async (result) => {
     const response = await fetch("/api/ui-action-result", {
       method: "POST",
@@ -40,8 +42,13 @@ export async function applyUiAction(
 ): Promise<void> {
   if (command.windowId !== windowId) return;
   let error: string | undefined;
+  let result: Record<string, unknown> | undefined;
   try {
     switch (command.action) {
+      case "session_input":
+        if (!adapter.sessionInput) throw new Error("Session input controls unavailable");
+        result = await adapter.sessionInput(command);
+        break;
       case "voice_message":
         if (!adapter.voiceMessage) throw new Error("Voice messages are unavailable in this window");
         await adapter.voiceMessage(command.text, command.cwd);
@@ -67,6 +74,7 @@ export async function applyUiAction(
     requestId: command.requestId,
     windowId,
     ok: error === undefined,
+    ...(result ? { result } : {}),
     ...(error === undefined ? {} : { error }),
   });
 }

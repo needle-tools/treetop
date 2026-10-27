@@ -69,16 +69,19 @@ const TOOLS: ToolDef[] = [
     description: "Read a compact live UI snapshot in one call: currently focused session, last-active session, active project, projects actually in the viewport, Zen mode and window focus. Includes snapshot age and window IDs. Defaults to the focused window, otherwise the last active fresh window. No transcript content. Returns unavailable rather than guessing when no UI has reported within 15 seconds.",
     inputSchema: { type: "object", properties: { window_id: { type: "string", description: "Optional window ID from a previous get_ui_context response." } } },
   },
-  ...["send_session_message", "read_session_messages"].map((name): ToolDef => ({
+  ...["send_session_message", "read_session_messages", "read_session_input"].map((name): ToolDef => ({
     name,
     description: name === "send_session_message"
-      ? "Send a message to an existing Claude/Codex terminal or open native Codex session, only when the user explicitly asks. Identify the exact target with source or session_id from list_sessions/search_sessions; repo_id can disambiguate. Does not create a session, interrupt a busy agent, or run shell commands. Defaults to action=stage: paste a reviewable terminal draft without Enter. Then action=submit with its draft_id and the same target/text explicitly submits it, or the user presses Enter. action=send explicitly performs immediate delivery (also supports native Codex). For a stopped session use open_session with resume_session_id first, then retry once its terminal is ready. Submission is not transcript confirmation; read_session_messages to verify, never automatically resend."
+      ? "Stage or explicitly submit input to an open session, only when the user asks. Default action=stage creates a reviewable AI-filled draft without Enter (CLI) or fills an empty native composer. Inspect existing draft/queue with read_session_input first. action=submit requires the returned draft_id and unchanged text; action=send stages and submits in one explicit call. Busy native chats queue follow-ups without interrupting or answering approvals. Native user drafts are never overwritten. Claude/Codex CLI terminals support stage and send even while working: text is appended at the current cursor using bracketed paste, without clearing existing input. CLI draft/queue state is unknown; inspect the terminal when combining with existing text. Approval prompts block injection. Open the target session first; does not change focus or Zen mode. Check status/ok; submitted is not transcript confirmation. Never automatically resend."
+      : name === "read_session_input" ? "Inspect an open session's unsent draft and queued messages, with AI/user provenance and bounded text. Native chat exposes authoritative state. CLI input/queue reports unknown, plus injectedDraft with the last AI-filled text and whether subsequent input changed it; this is not the full CLI buffer. Does not focus, type, submit, or resume. Use source/session_id from list_sessions."
       : "Read recent messages from an exact discovered session. Minimal output (default) contains only user/assistant text, excluding tool traces and reasoning. Verbose adds tool/event summaries, never private thinking. Output is bounded by limit and a total max_chars text budget. Messages are chronological; offset skips newest readable messages for paging backwards.",
     inputSchema: { type: "object", properties: {
       source: { type: "string", description: "Exact transcript source from list_sessions." },
       session_id: { type: "string", description: "Exact sessionId from list_sessions; ambiguous IDs are rejected." },
       repo_id: { type: "string" },
-      ...(name === "send_session_message" ? { text: { type: "string", minLength: 1, maxLength: 32000 }, action: { type: "string", enum: ["stage", "submit", "send"], default: "stage" }, draft_id: { type: "string" } } : {
+      ...(name === "send_session_message" ? { text: { type: "string", minLength: 1, maxLength: 32000 }, action: { type: "string", enum: ["stage", "submit", "send"], default: "stage" }, draft_id: { type: "string" } } : name === "read_session_input" ? {
+        max_chars: { type: "integer", minimum: 100, maximum: 32000, default: 6000 },
+      } : {
         limit: { type: "integer", minimum: 1, maximum: 50, default: 5 },
         offset: { type: "integer", minimum: 0, maximum: 1000, default: 0 },
         max_chars: { type: "integer", minimum: 100, maximum: 32000, default: 6000 },
@@ -337,6 +340,7 @@ interface McpContext {
   commandControl?: (action: "start" | "stop" | "restart", repoId: string, commandId: string, worktreePath?: string) => Promise<Record<string, unknown>>;
   sessionCwd?: string;
   sessions?: () => Promise<AgentSession[]>;
+  readSessionInput?: (session: AgentSession, maxChars: number) => Promise<Record<string, unknown> | undefined>;
   sendSessionMessage?: (session: AgentSession, text: string, action?: "stage" | "submit" | "send", draftId?: string) => Promise<Record<string, unknown>>;
 }
 
@@ -603,6 +607,7 @@ async function dispatchMcp(
           }
           case "send_session_message":
           case "focus_session":
+          case "read_session_input":
           case "read_session_messages": {
             for (const field of ["source", "session_id", "repo_id"]) {
               if (args[field] !== undefined && (typeof args[field] !== "string" || !(args[field] as string).trim()))
@@ -617,6 +622,8 @@ async function dispatchMcp(
               typeof maxChars !== "number" || !Number.isInteger(maxChars) || maxChars < 100 || maxChars > 32000 ||
               (args.verbosity !== undefined && !["minimal", "verbose"].includes(args.verbosity as string))))
               return err(request.id, -32602, `${name}: invalid limit, offset, max_chars or verbosity`);
+            if (name === "read_session_input" && (typeof maxChars !== "number" || !Number.isInteger(maxChars) || maxChars < 100 || maxChars > 32000))
+              return err(request.id, -32602, "read_session_input: max_chars must be 100..32000");
             if (name === "send_session_message" && (typeof args.text !== "string" || !args.text.trim() || args.text.length > 32000 || /[\x00-\x08\x0b-\x1f\x7f]/.test(args.text)))
               return err(request.id, -32602, `${name}: text must be 1..32000 characters without terminal control codes (newlines and tabs allowed)`);
             const sessions = ctx.sessions ? await ctx.sessions() : await detectAgents(ctx.workspace.path);
@@ -632,13 +639,20 @@ async function dispatchMcp(
               if (!ctx.uiAction) throw new Error("UI controls are unavailable in this daemon");
               return ok(request.id, textContent(JSON.stringify(await ctx.uiAction({ action: "focus_session", source: session.source, ...(session.sessionId ? { sessionId: session.sessionId } : {}) }, args.window_id as string | undefined))));
             }
+            if (name === "read_session_input") {
+              const terminal = await ctx.readSessionInput?.(session, maxChars as number);
+              if (terminal) return ok(request.id, textContent(JSON.stringify({ source: session.source, sessionId: session.sessionId, ...terminal })));
+              if (!ctx.uiAction) throw new Error("Session input inspection requires an open Treetop UI");
+              const response = await ctx.uiAction({ action: "session_input", operation: "inspect", source: session.source, sessionId: session.sessionId, maxChars: maxChars as number });
+              return ok(request.id, textContent(JSON.stringify({ source: session.source, sessionId: session.sessionId, ...(response.result as Record<string, unknown>) })));
+            }
             if (name === "send_session_message") {
               if (!ctx.sendSessionMessage) throw new Error("Session messaging is unavailable in this daemon");
               const action = args.action ?? "stage";
               if (!["stage", "submit", "send"].includes(action as string) || (action === "submit" && (typeof args.draft_id !== "string" || !args.draft_id))) return err(request.id, -32602, "Invalid action or missing draft_id");
               const delivery = await ctx.sendSessionMessage(session, args.text as string, action as "stage" | "submit" | "send", args.draft_id as string | undefined);
-              await ctx.events.append({ type: "mcp_send_session_message", actor: "agent", payload: { source: session.source, sessionId: session.sessionId, characters: (args.text as string).length, ...delivery } });
-              return ok(request.id, textContent(JSON.stringify({ ok: true, source: session.source, sessionId: session.sessionId, ...delivery })));
+              await ctx.events.append({ type: "mcp_send_session_message", actor: "agent", payload: { source: session.source, sessionId: session.sessionId, characters: (args.text as string).length, status: delivery.status, draftId: delivery.draftId, queueId: delivery.queueId } });
+              return ok(request.id, textContent(JSON.stringify({ ok: !["input_unknown", "draft_exists", "draft_changed", "submission_pending"].includes(delivery.status as string), source: session.source, sessionId: session.sessionId, ...delivery })));
             }
             const { body } = await getSessionResponseJson(session.agent, session.source, undefined, 2000);
             const transcript = JSON.parse(body) as NormalizedSession;

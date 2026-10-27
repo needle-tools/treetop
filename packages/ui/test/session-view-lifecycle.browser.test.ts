@@ -2445,3 +2445,67 @@ describe("SessionView browser lifecycle", { concurrency: false }, () => {
     30_000,
   );
 });
+
+
+test("MCP stages labeled native input, preserves user drafts and queues explicit sends", async () => {
+  const page = await openHarness();
+  const initialRequests = turnRequestCount;
+  try {
+    emitCodexEvents([{ kind: "notification", method: "turn/started", threadId, turnId: latestTurnId,
+      receivedAt: "2026-10-01T10:00:10.000Z", params: { turn: { id: latestTurnId } } }]);
+    await page.getByRole("button", { name: "Stop Codex", exact: true }).waitFor();
+    const act = (operation: string, text?: string, draftId?: string) => page.evaluate(async args => {
+      const { applySessionInput } = await import("/src/mcp-session-input.ts");
+      return applySessionInput({ action: "session_input", source: "__codex_app__:lifecycle-thread", sessionId: "lifecycle-thread", ...args });
+    }, { operation, text, draftId });
+    const composer = page.locator("textarea.composer-input");
+    await composer.fill("User is typing");
+    assert.equal((await act("stage", "AI follow-up")).status, "draft_exists");
+    assert.equal(await composer.inputValue(), "User is typing");
+    await composer.fill("");
+    const staged = await act("stage", "AI follow-up");
+    assert.equal(staged.status, "staged");
+    await page.locator(".ai-filled-label").waitFor();
+    assert.equal(turnRequestCount, initialRequests);
+    await composer.fill("AI follow-up edited");
+    assert.equal((await act("submit", "AI follow-up", staged.draftId as string)).status, "draft_changed");
+    assert.match(await page.locator(".ai-filled-label").innerText(), /edited/);
+    await composer.fill("AI follow-up");
+    assert.equal((await act("submit", "AI follow-up", staged.draftId as string)).status, "queued");
+    const input = await act("inspect") as any;
+    assert.equal(input.inputState, "empty");
+    assert.equal(input.queue[0].text, "AI follow-up");
+    assert.equal(input.queue[0].author, "ai");
+    await page.getByRole("button", { name: "Show queued messages", exact: true }).click();
+    await page.locator(".codex-queue .ai-filled-label").waitFor();
+    assert.equal(turnRequestCount, initialRequests);
+  } finally { await page.close(); }
+}, 30_000);
+
+
+test("MCP sends idle native input once and reports CLI input as unknown", async () => {
+  const page = await openHarness();
+  const before = turnRequestCount;
+  try {
+    const result = await page.evaluate(async () => {
+      const { applySessionInput } = await import("/src/mcp-session-input.ts");
+      return applySessionInput({ action: "session_input", operation: "send", source: "__codex_app__:lifecycle-thread", sessionId: "lifecycle-thread", text: "Explicit MCP send" });
+    });
+    assert.equal(result.status, "submitted");
+    assert.equal(turnRequestCount, before + 1);
+    assert.equal(turnRequestInputs.at(-1)?.text, "Explicit MCP send");
+    assert.equal(await page.locator("textarea.composer-input").inputValue(), "");
+  } finally { await page.close(); }
+  const terminalPage = await browser.newPage();
+  try {
+    await terminalPage.goto(`${origin}/test/browser/session-view-lifecycle.html?terminal`, { waitUntil: "networkidle" });
+    await terminalPage.locator(".session").waitFor();
+    const result = await terminalPage.evaluate(async () => {
+      const { applySessionInput } = await import("/src/mcp-session-input.ts");
+      return applySessionInput({ action: "session_input", operation: "stage", source: "__codex_app__:lifecycle-thread", sessionId: "lifecycle-thread", text: "Do not blindly type" });
+    });
+    assert.equal(result.status, "input_unknown");
+    assert.equal(result.queueState, "unknown");
+    assert.equal(turnRequestCount, before + 1);
+  } finally { await terminalPage.close(); }
+}, 30_000);

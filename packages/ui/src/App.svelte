@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { applySessionInput } from "./mcp-session-input";
   export let onInitialLoad: () => void = () => {};
   import BackgroundSessions from "./BackgroundSessions.svelte";
   import { backgroundRestorePending } from "./background-state";
@@ -6779,8 +6780,14 @@
             // we can't parse can't be a real mutation either.
           }
         }
+        if (payload.kind === "mcp_terminal_message") {
+          const message = payload as unknown as { status: string };
+          if (message.status === "staged") addToast({ type: "info", title: "AI-filled CLI draft", message: "Text was pasted into the target terminal without Enter. Review it before sending." });
+          return;
+        }
         if (payload.kind === "mcp_ui_action") {
           void applyUiAction(payload as unknown as UiActionCommand, UI_CONTEXT_WINDOW_ID, {
+            sessionInput: applySessionInput,
             focusSession: focusMcpSession,
             focusProject: focusMcpProject,
             setZenMode: setMcpZenMode,

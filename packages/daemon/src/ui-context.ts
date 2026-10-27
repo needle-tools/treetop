@@ -28,6 +28,7 @@ export interface UiContextReport {
 }
 
 export type UiAction =
+  | { action: "session_input"; source: string; sessionId?: string; operation: "inspect" | "stage" | "submit" | "send"; text?: string; draftId?: string; senderSource?: string; maxChars?: number }
   | { action: "voice_message"; text: string; cwd: string }
   | { action: "focus_session"; source: string; sessionId?: string }
   | { action: "focus_project"; repoId: string; cwd: string }
@@ -86,6 +87,7 @@ export class UiActionRequests {
     const request = this.pending.get(input.requestId);
     if (!request || request.windowId !== input.windowId)
       throw new Error("UI action request not found for this window");
+    const result = input.result === undefined ? undefined : object(input.result);
     clearTimeout(request.timer);
     this.pending.delete(input.requestId);
     if (input.ok)
@@ -93,6 +95,7 @@ export class UiActionRequests {
         applied: true,
         windowId: input.windowId,
         requestId: input.requestId,
+        ...(result !== undefined ? { result } : {}),
       });
     else
       request.reject(

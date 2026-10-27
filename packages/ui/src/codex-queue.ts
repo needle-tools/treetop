@@ -1,4 +1,5 @@
 export interface CodexQueuedMessage<Attachment = unknown> {
+  ai?: { source?: string; edited?: boolean };
   id: string;
   text: string;
   attachments: Attachment[];
@@ -30,6 +31,10 @@ export function parseCodexQueue<Attachment = unknown>(
         return null;
       return {
         id: obj.id,
+        ...(obj.ai && typeof obj.ai === "object" ? { ai: {
+          source: typeof (obj.ai as Record<string, unknown>).source === "string" ? (obj.ai as { source: string }).source : undefined,
+          edited: (obj.ai as Record<string, unknown>).edited === true,
+        } } : {}),
         text: obj.text,
         attachments: Array.isArray(obj.attachments)
           ? (obj.attachments as Attachment[])
@@ -75,7 +80,7 @@ export function updateCodexQueuedMessage<Attachment>(
   const text = payload.text.trim();
   return queue.map((item) =>
     item.id === id
-      ? { ...item, text, attachments: [...payload.attachments] }
+      ? { ...item, text, attachments: [...payload.attachments], ...(item.ai ? { ai: { ...item.ai, edited: true } } : {}) }
       : item,
   );
 }
@@ -125,6 +130,7 @@ export function mergeCodexQueuedMessageUp<Attachment>(
     ...queue.slice(0, index - 1),
     {
       ...previous,
+      ...(previous.ai || current.ai ? { ai: { ...(previous.ai ?? current.ai), edited: true } } : {}),
       text: [previous.text, current.text].filter(Boolean).join("\n\n"),
       attachments: [...previous.attachments, ...current.attachments],
     },

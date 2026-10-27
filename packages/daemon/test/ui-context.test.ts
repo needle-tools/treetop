@@ -263,3 +263,13 @@ test("MCP focus and Zen controls validate exact project/session targets and forw
   expect(await catalog()).toContain("only when the user explicitly asks");
   expect(await catalog()).not.toContain("Use frequent");
 });
+
+
+test("input replies carry structured results and invalid replies do not consume requests", async () => {
+  const requests = new UiActionRequests();
+  let command: any;
+  const response = requests.request("one", { action: "session_input", operation: "inspect", source: "target" }, value => { command = value; });
+  expect(() => requests.complete({ ...command, ok: true, result: "invalid" })).toThrow();
+  requests.complete({ ...command, ok: true, result: { inputState: "unknown" } });
+  expect(await response).toMatchObject({ applied: true, result: { inputState: "unknown" } });
+});

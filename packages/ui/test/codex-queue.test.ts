@@ -211,3 +211,16 @@ describe("Codex queue updates", () => {
     expect(mergeCodexQueuedMessageUp(queue, "missing")).toBe(queue);
   });
 });
+
+
+it("AI queue provenance survives storage, editing and merging", () => {
+  const queue = parseCodexQueue(JSON.stringify([
+    { id: "user", text: "user", attachments: [], createdAt: "now" },
+    { id: "ai", text: "AI draft", attachments: [], createdAt: "now", ai: { source: "origin" } },
+  ]));
+  expect(queue[1]?.ai).toEqual({ source: "origin", edited: false });
+  const edited = updateCodexQueuedMessage(queue, "ai", { text: "edited", attachments: [] });
+  expect(edited[1]?.ai).toEqual({ source: "origin", edited: true });
+  const merged = mergeCodexQueuedMessageUp(edited, "ai");
+  expect(merged[0]?.ai).toEqual({ source: "origin", edited: true });
+});

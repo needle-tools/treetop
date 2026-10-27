@@ -144,10 +144,14 @@ test("MCP reads a discovered transcript and sends only to an explicit registered
     lastActive: new Date().toISOString(),
   };
   const sent: unknown[] = [];
+  const inspected: unknown[] = [];
+  let terminalInput: Record<string, unknown> | undefined;
   const ctx = {
     workspace,
     events,
     sessions: async () => [session],
+    readSessionInput: async () => terminalInput,
+    uiAction: async (action: unknown) => { inspected.push(action); return { result: { inputState: "empty", queue: [] } }; },
     sendSessionMessage: async (
       target: unknown,
       text: string,
@@ -155,7 +159,7 @@ test("MCP reads a discovered transcript and sends only to an explicit registered
       draftId?: string,
     ) => {
       sent.push({ target, text, action, draftId });
-      return { delivery: "terminal" };
+      return { delivery: "terminal" } as Record<string, unknown>;
     },
   };
   const call = async (name: string, args: object) =>
@@ -168,6 +172,17 @@ test("MCP reads a discovered transcript and sends only to an explicit registered
       },
       ctx,
     )) as any;
+  const input = await call("read_session_input", { source, max_chars: 100 });
+  expect(JSON.parse(input.result.content[0].text)).toMatchObject({ source, inputState: "empty", queue: [] });
+  expect(inspected).toEqual([{ action: "session_input", operation: "inspect", source, sessionId: "target", maxChars: 100 }]);
+  expect((await call("read_session_input", { source, max_chars: 99 })).error).toBeDefined();
+  expect((await call("read_session_input", { source: "unregistered" })).error).toBeDefined();
+  expect(inspected).toHaveLength(1);
+  terminalInput = { inputState: "unknown", queueState: "unknown", injectedDraft: { text: "CLI draft", author: "ai" } };
+  const cliInput = await call("read_session_input", { source });
+  expect(JSON.parse(cliInput.result.content[0].text)).toMatchObject(terminalInput);
+  expect(inspected).toHaveLength(1);
+  terminalInput = undefined;
   const read = await call("read_session_messages", {
     session_id: "target",
     repo_id: repo.id,
@@ -235,9 +250,14 @@ test("MCP reads a discovered transcript and sends only to an explicit registered
     (await call("send_session_message", { source, text: "hello" })).error,
   ).toBeDefined();
   expect(sent).toHaveLength(1);
+  ctx.sessions = async () => [session];
+  ctx.sendSessionMessage = async () => ({ status: "draft_exists", draft: { text: "PRIVATE_UNSENT_DRAFT" } });
+  const refused = await call("send_session_message", { source, text: "hello" });
+  expect(JSON.parse(refused.result.content[0].text)).toMatchObject({ ok: false, status: "draft_exists" });
+  expect(JSON.stringify(await events.list())).not.toContain("PRIVATE_UNSENT_DRAFT");
 });
 
-test("terminal delivery pastes into the identified live agent and never writes to shells, busy or ambiguous targets", async () => {
+test("terminal delivery pastes into the identified live agent and never writes to shells, confirmation prompts or ambiguous targets", async () => {
   const writes: string[] = [];
   const record = {
     id: "pty",
@@ -253,7 +273,7 @@ test("terminal delivery pastes into the identified live agent and never writes t
       write: (s: string) => writes.push(s),
       subscribe: (sub: any) => {
         sub.onData(new TextEncoder().encode("\u001b[?2004h"));
-        sub.onState?.({ working, awaitingInput: false });
+        sub.onState?.({ working: false, awaitingInput: working });
         return () => {};
       },
     }),
@@ -280,7 +300,7 @@ test("terminal delivery pastes into the identified live agent and never writes t
   working = true;
   await expect(
     sendTerminalSessionMessage(backend as any, target, "hello"),
-  ).rejects.toThrow("busy");
+  ).rejects.toThrow("confirmation");
   working = false;
   record.agent = "shell";
   expect(
@@ -326,4 +346,64 @@ test("staged terminal drafts require explicit submission and reject edited or re
     "changed",
   );
   expect(writes).toEqual(["\r", "user edit"]);
+});
+
+
+test("CLI drafts inject while working, expose tracked AI text, and submit only unchanged receipts", async () => {
+  let revision = 0, awaiting = false;
+  const writes: string[] = [];
+  const handle = {
+    isAlive: () => true, inputRevision: () => revision,
+    write: (text: string) => { writes.push(text); revision++; },
+    subscribe: (sub: any) => {
+      sub.onData(new TextEncoder().encode("\x1b[?2004h"));
+      sub.onState?.({ working: true, awaitingInput: awaiting });
+      return () => {};
+    },
+  };
+  const backend = { list: () => [{ id: "pty", ownerId: "target", agent: "codex", cwd: "project" }], get: () => handle } as any;
+  const session = { source: "source", sessionId: "target", agent: "codex", cwd: "project" } as any;
+  const drafts = new TerminalMessageDrafts();
+  const staged = await drafts.deliver(backend, session, "follow up", "stage");
+  expect(writes).toEqual(["\x1b[200~follow up\x1b[201~"]);
+  expect(drafts.inspect(backend, session, 100)).toMatchObject({ inputState: "unknown", queueState: "unknown", injectedDraft: { text: "follow up", author: "ai", inputChanged: false } });
+  await expect(drafts.deliver(backend, session, "duplicate", "stage")).rejects.toThrow("staged draft");
+  await expect(drafts.deliver(backend, session, "different", "submit", staged!.draftId as string)).rejects.toThrow("text");
+  await drafts.deliver(backend, session, "follow up", "submit", staged!.draftId as string);
+  expect(writes.at(-1)).toBe("\r");
+  const next = await drafts.deliver(backend, session, "second", "stage");
+  handle.write("edited");
+  expect(drafts.inspect(backend, session, 100)).toMatchObject({ injectedDraft: { inputChanged: true } });
+  await expect(drafts.deliver(backend, session, "second", "submit", next!.draftId as string)).rejects.toThrow("changed");
+  awaiting = true;
+  const before = writes.length;
+  await expect(drafts.deliver(backend, session, "do not answer approval", "send")).rejects.toThrow("confirmation");
+  expect(writes).toHaveLength(before);
+});
+
+
+test("CLI immediate sends serialize injection and recheck confirmation before Enter", async () => {
+  let revision = 0, awaiting = false;
+  const writes: string[] = [];
+  const handle = {
+    isAlive: () => true, inputRevision: () => revision,
+    write: (text: string) => { writes.push(text); revision++; },
+    subscribe: (sub: any) => {
+      sub.onData(new TextEncoder().encode("\x1b[?2004h"));
+      sub.onState?.({ working: true, awaitingInput: awaiting });
+      return () => {};
+    },
+  };
+  const backend = { list: () => [{ id: "pty", ownerId: "target", agent: "claude", cwd: "project" }], get: () => handle } as any;
+  const session = { source: "source", sessionId: "target", agent: "claude", cwd: "project" } as any;
+  const drafts = new TerminalMessageDrafts();
+  const first = drafts.deliver(backend, session, "follow up", "send");
+  await expect(drafts.deliver(backend, session, "duplicate", "send")).rejects.toThrow("already being injected");
+  expect((await first)?.status).toBe("submitted");
+  expect(writes).toEqual(["\x1b[200~follow up\x1b[201~", "\r"]);
+  const second = drafts.deliver(backend, session, "wait for review", "send");
+  awaiting = true;
+  await expect(second).rejects.toThrow("confirmation");
+  expect(writes).toHaveLength(3);
+  expect(writes.at(-1)).toBe("\x1b[200~wait for review\x1b[201~");
 });

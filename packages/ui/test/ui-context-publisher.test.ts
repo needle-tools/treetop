@@ -91,3 +91,14 @@ test("UI presence publishes focus changes with one window ID and withdraws on cl
   expect(reports.map((report) => report.sequence)).toEqual([1, 2, 3]);
   expect(reports.at(-1).snapshot.visible).toBe(false);
 });
+
+
+test("session input acknowledgements return data without focus or Zen actions", async () => {
+  let acknowledgement: any;
+  const forbidden = async () => { throw new Error("Must not move focus or Zen mode"); };
+  await applyUiAction({ action: "session_input", operation: "inspect", source: "target", requestId: "r", windowId: "w" }, "w", {
+    focusSession: forbidden, focusProject: forbidden, setZenMode: forbidden,
+    sessionInput: async () => ({ inputState: "draft", draft: { text: "user text" } }),
+  }, async result => { acknowledgement = result; });
+  expect(acknowledgement).toMatchObject({ ok: true, result: { inputState: "draft", draft: { text: "user text" } } });
+});

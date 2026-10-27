@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { createSessionInputController, registerSessionInput } from "./mcp-session-input";
   import { apiUrl, withRequestDeadline } from "./api";
   import {
     estimateSessionTokenCost,
@@ -699,6 +700,37 @@
     scrollTop: number;
   } | null = null;
   let inputText = "";
+  const mcpInput = createSessionInputController({
+    snapshot: () => ({
+      owner: source,
+      known: codexVisualAppSurface && showChatComposer && !editingCodexQueueId,
+      text: inputText,
+      attachments: composerAttachments.length,
+      queue: codexQueuedMessages,
+    }),
+    setText: text => { inputText = text; },
+    submit: async origin => {
+      const owner = source;
+      const payload = currentCodexPayload();
+      if (!payload) throw new Error("Session is not ready for a message");
+      if (codexRunning || sending || awaitingInput || codexQueuedMessages.length) {
+        const id = enqueueCodexPayload(payload);
+        codexQueuedMessages = codexQueuedMessages.map(item => item.id === id ? { ...item, ai: origin } : item);
+        clearCodexComposer();
+        return { status: "queued", queueId: id, confirmed: true };
+      }
+      clearCodexComposer();
+      const accepted = await startCodexTurn(payload);
+      if (!accepted) {
+        if (source === owner && !inputText && !composerAttachments.length) inputText = payload.text;
+        throw new Error(sendError || "Message submission failed; inspect the draft before retrying");
+      }
+      return { delivery: "native", status: "submitted", confirmed: false };
+    },
+  });
+  let mcpDraftLabel: Record<string, unknown> | undefined;
+  $: { inputText; composerAttachments; source; codexVisualAppSurface; showChatComposer; editingCodexQueueId; mcpDraftLabel = mcpInput.inspect().draft as Record<string, unknown> | undefined; }
+  let unregisterMcpInput: (() => void) | undefined;
   let sending = false;
   let archiving = false;
   let sendError = "";
@@ -4924,6 +4956,7 @@
 
   function clearCodexComposer(): void {
     inputText = "";
+    mcpInput.inspect();
     composerAttachments = [];
     openComposerAttachmentIndex = null;
   }
@@ -5067,7 +5100,9 @@
     const payload = currentCodexPayload();
     if (!payload) return;
     const fromRect = composerMotionSourceRect();
-    enqueueCodexPayload(payload, fromRect);
+    const ai = mcpInput.inspect().draft as { author?: string; senderSource?: string; edited?: boolean } | undefined;
+    const id = enqueueCodexPayload(payload, fromRect);
+    if (ai?.author === "ai") codexQueuedMessages = codexQueuedMessages.map(item => item.id === id ? { ...item, ai: { source: ai.senderSource, edited: ai.edited } } : item);
     clearCodexComposer();
   }
 
@@ -5271,7 +5306,7 @@
   }
 
   async function drainCodexQueue(): Promise<void> {
-    if (!codexAppLiveStateActive || disposing || codexQueueBlocked || codexQueueDraining || codexRunning || codexQueuedMessages.length === 0)
+    if (!codexAppLiveStateActive || disposing || codexQueueBlocked || codexQueueDraining || codexRunning || sending || awaitingInput || codexQueuedMessages.length === 0)
       return;
     const [next, ...rest] = codexQueuedMessages;
     if (!next) return;
@@ -5900,6 +5935,8 @@
     codexAppLiveStateActive &&
     !disposing &&
     !codexRunning &&
+    !sending &&
+    !awaitingInput &&
     codexQueuedMessages.length > 0 &&
     !codexQueueDraining &&
     !codexQueueBlocked
@@ -5995,6 +6032,10 @@
 
   onMount(() => {
     mounted = true;
+    unregisterMcpInput = registerSessionInput({
+      matches: (target, id) => !daemonId && (target === source || (sessionMessageSource.kind === "transcript" && target === sessionMessageSource.source) || (!!id && (id === session?.sessionId || id === resumeSessionId))),
+      act: mcpInput.act,
+    });
     void loadModelsDevPricing().then((snapshot) => {
       if (mounted) modelsDevPricing = snapshot;
     });
@@ -6008,6 +6049,7 @@
   });
 
   onDestroy(() => {
+    unregisterMcpInput?.();
     sessionScroll.dispose();
     window.removeEventListener(STAGE_PROMPT_EVENT, onStagePrompt);
     if (typeof document !== "undefined") {
@@ -7025,6 +7067,7 @@
                     </span>
                   </div>
                   <div class="composer-panel-item-copy" title={item.text}>
+                    {#if item.ai}<span class="ai-filled-label">AI-filled{item.ai.edited ? " \u00b7 edited" : ""}</span>{/if}
                     {item.text || "(attachments only)"}
                   </div>
                   {#if queueAttachments.length}
@@ -7175,6 +7218,9 @@
               </span>
             {/if}
           </div>
+        {/if}
+        {#if mcpDraftLabel?.author === "ai"}
+          <span class="ai-filled-label" title={String(mcpDraftLabel.senderSource ?? "MCP")}>AI-filled{mcpDraftLabel.edited ? " · edited" : ""}</span>
         {/if}
         <div class="composer-box" bind:this={composerMotionSourceEl}>
           <textarea
@@ -7452,6 +7498,13 @@
 </div>
 
 <style>
+  .ai-filled-label {
+    display: block;
+    color: var(--muted, #999);
+    font-size: 11px;
+    line-height: 1.5;
+    padding: 2px 0;
+  }
   .session {
     --composer-tray-max-height: min(13rem, 34vh);
     /* Relative so the LoadingOverlay (and any other absolutely

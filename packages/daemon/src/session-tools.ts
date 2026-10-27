@@ -8,8 +8,96 @@ import { DecPrivateModeTracker } from "./dec-private-modes";
 export class TerminalMessageDrafts {
   private drafts = new Map<
     string,
-    { source: string; terminalId: string; revision: number; createdAt: number }
+    {
+      source: string;
+      terminalId: string;
+      revision: number;
+      createdAt: number;
+      text?: string;
+    }
   >();
+  private pending = new Set<string>();
+  inspect(
+    backend: Pick<PtyBackend, "list" | "get">,
+    session: AgentSession,
+    maxChars = 6000,
+  ): Record<string, unknown> | undefined {
+    const target = terminalTarget(backend, session);
+    if (!target) return undefined;
+    const entry = [...this.drafts].find(
+      ([, draft]) =>
+        draft.source === session.source && draft.terminalId === target.id,
+    );
+    const draft = entry?.[1];
+    return {
+      delivery: "terminal",
+      terminalId: target.id,
+      inputState: "unknown",
+      queueState: "unknown",
+      reason:
+        "CLI-owned input and queue cannot be read reliably. Injected text appends at the current cursor; it does not replace or clear existing text.",
+      ...(draft
+        ? {
+            injectedDraft: {
+              draftId: entry![0],
+              author: "ai",
+              text: (draft.text ?? "").slice(0, maxChars),
+              truncated: (draft.text?.length ?? 0) > maxChars,
+              inputChanged: target.handle.inputRevision?.() !== draft.revision,
+              expired: Date.now() - draft.createdAt > 300_000,
+            },
+          }
+        : {}),
+    };
+  }
+  async deliver(
+    backend: Pick<PtyBackend, "list" | "get">,
+    session: AgentSession,
+    text: string,
+    action: "stage" | "submit" | "send",
+    draftId?: string,
+  ): Promise<Record<string, unknown> | undefined> {
+    const target = terminalTarget(backend, session);
+    if (!target) return undefined;
+    if (this.pending.has(target.id))
+      throw new Error("A message is already being injected into this terminal");
+    this.pending.add(target.id);
+    try {
+      if (action === "submit") {
+        const draft = this.drafts.get(draftId ?? "");
+        if (
+          !draft ||
+          draft.terminalId !== target.id ||
+          draft.source !== session.source
+        )
+          throw new Error("Draft not found for this session");
+        if (draft.text !== text)
+          throw new Error("Submit text must match the staged text");
+        return this.submit(draftId!, session.source, target.handle);
+      }
+      this.assertCanStage(session.source, backend);
+      if (!target.handle.inputRevision)
+        throw new Error("Terminal does not support tracked message injection");
+      const delivery = await sendTerminalSessionMessage(
+        backend,
+        session,
+        text,
+        false,
+      );
+      const id = this.stage(session.source, target.id, target.handle, text);
+      if (action === "stage")
+        return {
+          ...delivery,
+          draftId: id,
+          inputState: "unknown",
+          next: "AI-filled text was appended at the CLI cursor without Enter. Review it, then press Enter or explicitly submit this draft_id with the same text.",
+        };
+      await new Promise((resolve) => setTimeout(resolve, 150));
+      return this.submit(id, session.source, target.handle);
+    } finally {
+      this.pending.delete(target.id);
+    }
+  }
   assertCanStage(source: string, backend: Pick<PtyBackend, "get">): void {
     for (const [id, draft] of this.drafts) {
       if (draft.source !== source) continue;
@@ -21,7 +109,12 @@ export class TerminalMessageDrafts {
       this.drafts.delete(id);
     }
   }
-  stage(source: string, terminalId: string, handle: TerminalHandle): string {
+  stage(
+    source: string,
+    terminalId: string,
+    handle: TerminalHandle,
+    text?: string,
+  ): string {
     if (!handle.inputRevision)
       throw new Error(
         "Terminal does not support safe draft submission; press Enter manually",
@@ -35,6 +128,7 @@ export class TerminalMessageDrafts {
     const id = crypto.randomUUID();
     this.drafts.set(id, {
       source,
+      text,
       terminalId,
       revision: handle.inputRevision(),
       createdAt: Date.now(),
@@ -146,9 +240,13 @@ export function openCodexMessageTarget(
           entry.resumeSessionId === session.sessionId ||
           entry.source === `__codex_app__:${session.sessionId}`),
     );
-  const native = targets.filter(entry => entry.mode !== "terminal" && entry.visualAppStopped !== true);
+  const native = targets.filter(
+    (entry) => entry.mode !== "terminal" && entry.visualAppStopped !== true,
+  );
   if (!native.length && targets.length)
-    throw new Error("Session is open as a terminal or stopped chat but has no matching live PTY. Resume its terminal before sending; focusing alone does not resume it.");
+    throw new Error(
+      "Session is open as a terminal or stopped chat but has no matching live PTY. Resume its terminal before sending; focusing alone does not resume it.",
+    );
   if (native.length !== 1)
     throw new Error(
       "Native session must be open in exactly one Treetop column before sending",
@@ -171,6 +269,41 @@ export async function sendTerminalSessionMessage(
     }
   | undefined
 > {
+  const target = terminalTarget(backend, session);
+  if (!target) return undefined;
+  const handle = target.handle;
+  assertTerminalMessageReady(handle);
+  handle.write(`\x1b[200~${text}\x1b[201~`);
+  if (!submit)
+    return {
+      delivery: "terminal",
+      terminalId: target.id,
+      status: "staged",
+      confirmed: false,
+    };
+  const revision = handle.inputRevision?.();
+  // Let the TUI consume the paste before submitting it as a user message.
+  await new Promise((resolve) => setTimeout(resolve, 150));
+  if (!handle.isAlive())
+    throw new Error("Session exited before the message could be submitted");
+  if (revision !== undefined && handle.inputRevision?.() !== revision)
+    throw new Error(
+      "Terminal input changed after paste; inspect the draft before submitting",
+    );
+  assertTerminalMessageReady(handle);
+  handle.write("\r");
+  return {
+    delivery: "terminal",
+    terminalId: target.id,
+    status: "submitted",
+    confirmed: false,
+  };
+}
+
+function terminalTarget(
+  backend: Pick<PtyBackend, "list" | "get">,
+  session: AgentSession,
+) {
   if (!session.sessionId || !["claude", "codex"].includes(session.agent))
     return undefined;
   const matches = backend
@@ -190,51 +323,25 @@ export async function sendTerminalSessionMessage(
   const handle = backend.get(matches[0]!.id);
   if (!handle?.isAlive())
     throw new Error("Session terminal is no longer running");
-  assertTerminalMessageReady(handle);
-  handle.write(`\x1b[200~${text}\x1b[201~`);
-  if (!submit)
-    return {
-      delivery: "terminal",
-      terminalId: matches[0]!.id,
-      status: "staged",
-      confirmed: false,
-    };
-  const revision = handle.inputRevision?.();
-  // Let the TUI consume the paste before submitting it as a user message.
-  await new Promise((resolve) => setTimeout(resolve, 150));
-  if (!handle.isAlive())
-    throw new Error("Session exited before the message could be submitted");
-  if (revision !== undefined && handle.inputRevision?.() !== revision)
-    throw new Error(
-      "Terminal input changed after paste; inspect the draft before submitting",
-    );
-  handle.write("\r");
-  return {
-    delivery: "terminal",
-    terminalId: matches[0]!.id,
-    status: "submitted",
-    confirmed: false,
-  };
+  return { id: matches[0]!.id, handle };
 }
 
 function assertTerminalMessageReady(handle: TerminalHandle): void {
   const modes = new DecPrivateModeTracker();
-  let busy = false;
   let awaiting = false;
   // Subscribe replays current DEC modes and state synchronously, just as a
-  // renderer reattach does. Refuse input into busy agents or approval prompts.
+  // renderer reattach does. Busy TUIs can accept drafts/queues; approval prompts cannot.
   const unsubscribe = handle.subscribe({
     onData: (bytes) => modes.observe(bytes),
     onExit: () => {},
     onState: (state) => {
-      busy = state.working === true;
       awaiting = state.awaitingInput === true;
     },
   });
   unsubscribe();
-  if (busy || awaiting)
+  if (awaiting)
     throw new Error(
-      "Session is busy or awaiting confirmation; retry when it is ready for a message",
+      "Session is awaiting confirmation; resolve that prompt before injecting a message",
     );
   if (modes.snapshot()[2004] !== true)
     throw new Error("Session terminal is not ready for pasted messages");
