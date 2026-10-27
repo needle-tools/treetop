@@ -46,6 +46,7 @@
   import { flip } from "svelte/animate";
   import {
     loadZenRow,
+    zenWaitingProject,
     saveZenRow,
     zenRowAfterNavigation,
     mergeOpenedSession,
@@ -346,6 +347,7 @@
     userMessageCount?: number;
     messageCount?: number;
     fileSizeBytes?: number;
+    totalTokens?: number;
     recentMessageCount?: number;
     lastMessageTs?: string;
     contextTokens?: number;
@@ -1860,7 +1862,8 @@
         kind: "error",
         title: "Push failed.",
         message: body.error ?? `HTTP ${res.status}`,
-        ttlMs: 14_000,
+        commandOutput: true,
+        persist: true,
       });
     } catch (e) {
       const msg =
@@ -7309,6 +7312,8 @@
       return true;
     });
   })();
+  $: zenWaitingName = zenWaitingProject(zenRowKey, rows.map(row => row.key),
+    repos.map(repo => ({ key: repoPrefsKey(repo), name: repo.name || repoName(repo), pending: repo.pending })), loading);
   $: dockRows = sidebarDockRows(rows, rowFolded);
   $: dockVisibleWtByRepo = (() => {
     const out = new Map<string, Set<string>>();
@@ -7573,9 +7578,9 @@
             lastUserMessages: meta?.lastUserMessages,
             messageCount: meta?.messageCount,
             fileSizeBytes: meta?.fileSizeBytes,
-            totalTokens: meta?.pricingUsage?.length
+            totalTokens: meta?.totalTokens ?? (meta?.pricingUsage?.length
               ? meta.pricingUsage.reduce((sum, segment) => sum + segment.usage.total, 0)
-              : undefined,
+              : undefined),
             totalTokensPartial: meta?.pricingUsageExact === false,
             lastActive: meta?.lastActive,
             lastMessageTs: meta?.lastMessageTs,
@@ -10242,7 +10247,12 @@
 
   <VoiceSessionLane state={voiceState} />
 
-  {#if loading && repos.length === 0}
+  {#if zenWaitingName}
+    <div class="zen-project-waiting" role="status" aria-live="polite">
+      Waiting for {zenWaitingName}
+    </div>
+  {/if}
+  {#if loading && repos.length === 0 && !zenWaitingName}
     <div class="loading-screen">
       <div class="loading-inline">
         <LoadingSpinner size="0.85rem" label="Loading" />
@@ -10264,7 +10274,7 @@
         <p class="loading-slow">Loading – scanning worktrees and sessions…</p>
       {/if}
     </div>
-  {:else if rows.length === 0 || emptyReposDebug}
+  {:else if !zenWaitingName && (rows.length === 0 || emptyReposDebug)}
     <div class="empty-repos">
       <div class="add-folder-actions">
         <button
@@ -13236,7 +13246,7 @@
         </li>
       {/each}
     </ul>
-    <div class="add-folder-footer">
+    <div class="add-folder-footer" class:zen-waiting-hidden={!!zenWaitingName}>
       <div class="add-folder-actions">
         <button
           class="add-folder-cta add-folder-cta-compact"
@@ -13578,6 +13588,8 @@
           {#if t.title}<strong class="toast-title">{t.title}</strong>{/if}
           <span
             class="toast-message"
+            class:toast-command-output={t.commandOutput}
+            tabindex={t.commandOutput ? 0 : undefined}
             class:toast-message-italic={t.messageItalic}>{t.message}</span
           >
           {#if t.action}

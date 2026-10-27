@@ -53,6 +53,8 @@ export interface AgentSession {
   /** Current on-disk transcript size. Cheap stat metadata used by the UI to
    *  make unusually large sessions visible before the user resumes them. */
   fileSizeBytes?: number;
+  /** Cumulative provider-reported session usage, including cached input. */
+  totalTokens?: number;
   /** Short human-readable title: Claude's auto-summary or the first user
    *  prompt, capped to ~80 chars. Undefined when nothing usable was found. */
   title?: string;
@@ -1692,6 +1694,7 @@ export async function scanCodex(
                     ? Math.ceil(overview.messageCount / 2)
                     : undefined,
                 messageCount: overview.messageCount,
+                totalTokens: overview.usage.pricingUsage?.total,
                 contextTokens: overview.contextTokens,
                 contextTokensExact: overview.contextTokensExact,
                 contextWindow: overview.usage.modelContextWindow,

@@ -1,6 +1,7 @@
 import { test, expect, describe } from "bun:test";
 import {
   loadZenRow,
+  zenWaitingProject,
   saveZenRow,
   zenRowAfterNavigation,
   mergeOpenedSession,
@@ -3097,4 +3098,14 @@ describe("CommandTermStore", () => {
       source: "__attached__:shell:t",
     });
   });
+});
+
+
+test("restored Zen waits for its target, not every project", () => {
+  const key = "repo|C:\\git\\project";
+  expect(zenWaitingProject(key, [], [], true)).toBe("project");
+  expect(zenWaitingProject(key, [], [{ key: "repo", name: "Friendly project", pending: true }], true)).toBe("Friendly project");
+  expect(zenWaitingProject(key, [key], [{ key: "repo", name: "Friendly project" }], true)).toBeNull();
+  expect(zenWaitingProject(null, [], [], true)).toBeNull();
+  expect(zenWaitingProject(key, [], [], false)).toBeNull();
 });

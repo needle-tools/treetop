@@ -2616,3 +2616,17 @@ describe("Codex scan cache (memory regression)", () => {
     expect(s!.messageCount).toBeUndefined();
   });
 });
+
+
+test("Codex discovery publishes cumulative token totals for sidebar metadata", async () => {
+  const root = await tempDir("supergit-codex-sidebar-");
+  await writeFile(join(root, "session.jsonl"), [
+    { type: "session_meta", payload: { id: "sidebar", cwd: "/project" } },
+    { type: "event_msg", payload: { type: "token_count", info: {
+      total_token_usage: { input_tokens: 1000000, cached_input_tokens: 800000, output_tokens: 20000, total_tokens: 1020000 },
+      last_token_usage: { input_tokens: 1000, output_tokens: 20, total_tokens: 1020 },
+    } } },
+  ].map(row => JSON.stringify(row)).join("\n") + "\n");
+  const sessions = await scanCodex([root]);
+  expect(sessions[0]?.totalTokens).toBe(1020000);
+});

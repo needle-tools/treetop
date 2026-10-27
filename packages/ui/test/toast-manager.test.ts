@@ -11,6 +11,18 @@ import { describe, it, expect, beforeEach } from "bun:test";
 import { createToastManager } from "../src/toast-manager";
 import type { Toast } from "../src/toast-manager";
 
+it("keeps multiline command output and its display mode until dismissed", () => {
+  const deps = makeDeps();
+  const manager = createToastManager(deps);
+  const message = "Push checks\n  FAIL submodule availability\nPush the submodule first.";
+  const id = manager.addToast({ kind: "error", message, commandOutput: true, persist: true });
+  expect(manager.toasts()[0]?.message).toBe(message);
+  expect(manager.toasts()[0]?.commandOutput).toBe(true);
+  expect(deps.scheduled).toHaveLength(0);
+  manager.dismissToast(id);
+  expect(manager.toasts()).toHaveLength(0);
+});
+
 it("persistent reminder dismissal invokes acknowledgement once without a timeout", () => {
   const deps = makeDeps();
   const manager = createToastManager(deps);

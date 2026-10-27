@@ -92,6 +92,7 @@
 }
 .toast-body {
   flex: 1;
+  min-width: 0;
   word-break: break-word;
 }
 /* When a toast carries both a title and a message, stack them as two
@@ -115,6 +116,16 @@
 }
 .toast-message-italic {
   font-style: italic;
+}
+.toast-command-output {
+  display: block;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-family: var(--font-mono, monospace);
+  line-height: 1.5;
+  max-height: min(24rem, 50vh);
+  overflow: auto;
+  user-select: text;
 }
 .toast-action {
   align-self: flex-start;

@@ -29,6 +29,20 @@ export function zenRowAfterNavigation(current: string | null, target: string): s
   return current === null ? null : target;
 }
 
+/** Keep restored Zen informative while its specific project is still arriving. */
+export function zenWaitingProject(
+  key: string | null, readyRows: readonly string[],
+  projects: readonly { key: string; name: string; pending?: boolean }[], loading: boolean,
+): string | null {
+  if (!key) return null;
+  const separator = key.indexOf("|");
+  const project = projects.find(project => project.key === key.slice(0, separator));
+  if (readyRows.includes(key) && !project?.pending) return null;
+  if (!loading && !project?.pending) return null;
+  const path = key.slice(separator + 1).replace(/[\\/]+$/, "");
+  return project?.name || path.split(/[\\/]/).pop() || "project";
+}
+
 export class ExpandedStore {
   constructor(
     private readonly storage: KVStore,

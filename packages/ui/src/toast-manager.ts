@@ -11,6 +11,8 @@ export interface Toast {
   id: number;
   kind: "error" | "info" | "success" | "invite" | "warning";
   message: string;
+  /** Preserve command output as a scrollable, selectable log. */
+  commandOutput?: boolean;
   title?: string;
   /** When set, the toast renders an agent brand mark (AgentIcon) instead
    *  of the default emoji glyph. Used by usage-warning toasts so the user
@@ -37,6 +39,7 @@ export type ToastKind = Toast["kind"];
 export type AddToastOpts = {
   kind: ToastKind;
   message: string;
+  commandOutput?: boolean;
   title?: string;
   agent?: string;
   messageItalic?: boolean;
@@ -112,6 +115,7 @@ export function createToastManager<H = ReturnType<typeof setTimeout>>(
         id,
         kind: opts.kind,
         message: opts.message,
+        commandOutput: opts.commandOutput,
         title: opts.title,
         agent: opts.agent,
         messageItalic: opts.messageItalic,

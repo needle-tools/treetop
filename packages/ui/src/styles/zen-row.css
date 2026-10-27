@@ -174,3 +174,18 @@ main.zen-row > .menubar-stack:has(.agents-popover) {
   color: var(--chip-purple-text);
   background: var(--chip-purple-bg);
 }
+
+
+/* Keep existing session rows mounted while a restored Zen target streams in. */
+.zen-project-waiting {
+  position: fixed;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  color: var(--text-muted, #9a9aa0);
+  pointer-events: none;
+  z-index: 49;
+}
+.add-folder-footer.zen-waiting-hidden {
+  display: none;
+}
