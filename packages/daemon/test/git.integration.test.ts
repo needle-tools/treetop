@@ -5,7 +5,7 @@
  */
 
 import { test, expect, describe } from "bun:test";
-import { mkdir, mkdtemp, realpath, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, realpath, writeFile, readFile, utimes } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, sep } from "node:path";
 import { $ } from "bun";
@@ -57,6 +57,25 @@ async function tempRepo(): Promise<string> {
   await $`git -C ${dir} commit --allow-empty -m initial -q`.quiet();
   return dir;
 }
+
+test("background worktree details do not rewrite the index stat cache", async () => {
+  const repo = await tempRepo();
+  const file = join(repo, "tracked.txt");
+  await writeFile(file, "unchanged content\n");
+  await $`git -C ${repo} add tracked.txt`.quiet();
+  await $`git -C ${repo} commit -qm tracked`.quiet();
+  // Same contents, different stat information: ordinary status writes a new index.
+  await utimes(file, new Date("2020-01-01"), new Date("2020-01-01"));
+  const index = join(repo, ".git", "index");
+  const before = await readFile(index);
+  const details = await getWorktreeDetails(repo);
+  expect(details.lastCommit).not.toBeNull();
+  expect(details.fileStatus.unstaged).toBe(0);
+  expect(await readFile(index)).toEqual(before);
+  // Prove the fixture actually needs an optional cache refresh.
+  await $`GIT_OPTIONAL_LOCKS=1 git -C ${repo} status --porcelain`.quiet();
+  expect(await readFile(index)).not.toEqual(before);
+}, 30_000);
 
 describe("listWorktrees against real git", () => {
   test("returns the main worktree for a fresh repo", async () => {

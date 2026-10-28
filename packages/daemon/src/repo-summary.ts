@@ -379,7 +379,7 @@ async function dirtyCounts(
   worktreePath: string,
 ): Promise<{ unstaged: number; staged: number }> {
   try {
-    const out = await $`git -C ${worktreePath} status --porcelain`
+    const out = await $`git --no-optional-locks -C ${worktreePath} status --porcelain`
       .quiet()
       .text();
     let unstaged = 0;

@@ -508,7 +508,7 @@ export async function checkoutBranch(
 ): Promise<{ stashed: boolean }> {
   let stashed = false;
   const isDirty = async (): Promise<boolean> => {
-    const r = await $`git -C ${worktreePath} status --porcelain`
+    const r = await $`git --no-optional-locks -C ${worktreePath} status --porcelain`
       .quiet()
       .nothrow();
     return r.stdout.toString().trim().length > 0;
@@ -1051,7 +1051,7 @@ export async function getWorktreeDetails(
 ): Promise<WorktreeDetails> {
   try {
     const [statusOut, logOut] = await Promise.all([
-      $`git -C ${worktreePath} status --porcelain=v2 --branch`.quiet().text(),
+      $`git --no-optional-locks -C ${worktreePath} status --porcelain=v2 --branch`.quiet().text(),
       $`git -C ${worktreePath} log -1 --format=%H%x00%s%x00%an%x00%aI`
         .quiet()
         .text()
@@ -1099,7 +1099,7 @@ export async function getWorktreeDetails(
       if (!Number.isNaN(n)) branchStatus.unpushed = n;
     }
     if (fileStatus.staged > 0 || fileStatus.unstaged > 0) {
-      const shortstatOut = await $`git -C ${worktreePath} diff --shortstat HEAD`
+      const shortstatOut = await $`git --no-optional-locks -C ${worktreePath} diff --shortstat HEAD`
         .quiet()
         .text()
         .catch(() => "");
@@ -1602,15 +1602,15 @@ export async function getFileDiff(
       // /dev/null vs a real file); .nothrow() prevents Bun from
       // promoting that into a thrown error.
       const result =
-        await $`git -C ${worktreePath} diff --no-index --no-color ${ctx} /dev/null ${file}`
+        await $`git --no-optional-locks -C ${worktreePath} diff --no-index --no-color ${ctx} /dev/null ${file}`
           .quiet()
           .nothrow();
       return result.stdout.toString();
     }
     const cmd =
       kind === "staged"
-        ? $`git -C ${worktreePath} diff --staged --no-color ${ctx} -- ${file}`
-        : $`git -C ${worktreePath} diff --no-color ${ctx} -- ${file}`;
+        ? $`git --no-optional-locks -C ${worktreePath} diff --staged --no-color ${ctx} -- ${file}`
+        : $`git --no-optional-locks -C ${worktreePath} diff --no-color ${ctx} -- ${file}`;
     return await cmd.quiet().text();
   } catch {
     return "";
@@ -1701,8 +1701,8 @@ export async function getDiff(
   try {
     const diff = await (
       kind === "staged"
-        ? $`git -C ${worktreePath} diff --staged --no-color ${ctx}`
-        : $`git -C ${worktreePath} diff --no-color ${ctx}`
+        ? $`git --no-optional-locks -C ${worktreePath} diff --staged --no-color ${ctx}`
+        : $`git --no-optional-locks -C ${worktreePath} diff --no-color ${ctx}`
     )
       .quiet()
       .text();
@@ -1751,7 +1751,7 @@ export async function getDiff(
               // differ (which is always, for /dev/null vs a real file).
               // .nothrow() lets us capture the body without throwing.
               const result =
-                await $`git -C ${worktreePath} diff --no-index --no-color ${ctx} /dev/null ${entry}`
+                await $`git --no-optional-locks -C ${worktreePath} diff --no-index --no-color ${ctx} /dev/null ${entry}`
                   .quiet()
                   .nothrow();
               return result.stdout.toString();

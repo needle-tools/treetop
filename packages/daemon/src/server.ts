@@ -8794,7 +8794,7 @@ const server = Bun.serve<TermWsData, never>({
         const fmt = "%H%x00%s%x00%an%x00%aI";
         const [statusOut, aheadOut, behindOut, numstatUnstaged, numstatStaged] =
           await Promise.all([
-            $`git -C ${path} status --porcelain`.quiet().nothrow().text(),
+            $`git --no-optional-locks -C ${path} status --porcelain`.quiet().nothrow().text(),
             $`git -C ${path} log @{u}..HEAD --pretty=format:${fmt} -n 20`
               .quiet()
               .nothrow()
@@ -8805,11 +8805,11 @@ const server = Bun.serve<TermWsData, never>({
               .text(),
             // --no-renames so paths line up 1:1 with parseChangedFiles output;
             // otherwise renames render as `{a => b}` and wouldn't match.
-            $`git -C ${path} diff --numstat --no-renames`
+            $`git --no-optional-locks -C ${path} diff --numstat --no-renames`
               .quiet()
               .nothrow()
               .text(),
-            $`git -C ${path} diff --cached --numstat --no-renames`
+            $`git --no-optional-locks -C ${path} diff --cached --numstat --no-renames`
               .quiet()
               .nothrow()
               .text(),
@@ -8859,7 +8859,7 @@ const server = Bun.serve<TermWsData, never>({
             // --no-index always exits non-zero when files differ; nothrow
             // and just read stdout.
             const out =
-              await $`git -C ${path} diff --no-index --numstat /dev/null ${rel}`
+              await $`git --no-optional-locks -C ${path} diff --no-index --numstat /dev/null ${rel}`
                 .quiet()
                 .nothrow()
                 .text();
@@ -9088,8 +9088,8 @@ const server = Bun.serve<TermWsData, never>({
             ? folder.slice(wt.length).replace(/^\//, "")
             : folder;
           const [unstaged, staged, untracked] = await Promise.all([
-            $`git -C ${wt} diff --numstat -- ${rel}`.quiet().nothrow().text(),
-            $`git -C ${wt} diff --cached --numstat -- ${rel}`
+            $`git --no-optional-locks -C ${wt} diff --numstat -- ${rel}`.quiet().nothrow().text(),
+            $`git --no-optional-locks -C ${wt} diff --cached --numstat -- ${rel}`
               .quiet()
               .nothrow()
               .text(),
@@ -9197,7 +9197,7 @@ const server = Bun.serve<TermWsData, never>({
           const gitWt = url.searchParams.get("git");
           if (gitWt) {
             try {
-              const statusOut = await $`git -C ${gitWt} status --porcelain`
+              const statusOut = await $`git --no-optional-locks -C ${gitWt} status --porcelain`
                 .quiet()
                 .nothrow()
                 .text();

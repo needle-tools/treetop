@@ -2261,3 +2261,13 @@ retry a still-living timed-out app or an app that fails after observed readiness
 Log retries and final readiness. This provides bounded recovery from the observed
 transient startup failure without touching the daemon, broker, or session PTYs;
 it is not evidence that the native crash cause has been eliminated.
+### 2026-10-29 Background Git index-lock contention
+
+Worktree detail, source-control, summary, and diagnostic status/diff reads now
+pass `git --no-optional-locks` explicitly. Ordinary status refreshes can rewrite
+the index stat cache and briefly contend with agents performing Git writes.
+A real-repository regression changes only a tracked file timestamp, verifies
+Treetop leaves the index bytes unchanged, and checks that ordinary status still
+refreshes that same fixture. This is scoped to each read invocation: agent
+terminals and intentional Git writes retain their normal locking. Fetch/ref
+locks remain possible; this change does not delete locks or alter fetch behavior.
