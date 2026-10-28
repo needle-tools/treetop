@@ -27,6 +27,7 @@ export interface Toast {
   onClick?: () => void;
   /** Persist acknowledgement when the user closes or clicks a reminder. */
   onDismiss?: () => void;
+  actions?: Array<{ label: string; onClick: () => void | Promise<void> }>;
   action?: { label: string; onClick: () => void | Promise<void> };
   /** When true, the toast does NOT auto-dismiss on a timer. The user
    *  has to click the body (which fires onClick) or the close button.
@@ -47,6 +48,7 @@ export type AddToastOpts = {
   onClick?: () => void;
   onDismiss?: () => void;
   action?: Toast["action"];
+  actions?: Toast["actions"];
   persist?: boolean;
   silent?: boolean;
 };
@@ -122,6 +124,7 @@ export function createToastManager<H = ReturnType<typeof setTimeout>>(
         onClick: opts.onClick,
         onDismiss: opts.onDismiss,
         action: opts.action,
+        actions: opts.actions,
         persist: opts.persist,
       },
     ];

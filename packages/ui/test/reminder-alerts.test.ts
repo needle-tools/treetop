@@ -42,14 +42,14 @@ test("snooze action waits for persistence, deduplicates clicks, and allows the n
   const pending = Promise.withResolvers<void>();
   let snoozes = 0, dismisses = 0, opens = 0;
   const alerts = createReminderAlerts({ showToast: manager.addToast, dismissToast: manager.dismissToast,
-    snoozeReminder: async () => { snoozes++; await pending.promise; },
+    snoozeReminder: async (_id, hours) => { expect(hours).toBe(2); snoozes++; await pending.promise; },
     dismissReminder: async () => { dismisses++; }, openReminder: () => { opens++; }, onError: error => { throw error; } });
   const item: Reminder = { id: "one", title: "Review", message: "Logs", createdAt: "2026-10-07T00:00:00Z", dueAt: "2026-10-08T00:00:00Z", status: "due" };
   alerts.sync([item]);
-  const action = manager.toasts()[0]!.action!;
+  const action = manager.toasts()[0]!.actions![0]!;
   expect(action.label).toBe("Remind me later · 2 hours");
   const first = action.onClick();
-  await action.onClick();
+  await manager.toasts()[0]!.actions![1]!.onClick();
   expect(snoozes).toBe(1);
   expect(manager.toasts()).toHaveLength(1);
   pending.resolve(); await first;
@@ -69,9 +69,9 @@ test("failed snooze keeps the reminder actionable for retry", async () => {
     snoozeReminder: async () => { if (++attempts === 1) throw new Error("offline"); },
     dismissReminder: async () => { throw new Error("must not dismiss"); }, openReminder: () => {}, onError: error => errors.push(error) });
   alerts.sync([{ id: "one", title: "Review", message: "Logs", createdAt: "2026-10-07T00:00:00Z", dueAt: "2026-10-08T00:00:00Z", status: "due" }]);
-  await manager.toasts()[0]!.action!.onClick();
+  await manager.toasts()[0]!.actions![0]!.onClick();
   expect(errors).toHaveLength(1);
   expect(manager.toasts()).toHaveLength(1);
-  await manager.toasts()[0]!.action!.onClick();
+  await manager.toasts()[0]!.actions![0]!.onClick();
   expect(manager.toasts()).toHaveLength(0);
 });

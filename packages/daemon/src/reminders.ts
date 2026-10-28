@@ -91,14 +91,14 @@ export class ReminderStore {
       return item;
     });
   }
-  snooze(id: string, now = Date.now()): Promise<Reminder> {
+  snooze(id: string, now = Date.now(), hours = 2): Promise<Reminder> {
     return this.serialized(async () => {
       const items = await this.read();
       const item = items.find(item => item.id === id);
       if (!item) throw new Error("Reminder not found");
       if (item.status !== "due") throw new Error("Only due reminders can be snoozed");
       item.status = "scheduled";
-      item.dueAt = new Date(now + 2 * 60 * 60 * 1000).toISOString();
+      item.dueAt = new Date(now + hours * 60 * 60 * 1000).toISOString();
       delete item.deliveredAt;
       delete item.dismissedAt;
       await this.write(items);
@@ -144,7 +144,14 @@ export async function handleRemindersHttp(request: Request, store: ReminderStore
   if (request.method !== "POST") return Response.json({ error: "POST required" }, { status: 405 });
   try {
     const id = decodeURIComponent(match[1]!);
-    const reminder = match[2] === "snooze" ? await store.snooze(id)
+    let hours = 2;
+    if (match[2] === "snooze") {
+      const text = await request.text();
+      const body = text ? JSON.parse(text) : {};
+      hours = body.hours ?? 2;
+      if (hours !== 2 && hours !== 8) throw new Error("Snooze duration must be 2 or 8 hours");
+    }
+    const reminder = match[2] === "snooze" ? await store.snooze(id, Date.now(), hours)
       : await store.updateStatus(id, match[2] === "dismiss" ? "dismissed" : "cancelled");
     changed({ kind: "reminder_changed", id: reminder.id });
     return Response.json(reminder);

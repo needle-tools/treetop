@@ -105,3 +105,16 @@ test("concurrent scheduling and ticking preserve all reminders; cancelled remind
   await expect(store.schedule({ title: "test", message: "test", dueAt: "2026-10-08T12:00:00" }, 0)).rejects.toThrow("timezone");
   await expect(store.schedule({ title: "test", message: "test", dueAt: "2026-10-08T12:00:00Z" }, Date.parse("2026-10-09T00:00:00Z"))).rejects.toThrow("future");
 });
+
+ test('snooze accepts eight hours and rejects unsupported durations', async () => {
+ const store = new ReminderStore(await mkdtemp(join(tmpdir(), 'treetop-snooze-')));
+ const now=Date.now();
+ const item=await store.schedule({title:'Review',message:'Logs',dueAt:new Date(now-1000).toISOString()},now-2000);
+ await store.takeDue(now);
+ const send=(hours:number)=>handleRemindersHttp(new Request('http://localhost/api/reminders/'+item.id+'/snooze',{method:'POST',body:JSON.stringify({hours})}),store,()=>{});
+ expect((await send(3)).status).toBe(400);
+ expect((await store.list()).find(r=>r.id===item.id)?.status).toBe('due');
+ const before=Date.now();const response=await send(8);expect(response.status).toBe(200);
+ const result=await response.json();expect(Date.parse(result.dueAt)).toBeGreaterThanOrEqual(before+8*3600000);
+ expect(Date.parse(result.dueAt)).toBeLessThanOrEqual(Date.now()+8*3600000);
+ });

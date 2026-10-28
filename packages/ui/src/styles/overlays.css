@@ -87,7 +87,8 @@
 .toast-clickable .toast-body {
   cursor: pointer;
 }
-.toast-clickable .toast-body:hover {
+.toast-clickable .toast-title:hover,
+.toast-clickable .toast-message:hover {
   text-decoration: underline;
 }
 .toast-body {
@@ -132,6 +133,28 @@
   margin-top: 8px;
   padding: 4px 8px;
   font-size: 0.8rem;
+}
+.toast-reminder-actions {
+  display: flex;
+  align-items: baseline;
+  gap: 0.7rem;
+  margin-top: 8px;
+  font-size: 0.75rem;
+  white-space: nowrap;
+  cursor: default;
+}
+.toast-reminder-action {
+  padding: 4px 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-decoration: none;
+  cursor: pointer;
+}
+.toast-reminder-action:hover {
+  text-decoration: underline;
+  text-underline-offset: 3px;
 }
 .toast-close {
   background: transparent;

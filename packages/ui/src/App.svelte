@@ -13595,6 +13595,13 @@
           {#if t.action}
             <button class="toast-action" on:click|stopPropagation={() => t.action?.onClick()}>{t.action.label}</button>
           {/if}
+          {#if t.actions?.length}
+            <div class="toast-reminder-actions">
+              {#each t.actions as action}
+                <button class="toast-reminder-action" on:click|stopPropagation={() => action.onClick()}>{action.label}</button>
+              {/each}
+            </div>
+          {/if}
         </div>
         <button
           class="toast-close"

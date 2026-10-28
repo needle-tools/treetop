@@ -16,7 +16,7 @@
   const alerts = createReminderAlerts({
     showToast: options => addToast(options), dismissToast: id => dismissToast(id),
     dismissReminder: id => change(id, "dismiss"), openReminder: showDetails,
-    snoozeReminder: id => change(id, "snooze"),
+    snoozeReminder: (id, hours) => change(id, "snooze", hours),
     onError: reportError,
   });
   function reportError(reason: unknown) {
@@ -44,8 +44,8 @@
       if (mounted && sequence === requestSequence) error = reason instanceof Error ? reason.message : String(reason);
     }
   }
-  async function change(id: string, action: "dismiss" | "cancel" | "snooze"): Promise<void> {
-    const response = await fetch(apiUrl(`/api/reminders/${encodeURIComponent(id)}/${action}`), { method: "POST" });
+  async function change(id: string, action: "dismiss" | "cancel" | "snooze", hours = 2): Promise<void> {
+    const response = await fetch(apiUrl(`/api/reminders/${encodeURIComponent(id)}/${action}`), { method: "POST", headers: { "Content-Type": "application/json" }, body: action === "snooze" ? JSON.stringify({ hours }) : undefined });
     if (!response.ok) {
       const body = await response.json();
       throw new Error(body.error ?? "Unable to update reminder");

@@ -5,7 +5,7 @@ export function createReminderAlerts(deps: {
   showToast: (options: AddToastOpts) => number;
   dismissToast: (id: number) => void;
   dismissReminder: (id: string) => Promise<void>;
-  snoozeReminder: (id: string) => Promise<void>;
+  snoozeReminder: (id: string, hours: number) => Promise<void>;
   openReminder: (reminder: Reminder) => void;
   onError: (error: unknown) => void;
 }) {
@@ -24,13 +24,13 @@ export function createReminderAlerts(deps: {
         const toast = deps.showToast({
           kind: "info", title: item.title, message: item.message, persist: true,
           onClick: () => deps.openReminder(item),
-          action: {
+          actions: [2, 8].map(hours => ({
             label: "Remind me later · 2 hours",
             onClick: async () => {
               if (snoozing.has(item.id)) return;
               snoozing.add(item.id);
               try {
-                await deps.snoozeReminder(item.id);
+                await deps.snoozeReminder(item.id, hours);
                 const toastId = alerts.get(item.id);
                 alerts.delete(item.id);
                 acknowledging.add(item.id);
@@ -38,7 +38,7 @@ export function createReminderAlerts(deps: {
               } catch (error) { deps.onError(error); }
               finally { snoozing.delete(item.id); }
             },
-          },
+          })),
           onDismiss: () => {
             if (!alerts.has(item.id)) return;
             alerts.delete(item.id);
