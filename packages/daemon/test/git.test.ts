@@ -1,11 +1,12 @@
 import { test, expect, describe } from "bun:test";
 import { resolve } from "node:path";
 import { enableBackgroundGitWorker, listWorktrees, listRemotes } from "../src/git";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 
 test("compiled Git worker loads outside the build working directory", async () => {
   const root = resolve(import.meta.dir, "../../..");
+  await mkdir(resolve(root, ".cache"), { recursive: true });
   const fixture = await mkdtemp(resolve(root, ".cache/git-worker-test-"));
   const runtime = await mkdtemp(resolve(tmpdir(), "treetop-worker-"));
   try {
