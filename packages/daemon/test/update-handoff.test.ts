@@ -5,6 +5,53 @@ import { join } from "node:path";
 import { UpdateHandoff, updateInstallParent, watchForUpdate } from "../../../src/electrobun/update-handoff";
 import { replaceInstallation } from "../../../scripts/windows-installer-core";
 
+test("installer cancellation remains available until the verified installation commits", async () => {
+  const { InstallerControl, InstallationCancelledError } = await import("../../../scripts/windows-installer-core");
+  const preparing = new InstallerControl();
+  expect(preparing.cancel()).toBe(true);
+  expect(() => preparing.checkpoint()).toThrow(InstallationCancelledError);
+  const committed = new InstallerControl();
+  committed.commit();
+  expect(committed.cancel()).toBe(false);
+  expect(() => committed.checkpoint()).not.toThrow();
+});
+
+test("cancelling replacement verification restores the previous installation", async () => {
+  const { InstallerControl, InstallationCancelledError } = await import("../../../scripts/windows-installer-core");
+  const root = await mkdtemp(join(tmpdir(), "treetop-cancel-update-"));
+  const app=join(root,"app"),staged=join(root,"staged"),backup=join(root,"previous");
+  const control = new InstallerControl();
+  try {
+    await mkdir(app); await mkdir(staged);
+    await writeFile(join(app,"version"),"old"); await writeFile(join(staged,"version"),"new");
+    await expect(replaceInstallation({ app, staged, backup, assertStopped: async () => {}, verify: async () => {
+      control.cancel(); control.checkpoint();
+    }})).rejects.toBeInstanceOf(InstallationCancelledError);
+    expect(await readFile(join(app,"version"),"utf8")).toBe("old");
+    expect(await readFile(join(staged,"version"),"utf8")).toBe("new");
+  } finally { await rm(root,{recursive:true,force:true}); }
+});
+
+test("cancelling a staging command waits for its own child to exit", async () => {
+  const { InstallerControl, InstallationCancelledError, runInstallerCommand } = await import("../../../scripts/windows-installer-core");
+  const root = await mkdtemp(join(tmpdir(), "treetop-cancel-command-"));
+  const marker = join(root,"pid");
+  const control = new InstallerControl();
+  try {
+    const result = runInstallerCommand([process.execPath,"-e",`require('fs').writeFileSync(process.argv[1],String(process.pid));setInterval(()=>{},1000)`,marker],process.env,control.signal).catch(error=>error);
+    const until = Date.now()+10_000;
+    let pid = 0;
+    while (!pid && Date.now()<until) {
+      try { pid=Number(await readFile(marker,"utf8")); } catch(error:any) { if(error.code!=="ENOENT")throw error; }
+      if(!pid)await Bun.sleep(20);
+    }
+    control.cancel();
+    expect(await result).toBeInstanceOf(InstallationCancelledError);
+    expect(pid).toBeGreaterThan(0);
+    expect(()=>process.kill(pid,0)).toThrow();
+  } finally { await rm(root,{recursive:true,force:true}); }
+},15_000);
+
 test("only installed UI and daemon participate, never the workspace broker or dev Bun", () => {
   expect(updateInstallParent("C:\\Apps\\stable\\app\\bin\\bun.exe","ui")).toBe("C:\\Apps\\stable");
   expect(updateInstallParent("C:\\Apps\\stable\\app\\Resources\\app\\supergit.exe","daemon")).toBe("C:\\Apps\\stable");

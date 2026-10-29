@@ -1,14 +1,9 @@
 import { appendFile, mkdir, open, readFile, rename, rm, lstat, readdir } from "node:fs/promises";
 import { join, resolve, relative, isAbsolute } from "node:path";
+import { existsSync } from "node:fs";
 import { dlopen, ptr } from "bun:ffi";
-import { replaceInstallation, InstallationRecoveryError, launchInstallerApp } from "./windows-installer-core";
-
-async function command(args: string[], env = process.env): Promise<string> {
-  const child = Bun.spawn(args, {env,windowsHide:true,stdin:"ignore",stdout:"pipe",stderr:"pipe"});
-  const [out,err,code] = await Promise.all([new Response(child.stdout).text(),new Response(child.stderr).text(),child.exited]);
-  if (code !== 0) throw Error(`${args[0]} exited ${code}: ${err.trim()}`);
-  return out;
-}
+import { replaceInstallation, InstallationRecoveryError, InstallationCancelledError, InstallerControl, launchInstallerApp, runInstallerCommand as command } from "./windows-installer-core";
+import { openInstallerProgress, type InstallerProgressWindow } from "./installer-progress";
 function dialog(message: string, error = false) {
   const dll=dlopen("user32.dll",{MessageBoxW:{args:["u64","ptr","ptr","u32"],returns:"i32"}});
   try { dll.symbols.MessageBoxW(0n,ptr(Buffer.from(message+"\0","utf16le")),ptr(Buffer.from("Treetop installer\0","utf16le")),error?0x10:0x40); }
@@ -23,22 +18,24 @@ async function installedProcesses(app: string): Promise<InstalledProcess[]> {
   if (!Array.isArray(parsed)) throw Error("Could not enumerate installation processes");
   return parsed;
 }
-async function waitFor(check:()=>Promise<boolean>, ms:number, description:string) {
+async function waitFor(check:()=>Promise<boolean>, ms:number, description:string, signal?:AbortSignal) {
   const until=Date.now()+ms;
-  while(Date.now()<until) { if(await check())return; await Bun.sleep(250); }
+  while(Date.now()<until) { signal?.throwIfAborted(); if(await check()) { signal?.throwIfAborted(); return; } await Bun.sleep(250); }
   throw Error(description);
 }
 async function writeRequest(parent:string, request:unknown) {
   const path=join(parent,"update-request.json");
   await Bun.write(path+".tmp",JSON.stringify(request)); await rename(path+".tmp",path);
 }
-export async function handoffInstallation(parent:string, app:string, id:string, log:(s:string)=>Promise<void>) {
+export async function handoffInstallation(parent:string, app:string, id:string, log:(s:string)=>Promise<void>, signal?:AbortSignal, onUiExit?:()=>void) {
+  signal?.throwIfAborted();
   const processes=await installedProcesses(app);
   if (!processes.length)return;
   const workers=processes.filter(p=>["bun","supergit"].includes(p.name.toLowerCase()));
   if (!workers.length) throw Error("An older Treetop process is locking the installation. No processes were stopped.");
   const request={id,phase:"prepare",expiresAt:Date.now()+120_000,pids:workers.map(p=>p.pid)};
   await log(`Preparing update for ${JSON.stringify(processes)}`);
+  signal?.throwIfAborted();
   await writeRequest(parent,request);
   await waitFor(async()=>{
     const states=await Promise.all(workers.map(async p=>{
@@ -48,12 +45,13 @@ export async function handoffInstallation(parent:string, app:string, id:string, 
     const failure=states.find(s=>s?.state==="error");
     if(failure)throw Error(`Treetop declined the update: ${failure.error}`);
     return states.every((s,i)=>s?.id===id && s.pid===workers[i]!.pid && s.state==="ready");
-  },15_000,"The running Treetop version does not support a safe update handoff, or did not respond. The installation was left unchanged and no processes were force-stopped. Close the old Treetop window/tray hosts and daemon before retrying; keep the workspace terminal-broker running to retain its sessions.");
+  },15_000,"The running Treetop version does not support a safe update handoff, or did not respond. The installation was left unchanged and no processes were force-stopped. Close the old Treetop window/tray hosts and daemon before retrying; keep the workspace terminal-broker running to retain its sessions.",signal);
   // Close UIs first so their window state is saved while the daemon is alive.
+  onUiExit?.();
   await writeRequest(parent,{...request,phase:"exit",pids:workers.filter(p=>p.name.toLowerCase()==="bun").map(p=>p.pid)});
-  await waitFor(async()=>!(await installedProcesses(app)).some(p=>p.name.toLowerCase()!=="supergit"),15_000,"Treetop windows or another process still hold installation files. Update cancelled.");
+  await waitFor(async()=>!(await installedProcesses(app)).some(p=>p.name.toLowerCase()!=="supergit"),15_000,"Treetop windows or another process still hold installation files. Update cancelled.",signal);
   await writeRequest(parent,{...request,phase:"exit",pids:workers.filter(p=>p.name.toLowerCase()==="supergit").map(p=>p.pid)});
-  await waitFor(async()=>!(await installedProcesses(app)).length,15_000,"The daemon did not release its installation files. Update cancelled.");
+  await waitFor(async()=>!(await installedProcesses(app)).length,15_000,"The daemon did not release its installation files. Update cancelled.",signal);
   await log("All installation processes exited; session broker was not stopped.");
 }
 async function validateBundle(root:string) {
@@ -71,7 +69,7 @@ async function removeOwned(parent:string,path:string) {
 }
 
 /** Called only by the packaged setup executable, never when imported by tests. */
-export async function runInstaller(payload:string,expectedHash:string) {
+export async function runInstaller(payload:string,expectedHash:string,splash:string) {
   // Packaging verification must never touch the installed app or show dialogs.
   if(process.argv.includes("--verify-payload")) {
     const hash=new Bun.CryptoHasher("sha256").update(await Bun.file(payload).arrayBuffer()).digest("hex");
@@ -81,12 +79,17 @@ export async function runInstaller(payload:string,expectedHash:string) {
   }
   const parent=join(process.env.LOCALAPPDATA!,"tools.needle.supergit","stable");
   const app=join(parent,"app"),id=crypto.randomUUID(),stage=join(parent,`update-stage-${id}`);
+  const hadInstallation = existsSync(app);
   const logPath=join(parent,"installer.log"), backup=join(parent,`previous-${id}`);
   await mkdir(parent,{recursive:true});
   const log=async(s:string)=>{await appendFile(logPath,`[${new Date().toISOString()}] ${s}\n`);};
   let lock:Awaited<ReturnType<typeof open>>|undefined,installed=false,handoffStarted=false;
+  const control = new InstallerControl();
+  let ui: InstallerProgressWindow | undefined;
+  let uiExitRequested = false;
   let launchAttempted=false;
   const launch=async()=>{
+    await ui?.update(installed ? "Opening Treetop…" : "Reopening your previous Treetop…",95);
     launchAttempted=true;
     const launchLog=join(parent,"installer-launch.log");
     await log(`Launching installed app; native output: ${launchLog}`);
@@ -98,28 +101,39 @@ export async function runInstaller(payload:string,expectedHash:string) {
     } finally { await rm(readyPath,{force:true}); }
   };
   try {
+    ui = await openInstallerProgress(splash, control);
+    control.checkpoint();
     // Fail closed on a crashed installer's lock; never guess its ownership.
     lock=await open(join(parent,"installer.lock"),"wx");
     await lock.writeFile(JSON.stringify({pid:process.pid,id}));
     await log(`Starting installer ${id}`);
+    await ui.update("Checking the installer…",8);
     const bytes=await Bun.file(payload).arrayBuffer();
     if(new Bun.CryptoHasher("sha256").update(bytes).digest("hex")!==expectedHash)throw Error("Installer payload checksum failed");
+    control.checkpoint();
+    await ui.update("Unpacking Treetop…",22);
     await mkdir(stage);
     const archive=join(stage,"payload.tar.zst"); await Bun.write(archive,bytes);
-    const listing=await command(["tar.exe","-tf",archive]);
+    const listing=await command(["tar.exe","-tf",archive],process.env,control.signal);
     for(const name of listing.trim().split(/\r?\n/)) {
       if(!name.startsWith("Treetop/") || name.includes("\\") || name.split("/").includes(".."))throw Error("Unsafe archive entry");
     }
-    await command(["tar.exe","-xf",archive,"-C",stage]);
+    await command(["tar.exe","-xf",archive,"-C",stage],process.env,control.signal);
     const staged=join(stage,"Treetop"),buildTime=await validateBundle(staged);
     await log(`Validated staged build ${buildTime}`);
+    control.checkpoint();
+    await ui.update("Keeping your sessions running…",45);
     handoffStarted=true;
-    await handoffInstallation(parent,app,id,log);
+    await handoffInstallation(parent,app,id,log,control.signal,()=>{uiExitRequested=true;});
+    control.checkpoint();
+    await ui.update("Installing Treetop…",66);
     await replaceInstallation({app,staged,backup,log,
-      assertStopped:async()=>{if((await installedProcesses(app)).length)throw Error("Treetop relaunched during installation; update cancelled");},
-      verify:async()=>{if(await validateBundle(app)!==buildTime)throw Error("Installed build verification failed");},
+      assertStopped:async()=>{control.checkpoint();if((await installedProcesses(app)).length)throw Error("Treetop relaunched during installation; update cancelled");control.checkpoint();},
+      verify:async()=>{if(await validateBundle(app)!==buildTime)throw Error("Installed build verification failed");control.checkpoint();},
     });
+    control.commit();
     installed=true;
+    await ui.update("Finishing installation…",84);
     await log(`Installed and verified ${buildTime}; rollback retained at ${backup}`);
     // Shortcuts always target the canonical app path, not staging or the installer.
     await command(["powershell.exe","-NoProfile","-NonInteractive","-Command",
@@ -134,24 +148,34 @@ export async function runInstaller(payload:string,expectedHash:string) {
     await rm(join(parent,"update-request.json"),{force:true});
     // Reopen immediately; successful installation needs no confirmation dialog.
     await launch();
+    await ui.update("Treetop is ready",100);
   } catch(error) {
     if(lock) await rm(join(parent,"update-request.json"),{force:true});
-    await log(`ERROR installed=${installed}: ${error}`);
-    if(handoffStarted && !launchAttempted && !(error instanceof InstallationRecoveryError)) {
+    const cancelled = error instanceof InstallationCancelledError;
+    await log(`${cancelled?"CANCELLED":"ERROR"} installed=${installed}: ${error}`);
+    let recoveryFailure: unknown;
+    if(hadInstallation && handoffStarted && !launchAttempted && !(error instanceof InstallationRecoveryError)) {
       try {
+        // A cancel cannot undo an exit request already read by the old UI.
+        // Let that exit settle before deciding whether recovery must reopen it.
+        if (uiExitRequested) await waitFor(async()=>!(await installedProcesses(app)).some(p=>p.name.toLowerCase()==="bun"),15_000,"The previous window is still closing; installation cancelled.");
         if(!(await installedProcesses(app)).some(p=>["bun","launcher"].includes(p.name.toLowerCase()))) {
           await validateBundle(app); await launch(); await log("Reopened the available installation after update failure");
         }
-      } catch(recoveryError) {await log(`Could not reopen installation: ${recoveryError}`);}
+      } catch(recoveryError) {recoveryFailure=recoveryError;await log(`Could not reopen installation: ${recoveryError}`);}
     }
     if(lock && !(error instanceof InstallationRecoveryError)) await removeOwned(parent,stage).catch(cleanupError=>log(`Staging cleanup deferred: ${cleanupError}`));
-    dialog(`${installed?"The new build was installed, but a finishing step failed.":"Treetop update did not complete."}\n\n${error}\n\nLog: ${logPath}`,true);
-    process.exitCode=1;
+    if (!cancelled || recoveryFailure) {
+      dialog(`${installed?"The new build was installed, but a finishing step failed.":"Treetop update did not complete."}\n\n${recoveryFailure ?? error}\n\nLog: ${logPath}`,true);
+      process.exitCode=1;
+    }
   } finally {
+    try {
     if(lock) {
       await rm(join(parent,"update-request.json"),{force:true});
       for(const entry of await readdir(parent))if(entry.startsWith(`update-${id}-`))await rm(join(parent,entry),{force:true});
       await lock.close(); await rm(join(parent,"installer.lock"),{force:true});
     }
+    } finally { await ui?.close(); }
   }
 }

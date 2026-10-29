@@ -362,6 +362,25 @@ describe("moveSessionStateKey", () => {
 });
 
 describe("reconcileLiveAgentTerminals", () => {
+  test("preserves a verified broker attachment when its owner is still synthetic", () => {
+    const before: Record<string, OpenSession[]> = { "/fastvid": [{ agent: "codex", source: "/session.jsonl", resumeSessionId: "session", mode: "terminal", attachTermId: "original" }] };
+    const after = reconcileLiveAgentTerminals(before, [], [
+      { id: "original", ownerId: "__new__:codex:temporary", cwd: "/fastvid", agent: "codex" },
+      { id: "duplicate", ownerId: "session", cwd: "/fastvid", agent: "codex" },
+    ]);
+    expect(after["/fastvid"]?.[0]?.attachTermId).toBe("original");
+    expect(selectSessionsForBackgroundSpawn(after, {
+      liveTerminalIds: new Set(["original", "duplicate"]), inFlight: new Set(), newTermIds: {},
+    })).toEqual([]);
+  });
+  test("does not reuse an attachment that belongs to a different resolved conversation", () => {
+    const before: Record<string, OpenSession[]> = { "/fastvid": [{ agent: "codex", source: "/session.jsonl", resumeSessionId: "session", mode: "terminal", attachTermId: "wrong" }] };
+    const after = reconcileLiveAgentTerminals(before, [], [
+      { id: "wrong", ownerId: "other-session", cwd: "/fastvid", agent: "codex" },
+      { id: "correct", ownerId: "session", cwd: "/fastvid", agent: "codex" },
+    ]);
+    expect(after["/fastvid"]?.[0]?.attachTermId).toBe("correct");
+  });
   const wtPath = "/repo/fastvid";
   const source = "/Users/me/.codex/sessions/rollout-019e975e.jsonl";
   const repos: Repo[] = [

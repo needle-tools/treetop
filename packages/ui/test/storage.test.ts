@@ -261,6 +261,12 @@ describe("DismissedSessionsStore", () => {
 });
 
 describe("OpenSessionsStore", () => {
+  test("broker terminal attachment survives an app handoff", () => {
+    const kv = new MemStore();
+    const store = new OpenSessionsStore(kv, "handoff");
+    store.save({ "/fastvid": [{ agent: "codex", source: "/session.jsonl", resumeSessionId: "session", mode: "terminal", attachTermId: "broker-terminal" }] });
+    expect(new OpenSessionsStore(kv, "handoff").load()["/fastvid"]?.[0]?.attachTermId).toBe("broker-terminal");
+  });
   test("explicitly stopped visual sessions stay stopped across reloads", () => {
     const kv = new MemStore();
     const store = new OpenSessionsStore(kv, "stopped-visual");
@@ -617,6 +623,11 @@ describe("OpenSessionsStore", () => {
 });
 
 describe("filterToExistingSessions", () => {
+  test("keeps a newly promoted live terminal before repository discovery catches up", () => {
+    const session: PersistedSession = { agent: "codex", source: "/fresh.jsonl", resumeSessionId: "new-session", mode: "terminal", attachTermId: "live-terminal" };
+    expect(filterToExistingSessions([session], new Set(), new Set(["live-terminal"]))).toEqual([session]);
+    expect(filterToExistingSessions([session], new Set(), new Set())).toEqual([]);
+  });
   const mkSess = (source: string): PersistedSession => ({
     agent: "claude",
     source,
@@ -2138,16 +2149,14 @@ describe("setSessionAttachTermId", () => {
     expect(JSON.stringify(before)).toBe(beforeJson);
   });
 
-  test("attachTermId is dropped on load (only valid within its daemon run)", () => {
-    // It must never be trusted across a reload: the PTY it names may be
-    // gone. sanitizeSession deliberately omits it.
+  test("attachTermId is retained for verification against the surviving broker", () => {
     const m = new MemStore();
     const store = new OpenSessionsStore(m, "supergit:openSessions-attach");
     store.save({
       "/wt": [{ agent: "claude", source: SOURCE, attachTermId: "t_dead" }],
     });
     expect(store.load()).toEqual({
-      "/wt": [{ agent: "claude", source: SOURCE }],
+      "/wt": [{ agent: "claude", source: SOURCE, attachTermId: "t_dead" }],
     });
   });
 

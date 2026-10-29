@@ -2,6 +2,41 @@ import { access, rename, mkdir, readdir, open, readFile, rm } from "node:fs/prom
 import { dirname, resolve, join } from "node:path";
 
 export class InstallationRecoveryError extends Error {}
+export class InstallationCancelledError extends Error {
+  constructor() { super("Installation cancelled"); this.name = "InstallationCancelledError"; }
+}
+
+/** Shared by native installer frontends. Cancellation never interrupts the
+ * file transaction: its next checkpoint rolls it back before cleanup. */
+export class InstallerControl {
+  private controller = new AbortController();
+  private committed = false;
+  get signal(): AbortSignal { return this.controller.signal; }
+  get canCancel(): boolean { return !this.committed && !this.signal.aborted; }
+  cancel(): boolean {
+    if (!this.canCancel) return false;
+    this.controller.abort(new InstallationCancelledError());
+    return true;
+  }
+  checkpoint(): void { this.signal.throwIfAborted(); }
+  commit(): void { this.checkpoint(); this.committed = true; }
+}
+
+/** Cancellation only stops this installer's own staging command, never any
+ * installed application, daemon, session broker, or terminal process. */
+export async function runInstallerCommand(args: string[], env = process.env, signal?: AbortSignal): Promise<string> {
+  signal?.throwIfAborted();
+  const child = Bun.spawn(args, { env, windowsHide: true, stdin: "ignore", stdout: "pipe", stderr: "pipe" });
+  const abort = () => { child.kill(); };
+  signal?.addEventListener("abort", abort, { once: true });
+  if (signal?.aborted) abort();
+  try {
+    const [out, err, code] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
+    signal?.throwIfAborted();
+    if (code !== 0) throw Error(`${args[0]} exited ${code}: ${err.trim()}`);
+    return out;
+  } finally { signal?.removeEventListener("abort", abort); }
+}
 
 /** Observe UI readiness, retrying only a confirmed process exit before readiness. */
 export async function launchInstallerApp(executable: string, cwd: string, logPath: string, args: string[] = [], startupMs = 5000,

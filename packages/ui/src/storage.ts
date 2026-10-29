@@ -342,11 +342,8 @@ export interface PersistedSession {
   mode?: "terminal";
   /** Optional. The daemon terminal id of the live PTY this column is
    *  currently attached to, stamped on spawn so a remount/reopen in the
-   *  same page reattaches to the running TUI instead of re-spawning. NOT
-   *  round-tripped through `sanitizeSession` (deliberately dropped on load):
-   *  it's only valid within the daemon run that minted it, and a stale one
-   *  after a daemon restart now self-heals via TerminalView's spawn
-   *  fallback. */
+   *  same page or after a broker-preserving handoff. Restore verifies the ID
+   *  against the live terminal inventory; a stale ID uses the normal fallback. */
   attachTermId?: string;
   /** Optional UI-only key used to preserve a mounted strip column across a
    *  source canonicalization in the current page. Deliberately not restored
@@ -658,6 +655,9 @@ function sanitizeSession(item: unknown): PersistedSession | null {
   if (typeof o.resumeSessionId === "string" && o.resumeSessionId.length > 0) {
     out.resumeSessionId = o.resumeSessionId;
   }
+  if (typeof o.attachTermId === "string" && o.attachTermId.length > 0) {
+    out.attachTermId = o.attachTermId;
+  }
   if (typeof o.transcriptSource === "string" && o.transcriptSource.length > 0) {
     out.transcriptSource = o.transcriptSource;
   }
@@ -910,6 +910,7 @@ export function transientDiscoverySources(
 export function filterToExistingSessions(
   persisted: PersistedSession[],
   existingSources: ReadonlySet<string>,
+  liveTerminalIds?: ReadonlySet<string>,
 ): PersistedSession[] {
   // Dedupe by source as a last line of defense for the strip's
   // `{#each ... as s (s.source)}` block. Promotion paths
@@ -922,6 +923,7 @@ export function filterToExistingSessions(
   return persisted.filter((s) => {
     if (seen.has(s.source)) return false;
     const keep =
+      (!!s.attachTermId && liveTerminalIds?.has(s.attachTermId)) ||
       SYNTHETIC_SOURCE_PREFIXES.some((p) => s.source.startsWith(p)) ||
       sessionMatchesKnownKeys(s, existingSources);
     if (keep) seen.add(s.source);

@@ -1095,7 +1095,12 @@
     cwd: string,
   ) {
     promotedSources.add(stampedSource);
-    const termId = newTermIds[stampedSource];
+      const original = openSessionsByWt[cwd]?.find(s => s.source === stampedSource);
+      const termId = newTermIds[stampedSource] ?? original?.attachTermId;
+      if (termId && original?.resumeSessionId) {
+        void bindTerminalSessionOwner(termId, original.resumeSessionId, daemonIdForWorktreePath(repos, cwd))
+          .catch(error => recordBrowserDiagnostic("promoted terminal owner binding failed", { termId, error: String(error) }));
+      }
     openSessionsByWt = {
       ...openSessionsByWt,
       [cwd]: (openSessionsByWt[cwd] ?? []).map((x) =>
@@ -3127,6 +3132,10 @@
             );
             if (!match) continue;
             const termId = newTermIds[s.source] ?? s.attachTermId;
+              if (termId) {
+                void bindTerminalSessionOwner(termId, sessionId, daemonIdForWorktreePath(repoList, wtPath))
+                  .catch(error => recordBrowserDiagnostic("promoted terminal owner binding failed", { termId, error: String(error) }));
+              }
             next = {
               ...next,
               [wtPath]: next[wtPath]!.map((x) =>
@@ -5937,17 +5946,6 @@
     commandTermStore.save(map);
   }
 
-  async function commandTermAlive(source: string, wtPath: string): Promise<boolean> {
-    const termId = source.replace("__attached__:shell:", "");
-    if (!termId || termId === source) return false;
-    const r = await fetch(apiUrl("/api/terminals", daemonIdForWorktreePath(repos, wtPath)), {
-      signal: AbortSignal.timeout(5_000),
-    });
-    if (!r.ok) throw new Error(`Could not check command status: HTTP ${r.status}`);
-    const list = (await r.json()) as { id: string; exitedAt?: string }[];
-    return list.some((t) => t.id === termId && !t.exitedAt);
-  }
-
   function forgetCommandTerm(
     linkId: string,
     entry: { wtPath: string; source: string },
@@ -6005,18 +6003,8 @@
     }
 
     try {
-      if (cmdLink.runMode === "internal") {
-        const prev = commandTermSources.get(link.id);
-        if (prev) {
-          const alive = await commandTermAlive(prev.source, prev.wtPath);
-          if (alive) {
-            await revealInternalCommand(prev);
-            return;
-          }
-          forgetCommandTerm(link.id, prev);
-        }
-      }
-
+      // The daemon/broker returns the existing command's terminal when it is
+      // running. Do not gate this action on a second, short-lived status fetch.
       const repoId = repos.find((r) =>
         (r.customLinks ?? []).some((l) => l.id === link.id),
       )?.id;
@@ -12309,6 +12297,7 @@
                     {@const visibleSessions = filterToExistingSessions(
                       openSessionsByWt[wt.path] ?? [],
                       existingSources,
+                      liveTerminalIds,
                     )}
                     {#if visibleSessions.length > 0 || (stripFilter && stripFilter.notOpen.length > 0)}
                       <div

@@ -469,9 +469,11 @@ export function reconcileLiveAgentTerminals(
   terminals: readonly LiveAgentTerminal[],
 ): Record<string, OpenSession[]> {
   const liveByOwner = new Map<string, LiveAgentTerminal>();
+  const liveById = new Map<string, LiveAgentTerminal>();
   for (const t of terminals) {
     if (!t.ownerId || t.exitedAt || t.agent === "shell") continue;
     liveByOwner.set(t.ownerId, t);
+    liveById.set(t.id, t);
   }
   if (liveByOwner.size === 0) return byWt;
 
@@ -501,7 +503,10 @@ export function reconcileLiveAgentTerminals(
         sessionIdByWtAndSource.get(`${wtPath}\0${s.source}`),
         s.source.startsWith("__new__:") ? s.source : undefined,
       ].filter((id): id is string => typeof id === "string" && id.length > 0);
-      const live = ownerIds.map((id) => liveByOwner.get(id)).find(Boolean);
+      const attached = s.attachTermId ? liveById.get(s.attachTermId) : undefined;
+      const verifiedAttachment = attached && attached.cwd === wtPath && attached.agent === s.agent &&
+        (ownerIds.includes(attached.ownerId!) || attached.ownerId?.startsWith(`__new__:${s.agent}:`));
+      const live = verifiedAttachment ? attached : ownerIds.map((id) => liveByOwner.get(id)).find(Boolean);
       if (!live || live.cwd !== wtPath) return;
       if (live.agent !== s.agent) return;
       if (s.attachTermId === live.id && s.mode === "terminal") return;

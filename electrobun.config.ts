@@ -20,6 +20,9 @@ export default {
   // The native tray/menu-bar owner must survive closing the last window.
   runtime: { exitOnLastWindowClosed: false },
   build: {
+    // The SDK default (1.3.13) corrupts the VM heap when WebView2 invokes
+    // threadsafe FFI callbacks. Use the fixed runtime (oven-sh/bun#31332).
+    bunVersion: "1.4.4",
     bun: {
       entrypoint: "src/electrobun/index.ts",
     },

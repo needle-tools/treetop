@@ -2353,3 +2353,47 @@ still running at the probe's 45-second deadline. A single-repo run published
 sessions at 703 ms and final details at 9.5 seconds. These are isolated timings,
 not confirmation of the installed UI. The live broker was not stopped.
 198 worker, refresh-plan, and UI characterization tests passed.
+
+### 2026-10-29 Fastvid Codex lock after broker-preserving handoff
+
+The broker retained PID 130416 / terminal t_mvtb77u5_34_8783ea05, initially
+owned by a synthetic __new__:codex source. The discovered real session ID was
+01a186e0-16a5-7d73-97f8-6eabd4c2440f. After update, another resume process
+(t_mvtbecgt_37_12f92437) displayed Codex's open-in-another-app / R-to-retry
+lock screen. Read-only replay confirmed the original terminal had completed
+its work while the duplicate was blocked on the lock.
+
+Recovered the running original by binding its real session ID, stopping only
+the verified lock-screen duplicate, and correcting its saved attachment.
+The original process and broker were left running. OpenSessionsStore had
+intentionally discarded attachTermId on load, based on the obsolete assumption
+that daemon restart destroys PTYs. It now retains the attachment as a candidate;
+reconciliation validates live ID, cwd, agent and resolved/synthetic owner before
+preferring it. A mismatching resolved owner is rejected. Both source-promotion
+paths also bind the real owner explicitly and retain an existing attachment.
+Tests cover persistence, original-over-duplicate preference, avoiding background
+respawn, and rejecting another conversation. The prior drop-on-load test was
+deliberately updated for the persistent-broker lifecycle. 345 focused tests pass.
+
+Action-log review: 2026-10-29 command clicks took 19.994 seconds (248.9 ms server),
+14.351 seconds (20.2 ms server), and 6.834 seconds (3.36 seconds server).
+An open-default request took 1.443 seconds with 22.5 ms server service time.
+Outside-server latency is measured evidence, not proof of browser queueing.
+2026-10-28 push failures took about 60-71 seconds, mostly inside the server;
+successful pushes ranged about 10-44 seconds. Push uses a 60-second operation
+timeout and first awaits worker-based remote enumeration. No push was retried
+or initiated during diagnosis; its network/auth/hook cause remains unresolved.
+
+### 2026-10-29 New live Fastvid column hidden after source promotion
+
+The session-did-not-render/layout-preserved message is a dock reveal check,
+not a caught rendering exception. The newly created Fastvid session remained
+saved with its real transcript source and live attachTermId, but
+filterToExistingSessions accepted only synthetic sources or sources already
+present in the slower per-repo agent inventory. Source promotion therefore
+removed its visible column until discovery caught up. The dock already exempted
+live terminals; the strip did not. Pass the verified live terminal ID set into
+the strip filter and retain those sessions even before discovery. A failing
+regression now passes and still excludes dead attachments with unknown sources.
+346 storage/routing tests pass. The installer is rebuilt to include both this
+fix and the handoff attachment/owner fix.

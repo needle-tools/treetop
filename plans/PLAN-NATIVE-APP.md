@@ -609,3 +609,90 @@ requires the same target and text, and expires after five minutes.
 Validation covers controller overwrite/concurrency checks, bounded reads,
 registered-target resolution, UI acknowledgements, provenance persistence and
 an isolated SessionView browser regression exercising stage/edit/submit/queue.
+
+### 2026-10-29 Installer splash and cancellation
+
+The standalone Windows Setup now embeds treetop-splash.png and opens a native
+WPF window through the installed Windows PowerShell/.NET runtime. No browser
+or terminal window is required. The small rounded window uses the existing
+artwork, a quiet status footer, a progress track, and an accessible cancel X.
+Its UI process is separate from extraction/hashing so cancellation stays responsive.
+A temporary status/cancel file protocol connects it to the installer; the UI
+closes if its owner exits and installer cleanup reaps only this owned UI child.
+
+InstallerControl is platform-independent. Cancel aborts only installer-owned
+staging commands and handoff waits. File replacement reaches its verification
+checkpoint before cancellation unwinds through the existing rollback path.
+After verification commits, cancellation is disabled while shortcuts, cleanup,
+and launch finish. Cancellation is not reported as an installation error. If
+old UI exit was already requested, recovery waits for that exit before reopening
+the previous installation; the terminal broker is never stopped. First installs
+have no old app to reopen. Payload verification-only mode never opens UI.
+
+Actual WPF preview rendered successfully; accessibility automation invoked its
+cancel X and observed cancellation. Screenshot: .cache/installer-preview.png.
+Seventeen handoff/rollback/cancellation/launch tests passed. macOS can reuse the
+controller and status protocol, but the WPF frontend is Windows-specific;
+no new macOS installer frontend or macOS-tested artifact is claimed.
+
+The five-second command-terminal preflight was also removed after a logged
+GET /api/terminals timed out at exactly 5000 ms and blocked a saved command click.
+Command clicks now go directly to the broker-backed saved-command start route,
+which returns an existing command terminal instead of starting a duplicate.
+Ten project-command lifecycle tests passed with a test-only 30s timeout for
+slow Windows process creation. Broader UI/terminal stalls remain unresolved.
+
+### 2026-10-29 Repeated post-install native startup crashes
+
+Installer fc1506d8 verified build 09:33:14 and then exhausted three startup
+attempts. Its launcher exited once with code 0 and twice with code 9; native
+child Bun exited 0xC0000409 on the failed native attempts. The native log reached
+BrowserWindow creation/initial focus, but not WebView DOM readiness. The user
+saw the splash briefly. No Windows Application Error/WER entry or matching
+crash dump was found. No lingering Electrobun-profile WebView2 process was
+found during the failure audit.
+
+Isolated SDK tests used copies under .cache, port 37792, a separate empty
+workspace/home, and no broker connection. A minimal native window, the full
+installed UI in a minimal host, caption/icon customization, and the complete
+native launcher all reached DOM readiness and exited cleanly. These passes do
+not establish the intermittent crash cause and no speculative startup source
+change was made.
+
+The user's later native launch at 09:48:26 reached DOM readiness and restored
+keyboard focus at 09:48:29. Production status then reported the same surviving
+broker PID 89956, connected, with ten sessions and four commands. The native
+tray belongs to the window host; a surviving broker does not display a tray
+when the host crashes. The user declined browser recovery. No production
+process or broker was started, killed, restarted, or reconfigured by the agent.
+Underlying native startup reliability remains unresolved.
+
+2026-10-29 native callback crash fix:
+The isolated native failures resolve to libNativeWrapper BridgeHandler::PostMessage
+(indirect callback at RVA 0x85766, return 0x8576d) and NavigationStarting's
+will-navigate callback (call 0xa3226, return 0xa322d). Both enter Bun FFI
+trampolines from the native UI thread before DOM readiness. Geometry changes
+still crashed; the failure is not established as a saved-window-size issue.
+A headless Windows CreateThread/JSCallback stress test independently reproduces
+heap corruption in bundled Bun 1.3.13 in under a second. Bun issue #33840 and
+fix #31332 identify unsafe copying of JSC::Strong handles on foreign threads.
+The identical test completes all 10,000 callbacks on official Bun 1.4.4.
+Pinned build.bunVersion to 1.4.4 through Electrobun's supported runtime override.
+Regression coverage checks the minimum fixed runtime and, when
+TREETOP_NATIVE_RUNTIME_TEST names a distribution executable, runs real foreign
+Windows thread callbacks in an isolated subprocess. Old runtime fails; 1.4.4 passes.
+This is strong causal evidence for the observed startup crashes, but native
+window launch was deliberately not rerun after the user's no-more-windows request.
+No production daemon, broker, or native host was restarted. Installer rebuild
+uses SUPERGIT_BUILD_OPEN_OUTPUT=0 to prevent Explorer windows.
+Primary references: https://github.com/oven-sh/bun/issues/33840
+https://github.com/oven-sh/bun/pull/31332
+Rebuild completed successfully. Final Treetop-Setup.exe is 231,993,344 bytes.
+Decompressed its final Treetop-Setup.tar.zst into workspace cache: build.json
+reports bunVersion 1.4.4 and exitOnLastWindowClosed false. The exact bun.exe
+extracted from that payload passes all three config/runtime checks, including
+10,000 foreign-thread callbacks. API/UI/embedded Git worker smoke checks pass.
+Broader build-launch tests were attempted in the sandbox: 12 passed and four
+could not spawn child processes (EPERM); these were not rerun to avoid extra
+process/window probes. The targeted native-runtime regression ran elevated.
+No installer or production app launch was performed.
