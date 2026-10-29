@@ -12,8 +12,16 @@ import {
   macFileManagerOpenCommand,
   resetDetectEditorsCache,
   windowsOpenCommand,
+  windowsFileManagerLaunch,
   windowsOpensWithNotepad,
 } from "../src/open";
+
+test("Windows file manager launches visibly with native paths and literal arguments", () => {
+  const launch = windowsFileManagerLaunch("C:/Users/me/session logs/a & b");
+  expect(launch.cmd).toEqual(["explorer.exe", "C:\\Users\\me\\session logs\\a & b"]);
+  expect(launch.windowsHide).toBe(false);
+  expect(windowsFileManagerLaunch("//server/share/sessions").cmd[1]).toBe("\\\\server\\share\\sessions");
+});
 
 async function tempDir(): Promise<string> {
   return mkdtemp(join(tmpdir(), "supergit-open-"));

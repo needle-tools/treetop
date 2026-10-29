@@ -13,7 +13,7 @@
  */
 
 import { access, readdir, stat } from "node:fs/promises";
-import { basename, extname, join } from "node:path";
+import { basename, extname, join, win32 } from "node:path";
 import { homedir } from "node:os";
 
 /** Absolute path to cmd.exe. Bare `"cmd"` fails under Bun.spawn when the
@@ -316,6 +316,17 @@ export function windowsOpenCommand(
   return [CMD_EXE, "/c", "start", "", path];
 }
 
+export function windowsFileManagerLaunch(path: string) {
+  // Explorer is the requested visible app, not a background console helper.
+  // Keep the path as one literal argument and use Explorer's native separators.
+  return {
+    cmd: ["explorer.exe", win32.normalize(path)],
+    windowsHide: false,
+    stdout: "ignore" as const,
+    stderr: "ignore" as const,
+  };
+}
+
 export function macFileManagerOpenCommand(args: {
   path: string;
   isDirectory: boolean;
@@ -456,7 +467,7 @@ export async function openIn(
       return { via: "Files" };
     }
     if (process.platform === "win32") {
-      Bun.spawn(["explorer", path], { windowsHide: true, stdout: "ignore", stderr: "ignore" });
+      Bun.spawn(windowsFileManagerLaunch(path));
       return { via: "Explorer" };
     }
     throw new Error(
