@@ -2038,11 +2038,10 @@
     // most-recent conversation when invoked as bare `claude`, which
     // makes "+ new session" silently resume the wrong thing. Codex has
     // no equivalent flag and isn't affected.
-    const entry: {
-      agent: "claude" | "codex";
-      source: string;
-      preassignedSessionId?: string;
-    } = { agent, source: synthetic };
+    const entry: OpenSession = {
+      agent, source: synthetic,
+      ...(agent === "codex" ? codexSessionDefaults(getDaemonKV().getItem(CODEX_TURN_SETTINGS_KEY), {newCliSession: true}) : {}),
+    };
     if (agent === "claude") {
       entry.preassignedSessionId = randomUUID();
     }
@@ -2384,6 +2383,7 @@
       agent: targetAgent,
       source: synthetic,
       contextFilePath: contextPath,
+      ...(targetAgent === "codex" ? codexSessionDefaults(getDaemonKV().getItem(CODEX_TURN_SETTINGS_KEY), {newCliSession: true}) : {}),
     };
     if (targetAgent === "claude") {
       (entry as { preassignedSessionId?: string }).preassignedSessionId =
@@ -2914,13 +2914,10 @@
   ) {
     const existing = openSessionsByWt[wtPath] ?? [];
     const id = `t_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
-    const replacement: {
-      agent: "claude" | "codex" | "copilot";
-      source: string;
-      preassignedSessionId?: string;
-    } = {
+    const replacement: OpenSession = {
       agent: current.agent as "claude" | "codex" | "copilot",
       source: `__new__:${current.agent}:${id}`,
+      ...(current.agent === "codex" ? codexSessionDefaults(getDaemonKV().getItem(CODEX_TURN_SETTINGS_KEY), {newCliSession: true}) : {}),
     };
     // Restart means a fresh conversation, not a continuation — mint a
     // new UUID for Claude so `--session-id` lands on a new file rather

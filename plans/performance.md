@@ -2546,3 +2546,12 @@ are not yet ruled out.
 
 305 targeted activity, cache, refresh-plan, Codex event-stream and server-helper
 tests pass. Production processes and live sessions were untouched.
+
+### 2026-10-29: automatic review for new Codex CLI sessions
+
+Fresh Codex CLI creation, context handoff, and fresh-conversation restart now
+snapshot approvals_reviewer=auto_review when no explicit reviewer was saved.
+The existing on-request/workspace-write defaults remain. Explicit reviewer
+choices win; restore/migration and existing session command generation keep
+their prior settings. 254 storage/menu regression tests pass, including fresh
+versus restored defaults and the resulting CLI flags. Svelte compilation passes.

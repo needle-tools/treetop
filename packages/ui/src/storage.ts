@@ -361,6 +361,7 @@ export interface PersistedSession {
  * coupled to a later global-settings change. */
 export function codexSessionDefaults(
   raw: string | null,
+  { newCliSession = false }: { newCliSession?: boolean } = {},
 ): Pick<
   PersistedSession,
   | "codexModel"
@@ -390,7 +391,7 @@ export function codexSessionDefaults(
     codexServiceTier: stringValue("serviceTier"),
     codexSandbox: stringValue("sandbox") ?? "workspaceWrite",
     codexApproval: stringValue("approval") ?? "on-request",
-    codexReviewer: ["user", "auto_review"].includes(stringValue("reviewer") ?? "") ? stringValue("reviewer") : undefined,
+    codexReviewer: ["user", "auto_review"].includes(stringValue("reviewer") ?? "") ? stringValue("reviewer") : newCliSession ? "auto_review" : undefined,
     codexSummary: stringValue("summary") ?? "auto",
   };
 }

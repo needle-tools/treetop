@@ -1334,6 +1334,19 @@ describe("cmdForOpenSession", () => {
     ]);
   });
 
+  test("defaults only new Codex CLI sessions to automatic approval review", () => {
+    for (const raw of [null, "{}", JSON.stringify({reviewer: "invalid"})]) {
+      const defaults = codexSessionDefaults(raw, {newCliSession: true});
+      expect(defaults.codexReviewer).toBe("auto_review");
+      expect(defaults.codexApproval).toBe("on-request");
+      expect(defaults.codexSandbox).toBe("workspaceWrite");
+      const command = cmdForOpenSession({agent: "codex", ...defaults}, "/bin/zsh");
+      expect(command).toContain('approvals_reviewer="auto_review"');
+      expect(codexSessionDefaults(raw).codexReviewer).toBeUndefined();
+    }
+    expect(codexSessionDefaults(JSON.stringify({reviewer: "user"}), {newCliSession: true}).codexReviewer).toBe("user");
+  });
+
   test("remembers the reviewer and applies it to both new and resumed CLI sessions", () => {
     const defaults = codexSessionDefaults(JSON.stringify({ reviewer: "auto_review" }));
     expect(defaults.codexReviewer).toBe("auto_review");
