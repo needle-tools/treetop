@@ -3,6 +3,8 @@ export interface StaleWhileRevalidateOptions<T> {
   load: () => Promise<T>;
   clock?: () => number;
   onRefreshError?: (error: unknown) => void;
+  /** Telemetry can serve an empty snapshot while its first scan runs. */
+  initialValue?: T;
 }
 
 export interface StaleWhileRevalidateCache<T> {
@@ -15,8 +17,10 @@ export function createStaleWhileRevalidateCache<T>({
   load,
   clock = Date.now,
   onRefreshError,
+  initialValue,
 }: StaleWhileRevalidateOptions<T>): StaleWhileRevalidateCache<T> {
-  let cache: { at: number; value: T } | null = null;
+  let cache: { at: number; value: T } | null =
+    initialValue === undefined ? null : { at: -Infinity, value: initialValue };
   let inflight: Promise<T> | null = null;
 
   const refresh = (): Promise<T> => {

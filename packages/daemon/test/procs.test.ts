@@ -6,7 +6,53 @@ import {
   normalizeCpuPercent,
   throttleAsync,
   withTimeout,
+  createWindowsProcessSampler,
+  runWindowsPowerShell,
+  enableBackgroundProcessQueries,
 } from "../src/procs";
+
+test("Windows CPU sampling uses cumulative process time instead of a machine-wide perf query", () => {
+  let now = 1000;
+  const parse = createWindowsProcessSampler(4, () => now);
+  expect(parse("42 4096 1000").get(42)).toEqual({
+    pid: 42,
+    memBytes: 4096,
+    cpuPercent: 0,
+  });
+  now = 2000;
+  expect(parse("42 8192 2000").get(42)).toEqual({
+    pid: 42,
+    memBytes: 8192,
+    cpuPercent: 25,
+  });
+  now = 3000;
+  expect(parse("42 8192 100").get(42)?.cpuPercent).toBe(0);
+  expect(parse("bad row\n0 10 20\n43 4096 NaN").size).toBe(0);
+});
+
+if (process.platform === "win32")
+  test("background PowerShell timeout waits for its own query to exit", async () => {
+    await expect(
+      runWindowsPowerShell("Start-Sleep -Seconds 5", { timeoutMs: 100 }),
+    ).rejects.toThrow("Background process query timed out");
+  }, 10000);
+
+if (process.platform === "win32")
+  test("worker process queries return real output while the calling event loop stays available", async () => {
+    enableBackgroundProcessQueries();
+    const started = performance.now();
+    const query = runWindowsPowerShell(
+      "Start-Sleep -Milliseconds 200; Write-Output worker-query-ok",
+    );
+    try {
+      await Bun.sleep(50);
+      expect(performance.now() - started).toBeLessThan(1000);
+      expect((await query).stdout.toString()).toContain("worker-query-ok");
+    } finally {
+      enableBackgroundProcessQueries(false);
+      await query.catch(() => {});
+    }
+  }, 10000);
 
 const isWin = process.platform === "win32";
 
@@ -127,11 +173,9 @@ describe("withTimeout", () => {
 
 describe("sampleProcs", () => {
   // Longer timeout: on Windows sampleProcs shells out to a PowerShell pass
-  // over Win32_PerfFormattedData_PerfProc_Process, which enumerates every
-  // process's perf counters and can take several seconds on a loaded /
-  // shared CI runner — well past bun's 5s default. In production this call
-  // is wrapped in throttleAsync, so the cost is amortized; here we call it
-  // raw, so give it room.
+  // for the requested PIDs. Process startup on a busy Windows CI runner can
+  // exceed Bun's default deadline; production serves cached snapshots while
+  // this runs in its worker, whereas this test exercises the query directly.
   test("reports this process within a machine-relative 0..100 band", async () => {
     const out = await sampleProcs([process.pid]);
     const s = out.get(process.pid);

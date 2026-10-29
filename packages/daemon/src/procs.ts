@@ -5,10 +5,9 @@
  * macOS / Linux: shell out to `ps -o pid=,pcpu=,rss= -p PIDLIST`.
  *   pcpu is "percentage of a single CPU core" — it can exceed 100 (200 =
  *   two pegged cores). rss is resident set size, in KB.
- * Windows: PowerShell — Get-Process for WorkingSet64 + Win32_PerfFormatted
- *   Data_PerfProc_Process for PercentProcessorTime, joined by PID. That
- *   counter is ALSO per-core (summed across logical processors, max
- *   100 * coreCount) — Windows does NOT normalise it for us.
+ * Windows: Get-Process for working set and cumulative CPU milliseconds.
+ *   CPU deltas between samples avoid the slow machine-wide WMI perf table.
+ *   The first sample establishes the baseline and reports zero CPU usage.
  *
  * Both sources are run through `normalizeCpuPercent` so the value we hand
  * the UI is machine-relative (0-100), matching Task Manager / Activity
@@ -20,20 +19,124 @@ import { stat, readdir } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { homedir, cpus } from "node:os";
 import { join, win32 } from "node:path";
+import { createLimiter } from "./concurrency";
+import {
+  Worker,
+  isMainThread,
+  parentPort,
+  workerData,
+} from "node:worker_threads";
+
+let backgroundQueries = false,
+  queryWorker: Worker | undefined,
+  querySequence = 0;
+const pendingQueries = new Map<
+  number,
+  { resolve: (value: any) => void; reject: (error: Error) => void }
+>();
+export function enableBackgroundProcessQueries(enabled = true): void {
+  backgroundQueries = enabled;
+}
+function backgroundPowerShell(script: string, options: { timeoutMs?: number }) {
+  if (!queryWorker) {
+    const entry = /(?:%7E|~)BUN|\$bunfs/i.test(import.meta.url)
+      ? "./packages/daemon/src/procs.ts"
+      : new URL("./procs.ts", import.meta.url);
+    const worker = new Worker(entry, {
+      workerData: { backgroundProcessQueries: true },
+    });
+    queryWorker = worker;
+    worker.on("message", (message) => {
+      const pending = pendingQueries.get(message.id);
+      if (!pending) return;
+      pendingQueries.delete(message.id);
+      if (message.error) pending.reject(new Error(message.error));
+      else
+        pending.resolve({
+          stdout: Buffer.from(message.stdout),
+          stderr: Buffer.from(message.stderr),
+          exitCode: message.exitCode,
+        });
+      if (!pendingQueries.size) worker.unref();
+    });
+    const failed = (error: Error) => {
+      if (queryWorker !== worker) return;
+      queryWorker = undefined;
+      for (const pending of pendingQueries.values()) pending.reject(error);
+      pendingQueries.clear();
+    };
+    worker.on("error", failed);
+    worker.on("exit", (code) =>
+      failed(new Error(`Background process worker exited (${code})`)),
+    );
+  }
+  const worker = queryWorker;
+  worker.ref();
+  return new Promise<{ stdout: Buffer; stderr: Buffer; exitCode: number }>(
+    (resolve, reject) => {
+      const id = ++querySequence;
+      pendingQueries.set(id, { resolve, reject });
+      worker.postMessage({ id, script, options });
+    },
+  );
+}
+if (!isMainThread && workerData?.backgroundProcessQueries) {
+  parentPort!.on("message", async ({ id, script, options }) => {
+    try {
+      parentPort!.postMessage({
+        id,
+        ...(await runWindowsPowerShell(script, options)),
+      });
+    } catch (error) {
+      parentPort!.postMessage({ id, error: String(error) });
+    }
+  });
+}
 
 /** Absolute path to cmd.exe — see open.ts for why bare "cmd" breaks. */
 const CMD_EXE = process.env.COMSPEC ?? "cmd.exe";
 
 /** Process discovery also runs in the console-free installed application. */
-export async function runWindowsPowerShell(script: string) {
-  const child = Bun.spawn(["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script], {
-    windowsHide: true,
-    stdin: "ignore", stdout: "pipe", stderr: "pipe",
+const processQueryLimit = createLimiter(1);
+export async function runWindowsPowerShell(
+  script: string,
+  options: { timeoutMs?: number } = {},
+) {
+  if (backgroundQueries && isMainThread)
+    return backgroundPowerShell(script, options);
+  return processQueryLimit(async () => {
+    const child = Bun.spawn(
+      ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script],
+      {
+        windowsHide: true,
+        stdin: "ignore",
+        stdout: "pipe",
+        stderr: "pipe",
+      },
+    );
+    let timedOut = false;
+    const timeoutMs = options.timeoutMs ?? 15000;
+    const timer = setTimeout(() => {
+      timedOut = true;
+      child.kill();
+    }, timeoutMs);
+    try {
+      const [stdout, stderr, exitCode] = await Promise.all([
+        new Response(child.stdout).arrayBuffer(),
+        new Response(child.stderr).arrayBuffer(),
+        child.exited,
+      ]);
+      if (timedOut)
+        throw Error(`Background process query timed out after ${timeoutMs}ms`);
+      return {
+        stdout: Buffer.from(stdout),
+        stderr: Buffer.from(stderr),
+        exitCode,
+      };
+    } finally {
+      clearTimeout(timer);
+    }
   });
-  const [stdout, stderr, exitCode] = await Promise.all([
-    new Response(child.stdout).arrayBuffer(), new Response(child.stderr).arrayBuffer(), child.exited,
-  ]);
-  return { stdout: Buffer.from(stdout), stderr: Buffer.from(stderr), exitCode };
 }
 
 /**
@@ -284,6 +387,46 @@ export interface ExternalProc {
  *  zero on an exotic host. */
 const LOGICAL_CPU_COUNT = Math.max(1, cpus().length);
 
+/** Get-Process exposes cumulative CPU time without the slow WMI perf table. */
+export function createWindowsProcessSampler(
+  coreCount = LOGICAL_CPU_COUNT,
+  clock = Date.now,
+) {
+  const previous = new Map<number, { at: number; cpuMs: number }>();
+  return (text: string): Map<number, ProcUsage> => {
+    const now = clock(),
+      out = new Map<number, ProcUsage>();
+    for (const line of text.split(/\r?\n/)) {
+      const [pid = NaN, memBytes = NaN, cpuMs = NaN] = line
+        .trim()
+        .split(/\s+/)
+        .map(Number);
+      if (
+        !Number.isSafeInteger(pid) ||
+        pid <= 0 ||
+        !Number.isFinite(memBytes) ||
+        memBytes < 0 ||
+        !Number.isFinite(cpuMs) ||
+        cpuMs < 0
+      )
+        continue;
+      const before = previous.get(pid);
+      const percent =
+        before && now > before.at && cpuMs >= before.cpuMs
+          ? ((cpuMs - before.cpuMs) / (now - before.at)) * 100
+          : 0;
+      out.set(pid, {
+        pid,
+        memBytes,
+        cpuPercent: normalizeCpuPercent(percent, coreCount),
+      });
+      previous.set(pid, { at: now, cpuMs });
+    }
+    return out;
+  };
+}
+const sampleWindowsProcesses = createWindowsProcessSampler();
+
 /**
  * Convert a per-process CPU reading into a machine-relative percentage
  * (0-100), matching what Task Manager / Activity Monitor show.
@@ -487,7 +630,10 @@ async function discoverRepoProcessesWindows(
   return matches.map((m) => {
     const s = samples.get(m.pid);
     const comm =
-      m.exe.split(/[\\/]/).pop()?.replace(/\.(exe|cmd|bat|ps1)$/i, "") ||
+      m.exe
+        .split(/[\\/]/)
+        .pop()
+        ?.replace(/\.(exe|cmd|bat|ps1)$/i, "") ||
       m.args.split(/\s/)[0] ||
       "process";
     return {
@@ -530,41 +676,15 @@ export async function sampleProcs(
   if (pids.length === 0) return out;
   if (process.platform === "win32") {
     try {
-      // Memory + CPU in one PowerShell pass. Memory comes from Get-Process
-      // (WorkingSet64 = private bytes). CPU comes from Win32_PerfFormattedData
-      // _PerfProc_Process.PercentProcessorTime, which is per-core (summed
-      // across logical processors, so it can read up to 100 * coreCount —
-      // Windows does NOT normalise it). We join the two by PID, emit
-      // "pid mem cpu" per line, and divide cpu by the core count below via
-      // normalizeCpuPercent. Falls back to mem-only if perf counters fail.
+      // Sample only requested PIDs. CPU is a delta of cumulative process
+      // time, avoiding the expensive machine-wide WMI performance table.
       const pidArr = `@(${pids.join(",")})`;
-      const ps =
-        `$m = @{}; Get-Process -Id ${pidArr} -ErrorAction SilentlyContinue | ForEach-Object { $m[$_.Id] = $_.WorkingSet64 }; ` +
-        `$c = @{}; Get-CimInstance Win32_PerfFormattedData_PerfProc_Process -ErrorAction SilentlyContinue | Where-Object { $m.ContainsKey([int]$_.IDProcess) } | ForEach-Object { $c[[int]$_.IDProcess] = $_.PercentProcessorTime }; ` +
-        // NB: the loop variable is `$procId`, NOT `$pid`. `$PID` is a
-        // read-only automatic variable in PowerShell (case-insensitive),
-        // so `foreach ($pid in …)` throws "Cannot overwrite variable PID
-        // because it is read-only or constant", aborting the whole script
-        // block → no output → every pid fell back to zeros (no CPU/mem on
-        // Windows).
-        `foreach ($procId in $m.Keys) { $cpu = if ($c.ContainsKey($procId)) { $c[$procId] } else { 0 }; "$procId $($m[$procId]) $cpu" }`;
+      const ps = `Get-Process -Id ${pidArr} -ErrorAction SilentlyContinue | ForEach-Object { "$($_.Id) $($_.WorkingSet64) $($_.TotalProcessorTime.TotalMilliseconds.ToString([Globalization.CultureInfo]::InvariantCulture))" }`;
       const result = await runWindowsPowerShell(ps);
-      const text = result.stdout.toString();
-      for (const line of text.split(/\r?\n/)) {
-        const trimmed = line.trim();
-        if (!trimmed) continue;
-        const parts = trimmed.split(/\s+/);
-        if (parts.length < 3) continue;
-        const pid = Number(parts[0]);
-        const memBytes = Number(parts[1]);
-        const cpuPercent = Number(parts[2]);
-        if (!Number.isFinite(pid)) continue;
-        out.set(pid, {
-          pid,
-          cpuPercent: normalizeCpuPercent(cpuPercent, LOGICAL_CPU_COUNT),
-          memBytes: Number.isFinite(memBytes) ? memBytes : 0,
-        });
-      }
+      for (const [pid, usage] of sampleWindowsProcesses(
+        result.stdout.toString(),
+      ))
+        out.set(pid, usage);
     } catch {
       // best-effort
     }

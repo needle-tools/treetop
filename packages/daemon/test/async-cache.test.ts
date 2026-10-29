@@ -2,6 +2,37 @@ import { describe, expect, test } from "bun:test";
 import { createStaleWhileRevalidateCache } from "../src/async-cache";
 
 describe("createStaleWhileRevalidateCache", () => {
+  test("seeded telemetry returns immediately and shares a slow first scan", async () => {
+    let calls = 0,
+      release!: (value: number[]) => void;
+    const seed: number[] = [];
+    const cache = createStaleWhileRevalidateCache({
+      ttlMs: 1000,
+      initialValue: seed,
+      load: () => {
+        calls++;
+        return new Promise<number[]>((resolve) => {
+          release = resolve;
+        });
+      },
+    });
+    let returned = false;
+    const first = cache.get().then((value) => {
+      returned = true;
+      return value;
+    });
+    try {
+      await Bun.sleep(0);
+      expect(returned).toBe(true);
+      for (let i = 0; i < 20; i++) expect(await cache.get()).toBe(seed);
+      expect(calls).toBe(1);
+    } finally {
+      release([7]);
+      await first;
+    }
+    await Bun.sleep(0);
+    expect(await cache.get()).toEqual([7]);
+  });
   test("awaits the first load and reuses fresh cached values", async () => {
     let now = 1_000;
     let calls = 0;

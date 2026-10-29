@@ -2490,3 +2490,33 @@ cancels deferred work during teardown. No claim that these two fixes explain
 every observed input delay; additional broker/helper/client delay is possible.
 34 idle/poll tests and the headless Edge caret-restoration regression pass;
 App.svelte compiles. Production has not been restarted or given synthetic input.
+
+2026-10-29 background request congestion:
+The latest reported alerts were local background requests timing out with
+roughly 16 requests outstanding: ui-context at 10s, background/status at 12s,
+and active-sends at 15s. UI-context already coalesces in-flight reports, so
+that publisher is not being changed speculatively or its errors suppressed.
+
+Found a process-scan backpressure hole: a 1.5s Promise.race around process
+sampling returned while the PowerShell query continued. After the 750ms
+throttle expired another poll could launch a second query. External scans
+similarly abandoned their 3s query, plus launched one extra git worktree list
+per repo (15 sequential one-second waits in the user's logs).
+
+Process stats now use a seeded stale-while-revalidate snapshot on the 5s panel
+cadence. HTTP reads return immediately even during the first sample; the real
+underlying scan stays single-flight until it settles. External discovery reuses
+registered roots and the watcher worktree inventory, and retains its actual
+query rather than racing an orphaning deadline. Visible rows/subscriptions
+remain intact. Windows CPU sampling uses Get-Process cumulative CPU deltas
+instead of the slow full-machine WMI performance table; the first reading is
+a zero-CPU baseline. All PowerShell discovery queries are serialized, bounded
+to their own 15s lifetime, and run in a separately embedded worker so Windows
+process startup cannot stall the daemon's terminal input loop. These limits
+apply to read-only diagnostic queries, not user/project commands or agents.
+The compiled daemon explicitly embeds procs.ts as a worker entry.
+
+34 targeted cache/concurrency/process tests pass, including retained slow
+in-flight scans, CPU delta/reset parsing, owned-query timeout, worker query
+output and main-event-loop availability. Build and compiled-worker smoke
+verification follow. Production processes and live sessions were untouched.

@@ -161,7 +161,7 @@ import {
   resolveAgentBinary,
   discoverRepoProcesses,
   throttleAsync,
-  withTimeout,
+  enableBackgroundProcessQueries,
   type ProcUsage,
 } from "./procs";
 import {
@@ -398,6 +398,7 @@ installCrashGuard(process);
 //                      wrapping us; lets `portless` inject its own port.
 //   3. 7777          — default.
 enableBackgroundGitWorker();
+enableBackgroundProcessQueries();
 const PORT = Number(process.env.SUPERGIT_PORT ?? process.env.PORT ?? 7777);
 
 // Network interface the daemon listens on (the `hostname` passed to
@@ -547,40 +548,23 @@ const nativeAgents = terminalBackend instanceof BrokerBackend ? {
 });
 
 /** External (non-TUI) repo-resident processes for the Processes panel.
- *  This scan is the heaviest part of an /api/processes poll — a
- *  full-machine process enumeration plus a `git worktree list` per repo —
- *  and its result changes slowly, so we throttle it well below the panel's
- *  poll cadence (which is 5s while open). The TUI rows the user actually
- *  watches are still sampled fresh on every request; only this scan is
- *  cached. A newly spawned external process therefore appears within
- *  EXTERNAL_SCAN_TTL_MS rather than instantly — an acceptable trade for
- *  not re-enumerating every process on the box twice a poll. */
+ *  Full-machine enumeration runs at most once per EXTERNAL_SCAN_TTL_MS.
+ *  TUI usage refreshes on the panel's 5s cadence; HTTP requests immediately
+ *  reuse the last snapshot while either scan is still running. */
 const EXTERNAL_SCAN_TTL_MS = 8_000;
-const EXTERNAL_SCAN_TIMEOUT_MS = 3_000;
-const PROCESS_REPO_LIST_TIMEOUT_MS = 1_500;
-const PROCESS_SAMPLE_TIMEOUT_MS = 1_500;
-const PROCESS_SAMPLE_TTL_MS = 750;
-const PROCESS_WORKTREE_TIMEOUT_MS = 1_000;
+const PROCESS_SAMPLE_TTL_MS = 5_000;
 const PROCESS_ROUTE_SLOW_MS = 1_000;
 const PROCESS_EXTERNAL_SLOW_MS = 1_000;
-let lastProcessSamples = new Map<number, ProcUsage>();
-const processSamples = throttleAsync(async () => {
-  const records = terminalBackend.list().filter((r) => !r.exitedAt);
-  try {
-    lastProcessSamples = await withTimeout(
-      sampleProcs(records.map((r) => r.pid)),
-      PROCESS_SAMPLE_TIMEOUT_MS,
-      "process sample",
-    );
-  } catch (err) {
-    console.warn(
-      `supergit daemon: /api/processes process sample skipped — ${
-        err instanceof Error ? err.message : String(err)
-      }`,
-    );
-  }
-  return lastProcessSamples;
-}, PROCESS_SAMPLE_TTL_MS);
+const processSamplesCache = createStaleWhileRevalidateCache({
+  ttlMs: PROCESS_SAMPLE_TTL_MS,
+  initialValue: new Map<number, ProcUsage>(),
+  onRefreshError: error => console.warn(`supergit daemon: process sample refresh failed: ${error}`),
+  load: async () => {
+    const records = terminalBackend.list().filter((r) => !r.exitedAt);
+    return sampleProcs(records.map((r) => r.pid));
+  },
+});
+const processSamples = () => processSamplesCache.get();
 
 let lastExternalProcessRows: Array<{
   id: string;
@@ -598,66 +582,20 @@ let lastExternalProcessRows: Array<{
 }> = [];
 const externalProcessRows = throttleAsync(async () => {
   const scanStarted = Date.now();
-  let repoCount = 0;
-  let pathCount = 0;
-  let worktreeMs = 0;
-  let discoverMs = 0;
-  let skippedWorktrees = 0;
-  let slowestWorktree: { repo: string; ms: number } | null = null;
   const records = terminalBackend.list().filter((r) => !r.exitedAt);
-  const excludePids = new Set<number>([
-    process.pid,
-    ...records.map((r) => r.pid),
+  const excludePids = new Set<number>([process.pid, ...records.map(r => r.pid)]);
+  const repos = await workspace.listRepos();
+  // The watcher inventory already knows linked worktrees. Do not launch a
+  // fresh Git query per repo merely to populate the optional process panel.
+  const allPaths = new Set([
+    ...repos.map(repo => repo.path),
+    ...worktreeWatchers.keys(),
   ]);
-  const repos = await withTimeout(
-    workspace.listRepos(),
-    PROCESS_REPO_LIST_TIMEOUT_MS,
-    "process repo list",
-  ).catch((err) => {
-    console.warn(
-      `supergit daemon: /api/processes repo list skipped — ${
-        err instanceof Error ? err.message : String(err)
-      }`,
-    );
-    return null;
-  });
-  if (!repos) return lastExternalProcessRows;
-  repoCount = repos.length;
-  const allPaths = new Set(repos.map((r) => r.path));
-  for (const repo of repos) {
-    const wtStarted = Date.now();
-    try {
-      const wts = await withTimeout(
-        listWorktrees(repo.path),
-        PROCESS_WORKTREE_TIMEOUT_MS,
-        `worktree list ${repo.path}`,
-      );
-      for (const wt of wts) allPaths.add(wt.path);
-    } catch (err) {
-      skippedWorktrees += 1;
-      console.warn(
-        `supergit daemon: /api/processes worktree list skipped repo=${repo.id} path=${repo.path} — ${
-          err instanceof Error ? err.message : String(err)
-        }`,
-      );
-    } finally {
-      const elapsed = Date.now() - wtStarted;
-      worktreeMs += elapsed;
-      if (!slowestWorktree || elapsed > slowestWorktree.ms) {
-        slowestWorktree = { repo: repo.id || basename(repo.path), ms: elapsed };
-      }
-    }
-  }
-  pathCount = allPaths.size;
   try {
-    const discoverStarted = Date.now();
-    const external = await withTimeout(
-      discoverRepoProcesses([...allPaths], excludePids),
-      EXTERNAL_SCAN_TIMEOUT_MS,
-      "external process scan",
-    );
-    discoverMs = Date.now() - discoverStarted;
-    lastExternalProcessRows = external.map((ep) => ({
+    // Retain the real in-flight query until completion. A Promise.race timeout
+    // abandoned it and allowed the next poll to start another expensive scan.
+    const external = await discoverRepoProcesses([...allPaths], excludePids);
+    lastExternalProcessRows = external.map(ep => ({
       id: `ext-${ep.pid}`,
       pid: ep.pid,
       agent: undefined,
@@ -671,22 +609,12 @@ const externalProcessRows = throttleAsync(async () => {
       kind: "external" as const,
       comm: ep.comm,
     }));
-  } catch (err) {
-    console.warn(
-      `supergit daemon: /api/processes external scan skipped — ${
-        err instanceof Error ? err.message : String(err)
-      }`,
-    );
+  } catch (error) {
+    console.warn(`supergit daemon: external process scan failed: ${error}`);
   }
-  const totalMs = Date.now() - scanStarted;
-  if (totalMs > PROCESS_EXTERNAL_SLOW_MS || skippedWorktrees > 0) {
-    console.log(
-      `supergit daemon: /api/processes external scan total=${totalMs}ms repos=${repoCount} paths=${pathCount} worktrees=${worktreeMs}ms skippedWorktrees=${skippedWorktrees} slowestWorktree=${
-        slowestWorktree
-          ? `${slowestWorktree.repo}:${slowestWorktree.ms}ms`
-          : "none"
-      } discover=${discoverMs}ms rows=${lastExternalProcessRows.length}`,
-    );
+  const elapsed = Date.now() - scanStarted;
+  if (elapsed > PROCESS_EXTERNAL_SLOW_MS) {
+    console.log(`supergit daemon: external process scan total=${elapsed}ms repos=${repos.length} paths=${allPaths.size} rows=${lastExternalProcessRows.length}`);
   }
   return lastExternalProcessRows;
 }, EXTERNAL_SCAN_TTL_MS);

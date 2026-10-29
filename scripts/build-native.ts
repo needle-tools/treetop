@@ -83,7 +83,7 @@ await mkdir(FLAT, { recursive: true });
 const binaryPath = join(FLAT, `supergit${exe}`);
 const buildTime = new Date().toISOString();
 const externalArgs = DAEMON_BUILD_EXTERNALS.flatMap(name => ["--external", name]);
-await $`bun build --compile --root ${ROOT} ${resolve(ROOT, "packages/daemon/src/server.ts")} ${resolve(ROOT, "packages/daemon/src/git.ts")} --outfile ${join(FLAT, "supergit")} ${externalArgs} ${NATIVE_BACKGROUND_COMPILE_ARGS} --define process.env.SUPERGIT_BUILD_TIME='"${buildTime}"'`.quiet();
+await $`bun build --compile --root ${ROOT} ${resolve(ROOT, "packages/daemon/src/server.ts")} ${resolve(ROOT, "packages/daemon/src/git.ts")} ${resolve(ROOT, "packages/daemon/src/procs.ts")} --outfile ${join(FLAT, "supergit")} ${externalArgs} ${NATIVE_BACKGROUND_COMPILE_ARGS} --define process.env.SUPERGIT_BUILD_TIME='"${buildTime}"'`.quiet();
 // Write build-info.json so the Electrobun entry script knows our version.
 await writeFile(join(FLAT, "build-info.json"), JSON.stringify({ buildTime }));
 await $`bun build --compile ${resolve(ROOT, "packages/daemon/src/terminal-broker.ts")} --outfile ${join(FLAT, "terminal-broker")} ${externalArgs} ${NATIVE_BACKGROUND_COMPILE_ARGS}`.quiet();
