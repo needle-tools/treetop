@@ -2465,3 +2465,28 @@ contract directly. Existing headless Edge session-focus browser regression
 passes under Node's intended test runner (Bun's runner timed out its harness).
 No production terminal input was injected and no process/session was stopped
 by this investigation. No visible test windows were opened.
+
+2026-10-29 focus-return refinement:
+The user still observes delayed input, possibly after activation or Zen
+project/session selection. Latest installed build remains 11:59:56 UTC.
+Native activation logs finish focus routing in roughly 65-85ms, while browser
+logs often show two caret restorations about 280ms apart for one activation.
+A later 1,906ms input-to-next-output sample had zero socket buffered bytes and
+zero queued replay bytes; that alone cannot locate the entire delay.
+
+Reproduced an unnecessary second DOM blur/focus in the headless browser test:
+ordinary focus restores the caret, then the delayed native event cycles it
+again. De-duplicate a native notification within one second of successful
+restoration when the same input is already focused and no blur occurred.
+A real blur resets the guard; missing DOM focus and later activation still
+repair normally. Tests cover both no duplicate cycle and later repair.
+
+Also found focus resume competing with first input: session polling ticked
+synchronously on onResume, and App's delayed load ran after 800ms even during
+continuous typing. Both catch-ups now coalesce and wait for a typing pause;
+periodic session polling also yields during typing. Registrations, cached
+state, terminal sockets and row geometry are retained. A generation fence
+cancels deferred work during teardown. No claim that these two fixes explain
+every observed input delay; additional broker/helper/client delay is possible.
+34 idle/poll tests and the headless Edge caret-restoration regression pass;
+App.svelte compiles. Production has not been restarted or given synthetic input.

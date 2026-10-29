@@ -19,7 +19,24 @@ import {
   syncIdleWith,
   noteTypingActivity,
   isUserTyping,
+  createResumeRefresh,
 } from "../src/ui-idle";
+
+test("resume refresh stays deferred while typing and coalesces until a pause", () => {
+  const callbacks:(()=>void)[]=[];
+  let typing=true,runs=0;
+  const refresh=createResumeRefresh(()=>{runs++;},{isTyping:()=>typing,
+    schedule:fn=>{callbacks.push(fn);return fn;},cancel:()=>{}});
+  refresh.schedule();refresh.schedule();
+  expect(callbacks).toHaveLength(1);
+  callbacks.shift()!();
+  expect(runs).toBe(0);
+  expect(callbacks).toHaveLength(1);
+  typing=false;callbacks.shift()!();
+  expect(runs).toBe(1);
+  refresh.schedule();const stale=callbacks.shift()!;refresh.cancel();stale();
+  expect(runs).toBe(1);
+});
 
 test("background work yields through typing bursts and resumes after a pause", () => {
   noteTypingActivity(1000);

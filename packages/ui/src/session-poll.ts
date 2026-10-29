@@ -20,7 +20,7 @@
  */
 
 import { apiUrl, withRequestDeadline } from "./api";
-import { isUiIdle, onResume } from "./ui-idle";
+import { isUiIdle, isUserTyping, createResumeRefresh, onResume } from "./ui-idle";
 import { record } from "./timings";
 
 export interface InflightRec {
@@ -472,8 +472,10 @@ const INITIAL_TICK_GRACE_MS = 50;
 
 const singleton = createSessionPoller({
   fetchImpl: (...args) => fetch(...args),
-  isIdle: isUiIdle,
+  isIdle: () => isUiIdle() || isUserTyping(),
 });
+
+const resumePoll = createResumeRefresh(() => {void singleton.tick();});
 
 let timer: ReturnType<typeof setInterval> | null = null;
 let resumeOff: (() => void) | null = null;
@@ -483,11 +485,12 @@ function ensureTimer() {
   if (timer !== null) return;
   timer = setInterval(() => void singleton.tick(), POLL_INTERVAL_MS);
   // One immediate catch-up when the user returns after an idle stretch.
-  resumeOff = onResume(() => void singleton.tick());
+  resumeOff = onResume(() => resumePoll.schedule());
 }
 
 function maybeStopTimer() {
   if (singleton.size() > 0) return;
+  resumePoll.cancel();
   if (immediateTickTimer !== null) {
     clearTimeout(immediateTickTimer);
     immediateTickTimer = null;

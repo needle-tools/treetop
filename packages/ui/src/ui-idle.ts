@@ -251,6 +251,31 @@ let lastTypingActivityMs = -Infinity;
 export function noteTypingActivity(nowMs = Date.now()): void { lastTypingActivityMs = nowMs; }
 export function isUserTyping(nowMs = Date.now()): boolean { return nowMs - lastTypingActivityMs < TYPING_IDLE_MS; }
 
+/** Activation must not compete with the first keystrokes after app return. */
+export function createResumeRefresh(run:()=>void, options: {
+  isTyping?:()=>boolean;
+  schedule?:(callback:()=>void,delayMs:number)=>unknown;
+  cancel?:(handle:unknown)=>void;
+} = {}) {
+  const schedule=options.schedule ?? ((fn:()=>void,ms:number)=>setTimeout(fn,ms));
+  const cancel=options.cancel ?? ((handle:unknown)=>clearTimeout(handle as ReturnType<typeof setTimeout>));
+  let handle:unknown=null,generation=0;
+  return {
+    schedule() {
+      if(handle!==null)return;
+      const current=generation;
+      const tick=()=>{
+        if(current!==generation)return;
+        handle=null;
+        if((options.isTyping ?? isUserTyping)()) {handle=schedule(tick,150);return;}
+        run();
+      };
+      handle=schedule(tick,800);
+    },
+    cancel() {generation++;if(handle!==null)cancel(handle);handle=null;},
+  };
+}
+
 /** Is this event target a field the user types into? Covers `<input>`,
  *  `<textarea>` (incl. xterm.js's hidden `.xterm-helper-textarea`), and
  *  contenteditable surfaces (sticky notes). Pure — exported for testing. */

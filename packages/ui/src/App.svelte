@@ -80,6 +80,7 @@
     installTypingTracker,
     isUiIdle,
     isUserTyping,
+    createResumeRefresh,
     onResume,
   } from "./ui-idle";
   import DiffViewer from "./DiffViewer.svelte";
@@ -9255,19 +9256,11 @@
     // keystroke's Layerize walks a smaller compositor tree (perf.md: Layerize
     // storm during typing). Toggles `body.is-typing`.
     const uninstallTyping = installTypingTracker();
-    const RESUME_LOAD_DELAY_MS = 800;
-    let resumeLoadTimer: ReturnType<typeof setTimeout> | null = null;
-    function scheduleResumeLoad(): void {
-      if (resumeLoadTimer) return;
-      resumeLoadTimer = setTimeout(() => {
-        resumeLoadTimer = null;
-        void load("resume");
-      }, RESUME_LOAD_DELAY_MS);
-    }
+    const resumeLoad = createResumeRefresh(() => {void load("resume");});
     const unsubResume = onResume(() => {
       // User came back because they interacted. Let that interaction render
       // first, then refresh stale dashboard state in the background.
-      scheduleResumeLoad();
+      resumeLoad.schedule();
     });
     const nowTimer = setInterval(() => {
       nowMs = Date.now();
@@ -9328,7 +9321,7 @@
       voiceMessagePlayer.stop();
       unsubFocus();
       unsubResume();
-      if (resumeLoadTimer) clearTimeout(resumeLoadTimer);
+      resumeLoad.cancel();
       uninstallIdle();
       uninstallTyping();
       clearInterval(nowTimer);

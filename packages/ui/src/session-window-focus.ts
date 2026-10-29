@@ -17,6 +17,7 @@ export function installSessionWindowFocus(
   let away = false;
   let frame: number | null = null;
   let attempts = 0;
+  let lastRestoredAt = -Infinity;
 
   const neutral = (element: Element | null) =>
     !element || element === doc.body || element === doc.documentElement;
@@ -44,6 +45,7 @@ export function installSessionWindowFocus(
     if (!away) remember();
   }
   function onBlur() {
+    lastRestoredAt = -Infinity;
     // Some webviews clear activeElement before the window blur event.
     // In that case retain the input recorded by focusin.
     if (!neutral(doc.activeElement)) remember();
@@ -107,6 +109,7 @@ export function installSessionWindowFocus(
       // routing. A blur/focus edge also repairs xterm's cached focus state.
       if (nativeRepair && doc.activeElement === previous) previous.blur();
       previous.focus({ preventScroll: true });
+      if (doc.activeElement === previous) lastRestoredAt = Date.now();
       report(doc.activeElement === previous ? "restored" : "restore failed");
       nativeRepair = false;
     });
@@ -120,6 +123,10 @@ export function installSessionWindowFocus(
       ?.focused;
     if (focused === false) onBlur();
     else if (focused === true) {
+      // The native notification commonly follows ordinary window focus by
+      // ~280ms. Do not cycle an already-restored caret a second time while
+      // the user starts typing. A real blur or missing DOM focus still repairs.
+      if (!away && doc.hasFocus() && doc.activeElement === previous && Date.now() - lastRestoredAt < 1000) return;
       // Native activation is authoritative even if the page missed blur.
       // Keep any newly focused control (search, menus, dialogs) untouched.
       nativeRepair = true;

@@ -84,10 +84,16 @@ test("returning to the app restores session input focus without stealing other f
       const nativeWithoutBlur = document.activeElement?.id;
       let refocused = 0;
       el("chat").addEventListener("focus", () => refocused++);
-      // WebView2 can keep DOM focus while losing its native keyboard route.
+      // A delayed native activation duplicates the ordinary focus event. It
+      // must not blur/refocus the caret the user has already started using.
       window.dispatchEvent(new CustomEvent("treetop:native-window-focus", { detail: { focused: true } }));
       await new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
-      const nativeSameInput = refocused > 0 && document.activeElement?.id === "chat";
+      const nativeSameInput = refocused === 0 && document.activeElement?.id === "chat";
+      // A later activation with a missed blur must still repair routing.
+      await new Promise(resolve => setTimeout(resolve, 1050));
+      window.dispatchEvent(new CustomEvent("treetop:native-window-focus", {detail:{focused:true}}));
+      await new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
+      const nativeLaterRepair = refocused > 0 && document.activeElement?.id === "chat";
       leave();
       el("chat").closest(".session-col")!.setAttribute("data-session-source", "chat-session");
       el("chat").outerHTML = '<textarea id="chat">draft text</textarea>';
@@ -130,6 +136,7 @@ test("returning to the app restores session input focus without stealing other f
         nativeReturn,
         nativeWithoutBlur,
         nativeSameInput,
+        nativeLaterRepair,
         replacedInput,
         replacedColumn,
         slowNativeReturn,
@@ -147,6 +154,7 @@ test("returning to the app restores session input focus without stealing other f
       nativeReturn: "chat",
       nativeWithoutBlur: "chat",
       nativeSameInput: true,
+      nativeLaterRepair: true,
       replacedInput: "chat",
       replacedColumn: "chat",
       slowNativeReturn: "chat",
