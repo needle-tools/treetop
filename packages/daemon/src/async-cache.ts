@@ -1,3 +1,15 @@
+/** Start telemetry work without holding an HTTP connection. Repeated polls
+ * join the actual operation, even when it outlives the client's next poll. */
+export function createBackgroundRefresh(onError: (error: unknown) => void) {
+  const inflight = new Set<string>();
+  return (key: string, load: () => Promise<unknown>): boolean => {
+    if (inflight.has(key)) return false;
+    inflight.add(key);
+    void Promise.resolve().then(load).catch(onError).finally(() => inflight.delete(key));
+    return true;
+  };
+}
+
 export interface StaleWhileRevalidateOptions<T> {
   ttlMs: number;
   load: () => Promise<T>;

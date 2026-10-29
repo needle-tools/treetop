@@ -1,5 +1,5 @@
 import { test, expect, describe } from "bun:test";
-import { appendFile, mkdtemp, writeFile } from "node:fs/promises";
+import { appendFile, mkdtemp, writeFile, utimes } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -9,7 +9,6 @@ import {
   startActivityTail,
   codexCliWorkingFromEntry,
   markCodexCliInterrupted,
-  expireInactiveCodexCliStates,
   getCodexCliStates,
   onCodexCliState,
   type ActivityEvent,
@@ -21,6 +20,22 @@ function delay(ms: number): Promise<void> {
 }
 
 describe("Codex CLI turn state", () => {
+  test("a quiet open turn remains working after ten minutes", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "supergit-quiet-turn-"));
+    const source = join(dir, "quiet.jsonl");
+    await writeFile(source, JSON.stringify({type: "event_msg", payload: {type: "task_started"}}) + "\n");
+    const old = new Date(Date.now() - 11 * 60_000);
+    await utimes(source, old, old);
+    const stop = await startActivityTail({detectAgents: async () => [{
+      agent: "codex", cwd: dir, source, sessionId: "quiet", lastActive: old.toISOString(),
+    }], rediscoverIntervalMs: 60_000});
+    try {
+      const deadline = Date.now() + 2000;
+      while (!getCodexCliStates().length && Date.now() < deadline) await delay(10);
+      await delay(50);
+      expect(getCodexCliStates()).toEqual([{source, sessionId: "quiet", working: true}]);
+    } finally { stop(); }
+  });
   test("discovers a fresh CLI even when its first turn precedes the watcher", async () => {
     const dir = await mkdtemp(join(tmpdir(), "supergit-codex-discovery-"));
     const source = join(dir, "fresh.jsonl");
@@ -123,11 +138,6 @@ describe("Codex CLI turn state", () => {
       await waitFor(false);
       await appendFile(source, line("task_started"));
       await waitFor(true);
-      const afterActivity = Date.now();
-      expireInactiveCodexCliStates(afterActivity + 9 * 60_000);
-      expect(getCodexCliStates().find(state => state.source === source)?.working).toBe(true);
-      expireInactiveCodexCliStates(afterActivity + 10 * 60_000);
-      await waitFor(false);
       await appendFile(source, line("token_count"));
       await waitFor(true);
       markCodexCliInterrupted("other-session");
@@ -141,7 +151,7 @@ describe("Codex CLI turn state", () => {
       await waitFor(true);
       await appendFile(source, line("task_complete"));
       await waitFor(false);
-      expect(snapshots).toEqual([true, false, true, false, true, false, true, false, true, false]);
+      expect(snapshots).toEqual([true, false, true, false, true, false, true, false]);
     } finally {
       stop();
       unsubscribe();

@@ -66,7 +66,7 @@ import {
   type DiffFileContentKind,
 } from "./git";
 import { createLimiter } from "./concurrency";
-import { createStaleWhileRevalidateCache } from "./async-cache";
+import { createStaleWhileRevalidateCache, createBackgroundRefresh } from "./async-cache";
 import { uiStaticRequestPath } from "./ui-static";
 import {
   listCodexReplaySessions,
@@ -1648,6 +1648,9 @@ const reposGitLimit = createLimiter(REPOS_GIT_CONCURRENCY);
 // the herd — the UI polls it every few seconds so the focused repo stays live
 // regardless of how busy everything else is.
 const reposGitPriorityLimit = createLimiter(2);
+const refreshWorktreeInBackground = createBackgroundRefresh(error =>
+  console.warn("supergit daemon: background worktree refresh failed", error),
+);
 
 // Per-worktree coalescing state for fs_change-driven recomputes. Bounds each
 // worktree to one recompute per FS_RECOMPUTE_MIN_INTERVAL_MS (+ a trailing run)
@@ -3919,6 +3922,15 @@ const server = Bun.serve<TermWsData, never>({
       if (url.pathname === "/api/worktree-details" && req.method === "GET") {
         const wtPath = url.searchParams.get("path");
         if (!wtPath) return json({ error: "path required" }, { status: 400 });
+        if (url.searchParams.get("background") === "1") {
+          const remote = selectedRemoteForCachedWorktree(wtPath);
+          refreshWorktreeInBackground(worktreeDetailsCacheKey(wtPath, remote), () =>
+            runWorktreeRecompute(wtPath, reposGitPriorityLimit, remote),
+          );
+          // Completion publishes fresh details over SSE. Keep the last known
+          // badges visible while Git runs without occupying a browser slot.
+          return json({ path: wtPath, details: getCachedWorktreeDetails(wtPath, remote), refreshing: true }, {status: 202});
+        }
         const details = await runWorktreeRecompute(
           wtPath,
           reposGitPriorityLimit,

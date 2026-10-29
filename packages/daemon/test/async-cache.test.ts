@@ -1,5 +1,25 @@
 import { describe, expect, test } from "bun:test";
-import { createStaleWhileRevalidateCache } from "../src/async-cache";
+import { createStaleWhileRevalidateCache, createBackgroundRefresh } from "../src/async-cache";
+
+test("background refresh returns immediately and joins the real work until completion", async () => {
+  const errors: unknown[] = [];
+  const refresh = createBackgroundRefresh(error => errors.push(error));
+  let calls = 0;
+  let release!: () => void;
+  const load = () => { calls++; return new Promise<void>(resolve => {release = resolve;}); };
+  expect(refresh("repo", load)).toBe(true);
+  await Bun.sleep(0);
+  for (let i = 0; i < 20; i++) expect(refresh("repo", load)).toBe(false);
+  expect(calls).toBe(1);
+  release();
+  await Bun.sleep(0);
+  expect(refresh("repo", async () => {throw new Error("git failed");})).toBe(true);
+  await Bun.sleep(0);
+  expect(errors).toHaveLength(1);
+  expect(refresh("repo", async () => {calls++;})).toBe(true);
+  await Bun.sleep(0);
+  expect(calls).toBe(2);
+});
 
 describe("createStaleWhileRevalidateCache", () => {
   test("seeded telemetry returns immediately and shares a slow first scan", async () => {

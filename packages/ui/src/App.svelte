@@ -3,7 +3,7 @@
   export let onInitialLoad: () => void = () => {};
   import BackgroundSessions from "./BackgroundSessions.svelte";
   import { backgroundRestorePending } from "./background-state";
-  import { replaceCodexCliStates } from "./codex-event-stream";
+  import { replaceCodexCliStates, codexCliStates, isCodexCliWorking, resolveTerminalWorking } from "./codex-event-stream";
   import {
     resolveTermId,
     applyBackgroundRestoreDecision,
@@ -3428,7 +3428,7 @@
       activeWtPollInFlight = true;
       void fetch(
         apiUrl(
-          `/api/worktree-details?path=${encodeURIComponent(wt)}`,
+          `/api/worktree-details?path=${encodeURIComponent(wt)}&background=1`,
           daemonIdForWorktreePath(repos, wt),
         ),
       )
@@ -7606,7 +7606,14 @@
             // dock. Its live-PTY state is conveyed by the rotating square
             // (vs. the round agent dot).
             working:
-              s.agent === "shell" ? false : !!transientWorking[s.source],
+              s.agent === "shell" ? false : isLiveTui
+                ? resolveTerminalWorking(
+                    s.agent,
+                    !!transientWorking[s.source],
+                    isCodexCliWorking($codexCliStates, meta?.source ?? s.source, s.resumeSessionId ?? meta?.sessionId, repo.daemonId),
+                    !!transientAwaiting[s.source],
+                  )
+                : !!transientWorking[s.source],
             awaiting:
               s.agent === "shell" ? false : !!transientAwaiting[s.source],
             // Inactive covers sessions with neither a live terminal

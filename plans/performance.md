@@ -2526,3 +2526,23 @@ while sampling ran, and a real 20,566,016-byte working-set reading arrived
 from the embedded worker. Only fixture processes were stopped. Installer
 rebuild completed (buildTime 2026-10-29T15:15:21.316Z); embedded payload checksum
 verification passed. The new installer was not run against production.
+
+### 2026-10-29: quiet turns and worktree poll connection starvation
+
+Removed the ten-minute Codex inactivity cutoff: silence during an open turn
+is not completion. Explicit completion, interruption, and terminal exit still
+clear activity. A regression fixture recovers an eleven-minute-old open turn.
+Dock CLI activity now reads the shared lifecycle store directly, independent
+of whether a collapsed/unloaded session view has reported its working state.
+
+Installed-app logs still showed background-status/UI-context timeouts and a
+worktree-details GET failing after 298 seconds. The focused-worktree poll now
+opts into an immediate 202 response with any cached details. One real refresh
+per worktree/remote runs in the priority lane, coalescing repeated polls until
+completion. Existing cache patches and SSE deliver fresh badges. Explicit
+refreshes and post-mutation reads retain awaited freshness. This addresses a
+confirmed source of connection pressure; other live renderer/network stalls
+are not yet ruled out.
+
+305 targeted activity, cache, refresh-plan, Codex event-stream and server-helper
+tests pass. Production processes and live sessions were untouched.

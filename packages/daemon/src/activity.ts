@@ -79,19 +79,6 @@ export function markCodexCliInterrupted(sessionId: string): void {
   if (changed) notifyCodexCliState();
 }
 
-const CODEX_INACTIVITY_MS = 10 * 60_000;
-/** Stop stale motion without stopping the process or discarding the open turn. */
-export function expireInactiveCodexCliStates(now = Date.now()): void {
-  let changed = false;
-  for (const session of tracked.values()) {
-    if (session.agent === "codex" && session.working && now - session.lastActivityAt >= CODEX_INACTIVITY_MS) {
-      session.working = false;
-      changed = true;
-    }
-  }
-  if (changed) notifyCodexCliState();
-}
-
 /** Read new bytes from `path` starting at `offset`. Returns the text
  *  of the new chunk and the updated offset (= file size after read).
  *  Returns null when there's nothing new to read: file is gone, hasn't
@@ -141,7 +128,6 @@ interface Tracked {
   watcher?: FSWatcher;
   working?: boolean;
   turnOpen?: boolean;
-  lastActivityAt: number;
   partial: string;
   reading: boolean;
   pending: boolean;
@@ -277,7 +263,6 @@ async function rediscover(
       cwd: s.cwd,
       sessionId: s.sessionId ?? "",
       agent: s.agent,
-      lastActivityAt: stats.mtimeMs,
       partial: "",
       reading: true,
       pending: false,
@@ -312,7 +297,7 @@ async function rediscover(
     }
     if (isStopped() || tracked.get(s.source) !== t) return;
     t.reading = false;
-    if (s.agent === "codex") { expireInactiveCodexCliStates(); notifyCodexCliState(); }
+    if (s.agent === "codex") notifyCodexCliState();
     // The first turn can be fully written before our next discovery pass.
     // Let the existing activity-based session linker see newly created CLIs,
     // but never replay old files into fresh columns on daemon startup.
@@ -377,7 +362,6 @@ function consumeLines(t: Tracked, text: string, live: boolean): void {
     if (t.agent === "codex") {
       const next = codexCliWorkingFromEntry(obj);
       if (next !== undefined) t.turnOpen = next;
-      if (live) t.lastActivityAt = Date.now();
       const working = next ?? (live && t.turnOpen ? true : t.working);
       if (t.working !== working) {
         t.working = working;
@@ -425,13 +409,11 @@ export async function startActivityTail(
       });
   };
   rediscoverSafely();
-  const inactivityTimer = setInterval(() => expireInactiveCodexCliStates(), 10_000);
   rediscoverTimer = setInterval(() => {
     rediscoverSafely();
   }, options.rediscoverIntervalMs ?? REDISCOVER_INTERVAL_MS);
   return () => {
     stopped = true;
-    clearInterval(inactivityTimer);
     if (rediscoverTimer) clearInterval(rediscoverTimer);
     rediscoverTimer = null;
     for (const t of tracked.values()) t.watcher?.close();
