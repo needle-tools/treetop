@@ -24,7 +24,7 @@ final class InstallerWindow: NSObject, NSApplicationDelegate, NSWindowDelegate {
     func cancel() {
         guard canCancel && !cancelled else { return }
         cancelled = true
-        status.stringValue = "Cancelling installation…"
+        status.stringValue = "Cancelling installation\u{2026}"
         window.standardWindowButton(.closeButton)?.isEnabled = false
         write("cancel", "TREETOP_SETUP_CANCEL")
     }
@@ -48,7 +48,7 @@ final class InstallerWindow: NSObject, NSApplicationDelegate, NSWindowDelegate {
         title.textColor = NSColor(calibratedRed: 0.14, green: 0.21, blue: 0.16, alpha: 1)
         title.frame = NSRect(x: 26, y: 80, width: 508, height: 28)
         window.contentView!.addSubview(title)
-        status = NSTextField(wrappingLabelWithString: "Preparing the installer…")
+        status = NSTextField(wrappingLabelWithString: "Preparing the installer\u{2026}")
         status.font = .systemFont(ofSize: 13)
         status.textColor = .secondaryLabelColor
         status.frame = NSRect(x: 26, y: 34, width: 508, height: 40)

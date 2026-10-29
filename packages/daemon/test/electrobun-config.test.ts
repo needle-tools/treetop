@@ -1,6 +1,29 @@
 import { describe, expect, test } from "bun:test";
 import electrobunConfig from "../../../electrobun.config";
 import { preserveNativeCallbackPointers } from "../../../scripts/patch-launcher";
+import { macInstallerWindowSource } from "../../../scripts/installer-progress";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
+if (process.platform === "darwin") {
+  test("generated macOS installer window compiles with AppKit", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "treetop-installer-compile-"));
+    try {
+      const source = join(directory, "installer-window.swift");
+      await writeFile(source, macInstallerWindowSource);
+      const child = Bun.spawn(["/usr/bin/xcrun", "swiftc", source,
+        "-framework", "AppKit", "-o", join(directory, "installer-window")],
+        { stdout: "pipe", stderr: "pipe" });
+      const [code, stdout, stderr] = await Promise.all([
+        child.exited, new Response(child.stdout).text(), new Response(child.stderr).text(),
+      ]);
+      expect({ code, diagnostics: code === 0 ? "" : stdout + stderr }).toEqual({ code: 0, diagnostics: "" });
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  }, 120_000);
+}
 
 describe("electrobun config", () => {
   test("native runtime includes the cross-thread FFI callback heap corruption fix", () => {

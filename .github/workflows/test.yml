@@ -58,6 +58,9 @@ jobs:
       - name: Install WebKit
         run: bun node_modules/playwright-core/cli.js install webkit --no-remove
 
+      - name: Compile macOS installer window
+        run: bun test packages/daemon/test/electrobun-config.test.ts
+
       - name: Test SessionView lifecycle in WebKit
         env:
           TREETOP_TEST_BROWSER: webkit
