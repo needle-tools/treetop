@@ -2555,3 +2555,5 @@ The existing on-request/workspace-write defaults remain. Explicit reviewer
 choices win; restore/migration and existing session command generation keep
 their prior settings. 254 storage/menu regression tests pass, including fresh
 versus restored defaults and the resulting CLI flags. Svelte compilation passes.
+
+Flowering vine implementation: stable seeded plant families reuse the existing stem path, leaves, lifetime persistence and two-second tick. Cacti use fixed growth paths with later arms; prickly pear pads attach to their parent. Botanical SVG is replaced only when its generated geometry changes. No continuous animation or extra layout measurement. Preview lives in demos/vine-garden.html. Regression coverage checks fixed old trunk segments, staged branches, attached pads, stable varieties and finite geometry.

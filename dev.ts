@@ -31,6 +31,11 @@ export interface DevWorkspaceOptions {
   uiPort: number;
 }
 
+/** Localhost cookies are shared across ports and can exceed Node's 16 KiB default. */
+export function devUiNodeOptions(existing = ""): string {
+  return `${existing} --max-http-header-size=131072`.trim();
+}
+
 function defaultWorkspaceRoot(): string {
   return join(homedir(), "supergit", "workspaces");
 }
@@ -302,6 +307,7 @@ export async function runDev(
   // is actually on a different port.
   const uiEnv = {
     ...process.env,
+    NODE_OPTIONS: devUiNodeOptions(process.env.NODE_OPTIONS),
     PORT: String(DEV_UI_PORT),
     SUPERGIT_PORT: String(DEV_DAEMON_PORT),
   };
@@ -317,8 +323,8 @@ export async function runDev(
   // On Windows bash isn't available, so skip the exec -a wrapper.
   const daemonCmd =
     process.platform === "win32"
-      ? [process.execPath, "--watch", "run", "src/server.ts"]
-      : ["bash", "-c", "exec -a 'supergit dev' bun --watch run src/server.ts"];
+      ? [process.execPath, "--max-http-header-size=131072", "--watch", "run", "src/server.ts"]
+      : ["bash", "-c", "exec -a 'supergit dev' bun --max-http-header-size=131072 --watch run src/server.ts"];
   const daemon = Bun.spawn(daemonCmd, {
     cwd: "packages/daemon",
     stdout: "inherit",

@@ -15,7 +15,36 @@ import {
   usage,
   seedWorkspaceIfMissing,
   waitForDevChildren,
+  devUiNodeOptions,
 } from "../../../dev";
+
+test("Vite's Node process accepts larger localhost cookie headers", async () => {
+  const child = Bun.spawn(["node", "-p", "require('node:http').maxHeaderSize"], {
+    env: {...process.env, NODE_OPTIONS: devUiNodeOptions("--enable-source-maps")},
+    windowsHide: true, stdout: "pipe", stderr: "pipe",
+  });
+  const output = await new Response(child.stdout).text();
+  expect(await child.exited).toBe(0);
+  expect(Number(output.trim())).toBe(131072);
+  expect(devUiNodeOptions("--enable-source-maps")).toContain("--enable-source-maps");
+});
+
+test("dev daemon runtime accepts a real 24 KiB cookie header", async () => {
+  const child = Bun.spawn([process.execPath, "--max-http-header-size=131072", "--eval", `
+    const server = Bun.serve({port: 0, hostname: '127.0.0.1', fetch: () => new Response('ok')});
+    console.log(server.port);
+  `], { windowsHide: true, stdout: "pipe", stderr: "pipe" });
+  try {
+    const reader = child.stdout.getReader();
+    const first = await reader.read();
+    const port = Number(new TextDecoder().decode(first.value).trim());
+    expect(port).toBeGreaterThan(0);
+    const response = await fetch(`http://127.0.0.1:${port}/`, { headers: {cookie: 'probe=' + 'a'.repeat(24000)} });
+    expect(response.status).toBe(200);
+    expect(await response.text()).toBe('ok');
+    reader.releaseLock();
+  } finally { child.kill(); await child.exited; }
+}, 15000);
 
 function pendingChild() {
   let resolveExit!: (code: number) => void;

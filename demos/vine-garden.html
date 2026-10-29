@@ -27,8 +27,7 @@ const studies=[
  {key:'cactus',variant:0,name:'Tall cactus',text:'A tall trunk with two uneven arms and occasional pink flowers at their tips.',detail:'The trunk extends first, followed by arms and blossoms.'},
  {key:'cactus',variant:1,name:'Branching cactus',text:'Several arms grow at different heights, each with its own timing and flower buds.',detail:'A fuller silhouette with scattered arm-tip flowers.'},
  {key:'cactus',variant:2,name:'Cactus cluster',text:'Smaller cactus stems sprout around an older central plant.',detail:'New growth begins at ground level beside the main trunk.'},
- {key:'cactus',variant:3,name:'Prickly pear',text:'Rounded pads emerge in stages, with flowers along their upper edges.',detail:'A different growth habit built from overlapping pads.'},
- {key:'cactus',variant:4,name:'Round barrel cactus',text:'A low, ribbed cactus with a little crown of pink flowers.',detail:'Stays close to the ground as its body fills out.'}
+ {key:'cactus',variant:3,name:'Prickly pear',text:'Rounded pads emerge in stages, with flowers along their upper edges.',detail:'A different growth habit built from overlapping pads.'}
 ];
 const gallery=document.querySelector('.gallery');
 for(const s of studies){const article=document.createElement('article');article.className='study';article.innerHTML=`<h2>${s.name}${s.pick?'<span class="badge">Suggested</span>':''}</h2><p class="caption">${s.text}</p><div class="sample"><svg class="vine" viewBox="0 0 64 440" preserveAspectRatio="none" aria-label="${s.name} illustration" role="img"></svg><div class="terminal"><div class="terminal-head"><span class="model">gpt-6.1</span><span class="session-name">Treetop garden</span></div><div class="body"><p class="prompt">› A little more life?</p><p>I'll keep the flowers small<br>and let the vines grow.</p><p class="ok">● Read vine-core.ts<br><span class="dim">  + Show details</span></p><p class="code">Leaves → buds → blossoms<br><span class="dim">A quiet change over time.</span></p><p class="ok">● Checks passed</p><p>Ready for a closer look.</p><p class="dim">Worked for 2m 45s</p><p class="foot">› Ask Codex anything<span style="color:#d8ddcd"> ▏</span></p></div></div></div><div class="detail">${s.detail}</div>`;gallery.append(article)}
@@ -42,6 +41,7 @@ const morePlants=[
  {key:'clover',name:'Clover flowers',text:'Little rounded pink flower heads on short side shoots.',detail:'Soft clusters with a meadow feel.'}
 ];
 for(const s of morePlants){studies.push(s);const article=gallery.firstElementChild.cloneNode(true);article.querySelector('h2').textContent=s.name;article.querySelector('.caption').textContent=s.text;article.querySelector('.detail').textContent=s.detail;article.querySelector('svg').setAttribute('aria-label',s.name);gallery.append(article)}
+function edgeSpines(x,y,rx,ry){let out='';for(const side of [-1,1])for(const t of [-.65,-.22,.25,.65]){const px=x+side*rx*Math.sqrt(1-t*t),py=y+ry*t;out+=`<path d="M${px} ${py} l${side*3} ${t*3-1} M${px} ${py} l${side*2} ${t*3+1}" stroke="#c0bd94" stroke-width=".65" fill="none"/>`}return out}
 function flower(kind,x,y,scale,index,bud){let content='';
  if(bud){content='<path d="M0 5 Q-7 -2 -2 -9 Q7 -6 3 3Z" fill="#8eac68"/><path d="M-1 0 Q-5 -6 -2 -9 Q4 -7 1 0" fill="'+(kind==='bells'?'#9c8ab8':'#c9c79a')+'"/>'}
  else if(kind==='bells'){content='<path d="M-1 -9 Q0 -18 6 -17" stroke="#718c4c" stroke-width="1.4" fill="none"/><path d="M-1 -10 C-10 -8 -9 3 -12 7 Q-8 11 -4 7 Q0 12 4 7 Q8 10 10 6 C5 1 7 -8 -1 -10Z" fill="#a294b7"/><path d="M-3 -6 Q-6 0 -5 5" fill="none" stroke="#c8bcd9" stroke-width="1.5"/><path d="M-2 9 L-2 12 M3 8 L3 11" stroke="#c8b281" stroke-width="1.4"/>'}
@@ -59,7 +59,7 @@ function draw(){const growth=Number(age.value)/100;document.querySelector('#age-
  for(let i=0;i<27;i++){const y=420-i*14.1;if(y<top)continue;const x=sx(y),side=i%2?1:-1;const light=.28+(420-y)/440*.65;const leafScale=.65+Math.sin(i*2.3)*.13;out+=`<g transform="translate(${x} ${y}) scale(${side*leafScale} ${leafScale})"><path d="M0 0 C4 -12 13 -17 20 -15 C19 -5 8 2 0 0Z" fill="#839d4b" opacity="${light}"/></g>`;
  if(kind==='fern'&&i%7===2){let branch=`<path d="M0 0 Q${side*12} -12 ${side*17} -30" stroke="#72884e" fill="none" stroke-width=".9"/>`;for(let n=1;n<6;n++){const xx=side*n*2.8, yy=-n*4.8;branch+=`<path d="M${xx} ${yy} q${side*9} -1 ${side*9} -7 q${-side*7} 0 ${-side*9} 7 M${xx} ${yy} q${-side*6} -2 ${-side*5} -8 q${side*6} 3 ${side*5} 8" fill="#6c8952"/>`}out+=`<g transform="translate(${x} ${y})" opacity=".7">${branch}</g>`}
  }
- if(kind!=='original'){const slots=Number(density.value)===1?[140,260,350]:[90,155,215,275,335,390];slots.forEach((y,i)=>{if(y<top+18)return;const side=i%2?1:-1;const x=sx(y),fx=x+side*(kind==='bells'?17:14),fy=y-8;out+=`<path d="M${x} ${y+10} Q${fx} ${y+4} ${fx} ${fy}" stroke="#728b4d" stroke-width="1.1" fill="none"/>`;out+=flower(kind,fx,fy,kind==='fern'?.62:.78,i,growth<.65||y<top+65)});if(growth>.5)out+=flower(kind,sx(top+8)+5,top+8,.62,0,true)}
+ if(kind!=='original'){const slots=Number(density.value)===1?[140,260,350]:[90,155,215,275,335,390];slots.forEach((slot,i)=>{const y=slot+Math.sin(gardenSeed*3+k*17+i*13)*15;if(y<top+18)return;const side=Math.sin(gardenSeed*13+k*7+i*37)>0?1:-1;const x=sx(y),fx=x+side*(kind==='bells'?17:14),fy=y-8;out+=`<path d="M${x} ${y+10} Q${fx} ${y+4} ${fx} ${fy}" stroke="#728b4d" stroke-width="1.1" fill="none"/>`;out+=flower(kind,fx,fy,kind==='fern'?.62:.78,i,y<top+45)});if(growth>.5)out+=flower(kind,sx(top+8)+5,top+8,.62,0,true)}
  if(kind==='monstera'){
  out=out.replaceAll('fill="#839d4b"','fill="#54896a"');
  for(const [i,y] of [150,240,330,390].entries()){if(y<top+25)continue;const side=i%2?1:-1;out+=`<g transform="translate(${sx(y)} ${y}) scale(${side*.85} .85)"><path d="M0 0 Q4 -15 14 -15 C12 -27 30 -26 33 -17 C42 -9 29 5 20 8 Q7 11 0 0Z" fill="#547f58"/><path d="M1 0 L27 -13 M13 -7 L12 -17 M19 -10 L20 -22 M20 -9 L32 -7 M14 -4 L24 3" stroke="#263e2d" stroke-width="2.7" fill="none"/><path d="M1 0 L27 -13" stroke="#8baf76" stroke-width=".8"/></g>`}
@@ -85,13 +85,7 @@ function draw(){const growth=Number(age.value)/100;document.querySelector('#age-
  }
  for(let y=12;y<height-8;y+=14){out+=`<path d="M${cx(y)-7} ${425-y} l-3 -2 M${cx(y)+7} ${420-y} l3 -1" stroke="#b9b58b" stroke-width=".7"/>`}
  if(variant===2){for(let i=0;i<3;i++){const g=clamp((growth-.22-i*.13)/.55);if(!g)continue;const x=13+i*17,h=20+g*(75+i*30);out+=stem(`M${x} 425 Q${x-4} ${425-h/2} ${x+2} ${425-h}`,10);if(g>.85)out+=flower('cactus',x+2,418-h,.65,i,false)}}
- if(variant===3){out='';for(let i=0;i<8;i++){const g=clamp((growth-i*.09)/.25);if(!g)continue;const x=28+Math.sin(i*2)*14,y=416-i*35;out+=`<ellipse cx="${x}" cy="${y+18*(1-g)}" rx="${8+g*4}" ry="${5+g*18}" fill="${i%2?'#60865c':'#4c7654'}" transform="rotate(${Math.sin(i)*22} ${x} ${y})"/><path d="M${x-4} ${y-5} l-2 -1 M${x+4} ${y+5} l2 -1" stroke="#bec399" stroke-width="1"/>`;if(g>.9&&i%3===1)out+=flower('cactus',x,y-25,.7,i,false)}}
- else if(variant===4){
- const r=10+growth*20,cy=428-r;
- out=`<path d="M-3 432 Q30 425 62 432" stroke="#5b5940" fill="none"/><ellipse cx="30" cy="${cy}" rx="${r}" ry="${r*.95}" fill="#4b7653"/>`;
- for(let i=-2;i<=2;i++){const x=30+i*r*.29;out+=`<path d="M${30+i*2} ${cy-r*.9} Q${x+i*4} ${cy} ${30+i*3} 427" stroke="${i%2?'#355c40':'#82a16c'}" stroke-width="1.5" fill="none"/>`;for(let j=0;j<4;j++){const y=cy-r*.55+j*r*.4;const dx=Math.sin(j+i)*1.5;out+=`<path d="M${x+dx-2} ${y-2} l4 4 M${x+dx-2} ${y+2} l4 -4" stroke="#c5c397" stroke-width=".75"/>`}}
- if(growth>.65){for(let i=0;i<3;i++){const angle=-Math.PI/2+(i-1)*.5;out+=flower('cactus',30+Math.cos(angle)*r*.68,cy+Math.sin(angle)*r*.82,.55,i,growth<.82)}}
- }
+ if(variant===3){out='';let blossoms='';let parent=null;for(let i=0;i<8;i++){const g=clamp((growth-i*.09)/.25);if(!g)continue;const rx=3+g*9,ry=3+g*20,x=parent?parent.x+Math.sin(i*2)*parent.rx*.45:28,bottom=parent?parent.y-parent.ry+5:428,y=bottom-ry;out+=`<ellipse cx="${x}" cy="${y}" rx="${rx}" ry="${ry}" fill="${i%2?'#60865c':'#4c7654'}"/>`;out+=edgeSpines(x,y,rx,ry);if(g>.9&&i%3===1)blossoms+=flower('cactus',x+rx*.7,y-ry*.6,.7,i,false);parent={x,y,rx,ry}}out+=blossoms;}
  else if(growth>.88)out+=flower('cactus',cx(height),418-height,.82,0,growth<.96);
  }
  svg.innerHTML=out;
