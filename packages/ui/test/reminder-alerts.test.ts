@@ -61,6 +61,24 @@ test("snooze action waits for persistence, deduplicates clicks, and allows the n
   expect(manager.toasts()).toHaveLength(1);
 });
 
+test("each snooze button labels and schedules its own delay", async () => {
+  const manager = createToastManager({ onChange: () => {}, play: () => {} });
+  const scheduled: number[] = [];
+  const alerts = createReminderAlerts({ showToast: manager.addToast, dismissToast: manager.dismissToast,
+    snoozeReminder: async (_id, hours) => { scheduled.push(hours); },
+    dismissReminder: async () => {}, openReminder: () => {}, onError: error => { throw error; } });
+  const item: Reminder = { id: "one", title: "Review", message: "Logs", createdAt: "2026-10-07T00:00:00Z", dueAt: "2026-10-08T00:00:00Z", status: "due" };
+  for (const [index, hours] of [2, 8].entries()) {
+    alerts.sync([{ ...item, status: "scheduled" }]);
+    alerts.sync([item]);
+    const action = manager.toasts()[0]!.actions![index]!;
+    expect(action.label).toBe(`Remind me later · ${hours} hours`);
+    await action.onClick();
+    expect(manager.toasts()).toHaveLength(0);
+  }
+  expect(scheduled).toEqual([2, 8]);
+});
+
 test("failed snooze keeps the reminder actionable for retry", async () => {
   const manager = createToastManager({ onChange: () => {}, play: () => {} });
   let attempts = 0;

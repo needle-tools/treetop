@@ -25,7 +25,7 @@ export function createReminderAlerts(deps: {
           kind: "info", title: item.title, message: item.message, persist: true,
           onClick: () => deps.openReminder(item),
           actions: [2, 8].map(hours => ({
-            label: "Remind me later · 2 hours",
+            label: `Remind me later · ${hours} hours`,
             onClick: async () => {
               if (snoozing.has(item.id)) return;
               snoozing.add(item.id);
