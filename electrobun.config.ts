@@ -14,7 +14,7 @@ export default {
   app: {
     name: "Treetop",
     identifier: "tools.needle.supergit",
-    version: "0.1.3",
+    version: "0.1.4",
   },
   // Runtime is top-level: Electrobun copies this into Resources/build.json.
   // The native tray/menu-bar owner must survive closing the last window.
