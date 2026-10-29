@@ -1,10 +1,31 @@
 import { test, expect, describe } from "bun:test";
 import {
   planWorktreeRecompute,
+  refreshWorktreeAfterMutation,
   type WorktreeRecomputeState,
 } from "../src/worktree-refresh-plan";
 
 const MIN = 2_500;
+
+test("a completed mutation does not wait for slow badge refresh and still publishes its result", async () => {
+  let finish!: (value: {ahead: number}) => void;
+  const slow = new Promise<{ahead: number}>(resolve => {finish = resolve;});
+  const published: unknown[] = [], errors: unknown[] = [];
+  expect(refreshWorktreeAfterMutation(() => slow, value => published.push(value), error => errors.push(error))).toBeUndefined();
+  expect(published).toEqual([]);
+  finish({ahead: 0});
+  await Bun.sleep(0);
+  expect(published).toEqual([{ahead: 0}]);
+  expect(errors).toEqual([]);
+});
+
+test("a failed post-mutation refresh is reported without changing mutation success", async () => {
+  const errors: unknown[] = [];
+  const error = new Error("status failed");
+  refreshWorktreeAfterMutation(async () => {throw error;}, () => {throw new Error("unexpected publication");}, value => errors.push(value));
+  await Bun.sleep(0);
+  expect(errors).toEqual([error]);
+});
 
 test("session worktrees publish before a blocked status refresh finishes", async () => {
   const { publishWorktreesBeforeDetails } = await import("../src/worktree-refresh-plan");

@@ -2559,3 +2559,21 @@ versus restored defaults and the resulting CLI flags. Svelte compilation passes.
 Flowering vine implementation: stable seeded plant families reuse the existing stem path, leaves, lifetime persistence and two-second tick. Cacti use fixed growth paths with later arms; prickly pear pads attach to their parent. Botanical SVG is replaced only when its generated geometry changes. No continuous animation or extra layout measurement. Preview lives in demos/vine-garden.html. Regression coverage checks fixed old trunk segments, staged branches, attached pads, stable varieties and finite geometry.
 
 Repository reload 502 investigation: health remained 200 while /api/repos waited over 70s. The shared in-flight path awaited enrichment before returning any response; Bun idleTimeout=30 could close it. Reload waiters now stream a fresh manifest immediately and blank NDJSON keepalives every 10s, then replay enriched repos. Fresh scan streams also send keepalives. Regression exercises manifest-before-completion and heartbeat delivery.
+
+### 2026-10-30: push/pull success held behind badge recompute
+
+Needle Cloud push event 2026-10-29T17:41:52.110Z recorded actual Git success,
+while its HTTP request timed out at 17:42:45.198Z (90 seconds total). Both
+mutation handlers awaited runWorktreeRecompute AFTER recording success, so a
+slow Git status/diff or queued priority read turned completed mutations into
+misleading network errors. Recent wt-summary requests also took 18-30 seconds.
+
+Push/pull now acknowledge success after their event is persisted and schedule
+the fresh badge recompute asynchronously. Completion still patches the caches
+and broadcasts the existing detailed change event. The UI recognizes refreshing
+and skips the full-dashboard fallback fetch while that targeted update runs.
+Older daemon responses retain their prior handling. Git mutation semantics and
+timeouts are unchanged. Two regression tests verify immediate return despite
+blocked refresh and that refresh failure cannot turn mutation success into an
+error. 16 targeted tests and Svelte compilation pass. No production operations,
+user push/pull commands, build, or restart were performed during diagnosis.

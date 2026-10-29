@@ -27,6 +27,16 @@ export interface WorktreeRecomputeState {
   hasPendingTrailing: boolean;
 }
 
+/** The mutation is already committed. A slow status read must not turn its
+ * successful HTTP response into a timeout; publish badges when ready. */
+export function refreshWorktreeAfterMutation<T>(
+  refresh: () => Promise<T>,
+  publish: (details: T) => void,
+  onError: (error: unknown) => void,
+): void {
+  void Promise.resolve().then(refresh).then(publish).catch(onError);
+}
+
 /** Session geometry and agent ownership are usable before expensive status
  * reads finish. Publish that snapshot without delaying the final refresh. */
 export async function publishWorktreesBeforeDetails<T>(

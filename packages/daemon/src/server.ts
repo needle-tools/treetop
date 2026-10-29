@@ -120,7 +120,7 @@ import { remindersForWorkspace, startReminderScheduler, handleRemindersHttp } fr
 import * as inflight from "./inflight";
 import { pingSubscribers } from "./sse-heartbeat";
 import { changeKindInvalidatesRepos } from "./sse-change-kinds";
-import { planWorktreeRecompute, publishWorktreesBeforeDetails } from "./worktree-refresh-plan";
+import { planWorktreeRecompute, publishWorktreesBeforeDetails, refreshWorktreeAfterMutation } from "./worktree-refresh-plan";
 import {
   terminalBackend,
   detectAgentLabel,
@@ -7833,11 +7833,14 @@ const server = Bun.serve<TermWsData, never>({
             // Fence older dashboard builds, but retain its snapshot so the
             // priority refresh can patch this row without rebuilding all repos.
             invalidateReposCache(true);
-            const details = await runWorktreeRecompute(wtPath, reposGitPriorityLimit, selectedRemote);
-            broadcast("change", { kind: "pull", path: wtPath, details });
+            refreshWorktreeAfterMutation(
+              () => runWorktreeRecompute(wtPath, reposGitPriorityLimit, selectedRemote),
+              details => broadcast("change", { kind: "pull", path: wtPath, details }),
+              error => console.warn("supergit daemon: post-pull refresh failed", error),
+            );
             return json({
               ok: true,
-              details,
+              refreshing: true,
               kind: result.kind,
               stashed: result.stashed === true,
               stashRestored: result.stashRestored === true,
@@ -7889,9 +7892,12 @@ const server = Bun.serve<TermWsData, never>({
             });
             invalidateWorktreeDetails(wtPath);
             invalidateReposCache(true);
-            const details = await runWorktreeRecompute(wtPath, reposGitPriorityLimit, selectedRemote);
-            broadcast("change", { kind: "push", path: wtPath, details });
-            return json({ ok: true, message: result.message, details });
+            refreshWorktreeAfterMutation(
+              () => runWorktreeRecompute(wtPath, reposGitPriorityLimit, selectedRemote),
+              details => broadcast("change", { kind: "push", path: wtPath, details }),
+              error => console.warn("supergit daemon: post-push refresh failed", error),
+            );
+            return json({ ok: true, message: result.message, refreshing: true });
           }
           return json(
             { ok: false, error: result.message, kind: result.kind },

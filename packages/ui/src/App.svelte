@@ -1630,9 +1630,10 @@
         stashConflict?: boolean;
         error?: string;
         details?: Record<string, unknown> | null;
+        refreshing?: boolean;
       };
       if (res.ok && body.ok) {
-        applyGitMutationDetails(wtPath, body.details, daemonIdForRepoId(repos, repoId));
+        if (!body.refreshing) applyGitMutationDetails(wtPath, body.details, daemonIdForRepoId(repos, repoId));
         return {
           ok: true,
           kind: body.kind,
@@ -1844,9 +1845,10 @@
         message?: string;
         kind?: string;
         details?: Record<string, unknown> | null;
+        refreshing?: boolean;
       };
       if (res.ok && body.ok) {
-        applyGitMutationDetails(wtPath, body.details, daemonIdForRepoId(repos, repoId));
+        if (!body.refreshing) applyGitMutationDetails(wtPath, body.details, daemonIdForRepoId(repos, repoId));
         play("git-push");
         addToast({
           kind: "success",
