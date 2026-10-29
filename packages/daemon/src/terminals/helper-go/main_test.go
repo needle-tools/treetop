@@ -5,7 +5,56 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
+
+func TestSlowSpawnDoesNotBlockExistingSessionInput(t *testing.T) {
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	events := make(chan string, 8)
+	dispatcher := newCommandDispatcher(func(msg map[string]any) {
+		if msg["op"] == "spawn" {
+			close(entered)
+			<-release
+		}
+		events <- msg["op"].(string) + ":" + msg["id"].(string)
+	})
+	defer dispatcher.close()
+	if err := dispatcher.dispatch(map[string]any{"op": "spawn", "id": "new"}); err != nil {
+		t.Fatal(err)
+	}
+	<-entered
+	if err := dispatcher.dispatch(map[string]any{"op": "resize", "id": "new"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := dispatcher.dispatch(map[string]any{"op": "write", "id": "new"}); err != nil {
+		t.Fatal(err)
+	}
+	returned := make(chan struct{})
+	go func() {
+		_ = dispatcher.dispatch(map[string]any{"op": "write", "id": "existing"})
+		close(returned)
+	}()
+	select {
+	case <-returned:
+		if got := <-events; got != "write:existing" {
+			t.Errorf("input lost priority: %s", got)
+		}
+	case <-time.After(time.Second):
+		t.Error("existing terminal input blocked behind spawn")
+	}
+	close(release)
+	for _, want := range []string{"spawn:new", "resize:new", "write:new"} {
+		select {
+		case got := <-events:
+			if got != want {
+				t.Errorf("got %s, want %s", got, want)
+			}
+		case <-time.After(time.Second):
+			t.Fatal("pending terminal command lost")
+		}
+	}
+}
 
 func TestResolveCwdFallsBackWhenMissing(t *testing.T) {
 	tmp := t.TempDir()

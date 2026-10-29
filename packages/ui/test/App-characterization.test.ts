@@ -870,6 +870,16 @@ describe("fetchReposNDJSON stream-parsing logic", () => {
 });
 
 describe("patchWorktreeDetails", () => {
+  test("push and pull confirmations clear stale arrows without replacing sessions", () => {
+    const agents = [{sessionId:"live-session"}];
+    const untouched = {path:"/other",branchStatus:{ahead:2,behind:1}};
+    const repos = [{id:"repo",worktrees:[{path:"/repo",agents,branchStatus:{ahead:3,behind:4}},untouched]}];
+    const patch = patchWorktreeDetails(repos,"/repo",{branchStatus:{ahead:0,behind:0}});
+    expect(patch.changed).toBe(true);
+    expect(patch.repos[0]!.worktrees[0]!.branchStatus).toEqual({ahead:0,behind:0});
+    expect((patch.repos[0]!.worktrees[0] as any).agents).toBe(agents);
+    expect(patch.repos[0]!.worktrees[1]).toBe(untouched);
+  });
   test("patches only the matching worktree and preserves unrelated identities", () => {
     const untouched = { path: "/repo/b", fileStatus: { unstaged: 0 } };
     const firstRepo = {

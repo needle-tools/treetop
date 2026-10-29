@@ -1,6 +1,6 @@
 import { $ } from "bun";
 import { Worker, isMainThread, parentPort, workerData } from "node:worker_threads";
-import { createLimiter } from "./concurrency";
+import { createGitWorkScheduler } from "./concurrency";
 
 type BackgroundGitOperation = "listWorktrees" | "listRemotes" | "getWorktreeDetails" | "fetchAll";
 let backgroundGitWorker: Worker | undefined;
@@ -59,11 +59,10 @@ function dispatchBackgroundGit<T>(operation: BackgroundGitOperation, args: unkno
 }
 
 if (!isMainThread && workerData?.backgroundGit) {
-  const limit = createLimiter(4);
-  const fetchLimit = createLimiter(1);
+  const scheduleGit = createGitWorkScheduler();
   parentPort!.on("message", ({ id, operation, args }) => {
     // Network fetches must not hold the slots needed to display sessions.
-    void (operation === "fetchAll" ? fetchLimit : limit)(async () => {
+    void scheduleGit(operation, operation === "getWorktreeDetails" && args[1]?.fresh === true, async () => {
       try {
         const operations = { listWorktrees, listRemotes, getWorktreeDetails, fetchAll };
         const value = await (operations[operation as BackgroundGitOperation] as Function)(...args);
@@ -1125,9 +1124,13 @@ export function parseWorktreeList(porcelain: string): Worktree[] {
 
 export async function getWorktreeDetails(
   worktreePath: string,
-  options: { remote?: string | null } = {},
+  options: { remote?: string | null; fresh?: boolean } = {},
 ): Promise<WorktreeDetails> {
-  if (backgroundGitEnabled && isMainThread) return backgroundGit("getWorktreeDetails", [worktreePath, options]);
+  if (backgroundGitEnabled && isMainThread) {
+    // A post-mutation read must not join a status query started before the
+    // mutation. The worker reserves a slot for this interactive refresh.
+    return options.fresh ? dispatchBackgroundGit("getWorktreeDetails", [worktreePath, options]) : backgroundGit("getWorktreeDetails", [worktreePath, options]);
+  }
   try {
     const [statusOut, logOut] = await Promise.all([
       $`git --no-optional-locks -C ${worktreePath} status --porcelain=v2 --branch`.quiet().text(),

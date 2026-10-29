@@ -247,6 +247,9 @@ export function createIdleStateForTest(clock: Clock): IdleState {
  *  enough to span the gap between keystrokes in a normal typing burst,
  *  short enough that the decorative animations resume promptly on pause. */
 export const TYPING_IDLE_MS = 600;
+let lastTypingActivityMs = -Infinity;
+export function noteTypingActivity(nowMs = Date.now()): void { lastTypingActivityMs = nowMs; }
+export function isUserTyping(nowMs = Date.now()): boolean { return nowMs - lastTypingActivityMs < TYPING_IDLE_MS; }
 
 /** Is this event target a field the user types into? Covers `<input>`,
  *  `<textarea>` (incl. xterm.js's hidden `.xterm-helper-textarea`), and
@@ -273,6 +276,7 @@ export function installTypingTracker(): () => void {
   };
   const onKeydown = (e: KeyboardEvent): void => {
     if (!isEditableTarget(e.target)) return;
+    noteTypingActivity();
     document.body.classList.add("is-typing");
     if (timer) clearTimeout(timer);
     timer = setTimeout(() => {

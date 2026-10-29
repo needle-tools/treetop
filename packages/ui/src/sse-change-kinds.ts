@@ -100,6 +100,14 @@ export function changeKindRequiresReposReload(kind: unknown): boolean {
   );
 }
 
+/** These notifications already contain the refreshed row; a full reload
+ * would put its badge behind every unrelated repository's Git work. */
+export function hasWorktreeDetailsUpdate(payload: {kind?:unknown;path?:unknown;details?:unknown}): boolean {
+  return ["fs_change", "push", "pull"].includes(String(payload.kind)) &&
+    typeof payload.path === "string" && !!payload.details &&
+    typeof payload.details === "object" && !Array.isArray(payload.details);
+}
+
 export function changeKindRequiresDaemonsReload(kind: unknown): boolean {
   return (
     typeof kind === "string" && CHANGE_KINDS_REQUIRING_DAEMONS_RELOAD.has(kind)

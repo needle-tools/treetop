@@ -1814,13 +1814,16 @@ function selectedRemoteForCachedWorktree(wtPath: string): string | null {
 async function recomputeWorktreeDetails(
   wtPath: string,
   limit: <T>(fn: () => Promise<T>) => Promise<T>,
+  remoteOverride?: string | null,
 ): Promise<WorktreeDetails | null> {
   let details: WorktreeDetails;
-  const selectedRemote = selectedRemoteForCachedWorktree(wtPath);
+  const selectedRemote = remoteOverride === undefined ? selectedRemoteForCachedWorktree(wtPath) : remoteOverride;
   const previousDetails = getCachedWorktreeDetails(wtPath, selectedRemote);
   try {
     details = await limit(() =>
-      selectedRemote
+      limit === reposGitPriorityLimit
+        ? getWorktreeDetails(wtPath, {remote:selectedRemote, fresh:true})
+        : selectedRemote
         ? getWorktreeDetails(wtPath, { remote: selectedRemote })
         : getWorktreeDetails(wtPath),
     );
@@ -1884,12 +1887,13 @@ function onWorktreeFsChange(wtPath: string): void {
 async function runWorktreeRecompute(
   wtPath: string,
   limit: <T>(fn: () => Promise<T>) => Promise<T>,
+  remoteOverride?: string | null,
 ): Promise<WorktreeDetails | null> {
   const s = wtRuntimeFor(wtPath);
   s.inFlight = true;
   s.lastRunAtMs = Date.now();
   try {
-    return await recomputeWorktreeDetails(wtPath, limit);
+    return await recomputeWorktreeDetails(wtPath, limit, remoteOverride);
   } finally {
     s.inFlight = false;
   }
@@ -2141,7 +2145,7 @@ function reposNDJSONFresh(
                             })
                           : getWorktreeDetails(wt.path),
                       );
-                      worktreeDetailsCache.set(
+                      if (myGen === repsCacheGen) worktreeDetailsCache.set(
                         worktreeDetailsCacheKey(wt.path, selectedRemote),
                         {
                           at: Date.now(),
@@ -2279,11 +2283,12 @@ async function reposNDJSONResponse(
  *  the next GET sees the user's change immediately instead of waiting
  *  out the 500ms window. The inflight promise can keep running — it's
  *  just no longer eligible to satisfy a later request from the cache. */
-function invalidateReposCache(): void {
+function invalidateReposCache(preserveSnapshot = false): void {
   const next = invalidateReposCacheRuntime({
     cache: reposCache,
     inflight: reposInflight,
     generation: repsCacheGen,
+    preserveSnapshot,
   });
   reposCache = next.cache;
   reposInflight = next.inflight;
@@ -7886,10 +7891,14 @@ const server = Bun.serve<TermWsData, never>({
               },
             });
             invalidateWorktreeDetails(wtPath);
-            invalidateReposCache();
-            broadcast("change", { kind: "pull", path: wtPath });
+            // Fence older dashboard builds, but retain its snapshot so the
+            // priority refresh can patch this row without rebuilding all repos.
+            invalidateReposCache(true);
+            const details = await runWorktreeRecompute(wtPath, reposGitPriorityLimit, selectedRemote);
+            broadcast("change", { kind: "pull", path: wtPath, details });
             return json({
               ok: true,
+              details,
               kind: result.kind,
               stashed: result.stashed === true,
               stashRestored: result.stashRestored === true,
@@ -7940,9 +7949,10 @@ const server = Bun.serve<TermWsData, never>({
               payload: { repoId: id, path: wtPath },
             });
             invalidateWorktreeDetails(wtPath);
-            invalidateReposCache();
-            broadcast("change", { kind: "push", path: wtPath });
-            return json({ ok: true, message: result.message });
+            invalidateReposCache(true);
+            const details = await runWorktreeRecompute(wtPath, reposGitPriorityLimit, selectedRemote);
+            broadcast("change", { kind: "push", path: wtPath, details });
+            return json({ ok: true, message: result.message, details });
           }
           return json(
             { ok: false, error: result.message, kind: result.kind },

@@ -44,7 +44,7 @@ describe("internalCommandTerminalArgs", () => {
         process.platform,
         "/bin/sh",
       ),
-      { stdout: "pipe", stderr: "pipe" },
+      { windowsHide: true, stdout: "pipe", stderr: "pipe" },
     );
 
     expect((await new Response(proc.stdout).text()).trim()).toBe("command-ok");
@@ -996,6 +996,14 @@ describe("worktreeDetailsChanged", () => {
 // diagnostics and attachment POSTs appear to hang.
 // ---------------------------------------------------------------------------
 describe("invalidateReposCacheRuntime", () => {
+  test("targeted mutations retain the snapshot and shared build while fencing stale publication", () => {
+    const cache = { rows: [{path:"/repo",ahead:1}] };
+    const inflight = { promise: Promise.resolve([]) };
+    const next = invalidateReposCacheRuntime({cache,inflight,generation:5,preserveSnapshot:true});
+    expect(next.cache).toBe(cache);
+    expect(next.inflight).toBe(inflight);
+    expect(next.generation).toBe(6);
+  });
   test("clears the reusable cache and advances generation", () => {
     const next = invalidateReposCacheRuntime({
       cache: { rows: ["stale"] },

@@ -43,3 +43,10 @@ export function createLimiter(
     });
   };
 }
+
+/** Background reads and network fetches must not consume interactive slots. */
+export function createGitWorkScheduler() {
+  const reads = createLimiter(4), fetches = createLimiter(1), interactive = createLimiter(1);
+  return <T>(operation: string, fresh: boolean, task: () => Promise<T>): Promise<T> =>
+    (fresh ? interactive : operation === "fetchAll" ? fetches : reads)(task);
+}

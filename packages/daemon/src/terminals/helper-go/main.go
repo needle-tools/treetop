@@ -401,6 +401,91 @@ func msgStr(msg map[string]any, key string) string {
 	return s
 }
 
+// Process creation can take seconds on Windows. Keep it off the stdin reader
+// so keystrokes for existing PTYs are never queued behind a new shell launch.
+// Commands for a pending terminal remain ordered behind its own spawn.
+type commandDispatcher struct {
+	mu      sync.Mutex
+	pending map[string][]map[string]any
+	spawns  chan map[string]any
+	done    chan struct{}
+	handle  func(map[string]any)
+}
+
+func newCommandDispatcher(handle func(map[string]any)) *commandDispatcher {
+	d := &commandDispatcher{pending: make(map[string][]map[string]any), spawns: make(chan map[string]any, 64), done: make(chan struct{}), handle: handle}
+	go func() {
+		defer close(d.done)
+		for msg := range d.spawns {
+			id := msgStr(msg, "id")
+			d.handle(msg)
+			for {
+				d.mu.Lock()
+				commands := d.pending[id]
+				if len(commands) == 0 {
+					delete(d.pending, id)
+					d.mu.Unlock()
+					break
+				}
+				d.pending[id] = nil
+				d.mu.Unlock()
+				for _, command := range commands {
+					d.handle(command)
+				}
+			}
+		}
+	}()
+	return d
+}
+
+func (d *commandDispatcher) dispatch(msg map[string]any) error {
+	id := msgStr(msg, "id")
+	d.mu.Lock()
+	if msg["op"] == "spawn" {
+		if _, exists := d.pending[id]; exists {
+			d.mu.Unlock()
+			return fmt.Errorf("spawn already pending")
+		}
+		d.pending[id] = nil
+		select {
+		case d.spawns <- msg:
+			d.mu.Unlock()
+			return nil
+		default:
+			delete(d.pending, id)
+			d.mu.Unlock()
+			return fmt.Errorf("spawn queue is full")
+		}
+	}
+	if commands, waiting := d.pending[id]; waiting {
+		d.pending[id] = append(commands, msg)
+		d.mu.Unlock()
+		return nil
+	}
+	d.mu.Unlock()
+	d.handle(msg)
+	return nil
+}
+
+func (d *commandDispatcher) close() { close(d.spawns); <-d.done }
+
+func handleCommand(msg map[string]any) {
+	switch msg["op"] {
+	case "spawn":
+		handleSpawn(msg)
+	case "write":
+		handleWrite(msg)
+	case "resize":
+		handleResize(msg)
+	case "kill":
+		handleKill(msg)
+	case "set-muted":
+		handleSetMuted(msg)
+	default:
+		fail("unknown op: "+fmt.Sprint(msg["op"]), "")
+	}
+}
+
 func main() {
 	emit(map[string]any{"ev": "ready"})
 
@@ -414,6 +499,7 @@ func main() {
 
 	scanner := bufio.NewScanner(os.Stdin)
 	scanner.Buffer(make([]byte, 1024*1024), 16*1024*1024)
+	dispatcher := newCommandDispatcher(handleCommand)
 
 	for scanner.Scan() {
 		line := scanner.Text()
@@ -426,21 +512,11 @@ func main() {
 			continue
 		}
 
-		switch msg["op"] {
-		case "spawn":
-			handleSpawn(msg)
-		case "write":
-			handleWrite(msg)
-		case "resize":
-			handleResize(msg)
-		case "kill":
-			handleKill(msg)
-		case "set-muted":
-			handleSetMuted(msg)
-		default:
-			fail("unknown op: "+fmt.Sprint(msg["op"]), "")
+		if err := dispatcher.dispatch(msg); err != nil {
+			fail(err.Error(), msgStr(msg, "id"))
 		}
 	}
 
+	dispatcher.close()
 	killAll()
 }

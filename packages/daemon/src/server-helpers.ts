@@ -608,16 +608,19 @@ export function worktreeDetailsChanged(
   return previous === undefined || !isDeepStrictEqual(previous, next);
 }
 
-export function invalidateReposCacheRuntime<TInflight>({
+export function invalidateReposCacheRuntime<TInflight, TCache>({
+  cache,
   inflight,
   generation,
+  preserveSnapshot = false,
 }: {
-  cache: unknown | null;
+  cache: TCache | null;
   inflight: TInflight | null;
   generation: number;
-}): { cache: null; inflight: TInflight | null; generation: number } {
+  preserveSnapshot?: boolean;
+}): { cache: TCache | null; inflight: TInflight | null; generation: number } {
   return {
-    cache: null,
+    cache: preserveSnapshot ? cache : null,
     inflight,
     generation: generation + 1,
   };

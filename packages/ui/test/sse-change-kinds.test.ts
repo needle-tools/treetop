@@ -11,7 +11,18 @@ import {
   changeKindRequiresEventsReload,
   changeKindRequiresReposReload,
   createFsChangeBatcher,
+  hasWorktreeDetailsUpdate,
 } from "../src/sse-change-kinds";
+
+test("push and pull carry targeted git status without a full repo reload", () => {
+  for (const kind of ["push", "pull", "fs_change"]) {
+    expect(hasWorktreeDetailsUpdate({kind,path:"/repo",details:{branchStatus:{ahead:0,behind:0}}})).toBe(true);
+    expect(hasWorktreeDetailsUpdate({kind,path:"/repo"})).toBe(false);
+    expect(hasWorktreeDetailsUpdate({kind,path:"/repo",details:null})).toBe(false);
+    expect(hasWorktreeDetailsUpdate({kind,details:{}})).toBe(false);
+  }
+  expect(hasWorktreeDetailsUpdate({kind:"remove_repo",path:"/repo",details:{}})).toBe(false);
+});
 
 describe("change-kind UI gating", () => {
   test("repo-affecting kinds trigger /api/repos reload", () => {

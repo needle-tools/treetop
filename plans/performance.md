@@ -2397,3 +2397,36 @@ the strip filter and retain those sessions even before discovery. A failing
 regression now passes and still excludes dead attachments with unknown sources.
 346 storage/routing tests pass. The installer is rebuilt to include both this
 fix and the handoff attachment/owner fix.
+
+2026-10-29 interactive input and git-status follow-up:
+Logs show /api/repos streams taking 149-304 seconds and single-worktree HTTP
+refreshes waiting 37-44 seconds outside server execution. Push/pull UI success
+paths each called load() twice, and mutation SSE also started a full reload.
+Push/pull now refresh only the changed worktree on the priority Git lane,
+include details in both response and broadcast, and patch badges directly in
+local/remote UIs. Active-worktree polling now applies its JSON response rather
+than depending exclusively on SSE. Retained cache snapshots are patched while
+advancing the build generation; existing in-flight builds remain shared to
+avoid duplicate fanout. Older daemons without details retain full-load fallback.
+
+The Go PTY helper read spawn/write/resize/kill on one serial stdin loop. A slow
+ConPTY/process creation therefore blocked input and stop commands for all
+existing PTYs. Spawn commands now run on one bounded background lane; existing
+terminal controls are handled by the reader immediately. Commands for a
+pending terminal queue behind its own spawn and retain order. No PTY/session
+is dropped or remounted. The deterministic blocked-spawn regression passed
+20 repetitions, and the full Go helper suite passed.
+Optional UI fetches, transient discovery, active-status polls and background
+TUI restores yield while editable fields/xterm are being typed into, resuming
+after the existing 600ms typing grace. Subscriptions and layout remain mounted.
+The running production broker/helper was not touched. An installer handoff
+preserves that existing broker, so helper scheduling takes effect only with a
+new broker after existing sessions are safely finished; UI/daemon changes can
+apply independently. No claim that every remaining latency source is solved.
+The Git worker now also reserves an interactive status lane, independent of
+its four background read slots and network-fetch slot. Explicit fresh reads
+bypass in-flight coalescing so a post-push status cannot reuse a pre-push query.
+Older dashboard generations cannot overwrite the per-worktree details cache.
+287 targeted UI/daemon tests pass, including saturated-background priority,
+typing grace, cache generation fencing, direct zero-ahead/behind patches, and
+preserved session/row identity. App.svelte compiles; Go helper suite passes.

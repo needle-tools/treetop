@@ -17,7 +17,19 @@ import {
   onResumeWith,
   setHiddenWith,
   syncIdleWith,
+  noteTypingActivity,
+  isUserTyping,
 } from "../src/ui-idle";
+
+test("background work yields through typing bursts and resumes after a pause", () => {
+  noteTypingActivity(1000);
+  expect(isUserTyping(1001)).toBe(true);
+  expect(isUserTyping(1500)).toBe(true);
+  noteTypingActivity(1500);
+  expect(isUserTyping(2000)).toBe(true);
+  expect(isUserTyping(2200)).toBe(false);
+  noteTypingActivity(-Infinity);
+});
 
 describe("ui-idle gate", () => {
   test("starts non-idle (fresh activity timestamp)", () => {

@@ -7,7 +7,22 @@
  */
 
 import { test, expect, describe } from "bun:test";
-import { createLimiter } from "../src/concurrency";
+import { createLimiter, createGitWorkScheduler } from "../src/concurrency";
+
+test("interactive git refresh bypasses saturated scans and network fetches", async () => {
+  const schedule = createGitWorkScheduler();
+  let release!: () => void;
+  const blocked = new Promise<void>(resolve => {release=resolve;});
+  const background = Array.from({length:4},()=>schedule("getWorktreeDetails",false,()=>blocked));
+  background.push(schedule("fetchAll",false,()=>blocked));
+  try {
+    const result = await Promise.race([
+      schedule("getWorktreeDetails",true,async()=>"fresh"),
+      Bun.sleep(500).then(()=>"blocked"),
+    ]);
+    expect(result).toBe("fresh");
+  } finally {release();await Promise.all(background);}
+});
 
 const defer = (ms: number) => new Promise((r) => setTimeout(r, ms));
 

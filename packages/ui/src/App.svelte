@@ -72,12 +72,14 @@
     changeKindRequiresDaemonsReload,
     changeKindRequiresEventsReload,
     changeKindRequiresReposReload,
+    hasWorktreeDetailsUpdate,
     createFsChangeBatcher,
   } from "./sse-change-kinds";
   import {
     installIdleTracker,
     installTypingTracker,
     isUiIdle,
+    isUserTyping,
     onResume,
   } from "./ui-idle";
   import DiffViewer from "./DiffViewer.svelte";
@@ -1626,8 +1628,10 @@
         stashRestored?: boolean;
         stashConflict?: boolean;
         error?: string;
+        details?: Record<string, unknown> | null;
       };
       if (res.ok && body.ok) {
+        applyGitMutationDetails(wtPath, body.details, daemonIdForRepoId(repos, repoId));
         return {
           ok: true,
           kind: body.kind,
@@ -1650,6 +1654,17 @@
             : String(e);
       return { ok: false, error: msg };
     }
+  }
+
+  function applyGitMutationDetails(wtPath: string, details: Record<string, unknown> | null | undefined, daemonId?: string) {
+    if (details) {
+      const patch = patchWorktreeDetails(repos, wtPath, details, daemonId);
+      if (patch.matched) {
+        if (patch.changed) repos = patch.repos;
+        return;
+      }
+    }
+    void load("git-mutation-status-fallback");
   }
 
   /** Behind-badge click entrypoint. Tries a fast-forward pull; on
@@ -1677,8 +1692,6 @@
             ttlMs: 6_000,
           });
         }
-        await load();
-        await load();
         return;
       }
       if (result.kind === "auth") {
@@ -1791,8 +1804,6 @@
             ttlMs: 6_000,
           });
         }
-        await load();
-        await load();
       } else {
         addToast({
           kind: "error",
@@ -1831,16 +1842,16 @@
         error?: string;
         message?: string;
         kind?: string;
+        details?: Record<string, unknown> | null;
       };
       if (res.ok && body.ok) {
+        applyGitMutationDetails(wtPath, body.details, daemonIdForRepoId(repos, repoId));
         play("git-push");
         addToast({
           kind: "success",
           message: "Pushed to upstream.",
           ttlMs: 6_000,
         });
-        await load();
-        await load();
         return;
       }
       if (body.kind === "auth") {
@@ -3105,7 +3116,7 @@
       // Skip while idle/hidden — the user isn't looking and the
       // transient session will still be promoted on the next
       // wake-up load() (registered via onResume).
-      if (isUiIdle()) return;
+      if (isUiIdle() || isUserTyping()) return;
       void load("transient-discovery");
     }, TRANSIENT_DISCOVERY_POLL_MS);
   } else if (!hasTransientDiscoverySessions && newSessionPollTimer) {
@@ -3286,7 +3297,7 @@
   }
 
   function spawnNextBackgroundTui(): void {
-    if ($backgroundRestorePending) return;
+    if ($backgroundRestorePending || isUserTyping()) return;
     const candidates = selectSessionsForBackgroundSpawn(openSessionsByWt, {
       liveTerminalIds,
       inFlight: bgSpawnInFlight,
@@ -3406,7 +3417,7 @@
       if (
         !shouldStartSingleFlightPoll({
           hasTarget: !!wt,
-          idle: isUiIdle(),
+          idle: isUiIdle() || isUserTyping(),
           inFlight: activeWtPollInFlight,
         })
       ) {
@@ -3420,6 +3431,13 @@
           daemonIdForWorktreePath(repos, wt),
         ),
       )
+        .then(async response => {
+          if (!response.ok) return;
+          const body = await response.json();
+          if (body.path === wt && body.details) {
+            applyGitMutationDetails(wt, body.details, daemonIdForWorktreePath(repos, wt));
+          }
+        })
         .catch(() => {})
         .finally(() => {
           activeWtPollInFlight = false;
@@ -6667,10 +6685,10 @@
     }
     if (
       changeKindRequiresReposReload(payload.kind) &&
-      payload.kind !== "fs_change"
+      payload.kind !== "fs_change" && !hasWorktreeDetailsUpdate(payload)
     )
       void load(`remote-sse:${payload.kind ?? "unknown"}`);
-    if (payload.kind === "fs_change") {
+    if (payload.kind === "fs_change" || hasWorktreeDetailsUpdate(payload)) {
       if (
         typeof payload.path === "string" &&
         payload.details &&
@@ -6846,7 +6864,7 @@
         // Gated to skip kinds that don't affect repo enrichment.
         if (
           changeKindRequiresReposReload(payload.kind) &&
-          payload.kind !== "fs_change"
+          payload.kind !== "fs_change" && !hasWorktreeDetailsUpdate(payload)
         ) {
           void load(`sse:${payload.kind ?? "unknown"}`);
         }
@@ -6983,7 +7001,7 @@
           void load();
           return;
         }
-        if (payload.kind !== "fs_change" || typeof payload.path !== "string")
+        if ((payload.kind !== "fs_change" && !hasWorktreeDetailsUpdate(payload)) || typeof payload.path !== "string")
           return;
         if (payload.details && typeof payload.details === "object") {
           const patch = patchWorktreeDetails(
@@ -8813,7 +8831,7 @@
     // worktree-watcher fs_change burst + a /api/repos rebuild — the
     // dominant source of the daemon's "idle 20% CPU" before this gate.
     // On resume we fire load() once which catches up via cache.
-    if (isUiIdle()) return;
+    if (isUiIdle() || isUserTyping()) return;
     const quietInMs = SCROLL_QUIET_MS - msSinceScroll();
     if (quietInMs > 0) {
       const s = ensureRepoFetchState(repoId);
