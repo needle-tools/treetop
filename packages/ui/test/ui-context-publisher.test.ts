@@ -2,6 +2,39 @@ import { expect, test } from "bun:test";
 import { installUiContextPublisher } from "../src/ui-context-publisher";
 import { applyUiAction } from "../src/ui-context-publisher";
 
+test("slow presence requests coalesce changes without delaying window withdrawal", async () => {
+  const win = new EventTarget(), doc = new EventTarget();
+  const reports: any[] = [];
+  let release!: () => void;
+  let focused = true;
+  const dispose = installUiContextPublisher(() => ({
+    windowFocused: focused, visible: true, zenMode: false,
+    focusedSession: null, lastActiveSession: null, activeProject: null, visibleProjects: [],
+  }), {
+    window: win as any, document: doc as any,
+    publish: async report => {
+      reports.push(report);
+      if (reports.length === 1) await new Promise<void>(resolve => { release = resolve; });
+    },
+  });
+  try {
+    focused = false;
+    win.dispatchEvent(new Event("blur"));
+    await Bun.sleep(140);
+    win.dispatchEvent(new Event("resize"));
+    await Bun.sleep(140);
+    expect(reports).toHaveLength(1);
+    release();
+    await Bun.sleep(10);
+    expect(reports).toHaveLength(2);
+    expect(reports[1].snapshot.windowFocused).toBe(false);
+  } finally {
+    dispose();
+    release();
+  }
+  expect(reports.at(-1).snapshot.visible).toBe(false);
+});
+
 test("UI actions affect only their chosen window and acknowledge application failures", async () => {
   const calls: unknown[] = [],
     results: any[] = [];

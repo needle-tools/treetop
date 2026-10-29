@@ -1,4 +1,79 @@
 import { $ } from "bun";
+import { Worker, isMainThread, parentPort, workerData } from "node:worker_threads";
+import { createLimiter } from "./concurrency";
+
+type BackgroundGitOperation = "listWorktrees" | "listRemotes" | "getWorktreeDetails" | "fetchAll";
+let backgroundGitWorker: Worker | undefined;
+let backgroundGitEnabled = false;
+let backgroundGitSequence = 0;
+const backgroundGitPending = new Map<number, { resolve: (value: any) => void; reject: (error: Error) => void }>();
+const backgroundGitReads = new Map<string, Promise<unknown>>();
+
+/** Windows process creation can block for seconds even with asynchronous APIs. */
+export function enableBackgroundGitWorker(): void { backgroundGitEnabled = true; }
+
+function backgroundGit<T>(operation: BackgroundGitOperation, args: unknown[]): Promise<T> {
+  // Timed-out process scans keep their underlying queries alive. Join those
+  // queries instead of adding another copy on each scan/UI refresh.
+  if (operation === "fetchAll") return dispatchBackgroundGit(operation, args);
+  const key = JSON.stringify([operation, args]);
+  const running = backgroundGitReads.get(key);
+  if (running) return running as Promise<T>;
+  const result = dispatchBackgroundGit<T>(operation, args).finally(() => backgroundGitReads.delete(key));
+  backgroundGitReads.set(key, result);
+  return result;
+}
+
+function dispatchBackgroundGit<T>(operation: BackgroundGitOperation, args: unknown[]): Promise<T> {
+  if (!backgroundGitWorker) {
+    // Compiled Bun resolves embedded entries by their build-root-relative name;
+    // a Windows file: URL incorrectly goes through the real filesystem loader.
+    const entry = /(?:%7E|~)BUN|\$bunfs/i.test(import.meta.url)
+      ? "./packages/daemon/src/git.ts"
+      : new URL("./git.ts", import.meta.url);
+    const worker = new Worker(entry, { workerData: { backgroundGit: true } });
+    backgroundGitWorker = worker;
+    worker.on("message", ({ id, value, error }) => {
+      const pending = backgroundGitPending.get(id);
+      if (!pending) return;
+      backgroundGitPending.delete(id);
+      if (error) pending.reject(new Error(error)); else pending.resolve(value);
+      if (!backgroundGitPending.size) worker.unref();
+    });
+    const failed = (error: Error) => {
+      if (backgroundGitWorker !== worker) return;
+      backgroundGitWorker = undefined;
+      for (const pending of backgroundGitPending.values()) pending.reject(error);
+      backgroundGitPending.clear();
+    };
+    worker.on("error", failed);
+    worker.on("exit", code => failed(new Error(`Background Git worker exited (${code})`)));
+  }
+  const worker = backgroundGitWorker;
+  worker.ref();
+  return new Promise<T>((resolve, reject) => {
+    const id = ++backgroundGitSequence;
+    backgroundGitPending.set(id, { resolve, reject });
+    worker.postMessage({ id, operation, args });
+  });
+}
+
+if (!isMainThread && workerData?.backgroundGit) {
+  const limit = createLimiter(4);
+  const fetchLimit = createLimiter(1);
+  parentPort!.on("message", ({ id, operation, args }) => {
+    // Network fetches must not hold the slots needed to display sessions.
+    void (operation === "fetchAll" ? fetchLimit : limit)(async () => {
+      try {
+        const operations = { listWorktrees, listRemotes, getWorktreeDetails, fetchAll };
+        const value = await (operations[operation as BackgroundGitOperation] as Function)(...args);
+        parentPort!.postMessage({ id, value });
+      } catch (error) {
+        parentPort!.postMessage({ id, error: error instanceof Error ? error.message : String(error) });
+      }
+    });
+  });
+}
 import { access, readFile, realpath } from "node:fs/promises";
 import {
   isAbsolute,
@@ -218,6 +293,7 @@ export async function listSubmoduleDetails(
 }
 
 export async function listWorktrees(repoPath: string): Promise<Worktree[]> {
+  if (backgroundGitEnabled && isMainThread) return backgroundGit("listWorktrees", [repoPath]);
   const normalRepo = resolvePath(repoPath);
   try {
     const result = await $`git -C ${repoPath} worktree list --porcelain`
@@ -934,6 +1010,7 @@ export function parseRemotesOutput(
  *  for non-git directories, missing paths, or repos with no remotes — the
  *  UI can treat the result as authoritative. */
 export async function listRemotes(repoPath: string): Promise<RemoteRef[]> {
+  if (backgroundGitEnabled && isMainThread) return backgroundGit("listRemotes", [repoPath]);
   const r = await $`git -C ${repoPath} remote -v`.quiet().nothrow();
   if (r.exitCode !== 0) return [];
   const parsed = parseRemotesOutput(r.stdout.toString());
@@ -991,6 +1068,7 @@ export function pickRemoteUrlForShare(
 }
 
 export async function fetchAll(repoPath: string): Promise<boolean> {
+  if (backgroundGitEnabled && isMainThread) return backgroundGit("fetchAll", [repoPath]);
   try {
     const proc = Bun.spawn(
       ["git", "-C", repoPath, "fetch", "--all", "--prune", "--quiet"],
@@ -1049,6 +1127,7 @@ export async function getWorktreeDetails(
   worktreePath: string,
   options: { remote?: string | null } = {},
 ): Promise<WorktreeDetails> {
+  if (backgroundGitEnabled && isMainThread) return backgroundGit("getWorktreeDetails", [worktreePath, options]);
   try {
     const [statusOut, logOut] = await Promise.all([
       $`git --no-optional-locks -C ${worktreePath} status --porcelain=v2 --branch`.quiet().text(),

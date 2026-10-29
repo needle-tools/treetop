@@ -93,6 +93,8 @@ export function installUiContextPublisher(
   const windowId = UI_CONTEXT_WINDOW_ID;
   let sequence = 0,
     disposed = false;
+  let inFlight = false;
+  let pending = false;
   let debounce: ReturnType<typeof setTimeout> | null = null;
   const publish =
     options.publish ??
@@ -109,6 +111,10 @@ export function installUiContextPublisher(
     });
   function report(closing = false) {
     if (disposed && !closing) return;
+    if (inFlight && !closing) {
+      pending = true;
+      return;
+    }
     const current = snapshot();
     if (closing) {
       current.windowFocused = false;
@@ -116,9 +122,17 @@ export function installUiContextPublisher(
       current.focusedSession = null;
       current.visibleProjects = [];
     }
+    if (!closing) inFlight = true;
     void publish({ windowId, sequence: ++sequence, snapshot: current }).catch(
       (error) => (options.onError ?? console.warn)(error),
-    );
+    ).finally(() => {
+      if (closing) return;
+      inFlight = false;
+      if (pending && !disposed) {
+        pending = false;
+        report();
+      }
+    });
   }
   function changed() {
     if (debounce !== null) clearTimeout(debounce);

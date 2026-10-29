@@ -1,5 +1,53 @@
 import { test, expect, describe } from "bun:test";
 import { resolve } from "node:path";
+import { enableBackgroundGitWorker, listWorktrees, listRemotes } from "../src/git";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+
+test("compiled Git worker loads outside the build working directory", async () => {
+  const root = resolve(import.meta.dir, "../../..");
+  const fixture = await mkdtemp(resolve(root, ".cache/git-worker-test-"));
+  const runtime = await mkdtemp(resolve(tmpdir(), "treetop-worker-"));
+  try {
+    const entry = resolve(fixture, "probe.ts");
+    const binary = resolve(fixture, process.platform === "win32" ? "probe.exe" : "probe");
+    await writeFile(entry, `import { enableBackgroundGitWorker, listWorktrees, listRemotes, getWorktreeDetails } from ${JSON.stringify(resolve(root, "packages/daemon/src/git.ts").replaceAll("\\", "/"))};\nenableBackgroundGitWorker();\nawait Promise.all(Array.from({length:4}, async () => { await Promise.all([listWorktrees(process.argv[2]), listRemotes(process.argv[2])]); await getWorktreeDetails(process.argv[2]); }));\nconsole.log(JSON.stringify(await listWorktrees(process.argv[2])));`);
+    const compile = Bun.spawn([process.execPath, "build", "--compile", "--root", root, entry, resolve(root, "packages/daemon/src/git.ts"), "--outfile", binary], { cwd: root, stdout: "ignore", stderr: "pipe", windowsHide: true });
+    const compileErrors = await new Response(compile.stderr).text();
+    expect(await compile.exited, compileErrors).toBe(0);
+    const probe = Bun.spawn([binary, root], { cwd: runtime, stdout: "pipe", stderr: "pipe", windowsHide: true, timeout: 40_000 });
+    const [output, errors, code] = await Promise.all([new Response(probe.stdout).text(), new Response(probe.stderr).text(), probe.exited]);
+    expect(code, errors).toBe(0);
+    expect(JSON.parse(output).some((wt: { path: string }) => resolve(wt.path) === root)).toBe(true);
+  } finally {
+    await rm(fixture, { recursive: true, force: true });
+    await rm(runtime, { recursive: true, force: true });
+  }
+}, 60_000);
+
+test("background Git worker preserves worktree and remote results while timers run", async () => {
+  const cwd = resolve(import.meta.dir, "../../..");
+  const expected = await listWorktrees(cwd);
+  const remotes = await listRemotes(cwd);
+  expect(expected.length).toBeGreaterThan(0);
+  enableBackgroundGitWorker();
+  let ticks = 0;
+  const timer = setInterval(() => ticks++, 10);
+  try {
+    expect(await listWorktrees(cwd)).toEqual(expected);
+    expect(await listRemotes(cwd)).toEqual(remotes);
+    expect(ticks).toBeGreaterThan(0);
+  } finally { clearInterval(timer); }
+}, 30_000);
+
+test("concurrent background worktree reads share one operation, then refresh", async () => {
+  enableBackgroundGitWorker();
+  const root = resolve(import.meta.dir, "../../..");
+  const [first, joined] = await Promise.all([listWorktrees(root), listWorktrees(root)]);
+  expect(first.length).toBeGreaterThan(0);
+  expect(joined).toBe(first);
+  expect(await listWorktrees(root)).not.toBe(first);
+}, 30_000);
 import {
   parseWorktreeList,
   parseFileStatus,

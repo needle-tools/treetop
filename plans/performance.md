@@ -2271,3 +2271,85 @@ Treetop leaves the index bytes unchanged, and checks that ordinary status still
 refreshes that same fixture. This is scoped to each read invocation: agent
 terminals and intentional Git writes retain their normal locking. Fetch/ref
 locks remain possible; this change does not delete locks or alter fetch behavior.
+### 2026-10-29 CLI typing latency investigation
+
+The native Treetop renderer, GPU process, and terminal broker were the busiest
+processes during a short CPU sample. Approximately 11 GiB RAM was free. Live
+HTTP probes responded in 5–82 ms, while earlier UI diagnostics recorded
+378–1189 ms frames. This does not establish the cause of current typing latency.
+The workspace daemon.log also records a 448-second repo load; this remains a
+separate contention lead. The daily launcher-owned daemon log can be empty when
+an existing workspace daemon is reused; inspect the workspace daemon.log too.
+
+Terminal diagnostics now measure key-event timestamp to socket send, input to
+first subsequent output (not necessarily its echo), and xterm output queue/parse
+time. Slow samples include renderer type, visibility, WebSocket buffered bytes,
+and pending output bytes. Logs are throttled to one per terminal per 10 seconds;
+rolling timings are bounded. No input text is stored. Pending input expires after
+10 seconds and is cleared on reconnect. GPU context loss can leave an already
+visible terminal using DOM until a later reveal, but this was not confirmed live.
+No production reload, session input injection, build, or restart was performed.
+
+### 2026-10-29 Slow startup and delayed command clicks
+
+- Live workspace `daemon.log` records `/api/repos` taking 448–465 seconds, and a later refresh 87 seconds. At 07:15 UTC, all 15 process-scan worktree lookups timed out. These are real refresh delays, not merely splash-screen timing. Per-worktree timings include limiter wait; they do not identify an individual slow Git operation.
+- A sampled `/api/ui-context` request took 4485 ms with only 0.625 ms reported server service time. Browser/transport scheduling and daemon refresh latency both need consideration. A later disk sample showed 1% busy and no queued I/O; this does not exclude earlier disk contention. The daemon sampled at about 5.2 GB working set.
+- Command chips now immediately show pending state and suppress repeat clicks until their callback settles. Existing-terminal verification has a five-second timeout, routes to the project's daemon, and reports failure without discarding the terminal mapping or guessing that the command exited.
+- UI context publishing now allows one normal request in flight and coalesces pending updates to the latest snapshot. Window withdrawal still bypasses that queue, so closing cannot leave stale presence merely because a normal report is stalled.
+- Validation: command-row browser regression failed before the change and passes afterwards; 69 focused unit tests pass; App, OpenInActions and TerminalView compile. No app build, restart, or live saved command execution. These fixes address silent clicks and request accumulation; the underlying multi-minute Git refresh cause is not yet established.
+
+### 2026-10-29 Terminal broker replay allocation fix
+
+Isolated session discovery completed in 567 ms (worst sampled event-loop delay 130 ms), whereas live scans took 48–74 seconds. Direct loopback probes established TCP in under 1 ms but sometimes received no HTTP bytes for four seconds, including memory-only routes. This establishes daemon responsiveness problems but does not identify fetch as the cause.
+
+BrokerBackend copied its entire 256 KiB replay tail for every output chunk. Replaced that with fixed-capacity circular storage; subscribers still receive an independent chronological snapshot, and live subscribers receive the original output. A 20,000 × 80-byte synthetic workload allocated 5.24 GB in the old path and took 486 ms, versus 3.8 ms with 256 KiB storage in the new path. This is a measured hot-path improvement, not proof that it accounts for the complete live stall. Regression covers wraparound, oversized chunks, reset, and snapshot ownership.
+
+### 2026-10-29 Confirmed synchronous Windows Git launch stalls
+
+The rebuilt UI measured input-to-first-output delays of 1550 and 4934 ms with WebGL active, zero websocket buffered bytes and zero queued renderer output. An isolated Bun.spawn(["git", "--version"]) probe measured the synchronous spawn call itself at 922, 2588, 1564 and 4037 ms. Awaiting subprocess completion does not prevent those creation-time stalls on the main thread.
+
+The daemon now dispatches listWorktrees, listRemotes, getWorktreeDetails and fetchAll to a bounded background worker (four operations at a time). The worker lives in git.ts, executes the same implementations, rejects outstanding requests on failure, and is embedded as an explicit native compilation entrypoint. Ordinary direct module consumers retain their original behavior unless worker dispatch is enabled. A real Git query taking 1572 ms produced only 14 ms worst sampled main-thread timer delay after dispatching through the worker. Ninety Git/scheduler tests passed. This isolates these background Git launches; other process-launching paths may still need investigation if latency remains.
+
+### 2026-10-29 Installed Git worker and duplicate Windows tray hosts
+
+Installed build 08:19:19 failed all 15 repository worktree lookups with
+ModuleNotFound resolving ./packages/daemon/src/git.ts. The worker-entry build
+correction was saved at 08:19:26, after that build started. Compilation now
+pins the root directory. A regression compiles and runs the worker from an
+unrelated temporary directory and asserts actual repository worktrees.
+
+Two native hosts shared the same daemon: closing the first window retained its
+tray, then launching the shortcut created another host. Installed Windows
+launches now claim an exclusive loopback endpoint derived from the install
+path before accessing the daemon or creating a tray. A duplicate requests
+reopen/activation, waits for acknowledgement, then exits. Behavior coverage
+checks duplicate rejection, reopen, and ownership release/reacquisition.
+Existing old hosts need the next installer handoff to retire them.
+The live broker reported ten terminals: seven sessions and three commands.
+No live daemon or broker was stopped during diagnosis or building.
+
+### 2026-10-29 Sessions hidden behind cold Git detail reads
+
+The repaired installed worker still left the UI without sessions while the
+broker held seven sessions and three commands. A separate source daemon with
+one actual repo spent 21.4 seconds enriching it (16.4 seconds in worktree
+details). Four concurrent compiled query groups completed in 30.6 seconds:
+the earlier 15-group timeout showed excessive latency, not a proven permanent
+worker deadlock. Timed-out process scans also kept queueing duplicate reads.
+
+Worker reads now share identical in-flight operations without retaining stale
+results after settlement. Fetches use a separate one-slot limiter, so network
+waits cannot occupy the four read slots. Repository streaming publishes real
+worktrees and agents before waiting for status/selected-remote details, then
+publishes the completed snapshot. Cached details are preserved when available;
+cold details use the existing empty-detail shape. The UI upserts repeat repo
+messages and counts each repo only once.
+
+A regression holds detail enrichment unresolved while asserting the session
+snapshot is already published. Against the fifteen registered paths in a
+separate temporary workspace, first repo/session rows arrived at 7.7 seconds
+and all fifteen initial snapshots by 35.9 seconds, while final status work was
+still running at the probe's 45-second deadline. A single-repo run published
+sessions at 703 ms and final details at 9.5 seconds. These are isolated timings,
+not confirmation of the installed UI. The live broker was not stopped.
+198 worker, refresh-plan, and UI characterization tests passed.

@@ -154,3 +154,19 @@ for (const signalsReady of [false, true]) {
     } finally { await rm(root, { recursive: true, force: true }); }
   });
 }
+test("desktop launch reopens its existing host and releases ownership on close", async () => {
+  const { claimDesktopInstance } = await import("../../../src/electrobun/update-handoff");
+  const reservation = Bun.listen({ hostname: "127.0.0.1", port: 0, socket: { data() {} } });
+  const endpoint = reservation.port;
+  reservation.stop(true);
+  let reopened = 0;
+  const owner = await claimDesktopInstance(endpoint, () => { reopened++; });
+  expect(owner).not.toBeNull();
+  try {
+    expect(await claimDesktopInstance(endpoint, () => { throw Error("duplicate host"); })).toBeNull();
+    expect(reopened).toBe(1);
+  } finally { await owner!.close(); }
+  const replacement = await claimDesktopInstance(endpoint, () => {});
+  expect(replacement).not.toBeNull();
+  await replacement!.close();
+});

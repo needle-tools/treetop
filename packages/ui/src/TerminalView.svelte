@@ -28,6 +28,7 @@
   } from "./clean-selection";
   import {
     TerminalIoByteAccounting,
+    TerminalInputTiming,
     TerminalRepaintTracker,
     TerminalWriteBuffer,
     splitTerminalWrite,
@@ -61,6 +62,7 @@
   } from "./errors";
   import { settingValue, getSetting, setSetting } from "./settings-registry";
   import { msSinceScroll, SCROLL_QUIET_MS } from "./scroll-activity";
+  import { record as recordTiming } from "./timings";
   import { shouldAutofocusOnWsOpen } from "./terminal-autofocus";
   import { createTerminalReconnect } from "./terminal-reconnect";
 
@@ -255,6 +257,21 @@
     }
   }
   const ioAccounting = new TerminalIoByteAccounting();
+  const inputTiming = new TerminalInputTiming();
+  let lastKeyEventAt: number | null = null;
+  let lastSlowInputLogAt = -Infinity;
+  function recordInputLatency(stage: string, ms: number): void {
+    recordTiming(`terminal.${stage}`, ms);
+    if (ms < 100 || performance.now() - lastSlowInputLogAt < 10_000) return;
+    lastSlowInputLogAt = performance.now();
+    recordBrowserDiagnostic(`terminal-input-latency ${stage}=${Math.round(ms)}ms`, {
+      terminalId, stage, durationMs: Math.round(ms),
+      renderer: webgl?.active ? "webgl" : "dom",
+      visible: isTerminalVisible,
+      websocketBufferedBytes: ws?.bufferedAmount ?? 0,
+      queuedOutputBytes: visibleWriteQueue.reduce((sum, bytes) => sum + bytes.byteLength, 0),
+    });
+  }
   let ioTicker: ReturnType<typeof setInterval> | null = null;
   let rxWindowBytes = 0;
   let txWindowBytes = 0;
@@ -315,6 +332,12 @@
     const bytes = typeof data === "string" ? textEncoder.encode(data) : data;
     recordTx(bytes.byteLength);
     ws.send(bytes);
+    const now = performance.now();
+    inputTiming.input(now);
+    if (lastKeyEventAt !== null) {
+      recordInputLatency("key-to-send", now - lastKeyEventAt);
+      lastKeyEventAt = null;
+    }
     return true;
   }
 
@@ -871,11 +894,16 @@
       const startedAt = performance.now();
       while (visibleWriteQueue.length > 0) {
         const chunk = visibleWriteQueue.shift()!;
-        xterm.write(chunk);
+        writeMeasuredTerminalOutput(chunk);
         if (performance.now() - startedAt >= TERMINAL_WRITE_BUDGET_MS) break;
       }
       if (visibleWriteQueue.length > 0) scheduleVisibleTerminalWrites();
     });
+  }
+
+  function writeMeasuredTerminalOutput(bytes: Uint8Array): void {
+    const startedAt = performance.now();
+    xterm?.write(bytes, () => recordInputLatency("output-parse", performance.now() - startedAt));
   }
 
   function writeTerminalOutput(bytes: Uint8Array): void {
@@ -884,7 +912,7 @@
       visibleWriteQueue.length === 0 &&
       bytes.byteLength <= TERMINAL_WRITE_CHUNK_BYTES
     ) {
-      xterm.write(bytes);
+      writeMeasuredTerminalOutput(bytes);
       return;
     }
     visibleWriteQueue.push(
@@ -927,6 +955,8 @@
   }
 
   async function spawnPtyAndConnect(reconnectId?: string) {
+    inputTiming.reset();
+    lastKeyEventAt = null;
     attachedThisAttempt = false;
     sawExitFrame = false;
     firstControlFrameLogged = false;
@@ -1117,6 +1147,8 @@
         }
         // Binary frame = raw PTY output.
         const bytes = new Uint8Array(ev.data as ArrayBuffer);
+        const inputToOutputMs = inputTiming.output(performance.now());
+        if (inputToOutputMs !== null) recordInputLatency("input-to-first-output", inputToOutputMs);
         if (!firstOutputFrameLogged) {
           firstOutputFrameLogged = true;
           logTerminalStartup("first-output-frame", {
@@ -1385,6 +1417,10 @@
     containerEl.addEventListener(
       "keydown",
       (ev) => {
+        // Event timestamps expose browser scheduling delay without reading keys.
+        lastKeyEventAt = ev.timeStamp > 0 && ev.timeStamp <= performance.now()
+          ? ev.timeStamp : performance.now();
+        queueMicrotask(() => { lastKeyEventAt = null; });
         const isMac = /Mac|iPod|iPhone|iPad/.test(navigator.platform);
 
         // Ctrl+F toggles this column's native fullscreen. We claim it in

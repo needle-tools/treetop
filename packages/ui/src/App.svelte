@@ -4683,7 +4683,7 @@
     const reader = r.body.getReader();
     const dec = new TextDecoder();
     let buf = "";
-    const out: Repo[] = [];
+    let out: Repo[] = [];
     // eslint-disable-next-line no-constant-condition
     while (true) {
       const { done, value } = await reader.read();
@@ -4699,7 +4699,7 @@
             onRepo: opts?.onRepo,
             daemonId,
           })) {
-            out.push(r as Repo);
+            out = upsertRepo(out, r as Repo);
           }
         }
         nl = buf.indexOf("\n");
@@ -4749,6 +4749,7 @@
       let tManifest = 0;
       let tFirstRepo = 0;
       let repoCount = 0;
+      const receivedRepos = new Set<string>();
       try {
         // Kick off /api/repos NDJSON first so its manifest lands and
         // paints skeleton rows before the other fetches resolve. The
@@ -4792,7 +4793,11 @@
           },
           onRepo: (full: Repo) => {
             time("load.repo-upsert", () => {
-              repoCount += 1;
+              const receivedKey = daemonRepoKey(full);
+              if (!receivedRepos.has(receivedKey)) {
+                receivedRepos.add(receivedKey);
+                repoCount += 1;
+              }
               loadingDone = repoCount;
               if (tFirstRepo === 0) tFirstRepo = performance.now() - tStart;
               // If a color save is still in flight for this repo, the daemon's
@@ -5932,17 +5937,15 @@
     commandTermStore.save(map);
   }
 
-  async function commandTermAlive(source: string): Promise<boolean> {
+  async function commandTermAlive(source: string, wtPath: string): Promise<boolean> {
     const termId = source.replace("__attached__:shell:", "");
     if (!termId || termId === source) return false;
-    try {
-      const r = await fetch(apiUrl("/api/terminals"));
-      if (!r.ok) return false;
-      const list = (await r.json()) as { id: string; exitedAt?: string }[];
-      return list.some((t) => t.id === termId && !t.exitedAt);
-    } catch {
-      return false;
-    }
+    const r = await fetch(apiUrl("/api/terminals", daemonIdForWorktreePath(repos, wtPath)), {
+      signal: AbortSignal.timeout(5_000),
+    });
+    if (!r.ok) throw new Error(`Could not check command status: HTTP ${r.status}`);
+    const list = (await r.json()) as { id: string; exitedAt?: string }[];
+    return list.some((t) => t.id === termId && !t.exitedAt);
   }
 
   function forgetCommandTerm(
@@ -6001,23 +6004,23 @@
       return;
     }
 
-    if (cmdLink.runMode === "internal") {
-      const prev = commandTermSources.get(link.id);
-      if (prev) {
-        const alive = await commandTermAlive(prev.source);
-        if (alive) {
-          await revealInternalCommand(prev);
-          return;
-        }
-        forgetCommandTerm(link.id, prev);
-      }
-    }
-
-    const repoId = repos.find((r) =>
-      (r.customLinks ?? []).some((l) => l.id === link.id),
-    )?.id;
-
     try {
+      if (cmdLink.runMode === "internal") {
+        const prev = commandTermSources.get(link.id);
+        if (prev) {
+          const alive = await commandTermAlive(prev.source, prev.wtPath);
+          if (alive) {
+            await revealInternalCommand(prev);
+            return;
+          }
+          forgetCommandTerm(link.id, prev);
+        }
+      }
+
+      const repoId = repos.find((r) =>
+        (r.customLinks ?? []).some((l) => l.id === link.id),
+      )?.id;
+
       const res = await fetch(
         apiUrl("/api/command/run", daemonIdForWorktreePath(repos, wtPath)),
         {

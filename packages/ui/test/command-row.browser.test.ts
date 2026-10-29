@@ -66,6 +66,11 @@ test("command URL hover preserves horizontal scrolling and remains clickable", {
           editors={[{name:'VSCode', cmd:'vscode'}]}
           onAddCustomLink={() => {}} onEditCustomLink={() => {}} openIn={() => {}} openRemote={() => {}} />
       </div>
+      <div class="pending-command-fixture" style="width:500px; margin:40px">
+        <Actions path="/test/project" customLinks={[{id:'build-pending',kind:'command',name:'Build pending',cmd:'bun run build'}]}
+          onCommandClick={() => { window.commandClicks = (window.commandClicks || 0) + 1; return new Promise(resolve => { window.finishCommand = resolve; }); }}
+          openIn={() => {}} openRemote={() => {}} />
+      </div>
       <style>:global(.custom-link-wrap) {flex-shrink:0} :global(.custom-link-btn) {white-space:nowrap}</style>
     `,
     );
@@ -232,6 +237,15 @@ test("command URL hover preserves horizontal scrolling and remains clickable", {
       const strips = document.querySelectorAll(".row-actions .command-actions, .row-actions .app-actions");
       return [...strips].slice(0, 2).every((el) => el.scrollWidth <= el.clientWidth);
     });
+    const pendingBuild = page.locator(".pending-command-fixture .custom-link-btn");
+    await pendingBuild.click();
+    assert.equal(await pendingBuild.getAttribute("aria-busy"), "true");
+    assert.equal(await pendingBuild.isDisabled(), true);
+    await pendingBuild.evaluate((button: HTMLButtonElement) => button.click());
+    assert.equal(await page.evaluate(() => (window as any).commandClicks), 1);
+    await page.evaluate(() => (window as any).finishCommand());
+    await page.waitForFunction(() => !document.querySelector<HTMLButtonElement>(".pending-command-fixture .custom-link-btn")!.disabled);
+    assert.equal(await pendingBuild.getAttribute("aria-busy"), "false");
     for (const strip of [row, apps]) {
       const size = await strip.evaluate((el) => ({
         scrollWidth: el.scrollWidth,

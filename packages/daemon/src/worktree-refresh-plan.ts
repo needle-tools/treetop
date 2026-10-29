@@ -27,6 +27,15 @@ export interface WorktreeRecomputeState {
   hasPendingTrailing: boolean;
 }
 
+/** Session geometry and agent ownership are usable before expensive status
+ * reads finish. Publish that snapshot without delaying the final refresh. */
+export async function publishWorktreesBeforeDetails<T>(
+  worktrees: T[], publish: (worktrees: T[]) => void, enrich: () => Promise<T[]>,
+): Promise<T[]> {
+  publish(worktrees);
+  return enrich();
+}
+
 export type WorktreeRecomputePlan =
   | { action: "run" }
   | { action: "schedule-trailing"; delayMs: number }

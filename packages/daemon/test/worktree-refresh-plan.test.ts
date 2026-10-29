@@ -5,6 +5,20 @@ import {
 } from "../src/worktree-refresh-plan";
 
 const MIN = 2_500;
+
+test("session worktrees publish before a blocked status refresh finishes", async () => {
+  const { publishWorktreesBeforeDetails } = await import("../src/worktree-refresh-plan");
+  const sessions = [{ path: "/repo", agents: [{ sessionId: "preserved" }], branchStatus: null }];
+  let finish!: (value: typeof sessions) => void;
+  const blocked = new Promise<typeof sessions>(resolve => { finish = resolve; });
+  const published: typeof sessions[] = [];
+  const loading = publishWorktreesBeforeDetails(sessions, value => published.push(value), () => blocked);
+  expect(published).toEqual([sessions]);
+  expect(published[0][0].agents[0].sessionId).toBe("preserved");
+  finish([{ ...sessions[0], branchStatus: { branch: "main" } as any }]);
+  expect((await loading)[0].branchStatus).toEqual({ branch: "main" });
+  expect(published[0][0].branchStatus).toBeNull();
+});
 const idle: WorktreeRecomputeState = {
   lastRunAtMs: null,
   inFlight: false,

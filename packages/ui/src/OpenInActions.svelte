@@ -100,7 +100,8 @@
     linkId: string;
     nonce: number;
   } | null = null;
-  export let onCommandClick: ((link: CustomLink) => void) | null = null;
+  export let onCommandClick: ((link: CustomLink) => void | Promise<void>) | null = null;
+  let pendingCommandIds = new Set<string>();
   export let openIn: (path: string, app: string) => void;
   export let openRemote: (remote: RemoteRef) => void;
   /** Add-link handler, supplied by the parent which owns the fetch.
@@ -824,10 +825,18 @@
     }
   }
 
-  function openLink(link: CustomLink) {
+  async function openLink(link: CustomLink) {
     const k = customLinkKind(link);
     if (k === "command") {
-      onCommandClick?.(link);
+      if (!onCommandClick || pendingCommandIds.has(link.id)) return;
+      pendingCommandIds = new Set([...pendingCommandIds, link.id]);
+      try {
+        await onCommandClick(link);
+      } finally {
+        const next = new Set(pendingCommandIds);
+        next.delete(link.id);
+        pendingCommandIds = next;
+      }
       return;
     }
     if (k === "file" || k === "folder") {
@@ -1352,6 +1361,7 @@
     {@const kind = customLinkKind(link)}
     {@const target = customLinkTarget(link)}
     {@const cmdRunning = kind === "command" && runningCommandIds.has(link.id)}
+    {@const cmdPending = pendingCommandIds.has(link.id)}
     {@const cmdUrls = kind === "command" ? commandUrls[link.id] : undefined}
     {@const cmdUrl =
       cmdUrls &&
@@ -1378,7 +1388,9 @@
         type="button"
         class="tiny open-in-btn custom-link-btn"
         class:icon-only={iconOnly}
-        title={cmdRunning ? `Running: ${target}` : linkTooltip(link)}
+        title={cmdPending ? `Opening: ${target}` : cmdRunning ? `Running: ${target}` : linkTooltip(link)}
+        aria-busy={cmdPending}
+        disabled={cmdPending}
         on:click={(ev) => {
           if (ev.shiftKey) return quickRemoveLink(link, ev);
           openLink(link);
@@ -1424,7 +1436,7 @@
             />
           </svg>
         {:else if kind === "command"}
-          {#if cmdRunning}
+          {#if cmdRunning || cmdPending}
             <svg
               class="open-in-icon cmd-spinner"
               viewBox="0 0 24 24"

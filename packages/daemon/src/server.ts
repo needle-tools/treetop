@@ -37,6 +37,7 @@ import {
 } from "./claude-json-repair";
 import {
   listWorktrees,
+  enableBackgroundGitWorker,
   mainWorktreePathFor,
   getWorktreeDetails,
   listSubmoduleDetails,
@@ -118,7 +119,7 @@ import { remindersForWorkspace, startReminderScheduler, handleRemindersHttp } fr
 import * as inflight from "./inflight";
 import { pingSubscribers } from "./sse-heartbeat";
 import { changeKindInvalidatesRepos } from "./sse-change-kinds";
-import { planWorktreeRecompute } from "./worktree-refresh-plan";
+import { planWorktreeRecompute, publishWorktreesBeforeDetails } from "./worktree-refresh-plan";
 import {
   terminalBackend,
   detectAgentLabel,
@@ -396,6 +397,7 @@ installCrashGuard(process);
 //   2. PORT          — set by portless (and most npm tooling) when
 //                      wrapping us; lets `portless` inject its own port.
 //   3. 7777          — default.
+enableBackgroundGitWorker();
 const PORT = Number(process.env.SUPERGIT_PORT ?? process.env.PORT ?? 7777);
 
 // Network interface the daemon listens on (the `hostname` passed to
@@ -2113,7 +2115,18 @@ function reposNDJSONFresh(
                   repoId: repo.id,
                   remotes,
                 });
-                const withDetails = await Promise.all(
+                const sessionWorktrees = worktrees.map(wt => ({
+                  ...wt,
+                  ...(getCachedWorktreeDetails(wt.path, selectedRemote) ?? {
+                    fileStatus: { staged: 0, unstaged: 0, untracked: 0, submodules: 0, submoduleChanges: 0, dirtyLines: 0 },
+                    branchStatus: null, lastCommit: null,
+                  }),
+                  agents: agentsForWorktree(wt.path, titled, repos.map(registered => registered.path)),
+                }));
+                const withDetails = await publishWorktreesBeforeDetails(
+                  sessionWorktrees,
+                  initial => safeEnqueue(enc.encode(repoLineFor({ ...repo, worktrees: initial, remotes } as EnrichedRepo))),
+                  () => Promise.all(
                   worktrees.map(async (wt) => {
                     const tWt = performance.now();
                     let details = getCachedWorktreeDetails(
@@ -2150,6 +2163,7 @@ function reposNDJSONFresh(
                       ),
                     };
                   }),
+                  ),
                 );
                 result = {
                   ...repo,

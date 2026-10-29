@@ -9,9 +9,36 @@ import type {
 import { DecPrivateModeTracker } from "../dec-private-modes";
 import { BROKER_PROTOCOL } from "../background-protocol";
 
+/** Copy only new output; materialize chronological scrollback on subscription. */
+export class TerminalReplayBuffer {
+  private bytes: Uint8Array;
+  private end = 0;
+  private length = 0;
+  constructor(private capacity = 256 * 1024) {
+    this.bytes = new Uint8Array(capacity);
+  }
+  append(input: Uint8Array): void {
+    const data = input.length > this.capacity ? input.subarray(-this.capacity) : input;
+    const first = Math.min(data.length, this.capacity - this.end);
+    this.bytes.set(data.subarray(0, first), this.end);
+    this.bytes.set(data.subarray(first), 0);
+    this.end = (this.end + data.length) % this.capacity;
+    this.length = Math.min(this.capacity, this.length + data.length);
+  }
+  clear(): void { this.end = 0; this.length = 0; }
+  snapshot(): Uint8Array {
+    const out = new Uint8Array(this.length);
+    const start = (this.end - this.length + this.capacity) % this.capacity;
+    const first = Math.min(this.length, this.capacity - start);
+    out.set(this.bytes.subarray(start, start + first));
+    out.set(this.bytes.subarray(0, this.length - first), first);
+    return out;
+  }
+}
+
 interface CachedTerminal {
   record: TerminalRecord;
-  buffer: Uint8Array;
+  buffer: TerminalReplayBuffer;
   modes: DecPrivateModeTracker;
   state: any;
   revision: number;
@@ -143,7 +170,7 @@ export class BrokerBackend implements PtyBackend {
             const present = new Set(message.recordIds);
             for (const [id, terminal] of this.terminals)
               if (present.has(id)) {
-                terminal.buffer = new Uint8Array();
+                terminal.buffer.clear();
                 terminal.modes = new DecPrivateModeTracker();
                 for (const sub of terminal.subscribers)
                   sub.onData(new TextEncoder().encode("\x1bc"));
@@ -176,7 +203,7 @@ export class BrokerBackend implements PtyBackend {
             } else
               this.terminals.set(message.record.id, {
                 record: message.record,
-                buffer: new Uint8Array(),
+                buffer: new TerminalReplayBuffer(),
                 modes: new DecPrivateModeTracker(),
                 state: { working: false, awaitingInput: false },
                 revision: message.revision ?? 0,
@@ -187,21 +214,7 @@ export class BrokerBackend implements PtyBackend {
             const terminal = this.terminals.get(message.id);
             if (!terminal) return;
             const bytes = new Uint8Array(Buffer.from(message.data, "base64"));
-            const joined = new Uint8Array(
-              Math.min(256 * 1024, terminal.buffer.length + bytes.length),
-            );
-            const tail = bytes.subarray(
-              Math.max(0, bytes.length - joined.length),
-            );
-            const previous = terminal.buffer.subarray(
-              Math.max(
-                0,
-                terminal.buffer.length - (joined.length - tail.length),
-              ),
-            );
-            joined.set(previous);
-            joined.set(tail, previous.length);
-            terminal.buffer = joined;
+            terminal.buffer.append(bytes);
             terminal.modes.observe(bytes);
             terminal.record.lastOutputAt = message.at;
             for (const sub of terminal.subscribers) sub.onData(bytes);
@@ -348,7 +361,8 @@ export class BrokerBackend implements PtyBackend {
       },
       subscribe: (sub) => {
         terminal.subscribers.add(sub);
-        if (terminal.buffer.length) sub.onData(terminal.buffer);
+        const replay = terminal.buffer.snapshot();
+        if (replay.length) sub.onData(replay);
         const modes = terminal.modes.reassertBytes();
         if (modes.length) sub.onData(modes);
         sub.onState?.(terminal.state);

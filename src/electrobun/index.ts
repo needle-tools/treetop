@@ -13,7 +13,8 @@
  */
 
 import { BrowserWindow, ApplicationMenu, Tray, Utils, BuildConfig } from "electrobun/bun";
-import { updateInstallParent, watchForUpdate } from "./update-handoff";
+import { claimDesktopInstance, updateInstallParent, watchForUpdate } from "./update-handoff";
+import { createHash } from "node:crypto";
 import { PRODUCT_NAME } from "../../product";
 import { resolve, dirname, join } from "node:path";
 import {
@@ -140,6 +141,23 @@ let PORT = PREFERRED_PORT;
 let DAEMON_URL = `http://localhost:${PORT}`;
 const isWin = process.platform === "win32";
 const exe = isWin ? ".exe" : "";
+
+let desktopReady!: () => void;
+const desktopStarted = new Promise<void>(resolve => { desktopReady = resolve; });
+// Stable per-user/per-installation loopback endpoint; dev launches stay separate.
+const desktopInstall = isWin ? updateInstallParent(process.execPath, "ui") : undefined;
+if (desktopInstall) {
+  const instancePort = 40000 + createHash("sha256").update(desktopInstall.toLowerCase()).digest().readUInt16BE(0) % 20000;
+  const instance = await phase("claimDesktopInstance", () => claimDesktopInstance(instancePort, async () => {
+    await desktopStarted;
+    await openTreetopWindow();
+  }));
+  if (!instance) {
+    llog("existing desktop host reopened; duplicate launcher exiting");
+    Utils.quit();
+    process.exit(0);
+  }
+}
 
 // ── Resolve user's login PATH ────────────────────────────────────────
 // On mac/linux, a .app bundle launched from Finder gets a minimal system
@@ -783,6 +801,7 @@ async function openTreetopWindow() {
 
 }
 await openTreetopWindow();
+desktopReady();
 const updateParent = isWin ? updateInstallParent(process.execPath, "ui") : undefined;
 if (updateParent) watchForUpdate(updateParent, {
   log: llog,

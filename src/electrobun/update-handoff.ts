@@ -1,5 +1,41 @@
 import { readFile, writeFile, rename } from "node:fs/promises";
 import { join, win32 } from "node:path";
+import { createServer, createConnection } from "node:net";
+
+/** The OS releases this endpoint on exit, including crashes. A second launch
+ * asks the existing tray owner to reopen, before creating any native windows. */
+export async function claimDesktopInstance(port: number, reopen: () => void | Promise<void>): Promise<{ close: () => Promise<void> } | null> {
+  const server = createServer(socket => {
+    socket.setTimeout(5000, () => socket.destroy());
+    socket.on("error", () => {});
+    socket.once("data", data => {
+      if (data.toString() !== "open") { socket.destroy(); return; }
+      void Promise.resolve().then(reopen).then(() => socket.end("opened"), () => socket.destroy());
+    });
+  });
+  try {
+    await new Promise<void>((resolve, reject) => {
+      server.once("error", reject);
+      server.listen({ port, host: "127.0.0.1", exclusive: true }, () => { server.removeListener("error", reject); resolve(); });
+    });
+    server.unref();
+    return { close: () => new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve())) };
+  } catch (error: any) {
+    if (error.code !== "EADDRINUSE") throw error;
+    await new Promise<void>((resolve, reject) => {
+      const socket = createConnection({ port, host: "127.0.0.1" }, () => socket.write("open"));
+      socket.setTimeout(15_000, () => socket.destroy(new Error("Existing Treetop window host did not respond")));
+      socket.once("error", reject);
+      socket.once("data", data => {
+        socket.end();
+        if (data.toString() === "opened") resolve();
+        else reject(new Error("Unexpected response from existing Treetop window host"));
+      });
+      socket.once("end", () => reject(new Error("Existing Treetop window host closed before reopening")));
+    });
+    return null;
+  }
+}
 
 export function updateInstallParent(executable: string, kind: "ui" | "daemon"): string | undefined {
   const suffix = kind === "ui" ? "\\app\\bin\\bun.exe" : "\\app\\resources\\app\\supergit.exe";

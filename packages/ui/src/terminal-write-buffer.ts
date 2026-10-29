@@ -15,6 +15,22 @@
 
 import { derived, writable, type Readable } from "svelte/store";
 
+/** First output after input is a latency clue, not proof that a TUI echoed it.
+ * Keep one timestamp, never the typed content, and expire unanswered input. */
+export class TerminalInputTiming {
+  private pendingAt: number | null = null;
+  input(now: number): void {
+    if (this.pendingAt === null || now - this.pendingAt > 10_000) this.pendingAt = now;
+  }
+  output(now: number): number | null {
+    const sentAt = this.pendingAt;
+    this.pendingAt = null;
+    if (sentAt === null || now < sentAt || now - sentAt > 10_000) return null;
+    return now - sentAt;
+  }
+  reset(): void { this.pendingAt = null; }
+}
+
 export interface TerminalIoStatsSample {
   visible: boolean;
   rxBytesPerSec: number;

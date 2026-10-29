@@ -11,6 +11,7 @@ import {
   TerminalRepaintTracker,
   TerminalWriteBuffer,
   TerminalIoByteAccounting,
+  TerminalInputTiming,
   splitTerminalWrite,
   TERMINAL_ACTIVITY_RECENT_MS,
   formatTerminalIoRate,
@@ -23,6 +24,20 @@ import {
 } from "../src/terminal-write-buffer";
 
 const bytes = (...n: number[]) => new Uint8Array(n);
+
+test("input timing measures the earliest pending input once and expires unrelated output", () => {
+  const timing = new TerminalInputTiming();
+  expect(timing.output(5)).toBeNull();
+  timing.input(10);
+  timing.input(20);
+  expect(timing.output(40)).toBe(30);
+  expect(timing.output(50)).toBeNull();
+  timing.input(60);
+  expect(timing.output(20_000)).toBeNull();
+  timing.input(21_000);
+  timing.reset();
+  expect(timing.output(21_010)).toBeNull();
+});
 
 beforeEach(() => {
   _resetTerminalIoStatsForTests();

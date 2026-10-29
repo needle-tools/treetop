@@ -1051,7 +1051,7 @@ function rendererTopologySnapshot(): Record<string, unknown> {
     ...performanceObserverCapabilities(),
     activityTimings: Object.entries(uiTimingSnapshot())
       .filter(([name]) =>
-        /^(codex-event|session-poll|visual-transcript|errors\.)/.test(name),
+        /^(codex-event|session-poll|visual-transcript|terminal\.|errors\.)/.test(name),
       )
       .sort((a, b) => b[1].count - a[1].count)
       .slice(0, 24)

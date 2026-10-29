@@ -6,8 +6,27 @@ import { mkdtemp, readFile, writeFile, mkdir, rename } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { startTerminalBroker, replayBrokerTerminals } from "../src/terminal-broker";
-import { BrokerBackend } from "../src/terminals/broker-backend";
+import { BrokerBackend, TerminalReplayBuffer } from "../src/terminals/broker-backend";
 import { UpdateHandoff } from "../../../src/electrobun/update-handoff";
+
+test("terminal replay retains exact newest bytes across wrap, oversized chunks and reset", () => {
+  const replay = new TerminalReplayBuffer(8);
+  const encode = (s: string) => new TextEncoder().encode(s);
+  const text = () => new TextDecoder().decode(replay.snapshot());
+  replay.append(encode("abc"));
+  expect(text()).toBe("abc");
+  const before = replay.snapshot();
+  replay.append(encode("defghi"));
+  expect(text()).toBe("bcdefghi");
+  expect(new TextDecoder().decode(before)).toBe("abc");
+  replay.append(encode("0123456789"));
+  replay.append(encode("XY"));
+  expect(text()).toBe("456789XY");
+  replay.clear();
+  expect(text()).toBe("");
+  replay.append(encode("new"));
+  expect(text()).toBe("new");
+});
 
 test("broker replays full scrollback for many surviving terminals before ready", async () => {
   const workspace = await mkdtemp(join(tmpdir(), "treetop-broker-replay-"));
