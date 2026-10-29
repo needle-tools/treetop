@@ -6,6 +6,18 @@
 
 import { test, expect, describe, jest } from "bun:test";
 import { Buffer } from "node:buffer";
+import { pendingNDJSONStream } from "../src/server-helpers";
+
+test("a waiting repo stream sends its manifest and keepalives before enrichment completes", async () => {
+  const pending = Promise.withResolvers<string>();
+  const reader = pendingNDJSONStream(Promise.resolve('manifest\n'), pending.promise, 10).getReader();
+  const decode = (chunk: ReadableStreamReadResult<Uint8Array>) => new TextDecoder().decode(chunk.value);
+  expect(decode(await reader.read())).toBe('manifest\n');
+  expect(decode(await reader.read())).toBe('\n');
+  pending.resolve('repo\n');
+  expect(decode(await reader.read())).toBe('repo\n');
+  expect((await reader.read()).done).toBe(true);
+});
 import {
   stripThinkingArtifacts,
   defaultLoginShell,

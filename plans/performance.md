@@ -2557,3 +2557,5 @@ their prior settings. 254 storage/menu regression tests pass, including fresh
 versus restored defaults and the resulting CLI flags. Svelte compilation passes.
 
 Flowering vine implementation: stable seeded plant families reuse the existing stem path, leaves, lifetime persistence and two-second tick. Cacti use fixed growth paths with later arms; prickly pear pads attach to their parent. Botanical SVG is replaced only when its generated geometry changes. No continuous animation or extra layout measurement. Preview lives in demos/vine-garden.html. Regression coverage checks fixed old trunk segments, staged branches, attached pads, stable varieties and finite geometry.
+
+Repository reload 502 investigation: health remained 200 while /api/repos waited over 70s. The shared in-flight path awaited enrichment before returning any response; Bun idleTimeout=30 could close it. Reload waiters now stream a fresh manifest immediately and blank NDJSON keepalives every 10s, then replay enriched repos. Fresh scan streams also send keepalives. Regression exercises manifest-before-completion and heartbeat delivery.

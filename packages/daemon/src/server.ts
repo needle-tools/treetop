@@ -1,4 +1,5 @@
 import { BrokerCodexAdapter } from "./broker-codex";
+import { pendingNDJSONStream } from "./server-helpers";
 import { updateInstallParent, watchForUpdate } from "../../../src/electrobun/update-handoff";
 import {
   join,
@@ -1976,6 +1977,7 @@ function reposNDJSONFresh(
   // want the git fan-out to run to completion so concurrent waiters
   // get the cached result — just stop touching the controller.
   let cancelled = false;
+  let heartbeat: ReturnType<typeof setInterval> | undefined;
   const stream = new ReadableStream<Uint8Array>({
     start(controller) {
       const safeEnqueue = (chunk: Uint8Array): void => {
@@ -1986,6 +1988,7 @@ function reposNDJSONFresh(
           cancelled = true;
         }
       };
+      heartbeat = setInterval(() => safeEnqueue(enc.encode("\n")), 10_000);
       // Phase timings for the /api/repos load. Logged as a single
       // structured line at the end so a slow load can be triaged from
       // the prod log (`/tmp/supergit-prod.log`) without needing to
@@ -2167,12 +2170,14 @@ function reposNDJSONFresh(
             }
           }
         } finally {
+          clearInterval(heartbeat);
           reposInflight = null;
         }
       })();
     },
     cancel() {
       cancelled = true;
+      clearInterval(heartbeat);
     },
   });
   return new Response(stream, { headers: ndjsonHeaders(cors) });
@@ -2197,15 +2202,9 @@ async function reposNDJSONResponse(
     // replay the cached array. We could splice ourselves into the
     // live stream, but a wait+replay is simpler and the cost is
     // bounded by the in-flight build's own latency.
-    try {
-      const value = await reposInflight.promise;
-      return reposNDJSONFromCache(value, cors);
-    } catch (err) {
-      return jsonErr(
-        { error: err instanceof Error ? err.message : String(err) },
-        { status: 500 },
-      );
-    }
+    const pending = reposInflight.promise.then(value => value.map(repoLineFor).join(""));
+    const manifest = workspace.listRepos().then(manifestLineFor);
+    return new Response(pendingNDJSONStream(manifest, pending), { headers: ndjsonHeaders(cors) });
   }
   return reposNDJSONFresh(cors, selectedRemotes, cacheKey);
 }

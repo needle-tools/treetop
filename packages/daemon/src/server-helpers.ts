@@ -709,3 +709,29 @@ export function extractIconHrefs(html: string): string[] {
   }
   return out;
 }
+/** Keep a slow shared repo scan from leaving reloads without headers or timing out. */
+export function pendingNDJSONStream(initial: Promise<string>, pending: Promise<string>, heartbeatMs = 10_000): ReadableStream<Uint8Array> {
+  const encoder = new TextEncoder();
+  let stopped = false;
+  let timer: ReturnType<typeof setInterval> | undefined;
+  const stop = () => { stopped = true; clearInterval(timer); };
+  // Observe rejection immediately, even while the initial manifest is loading.
+  const completion = pending.then(value => ({value}), error => ({error}));
+  return new ReadableStream({
+    start(controller) {
+      const emit = (value: string) => { if (!stopped) controller.enqueue(encoder.encode(value)); };
+      timer = setInterval(() => emit("\n"), heartbeatMs);
+      void (async () => {
+        try {
+          emit(await initial);
+          const result = await completion;
+          if ("error" in result) throw result.error;
+          emit(result.value);
+          if (!stopped) controller.close();
+        } catch (error) { if (!stopped) controller.error(error); }
+        finally { stop(); }
+      })();
+    },
+    cancel: stop,
+  });
+}
