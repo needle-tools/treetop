@@ -299,3 +299,52 @@ export function splitTerminalWrite(
   }
   return chunks;
 }
+
+/** xterm.write queues parsing asynchronously. Keep at most one parser write
+ * in flight, then yield a frame before the next replay chunk. Measuring only
+ * the enqueue call lets a large reveal backlog flood xterm in one turn. */
+export function createTerminalWriteQueue(options: {
+  write: (bytes: Uint8Array, done: () => void) => void;
+  schedule: (callback: () => void) => unknown;
+  cancel: (handle: unknown) => void;
+  chunkBytes?: number;
+}) {
+  let chunks: Uint8Array[] = [];
+  let size = 0, generation = 0;
+  let writing = false, disposed = false;
+  let frame: unknown = null;
+  function drain() {
+    if (disposed || writing || !chunks.length) return;
+    const bytes = chunks.shift()!;
+    size -= bytes.byteLength;
+    writing = true;
+    const currentGeneration = generation;
+    options.write(bytes, () => {
+      if (disposed || currentGeneration !== generation) return;
+      writing = false;
+      if (chunks.length && frame === null) {
+        frame = options.schedule(() => {frame=null;drain();});
+      }
+    });
+  }
+  function clear() {
+    generation++;
+    if (frame !== null) options.cancel(frame);
+    frame = null;
+    chunks = [];
+    size = 0;
+    writing = false;
+  }
+  return {
+    push(bytes: Uint8Array) {
+      if (disposed || bytes.byteLength === 0) return;
+      chunks.push(...splitTerminalWrite(bytes, options.chunkBytes ?? 16 * 1024));
+      size += bytes.byteLength;
+      // A small live echo never waits for a frame when there is no backlog.
+      if (!writing && frame === null) drain();
+    },
+    queuedBytes: () => size,
+    clear,
+    dispose() {disposed=true;clear();},
+  };
+}

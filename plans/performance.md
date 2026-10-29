@@ -2430,3 +2430,38 @@ Older dashboard generations cannot overwrite the per-worktree details cache.
 287 targeted UI/daemon tests pass, including saturated-background priority,
 typing grace, cache generation fencing, direct zero-ahead/behind patches, and
 preserved session/row identity. App.svelte compiles; Go helper suite passes.
+
+2026-10-29 stop/Zen/activation follow-up:
+The installed app launched on port 27788 at 11:32 UTC; 27787 was not listening
+when inspected. Read-only terminal inventory on 27788 responded in 9ms.
+The user's stopped Treetop Codex terminal t_mvtfuhx1_49_cda49883 / PID 17164
+reached the surviving broker at 11:37:39.142 UTC and exited at 11:37:39.281
+(139ms). This rules out a slow agent shutdown for that attempt. The daemon
+also logged a 318,564ms full-repo refresh around the stop. A separate observed
+input-to-next-output delay was 5,455ms in needle-cloud at 11:33:56; both socket
+buffered bytes and client queued output bytes were zero. This metric does not
+prove echo or localize the delay by itself.
+
+User reports strongest delay during Zen project/session switches and app
+activation. Found that TerminalView's four-ms replay budget measured async
+xterm.write enqueue cost, so a 256KiB replay could enqueue every chunk before
+parsing completed. Added an ordered callback-driven queue: one 16KiB parser
+write at a time, a frame yield before the next chunk, immediate small writes
+when no backlog exists, and generation-safe clear/dispose. All bytes remain
+ordered, and sessions/subscriptions are not reaped. This fixes a concrete
+replay scheduling flaw; it is not proof of the cause of every input delay.
+
+Existing terminal sockets now advertise a Stop control and acknowledge it
+after broker acceptance. SessionView's requestTerminalStop uses that transport
+when available, bypassing occupied HTTP request slots, with HTTP fallback for
+older/remote daemons without the capability. An unconfirmed socket stop
+rejects rather than automatically issuing a second HTTP stop. These changes
+work with the existing broker and do not require stopping other sessions.
+
+47 API/replay tests pass. Native socket teardown was additionally confirmed
+with Bun 1.4.4; Bun 1.3.14 on Windows omits abrupt-close events in a same-process
+fixture, so the portable close-event unit test drives the browser event
+contract directly. Existing headless Edge session-focus browser regression
+passes under Node's intended test runner (Bun's runner timed out its harness).
+No production terminal input was injected and no process/session was stopped
+by this investigation. No visible test windows were opened.

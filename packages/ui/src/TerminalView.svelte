@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { apiUrl, apiWsUrl, bindTerminalSessionOwner } from "./api";
+  import { apiUrl, apiWsUrl, bindTerminalSessionOwner, attachTerminalStopChannel } from "./api";
   import { onMount, onDestroy } from "svelte";
   import { fetchSshSessions, type SshSessionInfo } from "./file-browser-utils";
   import {
@@ -31,7 +31,7 @@
     TerminalInputTiming,
     TerminalRepaintTracker,
     TerminalWriteBuffer,
-    splitTerminalWrite,
+    createTerminalWriteQueue,
     setTerminalIoStats,
     removeTerminalIoStats,
     type TerminalRepaintCell,
@@ -74,8 +74,6 @@
   const REPAINT_DEBUG_FOREGROUND = "#07130a";
   const TERMINAL_THEME_BACKGROUND = "#1a1a1b";
   const TERMINAL_THEME_FOREGROUND = "#e8e8e8";
-  const TERMINAL_WRITE_CHUNK_BYTES = 64 * 1024;
-  const TERMINAL_WRITE_BUDGET_MS = 4;
 
   /** Read the current selection and collapse soft-wrap newlines so a
    *  command that wrapped across visual rows pastes as one runnable line.
@@ -269,7 +267,7 @@
       renderer: webgl?.active ? "webgl" : "dom",
       visible: isTerminalVisible,
       websocketBufferedBytes: ws?.bufferedAmount ?? 0,
-      queuedOutputBytes: visibleWriteQueue.reduce((sum, bytes) => sum + bytes.byteLength, 0),
+      queuedOutputBytes: terminalWrites.queuedBytes(),
     });
   }
   let ioTicker: ReturnType<typeof setInterval> | null = null;
@@ -479,6 +477,7 @@
   }
   let fit: FitAddon | null = null;
   let ws: WebSocket | null = null;
+  let detachStopChannel: (() => void) | null = null;
   let resizeObs: ResizeObserver | null = null;
   let onWindowResize: (() => void) | null = null;
   let onDocVisibility: (() => void) | null = null;
@@ -562,8 +561,18 @@
       );
   }
   const writeBuffer = new TerminalWriteBuffer();
-  let visibleWriteQueue: Uint8Array[] = [];
-  let visibleWriteRaf: number | null = null;
+  const terminalWrites = createTerminalWriteQueue({
+    schedule: callback => requestAnimationFrame(callback),
+    cancel: handle => cancelAnimationFrame(handle as number),
+    write: (bytes, done) => {
+      if (!xterm) {done();return;}
+      const startedAt = performance.now();
+      xterm.write(bytes, () => {
+        recordInputLatency("output-parse", performance.now() - startedAt);
+        done();
+      });
+    },
+  });
   let hiddenFlushes = 0;
   let terminalId = "";
   let boundSessionOwner = "";
@@ -661,6 +670,7 @@
    *  regression test keys off the first literal `ws.onopen` being the real
    *  open handler below.) */
   function detachSocket(s: WebSocket): void {
+    if (s === ws) {detachStopChannel?.();detachStopChannel=null;}
     s.onopen = s.onmessage = s.onerror = s.onclose = null;
   }
 
@@ -883,42 +893,9 @@
     return batch;
   }
 
-  function scheduleVisibleTerminalWrites(): void {
-    if (visibleWriteRaf !== null) return;
-    visibleWriteRaf = requestAnimationFrame(() => {
-      visibleWriteRaf = null;
-      if (!xterm) {
-        visibleWriteQueue = [];
-        return;
-      }
-      const startedAt = performance.now();
-      while (visibleWriteQueue.length > 0) {
-        const chunk = visibleWriteQueue.shift()!;
-        writeMeasuredTerminalOutput(chunk);
-        if (performance.now() - startedAt >= TERMINAL_WRITE_BUDGET_MS) break;
-      }
-      if (visibleWriteQueue.length > 0) scheduleVisibleTerminalWrites();
-    });
-  }
-
-  function writeMeasuredTerminalOutput(bytes: Uint8Array): void {
-    const startedAt = performance.now();
-    xterm?.write(bytes, () => recordInputLatency("output-parse", performance.now() - startedAt));
-  }
-
   function writeTerminalOutput(bytes: Uint8Array): void {
     if (!xterm) return;
-    if (
-      visibleWriteQueue.length === 0 &&
-      bytes.byteLength <= TERMINAL_WRITE_CHUNK_BYTES
-    ) {
-      writeMeasuredTerminalOutput(bytes);
-      return;
-    }
-    visibleWriteQueue.push(
-      ...splitTerminalWrite(bytes, TERMINAL_WRITE_CHUNK_BYTES),
-    );
-    scheduleVisibleTerminalWrites();
+    terminalWrites.push(bytes);
   }
 
   function paintBufferedTerminalOutput(): void {
@@ -1037,6 +1014,7 @@
       });
       flushTerminalStartupLog("ws-create");
       ws = new WebSocket(url);
+      detachStopChannel = attachTerminalStopChannel(ws,id,daemonId);
       ws.binaryType = "arraybuffer";
       ws.onopen = () => {
         reconnect.reset();
@@ -1045,7 +1023,7 @@
         // renderer so that replay does not duplicate the previous screen.
         if (reconnectId) {
           writeBuffer.flush();
-          visibleWriteQueue = [];
+          terminalWrites.clear();
           xterm?.reset();
         }
         phase = "live";
@@ -1723,11 +1701,7 @@
     }
     if (tuiSettleTimer) clearTimeout(tuiSettleTimer);
     if (revealReconcileTimer) clearTimeout(revealReconcileTimer);
-    if (visibleWriteRaf !== null) {
-      cancelAnimationFrame(visibleWriteRaf);
-      visibleWriteRaf = null;
-    }
-    visibleWriteQueue = [];
+    terminalWrites.dispose();
     resizeObs?.disconnect();
     resizeCoalescer?.cancel();
     visibilityObs?.disconnect();

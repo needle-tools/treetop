@@ -13,6 +13,7 @@ import {
   TerminalIoByteAccounting,
   TerminalInputTiming,
   splitTerminalWrite,
+  createTerminalWriteQueue,
   TERMINAL_ACTIVITY_RECENT_MS,
   formatTerminalIoRate,
   isTerminalRecentlyActive,
@@ -22,6 +23,44 @@ import {
   removeTerminalIoStats,
   _resetTerminalIoStatsForTests,
 } from "../src/terminal-write-buffer";
+
+test("replay waits for parser completion and yields between chunks without losing bytes", () => {
+  const frames: (()=>void)[] = [], completions: (()=>void)[] = [], written: number[] = [];
+  const queue = createTerminalWriteQueue({chunkBytes:4,
+    schedule: callback => {frames.push(callback);return callback;}, cancel:()=>{},
+    write: (bytes,done)=>{written.push(...bytes);completions.push(done);},
+  });
+  queue.push(new Uint8Array([1,2,3,4,5,6,7,8,9]));
+  expect(written).toEqual([1,2,3,4]);
+  expect(frames).toHaveLength(0);
+  queue.push(new Uint8Array([10]));
+  expect(written).toHaveLength(4);
+  completions.shift()!();
+  expect(frames).toHaveLength(1);
+  expect(written).toHaveLength(4);
+  while (frames.length) {frames.shift()!();completions.shift()!();}
+  expect(written).toEqual([1,2,3,4,5,6,7,8,9,10]);
+  expect(queue.queuedBytes()).toBe(0);
+});
+
+test("small terminal echo starts immediately and old parser callbacks cannot revive a cleared queue", () => {
+  const frames: (()=>void)[] = [], done: (()=>void)[] = [];
+  const written: number[] = [];
+  const queue = createTerminalWriteQueue({chunkBytes:4,schedule:fn=>{frames.push(fn);return fn;},cancel:()=>{},
+    write:(bytes,complete)=>{written.push(...bytes);done.push(complete);}});
+  queue.push(new Uint8Array([1]));
+  expect(written).toEqual([1]);
+  queue.push(new Uint8Array([2,3,4,5]));
+  queue.clear();
+  done.shift()!();
+  expect(frames).toHaveLength(0);
+  queue.push(new Uint8Array([6]));
+  expect(written).toEqual([1,6]);
+  queue.dispose();
+  done.shift()!();
+  queue.push(new Uint8Array([7]));
+  expect(written).toEqual([1,6]);
+});
 
 const bytes = (...n: number[]) => new Uint8Array(n);
 

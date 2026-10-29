@@ -1,5 +1,44 @@
 import { test, expect, describe } from "bun:test";
-import { apiUrl, apiWsUrl, withRequestDeadline, requestTerminalStop } from "../src/api";
+import { apiUrl, apiWsUrl, withRequestDeadline, requestTerminalStop, attachTerminalStopChannel } from "../src/api";
+
+test("stop uses an acknowledged live terminal socket instead of the HTTP request queue", async () => {
+  let httpStops = 0, socketStops = 0;
+  const server = Bun.serve({hostname:"127.0.0.1",port:0,
+    fetch(request,server) {
+      if (server.upgrade(request)) return;
+      httpStops++;return Response.json({ok:true});
+    },
+    websocket:{open(socket){socket.send(JSON.stringify({type:"capabilities",controls:["stop"]}));},
+      message(socket,raw){const message=JSON.parse(String(raw));expect(message.type).toBe("stop");socketStops++;
+        socket.send(JSON.stringify({type:"stop-accepted",requestId:message.requestId}));}},
+  });
+  const socket = new WebSocket(`ws://127.0.0.1:${server.port}/io`);
+  const detach = attachTerminalStopChannel(socket,"socket-session");
+  try {
+    await new Promise<void>((resolve,reject)=>{socket.addEventListener("message",()=>resolve(),{once:true});socket.addEventListener("error",reject,{once:true});});
+    await requestTerminalStop("socket-session",undefined,server.url.origin);
+    expect(socketStops).toBe(1);
+    expect(httpStops).toBe(0);
+  } finally {detach();socket.close();server.stop(true);}
+});
+
+test("an unconfirmed socket stop reports a close event without sending a duplicate HTTP stop", async () => {
+  let httpStops=0;
+  const server=Bun.serve({hostname:"127.0.0.1",port:0,fetch(){httpStops++;return Response.json({ok:true});}});
+  // Exercise the browser close-event contract directly. Bun 1.3.14 on Windows
+  // can omit this event after a same-process test server terminates a socket.
+  class ClosingSocket extends EventTarget {
+    readyState=1;
+    send() {this.readyState=3;queueMicrotask(()=>this.dispatchEvent(new Event("close")));}
+  }
+  const socket=new ClosingSocket() as unknown as WebSocket;
+  const detach=attachTerminalStopChannel(socket,"unconfirmed","remote");
+  try {
+    socket.dispatchEvent(new MessageEvent("message",{data:JSON.stringify({type:"capabilities",controls:["stop"]})}));
+    await expect(requestTerminalStop("unconfirmed","remote",server.url.origin)).rejects.toThrow("before stop was confirmed");
+    expect(httpStops).toBe(0);
+  } finally {detach();server.stop(true);}
+});
 
 test("session stop waits past five seconds for confirmation and accepts an already stopped terminal", async () => {
   let calls = 0;

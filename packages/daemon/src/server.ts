@@ -10563,6 +10563,7 @@ const server = Bun.serve<TermWsData, never>({
         ws.close(1011, terminalGoneReason(terminalBackend.getExitInfo(termId)));
         return;
       }
+      ws.send(JSON.stringify({type:"capabilities",controls:["stop"]}));
       cancelGrace(termId);
       if (!backgroundBackend) orphanCleaner.onFrontendConnected();
       const pendingSpawnAt = terminalSpawnPendingWs.get(termId);
@@ -10688,6 +10689,15 @@ const server = Bun.serve<TermWsData, never>({
             handle.resize({
               cols: clampCols(Number(parsed.cols)),
               rows: clampRows(Number(parsed.rows)),
+            });
+          } else if (parsed?.type === "stop" && typeof parsed.requestId === "string" && parsed.requestId.length <= 80) {
+            const requestId=parsed.requestId;
+            cancelGrace(ws.data.termId);
+            console.log(`supergit daemon: terminal socket stop id=${ws.data.termId} pid=${handle.pid}`);
+            void handle.kill().then(() => {
+              if(ws.readyState===1)ws.send(JSON.stringify({type:"stop-accepted",requestId}));
+            }).catch(error => {
+              if(ws.readyState===1)ws.send(JSON.stringify({type:"stop-error",requestId,error:String(error)}));
             });
           } else if (parsed?.type === "visibility") {
             setTerminalOutputVisible(
