@@ -2520,3 +2520,9 @@ The compiled daemon explicitly embeds procs.ts as a worker entry.
 in-flight scans, CPU delta/reset parsing, owned-query timeout, worker query
 output and main-event-loop availability. Build and compiled-worker smoke
 verification follow. Production processes and live sessions were untouched.
+Compiled verification passed in an isolated daemon with a disposable PTY:
+first /api/processes response 9ms, peak paired health/active-sends probe 18ms
+while sampling ran, and a real 20,566,016-byte working-set reading arrived
+from the embedded worker. Only fixture processes were stopped. Installer
+rebuild completed (buildTime 2026-10-29T15:15:21.316Z); embedded payload checksum
+verification passed. The new installer was not run against production.
