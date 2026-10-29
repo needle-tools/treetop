@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import electrobunConfig from "../../../electrobun.config";
+import { preserveNativeCallbackPointers } from "../../../scripts/patch-launcher";
 
 describe("electrobun config", () => {
   test("native runtime includes the cross-thread FFI callback heap corruption fix", () => {
@@ -23,13 +24,22 @@ describe("electrobun config", () => {
 // This uses native Windows threads without creating a window or contacting a daemon.
 if (process.platform === "win32" && process.env.TREETOP_NATIVE_RUNTIME_TEST) {
   test("packaged runtime survives callbacks from foreign Windows threads", async () => {
-    const child = Bun.spawn([process.env.TREETOP_NATIVE_RUNTIME_TEST!, "--eval", `
-      const { dlopen, JSCallback } = require("bun:ffi");
+    const child = Bun.spawn([process.env.TREETOP_NATIVE_RUNTIME_TEST!, "--eval", preserveNativeCallbackPointers(`
+      const { dlopen, JSCallback, CString, ptr, FFIType } = require("bun:ffi");
       const kernel = dlopen("kernel32.dll", {
         CreateThread: { args: ["ptr", "u64", "ptr", "ptr", "u32", "ptr"], returns: "ptr" },
         CloseHandle: { args: ["ptr"], returns: "bool" },
       });
       let seen = 0;
+      let decoded = "";
+      const text = Buffer.from("dom-ready\\0");
+      const event = new JSCallback(
+        value => { decoded = new CString(value).toString(); },
+        { args: [FFIType.cstring], returns: "void", threadsafe: true },
+);
+      const eventThread = kernel.symbols.CreateThread(null, 0, event.ptr, ptr(text), 0, null);
+      if (!eventThread) throw Error("CreateThread failed");
+      kernel.symbols.CloseHandle(eventThread);
       const callback = new JSCallback(() => { seen++; }, {
         args: ["ptr"], returns: "u32", threadsafe: true,
       });
@@ -43,13 +53,14 @@ if (process.platform === "win32" && process.env.TREETOP_NATIVE_RUNTIME_TEST) {
       }
       const deadline = Date.now() + 5000;
       while (seen < 10000 && Date.now() < deadline) await Bun.sleep(10);
-      console.log(JSON.stringify({ seen }));
-      process.exit(seen === 10000 ? 0 : 1);
-    `], { windowsHide: true, stdout: "pipe", stderr: "pipe", timeout: 15000 });
+      console.log(JSON.stringify({ seen, decoded }));
+      process.exit(seen === 10000 && decoded === "dom-ready" ? 0 : 1);
+    `)], { windowsHide: true, stdout: "pipe", stderr: "pipe", timeout: 15000 });
     const [stdout, stderr, code] = await Promise.all([
       new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited,
     ]);
     expect({ code, stderr }).toEqual({ code: 0, stderr: "" });
     expect(JSON.parse(stdout).seen).toBe(10000);
+    expect(JSON.parse(stdout).decoded).toBe("dom-ready");
   }, 20000);
 }

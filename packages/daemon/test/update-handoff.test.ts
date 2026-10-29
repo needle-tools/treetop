@@ -3,7 +3,35 @@ import { mkdtemp, mkdir, writeFile, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { UpdateHandoff, updateInstallParent, watchForUpdate } from "../../../src/electrobun/update-handoff";
-import { replaceInstallation } from "../../../scripts/windows-installer-core";
+import { replaceInstallation, installerLayoutFor, parseMacInstalledProcesses } from "../../../scripts/windows-installer-core";
+
+test("installer layouts keep platform-specific executables and archive roots", () => {
+  const mac = installerLayoutFor("darwin", "/Users/test");
+  expect(mac.app).toBe("/Users/test/Applications/Treetop.app");
+  expect(mac.parent).toBe("/Users/test/Applications/.treetop-installer");
+  expect(mac.archiveRoot).toBe("Treetop.app");
+  expect(mac.launcher).toBe("Contents/MacOS/launcher");
+  const win = installerLayoutFor("win32", "C:\\Users\\test", "C:\\Users\\test\\AppData\\Local");
+  expect(win.app).toBe("C:\\Users\\test\\AppData\\Local\\tools.needle.supergit\\stable\\app");
+  expect(win.archiveRoot).toBe("Treetop");
+  expect(() => installerLayoutFor("linux", "/home/test")).toThrow("Unsupported");
+});
+
+test("mac process inventory excludes other bundles, similarly named paths and brokers", () => {
+  expect(parseMacInstalledProcesses(`10 /Users/test/Applications/Treetop.app/Contents/MacOS/bun
+11 /Users/test/Applications/Treetop.app/Contents/Resources/app/supergit
+12 /Users/test/Applications/Treetop.app-old/Contents/MacOS/bun
+13 /Users/test/workspace/terminal-broker
+14 /Users/test/Applications/Other.app/Contents/MacOS/bun`, "/Users/test/Applications/Treetop.app"))
+    .toEqual([{pid:10,name:"bun"},{pid:11,name:"supergit"}]);
+});
+
+test("mac app and daemon share installer IPC outside the replaceable bundle", () => {
+  const parent = "/Users/test/Applications/.treetop-installer";
+  expect(updateInstallParent("/Users/test/Applications/Treetop.app/Contents/MacOS/bun", "ui")).toBe(parent);
+  expect(updateInstallParent("/Users/test/Applications/Treetop.app/Contents/Resources/app/supergit", "daemon")).toBe(parent);
+  expect(updateInstallParent("/Users/test/workspace/terminal-broker", "daemon")).toBeUndefined();
+});
 
 test("installer cancellation remains available until the verified installation commits", async () => {
   const { InstallerControl, InstallationCancelledError } = await import("../../../scripts/windows-installer-core");

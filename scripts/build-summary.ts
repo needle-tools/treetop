@@ -3,7 +3,7 @@ import { resolve, join } from "node:path";
 import { existsSync, statSync, readdirSync, rmSync } from "node:fs";
 import { readdir } from "node:fs/promises";
 import { $ } from "bun";
-import { packageWindowsInstaller, archiveWindowsInstaller } from "./package-windows-installer";
+import { packageWindowsInstaller, archiveWindowsInstaller, packageMacInstaller } from "./package-windows-installer";
 
 const ROOT = resolve(import.meta.dir, "..");
 const isWin = process.platform === "win32";
@@ -35,9 +35,9 @@ if (process.platform === "darwin" && paths.app && existsSync(paths.app)) {
     const tarPath = join(buildDir, `${APP_NAME}.app.tar`);
 
     // zig-zstd lives in electrobun's dist, not inside the self-extracting wrapper
-    const zigZstd = resolve(ROOT, "node_modules/electrobun/dist-macos-arm64/zig-zstd");
+    const zigZstd = resolve(ROOT, `node_modules/electrobun/dist-macos-${process.arch}/zig-zstd`);
     if (!existsSync(zigZstd)) {
-      console.warn(`  ⚠ zig-zstd not found at ${zigZstd}, skipping pre-extraction`);
+      throw Error(`zig-zstd not found at ${zigZstd}; cannot package an unextracted app`);
     } else {
       const dec = Bun.spawnSync([zigZstd, "decompress", "-i", zstPath, "-o", tarPath], {
         cwd: buildDir, stdout: "inherit", stderr: "inherit",
@@ -90,6 +90,11 @@ if (isWin) {
 }
 
 if (isWin) await archiveWindowsInstaller(ROOT);
+if (process.platform === "darwin" && paths.app) {
+  const installer = await packageMacInstaller(ROOT, paths.app);
+  paths.setup = installer.bundle;
+  paths.installerDmg = installer.dmg;
+}
 console.log(`\n=== supergit build complete ===\n`);
 
 for (const [label, path] of Object.entries(paths)) {

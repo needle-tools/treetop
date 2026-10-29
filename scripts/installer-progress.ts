@@ -1,8 +1,87 @@
-import { mkdtemp, writeFile, rm } from "node:fs/promises";
+import { mkdtemp, writeFile, rm, chmod } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { InstallerControl } from "./windows-installer-core";
+
+/** Compiled on the Mac build machine; end users need no Swift tools. */
+export const macInstallerWindowSource = String.raw`
+import AppKit
+import Darwin
+
+final class InstallerWindow: NSObject, NSApplicationDelegate, NSWindowDelegate {
+    let env = ProcessInfo.processInfo.environment
+    var window: NSWindow!
+    var status: NSTextField!
+    var progress: NSProgressIndicator!
+    var timer: Timer?
+    var canCancel = true
+    var cancelled = false
+    var done = false
+    func write(_ text: String, _ key: String) {
+        if let path = env[key] { try? Data(text.utf8).write(to: URL(fileURLWithPath: path), options: .atomic) }
+    }
+    func cancel() {
+        guard canCancel && !cancelled else { return }
+        cancelled = true
+        status.stringValue = "Cancelling installation…"
+        window.standardWindowButton(.closeButton)?.isEnabled = false
+        write("cancel", "TREETOP_SETUP_CANCEL")
+    }
+    func windowShouldClose(_ sender: NSWindow) -> Bool { cancel(); return false }
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        if done { return .terminateNow }; cancel(); return .terminateCancel
+    }
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 560, height: 440),
+                          styleMask: [.titled, .closable], backing: .buffered, defer: false)
+        window.title = "Treetop installer"
+        window.delegate = self
+        window.isReleasedWhenClosed = false
+        window.backgroundColor = NSColor(calibratedRed: 0.969, green: 0.965, blue: 0.945, alpha: 1)
+        let image = NSImageView(frame: NSRect(x: 0, y: 126, width: 560, height: 314))
+        image.imageScaling = .scaleProportionallyUpOrDown
+        if let path = env["TREETOP_SETUP_SPLASH"] { image.image = NSImage(contentsOfFile: path) }
+        window.contentView!.addSubview(image)
+        let title = NSTextField(labelWithString: "Setting up Treetop")
+        title.font = .systemFont(ofSize: 21, weight: .semibold)
+        title.textColor = NSColor(calibratedRed: 0.14, green: 0.21, blue: 0.16, alpha: 1)
+        title.frame = NSRect(x: 26, y: 80, width: 508, height: 28)
+        window.contentView!.addSubview(title)
+        status = NSTextField(wrappingLabelWithString: "Preparing the installer…")
+        status.font = .systemFont(ofSize: 13)
+        status.textColor = .secondaryLabelColor
+        status.frame = NSRect(x: 26, y: 34, width: 508, height: 40)
+        window.contentView!.addSubview(status)
+        progress = NSProgressIndicator(frame: NSRect(x: 26, y: 18, width: 508, height: 8))
+        progress.isIndeterminate = false
+        progress.minValue = 0; progress.maxValue = 100
+        window.contentView!.addSubview(progress)
+        window.center(); window.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+        write("ready", "TREETOP_SETUP_READY")
+        timer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in self?.tick() }
+    }
+    func tick() {
+        if let owner = env["TREETOP_SETUP_OWNER"], let pid = Int32(owner), kill(pid, 0) != 0 && errno == ESRCH {
+            done = true; NSApp.terminate(nil); return
+        }
+        guard let path = env["TREETOP_SETUP_STATUS"], let data = FileManager.default.contents(atPath: path),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return }
+        done = json["done"] as? Bool ?? false
+        canCancel = json["canCancel"] as? Bool ?? false
+        if !cancelled || done { status.stringValue = json["message"] as? String ?? "" }
+        progress.doubleValue = json["progress"] as? Double ?? 0
+        window.standardWindowButton(.closeButton)?.isEnabled = canCancel && !cancelled
+        if done { timer?.invalidate(); NSApp.terminate(nil) }
+    }
+}
+let app = NSApplication.shared
+let delegate = InstallerWindow()
+app.delegate = delegate
+app.setActivationPolicy(.accessory)
+app.run()
+`;
 
 // The window is a separate native UI process: extraction and hashing cannot
 // freeze its close button. The status/cancel protocol is platform-independent.
@@ -80,17 +159,24 @@ export interface InstallerProgressWindow {
   close(): Promise<void>;
 }
 
-/** Windows' built-in WPF supplies the GUI without a browser/runtime install.
- * A macOS native frontend can consume the same status/cancel protocol. */
-export async function openInstallerProgress(splash: string, control: InstallerControl): Promise<InstallerProgressWindow> {
-  if (process.platform !== "win32") throw new Error("The native installer window requires a platform adapter");
+/** WPF on Windows and a bundled Cocoa helper on macOS share this protocol. */
+export async function openInstallerProgress(splash: string, control: InstallerControl, macHelper?: string): Promise<InstallerProgressWindow> {
+  if (process.platform !== "win32" && process.platform !== "darwin") throw new Error("Unsupported installer window platform");
+  if (process.platform === "darwin" && !macHelper) throw new Error("The macOS installer window helper is missing");
   const root = await mkdtemp(join(tmpdir(), "treetop-setup-ui-"));
   const status = join(root, "status.json"), cancel = join(root, "cancel"), ready = join(root, "ready");
   const script = join(root, "window.ps1"), image = join(root, "splash.png");
   let message = "Preparing the installer…", progress = 0;
   const publish = (done = false) => writeFile(status, JSON.stringify({ message, progress, canCancel: control.canCancel, done }));
   await Promise.all([writeFile(script, "\ufeff" + windowsWindow, "utf8"), Bun.write(image, Bun.file(splash)), publish()]);
-  const child = Bun.spawn(["powershell.exe", "-NoProfile", "-NonInteractive", "-STA", "-ExecutionPolicy", "Bypass", "-File", script], {
+  let args = ["powershell.exe", "-NoProfile", "-NonInteractive", "-STA", "-ExecutionPolicy", "Bypass", "-File", script];
+  if (process.platform === "darwin") {
+    const executable = join(root, "installer-window");
+    await Bun.write(executable, Bun.file(macHelper!));
+    await chmod(executable, 0o755);
+    args = [executable];
+  }
+  const child = Bun.spawn(args, {
     windowsHide: true, stdin: "ignore", stdout: "ignore", stderr: "pipe",
     env: { ...process.env, TREETOP_SETUP_SPLASH: image, TREETOP_SETUP_STATUS: status, TREETOP_SETUP_CANCEL: cancel,
       TREETOP_SETUP_READY: ready, TREETOP_SETUP_OWNER: String(process.pid) },

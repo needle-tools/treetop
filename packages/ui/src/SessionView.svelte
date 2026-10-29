@@ -1,6 +1,6 @@
 <script lang="ts">
   import { createSessionInputController, registerSessionInput } from "./mcp-session-input";
-  import { apiUrl, withRequestDeadline } from "./api";
+  import { apiUrl, withRequestDeadline, requestTerminalStop } from "./api";
   import {
     estimateSessionTokenCost,
     loadModelsDevPricing,
@@ -1289,9 +1289,6 @@
     onWorkingChange(working);
   }
 
-  /** Bound stop requests; failed/unconfirmed requests leave the session
-   *  attached and show an error so the user can retry. */
-  const DISPOSE_TIMEOUT_MS = 5_000;
   /** Minimum visible "Stopping…" feedback window. The fetch itself is
    *  typically <10ms (the daemon just sends SIGTERM and returns) so
    *  without this floor the spinner would flicker by too fast to read.
@@ -1324,22 +1321,10 @@
     // or a resumed SessionView in terminal mode. Fires here (post grace
     // window) so a cancelled stop stays silent.
     play("session-stop");
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), DISPOSE_TIMEOUT_MS);
     try {
       const termId = terminalId ?? attachTermId;
       if (termId) {
-        const response = await fetch(
-          apiUrl(`/api/terminals/${encodeURIComponent(termId)}`, daemonId),
-          {
-            method: "DELETE",
-            signal: controller.signal,
-          },
-        );
-        if (!response.ok) {
-          const body = await response.json().catch(() => null);
-          throw new Error(body?.error ?? `Stop failed (HTTP ${response.status})`);
-        }
+        await requestTerminalStop(termId, daemonId);
       }
       onTerminalStopped();
       // Flip back to read mode and force a scroll-to-bottom on the next
@@ -1359,11 +1344,8 @@
       onModeChange(mode);
       void load();
     } catch (e) {
-      sendError = e instanceof Error && e.name === "AbortError"
-        ? "Could not confirm the session stopped within 5 seconds. Try again."
-        : e instanceof Error ? e.message : String(e);
+      sendError = e instanceof Error ? e.message : String(e);
     } finally {
-      clearTimeout(timeout);
       disposing = false;
     }
   }

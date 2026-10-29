@@ -8,6 +8,23 @@ import { resolve } from "node:path";
 
 const ROOT = resolve(import.meta.dir, "..");
 
+/** SDK callbacks explicitly decode CString pointers. Bun 1.4 now converts
+ * cstring callback arguments to JS strings; keep the SDK's pointer contract. */
+export function preserveNativeCallbackPointers(source: string): string {
+  return source.replace(/new JSCallback\([\s\S]*?\n\);/g, callback =>
+    callback.replace(/args:\s*\[[^\]]*\]/g, args => args.replace(/FFIType\.cstring\b/g, "FFIType.ptr")));
+}
+
+if (import.meta.main) {
+  for (const directory of ["dist", "dist-win-x64", "dist-macos-arm64", "dist-macos-x64"]) {
+    const path = resolve(ROOT, "node_modules/electrobun", directory, "api/bun/proc/native.ts");
+    if (!existsSync(path)) continue;
+    const original = readFileSync(path, "utf8");
+    const patched = preserveNativeCallbackPointers(original);
+    if (patched !== original) writeFileSync(path, patched);
+  }
+}
+
 const targets = [
   resolve(ROOT, "node_modules/electrobun/dist/main.js"),
   resolve(ROOT, "node_modules/electrobun/dist-win-x64/main.js"),

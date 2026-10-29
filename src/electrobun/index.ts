@@ -145,7 +145,7 @@ const exe = isWin ? ".exe" : "";
 let desktopReady!: () => void;
 const desktopStarted = new Promise<void>(resolve => { desktopReady = resolve; });
 // Stable per-user/per-installation loopback endpoint; dev launches stay separate.
-const desktopInstall = isWin ? updateInstallParent(process.execPath, "ui") : undefined;
+const desktopInstall = updateInstallParent(process.execPath, "ui");
 if (desktopInstall) {
   const instancePort = 40000 + createHash("sha256").update(desktopInstall.toLowerCase()).digest().readUInt16BE(0) % 20000;
   const instance = await phase("claimDesktopInstance", () => claimDesktopInstance(instancePort, async () => {
@@ -802,7 +802,7 @@ async function openTreetopWindow() {
 }
 await openTreetopWindow();
 desktopReady();
-const updateParent = isWin ? updateInstallParent(process.execPath, "ui") : undefined;
+const updateParent = updateInstallParent(process.execPath, "ui");
 if (updateParent) watchForUpdate(updateParent, {
   log: llog,
   prepare: async () => {

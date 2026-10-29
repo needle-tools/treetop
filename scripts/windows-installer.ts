@@ -1,16 +1,22 @@
 import { appendFile, mkdir, open, readFile, rename, rm, lstat, readdir } from "node:fs/promises";
 import { join, resolve, relative, isAbsolute } from "node:path";
 import { existsSync } from "node:fs";
+import { homedir } from "node:os";
 import { dlopen, ptr } from "bun:ffi";
-import { replaceInstallation, InstallationRecoveryError, InstallationCancelledError, InstallerControl, launchInstallerApp, runInstallerCommand as command } from "./windows-installer-core";
+import { replaceInstallation, InstallationRecoveryError, InstallationCancelledError, InstallerControl, launchInstallerApp, runInstallerCommand as command, installerLayoutFor, parseMacInstalledProcesses } from "./windows-installer-core";
 import { openInstallerProgress, type InstallerProgressWindow } from "./installer-progress";
-function dialog(message: string, error = false) {
+async function dialog(message: string, error = false) {
+  if (process.platform === "darwin") {
+    await command(["/usr/bin/osascript", "-e", 'on run argv\ndisplay alert "Treetop installer" message (item 1 of argv) as critical\nend run', message]);
+    return;
+  }
   const dll=dlopen("user32.dll",{MessageBoxW:{args:["u64","ptr","ptr","u32"],returns:"i32"}});
   try { dll.symbols.MessageBoxW(0n,ptr(Buffer.from(message+"\0","utf16le")),ptr(Buffer.from("Treetop installer\0","utf16le")),error?0x10:0x40); }
   finally {dll.close();}
 }
 type InstalledProcess = {pid:number;name:string};
 async function installedProcesses(app: string): Promise<InstalledProcess[]> {
+  if (process.platform === "darwin") return parseMacInstalledProcesses(await command(["/bin/ps", "-axo", "pid=,comm="]), app);
   // A path boundary excludes other Treetop builds and the workspace broker.
   const out=await command(["powershell.exe","-NoProfile","-NonInteractive","-Command",
     "$ErrorActionPreference='Stop'; $prefix=$env:TREETOP_INSTALL_APP.TrimEnd('\\')+'\\'; $items=@(Get-Process | Where-Object { $_.Path -and $_.Path.StartsWith($prefix,[StringComparison]::OrdinalIgnoreCase) } | ForEach-Object { @{pid=$_.Id;name=$_.ProcessName} }); ConvertTo-Json -InputObject $items -Compress"],{...process.env,TREETOP_INSTALL_APP:app});
@@ -55,10 +61,11 @@ export async function handoffInstallation(parent:string, app:string, id:string, 
   await log("All installation processes exited; session broker was not stopped.");
 }
 async function validateBundle(root:string) {
-  for(const file of ["bin/launcher.exe","bin/bun.exe","bin/libNativeWrapper.dll","Resources/app/bun/index.js","Resources/app/supergit.exe","Resources/app/terminal-broker.exe","Resources/app/pty-helper.exe"]) {
+  const layout = installerLayoutFor(process.platform, homedir(), process.env.LOCALAPPDATA);
+  for(const file of layout.required) {
     const stat=await lstat(join(root,file)); if(!stat.isFile()||stat.size===0)throw Error(`Incomplete installation: ${file}`);
   }
-  const info=JSON.parse(await readFile(join(root,"Resources/app/build-info.json"),"utf8"));
+  const info=JSON.parse(await readFile(join(root,layout.resources,"build-info.json"),"utf8"));
   if(!Number.isFinite(Date.parse(info.buildTime)))throw Error("Invalid build metadata");
   return info.buildTime as string;
 }
@@ -69,7 +76,7 @@ async function removeOwned(parent:string,path:string) {
 }
 
 /** Called only by the packaged setup executable, never when imported by tests. */
-export async function runInstaller(payload:string,expectedHash:string,splash:string) {
+export async function runInstaller(payload:string,expectedHash:string,splash:string,macProgress?:string) {
   // Packaging verification must never touch the installed app or show dialogs.
   if(process.argv.includes("--verify-payload")) {
     const hash=new Bun.CryptoHasher("sha256").update(await Bun.file(payload).arrayBuffer()).digest("hex");
@@ -77,8 +84,9 @@ export async function runInstaller(payload:string,expectedHash:string,splash:str
     console.log("Embedded installer payload verified");
     return;
   }
-  const parent=join(process.env.LOCALAPPDATA!,"tools.needle.supergit","stable");
-  const app=join(parent,"app"),id=crypto.randomUUID(),stage=join(parent,`update-stage-${id}`);
+  const layout = installerLayoutFor(process.platform, homedir(), process.env.LOCALAPPDATA);
+  const {parent, app} = layout;
+  const id=crypto.randomUUID(),stage=join(parent,`update-stage-${id}`);
   const hadInstallation = existsSync(app);
   const logPath=join(parent,"installer.log"), backup=join(parent,`previous-${id}`);
   await mkdir(parent,{recursive:true});
@@ -96,12 +104,13 @@ export async function runInstaller(payload:string,expectedHash:string,splash:str
     await appendFile(launchLog,`\n[${new Date().toISOString()}] Installer launch ${id}\n`);
     const readyPath=join(parent,`installer-ready-${id}.json`);
     try {
-      const pid=await launchInstallerApp(join(app,"bin/launcher.exe"),join(app,"bin"),launchLog,[],30_000,{readyPath,retries:2,log});
+      const executable=join(app,layout.launcher);
+      const pid=await launchInstallerApp(executable,resolve(executable,".."),launchLog,[],30_000,{readyPath,retries:2,log});
       await log(`Launcher PID ${pid} confirmed WebView readiness and survived startup observation`);
     } finally { await rm(readyPath,{force:true}); }
   };
   try {
-    ui = await openInstallerProgress(splash, control);
+    ui = await openInstallerProgress(splash, control, macProgress);
     control.checkpoint();
     // Fail closed on a crashed installer's lock; never guess its ownership.
     lock=await open(join(parent,"installer.lock"),"wx");
@@ -113,13 +122,14 @@ export async function runInstaller(payload:string,expectedHash:string,splash:str
     control.checkpoint();
     await ui.update("Unpacking Treetop…",22);
     await mkdir(stage);
-    const archive=join(stage,"payload.tar.zst"); await Bun.write(archive,bytes);
-    const listing=await command(["tar.exe","-tf",archive],process.env,control.signal);
+    const archive=join(stage,process.platform === "darwin" ? "payload.tar.gz" : "payload.tar.zst"); await Bun.write(archive,bytes);
+    const tar=process.platform === "darwin" ? "/usr/bin/tar" : "tar.exe";
+    const listing=await command([tar,"-tf",archive],process.env,control.signal);
     for(const name of listing.trim().split(/\r?\n/)) {
-      if(!name.startsWith("Treetop/") || name.includes("\\") || name.split("/").includes(".."))throw Error("Unsafe archive entry");
+      if(!name.startsWith(layout.archiveRoot+"/") || name.includes("\\") || name.split("/").includes(".."))throw Error("Unsafe archive entry");
     }
-    await command(["tar.exe","-xf",archive,"-C",stage],process.env,control.signal);
-    const staged=join(stage,"Treetop"),buildTime=await validateBundle(staged);
+    await command([tar,"-xf",archive,"-C",stage],process.env,control.signal);
+    const staged=join(stage,layout.archiveRoot),buildTime=await validateBundle(staged);
     await log(`Validated staged build ${buildTime}`);
     control.checkpoint();
     await ui.update("Keeping your sessions running…",45);
@@ -136,7 +146,7 @@ export async function runInstaller(payload:string,expectedHash:string,splash:str
     await ui.update("Finishing installation…",84);
     await log(`Installed and verified ${buildTime}; rollback retained at ${backup}`);
     // Shortcuts always target the canonical app path, not staging or the installer.
-    await command(["powershell.exe","-NoProfile","-NonInteractive","-Command",
+    if (process.platform === "win32") await command(["powershell.exe","-NoProfile","-NonInteractive","-Command",
       "$ErrorActionPreference='Stop'; $w=New-Object -ComObject WScript.Shell; foreach($folder in @([Environment]::GetFolderPath('Desktop'),[Environment]::GetFolderPath('Programs'))) { $s=$w.CreateShortcut((Join-Path $folder 'Treetop.lnk')); $s.TargetPath=Join-Path $env:TREETOP_INSTALL_APP 'bin\\launcher.exe'; $s.WorkingDirectory=Join-Path $env:TREETOP_INSTALL_APP 'bin'; $s.IconLocation=$s.TargetPath; $s.Save() }"],{...process.env,TREETOP_INSTALL_APP:app});
     // Keep just the latest rollback. Old backups must be unused before removal.
     for(const entry of await readdir(parent,{withFileTypes:true})) {
@@ -166,7 +176,7 @@ export async function runInstaller(payload:string,expectedHash:string,splash:str
     }
     if(lock && !(error instanceof InstallationRecoveryError)) await removeOwned(parent,stage).catch(cleanupError=>log(`Staging cleanup deferred: ${cleanupError}`));
     if (!cancelled || recoveryFailure) {
-      dialog(`${installed?"The new build was installed, but a finishing step failed.":"Treetop update did not complete."}\n\n${recoveryFailure ?? error}\n\nLog: ${logPath}`,true);
+      await dialog(`${installed?"The new build was installed, but a finishing step failed.":"Treetop update did not complete."}\n\n${recoveryFailure ?? error}\n\nLog: ${logPath}`,true);
       process.exitCode=1;
     }
   } finally {

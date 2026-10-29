@@ -22,6 +22,15 @@ export function apiUrl(path: string, daemonId?: string | null): string {
   return path.replace(/^\/api/, `/api/daemons/${daemonId}`);
 }
 
+/** Do not abort a queued stop after five seconds: aborting HTTP cannot undo
+ * a stop already accepted by the daemon. Keep the attachment until a reply. */
+export async function requestTerminalStop(terminalId: string, daemonId?: string, baseUrl = ""): Promise<void> {
+  const response = await fetch(baseUrl + apiUrl(`/api/terminals/${encodeURIComponent(terminalId)}`, daemonId), {method:"DELETE"});
+  if (response.ok || response.status === 404) return;
+  const body = await response.json().catch(() => null);
+  throw new Error(body?.error ?? `Stop failed (HTTP ${response.status})`);
+}
+
 export async function bindTerminalSessionOwner(terminalId: string, sessionId: string, daemonId?: string): Promise<void> {
   const response = await fetch(apiUrl(`/api/terminals/${encodeURIComponent(terminalId)}/owner`, daemonId), {
     method: "PATCH", headers: { "Content-Type": "application/json" },

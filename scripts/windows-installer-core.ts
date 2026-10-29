@@ -1,5 +1,33 @@
 import { access, rename, mkdir, readdir, open, readFile, rm } from "node:fs/promises";
-import { dirname, resolve, join } from "node:path";
+import { dirname, resolve, join, posix, win32 } from "node:path";
+
+export function installerLayoutFor(platform: NodeJS.Platform, home: string, localAppData?: string) {
+  if (platform === "darwin") {
+    const apps = posix.join(home, "Applications");
+    return { parent: posix.join(apps, ".treetop-installer"), app: posix.join(apps, "Treetop.app"),
+      archiveRoot: "Treetop.app", launcher: "Contents/MacOS/launcher", resources: "Contents/Resources/app",
+      required: ["Contents/MacOS/launcher", "Contents/MacOS/bun", "Contents/Resources/app/bun/index.js",
+        "Contents/Resources/app/supergit", "Contents/Resources/app/terminal-broker", "Contents/Resources/app/pty-helper"] };
+  }
+  if (platform === "win32") {
+    if (!localAppData) throw Error("LOCALAPPDATA is required for Windows installation");
+    const parent = win32.join(localAppData, "tools.needle.supergit", "stable");
+    return { parent, app: win32.join(parent, "app"), archiveRoot: "Treetop", launcher: "bin/launcher.exe", resources: "Resources/app",
+      required: ["bin/launcher.exe", "bin/bun.exe", "bin/libNativeWrapper.dll", "Resources/app/bun/index.js",
+        "Resources/app/supergit.exe", "Resources/app/terminal-broker.exe", "Resources/app/pty-helper.exe"] };
+  }
+  throw Error(`Unsupported installer platform: ${platform}`);
+}
+
+export function parseMacInstalledProcesses(output: string, app: string): {pid:number;name:string}[] {
+  const prefix = app.replace(/\/$/, "") + "/";
+  return output.split(/\r?\n/).flatMap(line => {
+    const match = line.match(/^\s*(\d+)\s+(.+?)\s*$/);
+    if (!match || !match[2]!.startsWith(prefix)) return [];
+    const pid = Number(match[1]);
+    return Number.isSafeInteger(pid) && pid > 0 ? [{pid, name: posix.basename(match[2]!)}] : [];
+  });
+}
 
 export class InstallationRecoveryError extends Error {}
 export class InstallationCancelledError extends Error {

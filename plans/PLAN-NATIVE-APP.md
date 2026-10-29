@@ -696,3 +696,30 @@ Broader build-launch tests were attempted in the sandbox: 12 passed and four
 could not spawn child processes (EPERM); these were not rerun to avoid extra
 process/window probes. The targeted native-runtime regression ran elevated.
 No installer or production app launch was performed.
+
+2026-10-29 installer cross-platform follow-up:
+Committed the initial native runtime/session/Windows installer fixes as 08dc9df.
+The next installation stayed alive but timed out waiting for DOM readiness.
+A headless native thread test confirmed Bun 1.4.4 delivers cstring callback
+arguments as JS strings; this SDK explicitly calls new CString(pointer), which
+then throws. patch-launcher now preserves ptr arguments specifically in SDK
+JSCallback signatures, leaving outbound FFI string signatures alone. The
+regression now exercises CString decoding of dom-ready as well as 10,000 calls.
+
+Added a macOS installer adapter to the shared orchestration: native Cocoa
+splash/status/cancel helper compiled with Swift on the build Mac, embedded in
+a standalone Treetop-Setup.app, distributed as a separate Setup.dmg. End users
+need no Swift compiler. Default install target is ~/Applications/Treetop.app;
+IPC and rollback copies live in ~/Applications/.treetop-installer, outside the
+bundle. Both native host and daemon now enable installed-app handoff on macOS.
+Process inventory is restricted to the exact installed bundle path. Windows
+keeps WPF and its existing target/shortcuts. Linux is explicitly unsupported.
+Mac packaging/helper cannot be compiled or launched on this Windows machine;
+Mac end-to-end validation remains required. Apple reference for native progress:
+https://developer.apple.com/documentation/appkit/nsprogressindicator/doublevalue
+
+Session Stop's five-second UI abort was also reported under request congestion.
+Removed that client-only deadline: it cannot undo a stop the server has already
+accepted. Keep the session attached until a response, accept 404 as already
+stopped, and surface server/transport failures. A real delayed HTTP test verifies
+confirmation after 5.1 seconds; no production session was stopped in testing.

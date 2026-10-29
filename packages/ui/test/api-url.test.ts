@@ -1,5 +1,29 @@
 import { test, expect, describe } from "bun:test";
-import { apiUrl, apiWsUrl, withRequestDeadline } from "../src/api";
+import { apiUrl, apiWsUrl, withRequestDeadline, requestTerminalStop } from "../src/api";
+
+test("session stop waits past five seconds for confirmation and accepts an already stopped terminal", async () => {
+  let calls = 0;
+  const server = Bun.serve({hostname:"127.0.0.1",port:0,async fetch(request) {
+    expect(request.method).toBe("DELETE");
+    expect(new URL(request.url).pathname).toBe("/api/terminals/session");
+    if (++calls === 1) { await Bun.sleep(5100); return Response.json({ok:true}); }
+    return Response.json({error:"not found"},{status:404});
+  }});
+  try {
+    await requestTerminalStop("session", undefined, server.url.origin);
+    await requestTerminalStop("session", undefined, server.url.origin);
+    expect(calls).toBe(2);
+  } finally { server.stop(true); }
+},10000);
+
+test("session stop reports server failures without treating them as confirmation", async () => {
+  const server = Bun.serve({hostname:"127.0.0.1",port:0,fetch() {
+    return Response.json({error:"Broker unavailable"},{status:503});
+  }});
+  try {
+    await expect(requestTerminalStop("session", undefined, server.url.origin)).rejects.toThrow("Broker unavailable");
+  } finally { server.stop(true); }
+});
 import {
   isLocalFileMarkdownHref,
   resolveLocalFileMarkdownHref,

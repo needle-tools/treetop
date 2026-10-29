@@ -1,5 +1,5 @@
 import { readFile, writeFile, rename } from "node:fs/promises";
-import { join, win32 } from "node:path";
+import { join, win32, posix } from "node:path";
 import { createServer, createConnection } from "node:net";
 
 /** The OS releases this endpoint on exit, including crashes. A second launch
@@ -38,6 +38,10 @@ export async function claimDesktopInstance(port: number, reopen: () => void | Pr
 }
 
 export function updateInstallParent(executable: string, kind: "ui" | "daemon"): string | undefined {
+  const macSuffix = kind === "ui" ? "/Contents/MacOS/bun" : "/Contents/Resources/app/supergit";
+  if (executable.endsWith(`/Treetop.app${macSuffix}`)) {
+    return posix.join(posix.dirname(executable.slice(0, -macSuffix.length)), ".treetop-installer");
+  }
   const suffix = kind === "ui" ? "\\app\\bin\\bun.exe" : "\\app\\resources\\app\\supergit.exe";
   const normalized = win32.normalize(executable);
   return normalized.toLowerCase().endsWith(suffix) ? normalized.slice(0, -suffix.length) : undefined;

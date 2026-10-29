@@ -10852,7 +10852,7 @@ const shutdown = async (signal: string) => {
 process.on("SIGTERM", () => shutdown("SIGTERM"));
 process.on("SIGINT", () => shutdown("SIGINT"));
 process.on("SIGHUP", () => shutdown("SIGHUP"));
-const updateParent = process.platform === "win32" ? updateInstallParent(process.execPath, "daemon") : undefined;
+const updateParent = updateInstallParent(process.execPath, "daemon");
 if (updateParent) watchForUpdate(updateParent, {
   log: message => console.log(`supergit daemon: ${message}`),
   prepare: async () => {
