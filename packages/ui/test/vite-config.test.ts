@@ -1,6 +1,25 @@
 import { describe, expect, test } from "bun:test";
 import { resolve } from "node:path";
-import config from "../vite.config";
+import config, { replayLabDevRoutePlugin } from "../vite.config";
+
+test("standalone Replay Lab routes root and index to its entry, preserving queries", () => {
+  function rewrite(url: string, standalone: boolean) {
+    let middleware: any;
+    const plugin = replayLabDevRoutePlugin(standalone);
+    (plugin.configureServer as Function)({ middlewares: { use(fn: any) { middleware = fn; } } });
+    const req = { url };
+    let continued = false;
+    middleware(req, {}, () => { continued = true; });
+    expect(continued).toBe(true);
+    return req.url;
+  }
+  expect(rewrite("/", true)).toBe("/replay-lab.html");
+  expect(rewrite("/?example=1", true)).toBe("/replay-lab.html?example=1");
+  expect(rewrite("/index.html", true)).toBe("/replay-lab.html");
+  expect(rewrite("/", false)).toBe("/");
+  expect(rewrite("/src/main.ts", true)).toBe("/src/main.ts");
+  expect(rewrite("/replay-lab?example=1", false)).toBe("/replay-lab.html?example=1");
+});
 
 async function resolveConfig(mode = "production") {
   const exported = config as unknown as

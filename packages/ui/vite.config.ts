@@ -13,13 +13,14 @@ function envFlag(value: string | undefined): boolean {
   return normalized === "1" || normalized === "true" || normalized === "yes";
 }
 
-function replayLabDevRoutePlugin(): Plugin {
+export function replayLabDevRoutePlugin(standalone = false): Plugin {
   return {
     name: "replay-lab-dev-route",
     configureServer(server) {
       server.middlewares.use((req, _res, next) => {
         const url = req.url ?? "";
-        const match = /^\/(?:replay-lab|codex-replay)\/?([?#].*)?$/.exec(url);
+        const match = /^\/(?:replay-lab|codex-replay)\/?([?#].*)?$/.exec(url)
+          ?? (standalone ? /^\/(?:index\.html)?([?#].*)?$/.exec(url) : null);
         if (match) req.url = `/replay-lab.html${match[1] ?? ""}`;
         next();
       });
@@ -49,7 +50,7 @@ export default defineConfig(({ mode, command }) => ({
           .replace(/%SPLASH_BUILD%/g, `v${nativeConfig.app.version} · ${build}`);
       },
     },
-    replayLabDevRoutePlugin(),
+    replayLabDevRoutePlugin(mode === "replay-lab-static"),
   ],
   server: {
     // 7779 sits next to the daemon's 7777 so supergit's two ports cluster
