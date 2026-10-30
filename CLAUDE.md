@@ -219,6 +219,29 @@ port, initError, platform } }`. Use this to check whether bonjour
 initialized, which interface multicast is pinned to, and any swallowed
 init error — without tailing daemon logs.
 
+### Log locations
+
+For the default Windows installation:
+
+- Workspace: `%USERPROFILE%\supergit\workspaces\default` (or the configured
+  `SUPERGIT_WORKSPACE`). `daemon.log` has timestamped daemon activity;
+  `errors.jsonl` has browser errors and performance diagnostics;
+  `terminal-broker.log` and `terminal-broker-launch.log` cover the persistent
+  session owner.
+- Native launcher: `%USERPROFILE%\.config\supergit\launcher-YYYY-MM-DD.log`.
+  The adjacent `daemon-YYYY-MM-DD.log` captures daemon stdout/stderr. It can
+  be empty when an existing daemon is reused; check workspace `daemon.log` too.
+- Installer: `%LOCALAPPDATA%\tools.needle.supergit\stable\installer.log` and
+  `installer-launch.log`. Installed build timestamp:
+  `stable\app\Resources\app\build-info.json` under the same product directory.
+
+Log timestamps and daily filenames use UTC, which may differ from the local
+calendar date. Read `errors.jsonl` selectively: entries can contain large
+diagnostic payloads. Match terminal startup trace IDs and terminal IDs across
+logs; a slow first-output sample alone does not establish delayed key echo.
+Never print `terminal-broker.json` wholesale: it contains the broker auth token.
+Reading logs does not authorize restarting the broker, helper, or live sessions.
+
 ## UI styles
 
 Shared component CSS lives in `packages/ui/src/styles/` (e.g.

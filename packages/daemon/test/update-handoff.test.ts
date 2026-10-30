@@ -4,6 +4,34 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { UpdateHandoff, updateInstallParent, watchForUpdate } from "../../../src/electrobun/update-handoff";
 import { replaceInstallation, installerLayoutFor, parseMacInstalledProcesses } from "../../../scripts/windows-installer-core";
+import { publishInstallerProgress } from "../../../scripts/installer-progress";
+
+test("progress publication survives a Windows reader briefly locking its status file", async () => {
+  const root=await mkdtemp(join(tmpdir(),"treetop-progress-lock-"));
+  const status=join(root,"status.json"),ready=join(root,"ready"),release=join(root,"release");
+  await writeFile(status,JSON.stringify({message:"old"}));
+  let reader:ReturnType<typeof Bun.spawn>|undefined;
+  try {
+    if(process.platform==="win32") {
+      reader=Bun.spawn(["powershell.exe","-NoProfile","-NonInteractive","-Command",
+        "$s=[IO.File]::Open($env:TREETOP_TEST_STATUS,'Open','Read','Read'); try { [IO.File]::WriteAllText($env:TREETOP_TEST_READY,'ready'); $end=[DateTime]::UtcNow.AddSeconds(10); while(-not [IO.File]::Exists($env:TREETOP_TEST_RELEASE) -and [DateTime]::UtcNow -lt $end){Start-Sleep -Milliseconds 20} } finally {$s.Dispose()}"],
+        {windowsHide:true,stdout:"ignore",stderr:"pipe",env:{...process.env,TREETOP_TEST_STATUS:status,TREETOP_TEST_READY:ready,TREETOP_TEST_RELEASE:release}});
+      const deadline=Date.now()+15000;
+      while(!await Bun.file(ready).exists()) {if(Date.now()>deadline)throw Error("Reader not ready");await Bun.sleep(25);}
+    }
+    const snapshot={message:"Installing",progress:66,canCancel:true,done:false};
+    let published=false;
+    const writing=publishInstallerProgress(status,snapshot).then(()=>{published=true;});
+    if(reader) {await Bun.sleep(75);expect(published).toBe(false);}
+    await writeFile(release,"");await writing;
+    expect(JSON.parse(await readFile(status,"utf8"))).toEqual(snapshot);
+  } finally {
+    await writeFile(release,"");
+    if(reader)expect(await reader.exited,await new Response(reader.stderr).text()).toBe(0);
+    expect(root.startsWith(join(tmpdir(),"treetop-progress-lock-"))).toBe(true);
+    await rm(root,{recursive:true,force:true});
+  }
+},30000);
 
 test("installer layouts keep platform-specific executables and archive roots", () => {
   const mac = installerLayoutFor("darwin", "/Users/test");

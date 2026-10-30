@@ -2798,6 +2798,35 @@ cmd wrapper check passed with permitted hidden process creation. Binary bytes
 are covered by the worker regression. No further app install or restart has
 been performed for this fix.
 
+### 2026-10-31 new-terminal visibility gate and log documentation
+
+The reported fresh Treetop Codex column had about 27198ms between its
+synthetic source timestamp and terminal record timestamp. Daemon spawn took
+1001ms and first output followed 40ms later, so most elapsed time preceded
+process creation; the persisted browser trace for that launch was unavailable.
+These timestamps do not alone establish whether the remaining wait was mount
+gating, browser scheduling, or request queuing.
+
+NewSessionCol still gated mounting on ancestor row-offscreen/col-offscreen
+classes as well as its actual geometry, unlike SessionView. A headless test
+with a visible column and stale ancestor hints reproduced no spawn request
+with the old gate; the corrected viewport-only gate sends one. Its observer
+is now authoritative; redundant ancestor class observers were removed. The
+initial geometry check rejects display:none elements (whose zero rectangle
+otherwise appears near the origin). This is a demonstrated additional startup
+bug, not proof it accounts for every millisecond of that reported launch.
+
+Validation: 142 visibility/routing checks, the existing headless focus check,
+and a real NewSessionCol browser regression pass. The latter verifies visible
+startup with stale hints, no eager offscreen spawn, spawn on reveal, and no
+spawn for a display:none panel. Hidden-panel coverage first failed before
+the getClientRects guard. NewSessionCol compiles with zero warnings.
+
+Log locations are now collected in CLAUDE.md under Log locations, including
+workspace/native/installer paths, UTC dates, fallback daemon logs and broker
+descriptor credential handling. No app or broker restart, installer build,
+or production terminal creation was performed for this follow-up.
+
 ### 2026-10-31 Git queue diagnostics
 
 Installed logs showed readGitText queue waits over 120s and worktree detail
@@ -2815,3 +2844,16 @@ one join record and two merged hits, responsive main-thread timers, and binary
 output preservation. Real Git checks required running outside the restricted
 Windows sandbox. No build, installation or production restart was performed;
 the installed app needs a future rebuild/restart to emit these diagnostics.
+Installer follow-up: installing the new-column fix initially failed after
+app handoff with EBUSY on the progress window status.json. Recovery correctly
+reopened the previous 16:52 build; it was not a successful update. The WPF
+ReadAllText reader denied replacement while polling. Progress now publishes
+complete snapshots via temp-file rename with bounded sharing-lock retries,
+and WPF explicitly opens with ReadWrite/Delete sharing. A hidden Windows
+reader-lock regression failed before implementation and passes afterward.
+All 21 installer/handoff test cases passed across the suite and a rerun of
+the one default-5s timeout with a longer allowance; that isolated rerun took
+2.6s. Repackaged only Setup using the existing verified app archive.
+Retry 2414de10-f6c0-4e84-a963-75108ba6139c installed build 18:07:10.028Z,
+confirmed native WebView readiness at 18:17:09Z. Broker PID 89956 was unchanged
+and all 23 previously live terminal IDs retained their exact process IDs.

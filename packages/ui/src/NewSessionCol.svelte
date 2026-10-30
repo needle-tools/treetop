@@ -39,7 +39,7 @@
     type CodexModelInfo,
   } from "./claude-session-menu";
   import type { SshSessionInfo } from "./file-browser-utils";
-  import { elementNearViewport } from "./col-visibility";
+  import { elementNearViewport, sessionViewportNear } from "./col-visibility";
   import { apiWsUrl } from "./api";
   import {
     codexModelsCacheKey,
@@ -328,7 +328,6 @@
   let colEl: HTMLElement | null = null;
   let nearViewport = false;
   let visibilityObs: IntersectionObserver | null = null;
-  let ancestorVisibilityObs: MutationObserver | null = null;
   let mounted = false;
 
   // Keeps an attached PTY alive (and running) while its TerminalView renderer
@@ -387,19 +386,11 @@
       : undefined,
   );
 
-  function ancestorsNearViewport(): boolean {
-    if (!colEl) return true;
-    const col = colEl.closest(".session-col");
-    const row = colEl.closest(".row");
-    return (
-      !col?.classList.contains("col-offscreen") &&
-      !row?.classList.contains("row-offscreen")
-    );
-  }
-
   function syncViewportState(): void {
-    const next =
-      !!colEl && ancestorsNearViewport() && elementNearViewport(colEl);
+    // Parent offscreen classes only pause animations. Stale hints must not
+    // strand a newly selected, visible terminal before its spawn request.
+    const next = !!colEl && colEl.getClientRects().length > 0 &&
+      sessionViewportNear(elementNearViewport(colEl));
     if (nearViewport !== next) nearViewport = next;
   }
 
@@ -414,27 +405,14 @@
       nearViewport = true;
       return;
     }
-    visibilityObs = new IntersectionObserver(() => syncViewportState(), {
+    visibilityObs = new IntersectionObserver(entries => {
+      nearViewport = sessionViewportNear(entries.some(entry => entry.isIntersecting));
+    }, {
       root: null,
       rootMargin: "300px",
       threshold: 0,
     });
     visibilityObs.observe(colEl);
-    if (typeof MutationObserver !== "undefined") {
-      ancestorVisibilityObs = new MutationObserver(syncViewportState);
-      const col = colEl.closest(".session-col");
-      const row = colEl.closest(".row");
-      col &&
-        ancestorVisibilityObs.observe(col, {
-          attributes: true,
-          attributeFilter: ["class"],
-        });
-      row &&
-        ancestorVisibilityObs.observe(row, {
-          attributes: true,
-          attributeFilter: ["class"],
-        });
-    }
     syncViewportState();
     requestAnimationFrame(syncViewportState);
   });
@@ -447,8 +425,6 @@
     terminalHold.close();
     visibilityObs?.disconnect();
     visibilityObs = null;
-    ancestorVisibilityObs?.disconnect();
-    ancestorVisibilityObs = null;
   });
 
   async function saveAsLink(triggerRect: DOMRect): Promise<void> {

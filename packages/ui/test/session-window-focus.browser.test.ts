@@ -4,6 +4,75 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { chromium } from "playwright-core";
 import { createServer } from "vite";
+import { svelte } from "@sveltejs/vite-plugin-svelte";
+
+test("a visible new terminal starts despite stale ancestor animation hints", {timeout:60000}, async () => {
+  const root=resolve(dirname(fileURLToPath(import.meta.url)),"..");
+  const server=await createServer({root,configFile:false,
+    plugins:[svelte({compilerOptions:{compatibility:{componentApi:4}}})],
+    resolve:{alias:{"@treetop/nicifier":resolve(root,"../nicifier/src/index.ts")}},
+    server:{host:"127.0.0.1",port:0,hmr:false},logLevel:"error",
+  });
+  let browser;
+  try {
+    await server.listen();const address=server.httpServer!.address();assert(address&&typeof address!=="string");
+    browser=await chromium.launch({channel:process.platform==="win32"?"msedge":"chrome",headless:true,timeout:20000});
+    const page=await browser.newPage();let spawns=0;
+    const pageErrors:string[]=[];
+    page.on("pageerror",error=>{if(pageErrors.length<2)pageErrors.push(error.stack ?? error.message);});
+    await page.route("**/api/**",route=>{
+      if(route.request().method()==="POST"&&new URL(route.request().url()).pathname==="/api/terminals") {
+        spawns++;return route.fulfill({json:{id:"test-terminal",pid:1}});
+      }
+      return route.fulfill({json:{}});
+    });
+    await page.route("**/",route=>route.fulfill({contentType:"text/html",body:'<div class="row row-offscreen"><div class="session-col col-offscreen" style="width:600px;height:500px"><div id="target"></div></div></div>'}));
+    await page.goto(`http://127.0.0.1:${address.port}/`);
+    await page.evaluate(async()=>{
+      const path="/src/NewSessionCol.svelte";
+      const {default:Col}=await import(/* @vite-ignore */path);
+      (window as any).Col=Col;
+    });
+    const spawn=page.waitForResponse(response=>new URL(response.url()).pathname==="/api/terminals",{timeout:5000});
+    await page.evaluate(()=>{
+      (window as any).col=new (window as any).Col({target:document.querySelector("#target"),props:{
+        agent:"shell",source:"__new__:shell:visibility-probe",wtPath:"C:/probe",cwd:"C:/probe",cmd:["cmd.exe"],procName:"probe",spawnReady:true,
+      }});
+    });
+    try {await spawn;} catch(error) {
+      console.error(JSON.stringify({pageErrors,rect:await page.locator("#target").boundingBox()}));
+      throw error;
+    }
+    assert.equal(spawns,1);
+    assert.equal(await page.locator(".col-offscreen").count(),1);
+    await page.evaluate(async()=>{
+      (window as any).col.$destroy();
+      const target=document.querySelector<HTMLElement>("#target")!;
+      target.style.marginTop="5000px";
+      (window as any).col=new (window as any).Col({target,props:{
+        agent:"shell",source:"__new__:shell:offscreen-probe",wtPath:"C:/probe",cwd:"C:/probe",cmd:["cmd.exe"],procName:"probe",spawnReady:true,
+      }});
+      await new Promise<void>(resolve=>requestAnimationFrame(()=>requestAnimationFrame(()=>resolve())));
+    });
+    assert.equal(spawns,1);
+    assert.equal(await page.locator(".session-body-deferred").count(),1);
+    const revealed=page.waitForResponse(response=>new URL(response.url()).pathname==="/api/terminals",{timeout:5000});
+    await page.locator("#target").scrollIntoViewIfNeeded();
+    await revealed;assert.equal(spawns,2);
+    await page.evaluate(async()=>{
+      (window as any).col.$destroy();
+      const target=document.querySelector<HTMLElement>("#target")!;
+      target.style.marginTop="0";target.parentElement!.style.display="none";
+      (window as any).col=new (window as any).Col({target,props:{
+        agent:"shell",source:"__new__:shell:hidden-probe",wtPath:"C:/probe",cwd:"C:/probe",cmd:["cmd.exe"],procName:"probe",spawnReady:true,
+      }});
+      await new Promise<void>(resolve=>requestAnimationFrame(()=>requestAnimationFrame(()=>resolve())));
+    });
+    assert.equal(spawns,2);
+    assert.equal(await page.locator(".session-body-deferred").count(),1);
+    await page.evaluate(()=>{(window as any).col.$destroy();});
+  } finally {await browser?.close();await server.close();}
+});
 
 test("returning to the app restores session input focus without stealing other focus", { timeout: 30000 }, async () => {
   const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");

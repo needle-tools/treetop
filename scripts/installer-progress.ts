@@ -1,8 +1,27 @@
-import { mkdtemp, writeFile, rm, chmod } from "node:fs/promises";
+import { mkdtemp, writeFile, rename, rm, chmod } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { InstallerControl } from "./windows-installer-core";
+
+/** Publish complete snapshots. A short Windows reader/AV lock must not abort
+ * installation after the app has already exited for handoff. */
+export async function publishInstallerProgress(path: string, snapshot: {
+  message: string; progress: number; canCancel: boolean; done: boolean;
+}): Promise<void> {
+  const temporary=`${path}.${crypto.randomUUID()}.tmp`;
+  try {
+    await writeFile(temporary,JSON.stringify(snapshot));
+    const deadline=Date.now()+2000;
+    for(;;) {
+      try {await rename(temporary,path);return;}
+      catch(error) {
+        if(!["EBUSY","EPERM","EACCES"].includes((error as NodeJS.ErrnoException).code ?? "") || Date.now()>=deadline) throw error;
+        await Bun.sleep(25);
+      }
+    }
+  } finally {await rm(temporary,{force:true});}
+}
 
 /** Compiled on the Mac build machine; end users need no Swift tools. */
 export const macInstallerWindowSource = String.raw`
@@ -141,7 +160,9 @@ $timer = New-Object Windows.Threading.DispatcherTimer
 $timer.Interval = [TimeSpan]::FromMilliseconds(100)
 $timer.Add_Tick({
  try {
-  $snapshot = [IO.File]::ReadAllText($env:TREETOP_SETUP_STATUS) | ConvertFrom-Json
+  $stream = [IO.File]::Open($env:TREETOP_SETUP_STATUS, [IO.FileMode]::Open, [IO.FileAccess]::Read, ([IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete))
+  $reader = [IO.StreamReader]::new($stream)
+  try { $snapshot = $reader.ReadToEnd() | ConvertFrom-Json } finally { $reader.Dispose() }
   if (-not $script:cancelRequested -or $snapshot.done) { $status.Text = $snapshot.message }
   $progress.Value = $snapshot.progress
   $script:canCancel = $snapshot.canCancel; $cancel.IsEnabled = $script:canCancel -and -not $script:cancelRequested
@@ -167,7 +188,7 @@ export async function openInstallerProgress(splash: string, control: InstallerCo
   const status = join(root, "status.json"), cancel = join(root, "cancel"), ready = join(root, "ready");
   const script = join(root, "window.ps1"), image = join(root, "splash.png");
   let message = "Preparing the installer…", progress = 0;
-  const publish = (done = false) => writeFile(status, JSON.stringify({ message, progress, canCancel: control.canCancel, done }));
+  const publish = (done = false) => publishInstallerProgress(status, { message, progress, canCancel: control.canCancel, done });
   await Promise.all([writeFile(script, "\ufeff" + windowsWindow, "utf8"), Bun.write(image, Bun.file(splash)), publish()]);
   let args = ["powershell.exe", "-NoProfile", "-NonInteractive", "-STA", "-ExecutionPolicy", "Bypass", "-File", script];
   if (process.platform === "darwin") {
