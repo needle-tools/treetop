@@ -58,22 +58,41 @@ export function createGitWorkScheduler() {
     "getUpstreamRemoteName", "listCommits", "getDiffFileContent", "getFileDiff",
     "getCommitDiff", "listCommitFiles", "getCommitFileDiff", "getDiff",
   ]);
-  return <T>(
+  const lanes = { inventory, reads, lineCounts, fetches, interactive, branches, queries };
+  const counts = Object.fromEntries(Object.keys(lanes).map(lane => [lane, { active: 0, queued: 0 }]));
+  const schedule = <T>(
     operation: string,
     fresh: boolean,
     task: () => Promise<T>,
-  ): Promise<T> =>
-    (operation === "getSelectedRemoteBranchStatus"
-      ? branches
+    onStart?: (state: { lane: string; active: number; queued: number }) => void,
+  ): Promise<T> => {
+    const lane = operation === "getSelectedRemoteBranchStatus"
+      ? "branches"
       : onDemand.has(operation)
-      ? queries
+      ? "queries"
       : fresh
-      ? interactive
+      ? "interactive"
       : operation === "fetchAll"
-        ? fetches
+        ? "fetches"
         : operation === "getDirtyLineCount"
-          ? lineCounts
+          ? "lineCounts"
           : operation === "listWorktrees" || operation === "listRemotes"
-            ? inventory
-            : reads)(task);
+            ? "inventory"
+            : "reads";
+    const state = counts[lane];
+    state.queued++;
+    return lanes[lane](async () => {
+      state.queued--;
+      state.active++;
+      try {
+        onStart?.({ lane, ...state });
+        return await task();
+      } finally {
+        state.active--;
+      }
+    });
+  };
+  return Object.assign(schedule, {
+    snapshot: () => Object.fromEntries(Object.entries(counts).map(([lane, state]) => [lane, { ...state }])),
+  });
 }

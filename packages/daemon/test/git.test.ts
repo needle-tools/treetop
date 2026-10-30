@@ -1,8 +1,32 @@
-import { test, expect, describe } from "bun:test";
+import { test, expect, describe, spyOn } from "bun:test";
 import { resolve } from "node:path";
 import { enableBackgroundGitWorker, readGitText, getDiffFileContent, listWorktrees, listRemotes, listCommits, shouldReadSelectedRemoteStatus, getWorktreeDetails, getDirtyLineCount } from "../src/git";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
+
+test("identical worker reads log one dedup join and the completed hit count", async () => {
+  enableBackgroundGitWorker();
+  const log = spyOn(console, "log");
+  try {
+    const outputs = await Promise.all([
+      readGitText(tmpdir(), ["--version"], false),
+      readGitText(tmpdir(), ["--version"], false),
+      readGitText(tmpdir(), ["--version"], false),
+    ]);
+    expect(outputs[0]).toMatch(/^git version /);
+    expect(outputs[1]).toBe(outputs[0]);
+    expect(outputs[2]).toBe(outputs[0]);
+    const lines = log.mock.calls.map(args => String(args[0]));
+    const joins = lines.filter(line => line.includes("git-dedup join"));
+    const completions = lines.filter(line => line.includes("git-dedup complete"));
+    expect(joins).toHaveLength(1);
+    expect(completions).toHaveLength(1);
+    expect(joins[0]).toContain('command=["--version"]');
+    expect(completions[0]).toContain("hits=2");
+    expect(joins[0].match(/id=\d+/)?.[0]).toBe(completions[0].match(/id=\d+/)?.[0]);
+    expect(joins[0]).toMatch(/id=\d+/);
+  } finally { log.mockRestore(); }
+}, 120_000);
 
 test("read-only Git requests preserve output while the main event loop remains responsive", async () => {
   const dir=await mkdtemp(resolve(tmpdir(),"treetop-git-read-worker-"));

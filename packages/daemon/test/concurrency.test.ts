@@ -9,6 +9,27 @@
 import { test, expect, describe } from "bun:test";
 import { createLimiter, createGitWorkScheduler } from "../src/concurrency";
 
+test("Git scheduler reports lane depth and releases counts after failure", async () => {
+  const schedule = createGitWorkScheduler();
+  let release!: () => void;
+  const blocked = new Promise<void>(resolve => { release = resolve; });
+  const first = schedule("readGitText", false, () => blocked);
+  const second = schedule("readGitText", false, () => blocked);
+  let started: unknown;
+  const third = schedule("readGitText", false, async () => { throw Error("failed"); }, state => { started = state; });
+  const rejected = third.catch(error => error.message);
+  await Promise.resolve();
+  expect(schedule.snapshot().queries).toEqual({ active: 2, queued: 1 });
+  expect(schedule.snapshot().reads).toEqual({ active: 0, queued: 0 });
+  release();
+  await Promise.all([first, second]);
+  expect(await rejected).toBe("failed");
+  // Allow the limiter's finally callbacks to release their slots.
+  await Bun.sleep(0);
+  expect(started).toMatchObject({ lane: "queries", active: 1, queued: 0 });
+  expect(schedule.snapshot().queries).toEqual({ active: 0, queued: 0 });
+});
+
 test("worktree inventory bypasses slow status and dirty-line reads", async () => {
   const schedule = createGitWorkScheduler();
   let release!: () => void;

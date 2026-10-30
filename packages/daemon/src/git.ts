@@ -10,7 +10,7 @@ let backgroundGitWorker: Worker | undefined;
 let backgroundGitEnabled = false;
 let backgroundGitSequence = 0;
 const backgroundGitPending = new Map<number, { resolve: (value: any) => void; reject: (error: Error) => void }>();
-const backgroundGitReads = new Map<string, Promise<unknown>>();
+const backgroundGitReads = new Map<string, { id: number; promise: Promise<unknown>; hits: number; startedAt: number }>();
 
 /** Windows process creation can block for seconds even with asynchronous APIs. */
 export function enableBackgroundGitWorker(): void { backgroundGitEnabled = true; }
@@ -21,13 +21,23 @@ function backgroundGit<T>(operation: BackgroundGitOperation, args: unknown[]): P
   if (operation === "fetchAll") return dispatchBackgroundGit(operation, args);
   const key = JSON.stringify([operation, args]);
   const running = backgroundGitReads.get(key);
-  if (running) return running as Promise<T>;
-  const result = dispatchBackgroundGit<T>(operation, args).finally(() => backgroundGitReads.delete(key));
-  backgroundGitReads.set(key, result);
+  if (running) {
+    running.hits++;
+    // One breadcrumb per flight, followed by an aggregate on completion.
+    if (running.hits === 1) console.log(`supergit daemon: git-dedup join id=${running.id} operation=${operation} age=${Math.round(performance.now() - running.startedAt)}ms path=${JSON.stringify(args[0])}${operation === "readGitText" ? ` command=${JSON.stringify(args[1])}` : ""}`);
+    return running.promise as Promise<T>;
+  }
+  const entry = { id: ++backgroundGitSequence, promise: undefined as unknown as Promise<T>, hits: 0, startedAt: performance.now() };
+  const result = dispatchBackgroundGit<T>(operation, args, entry.id).finally(() => {
+    backgroundGitReads.delete(key);
+    if (entry.hits) console.log(`supergit daemon: git-dedup complete id=${entry.id} operation=${operation} hits=${entry.hits} total=${Math.round(performance.now() - entry.startedAt)}ms path=${JSON.stringify(args[0])}${operation === "readGitText" ? ` command=${JSON.stringify(args[1])}` : ""}`);
+  });
+  entry.promise = result;
+  backgroundGitReads.set(key, entry);
   return result;
 }
 
-function dispatchBackgroundGit<T>(operation: BackgroundGitOperation, args: unknown[]): Promise<T> {
+function dispatchBackgroundGit<T>(operation: BackgroundGitOperation, args: unknown[], id = ++backgroundGitSequence): Promise<T> {
   if (!backgroundGitWorker) {
     // Compiled Bun resolves embedded entries by their build-root-relative name;
     // a Windows file: URL incorrectly goes through the real filesystem loader.
@@ -36,7 +46,9 @@ function dispatchBackgroundGit<T>(operation: BackgroundGitOperation, args: unkno
       : new URL("./git.ts", import.meta.url);
     const worker = new Worker(entry, { workerData: { backgroundGit: true } });
     backgroundGitWorker = worker;
-    worker.on("message", ({ id, value, error }) => {
+    worker.on("message", ({ id, value, error, diagnostic }) => {
+      // Tee worker diagnostics through the daemon logger as well as stdout.
+      if (diagnostic) { console.log(diagnostic); return; }
       const pending = backgroundGitPending.get(id);
       if (!pending) return;
       backgroundGitPending.delete(id);
@@ -55,7 +67,6 @@ function dispatchBackgroundGit<T>(operation: BackgroundGitOperation, args: unkno
   const worker = backgroundGitWorker;
   worker.ref();
   return new Promise<T>((resolve, reject) => {
-    const id = ++backgroundGitSequence;
     backgroundGitPending.set(id, { resolve, reject });
     worker.postMessage({ id, operation, args });
   });
@@ -65,9 +76,18 @@ if (!isMainThread && workerData?.backgroundGit) {
   const scheduleGit = createGitWorkScheduler();
   parentPort!.on("message", ({ id, operation, args }) => {
     const queuedAt = performance.now();
+    let startedAt: number | undefined;
+    let laneState: { lane: string; active: number; queued: number } | undefined;
+    let outcome = "ok";
+    const detail = `id=${id} path=${JSON.stringify(args[0])}${operation === "readGitText" ? ` command=${JSON.stringify(args[1])}` : ""}`;
+    const log = (message: string) => parentPort!.postMessage({ diagnostic: `supergit daemon: git-read ${operation} ${message} ${detail}` });
+    const pendingWarning = setTimeout(() => {
+      log(`pending phase=${startedAt === undefined ? "queued" : "running"} age=${Math.round(performance.now() - queuedAt)}ms lanes=${JSON.stringify(scheduleGit.snapshot())}`);
+    }, 10_000);
+    pendingWarning.unref();
     // Network fetches must not hold the slots needed to display sessions.
     void scheduleGit(operation, operation === "getWorktreeDetails" && args[1]?.fresh === true, async () => {
-      const startedAt = performance.now();
+      startedAt = performance.now();
       try {
         const operations = { listWorktrees, listRemotes, getWorktreeDetails, getSelectedRemoteBranchStatus, getDirtyLineCount, fetchAll,
           readGitText, listSubmoduleDetails, mainWorktreePathFor, listBranches, getUpstreamRemoteName,
@@ -75,11 +95,17 @@ if (!isMainThread && workerData?.backgroundGit) {
         const value = await (operations[operation as BackgroundGitOperation] as Function)(...args);
         parentPort!.postMessage({ id, value });
       } catch (error) {
+        outcome = "error";
         parentPort!.postMessage({ id, error: error instanceof Error ? error.message : String(error) });
       } finally {
         const completedAt = performance.now();
-        if (operation !== "fetchAll" && completedAt - queuedAt > 1000) console.log(`supergit daemon: git-read ${operation} queue=${(startedAt - queuedAt).toFixed(0)}ms run=${(completedAt - startedAt).toFixed(0)}ms path=${args[0]}`);
+        clearTimeout(pendingWarning);
+        if (completedAt - queuedAt > 1000 || outcome === "error") log(`complete outcome=${outcome} queue=${(startedAt - queuedAt).toFixed(0)}ms run=${(completedAt - startedAt).toFixed(0)}ms lane=${laneState?.lane} activeAtStart=${laneState?.active} queuedAtStart=${laneState?.queued} lanes=${JSON.stringify(scheduleGit.snapshot())}`);
       }
+    }, state => {
+      laneState = state;
+      const waited = performance.now() - queuedAt;
+      if (waited > 1000) log(`start queue=${waited.toFixed(0)}ms lane=${state.lane} active=${state.active} queued=${state.queued}`);
     });
   });
 }

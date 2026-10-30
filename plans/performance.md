@@ -2797,3 +2797,21 @@ pass; 175 API/scheduler/server helper checks passed, and the one sandbox-blocked
 cmd wrapper check passed with permitted hidden process creation. Binary bytes
 are covered by the worker regression. No further app install or restart has
 been performed for this fix.
+
+### 2026-10-31 Git queue diagnostics
+
+Installed logs showed readGitText queue waits over 120s and worktree detail
+reads taking tens of seconds. Worker records now include request IDs,
+readGitText command arrays, lane active/queued counts, queue/run timings and
+outcomes. One warning after ten seconds distinguishes queued from running
+requests before completion. Dedup emits its first join and an aggregate hit
+count at completion using the same request ID. Worker diagnostics pass through
+the main daemon logger so workspace daemon.log receives them as well as the
+native redirected log. Concurrency limits and lane selection are unchanged.
+
+Validation: nine scheduler checks and two real Git worker checks pass (20
+assertions in the real-Git checks), including three identical calls producing
+one join record and two merged hits, responsive main-thread timers, and binary
+output preservation. Real Git checks required running outside the restricted
+Windows sandbox. No build, installation or production restart was performed;
+the installed app needs a future rebuild/restart to emit these diagnostics.
