@@ -53,6 +53,45 @@ export function terminalRequestTiming(
   };
 }
 let stopRequestSequence = 0;
+let inputProbeSequence = 0;
+
+/** A sampled fence after input on the same socket. It acknowledges broker
+ * processing, not PTY consumption or an echo from the terminal application. */
+export function attachTerminalInputProbe(
+  socket: WebSocket,
+  measured: (sample: {roundTripMs:number;brokerMs:number|null}) => void,
+) {
+  let supported = false, disposed = false;
+  let lastSampleAt = -Infinity;
+  let pending: {id:string;at:number} | undefined;
+  const onMessage = (event: MessageEvent) => {
+    if (typeof event.data !== "string") return;
+    let message:any;
+    try {message=JSON.parse(event.data);} catch {return;}
+    if(message.type === "capabilities") supported=message.controls?.includes("input-probe") === true;
+    if(!pending || message.type !== "input-probe-result" || message.requestId !== pending.id) return;
+    const at=pending.at;pending=undefined;
+    measured({roundTripMs:performance.now()-at,brokerMs:typeof message.brokerMs === "number" ? message.brokerMs : null});
+  };
+  const dispose = () => {
+    disposed=true;pending=undefined;
+    socket.removeEventListener("message",onMessage);
+    socket.removeEventListener("close",dispose);
+  };
+  socket.addEventListener("message",onMessage);
+  socket.addEventListener("close",dispose);
+  return {
+    sample(): boolean {
+      const now=performance.now();
+      if(disposed || !supported || socket.readyState !== 1 || now-lastSampleAt < 2000) return false;
+      if(pending && now-pending.at < 10_000) return false;
+      lastSampleAt=now;pending={id:`input-${++inputProbeSequence}`,at:now};
+      socket.send(JSON.stringify({type:"input-probe",requestId:pending.id}));
+      return true;
+    },
+    dispose,
+  };
+}
 const terminalStopKey = (id:string,daemonId?:string) => `${daemonId ?? ""}\0${id}`;
 
 /** Use the already-connected terminal transport for urgent controls. The

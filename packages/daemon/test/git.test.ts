@@ -1,8 +1,41 @@
 import { test, expect, describe } from "bun:test";
 import { resolve } from "node:path";
-import { enableBackgroundGitWorker, listWorktrees, listRemotes, listCommits, shouldReadSelectedRemoteStatus, getWorktreeDetails, getDirtyLineCount } from "../src/git";
+import { enableBackgroundGitWorker, readGitText, getDiffFileContent, listWorktrees, listRemotes, listCommits, shouldReadSelectedRemoteStatus, getWorktreeDetails, getDirtyLineCount } from "../src/git";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
+
+test("read-only Git requests preserve output while the main event loop remains responsive", async () => {
+  const dir=await mkdtemp(resolve(tmpdir(),"treetop-git-read-worker-"));
+  const init=Bun.spawn(["git","-C",dir,"init"],{windowsHide:true,stdout:"ignore",stderr:"pipe"});
+  expect(await init.exited,await new Response(init.stderr).text()).toBe(0);
+  enableBackgroundGitWorker();
+  let last=performance.now(),maxGap=0,ticks=0;
+  const timer=setInterval(()=>{const now=performance.now();maxGap=Math.max(maxGap,now-last);last=now;ticks++;},20);
+  try {
+    const outputs=await Promise.all([
+      readGitText(dir,["rev-parse","--is-inside-work-tree"]),
+      readGitText(dir,["status","--porcelain"]),
+      readGitText(dir,["remote","-v"]),
+      readGitText(dir,["worktree","list","--porcelain"]),
+    ]);
+    await Bun.sleep(30);
+    expect(outputs[0].trim()).toBe("true");expect(outputs[1]).toBe("");expect(outputs[2]).toBe("");
+    expect(outputs[3]).toContain("worktree ");expect(ticks).toBeGreaterThan(0);
+    expect(maxGap).toBeLessThan(1000);
+    clearInterval(timer);
+    const binary=Buffer.from([0,255,128,13,10]);
+    await writeFile(resolve(dir,"binary.bin"),binary);
+    const add=Bun.spawn(["git","-C",dir,"add","binary.bin"],{windowsHide:true,stdout:"ignore",stderr:"pipe"});
+    expect(await add.exited,await new Response(add.stderr).text()).toBe(0);
+    const content=await getDiffFileContent(dir,"binary.bin","staged","after");
+    expect(Buffer.isBuffer(content)).toBe(true);
+    expect(content).toEqual(binary);
+  } finally {
+    clearInterval(timer);
+    expect(dir.startsWith(resolve(tmpdir(),"treetop-git-read-worker-"))).toBe(true);
+    await rm(dir,{recursive:true,force:true});
+  }
+},120_000);
 
 test("basic worktree details retain dirty file counts while optional line counts run separately", async () => {
   const dir=await mkdtemp(resolve(tmpdir(),"treetop-basic-status-"));
@@ -64,14 +97,16 @@ test("compiled Git worker loads outside the build working directory", async () =
   try {
     const entry = resolve(fixture, "probe.ts");
     const binary = resolve(fixture, process.platform === "win32" ? "probe.exe" : "probe");
-    await writeFile(entry, `import { enableBackgroundGitWorker, listWorktrees, listRemotes, getWorktreeDetails } from ${JSON.stringify(resolve(root, "packages/daemon/src/git.ts").replaceAll("\\", "/"))};\nenableBackgroundGitWorker();\nawait Promise.all(Array.from({length:4}, async () => { await Promise.all([listWorktrees(process.argv[2]), listRemotes(process.argv[2])]); await getWorktreeDetails(process.argv[2]); }));\nconsole.log(JSON.stringify(await listWorktrees(process.argv[2])));`);
+    await writeFile(entry, `import { enableBackgroundGitWorker, listWorktrees, listRemotes, getWorktreeDetails } from ${JSON.stringify(resolve(root, "packages/daemon/src/git.ts").replaceAll("\\", "/"))};\nenableBackgroundGitWorker();\nawait Promise.all(Array.from({length:4}, async () => { await Promise.all([listWorktrees(process.argv[2]), listRemotes(process.argv[2])]); await getWorktreeDetails(process.argv[2]); }));\nconsole.log("RESULT:"+JSON.stringify(await listWorktrees(process.argv[2])));`);
     const compile = Bun.spawn([process.execPath, "build", "--compile", "--root", root, entry, resolve(root, "packages/daemon/src/git.ts"), "--outfile", binary], { cwd: root, stdout: "ignore", stderr: "pipe", windowsHide: true });
     const compileErrors = await new Response(compile.stderr).text();
     expect(await compile.exited, compileErrors).toBe(0);
     const probe = Bun.spawn([binary, root], { cwd: runtime, stdout: "pipe", stderr: "pipe", windowsHide: true, timeout: 40_000 });
     const [output, errors, code] = await Promise.all([new Response(probe.stdout).text(), new Response(probe.stderr).text(), probe.exited]);
     expect(code, errors).toBe(0);
-    expect(JSON.parse(output).some((wt: { path: string }) => resolve(wt.path) === root)).toBe(true);
+    const resultLine = output.split(/\r?\n/).find(line => line.startsWith("RESULT:"));
+    expect(resultLine, output).toBeDefined();
+    expect(JSON.parse(resultLine!.slice(7)).some((wt: { path: string }) => resolve(wt.path) === root)).toBe(true);
   } finally {
     await rm(fixture, { recursive: true, force: true });
     await rm(runtime, { recursive: true, force: true });

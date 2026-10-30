@@ -2737,3 +2737,63 @@ slow-only, cooldown-limited samples, not a latency distribution. Protocol
 responses also call sendTerminalInput, so first-output delay is not a pure
 keystroke echo measurement. Hidden-window timer throttling explains the
 repeated ~59s hidden event-loop diagnostics and is not a foreground freeze.
+
+### 2026-10-30 input lag also occurs without process launches
+
+User confirmed typing delays while staying in one terminal, with no launches.
+The old-helper spawn bottleneck therefore cannot explain the full complaint.
+Daemon logs also contain repeated broker write-request timeouts. Read-only
+probes during this investigation were fast: broker HTTP 1-10ms, daemon health
+10-16ms, and daemon-to-broker status round trips 12-27ms. The stall is
+intermittent; these samples do not establish where a delayed key waited.
+
+Added a capability-negotiated input probe after sampled binary keystrokes,
+limited to one outstanding sample and one per 2s. The daemon fences the prior
+write with a status RPC over its existing broker socket, then returns timing.
+It sends no extra PTY bytes, records no typed content, and requires no broker
+or helper upgrade. It measures processing through the broker, not actual
+helper/ConPTY consumption or a verified character echo. Probes are not
+replayed. Unsupported daemons leave input unchanged.
+
+Corrected key-event timestamp lifetime: a microtask checkpoint between capture
+and xterm listeners could clear it before onData. It now survives the event
+dispatch task. Only key-associated input arms first-output timing/probes;
+automatic xterm protocol/focus/mouse replies no longer arm the echo clue.
+Latency diagnostics include recent sampled transport/broker timing and age.
+The sampled-socket test was observed failing before implementation, then
+passed with binary-before-probe ordering, rate limiting, ack measurement and
+disposal assertions. All 27 API tests pass; TerminalView and daemon parse.
+The code is source-only pending an explicit build/install request. No live
+process was restarted and the underlying stationary-typing cause remains
+unconfirmed.
+
+### 2026-10-30 sampled input trace isolates a remaining main-thread Git stall
+
+Installed tracing recorded input transport round trips of 13203ms and
+24423ms while their broker status fences took 25ms and 56ms respectively.
+Cheap API routes and native tray requests stalled concurrently. An external
+health probe caught the daemon at 1239ms versus broker HTTP at 19ms. This
+excludes the preserved helper as the sole explanation for the stationary
+typing complaint, but does not individually attribute every delayed key.
+
+An isolated Windows Bun reproduction issued four read-only Git commands:
+main-thread execution took 8079ms with a 5939ms timer gap; the same inventory
+queries via the Git worker took 13784ms with a maximum timer gap of 39ms.
+Thus Windows process creation on the request thread is a demonstrated input
+forwarding blocker, despite asynchronous command APIs. Raw Git reads remained
+in worktree hover summaries (five parallel commands plus optional per-file
+commands), folder stats, folder listings, repo summaries and remote lookup.
+History, diff, branch and submodule functions could also spawn on that thread.
+
+These read paths now dispatch through the existing Git worker. On-demand
+queries have a bounded separate two-slot lane so slow background status scans
+do not starve hover/history reads. No cache/layout/subscription or PTY lifecycle
+is changed. Buffer-valued diff content is reconstructed after worker cloning.
+The compiled-worker test now frames its JSON result separately from normal
+slow-Git logs; the old stdout-only assumption failed when real queries logged
+latency. The new responsiveness and lane regressions were observed failing
+first. Read-worker responsiveness, history/tag behavior and compiled loading
+pass; 175 API/scheduler/server helper checks passed, and the one sandbox-blocked
+cmd wrapper check passed with permitted hidden process creation. Binary bytes
+are covered by the worker regression. No further app install or restart has
+been performed for this fix.

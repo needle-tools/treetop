@@ -1,5 +1,34 @@
 import { test, expect, describe } from "bun:test";
-import { apiUrl, apiWsUrl, withRequestDeadline, requestTerminalStop, attachTerminalStopChannel, startTerminalBootstrap, terminalRequestTiming } from "../src/api";
+import { apiUrl, apiWsUrl, withRequestDeadline, requestTerminalStop, attachTerminalStopChannel, startTerminalBootstrap, terminalRequestTiming, attachTerminalInputProbe } from "../src/api";
+
+test("sampled input probes follow binary input, measure acknowledgement and do not flood the socket", async () => {
+  const received:string[] = [];
+  const server = Bun.serve({hostname:"127.0.0.1",port:0,
+    fetch(request, server) { if (server.upgrade(request)) return; return new Response(null,{status:404}); },
+    websocket:{open(socket){socket.send(JSON.stringify({type:"capabilities",controls:["input-probe"]}));},
+      message(socket, raw){
+        if(typeof raw !== "string"){received.push("input");return;}
+        const message=JSON.parse(raw);received.push(message.type);
+        setTimeout(()=>socket.send(JSON.stringify({type:"input-probe-result",requestId:message.requestId,brokerMs:12})),30);
+      }},
+  });
+  const socket = new WebSocket(`ws://127.0.0.1:${server.port}/io`);
+  let complete!:(sample:{roundTripMs:number;brokerMs:number|null})=>void;
+  const measured=new Promise<{roundTripMs:number;brokerMs:number|null}>(resolve=>{complete=resolve;});
+  const probe=attachTerminalInputProbe(socket,complete);
+  try {
+    expect(probe.sample()).toBe(false);
+    await new Promise(resolve=>socket.addEventListener("message",resolve,{once:true}));
+    socket.send(new Uint8Array([97]));
+    expect(probe.sample()).toBe(true);
+    expect(probe.sample()).toBe(false);
+    const sample=await measured;
+    expect(sample.roundTripMs).toBeGreaterThanOrEqual(25);
+    expect(sample.brokerMs).toBe(12);
+    expect(received).toEqual(["input","input-probe"]);
+    probe.dispose();expect(probe.sample()).toBe(false);
+  } finally {probe.dispose();socket.close();await Bun.sleep(20);server.stop(true);}
+});
 
 test("terminal launch timings distinguish request wait from response delivery delay", () => {
   const entry = {startTime:100,requestStart:8100,responseStart:8228,responseEnd:8240};

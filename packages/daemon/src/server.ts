@@ -38,6 +38,7 @@ import {
 } from "./claude-json-repair";
 import {
   listWorktrees,
+  readGitText,
   enableBackgroundGitWorker,
   mainWorktreePathFor,
   getWorktreeDetails,
@@ -76,7 +77,7 @@ import {
   listCodexReplaySessions,
   readCodexReplaySession,
 } from "./codex-replay-recordings";
-import { $, type ServerWebSocket } from "bun";
+import { type ServerWebSocket } from "bun";
 import {
   detectAgents,
   agentsForWorktree,
@@ -4212,9 +4213,7 @@ const server = Bun.serve<TermWsData, never>({
             if (exists) {
               try {
                 const out =
-                  await $`git -C ${g.path} config --get remote.origin.url`
-                    .quiet()
-                    .text();
+                  await readGitText(g.path, ["config", "--get", "remote.origin.url"], false);
                 const trimmed = out.trim();
                 if (trimmed) repoUrl = trimmed;
               } catch {
@@ -8331,7 +8330,7 @@ const server = Bun.serve<TermWsData, never>({
         let currentSha = "";
         try {
           currentSha = (
-            await $`git -C ${repo.path} rev-parse HEAD`.quiet().text()
+            await readGitText(repo.path, ["rev-parse", "HEAD"], false)
           ).trim();
         } catch {
           // ignore
@@ -8417,7 +8416,7 @@ const server = Bun.serve<TermWsData, never>({
               let currentSha = "";
               try {
                 currentSha = (
-                  await $`git -C ${repo.path} rev-parse HEAD`.quiet().text()
+                  await readGitText(repo.path, ["rev-parse", "HEAD"], false)
                 ).trim();
               } catch {
                 // ignore
@@ -8856,25 +8855,13 @@ const server = Bun.serve<TermWsData, never>({
         const fmt = "%H%x00%s%x00%an%x00%aI";
         const [statusOut, aheadOut, behindOut, numstatUnstaged, numstatStaged] =
           await Promise.all([
-            $`git --no-optional-locks -C ${path} status --porcelain`.quiet().nothrow().text(),
-            $`git -C ${path} log @{u}..HEAD --pretty=format:${fmt} -n 20`
-              .quiet()
-              .nothrow()
-              .text(),
-            $`git -C ${path} log HEAD..@{u} --pretty=format:${fmt} -n 20`
-              .quiet()
-              .nothrow()
-              .text(),
+            readGitText(path, ["status", "--porcelain"]),
+            readGitText(path, ["log", "@{u}..HEAD", `--pretty=format:${fmt}`, "-n", "20"]),
+            readGitText(path, ["log", "HEAD..@{u}", `--pretty=format:${fmt}`, "-n", "20"]),
             // --no-renames so paths line up 1:1 with parseChangedFiles output;
             // otherwise renames render as `{a => b}` and wouldn't match.
-            $`git --no-optional-locks -C ${path} diff --numstat --no-renames`
-              .quiet()
-              .nothrow()
-              .text(),
-            $`git --no-optional-locks -C ${path} diff --cached --numstat --no-renames`
-              .quiet()
-              .nothrow()
-              .text(),
+            readGitText(path, ["diff", "--numstat", "--no-renames"]),
+            readGitText(path, ["diff", "--cached", "--numstat", "--no-renames"]),
           ]);
         const files = parseChangedFiles(statusOut);
         let unpushedCommits = parseUnpushedCommits(aheadOut);
@@ -8890,10 +8877,7 @@ const server = Bun.serve<TermWsData, never>({
         // branch because `aheadOut` was non-empty.
         if (unpushedCommits.length === 0) {
           const orphanOut =
-            await $`git -C ${path} log HEAD --not --remotes --pretty=format:${fmt} -n 20`
-              .quiet()
-              .nothrow()
-              .text();
+            await readGitText(path, ["log", "HEAD", "--not", "--remotes", `--pretty=format:${fmt}`, "-n", "20"]);
           unpushedCommits = parseUnpushedCommits(orphanOut);
         }
         // Per-path line stats. Two maps: one for the working tree (covers
@@ -8921,10 +8905,7 @@ const server = Bun.serve<TermWsData, never>({
             // --no-index always exits non-zero when files differ; nothrow
             // and just read stdout.
             const out =
-              await $`git --no-optional-locks -C ${path} diff --no-index --numstat /dev/null ${rel}`
-                .quiet()
-                .nothrow()
-                .text();
+              await readGitText(path, ["diff", "--no-index", "--numstat", "/dev/null", rel]);
             return { rel, parsed: parseNumstat(out) };
           }),
         );
@@ -9152,15 +9133,9 @@ const server = Bun.serve<TermWsData, never>({
             ? folder.slice(wt.length).replace(/^\//, "")
             : folder;
           const [unstaged, staged, untracked] = await Promise.all([
-            $`git --no-optional-locks -C ${wt} diff --numstat -- ${rel}`.quiet().nothrow().text(),
-            $`git --no-optional-locks -C ${wt} diff --cached --numstat -- ${rel}`
-              .quiet()
-              .nothrow()
-              .text(),
-            $`git -C ${wt} ls-files --others --exclude-standard -- ${rel}`
-              .quiet()
-              .nothrow()
-              .text(),
+            readGitText(wt, ["diff", "--numstat", "--", rel]),
+            readGitText(wt, ["diff", "--cached", "--numstat", "--", rel]),
+            readGitText(wt, ["ls-files", "--others", "--exclude-standard", "--", rel]),
           ]);
           const files: {
             path: string;
@@ -9261,10 +9236,7 @@ const server = Bun.serve<TermWsData, never>({
           const gitWt = url.searchParams.get("git");
           if (gitWt) {
             try {
-              const statusOut = await $`git --no-optional-locks -C ${gitWt} status --porcelain`
-                .quiet()
-                .nothrow()
-                .text();
+              const statusOut = await readGitText(gitWt, ["status", "--porcelain"]);
               const gitMap = new Map<string, string>();
               for (const line of statusOut.split("\n")) {
                 if (line.length < 4) continue;
@@ -10603,7 +10575,7 @@ const server = Bun.serve<TermWsData, never>({
         ws.close(1011, terminalGoneReason(terminalBackend.getExitInfo(termId)));
         return;
       }
-      ws.send(JSON.stringify({type:"capabilities",controls:["stop"]}));
+      ws.send(JSON.stringify({type:"capabilities",controls:["stop","input-probe"]}));
       cancelGrace(termId);
       if (!backgroundBackend) orphanCleaner.onFrontendConnected();
       const pendingSpawnAt = terminalSpawnPendingWs.get(termId);
@@ -10730,6 +10702,18 @@ const server = Bun.serve<TermWsData, never>({
               cols: clampCols(Number(parsed.cols)),
               rows: clampRows(Number(parsed.rows)),
             });
+          } else if (parsed?.type === "input-probe" && typeof parsed.requestId === "string" && parsed.requestId.length <= 80) {
+            // This frame follows sampled binary input. A status round trip on
+            // the same broker socket fences its preceding write without
+            // sending extra bytes to the PTY or changing the broker/helper.
+            const startedAt=performance.now();
+            const reply=(brokerMs:number|null) => {
+              if(ws.readyState===1) ws.send(JSON.stringify({type:"input-probe-result",requestId:parsed.requestId,brokerMs}));
+            };
+            if(backgroundBackend) void backgroundBackend.request("status").then(
+              () => reply(performance.now()-startedAt), () => reply(null),
+            );
+            else reply(0);
           } else if (parsed?.type === "stop" && typeof parsed.requestId === "string" && parsed.requestId.length <= 80) {
             const requestId=parsed.requestId;
             cancelGrace(ws.data.termId);

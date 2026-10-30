@@ -51,7 +51,13 @@ export function createGitWorkScheduler() {
     lineCounts = createLimiter(1),
     fetches = createLimiter(1),
     interactive = createLimiter(1),
-    branches = createLimiter(2);
+    branches = createLimiter(2),
+    queries = createLimiter(2);
+  const onDemand = new Set([
+    "readGitText", "listSubmoduleDetails", "mainWorktreePathFor", "listBranches",
+    "getUpstreamRemoteName", "listCommits", "getDiffFileContent", "getFileDiff",
+    "getCommitDiff", "listCommitFiles", "getCommitFileDiff", "getDiff",
+  ]);
   return <T>(
     operation: string,
     fresh: boolean,
@@ -59,6 +65,8 @@ export function createGitWorkScheduler() {
   ): Promise<T> =>
     (operation === "getSelectedRemoteBranchStatus"
       ? branches
+      : onDemand.has(operation)
+      ? queries
       : fresh
       ? interactive
       : operation === "fetchAll"

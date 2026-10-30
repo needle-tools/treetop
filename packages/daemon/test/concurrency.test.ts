@@ -35,6 +35,19 @@ test("worktree inventory bypasses slow status and dirty-line reads", async () =>
   }
 });
 
+test("on-demand Git reads bypass saturated worktree scans", async () => {
+  const schedule=createGitWorkScheduler();
+  let release!:()=>void;
+  const pending=new Promise<void>(resolve=>{release=resolve;});
+  const slow=[schedule("getWorktreeDetails",false,()=>pending),schedule("getWorktreeDetails",false,()=>pending)];
+  try {
+    expect(await Promise.race([
+      schedule("readGitText",false,async()=>"summary"),
+      Bun.sleep(100).then(()=>"blocked"),
+    ])).toBe("summary");
+  } finally {release();await Promise.all(slow);}
+});
+
 test("branch badges bypass slow worktree scans including the interactive scan", async () => {
   const schedule = createGitWorkScheduler();
   let release!: () => void;

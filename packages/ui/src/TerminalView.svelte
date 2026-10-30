@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { apiUrl, apiWsUrl, bindTerminalSessionOwner, attachTerminalStopChannel, terminalRequestTiming } from "./api";
+  import { apiUrl, apiWsUrl, bindTerminalSessionOwner, attachTerminalStopChannel, terminalRequestTiming, attachTerminalInputProbe } from "./api";
   import { onMount, onDestroy } from "svelte";
   import { fetchSshSessions, type SshSessionInfo } from "./file-browser-utils";
   import {
@@ -257,6 +257,8 @@
   const ioAccounting = new TerminalIoByteAccounting();
   const inputTiming = new TerminalInputTiming();
   let lastKeyEventAt: number | null = null;
+  let inputProbe: ReturnType<typeof attachTerminalInputProbe> | null = null;
+  let lastInputProbe: {at:number;roundTripMs:number;brokerMs:number|null} | null = null;
   let lastSlowInputLogAt = -Infinity;
   function recordInputLatency(stage: string, ms: number): void {
     recordTiming(`terminal.${stage}`, ms);
@@ -268,6 +270,11 @@
       visible: isTerminalVisible,
       websocketBufferedBytes: ws?.bufferedAmount ?? 0,
       queuedOutputBytes: terminalWrites.queuedBytes(),
+      inputProbe: lastInputProbe ? {
+        ageMs: Math.round(performance.now()-lastInputProbe.at),
+        roundTripMs: Math.round(lastInputProbe.roundTripMs),
+        brokerMs: lastInputProbe.brokerMs === null ? null : Math.round(lastInputProbe.brokerMs),
+      } : null,
     });
   }
   let ioTicker: ReturnType<typeof setInterval> | null = null;
@@ -331,7 +338,12 @@
     recordTx(bytes.byteLength);
     ws.send(bytes);
     const now = performance.now();
-    inputTiming.input(now);
+    // xterm also emits focus/mouse/protocol responses through onData. They
+    // are not keystrokes and must not arm a potentially misleading echo timer.
+    if (lastKeyEventAt !== null) {
+      inputTiming.input(now);
+      inputProbe?.sample();
+    }
     if (lastKeyEventAt !== null) {
       recordInputLatency("key-to-send", now - lastKeyEventAt);
       lastKeyEventAt = null;
@@ -670,6 +682,7 @@
    *  regression test keys off the first literal `ws.onopen` being the real
    *  open handler below.) */
   function detachSocket(s: WebSocket): void {
+    if (s === ws) {inputProbe?.dispose();inputProbe=null;lastInputProbe=null;}
     if (s === ws) {detachStopChannel?.();detachStopChannel=null;}
     s.onopen = s.onmessage = s.onerror = s.onclose = null;
   }
@@ -1037,6 +1050,10 @@
       flushTerminalStartupLog("ws-create");
       ws = new WebSocket(url);
       detachStopChannel = attachTerminalStopChannel(ws,id,daemonId);
+      inputProbe = attachTerminalInputProbe(ws, sample => {
+        lastInputProbe={...sample,at:performance.now()};
+        recordInputLatency("input-transport", sample.roundTripMs);
+      });
       ws.binaryType = "arraybuffer";
       ws.onopen = () => {
         reconnect.reset();
@@ -1421,7 +1438,10 @@
         // Event timestamps expose browser scheduling delay without reading keys.
         lastKeyEventAt = ev.timeStamp > 0 && ev.timeStamp <= performance.now()
           ? ev.timeStamp : performance.now();
-        queueMicrotask(() => { lastKeyEventAt = null; });
+        // A microtask checkpoint can run between capture and xterm's target
+        // listener. Keep the timestamp for this event's whole dispatch task.
+        const keyEventAt = lastKeyEventAt;
+        setTimeout(() => { if(lastKeyEventAt === keyEventAt) lastKeyEventAt = null; }, 0);
         const isMac = /Mac|iPod|iPhone|iPad/.test(navigator.platform);
 
         // Ctrl+F toggles this column's native fullscreen. We claim it in

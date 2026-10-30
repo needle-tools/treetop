@@ -2,7 +2,10 @@ import { $ } from "bun";
 import { Worker, isMainThread, parentPort, workerData } from "node:worker_threads";
 import { createGitWorkScheduler } from "./concurrency";
 
-type BackgroundGitOperation = "listWorktrees" | "listRemotes" | "getWorktreeDetails" | "getSelectedRemoteBranchStatus" | "getDirtyLineCount" | "fetchAll";
+type BackgroundGitOperation = "listWorktrees" | "listRemotes" | "getWorktreeDetails" | "getSelectedRemoteBranchStatus" | "getDirtyLineCount" | "fetchAll"
+  | "readGitText" | "listSubmoduleDetails" | "mainWorktreePathFor" | "listBranches"
+  | "getUpstreamRemoteName" | "listCommits" | "getDiffFileContent" | "getFileDiff"
+  | "getCommitDiff" | "listCommitFiles" | "getCommitFileDiff" | "getDiff";
 let backgroundGitWorker: Worker | undefined;
 let backgroundGitEnabled = false;
 let backgroundGitSequence = 0;
@@ -66,7 +69,9 @@ if (!isMainThread && workerData?.backgroundGit) {
     void scheduleGit(operation, operation === "getWorktreeDetails" && args[1]?.fresh === true, async () => {
       const startedAt = performance.now();
       try {
-        const operations = { listWorktrees, listRemotes, getWorktreeDetails, getSelectedRemoteBranchStatus, getDirtyLineCount, fetchAll };
+        const operations = { listWorktrees, listRemotes, getWorktreeDetails, getSelectedRemoteBranchStatus, getDirtyLineCount, fetchAll,
+          readGitText, listSubmoduleDetails, mainWorktreePathFor, listBranches, getUpstreamRemoteName,
+          listCommits, getDiffFileContent, getFileDiff, getCommitDiff, listCommitFiles, getCommitFileDiff, getDiff };
         const value = await (operations[operation as BackgroundGitOperation] as Function)(...args);
         parentPort!.postMessage({ id, value });
       } catch (error) {
@@ -87,6 +92,15 @@ import {
 } from "node:path";
 
 const PUSH_PULL_TIMEOUT_MS = 60_000;
+
+/** Windows process creation itself can block Bun. Route read-only handler
+ * queries through the existing worker, not just expensive status scans. */
+export async function readGitText(worktreePath: string, args: string[], allowFailure = true): Promise<string> {
+  if (backgroundGitEnabled && isMainThread)
+    return backgroundGit("readGitText", [worktreePath, args, allowFailure]);
+  const command = $`git --no-optional-locks -C ${worktreePath} ${args}`.quiet();
+  return allowFailure ? command.nothrow().text() : command.text();
+}
 
 /** Delay before retrying a git op that failed on a stale `*.lock` file.
  *  Short enough that the user doesn't notice, long enough that a
@@ -245,6 +259,7 @@ export interface SubmoduleDetails {
 export async function listSubmoduleDetails(
   parentPath: string,
 ): Promise<SubmoduleDetails[]> {
+  if (backgroundGitEnabled && isMainThread) return backgroundGit("listSubmoduleDetails", [parentPath]);
   const [indexResult, headResult] = await Promise.all([
     $`git -C ${parentPath} ls-files --stage -z`.quiet().nothrow(),
     $`git -C ${parentPath} ls-tree -rz HEAD`.quiet().nothrow(),
@@ -401,6 +416,7 @@ export async function resolveSubmoduleWorktreePaths(
  * back to its repo (and thus its accent colour) for the user-box tint.
  */
 export async function mainWorktreePathFor(cwd: string): Promise<string | null> {
+  if (backgroundGitEnabled && isMainThread) return backgroundGit("mainWorktreePathFor", [cwd]);
   try {
     const r = await $`git -C ${cwd} rev-parse --git-common-dir`
       .quiet()
@@ -531,6 +547,7 @@ export interface BranchListing {
 }
 
 export async function listBranches(repoPath: string): Promise<BranchListing> {
+  if (backgroundGitEnabled && isMainThread) return backgroundGit("listBranches", [repoPath]);
   let current: string | null = null;
   try {
     const out = await $`git -C ${repoPath} symbolic-ref --quiet --short HEAD`
@@ -1039,6 +1056,7 @@ export function parseUpstreamRemote(out: string): string | null {
 export async function getUpstreamRemoteName(
   worktreePath: string,
 ): Promise<string | null> {
+  if (backgroundGitEnabled && isMainThread) return backgroundGit("getUpstreamRemoteName", [worktreePath]);
   const r =
     await $`git -C ${worktreePath} rev-parse --abbrev-ref --symbolic-full-name @{upstream}`
       .quiet()
@@ -1397,6 +1415,7 @@ export async function listCommits(
   worktreePath: string,
   options: { before?: string; limit?: number; all?: boolean; tag?: string; branch?: string } = {},
 ): Promise<LastCommit[]> {
+  if (backgroundGitEnabled && isMainThread) return backgroundGit("listCommits", [worktreePath, options]);
   const limit = options.limit ?? 20;
   const args = [
     "-C",
@@ -1630,6 +1649,10 @@ export async function getDiffFileContent(
   side: DiffFileContentSide,
   options: { sha?: string; oldFile?: string } = {},
 ): Promise<Buffer | null> {
+  if (backgroundGitEnabled && isMainThread) {
+    const bytes = await backgroundGit<Uint8Array | null>("getDiffFileContent", [worktreePath, file, kind, side, options]);
+    return bytes === null ? null : Buffer.from(bytes);
+  }
   const root = resolvePath(worktreePath);
   const requestedFile = side === "before" ? (options.oldFile ?? file) : file;
   const absoluteFile = resolvePath(root, requestedFile);
@@ -1696,6 +1719,7 @@ export async function getFileDiff(
   kind: FileDiffKind = "workdir",
   context: number = 0,
 ): Promise<string> {
+  if (backgroundGitEnabled && isMainThread) return backgroundGit("getFileDiff", [worktreePath, file, kind, context]);
   const ctx = `--unified=${clampContext(context)}`;
   try {
     if (kind === "untracked") {
@@ -1727,6 +1751,7 @@ export async function getCommitDiff(
   sha: string,
   context: number = 2,
 ): Promise<string> {
+  if (backgroundGitEnabled && isMainThread) return backgroundGit("getCommitDiff", [worktreePath, sha, context]);
   if (!/^[0-9a-f]{4,64}$/i.test(sha)) {
     // Don't pass user-supplied strings to git; only short/long hex SHAs.
     return "";
@@ -1745,6 +1770,7 @@ export async function listCommitFiles(
   worktreePath: string,
   sha: string,
 ): Promise<CommitFileStat[]> {
+  if (backgroundGitEnabled && isMainThread) return backgroundGit("listCommitFiles", [worktreePath, sha]);
   if (!/^[0-9a-f]{4,64}$/i.test(sha)) return [];
   try {
     const out =
@@ -1763,6 +1789,7 @@ export async function getCommitFileDiff(
   file: string,
   context: number = 0,
 ): Promise<string> {
+  if (backgroundGitEnabled && isMainThread) return backgroundGit("getCommitFileDiff", [worktreePath, sha, file, context]);
   if (!/^[0-9a-f]{4,64}$/i.test(sha)) return "";
   const ctx = `--unified=${clampContext(context)}`;
   try {
@@ -1798,6 +1825,7 @@ export async function getDiff(
   kind: DiffKind = "workdir",
   context: number = 2,
 ): Promise<string> {
+  if (backgroundGitEnabled && isMainThread) return backgroundGit("getDiff", [worktreePath, kind, context]);
   const ctx = `--unified=${clampContext(context)}`;
   try {
     const diff = await (
