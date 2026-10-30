@@ -77,6 +77,7 @@ test("command URL hover preserves horizontal scrolling and remains clickable", {
     server = await createServer({
       root: uiRoot,
       configFile: false,
+      cacheDir: join(fixture, ".vite"),
       resolve: {
         alias: { "@treetop/nicifier": resolve(uiRoot, "../nicifier/src/index.ts") },
       },

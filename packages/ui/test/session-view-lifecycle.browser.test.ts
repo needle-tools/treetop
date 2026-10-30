@@ -3,6 +3,8 @@ import assert from "node:assert/strict";
 import type { ServerResponse } from "node:http";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { chromium, webkit, type Browser, type Page } from "playwright-core";
 import { createServer, type Plugin, type ViteDevServer } from "vite";
 import { svelte } from "@sveltejs/vite-plugin-svelte";
@@ -11,6 +13,7 @@ const uiRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const test = (name: string, run: () => Promise<void>, timeout: number) =>
   nodeTest(name, { timeout }, run);
 let server: ViteDevServer;
+let cacheDir: string;
 let browser: Browser;
 let origin = "";
 let latestTurnComplete = false;
@@ -307,9 +310,11 @@ function lifecycleApiPlugin(): Plugin {
 }
 
 before(async () => {
+  cacheDir = await mkdtemp(resolve(tmpdir(), "treetop-lifecycle-vite-"));
   server = await createServer({
     root: uiRoot,
     configFile: false,
+    cacheDir,
     resolve: { alias: { "@treetop/nicifier": resolve(uiRoot, "../nicifier/src/index.ts") } },
     optimizeDeps: { entries: ["test/browser/session-view-lifecycle.html"] },
     logLevel: "error",
@@ -341,6 +346,10 @@ after(async () => {
   await browser?.close();
   server?.httpServer?.closeAllConnections();
   await server?.close();
+  if (cacheDir) {
+    assert.equal(dirname(cacheDir), resolve(tmpdir()));
+    await rm(cacheDir, { recursive: true, force: true });
+  }
 }, { timeout: 10_000 });
 
 async function openHarness(options: { query?: string } = {}): Promise<Page> {

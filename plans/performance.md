@@ -2857,3 +2857,20 @@ the one default-5s timeout with a longer allowance; that isolated rerun took
 Retry 2414de10-f6c0-4e84-a963-75108ba6139c installed build 18:07:10.028Z,
 confirmed native WebView readiness at 18:17:09Z. Broker PID 89956 was unchanged
 and all 23 previously live terminal IDs retained their exact process IDs.
+
+### 2026-10-31 parallel browser-test Vite cache isolation
+
+CI run 41111811485 passed all 4579 unit tests but failed the Mermaid dynamic
+import and NewSessionCol import in the concurrent browser group. Reproduced
+the NewSessionCol dynamic-import failure locally with the two affected test
+files running together. Focus and lifecycle Vite servers shared the UI root's
+default dependency cache; the command-row server also used that cache.
+Each server now uses a private temporary cache (or its existing isolated
+fixture directory), closes Vite before cleanup, and leaves the dev cache alone.
+Focus harnesses also scan their actual component/helper entrypoints rather
+than the whole application. No application assertions or behavior changed.
+
+Validation: the reproduced two-test pair passes, then the exact CI four-file
+browser command passes all 53 tests concurrently (zero skips, 177.5 seconds).
+The nine Git scheduler checks also pass. No app build, installation or daemon
+restart was performed.

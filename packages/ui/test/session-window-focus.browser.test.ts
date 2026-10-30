@@ -2,13 +2,18 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { chromium } from "playwright-core";
 import { createServer } from "vite";
 import { svelte } from "@sveltejs/vite-plugin-svelte";
 
 test("a visible new terminal starts despite stale ancestor animation hints", {timeout:60000}, async () => {
   const root=resolve(dirname(fileURLToPath(import.meta.url)),"..");
+  const cacheDir=await mkdtemp(resolve(tmpdir(),"treetop-focus-vite-"));
   const server=await createServer({root,configFile:false,
+    cacheDir,
+    optimizeDeps:{entries:["src/NewSessionCol.svelte"]},
     plugins:[svelte({compilerOptions:{compatibility:{componentApi:4}}})],
     resolve:{alias:{"@treetop/nicifier":resolve(root,"../nicifier/src/index.ts")}},
     server:{host:"127.0.0.1",port:0,hmr:false},logLevel:"error",
@@ -71,14 +76,21 @@ test("a visible new terminal starts despite stale ancestor animation hints", {ti
     assert.equal(spawns,2);
     assert.equal(await page.locator(".session-body-deferred").count(),1);
     await page.evaluate(()=>{(window as any).col.$destroy();});
-  } finally {await browser?.close();await server.close();}
+  } finally {
+    await browser?.close();await server.close();
+    assert.equal(dirname(cacheDir),resolve(tmpdir()));
+    await rm(cacheDir,{recursive:true,force:true});
+  }
 });
 
 test("returning to the app restores session input focus without stealing other focus", { timeout: 30000 }, async () => {
   const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+  const cacheDir = await mkdtemp(resolve(tmpdir(), "treetop-focus-vite-"));
   const server = await createServer({
     root,
     configFile: false,
+    cacheDir,
+    optimizeDeps: { entries: ["src/session-window-focus.ts"] },
     resolve: { alias: { "@treetop/nicifier": resolve(root, "../nicifier/src/index.ts") } },
     server: { host: "127.0.0.1", port: 0 },
     logLevel: "error",
@@ -236,5 +248,7 @@ test("returning to the app restores session input focus without stealing other f
   } finally {
     await browser?.close();
     await server.close();
+    assert.equal(dirname(cacheDir), resolve(tmpdir()));
+    await rm(cacheDir, { recursive: true, force: true });
   }
 });
