@@ -50,13 +50,16 @@ export function createGitWorkScheduler() {
     reads = createLimiter(2),
     lineCounts = createLimiter(1),
     fetches = createLimiter(1),
-    interactive = createLimiter(1);
+    interactive = createLimiter(1),
+    branches = createLimiter(2);
   return <T>(
     operation: string,
     fresh: boolean,
     task: () => Promise<T>,
   ): Promise<T> =>
-    (fresh
+    (operation === "getSelectedRemoteBranchStatus"
+      ? branches
+      : fresh
       ? interactive
       : operation === "fetchAll"
         ? fetches

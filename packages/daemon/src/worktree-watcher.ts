@@ -42,12 +42,13 @@ export interface WatchOpts {
  */
 export function watchWorktree(
   path: string,
-  onChange: () => void,
+  onChange: (change: { refsChanged: boolean }) => void,
   opts: WatchOpts = {},
 ): () => void {
   const debounceMs = opts.debounceMs ?? 300;
   let timer: ReturnType<typeof setTimeout> | null = null;
   let stopped = false;
+  let refsChanged = false;
   let watcher: FSWatcher;
   try {
     watcher = watch(path, { recursive: true }, (_event, filename) => {
@@ -55,11 +56,14 @@ export function watchWorktree(
       if (filename && shouldIgnore(filename)) {
         return;
       }
+      refsChanged ||= !!filename && isBranchRefChange(filename);
       if (timer) clearTimeout(timer);
       timer = setTimeout(() => {
         timer = null;
         if (stopped) return;
-        onChange();
+        const change = { refsChanged };
+        refsChanged = false;
+        onChange(change);
       }, debounceMs);
     });
   } catch {
@@ -92,6 +96,13 @@ const IGNORED_SEGMENTS = new Set([
   ".turbo",
   "target",
 ]);
+
+/** Parent branch/ref writes affect ahead/behind; ordinary edits do not. */
+export function isBranchRefChange(filename: string): boolean {
+  const path = filename.replaceAll("\\", "/");
+  return !shouldIgnore(filename) &&
+    (/^\.git\/(HEAD|packed-refs)$/.test(path) || path.startsWith(".git/refs/"));
+}
 
 // Files directly under `.git/` whose modification means worktree state
 // the dashboard cares about just changed. `refs/` is handled as a

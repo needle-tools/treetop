@@ -2663,3 +2663,77 @@ offscreen request in flight. Existing geometry and hold subscriptions remain.
 Validation: 157 API/routing tests pass, including three regressions observed
 failing first. App.svelte compiles with eight existing warnings. No production
 processes restarted; no installer rebuilt.
+
+
+### 2026-10-30 hook-aware pushes and independent branch badges
+
+needle-web-editor uses .githooks/pre-push to check deployment branches and
+remote submodule availability. Treetop imposed a 60s Promise.race timeout
+without cancelling Git, then the UI aborted at 90s. A real local hook sleeping
+61s reproduced a false failure. Push now waits for Git completion, retains
+hook errors/output, and disables the push request HTTP idle/client deadlines.
+Pull/stash deadlines remain unchanged.
+
+Recent installed logs showed full needle-web-editor status reads taking
+43-55s, with one queued another 20s. Branch counts previously waited for
+file/submodule traversal. Ref-only reads now use an independent worker lane
+and publish partial branchStatus updates, preserving dirty/session data.
+They run on parent ref writes, focused polls and post-mutation priority reads;
+ordinary/submodule file churn does not start additional branch queries.
+Requests are coalesced and throttled, and older full scans preserve newer
+ref-only snapshots. A read-only live worker probe returned dev ahead=0,
+behind=0 in 11.7s; Windows process latency remains material.
+
+Validation: slow-hook regression failed before the fix and passed afterward,
+including hook rejection and unchanged remote verification. 32 scheduler,
+refresh and SSE tests plus 121 watcher/UI characterization tests passed; an
+additional real watcher test verified ref flags reset after ordinary edits.
+Svelte compiles with eight existing warnings and daemon modules parse.
+No production push, daemon restart, installer build or installation was run
+for this follow-up. TUI-priority work was separately pushed as 949d63b first.
+
+Terminal launch follow-up: 13:12:50 UTC needle-web-editor create request took
+8559ms in the browser, 128ms in the daemon, 8430ms outside the handler. The
+socket opened 25ms later; first output arrived 9ms after that. Other cheap
+routes simultaneously took seconds outside their handlers. This implicates
+request/scheduling contention, not PTY creation, but does not isolate browser
+queueing from renderer/native scheduling. The speculative Fetch priority hint was removed after review: it did not
+establish or fix the cause. Terminal startup diagnostics now split Resource
+Timing into time before request dispatch, request-to-first-byte, download,
+and response-to-JS delivery (including body decoding). Missing timing entries
+are reported as unavailable, never inferred as zero. The regression test and
+TerminalView compilation pass. No extra windows or installer were launched.
+
+Post-install check (14:15 UTC): fresh mesh-baker terminal reached first output
+in 3152ms: POST 2859ms, daemon 1429ms, socket open 52ms, then output 228ms
+later. Existing needle-web-editor attached/output in 229ms. Resource Timing
+was unavailable, so the 1430ms outside-handler portion remains unexplained.
+The diagnostic now observes the request directly rather than relying only on
+the shared resource timeline, and distinguishes missing from restricted data.
+This diagnostic correction is source-only. Ref-only reads bypassed queues
+(queue=0) but later took 30s for both treetop and needle-web-editor; separate
+lanes do not eliminate underlying Windows Git/process latency.
+
+### 2026-10-30 recurring input latency: preserved helper predates input fix
+
+Read-only process inspection confirmed broker PID 89956 and helper PID 154432
+started October 29 at 14:06 local time. The live versioned helper has mtime
+October 29 12:49 and SHA256 05A2C3248243346F357C973267F9A49C80FF1397760488AC2ED84252076E2F44.
+Its binary lacks the async dispatcher marker; the installed October 30 helper
+(SHA256 861F1EAE736BAC238DED98EFB9BADC25F7AB1E1B3817C4598C0511E842A1392B) contains it.
+Commit 11a8c4c added the dispatcher at October 29 18:25, after the live helper
+started. Preserved handoff therefore kept the old serial command reader: a
+slow spawn can still block existing-session keystrokes. Reinstalling the UI
+repeatedly cannot replace the helper owning those live ConPTYs.
+
+TestSlowSpawnDoesNotBlockExistingSessionInput passes against the new source.
+No live broker/helper was restarted or replaced. Activation requires a
+controlled broker renewal once the user is ready to interrupt its sessions;
+this finding does not establish that every lag incident is spawn-related.
+
+Since latest install: 39 sampled input-to-output diagnostics, 25 >=500ms,
+maximum 9774ms; 27 output-parse completion samples, maximum 440ms. These are
+slow-only, cooldown-limited samples, not a latency distribution. Protocol
+responses also call sendTerminalInput, so first-output delay is not a pure
+keystroke echo measurement. Hidden-window timer throttling explains the
+repeated ~59s hidden event-loop diagnostics and is not a foreground freeze.

@@ -1,5 +1,15 @@
 import { test, expect, describe } from "bun:test";
-import { apiUrl, apiWsUrl, withRequestDeadline, requestTerminalStop, attachTerminalStopChannel, startTerminalBootstrap } from "../src/api";
+import { apiUrl, apiWsUrl, withRequestDeadline, requestTerminalStop, attachTerminalStopChannel, startTerminalBootstrap, terminalRequestTiming } from "../src/api";
+
+test("terminal launch timings distinguish request wait from response delivery delay", () => {
+  const entry = {startTime:100,requestStart:8100,responseStart:8228,responseEnd:8240};
+  expect(terminalRequestTiming(entry, 8260)).toEqual({
+    beforeRequestMs:8000, requestToFirstByteMs:128, downloadMs:12, responseToJsMs:20,
+  });
+  expect(terminalRequestTiming({...entry,requestStart:120}, 16000)?.responseToJsMs).toBe(7760);
+  expect(terminalRequestTiming(undefined, 8260)).toBeNull();
+  expect(terminalRequestTiming({...entry,requestStart:0}, 8260)).toBeNull();
+});
 
 test("terminal inventory is applied before unrelated startup metadata completes", async () => {
   const order:string[]=[];

@@ -2,7 +2,7 @@ import { $ } from "bun";
 import { Worker, isMainThread, parentPort, workerData } from "node:worker_threads";
 import { createGitWorkScheduler } from "./concurrency";
 
-type BackgroundGitOperation = "listWorktrees" | "listRemotes" | "getWorktreeDetails" | "getDirtyLineCount" | "fetchAll";
+type BackgroundGitOperation = "listWorktrees" | "listRemotes" | "getWorktreeDetails" | "getSelectedRemoteBranchStatus" | "getDirtyLineCount" | "fetchAll";
 let backgroundGitWorker: Worker | undefined;
 let backgroundGitEnabled = false;
 let backgroundGitSequence = 0;
@@ -66,7 +66,7 @@ if (!isMainThread && workerData?.backgroundGit) {
     void scheduleGit(operation, operation === "getWorktreeDetails" && args[1]?.fresh === true, async () => {
       const startedAt = performance.now();
       try {
-        const operations = { listWorktrees, listRemotes, getWorktreeDetails, getDirtyLineCount, fetchAll };
+        const operations = { listWorktrees, listRemotes, getWorktreeDetails, getSelectedRemoteBranchStatus, getDirtyLineCount, fetchAll };
         const value = await (operations[operation as BackgroundGitOperation] as Function)(...args);
         parentPort!.postMessage({ id, value });
       } catch (error) {
@@ -849,8 +849,9 @@ export async function pushUpstream(
   try {
     const branch = options.remote ? await currentBranchName(worktreePath) : null;
     const refspec = branch ? `HEAD:refs/heads/${branch}` : null;
+    // Hooks can build/test for minutes. Wait for Git's actual verdict rather
+    // than reporting failure while the uncancelled push is still running.
     r = await runGitWithLockRetry(() =>
-      raceTimeout(
         options.remote && refspec
           ? $`GIT_TERMINAL_PROMPT=0 git -C ${worktreePath} push ${options.remote} ${refspec}`
               .quiet()
@@ -858,9 +859,6 @@ export async function pushUpstream(
           : $`GIT_TERMINAL_PROMPT=0 git -C ${worktreePath} push`
               .quiet()
               .nothrow(),
-        PUSH_PULL_TIMEOUT_MS,
-        "git push",
-      ),
     );
   } catch (e) {
     return { ok: false, message: e instanceof Error ? e.message : String(e) };
@@ -1246,6 +1244,8 @@ export async function getSelectedRemoteBranchStatus(
   worktreePath: string,
   remote: string,
 ): Promise<BranchStatus | null> {
+  if (backgroundGitEnabled && isMainThread)
+    return backgroundGit("getSelectedRemoteBranchStatus", [worktreePath, remote]);
   const branch = await currentBranchName(worktreePath);
   if (!branch) return null;
   const remoteRef = `refs/remotes/${remote}/${branch}`;

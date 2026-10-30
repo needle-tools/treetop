@@ -1836,7 +1836,6 @@
             path: wtPath,
             remote: persistedSelectedRemoteForRepoId(repoId),
           }),
-          signal: AbortSignal.timeout(90_000),
         },
       );
       const body = (await res.json().catch(() => ({}))) as {

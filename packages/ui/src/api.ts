@@ -37,6 +37,21 @@ export function apiUrl(path: string, daemonId?: string | null): string {
 }
 
 const terminalStopChannels = new Map<string, {socket:WebSocket;stop:()=>Promise<void>}>();
+
+/** Browser Resource Timing separates network scheduling from JS delivery. */
+export function terminalRequestTiming(
+  entry: Pick<PerformanceResourceTiming, "startTime" | "requestStart" | "responseStart" | "responseEnd"> | undefined,
+  observedAtMs: number,
+) {
+  if (!entry || entry.requestStart <= 0 || entry.responseEnd <= 0) return null;
+  const ms = (value: number) => Math.round(Math.max(0, value));
+  return {
+    beforeRequestMs: ms(entry.requestStart - entry.startTime),
+    requestToFirstByteMs: ms(entry.responseStart - entry.requestStart),
+    downloadMs: ms(entry.responseEnd - entry.responseStart),
+    responseToJsMs: ms(observedAtMs - entry.responseEnd),
+  };
+}
 let stopRequestSequence = 0;
 const terminalStopKey = (id:string,daemonId?:string) => `${daemonId ?? ""}\0${id}`;
 

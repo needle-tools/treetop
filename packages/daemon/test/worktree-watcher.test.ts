@@ -2,7 +2,14 @@ import { test, expect, describe } from "bun:test";
 import { mkdtemp, writeFile, mkdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { watchWorktree, shouldIgnore } from "../src/worktree-watcher";
+import { watchWorktree, shouldIgnore, isBranchRefChange } from "../src/worktree-watcher";
+
+test("branch refreshes distinguish parent refs from file and submodule churn", () => {
+  for (const path of [".git/HEAD", ".git/refs/heads/main", ".git/refs/remotes/origin/main", ".git/packed-refs", ".git\\refs\\heads\\main"])
+    expect(isBranchRefChange(path), path).toBe(true);
+  for (const path of ["src/main.ts", ".git/index", ".git/refs/heads/main.lock", ".git/modules/child/HEAD", "child/.git/HEAD"])
+    expect(isBranchRefChange(path), path).toBe(false);
+});
 
 async function tempDir(): Promise<string> {
   return mkdtemp(join(tmpdir(), "supergit-watch-test-"));
@@ -19,6 +26,25 @@ const DEBOUNCE_MS = 120;
 const SETTLE_MS = 450;
 
 describe("watchWorktree", () => {
+  test("reports ref changes and resets the flag for subsequent ordinary edits", async () => {
+    const dir = await tempDir();
+    await mkdir(join(dir, ".git", "refs", "heads"), {recursive:true});
+    const changes: boolean[] = [];
+    const stop = watchWorktree(dir, change => changes.push(change.refsChanged), {debounceMs:DEBOUNCE_MS});
+    try {
+      await writeFile(join(dir, ".git", "refs", "heads", "main"), "new-head\n");
+      await sleep(SETTLE_MS);
+      expect(changes).toContain(true);
+      changes.length = 0;
+      await writeFile(join(dir, "ordinary.txt"), "edit\n");
+      await sleep(SETTLE_MS);
+      expect(changes).toEqual([false]);
+    } finally {
+      stop();
+      await rm(dir, {recursive:true,force:true});
+    }
+  });
+
   test("fires onChange after a file write (debounced)", async () => {
     const dir = await tempDir();
     let calls = 0;

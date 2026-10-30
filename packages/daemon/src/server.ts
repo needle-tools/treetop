@@ -42,6 +42,7 @@ import {
   mainWorktreePathFor,
   getWorktreeDetails,
   getDirtyLineCount,
+  getSelectedRemoteBranchStatus,
   listSubmoduleDetails,
   listCommits,
   listCommitFiles,
@@ -64,6 +65,7 @@ import {
   parseNumstat,
   parseUnpushedCommits,
   type DiffKind,
+  type BranchStatus,
   type FileDiffKind,
   type DiffFileContentKind,
 } from "./git";
@@ -1748,6 +1750,35 @@ function selectedRemoteForCachedWorktree(wtPath: string): string | null {
   return null;
 }
 
+const branchRefreshStartedAt = new Map<string, { at: number; status?: BranchStatus }>();
+
+/** Push/pull counts read refs only; never wait for file/submodule traversal. */
+function refreshWorktreeBranchCounts(wtPath: string, remote: string | null): void {
+  if (!remote) return;
+  const key = worktreeDetailsCacheKey(wtPath, remote);
+  const now = Date.now();
+  if (now - (branchRefreshStartedAt.get(key)?.at ?? 0) < FS_RECOMPUTE_MIN_INTERVAL_MS) return;
+  refreshWorktreeInBackground(`branch:${key}`, async () => {
+    const snapshot: {at:number;status?:BranchStatus} = {at:Date.now()};
+    branchRefreshStartedAt.set(key, snapshot);
+    const branchStatus = await getSelectedRemoteBranchStatus(wtPath, remote);
+    if (!branchStatus) return;
+    snapshot.status = branchStatus;
+    const cached = worktreeDetailsCache.get(key);
+    const previous = cached?.value.branchStatus ?? reposCache?.value
+      .flatMap(repo => (repo as {worktrees?: Array<{path:string;branchStatus?:unknown}>}).worktrees ?? [])
+      .find(wt => wt.path === wtPath)?.branchStatus;
+    if (cached) worktreeDetailsCache.set(key, {
+      ...cached, value: {...cached.value, branchStatus},
+    });
+    if (reposCache) patchWorktreeDetailsInRepos(
+      reposCache.value as Array<{worktrees?:unknown}>, wtPath, {branchStatus},
+    );
+    if (worktreeDetailsChanged(previous, branchStatus))
+      broadcast("change", {kind:"fs_change", path:wtPath, details:{branchStatus}});
+  });
+}
+
 // fs-watcher reaction: recompute just the changed worktree's git state and
 // splice it into the cached /api/repos payload in place, THEN broadcast.
 //
@@ -1771,6 +1802,7 @@ async function recomputeWorktreeDetails(
   limit: <T>(fn: () => Promise<T>) => Promise<T>,
   remoteOverride?: string | null,
 ): Promise<WorktreeDetails | null> {
+  const startedAt = Date.now();
   let details: WorktreeDetails;
   const selectedRemote = remoteOverride === undefined ? selectedRemoteForCachedWorktree(wtPath) : remoteOverride;
   const previousDetails = getCachedWorktreeDetails(wtPath, selectedRemote);
@@ -1790,6 +1822,11 @@ async function recomputeWorktreeDetails(
     broadcast("change", { kind: "fs_change", path: wtPath });
     return null;
   }
+  // A ref-only update may have observed a commit/push while this older
+  // filesystem scan was still running. Do not roll its branch counts back.
+  const branchSnapshot = branchRefreshStartedAt.get(worktreeDetailsCacheKey(wtPath, selectedRemote));
+  if (branchSnapshot?.status && branchSnapshot.at >= startedAt)
+    details = {...details, branchStatus:branchSnapshot.status};
   if (details.fileStatus.staged + details.fileStatus.unstaged > 0) details.fileStatus.dirtyLines = previousDetails?.fileStatus.dirtyLines ?? 0;
   worktreeDetailsCache.set(worktreeDetailsCacheKey(wtPath, selectedRemote), {
     at: Date.now(),
@@ -1819,7 +1856,8 @@ async function recomputeWorktreeDetails(
 // a `reposGitLimit` slot and starves quiet repos' dirty badges. planWorktreeRecompute
 // bounds each worktree to one recompute per FS_RECOMPUTE_MIN_INTERVAL_MS plus a
 // single trailing run to capture whatever changed during the cooldown.
-function onWorktreeFsChange(wtPath: string): void {
+function onWorktreeFsChange(wtPath: string, refsChanged = false): void {
+  if (refsChanged) refreshWorktreeBranchCounts(wtPath, selectedRemoteForCachedWorktree(wtPath));
   const s = wtRuntimeFor(wtPath);
   const plan = planWorktreeRecompute(
     {
@@ -1846,6 +1884,8 @@ async function runWorktreeRecompute(
   limit: <T>(fn: () => Promise<T>) => Promise<T>,
   remoteOverride?: string | null,
 ): Promise<WorktreeDetails | null> {
+  if (limit === reposGitPriorityLimit)
+    refreshWorktreeBranchCounts(wtPath, remoteOverride === undefined ? selectedRemoteForCachedWorktree(wtPath) : remoteOverride);
   const s = wtRuntimeFor(wtPath);
   s.inFlight = true;
   s.lastRunAtMs = Date.now();
@@ -2501,8 +2541,8 @@ async function reconcileWorktreeWatchers(): Promise<void> {
   // Start watchers for new paths.
   for (const path of wanted) {
     if (worktreeWatchers.has(path)) continue;
-    const stop = watchWorktree(path, () => {
-      void onWorktreeFsChange(path);
+    const stop = watchWorktree(path, change => {
+      void onWorktreeFsChange(path, change.refsChanged);
     });
     worktreeWatchers.set(path, stop);
   }
@@ -3973,6 +4013,7 @@ const server = Bun.serve<TermWsData, never>({
         if (!wtPath) return json({ error: "path required" }, { status: 400 });
         if (url.searchParams.get("background") === "1") {
           const remote = selectedRemoteForCachedWorktree(wtPath);
+          refreshWorktreeBranchCounts(wtPath, remote);
           refreshWorktreeInBackground(worktreeDetailsCacheKey(wtPath, remote), () =>
             runWorktreeRecompute(wtPath, reposGitPriorityLimit, remote),
           );
@@ -7912,6 +7953,8 @@ const server = Bun.serve<TermWsData, never>({
       {
         const m = url.pathname.match(/^\/api\/repos\/([^/]+)\/push$/);
         if (m && req.method === "POST") {
+          // Pre-push hooks may build/test for minutes without HTTP traffic.
+          srv.timeout(req, 0);
           const id = m[1]!;
           const body = (await req.json().catch(() => null)) as {
             path?: unknown;

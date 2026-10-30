@@ -1333,6 +1333,26 @@ describe("pullFastForward against real git", () => {
 });
 
 describe("pushUpstream against real git", () => {
+  test("waits for a pre-push hook longer than one minute and preserves its verdict", async () => {
+    const { a, bare } = await tempRepoTrio();
+    await $`git -C ${a} commit --allow-empty -m hook-check -q`.quiet();
+    const hook = join(a, ".git", "hooks", "pre-push");
+    await writeFile(hook, "#!/bin/sh\necho 'Checking deployment before push' >&2\nsleep 61\necho 'Deployment check passed' >&2\n", { mode: 0o755 });
+    const result = await pushUpstream(a);
+    expect(result.ok, result.message).toBe(true);
+    expect(result.message).toContain("Deployment check passed");
+    const local = (await $`git -C ${a} rev-parse HEAD`.quiet()).stdout.toString().trim();
+    const remote = (await $`git -C ${bare} rev-parse refs/heads/main`.quiet()).stdout.toString().trim();
+    expect(remote).toBe(local);
+
+    await $`git -C ${a} commit --allow-empty -m blocked-by-hook -q`.quiet();
+    await writeFile(hook, "#!/bin/sh\necho 'Deployment check rejected this push' >&2\nexit 1\n", { mode: 0o755 });
+    const rejected = await pushUpstream(a);
+    expect(rejected.ok).toBe(false);
+    expect(rejected.message).toContain("Deployment check rejected this push");
+    expect((await $`git -C ${bare} rev-parse refs/heads/main`.quiet()).stdout.toString().trim()).toBe(remote);
+  }, 240_000);
+
   test("returns ok when there's nothing to push", async () => {
     const { a } = await tempRepoTrio();
     const r = await pushUpstream(a);

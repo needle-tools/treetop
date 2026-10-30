@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { apiUrl, apiWsUrl, bindTerminalSessionOwner, attachTerminalStopChannel } from "./api";
+  import { apiUrl, apiWsUrl, bindTerminalSessionOwner, attachTerminalStopChannel, terminalRequestTiming } from "./api";
   import { onMount, onDestroy } from "svelte";
   import { fetchSshSessions, type SshSessionInfo } from "./file-browser-utils";
   import {
@@ -932,6 +932,7 @@
   }
 
   async function spawnPtyAndConnect(reconnectId?: string) {
+    let requestTimingObserver: PerformanceObserver | undefined;
     inputTiming.reset();
     lastKeyEventAt = null;
     attachedThisAttempt = false;
@@ -966,6 +967,19 @@
         const cols = Math.max(xterm?.cols ?? 80, 80);
         const rows = Math.max(xterm?.rows ?? 24, 24);
         const postStartedAt = performance.now();
+        const resourceUrl = new URL(apiUrl("/api/terminals", daemonId), location.href).href;
+        let observedResource: PerformanceResourceTiming | undefined;
+        // Observe this request directly: the shared resource timeline can fill
+        // during startup, after which getEntriesByName omits new requests.
+        if (typeof PerformanceObserver !== "undefined" &&
+            PerformanceObserver.supportedEntryTypes.includes("resource")) {
+          requestTimingObserver = new PerformanceObserver(list => {
+            observedResource = list.getEntries().find(entry =>
+              entry.name === resourceUrl && entry.startTime >= postStartedAt,
+            ) as PerformanceResourceTiming | undefined ?? observedResource;
+          });
+          requestTimingObserver.observe({type:"resource"});
+        }
         logTerminalStartup("post-start", { cols, rows });
         flushTerminalStartupLog("post-start");
         const res = await fetch(apiUrl("/api/terminals", daemonId), {
@@ -983,10 +997,18 @@
           }),
         });
         const body = await res.json().catch(() => null);
+        const resource = [...performance.getEntriesByName(resourceUrl, "resource"),
+          ...(requestTimingObserver?.takeRecords() ?? [])]
+          .filter(entry => entry.name === resourceUrl)
+          .filter(entry => entry.startTime >= postStartedAt)
+          .at(-1) as PerformanceResourceTiming | undefined ?? observedResource;
+        requestTimingObserver?.disconnect();
         logTerminalStartup("post-response", {
           status: res.status,
           ok: res.ok,
           fetchMs: roundMs(performance.now() - postStartedAt),
+          networkTiming: terminalRequestTiming(resource, performance.now()),
+          resourceTimingState: !resource ? "missing" : resource.requestStart <= 0 ? "restricted" : "available",
         });
         flushTerminalStartupLog("post-response");
         if (!res.ok) {
@@ -1224,6 +1246,7 @@
         phase = "error";
       };
     } catch (e) {
+      requestTimingObserver?.disconnect();
       logTerminalStartup("spawn-flow-error", {
         message: e instanceof Error ? e.message : String(e),
       });
