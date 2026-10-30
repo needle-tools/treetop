@@ -710,6 +710,44 @@ export function extractIconHrefs(html: string): string[] {
   return out;
 }
 /** Keep a slow shared repo scan from leaving reloads without headers or timing out. */
+export function createReplayNDJSONStream() {
+  const latest=new Map<string,string>();
+  const subscribers=new Set<ReadableStreamDefaultController<Uint8Array>>();
+  const encoder=new TextEncoder();
+  let closed=false, failure: unknown;
+  return {
+    publish(value:string,key?:string) {
+      if(closed) return;
+      if(key!==undefined) latest.set(key,value);
+      for(const subscriber of subscribers) {
+        try {subscriber.enqueue(encoder.encode(value));}
+        catch {subscribers.delete(subscriber);} // A disconnected client must not end another client's scan.
+      }
+    },
+    subscribe() {
+      let subscriber: ReadableStreamDefaultController<Uint8Array>;
+      return new ReadableStream<Uint8Array>({
+        start(controller) {
+          subscriber=controller;
+          for(const value of latest.values()) controller.enqueue(encoder.encode(value));
+          if(closed) {if(failure) controller.error(failure);else controller.close();}
+          else subscribers.add(controller);
+        },
+        cancel() {subscribers.delete(subscriber);},
+      });
+    },
+    close(error?:unknown) {
+      if(closed) return;
+      closed=true;failure=error;
+      for(const subscriber of subscribers) {
+        try {if(error) subscriber.error(error);else subscriber.close();}
+        catch { /* This client disconnected before completion. */ }
+      }
+      subscribers.clear();
+    },
+  };
+}
+
 export function pendingNDJSONStream(initial: Promise<string>, pending: Promise<string>, heartbeatMs = 10_000): ReadableStream<Uint8Array> {
   const encoder = new TextEncoder();
   let stopped = false;

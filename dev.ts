@@ -9,6 +9,7 @@
 
 import { dirname, join, relative, resolve } from "node:path";
 import { homedir } from "node:os";
+import { createConnection } from "node:net";
 import {
   cp,
   mkdir,
@@ -219,6 +220,142 @@ export interface DevChildProcess {
   kill(): void;
 }
 
+/** Only a refused TCP connection permits recovery. A slow API or timeout is
+ * never a reason to stop a daemon that may still host live dev terminals. */
+export function probeDevDaemon(
+  port: number,
+  host = "127.0.0.1",
+): Promise<boolean> {
+  return new Promise((resolve, reject) => {
+    const socket = createConnection({ host, port });
+    socket.setTimeout(2000);
+    socket.once("connect", () => {
+      socket.destroy();
+      resolve(true);
+    });
+    socket.once("timeout", () => {
+      socket.destroy();
+      reject(new Error("Dev daemon probe timed out"));
+    });
+    socket.once("error", (error: NodeJS.ErrnoException) => {
+      socket.destroy();
+      if (error.code === "ECONNREFUSED") resolve(false);
+      else reject(error);
+    });
+  });
+}
+
+export function createDevDaemonRecovery({
+  probe,
+  restart,
+  report,
+  clock = Date.now,
+  startupGraceMs = 15_000,
+}: {
+  probe: () => Promise<boolean>;
+  restart: () => Promise<void>;
+  report: (state: "recovering" | "failed" | "healthy") => void;
+  clock?: () => number;
+  startupGraceMs?: number;
+}) {
+  let failures = 0,
+    attempts = 0,
+    checking = false;
+  let graceUntil = clock() + startupGraceMs;
+  let state = "starting",
+    healthySince: number | undefined;
+  const publish = (next: "recovering" | "failed" | "healthy") => {
+    if (state !== next) {
+      state = next;
+      report(next);
+    }
+  };
+  return {
+    async check() {
+      if (checking) return;
+      checking = true;
+      try {
+        let reachable: boolean;
+        try {
+          reachable = await probe();
+        } catch {
+          failures = 0;
+          return;
+        }
+        if (reachable) {
+          failures = 0;
+          healthySince ??= clock();
+          if (clock() - healthySince >= 60_000) attempts = 0;
+          publish("healthy");
+          return;
+        }
+        healthySince = undefined;
+        if (clock() < graceUntil || ++failures < 3) return;
+        if (attempts >= 2) {
+          publish("failed");
+          return;
+        }
+        attempts++;
+        failures = 0;
+        publish("recovering");
+        try {
+          await restart();
+        } catch (error) {
+          console.error("dev: backend recovery failed", error);
+        } finally {
+          graceUntil = clock() + startupGraceMs;
+        }
+      } finally {
+        checking = false;
+      }
+    },
+  };
+}
+
+/** Watch recovery must leave detached brokers/helpers outside its kill set. */
+export async function stopDevChild(
+  child: Bun.Subprocess,
+  watcher = true,
+): Promise<void> {
+  if (child.exitCode !== null) return;
+  if (process.platform === "win32") {
+    const command = watcher
+      ? [
+          "powershell.exe",
+          "-NoProfile",
+          "-NonInteractive",
+          "-Command",
+          `
+      $ErrorActionPreference='Stop'
+      $watchRuntimes=@(Get-CimInstance Win32_Process -Filter 'ParentProcessId=${child.pid}' | Where-Object { $_.CommandLine -match '\\s--watch(?:\\s|$)' })
+      Stop-Process -Id ${child.pid} -Force -ErrorAction SilentlyContinue
+      foreach($runtime in $watchRuntimes) {
+        $current=Get-CimInstance Win32_Process -Filter ('ProcessId='+$runtime.ProcessId)
+        if($current -and $current.ParentProcessId -eq ${child.pid} -and $current.CreationDate -eq $runtime.CreationDate) {
+          Stop-Process -Id $runtime.ProcessId -Force -ErrorAction SilentlyContinue
+        }
+      }
+    `,
+        ]
+      : ["taskkill", "/PID", String(child.pid), "/T", "/F"];
+    const stop = Bun.spawn(command, {
+      windowsHide: true,
+      stdout: "ignore",
+      stderr: "ignore",
+    });
+    const code = await stop.exited;
+    if (code !== 0 && child.exitCode === null)
+      throw new Error(`Could not stop owned dev process ${child.pid}`);
+  } else {
+    try {
+      process.kill(-child.pid, "SIGTERM");
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
+    }
+  }
+  await child.exited;
+}
+
 export async function waitForDevChildren(
   daemon: DevChildProcess,
   ui: DevChildProcess,
@@ -323,32 +460,77 @@ export async function runDev(
   // On Windows bash isn't available, so skip the exec -a wrapper.
   const daemonCmd =
     process.platform === "win32"
-      ? [process.execPath, "--max-http-header-size=131072", "--watch", "run", "src/server.ts"]
-      : ["bash", "-c", "exec -a 'supergit dev' bun --max-http-header-size=131072 --watch run src/server.ts"];
-  const daemon = Bun.spawn(daemonCmd, {
-    cwd: "packages/daemon",
-    stdout: "inherit",
-    stderr: "inherit",
-    env: daemonEnv,
-  });
+      ? [
+          process.execPath,
+          "--max-http-header-size=131072",
+          "--watch",
+          "run",
+          "src/server.ts",
+        ]
+      : [
+          "bash",
+          "-c",
+          "exec -a 'supergit dev' bun --max-http-header-size=131072 --watch run src/server.ts",
+        ];
+  const spawnDaemon = () =>
+    Bun.spawn(daemonCmd, {
+      cwd: "packages/daemon",
+      stdout: "inherit",
+      stderr: "inherit",
+      env: daemonEnv,
+      detached: process.platform !== "win32",
+    });
+  let daemon = spawnDaemon();
 
   const ui = Bun.spawn([process.execPath, "run", "dev"], {
     cwd: "packages/ui",
     stdout: "inherit",
     stderr: "inherit",
     env: uiEnv,
+    detached: process.platform !== "win32",
   });
 
-  const cleanup = () => {
-    daemon.kill();
-    ui.kill();
+  let stopping = false;
+  const devBind = process.env.SUPERGIT_BIND ?? "0.0.0.0";
+  const probeHost =
+    devBind === "0.0.0.0" ? "127.0.0.1" : devBind === "::" ? "::1" : devBind;
+  const recovery = createDevDaemonRecovery({
+    probe: () => probeDevDaemon(DEV_DAEMON_PORT, probeHost),
+    restart: async () => {
+      await stopDevChild(daemon);
+      if (!stopping) daemon = spawnDaemon();
+    },
+    report: (state) =>
+      console.log(
+        state === "recovering"
+          ? "dev: backend refused connections repeatedly; restarting the owned dev backend"
+          : state === "failed"
+            ? "dev: backend recovery failed twice. Check the startup error above and run bun dev again."
+            : "dev: backend is reachable",
+      ),
+  });
+  const monitor = setInterval(() => {
+    if (!stopping) void recovery.check().catch(console.error);
+  }, 2000);
+  const cleanup = async () => {
+    if (stopping) return;
+    stopping = true;
+    clearInterval(monitor);
+    await Promise.all([stopDevChild(daemon), stopDevChild(ui, false)]);
     process.exit(0);
   };
 
   process.on("SIGINT", cleanup);
   process.on("SIGTERM", cleanup);
 
-  await waitForDevChildren(daemon, ui);
+  try {
+    const code = await ui.exited;
+    throw new Error(`UI exited with code ${code}`);
+  } finally {
+    stopping = true;
+    clearInterval(monitor);
+    await stopDevChild(daemon);
+  }
 }
 
 if (import.meta.main) {

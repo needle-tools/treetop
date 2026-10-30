@@ -10645,6 +10645,8 @@
                   <span class="branch bare">bare</span>
                 {:else}
                   <span class="branch-anchor" data-branch-anchor={wt.path}>
+                    <Tooltip escapeClip variant="wide" disabled={!!branchPickerOpen[wt.path]}>
+                      <svelte:fragment slot="trigger">
                     <button
                       class="branch branch-button"
                       title={`Click to switch this worktree to another branch.\nDirty state opens a dialog with Stash / Force / Cancel.`}
@@ -10669,6 +10671,11 @@
                       <span class="branch-caret" aria-hidden="true">▾</span
                       ></button
                     >
+                      </svelte:fragment>
+                      <div slot="content" aria-label={`Recent commits on ${wt.branch}`}>
+                        <GitHistory wtPath={wt.path} branch={wt.branch} source={`__branch_preview__:${wt.path}`} daemonId={repo.daemonId} fsChangeKey={fsChangeKey[wt.path] ?? 0} preview />
+                      </div>
+                    </Tooltip>
                     {#if branchPickerOpen[wt.path]}
                       <Popover
                         variant="agents"

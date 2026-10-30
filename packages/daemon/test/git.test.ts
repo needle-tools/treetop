@@ -1,8 +1,60 @@
 import { test, expect, describe } from "bun:test";
 import { resolve } from "node:path";
-import { enableBackgroundGitWorker, listWorktrees, listRemotes } from "../src/git";
+import { enableBackgroundGitWorker, listWorktrees, listRemotes, listCommits, shouldReadSelectedRemoteStatus, getWorktreeDetails, getDirtyLineCount } from "../src/git";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
+
+test("basic worktree details retain dirty file counts while optional line counts run separately", async () => {
+  const dir=await mkdtemp(resolve(tmpdir(),"treetop-basic-status-"));
+  const git=async(...args:string[])=>{
+    const child=Bun.spawn(["git","-C",dir,...args],{windowsHide:true,stdout:"ignore",stderr:"pipe"});
+    const error=await new Response(child.stderr).text();expect(await child.exited,error).toBe(0);
+  };
+  try {
+    await git("init");await writeFile(resolve(dir,"file.txt"),"before\n");await git("add","file.txt");
+    await git("-c","user.name=Test","-c","user.email=test@example.test","-c","commit.gpgsign=false","commit","-m","initial");
+    await writeFile(resolve(dir,"file.txt"),"after\n");
+    const details=await getWorktreeDetails(dir,{includeDirtyLines:false});
+    expect(details.fileStatus.unstaged).toBe(1);
+    expect(details.fileStatus.dirtyLines).toBe(0);
+    expect(await getDirtyLineCount(dir)).toBe(2);
+  } finally {
+    expect(dir.startsWith(resolve(tmpdir(),"treetop-basic-status-"))).toBe(true);
+    await rm(dir,{recursive:true,force:true});
+  }
+},90_000);
+
+test("tracked selected remote reuses status counts without redundant remote queries", () => {
+  expect(shouldReadSelectedRemoteStatus({branch:"main",upstream:"origin/main"},"origin")).toBe(false);
+  expect(shouldReadSelectedRemoteStatus({branch:"feature",upstream:"origin/main"},"origin")).toBe(true);
+  expect(shouldReadSelectedRemoteStatus({branch:"main",upstream:"origin/main"},"upstream")).toBe(true);
+  expect(shouldReadSelectedRemoteStatus({branch:"main",upstream:null},"origin")).toBe(true);
+  expect(shouldReadSelectedRemoteStatus({branch:"main",upstream:null},null)).toBe(false);
+});
+
+test("tag history ends at the tagged commit rather than the current HEAD", async () => {
+  const dir = await mkdtemp(resolve(tmpdir(), "treetop-tag-history-"));
+  const git = async (...args: string[]) => {
+    const child = Bun.spawn(["git", "-C", dir, "-c", "user.name=Tag Test", "-c", "user.email=tag@example.test", ...args], {windowsHide:true, stdout:"pipe", stderr:"pipe"});
+    const [out, error, code] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
+    expect(code, error).toBe(0);
+    return out.trim();
+  };
+  try {
+    await git("init");
+    await git("-c", "commit.gpgsign=false", "commit", "--allow-empty", "-m", "release commit");
+    await git("-c", "tag.gpgsign=false", "tag", "-a", "release/test", "-m", "Release");
+    await git("-c", "commit.gpgsign=false", "commit", "--allow-empty", "-m", "later commit");
+    await git("branch", "release-branch", "release/test");
+    expect((await listCommits(dir, {branch:"release-branch", limit:10})).map(c => c.subject)).toEqual(["release commit"]);
+    expect((await listCommits(dir, {tag:"release/test", limit:10})).map(c => c.subject)).toEqual(["release commit"]);
+    expect((await listCommits(dir, {tag:"release/test", all:true, limit:10})).map(c => c.subject)).toEqual(["release commit"]);
+    expect((await listCommits(dir, {limit:10})).map(c => c.subject)).toEqual(["later commit", "release commit"]);
+  } finally {
+    expect(dir.startsWith(resolve(tmpdir(),"treetop-tag-history-"))).toBe(true);
+    await rm(dir, {recursive:true, force:true});
+  }
+}, 120_000);
 
 test("compiled Git worker loads outside the build working directory", async () => {
   const root = resolve(import.meta.dir, "../../..");

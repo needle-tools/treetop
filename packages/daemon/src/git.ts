@@ -2,7 +2,7 @@ import { $ } from "bun";
 import { Worker, isMainThread, parentPort, workerData } from "node:worker_threads";
 import { createGitWorkScheduler } from "./concurrency";
 
-type BackgroundGitOperation = "listWorktrees" | "listRemotes" | "getWorktreeDetails" | "fetchAll";
+type BackgroundGitOperation = "listWorktrees" | "listRemotes" | "getWorktreeDetails" | "getDirtyLineCount" | "fetchAll";
 let backgroundGitWorker: Worker | undefined;
 let backgroundGitEnabled = false;
 let backgroundGitSequence = 0;
@@ -61,14 +61,19 @@ function dispatchBackgroundGit<T>(operation: BackgroundGitOperation, args: unkno
 if (!isMainThread && workerData?.backgroundGit) {
   const scheduleGit = createGitWorkScheduler();
   parentPort!.on("message", ({ id, operation, args }) => {
+    const queuedAt = performance.now();
     // Network fetches must not hold the slots needed to display sessions.
     void scheduleGit(operation, operation === "getWorktreeDetails" && args[1]?.fresh === true, async () => {
+      const startedAt = performance.now();
       try {
-        const operations = { listWorktrees, listRemotes, getWorktreeDetails, fetchAll };
+        const operations = { listWorktrees, listRemotes, getWorktreeDetails, getDirtyLineCount, fetchAll };
         const value = await (operations[operation as BackgroundGitOperation] as Function)(...args);
         parentPort!.postMessage({ id, value });
       } catch (error) {
         parentPort!.postMessage({ id, error: error instanceof Error ? error.message : String(error) });
+      } finally {
+        const completedAt = performance.now();
+        if (operation !== "fetchAll" && completedAt - queuedAt > 1000) console.log(`supergit daemon: git-read ${operation} queue=${(startedAt - queuedAt).toFixed(0)}ms run=${(completedAt - startedAt).toFixed(0)}ms path=${args[0]}`);
       }
     });
   });
@@ -1122,9 +1127,23 @@ export function parseWorktreeList(porcelain: string): Worktree[] {
   return worktrees;
 }
 
+export function shouldReadSelectedRemoteStatus(
+  branch: Pick<BranchStatus,"branch"|"upstream">,
+  remote?: string | null,
+): boolean {
+  return !!remote && branch.upstream !== `${remote}/${branch.branch}`;
+}
+
+/** Optional display enrichment runs separately from status/inventory reads. */
+export async function getDirtyLineCount(worktreePath: string): Promise<number> {
+  if (backgroundGitEnabled && isMainThread) return backgroundGit("getDirtyLineCount", [worktreePath]);
+  const out = await $`git --no-optional-locks -C ${worktreePath} diff --shortstat HEAD`.quiet().text();
+  return parseShortstatLines(out);
+}
+
 export async function getWorktreeDetails(
   worktreePath: string,
-  options: { remote?: string | null; fresh?: boolean } = {},
+  options: { remote?: string | null; fresh?: boolean; includeDirtyLines?: boolean } = {},
 ): Promise<WorktreeDetails> {
   if (backgroundGitEnabled && isMainThread) {
     // A post-mutation read must not join a status query started before the
@@ -1142,7 +1161,7 @@ export async function getWorktreeDetails(
     let branchStatus = parseBranchStatus(statusOut);
     const fileStatus = parseFileStatus(statusOut);
 
-    if (branchStatus && options.remote) {
+    if (branchStatus && options.remote && shouldReadSelectedRemoteStatus(branchStatus, options.remote)) {
       const selectedStatus = await getSelectedRemoteBranchStatus(
         worktreePath,
         options.remote,
@@ -1180,12 +1199,8 @@ export async function getWorktreeDetails(
       const n = Number.parseInt(countOut.trim(), 10);
       if (!Number.isNaN(n)) branchStatus.unpushed = n;
     }
-    if (fileStatus.staged > 0 || fileStatus.unstaged > 0) {
-      const shortstatOut = await $`git --no-optional-locks -C ${worktreePath} diff --shortstat HEAD`
-        .quiet()
-        .text()
-        .catch(() => "");
-      fileStatus.dirtyLines = parseShortstatLines(shortstatOut);
+    if (options.includeDirtyLines !== false && (fileStatus.staged > 0 || fileStatus.unstaged > 0)) {
+      fileStatus.dirtyLines = await getDirtyLineCount(worktreePath).catch(() => 0);
     }
     return {
       fileStatus,
@@ -1380,7 +1395,7 @@ export function parseLastCommit(logOut: string): LastCommit | null {
 
 export async function listCommits(
   worktreePath: string,
-  options: { before?: string; limit?: number; all?: boolean } = {},
+  options: { before?: string; limit?: number; all?: boolean; tag?: string; branch?: string } = {},
 ): Promise<LastCommit[]> {
   const limit = options.limit ?? 20;
   const args = [
@@ -1391,9 +1406,13 @@ export async function listCommits(
     "-n",
     String(limit),
   ];
-  if (options.all) args.push("--all");
+  if (options.all && !options.tag && !options.branch) args.push("--all");
+  args.push("--end-of-options");
   if (options.before) args.push(`${options.before}^`);
+  else if (options.tag) args.push(`refs/tags/${options.tag}`);
+  else if (options.branch) args.push(`refs/heads/${options.branch}`);
   else if (!options.all) args.push("HEAD");
+  args.push("--");
   try {
     const out = await $`git ${args}`.quiet().text();
     return parseCommitList(out);

@@ -1162,3 +1162,26 @@ select a non-WebRTC-compatible backend and return `Voice session access denied`
 even when voice access works. Unavailable experimental methods or versions
 surface as a concise UI error. No API key or separate OpenAI auth path is
 introduced.
+
+### Branch and Git tag history hover (2026-10-30)
+
+Branch-switch buttons and Git tag badges now open delayed hover/focus previews.
+The preview reuses GitHistory itself in compact mode: the commit rows and
+click-to-expand diffs remain the same renderer, with nested tag popovers and
+pagination disabled. It requests at most ten commits ending at the selected
+tag or branch, on demand; /api/commits uses explicit refs/tags or refs/heads
+instead of racing a later HEAD change. Remote daemon routing is retained. The popup escapes
+scroll clipping, clamps to the viewport, stays open during interaction, closes
+on pointer leave; tag dialogs also dismiss with Escape. Shared preview reads
+survive brief hover-outs and populate a bounded per-daemon/path/ref cache.
+Cached rows display immediately, with background refresh after repo changes
+or thirty seconds. Clicking the branch button still opens its switcher and
+suppresses the preview. Embedded history has no extra surface or list padding.
+Commit rows flex around the graph dot instead of overflowing their parent;
+portal positioning observes asynchronous content resize to keep hashes visible.
+
+A real temporary Git repository verifies annotated-tag history and precedence
+over all-branches mode. Headless browser coverage verifies lazy fetch, remote
+routing, shared commit rows, diff expansion, keyboard opening, Escape, viewport
+bounds and fetch-error presentation. No native app window or production process
+was launched or restarted for these checks.

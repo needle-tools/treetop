@@ -2577,3 +2577,71 @@ timeouts are unchanged. Two regression tests verify immediate return despite
 blocked refresh and that refresh failure cannot turn mutation success into an
 error. 16 targeted tests and Svelte compilation pass. No production operations,
 user push/pull commands, build, or restart were performed during diagnosis.
+
+### Dev-only backend recovery (2026-10-30)
+
+The dev launcher now checks whether its backend is still listening. After a
+15-second startup/restart grace and three consecutive connection refusals
+(two-second cadence), it replaces its owned Bun watcher/runtime. It retries
+twice, then stays available with an actionable error instead of looping.
+Timeouts and other probe failures never cause a restart. A minute of sustained
+health restores the retry budget. Windows recovery targets the watcher and its
+direct watch runtime, preserving detached descendants such as broker helpers;
+it does not kill a port owner or an arbitrary process tree.
+
+Vite alone serves a dev health endpoint and injects a warning dialog after
+roughly thirty seconds of failed backend checks. Dismissal lasts until the
+backend recovers, and recovery closes the dialog. A reload action is available.
+The plugin is excluded from production builds and standalone Replay Lab.
+Tests cover bounded retries, grace, overlapping checks, timeout non-restart,
+real Bun watcher replacement with a preserved detached helper, header limits,
+production exclusion and dialog lifecycle in headless Edge. The dev pair was
+restarted to enable recovery; both dev ports returned 200 afterward. The
+production broker PID 89956 remained alive. The initial manual dev tree stop
+also terminated old dev-owned descendants; the narrowed recovery avoids that
+broad shutdown behavior.
+
+### Repo loading and cached history previews (2026-10-30)
+
+Measured a 214.7-second repo response, with 183 seconds attributed to a slow
+worktree including queue time. Direct reads in needle-engine-build-pipeline
+showed status and dirty-line diff exceeding diagnostic deadlines; even last
+commit and remote reads took 4.9s and 7.3s. The shared Git worker now reserves
+inventory capacity independently from status, optional dirty-line counts,
+interactive refreshes and fetches. A selected remote matching the tracked
+branch reuses porcelain ahead/behind values instead of launching redundant
+symbolic-ref/ref-existence/count commands. Slow worker logs separate queue
+and execution time.
+
+Repo streams publish usable worktree/session geometry without awaiting status
+or line counts. Concurrent callers replay latest rows and subscribe to the
+same scan instead of waiting for its final array. Disconnecting one caller
+leaves other subscribers and the scan heartbeat intact. Dirty line counts
+refresh in a separate single-flight lane, preserve previous values during
+refresh and cannot overwrite a newer status snapshot.
+
+A small atomic .cache/worktree-discovery.json inside the workspace preserves
+last-known topology across daemon restarts. It stores neither agent sessions,
+remote URLs/credentials nor Git status. Cached paths are matched to currently
+registered repo IDs/paths and joined to current detected sessions; fresh Git
+metadata replaces them on the same stream. Read-only instances do not write
+this snapshot. A live dev check rendered all 15 repo rows in 39ms from this
+snapshot. Fresh uncached discovery is still subject to slow Windows Git/IO;
+the earlier live uncached check took 47.5s, and another under contention hit
+the diagnostic HTTP deadline. Those fresh reads now continue without blocking
+cached rows or optional badge refreshes.
+
+History previews cache by daemon, worktree and explicit branch/tag, render the
+cached list immediately and coalesce a background refresh on repo-change or
+30-second age. The hash clipping was a 100%-wide button plus graph dot; rows
+now flex into the remaining width, and portal resize observation repositions
+lazy content. Headless checks hold a refresh pending and assert cached rows
+remain visible, fresh reopens avoid requests, hashes fit, and switching still
+works. Test fixtures live outside the active UI root to avoid reloading the
+user's dev page.
+
+Validation: 224 cache/stream/scheduler/server/dev/Vite checks, three real-Git
+checks and two headless browser checks pass. The real tag/branch fixture's
+Windows allowance was increased after measured process-start delays exceeded
+60s; assertions remain intact and the rerun passed. No production restart or
+native installer build was performed for these changes.

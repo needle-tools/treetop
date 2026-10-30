@@ -6,7 +6,25 @@
 
 import { test, expect, describe, jest } from "bun:test";
 import { Buffer } from "node:buffer";
-import { pendingNDJSONStream } from "../src/server-helpers";
+import { pendingNDJSONStream, createReplayNDJSONStream } from "../src/server-helpers";
+
+test("repo scan joiners replay current rows and receive new rows before scan completion", async () => {
+  const feed=createReplayNDJSONStream();
+  const first=feed.subscribe().getReader();
+  const decode=(value: ReadableStreamReadResult<Uint8Array>)=>new TextDecoder().decode(value.value);
+  feed.publish("manifest\n","manifest"); feed.publish("repo-a\n","a");
+  const joined=feed.subscribe().getReader();
+  expect(decode(await joined.read())).toBe("manifest\n");
+  expect(decode(await joined.read())).toBe("repo-a\n");
+  await joined.cancel();
+  feed.publish("updated-a\n","a");feed.publish("repo-b\n","b");
+  expect(decode(await first.read())).toBe("manifest\n");
+  expect(decode(await first.read())).toBe("repo-a\n");
+  expect(decode(await first.read())).toBe("updated-a\n");
+  expect(decode(await first.read())).toBe("repo-b\n");
+  feed.close();expect((await first.read()).done).toBe(true);
+  expect(await new Response(feed.subscribe()).text()).toBe("manifest\nupdated-a\nrepo-b\n");
+});
 
 test("a waiting repo stream sends its manifest and keepalives before enrichment completes", async () => {
   const pending = Promise.withResolvers<string>();

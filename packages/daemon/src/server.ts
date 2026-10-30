@@ -1,5 +1,5 @@
 import { BrokerCodexAdapter } from "./broker-codex";
-import { pendingNDJSONStream } from "./server-helpers";
+import { createReplayNDJSONStream } from "./server-helpers";
 import { updateInstallParent, watchForUpdate } from "../../../src/electrobun/update-handoff";
 import {
   join,
@@ -41,6 +41,7 @@ import {
   enableBackgroundGitWorker,
   mainWorktreePathFor,
   getWorktreeDetails,
+  getDirtyLineCount,
   listSubmoduleDetails,
   listCommits,
   listCommitFiles,
@@ -67,7 +68,7 @@ import {
   type DiffFileContentKind,
 } from "./git";
 import { createLimiter } from "./concurrency";
-import { createStaleWhileRevalidateCache, createBackgroundRefresh } from "./async-cache";
+import { createStaleWhileRevalidateCache, createBackgroundRefresh, createWorktreeDiscoveryCache } from "./async-cache";
 import { uiStaticRequestPath } from "./ui-static";
 import {
   listCodexReplaySessions,
@@ -1552,8 +1553,8 @@ function broadcast(event: string, data: unknown): void {
 // upgrades and "Open in <editor>" clicks behind it.
 //
 // Coalescing strategy:
-//   - If a build is currently in flight, every caller awaits the SAME
-//     promise. No duplicate git work.
+//   - If discovery is in flight, callers replay its latest rows and subscribe
+//     to further rows. No duplicate Git work or wait for its final result.
 //   - If the most recent build finished < REPOS_CACHE_MS ago, return
 //     that cached payload directly. Mutations broadcast a `change`
 //     event over SSE; the UI re-fetches, but if a burst of fs_change
@@ -1569,8 +1570,9 @@ function broadcast(event: string, data: unknown): void {
 // repos have flushed — there's no explicit "done" marker; EOF is
 // sufficient. Cache hits stream the same shape from memory.
 const REPOS_CACHE_MS = 2500;
+const worktreeDiscovery = createWorktreeDiscoveryCache(join(WORKSPACE_PATH,".cache","worktree-discovery.json"), error=>console.warn("supergit daemon: worktree discovery snapshot failed",error));
 type EnrichedRepo = Record<string, unknown> & { id: string };
-let reposInflight: { key: string; promise: Promise<EnrichedRepo[]> } | null =
+let reposInflight: { key: string; feed: ReturnType<typeof createReplayNDJSONStream> } | null =
   null;
 let reposCache: {
   at: number;
@@ -1627,7 +1629,7 @@ async function sharedDetectAgents(): Promise<AgentSession[]> {
 // this, /api/repos spawns 3 git subprocesses per worktree on every
 // refresh — a workspace with 5 repos × 3 worktrees = 45 processes.
 // With the cache, only worktrees that actually changed re-run git.
-import type { WorktreeDetails } from "./git";
+import type { WorktreeDetails, Worktree } from "./git";
 const worktreeDetailsCache = new Map<
   string,
   { at: number; value: WorktreeDetails }
@@ -1705,6 +1707,27 @@ function invalidateWorktreeDetails(wtPath: string): void {
   }
 }
 
+function refreshDirtyLineCount(wtPath: string, remote: string | null, baseline: WorktreeDetails): void {
+  if (baseline.fileStatus.staged + baseline.fileStatus.unstaged === 0) return;
+  const key = worktreeDetailsCacheKey(wtPath, remote);
+  refreshWorktreeInBackground(`dirty-lines:${key}`, async () => {
+    const count = await getDirtyLineCount(wtPath);
+    const current = worktreeDetailsCache.get(key);
+    if (!current) return;
+    if (current.value !== baseline) {
+      // A newer status landed during the diff. Refresh that version instead
+      // of overwriting it with a line count from an older working tree.
+      setTimeout(() => refreshDirtyLineCount(wtPath, remote, current.value), 0);
+      return;
+    }
+    if (count === baseline.fileStatus.dirtyLines) return;
+    const details = {...baseline, fileStatus: {...baseline.fileStatus, dirtyLines: count}};
+    worktreeDetailsCache.set(key, {...current, value: details});
+    if (reposCache) patchWorktreeDetailsInRepos(reposCache.value as Array<{worktrees?:unknown}>, wtPath, details as unknown as Record<string,unknown>);
+    broadcast("change", {kind:"fs_change", path:wtPath, details});
+  });
+}
+
 function selectedRemoteForCachedWorktree(wtPath: string): string | null {
   if (!reposCache) return null;
   for (const repo of reposCache.value) {
@@ -1754,10 +1777,10 @@ async function recomputeWorktreeDetails(
   try {
     details = await limit(() =>
       limit === reposGitPriorityLimit
-        ? getWorktreeDetails(wtPath, {remote:selectedRemote, fresh:true})
+        ? getWorktreeDetails(wtPath, {remote:selectedRemote, fresh:true, includeDirtyLines:false})
         : selectedRemote
-        ? getWorktreeDetails(wtPath, { remote: selectedRemote })
-        : getWorktreeDetails(wtPath),
+        ? getWorktreeDetails(wtPath, { remote: selectedRemote, includeDirtyLines:false })
+        : getWorktreeDetails(wtPath, {includeDirtyLines:false}),
     );
   } catch {
     // git failed (dir vanished mid-rename, etc.) — drop both caches so the
@@ -1767,6 +1790,7 @@ async function recomputeWorktreeDetails(
     broadcast("change", { kind: "fs_change", path: wtPath });
     return null;
   }
+  if (details.fileStatus.staged + details.fileStatus.unstaged > 0) details.fileStatus.dirtyLines = previousDetails?.fileStatus.dirtyLines ?? 0;
   worktreeDetailsCache.set(worktreeDetailsCacheKey(wtPath, selectedRemote), {
     at: Date.now(),
     value: details,
@@ -1786,6 +1810,7 @@ async function recomputeWorktreeDetails(
   ) {
     broadcast("change", { kind: "fs_change", path: wtPath, details });
   }
+  refreshDirtyLineCount(wtPath, selectedRemote, details);
   return details;
 }
 
@@ -1914,9 +1939,8 @@ function reposNDJSONFromCache(
   return new Response(stream, { headers: ndjsonHeaders(cors) });
 }
 
-/** Fresh build that yields each repo as soon as its worktrees finish
- *  enriching. Also populates the cache + resolves `reposInflight` so
- *  concurrent callers can share the work. */
+/** Fresh discovery publishes session geometry without awaiting status/diff
+ * enrichment. Concurrent callers share the live replay stream. */
 function reposSelectionCacheKey(
   selectedRemotes: Record<string, string>,
 ): string {
@@ -1961,14 +1985,10 @@ function reposNDJSONFresh(
 ): Response {
   const enc = new TextEncoder();
   const myGen = repsCacheGen;
-  let resolveInflight: (v: EnrichedRepo[]) => void;
-  let rejectInflight: (e: unknown) => void;
+  const feed = createReplayNDJSONStream();
   reposInflight = {
     key: cacheKey,
-    promise: new Promise<EnrichedRepo[]>((res, rej) => {
-      resolveInflight = res;
-      rejectInflight = rej;
-    }),
+    feed,
   };
 
   // Client may abort mid-stream (fast page reload, navigating away).
@@ -1980,15 +2000,16 @@ function reposNDJSONFresh(
   let heartbeat: ReturnType<typeof setInterval> | undefined;
   const stream = new ReadableStream<Uint8Array>({
     start(controller) {
-      const safeEnqueue = (chunk: Uint8Array): void => {
+      const safeEnqueue = (value: string, key?: string): void => {
+        feed.publish(value, key);
         if (cancelled) return;
         try {
-          controller.enqueue(chunk);
+          controller.enqueue(enc.encode(value));
         } catch {
           cancelled = true;
         }
       };
-      heartbeat = setInterval(() => safeEnqueue(enc.encode("\n")), 10_000);
+      heartbeat = setInterval(() => safeEnqueue("\n"), 10_000);
       // Phase timings for the /api/repos load. Logged as a single
       // structured line at the end so a slow load can be triaged from
       // the prod log (`/tmp/supergit-prod.log`) without needing to
@@ -2008,7 +2029,7 @@ function reposNDJSONFresh(
           // for agent detection. The UI renders skeleton rows immediately.
           const repos = await workspace.listRepos();
           tManifest = performance.now() - tPrelude;
-          safeEnqueue(enc.encode(manifestLineFor(repos)));
+          safeEnqueue(manifestLineFor(repos), "manifest");
 
           // Agent detection + titles run in parallel with repo enrichment.
           // The git operations (listWorktrees, getWorktreeDetails) overlap
@@ -2031,6 +2052,25 @@ function reposNDJSONFresh(
             }
             return agents.map((s) => withSessionTitles(s, titles));
           });
+          const freshRepoIds = new Set<string>();
+          void Promise.all([worktreeDiscovery.load(), titledP])
+            .then(([snapshot, titled]) => {
+              for (const repo of repos) {
+                if (freshRepoIds.has(repo.id)) continue;
+                const cached = snapshot.find(row => row.id === repo.id && row.path === repo.path);
+                if (!cached) continue;
+                const worktrees = cached.worktrees.map(wt => ({
+                  ...wt,
+                  ...(getCachedWorktreeDetails(wt.path, selectedRemotes[repo.id] ?? selectedRemoteForCachedWorktree(wt.path)) ?? {
+                    fileStatus: {staged:0, unstaged:0, untracked:0, submodules:0, submoduleChanges:0, dirtyLines:0},
+                    branchStatus:null, lastCommit:null,
+                  }),
+                  agents: agentsForWorktree(wt.path, titled, repos.map(row => row.path)),
+                }));
+                safeEnqueue(repoLineFor({...repo, remotes:[], worktrees} as EnrichedRepo), repo.id);
+              }
+            })
+            .catch(error => console.warn("supergit daemon: cached discovery publication failed", error));
 
           const enriched: EnrichedRepo[] = [];
           tEnrichStart = performance.now();
@@ -2043,8 +2083,8 @@ function reposNDJSONFresh(
                 // agents only after git finishes so the overlap is real.
                 const [[worktrees, remotes], titled] = await Promise.all([
                   Promise.all([
-                    reposGitLimit(() => listWorktrees(repo.path)),
-                    reposGitLimit(() => listRemotes(repo.path)),
+                    listWorktrees(repo.path),
+                    listRemotes(repo.path),
                   ]),
                   titledP,
                 ]);
@@ -2061,9 +2101,9 @@ function reposNDJSONFresh(
                   }),
                   agents: agentsForWorktree(wt.path, titled, repos.map(registered => registered.path)),
                 }));
-                const withDetails = await publishWorktreesBeforeDetails(
+                const withDetails = publishWorktreesBeforeDetails(
                   sessionWorktrees,
-                  initial => safeEnqueue(enc.encode(repoLineFor({ ...repo, worktrees: initial, remotes } as EnrichedRepo))),
+                  initial => {freshRepoIds.add(repo.id);safeEnqueue(repoLineFor({ ...repo, worktrees: initial, remotes } as EnrichedRepo), repo.id);},
                   () => Promise.all(
                   worktrees.map(async (wt) => {
                     const tWt = performance.now();
@@ -2073,11 +2113,12 @@ function reposNDJSONFresh(
                     );
                     if (!details) {
                       details = await reposGitLimit(() =>
-                        selectedRemote
+                        getCachedWorktreeDetails(wt.path, selectedRemote) ?? (selectedRemote
                           ? getWorktreeDetails(wt.path, {
                               remote: selectedRemote,
+                              includeDirtyLines:false,
                             })
-                          : getWorktreeDetails(wt.path),
+                          : getWorktreeDetails(wt.path, {includeDirtyLines:false})),
                       );
                       if (myGen === repsCacheGen) worktreeDetailsCache.set(
                         worktreeDetailsCacheKey(wt.path, selectedRemote),
@@ -2091,6 +2132,14 @@ function reposNDJSONFresh(
                       wt: wt.path,
                       ms: performance.now() - tWt,
                     });
+                    if (myGen === repsCacheGen) {
+                      const initial = sessionWorktrees.find(row => row.path === wt.path)!;
+                      const changed = worktreeDetailsChanged(initial, details);
+                      Object.assign(initial, details);
+                      if (reposCache?.key === cacheKey) patchWorktreeDetailsInRepos(reposCache.value as Array<{worktrees?:unknown}>, wt.path, details as unknown as Record<string,unknown>);
+                      if (changed) broadcast("change", {kind:"fs_change", path:wt.path, details});
+                      refreshDirtyLineCount(wt.path, selectedRemote, details);
+                    }
                     return {
                       ...wt,
                       ...details,
@@ -2103,9 +2152,12 @@ function reposNDJSONFresh(
                   }),
                   ),
                 );
+                // Repo/session geometry is ready. Status and line-count work
+                // updates this same snapshot and SSE without holding the stream.
+                void withDetails.catch(error => console.warn("supergit daemon: background repo details failed", repo.path, error));
                 result = {
                   ...repo,
-                  worktrees: withDetails,
+                  worktrees: sessionWorktrees,
                   remotes,
                 } as EnrichedRepo;
               } catch {
@@ -2117,7 +2169,8 @@ function reposNDJSONFresh(
               }
               perRepoMs.set(repo.id, performance.now() - tRepo);
               enriched.push(result);
-              safeEnqueue(enc.encode(repoLineFor(result)));
+              freshRepoIds.add(repo.id);
+              safeEnqueue(repoLineFor(result), repo.id);
             }),
           );
           // Stable ordering for the cached array so cache-hit replays
@@ -2134,8 +2187,9 @@ function reposNDJSONFresh(
               selectedRemotes,
               value: ordered,
             };
+            if (!READONLY_MODE) void worktreeDiscovery.save(ordered as unknown as Array<{id:string;path:string;worktrees:Worktree[]}>);
           }
-          resolveInflight(ordered);
+          feed.close();
           const totalMs = performance.now() - t0;
           const enrichMs = performance.now() - tEnrichStart;
           const slowestRepo = [...perRepoMs.entries()].sort(
@@ -2161,7 +2215,7 @@ function reposNDJSONFresh(
             }
           }
         } catch (err) {
-          rejectInflight(err);
+          feed.close(err);
           if (!cancelled) {
             try {
               controller.error(err);
@@ -2171,13 +2225,14 @@ function reposNDJSONFresh(
           }
         } finally {
           clearInterval(heartbeat);
-          reposInflight = null;
+          if (reposInflight?.feed === feed) reposInflight = null;
         }
       })();
     },
     cancel() {
       cancelled = true;
-      clearInterval(heartbeat);
+      // Other callers may still consume the shared scan. Its heartbeat
+      // belongs to the scan and is cleared by the completion/failure path.
     },
   });
   return new Response(stream, { headers: ndjsonHeaders(cors) });
@@ -2198,13 +2253,8 @@ async function reposNDJSONResponse(
     return reposNDJSONFromCache(reposCache.value, cors);
   }
   if (reposInflight && reposInflight.key === cacheKey) {
-    // Concurrent caller during a fresh build — wait for it, then
-    // replay the cached array. We could splice ourselves into the
-    // live stream, but a wait+replay is simpler and the cost is
-    // bounded by the in-flight build's own latency.
-    const pending = reposInflight.promise.then(value => value.map(repoLineFor).join(""));
-    const manifest = workspace.listRepos().then(manifestLineFor);
-    return new Response(pendingNDJSONStream(manifest, pending), { headers: ndjsonHeaders(cors) });
+    // Replay already discovered rows, then share new rows as they arrive.
+    return new Response(reposInflight.feed.subscribe(), { headers: ndjsonHeaders(cors) });
   }
   return reposNDJSONFresh(cors, selectedRemotes, cacheKey);
 }
@@ -8973,7 +9023,9 @@ const server = Bun.serve<TermWsData, never>({
           );
         }
         const all = url.searchParams.get("all") === "1";
-        const commits = await listCommits(path, { before, limit, all });
+        const tag = url.searchParams.get("tag") ?? undefined;
+        const branch = url.searchParams.get("branch") ?? undefined;
+        const commits = await listCommits(path, { before, limit, all, tag, branch });
         return json(commits);
       }
 

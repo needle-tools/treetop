@@ -1,22 +1,95 @@
 import { describe, expect, test } from "bun:test";
-import { createStaleWhileRevalidateCache, createBackgroundRefresh } from "../src/async-cache";
+import {
+  createStaleWhileRevalidateCache,
+  createBackgroundRefresh,
+  createWorktreeDiscoveryCache,
+} from "../src/async-cache";
+import { mkdtemp, rm } from "node:fs/promises";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
+
+test("worktree discovery survives daemon restarts without persisting sessions or Git status", async () => {
+  const root = await mkdtemp(join(tmpdir(), "treetop-discovery-cache-"));
+  try {
+    const path = join(root, "cache", "discovery.json");
+    const errors: unknown[] = [];
+    const cache = createWorktreeDiscoveryCache(path, (error) =>
+      errors.push(error),
+    );
+    expect(await cache.load()).toEqual([]);
+    await cache.save([
+      {
+        id: "repo",
+        path: "/repo",
+        worktrees: [
+          {
+            path: "/repo",
+            branch: "main",
+            head: "abc",
+            bare: false,
+            detached: false,
+            agents: [{ sessionId: "private" }],
+            fileStatus: { unstaged: 1 },
+          },
+        ],
+      },
+    ] as any);
+    const restarted = createWorktreeDiscoveryCache(path, (error) =>
+      errors.push(error),
+    );
+    expect(await restarted.load()).toEqual([
+      {
+        id: "repo",
+        path: "/repo",
+        worktrees: [
+          {
+            path: "/repo",
+            branch: "main",
+            head: "abc",
+            bare: false,
+            detached: false,
+          },
+        ],
+      },
+    ]);
+    expect(errors).toEqual([]);
+  } finally {
+    expect(root.startsWith(join(tmpdir(), "treetop-discovery-cache-"))).toBe(
+      true,
+    );
+    await rm(root, { recursive: true, force: true });
+  }
+});
 
 test("background refresh returns immediately and joins the real work until completion", async () => {
   const errors: unknown[] = [];
-  const refresh = createBackgroundRefresh(error => errors.push(error));
+  const refresh = createBackgroundRefresh((error) => errors.push(error));
   let calls = 0;
   let release!: () => void;
-  const load = () => { calls++; return new Promise<void>(resolve => {release = resolve;}); };
+  const load = () => {
+    calls++;
+    return new Promise<void>((resolve) => {
+      release = resolve;
+    });
+  };
   expect(refresh("repo", load)).toBe(true);
   await Bun.sleep(0);
   for (let i = 0; i < 20; i++) expect(refresh("repo", load)).toBe(false);
   expect(calls).toBe(1);
   release();
   await Bun.sleep(0);
-  expect(refresh("repo", async () => {throw new Error("git failed");})).toBe(true);
+  expect(
+    refresh("repo", async () => {
+      throw new Error("git failed");
+    }),
+  ).toBe(true);
   await Bun.sleep(0);
   expect(errors).toHaveLength(1);
-  expect(refresh("repo", async () => {calls++;})).toBe(true);
+  expect(
+    refresh("repo", async () => {
+      calls++;
+    }),
+  ).toBe(true);
   await Bun.sleep(0);
   expect(calls).toBe(2);
 });

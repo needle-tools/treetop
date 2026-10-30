@@ -1,15 +1,39 @@
 import { describe, expect, test } from "bun:test";
 import { resolve } from "node:path";
-import config, { replayLabDevRoutePlugin } from "../vite.config";
+import { resolveConfig as resolveViteConfig } from "vite";
+import config, {
+  replayLabDevRoutePlugin,
+  devDaemonRecoveryPlugin,
+} from "../vite.config";
+
+test("dev recovery UI is excluded from production builds", async () => {
+  const resolved = await resolveViteConfig(
+    { configFile: false, plugins: [devDaemonRecoveryPlugin(7777)] },
+    "build",
+  );
+  expect(
+    resolved.plugins.some(
+      (plugin) => plugin.name === "treetop-dev-backend-recovery",
+    ),
+  ).toBe(false);
+});
 
 test("standalone Replay Lab routes root and index to its entry, preserving queries", () => {
   function rewrite(url: string, standalone: boolean) {
     let middleware: any;
     const plugin = replayLabDevRoutePlugin(standalone);
-    (plugin.configureServer as Function)({ middlewares: { use(fn: any) { middleware = fn; } } });
+    (plugin.configureServer as Function)({
+      middlewares: {
+        use(fn: any) {
+          middleware = fn;
+        },
+      },
+    });
     const req = { url };
     let continued = false;
-    middleware(req, {}, () => { continued = true; });
+    middleware(req, {}, () => {
+      continued = true;
+    });
     expect(continued).toBe(true);
     return req.url;
   }
@@ -18,7 +42,9 @@ test("standalone Replay Lab routes root and index to its entry, preserving queri
   expect(rewrite("/index.html", true)).toBe("/replay-lab.html");
   expect(rewrite("/", false)).toBe("/");
   expect(rewrite("/src/main.ts", true)).toBe("/src/main.ts");
-  expect(rewrite("/replay-lab?example=1", false)).toBe("/replay-lab.html?example=1");
+  expect(rewrite("/replay-lab?example=1", false)).toBe(
+    "/replay-lab.html?example=1",
+  );
 });
 
 async function resolveConfig(mode = "production") {

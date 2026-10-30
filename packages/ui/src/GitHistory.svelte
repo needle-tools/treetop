@@ -1,3 +1,42 @@
+<script context="module" lang="ts">
+  interface Commit {
+    sha: string;
+    shortSha: string;
+    subject: string;
+    author: string;
+    time: string;
+    parents?: number;
+    refs?: string[];
+  }
+  interface PreviewEntry {
+    value?: Commit[];
+    at: number;
+    version: number;
+    pending?: Promise<Commit[]>;
+  }
+  const previewCache = new Map<string, PreviewEntry>();
+  function previewKey(
+    daemonId: string | undefined,
+    path: string,
+    tag: string | undefined,
+    branch: string | undefined,
+  ) {
+    return JSON.stringify([
+      daemonId ?? "",
+      path,
+      tag ? ["tag", tag] : branch ? ["branch", branch] : ["HEAD"],
+    ]);
+  }
+  function previewEntry(key: string): PreviewEntry {
+    const entry = previewCache.get(key) ?? { at: 0, version: -1 };
+    previewCache.delete(key);
+    previewCache.set(key, entry);
+    if (previewCache.size > 64)
+      previewCache.delete(previewCache.keys().next().value!);
+    return entry;
+  }
+</script>
+
 <script lang="ts">
   import { onDestroy } from "svelte";
   import { apiUrl } from "./api";
@@ -15,16 +54,10 @@
   /** Owning daemon for this worktree. Undefined ⇒ local daemon
    *  (byte-identical behaviour). Set for remote daemon folder rows. */
   export let daemonId: string | undefined = undefined;
-
-  interface Commit {
-    sha: string;
-    shortSha: string;
-    subject: string;
-    author: string;
-    time: string;
-    parents?: number;
-    refs?: string[];
-  }
+  /** Compact reuse of this exact history renderer for a tag hover preview. */
+  export let preview = false;
+  export let tag: string | undefined = undefined;
+  export let branch: string | undefined = undefined;
 
   const COMMITS_BATCH = 50;
   const FULL_FILE_CONTEXT = 99999;
@@ -33,6 +66,66 @@
   let commits: Commit[] | undefined = undefined;
   let commitsLoading = false;
   let commitsExhausted = false;
+  let commitsError = "";
+  const requests = new AbortController();
+  let tagAnchor: HTMLElement | null = null;
+  let hoverTag: string | null = null;
+  let showTagTimer: ReturnType<typeof setTimeout> | undefined;
+  let hideTagTimer: ReturnType<typeof setTimeout> | undefined;
+
+  function keepTagOpen() {
+    clearTimeout(hideTagTimer);
+  }
+  function closeTag() {
+    clearTimeout(showTagTimer);
+    clearTimeout(hideTagTimer);
+    hoverTag = null;
+  }
+  function leaveTag() {
+    clearTimeout(showTagTimer);
+    clearTimeout(hideTagTimer);
+    hideTagTimer = setTimeout(closeTag, 200);
+  }
+  function showTag(
+    event: MouseEvent | FocusEvent | KeyboardEvent,
+    ref: string,
+  ) {
+    if (preview || !ref.startsWith("tag:")) return;
+    keepTagOpen();
+    clearTimeout(showTagTimer);
+    const anchor = event.currentTarget as HTMLElement;
+    showTagTimer = setTimeout(() => {
+      tagAnchor = anchor;
+      hoverTag = ref.replace(/^tag:\s*/, "");
+    }, 250);
+  }
+  function tagPopup(node: HTMLElement) {
+    document.body.appendChild(node);
+    const position = () => {
+      if (!tagAnchor?.isConnected) {
+        closeTag();
+        return;
+      }
+      const anchor = tagAnchor.getBoundingClientRect();
+      const rect = node.getBoundingClientRect();
+      node.style.left = `${Math.max(8, Math.min(anchor.left, window.innerWidth - rect.width - 8))}px`;
+      const below = anchor.bottom + 6;
+      node.style.top = `${Math.max(8, below + rect.height > window.innerHeight - 8 ? anchor.top - rect.height - 6 : below)}px`;
+    };
+    const resize = new ResizeObserver(position);
+    resize.observe(node);
+    position();
+    window.addEventListener("scroll", position, true);
+    window.addEventListener("resize", position);
+    return {
+      destroy() {
+        resize.disconnect();
+        window.removeEventListener("scroll", position, true);
+        window.removeEventListener("resize", position);
+        node.remove();
+      },
+    };
+  }
 
   let openCommitSha: string | null = null;
   let commitDiff: Record<string, string> = {};
@@ -57,11 +150,15 @@
   async function fetchCommits(before?: string): Promise<Commit[]> {
     const qs = new URLSearchParams({
       path: wtPath,
-      limit: String(COMMITS_BATCH),
+      limit: String(preview ? 10 : COMMITS_BATCH),
     });
     if (before) qs.set("before", before);
     if (allBranches) qs.set("all", "1");
-    const res = await fetch(apiUrl(`/api/commits?${qs.toString()}`, daemonId));
+    if (tag) qs.set("tag", tag);
+    if (branch) qs.set("branch", branch);
+    const res = await fetch(apiUrl(`/api/commits?${qs.toString()}`, daemonId), {
+      signal: preview ? undefined : requests.signal,
+    });
     if (!res.ok) {
       const body = await res.json().catch(() => ({}));
       throw new Error(body.error ?? `HTTP ${res.status}`);
@@ -70,16 +167,68 @@
   }
 
   async function loadCommitsInitial() {
-    if (commits !== undefined) return;
+    const key = previewKey(daemonId, wtPath, tag, branch);
+    const cached = preview ? previewEntry(key) : undefined;
+    if (cached?.value) {
+      commits = cached.value;
+      commitsError = "";
+      if (cached.version === fsChangeKey && Date.now() - cached.at < 30_000)
+        return;
+    } else if (commits !== undefined) return;
     commitsLoading = true;
+    commitsError = "";
     try {
-      const list = await fetchCommits();
+      let list: Commit[];
+      if (cached) {
+        if (!cached.pending) {
+          const version = fsChangeKey;
+          cached.pending = fetchCommits()
+            .then((value) => {
+              cached.value = value;
+              cached.at = Date.now();
+              cached.version = version;
+              return value;
+            })
+            .finally(() => {
+              cached.pending = undefined;
+            });
+        }
+        list = await cached.pending;
+      } else list = await fetchCommits();
+      if (
+        requests.signal.aborted ||
+        (preview && key !== previewKey(daemonId, wtPath, tag, branch))
+      )
+        return;
       commits = list;
       commitsExhausted = list.length < COMMITS_BATCH;
+      if (cached && cached.version !== fsChangeKey)
+        queueMicrotask(() => {
+          if (!requests.signal.aborted) void loadCommitsInitial();
+        });
     } catch (e) {
+      if (
+        requests.signal.aborted ||
+        (preview && key !== previewKey(daemonId, wtPath, tag, branch))
+      )
+        return;
+      if (commits === undefined)
+        commitsError = e instanceof Error ? e.message : String(e);
       console.error("GitHistory: loadCommitsInitial", e);
     } finally {
       commitsLoading = false;
+    }
+  }
+
+  let observedFsChangeKey = fsChangeKey;
+  let observedPreviewKey = previewKey(daemonId, wtPath, tag, branch);
+  $: if (preview) {
+    const key = previewKey(daemonId, wtPath, tag, branch);
+    if (observedPreviewKey !== key || observedFsChangeKey !== fsChangeKey) {
+      if (observedPreviewKey !== key) commits = undefined;
+      observedPreviewKey = key;
+      observedFsChangeKey = fsChangeKey;
+      void loadCommitsInitial();
     }
   }
 
@@ -142,7 +291,9 @@
           sha: openCommitSha,
           context: String(contextLines()),
         });
-        const res = await fetch(apiUrl(`/api/commit?${qs.toString()}`, daemonId));
+        const res = await fetch(
+          apiUrl(`/api/commit?${qs.toString()}`, daemonId),
+        );
         if (res.ok) commitDiff = { [openCommitSha]: await res.text() };
       } catch (e) {
         console.error("GitHistory: toggleFullFile", e);
@@ -207,31 +358,43 @@
 
   onDestroy(() => {
     observer?.disconnect();
+    requests.abort();
+    closeTag();
   });
 
   void loadCommitsInitial();
 </script>
 
-<div class="session git-history">
-  <SessionHeader
-    agent="history"
-    agentLabel="history"
-    {source}
-    manualTitle={repoName}
-    mode="read"
-    canResume={false}
-    canEnd={false}
-    {onClose}
-    {onDragStart}
-    lastActivityFallback={commits
-      ? `${commits.length}${commitsExhausted ? "" : "+"} commits`
-      : ""}
-    closeTitle="Close this git history panel."
-    {menuItems}
-  />
+<svelte:window
+  on:keydown={(event) => {
+    if (event.key === "Escape") closeTag();
+  }}
+/>
+
+<div class="session git-history" class:gh-preview={preview}>
+  {#if !preview}
+    <SessionHeader
+      agent="history"
+      agentLabel="history"
+      {source}
+      manualTitle={repoName}
+      mode="read"
+      canResume={false}
+      canEnd={false}
+      {onClose}
+      {onDragStart}
+      lastActivityFallback={commits
+        ? `${commits.length}${commitsExhausted ? "" : "+"} commits`
+        : ""}
+      closeTitle="Close this git history panel."
+      {menuItems}
+    />
+  {/if}
 
   <div class="gh-content">
-    {#if commitsLoading && commits === undefined}
+    {#if commitsError}
+      <div class="gh-status" role="alert">{commitsError}</div>
+    {:else if commitsLoading && commits === undefined}
       <div class="gh-status"><LoadingSpinner size="1.2rem" /></div>
     {:else if commits && commits.length === 0}
       <div class="gh-status muted small">No commits yet.</div>
@@ -247,13 +410,31 @@
               on:click={() => void openCommit(c.sha)}
             >
               <span class="gh-subject">
-                {#if c.refs && c.refs.length > 0}
+                {#if !preview && c.refs && c.refs.length > 0}
                   {#each c.refs as ref}
-                    <span
-                      class="gh-ref"
-                      class:gh-ref-head={ref.startsWith("HEAD")}
-                      class:gh-ref-tag={ref.startsWith("tag:")}
-                      >{#if ref.startsWith("tag:")}<svg
+                    {#if ref.startsWith("tag:")}
+                      <span
+                        class="gh-ref gh-ref-tag"
+                        role="button"
+                        aria-label={`View history at ${ref.replace(/^tag:\s*/, "")}`}
+                        aria-haspopup="dialog"
+                        tabindex="0"
+                        on:click={(event) => {
+                          event.stopPropagation();
+                          showTag(event, ref);
+                        }}
+                        on:keydown={(event) => {
+                          if (event.key === "Enter" || event.key === " ") {
+                            event.preventDefault();
+                            event.stopPropagation();
+                            showTag(event, ref);
+                          }
+                        }}
+                        on:mouseenter={(event) => showTag(event, ref)}
+                        on:mouseleave={leaveTag}
+                        on:focus={(event) => showTag(event, ref)}
+                        on:blur={leaveTag}
+                        ><svg
                           class="gh-tag-icon"
                           viewBox="0 0 24 24"
                           fill="none"
@@ -268,8 +449,14 @@
                               cy={c.cy}
                               r={c.r}
                             />{/each}</svg
-                        >{/if}{ref.replace(/^tag: /, "")}</span
-                    >
+                        >{ref.replace(/^tag: /, "")}</span
+                      >
+                    {:else}
+                      <span
+                        class="gh-ref"
+                        class:gh-ref-head={ref.startsWith("HEAD")}>{ref}</span
+                      >
+                    {/if}
                   {/each}
                 {/if}
                 <span class="gh-subject-text">{c.subject}</span>
@@ -298,13 +485,13 @@
             </div>
           {/if}
         {/each}
-        {#if !commitsExhausted}
+        {#if !preview && !commitsExhausted}
           <div class="gh-sentinel" use:setupObserver>
             {#if commitsLoading}
               <LoadingSpinner size="0.8rem" />
             {/if}
           </div>
-        {:else}
+        {:else if !preview}
           <div class="gh-end-row">
             <div class="gh-rail-cap"></div>
             <span class="gh-end muted small">end of history</span>
@@ -315,7 +502,78 @@
   </div>
 </div>
 
+{#if hoverTag}
+  <div
+    class="gh-tag-popover"
+    role="dialog"
+    aria-label={`History at ${hoverTag}`}
+    tabindex="-1"
+    use:tagPopup
+    on:mouseenter={keepTagOpen}
+    on:mouseleave={leaveTag}
+    on:focusin={keepTagOpen}
+    on:focusout={leaveTag}
+  >
+    <div class="gh-tag-heading">
+      {hoverTag} <span class="muted small">Recent commits</span>
+    </div>
+    {#key hoverTag}
+      <svelte:self
+        {wtPath}
+        {daemonId}
+        source={`${source}:tag:${hoverTag}`}
+        {fsChangeKey}
+        preview={true}
+        tag={hoverTag}
+      />
+    {/key}
+  </div>
+{/if}
+
 <style>
+  .gh-tag-popover {
+    position: fixed;
+    z-index: 10000;
+    width: min(720px, calc(100vw - 16px));
+    max-height: calc(100vh - 16px);
+    overflow: auto;
+    border: 1px solid var(--surface-3);
+    border-radius: var(--radius-md);
+    background: var(--surface-1);
+    box-shadow: 0 8px 28px #0005;
+  }
+  .gh-tag-heading {
+    padding: 0.6rem;
+    display: flex;
+    align-items: baseline;
+    gap: 0.6rem;
+  }
+  .git-history.gh-preview {
+    height: auto;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    padding: 0;
+    width: min(680px, calc(100vw - 48px));
+    max-width: 100%;
+  }
+  .gh-preview .gh-content {
+    max-height: 55vh;
+  }
+  .gh-preview .gh-list {
+    padding: 0;
+  }
+  .gh-preview .gh-rail {
+    top: calc(0.35rem + 4px);
+  }
+  .gh-tag-popover .gh-preview {
+    width: 100%;
+  }
+  .gh-preview .gh-author {
+    max-width: 12ch;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
   .git-history {
     position: relative;
     border: 1px solid var(--surface-2);
@@ -395,8 +653,8 @@
     border-radius: var(--radius-sm);
     cursor: pointer;
     text-align: left;
-    width: 100%;
-    flex-shrink: 0;
+    flex: 1;
+    width: auto;
     min-width: 0;
   }
   .gh-commit:hover {

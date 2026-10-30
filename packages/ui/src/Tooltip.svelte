@@ -44,12 +44,19 @@
    *  absolutely-positioned popup). Default off so existing tooltips
    *  behave identically. */
   export let escapeClip: boolean = false;
+  /** Suppress a hover preview while its trigger's primary popup is open. */
+  export let disabled = false;
 
   let open = false;
   let timer: ReturnType<typeof setTimeout> | null = null;
   let hideTimer: ReturnType<typeof setTimeout> | null = null;
   /** Trigger wrapper — used by the portal action to anchor coords. */
   let wrapEl: HTMLDivElement | null = null;
+  $: if (disabled) {
+    open = false;
+    if (timer) clearTimeout(timer);
+    if (hideTimer) clearTimeout(hideTimer);
+  }
 
   /** Svelte action: move the popup to document.body, position it
    *  with `position: fixed` against `wrapEl`'s rect, and reposition
@@ -113,10 +120,14 @@
       }
     }
     reposition();
+    // Lazy content can become wider after the initial loading indicator.
+    const resizeObserver = new ResizeObserver(reposition);
+    resizeObserver.observe(node);
     window.addEventListener("scroll", reposition, true);
     window.addEventListener("resize", reposition);
     return {
       destroy() {
+        resizeObserver.disconnect();
         window.removeEventListener("scroll", reposition, true);
         window.removeEventListener("resize", reposition);
         node.remove();
@@ -125,6 +136,7 @@
   }
 
   function start() {
+    if (disabled) return;
     if (hideTimer) {
       clearTimeout(hideTimer);
       hideTimer = null;
@@ -199,6 +211,7 @@
   on:mouseenter={start}
   on:mouseleave={stop}
   on:click={() => {
+    if (disabled) return;
     // A click inside the trigger should keep the tooltip open — the
     // user is interacting with it. Cancel any pending hide (e.g.
     // from a disabled-button focusout) and force open immediately.

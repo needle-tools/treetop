@@ -15,7 +15,7 @@
 
 import { test, expect, describe } from "bun:test";
 import { readFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 
 const SERVER_TS = readFileSync(
   join(import.meta.dir, "../src/server.ts"),
@@ -385,17 +385,18 @@ describe("repoSummaryInflight single-flight", () => {
 // 21. /api/repos includes agents in the initial enriched rows
 // ---------------------------------------------------------------------------
 describe("/api/repos agent enrichment", () => {
-  test("fresh repo stream starts sharedDetectAgents before worktree enrichment", () => {
-    const start = SERVER_TS.indexOf("function reposNDJSONFresh");
-    const end = SERVER_TS.indexOf("async function reposNDJSONResponse", start);
-    const fnBody = start >= 0 && end > start ? SERVER_TS.slice(start, end) : "";
-    const agentsAt = fnBody.indexOf("sharedDetectAgents()");
-    const detailsAt = fnBody.indexOf("getWorktreeDetails(wt.path)");
-    const agentsForWtAt = fnBody.indexOf("agentsForWorktree(");
-    expect(agentsAt).toBeGreaterThan(-1);
-    expect(detailsAt).toBeGreaterThan(-1);
-    expect(agentsForWtAt).toBeGreaterThan(-1);
-    expect(agentsAt).toBeLessThan(detailsAt);
+  test("session ownership is published before slow worktree details finish", async () => {
+    const {agentsForWorktree}=await import("../src/agents");
+    const {publishWorktreesBeforeDetails}=await import("../src/worktree-refresh-plan");
+    const path=resolve("/repo");
+    const agent={agent:"codex" as const,cwd:path,source:"session.jsonl",sessionId:"session",lastActive:new Date().toISOString()};
+    const rows=[{path,agents:agentsForWorktree(path,[agent],[path])}];
+    let finish!:()=>void;
+    const slow=new Promise<void>(resolve=>{finish=resolve;});
+    const published: typeof rows[]=[];
+    const pending=publishWorktreesBeforeDetails(rows,value=>published.push(value),async()=>{await slow;return rows;});
+    expect(published[0]![0]!.agents.map(row=>row.sessionId)).toEqual(["session"]);
+    finish();await pending;
   });
 });
 
