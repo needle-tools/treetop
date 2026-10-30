@@ -30,7 +30,7 @@
     READ_GRACE_MS,
     MIN_WORKING_FOR_PULSE_MS,
   } from "./unread-pulse-manager";
-  import { apiUrl, bindTerminalSessionOwner } from "./api";
+  import { apiUrl, bindTerminalSessionOwner, startTerminalBootstrap } from "./api";
   import {
     daemonRepoKey,
     upsertRepo,
@@ -3276,6 +3276,9 @@
         now: Date.now(),
         idleMs: TUI_IDLE_SLEEP_MS,
         alwaysLiveCount: TUI_ALWAYS_LIVE,
+        liveSources: new Set(Object.values(openSessionsByWt).flat().filter(s =>
+          openSessionHasLiveTerminal(s, { liveTerminalIds, newTermIds, transientExited })
+        ).map(s => s.source)),
       },
     );
     if (dormantTuiSources.size > 0)
@@ -3297,12 +3300,16 @@
   }
 
   function spawnNextBackgroundTui(): void {
-    if ($backgroundRestorePending || isUserTyping()) return;
+    if ($backgroundRestorePending || isUserTyping() || bgSpawnInFlight.size > 0) return;
+    const visibleSources = new Set(Array.from(document.querySelectorAll<HTMLElement>(
+      ".session-col:not(.col-offscreen)[data-session-source]",
+    )).filter(col => col.querySelector(".session:not(.read-mode)")).map(col => col.dataset.sessionSource!));
     const candidates = selectSessionsForBackgroundSpawn(openSessionsByWt, {
       liveTerminalIds,
       inFlight: bgSpawnInFlight,
       newTermIds,
       dormantSources: dormantTuiSources,
+      visibleSources,
     });
     if (candidates.length === 0) {
       // Drain finished (and nothing landing) → stop the timer. A later
@@ -4777,6 +4784,7 @@
       let tFirstRepo = 0;
       let repoCount = 0;
       const receivedRepos = new Set<string>();
+      let liveTerms: any[] | null = null;
       try {
         // Kick off /api/repos NDJSON first so its manifest lands and
         // paints skeleton rows before the other fetches resolve. The
@@ -4841,57 +4849,48 @@
                 else full.color = pending;
               }
               repos = upsertRepo(repos, full);
+              if (liveTerms) openSessionsByWt = reconcileLiveAgentTerminals(
+                openSessionsByWt, repos, liveTerms,
+              ) as typeof openSessionsByWt;
             });
           },
         });
-        const reposStream = fetchReposNDJSON(makeRepoHandlers());
-        // Keep bootstrap fetch fan-out below the browser's same-origin
-        // HTTP/1 connection budget while /api/repos and SSE streams are open.
-        const [e, s] = await Promise.all([
-          fetch(apiUrl("/api/events")),
-          fetch(apiUrl("/api/shells")),
-        ]);
-        const [t, liveTermsResp, dResp] = await Promise.all([
+        let reposStream: Promise<unknown>;
+        const bootstrap = startTerminalBootstrap(
+          async () => {
+            const response = await fetch(apiUrl("/api/terminals")).catch(() => null);
+            if (!response?.ok) return null;
+            const parsed = await response.json().catch(() => null);
+            return Array.isArray(parsed) ? parsed : null;
+          },
+          (parsed) => {
+            if (parsed) {
+              liveTerms = parsed;
+              liveTerminalIds = new Set(parsed
+                .filter(t => !t?.exitedAt && typeof t?.id === "string")
+                .map(t => t.id));
+              openSessionsByWt = reconcileLiveAgentTerminals(
+                openSessionsByWt, repos, parsed,
+              ) as typeof openSessionsByWt;
+            }
+            initialTerminalSnapshotReady = true;
+          },
+          () => {
+            reposStream = fetchReposNDJSON(makeRepoHandlers());
+            return Promise.all([
+              fetch(apiUrl("/api/events")),
+              fetch(apiUrl("/api/shells")),
+            ]);
+          },
+        );
+        const [e, s] = await bootstrap.metadata;
+        const [t, dResp] = await Promise.all([
           fetch(apiUrl("/api/session-titles")),
-          fetch(apiUrl("/api/terminals")).catch(() => null),
-          // Cheap local read of the remote-daemon registry; null if it
-          // ever fails so fan-out is simply skipped (local path unaffected).
           fetch(apiUrl("/api/daemons")).catch(() => null),
         ]);
         if (!e.ok) throw new Error(`/api/events: ${e.status}`);
-        // Wait for the stream to finish before reading sibling responses,
-        // but DON'T reassign `repos` from the stream's return value — that
-        // array is in completion order, while `repos` is already in
-        // canonical workspace order (manifest seeds order, `onRepo` does
-        // in-place updates by id). Reassigning would reorder the dashboard
-        // on every refresh.
-        // Mark live TUIs active in the dock as soon as /api/terminals is in —
-        // BEFORE awaiting the (cold, bounded) repos stream. reconcile's
-        // resumeSessionId→ownerId match needs no repo data, so gating this on
-        // the full stream meant the dock showed nothing as active until every
-        // repo finished enriching — the user saw dots appear only as they
-        // scrolled (mounting a column populated activity the other way).
-        let liveTerms: any[] | null = null;
-        if (liveTermsResp && liveTermsResp.ok) {
-          const parsed = await timeAsync("load.terminals-json", () =>
-            liveTermsResp.json().catch(() => []),
-          );
-          if (Array.isArray(parsed)) {
-            liveTerms = parsed;
-            liveTerminalIds = new Set(
-              parsed
-                .filter((t) => !t?.exitedAt && typeof t?.id === "string")
-                .map((t) => t.id),
-            );
-            openSessionsByWt = reconcileLiveAgentTerminals(
-              openSessionsByWt,
-              repos,
-              parsed,
-            ) as typeof openSessionsByWt;
-          }
-        }
-        if (!initialTerminalSnapshotReady) initialTerminalSnapshotReady = true;
-        await reposStream;
+        await bootstrap.snapshot;
+        await reposStream!;
         // Re-reconcile once every worktree's agents have streamed in, so
         // sessions matchable only via the per-worktree agent scan (no
         // persisted resumeSessionId) also attach to their live PTY.
@@ -13006,7 +13005,7 @@
                                     })}
                                   attachTermId={s.attachTermId}
                                   spawnReady={initialTerminalSnapshotReady && !$backgroundRestorePending}
-                                  dormant={dormantTuiSources.has(s.source)}
+                                  dormant={dormantTuiSources.has(s.source) && !openSessionHasLiveTerminal(s, { liveTerminalIds, newTermIds, transientExited })}
                                   manualTitleOverride={agentMeta?.manualTitle ??
                                     newSessionTitles[titleSource] ??
                                     newSessionTitles[s.source]}

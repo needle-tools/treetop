@@ -584,6 +584,8 @@ export interface TuiRestorePolicy {
   idleMs: number;
   /** The N most-recently-active sessions stay live regardless of idle age. */
   alwaysLiveCount: number;
+  /** Existing broker processes must remain attachable regardless of file age. */
+  liveSources?: ReadonlySet<string>;
 }
 
 /** Epoch-ms of each source's last activity — the agent session file's mtime,
@@ -628,6 +630,7 @@ export function selectDormantTuiSources(
 
   for (let i = Math.max(0, policy.alwaysLiveCount); i < ranked.length; i++) {
     const source = ranked[i]!;
+    if (policy.liveSources?.has(source)) continue;
     const t = at(source);
     if (t === null) continue; // un-judgeable -> leave it live
     if (policy.now - t > policy.idleMs) dormant.add(source);
@@ -657,6 +660,8 @@ export function selectSessionsForBackgroundSpawn(
     /** Sources classified dormant by `selectDormantTuiSources` — restored
      *  read-only, never background-spawned. Omit to disable the gate. */
     dormantSources?: ReadonlySet<string>;
+    /** Mounted visible terminals own their foreground spawn. */
+    visibleSources?: ReadonlySet<string>;
   },
 ): BackgroundSpawnCandidate[] {
   const out: BackgroundSpawnCandidate[] = [];
@@ -688,6 +693,8 @@ export function selectSessionsForBackgroundSpawn(
       });
     }
   }
+  if (out.some((candidate) => options.visibleSources?.has(candidate.source)))
+    return [];
   return out;
 }
 

@@ -566,6 +566,27 @@ describe("reconcileLiveAgentTerminals", () => {
   });
 });
 
+test("background restores yield while a visible terminal still needs its PTY", () => {
+  const sessions:Record<string,OpenSession[]>={"/repo":[
+    {agent:"codex",source:"visible",mode:"terminal",resumeSessionId:"v"},
+    {agent:"codex",source:"hidden",mode:"terminal",resumeSessionId:"h"},
+  ]};
+  const options={liveTerminalIds:new Set<string>(),inFlight:new Set<string>(),newTermIds:{},visibleSources:new Set(["visible"])};
+  expect(selectSessionsForBackgroundSpawn(sessions,options)).toEqual([]);
+  sessions["/repo"]![0]!.attachTermId="running";options.liveTerminalIds.add("running");
+  expect(selectSessionsForBackgroundSpawn(sessions,options).map(row=>row.source)).toEqual(["hidden"]);
+});
+
+test("a running broker session is never classified dormant from old transcript activity", () => {
+  const sessions:Record<string,OpenSession[]>={"/repo":[
+    {agent:"codex",source:"running",mode:"terminal",resumeSessionId:"r"},
+    {agent:"codex",source:"stopped",mode:"terminal",resumeSessionId:"s"},
+  ]};
+  expect([...selectDormantTuiSources(sessions,new Map([["running",1],["stopped",1]]),{
+    now:1_000_000,idleMs:1000,alwaysLiveCount:0,liveSources:new Set(["running"]),
+  })]).toEqual(["stopped"]);
+});
+
 describe("selectSessionsForBackgroundSpawn", () => {
   const wtPath = "/repo/needle-cloud";
   const otherWt = "/repo/fastvid";

@@ -17,6 +17,20 @@
  * remote → `/api/daemons/<id>/...`. Only the leading `/api` segment is
  * rewritten, so query values that contain `/api` are left intact.
  */
+/** Start and apply terminal inventory independently of slower dashboard metadata. */
+export function startTerminalBootstrap<Snapshot, Metadata>(
+  readSnapshot: () => Promise<Snapshot>,
+  applySnapshot: (snapshot: Snapshot) => void,
+  loadMetadata: () => Promise<Metadata>,
+) {
+  const snapshot = readSnapshot().then((value) => {
+    applySnapshot(value);
+    return value;
+  });
+  const metadata = loadMetadata();
+  return { snapshot, metadata };
+}
+
 export function apiUrl(path: string, daemonId?: string | null): string {
   if (!daemonId) return path;
   return path.replace(/^\/api/, `/api/daemons/${daemonId}`);

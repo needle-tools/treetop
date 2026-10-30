@@ -2645,3 +2645,21 @@ checks and two headless browser checks pass. The real tag/branch fixture's
 Windows allowance was increased after measured process-start delays exceeded
 60s; assertions remain intact and the rerun passed. No production restart or
 native installer build was performed for these changes.
+
+
+### 2026-10-30 visible terminal restore priority
+
+Read-only logs showed WebView readiness in 7.139s after installation and 3.737s
+after the user restarted. Warm startup may explain the improvement; exact
+causality is unconfirmed. Attachment first-output frames took about 200-250ms,
+while the repo stream took 52.3s (36 of 39 columns offscreen).
+
+Terminal inventory now starts first and applies independently of ancillary
+metadata. Each streamed repo row reconciles live attachments. Running broker
+sessions are exempt from transcript-age dormancy, including late matches.
+Background restores yield to visible terminal candidates and allow only one
+offscreen request in flight. Existing geometry and hold subscriptions remain.
+
+Validation: 157 API/routing tests pass, including three regressions observed
+failing first. App.svelte compiles with eight existing warnings. No production
+processes restarted; no installer rebuilt.

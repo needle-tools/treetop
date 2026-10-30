@@ -1,5 +1,20 @@
 import { test, expect, describe } from "bun:test";
-import { apiUrl, apiWsUrl, withRequestDeadline, requestTerminalStop, attachTerminalStopChannel } from "../src/api";
+import { apiUrl, apiWsUrl, withRequestDeadline, requestTerminalStop, attachTerminalStopChannel, startTerminalBootstrap } from "../src/api";
+
+test("terminal inventory is applied before unrelated startup metadata completes", async () => {
+  const order:string[]=[];
+  let releaseSnapshot!:(value:string[])=>void, releaseMetadata!:(value:string)=>void;
+  const bootstrap=startTerminalBootstrap(
+    ()=>{order.push("inventory-request");return new Promise<string[]>(resolve=>{releaseSnapshot=resolve;});},
+    value=>{order.push(`attached:${value[0]}`);},
+    ()=>{order.push("metadata-request");return new Promise<string>(resolve=>{releaseMetadata=resolve;});},
+  );
+  expect(order).toEqual(["inventory-request","metadata-request"]);
+  releaseSnapshot(["live-terminal"]);
+  await bootstrap.snapshot;
+  expect(order).toEqual(["inventory-request","metadata-request","attached:live-terminal"]);
+  releaseMetadata("events");expect(await bootstrap.metadata).toBe("events");
+});
 
 test("stop uses an acknowledged live terminal socket instead of the HTTP request queue", async () => {
   let httpStops = 0, socketStops = 0;
