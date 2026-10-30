@@ -22,12 +22,11 @@ import {
   buildVines,
   accrueAges,
   stemPath,
-  leaves,
   type Panel,
   type SourceAges,
   type RenderVine,
 } from "./vine-core";
-import { botanicalMarkup, isCactus, leafShape, plantKind } from "./vine-botany";
+import { botanicalLeaves, botanicalMarkup, isCactus, plantKind } from "./vine-botany";
 
 const STORE_KEY = "vines:v3"; // per-session lifetimes
 const TICK_MS = 2000;
@@ -38,7 +37,6 @@ const DEFAULT_FULL_MS = 4 * 60 * 60 * 1000; // ~4h of session lifetime → full
 const STRIP_SELECTOR = ".sessions-strip";
 const COL_SELECTOR = ".session-col[data-session-source]";
 const SVGNS = "http://www.w3.org/2000/svg";
-const LEAF_D = "M0 0 C -4.5 -4 -4.5 -11 0 -15 C 4.5 -11 4.5 -4 0 0 Z";
 const STEM_GRAD_ID = "vine-stem-grad";
 
 const QUERY = (() => {
@@ -415,7 +413,7 @@ export function createVinesOverlay(): { destroy: () => void } {
 
   function patchLeaves(v: RenderVine, n: VineNodes, maxH: number) {
     if (isCactus(plantKind(v.seed))) return;
-    const ls = leaves(v, maxH);
+    const ls = botanicalLeaves(v, maxH);
     for (let i = n.renderedLeaves; i < ls.length; i++) {
       const leaf = ls[i];
       const anchor = document.createElementNS(SVGNS, "g");
@@ -425,7 +423,7 @@ export function createVinesOverlay(): { destroy: () => void } {
       );
       const path = document.createElementNS(SVGNS, "path");
       path.setAttribute("class", "vine-leaf");
-      path.setAttribute("d", leafShape(plantKind(v.seed), LEAF_D));
+      path.setAttribute("d", leaf.shape);
       // depth shading: 0 = dark (root) → 1 = bright (top)
       path.style.setProperty("--leaf-light", leaf.light.toFixed(2));
       path.style.animationDelay = `${((i * 0.7 + (leaf.side > 0 ? 0.35 : 0)) % 4).toFixed(2)}s`;

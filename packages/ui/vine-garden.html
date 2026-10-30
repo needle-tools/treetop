@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Treetop · A little more life</title>
+<style>
+:root{color-scheme:dark;--page:#1b1d18;--panel:#191919;--ink:#e2e4db;--muted:#a1a696;--line:#3a4031;--green:#839954;--ivory:#e5dfb7;--purple:#b2a1cf}
+*{box-sizing:border-box}body{margin:0;background:var(--page);color:var(--ink);font:15px/1.5 "Segoe UI",sans-serif}main{max-width:1560px;margin:auto;padding:42px 38px 28px}header{display:flex;align-items:end;justify-content:space-between;gap:30px;margin-bottom:30px}h1{font-size:38px;letter-spacing:-1.4px;font-weight:550;line-height:1.15;margin:5px 0 12px}p{margin:0;color:var(--muted);max-width:660px}.brand{font-size:14px;color:#bcc5ab;margin-bottom:12px}.controls{position:sticky;top:0;z-index:20;background:var(--page);box-shadow:0 8px 12px var(--page);display:flex;gap:14px;align-items:center;flex-wrap:wrap;padding:16px 0 22px;border-top:1px solid var(--line)}button,select{font:inherit;background:#2c3026;color:var(--ink);border:1px solid #505743;border-radius:6px;padding:8px 13px;cursor:pointer}button:hover,select:hover{background:#363e2d}button:focus-visible,select:focus-visible,input:focus-visible{outline:2px solid var(--ivory);outline-offset:4px}label{display:flex;align-items:center;gap:10px}input{accent-color:#a0b776;width:150px}output{min-width:66px;color:#cdd5bf}.controls .spacer{flex:1}.gallery{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:22px}.study{min-width:0}h2{font-weight:550;font-size:18px;margin:0 0 6px}.caption{font-size:13px;min-height:66px;line-height:1.5}.badge{font-size:11px;color:#c5d7a6;border:1px solid #536043;border-radius:4px;padding:2px 5px;margin-left:5px;vertical-align:2px}.sample{position:relative;margin:10px 0 16px;padding-left:27px;height:480px;isolation:isolate}.terminal{height:100%;background:var(--panel);border:1px solid #414638;border-radius:8px;overflow:hidden}.terminal-head{background:#292b25;display:flex;gap:8px;align-items:center;padding:14px 12px;border-bottom:1px solid #3a3c34;color:#aeb4a6;font-size:12px}.model{font-family:Consolas,monospace;border:1px solid #626757;padding:0 5px;border-radius:3px;color:#d5dacb;white-space:nowrap}.session-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.body{padding:18px 15px;font:12px/1.8 Consolas,"Cascadia Mono",monospace;color:#c7c7c1}.body p{margin:0 0 19px;color:inherit}.body .dim{color:#7e8278}.body .ok{color:#9bb67c}.body .prompt{color:#dfdfd5}.body .code{background:#22251f;padding:10px;border-radius:4px}.body .foot{margin-top:34px;color:#989e8d}.vine{position:absolute;left:0;top:38px;width:64px;height:440px;pointer-events:none;overflow:visible;z-index:2}.flower{transform-box:fill-box;transform-origin:center;animation:unfold 850ms cubic-bezier(.2,.7,.3,1) both;animation-delay:var(--delay,0ms)}@keyframes unfold{from{opacity:0;scale:.2;rotate:-30deg}to{opacity:1;scale:1;rotate:0deg}}.detail{padding-top:10px;border-top:1px solid var(--line);font-size:13px;color:#a1a696}.detail strong{color:#d4dac8;font-weight:500}.note{display:flex;gap:42px;border-top:1px solid var(--line);margin-top:28px;padding-top:22px}.note p{font-size:14px;max-width:660px}.note strong{color:#d4dac8;font-weight:550}footer{margin-top:24px;color:#7c8372;font-size:12px}.zoom .gallery{grid-template-columns:repeat(2,minmax(0,1fr));max-width:1000px;margin:auto}.zoom .sample{height:600px}.zoom .vine{height:560px}.zoom .body{font-size:14px}.zoom .caption{min-height:40px}@media(max-width:1050px){.gallery{grid-template-columns:repeat(2,minmax(0,1fr))}header{align-items:start}.caption{min-height:44px}}@media(max-width:600px){main{padding:24px 18px}h1{font-size:30px}.gallery,.zoom .gallery{grid-template-columns:1fr}.note{display:block}.note p{margin-bottom:15px}header{display:block}.controls{gap:12px}.spacer{display:none}.sample{height:430px}.vine{height:390px}}@media(prefers-reduced-motion:reduce){.flower{animation:none}}
+</style>
+</head>
+<body><main>
+<header><div><div class="brand">Treetop / vine sketches</div><h1>A little more life.</h1><p>Small blooms on the vines you already know. All runtime plant varieties, shown beside the same session so you can judge how much attention they take.</p></div></header>
+<div class="controls"><label for="age">Growth <input id="age" type="range" min="15" max="100" value="85"><output id="age-label">Mature</output></label><button id="bloom">Replay bloom</button><span class="spacer"></span><button id="zoom" aria-pressed="false">Larger previews</button></div>
+<section class="gallery" aria-label="Vine design variations"></section>
+<div class="note"><p><strong>My pick: ivory blossoms.</strong> Two or three small flowers per mature vine. Their warm, muted color sits naturally beside the olive leaves without competing with terminal text.</p><p><strong>Growth, not an alert.</strong> Buds appear first, then open once. No looping sway, glow, or confetti. Keep flowers in the gutter and let older stems fade into the background.</p></div>
+<footer>Standalone visual draft · No app settings changed · Growth is illustrative, not a proposed reward system</footer>
+</main>
+<script type="module">
+import { stemPath, leaves } from '/src/vines/vine-core.ts';
+import { DEFAULT_LEAF_SHAPE, botanicalLeaves, plantKind, isCactus, leafShape, botanicalMarkup } from '/src/vines/vine-botany.ts';
+const studies=[
+ {key:'original',name:'Leaves only',text:'The current direction: a quiet olive vine. A reference for the amount of detail we add.',detail:'Familiar silhouette. No flowers.'},
+ {key:'ivory',name:'Ivory blossoms',text:'Tiny five-petal flowers with honey centers. A few buds near the fresh growing tip.',detail:'<strong>Gentle contrast.</strong> Flowers stay about the size of a leaf.',pick:true},
+ {key:'bells',name:'Woodland bells',text:'Small, hanging purple bells. Side stems curl outward before the flowers open.',detail:'<strong>A little more character.</strong> Restrained lavender, no neon.'},
+ {key:'fern',name:'Forest floor',text:'Fern-like side shoots, soft seedheads and occasional small golden flowers.',detail:'<strong>More botanical variety.</strong> Best used sparingly on older vines.'},
+ {key:'monstera',name:'Little monstera',text:'Split leaves on curling stems. A miniature tropical climber with deeper greens.',detail:'<strong>Big leaf shapes, small footprint.</strong> A few mature leaves among new shoots.'},
+ {key:'rose',name:'Rambling roses',text:'Dusty pink rosettes and smaller rounded leaves on a gently climbing stem.',detail:'<strong>Soft pink accents.</strong> Flowers open slowly from compact buds.'},
+ {key:'daisy',name:'Meadow daisies',text:'Fine leaves and small white daisies on branching stems. Light and a little unruly.',detail:'<strong>Airy and delicate.</strong> More petals, less leaf mass.'},
+ {key:'cactus',variant:0,name:'Tall cactus',text:'A tall trunk with two uneven arms and occasional pink flowers at their tips.',detail:'The trunk extends first, followed by arms and blossoms.'},
+ {key:'cactus',variant:1,name:'Branching cactus',text:'Several arms grow at different heights, each with its own timing and flower buds.',detail:'A fuller silhouette with scattered arm-tip flowers.'},
+ {key:'cactus',variant:2,name:'Cactus cluster',text:'Smaller cactus stems sprout around an older central plant.',detail:'New growth begins at ground level beside the main trunk.'},
+ {key:'cactus',variant:3,name:'Prickly pear',text:'Rounded pads emerge in stages, with flowers along their upper edges.',detail:'A different growth habit built from overlapping pads.'}
+];
+const gallery=document.querySelector('.gallery');
+for(const s of studies){const article=document.createElement('article');article.className='study';article.innerHTML=`<h2>${s.name}${s.pick?'<span class="badge">Suggested</span>':''}</h2><p class="caption">${s.text}</p><div class="sample"><svg class="vine" viewBox="0 0 64 440" preserveAspectRatio="none" aria-label="${s.name} illustration" role="img"></svg><div class="terminal"><div class="terminal-head"><span class="model">gpt-6.1</span><span class="session-name">Treetop garden</span></div><div class="body"><p class="prompt">› A little more life?</p><p>I'll keep the flowers small<br>and let the vines grow.</p><p class="ok">● Read vine-core.ts<br><span class="dim">  + Show details</span></p><p class="code">Leaves → buds → blossoms<br><span class="dim">A quiet change over time.</span></p><p class="ok">● Checks passed</p><p>Ready for a closer look.</p><p class="dim">Worked for 2m 45s</p><p class="foot">› Ask Codex anything<span style="color:#d8ddcd"> ▏</span></p></div></div></div><div class="detail">${s.detail}</div>`;gallery.append(article)}
+const age=document.querySelector('#age');
+let gardenSeed=17;
+const gardenButton=document.createElement('button');gardenButton.textContent='New garden';document.querySelector('#bloom').after(gardenButton);
+gardenButton.onclick=()=>{gardenSeed++;draw()};
+const morePlants=[
+ {key:'tree',name:'Beech ? Buche',text:'Smooth silver-grey bark with subtle scars and oval leaves.',detail:'A slender woodland tree with staggered leafy branches.'},
+ {key:'oak',name:'Oak ? Eiche',text:'Rough brown bark with fine vertical fissures and lobed leaves.',detail:'A warm woody trunk with small oak leaves.'},
+ {key:'birch',name:'Birch ? Birke',text:'Pale bark with dark horizontal markings and pointed leaves.',detail:'Light bark and airy green foliage.'},
+ {key:'poppy',name:'Wild poppies',text:'Papery coral flowers with dark centers, mixed with the original olive leaves.',detail:'Warm color in small, scattered blooms.'},
+ {key:'star',name:'Blue star flowers',text:'Pointed periwinkle petals and fine yellow centers on the climbing stems.',detail:'Cool blue accents among fresh leaves.'},
+ {key:'clover',name:'Clover flowers',text:'Little rounded pink flower heads on short side shoots.',detail:'Soft clusters with a meadow feel.'}
+];
+for(const s of morePlants){studies.push(s);const article=gallery.firstElementChild.cloneNode(true);article.querySelector('h2').textContent=s.name;article.querySelector('.caption').textContent=s.text;article.querySelector('.detail').textContent=s.detail;article.querySelector('svg').setAttribute('aria-label',s.name);gallery.append(article)}
+function draw(){
+ const length=Number(age.value)/100;
+ document.querySelector('#age-label').textContent=length<.4?'Young':length<.7?'Budding':'Mature';
+ document.querySelectorAll('.vine').forEach((svg,k)=>{
+  const study=studies[k];
+  const kind=study.key==='cactus'?['tall','branching','cluster','pear'][study.variant]:study.key;
+  let seed=gardenSeed*1000;
+  while(plantKind(seed)!==(kind==='original'?'ivory':kind)) seed++;
+  const v={seed,length},height=390;
+  let out='';
+  if(!isCactus(plantKind(seed))){
+   out+=`<path d="${stemPath(v,height)}" fill="none" stroke="#607d3f" stroke-width="2"/>`;
+   for(const leaf of botanicalLeaves(v,height)) out+=`<g transform="translate(${leaf.x} ${leaf.y}) rotate(${leaf.rot}) scale(${leaf.scale})"><path d="${leaf.shape}" fill="#839d4b" opacity="${.3+leaf.light*.7}"/></g>`;
+  }
+  if(kind!=='original') out+=botanicalMarkup(v,height);
+  svg.innerHTML=`<g transform="translate(28 430)">${out}</g>`;
+ });
+}
+age.addEventListener('input',draw);document.querySelector('#bloom').addEventListener('click',draw);document.querySelector('#zoom').addEventListener('click',e=>{const on=document.body.classList.toggle('zoom');e.currentTarget.setAttribute('aria-pressed',on);e.currentTarget.textContent=on?'Side-by-side previews':'Larger previews'});draw();
+</script></body></html>
