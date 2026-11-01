@@ -1403,7 +1403,7 @@ describe("cmdForOpenSession", () => {
     ).toEqual(["codex", "resume", "ses_42"]);
   });
 
-  test("resumed codex column threads `--model` before the resume session id", () => {
+  test("resumed codex leaves the remembered model to the harness", () => {
     expect(
       cmdForOpenSession(
         {
@@ -1413,7 +1413,12 @@ describe("cmdForOpenSession", () => {
         },
         "/bin/zsh",
       ),
-    ).toEqual(["codex", "resume", "--model", "gpt-5.4-mini", "ses_42"]);
+    ).toEqual(["codex", "resume", "ses_42"]);
+  });
+
+  test("an explicit model menu choice applies to the next resume", () => {
+    expect(cmdForOpenSession({ agent: "codex", resumeSessionId: "ses_42", codexModel: "gpt-6-astra", codexResumeModel: "gpt-6.1-sol" }, "/bin/zsh"))
+      .toEqual(["codex", "resume", "--model", "gpt-6.1-sol", "ses_42"]);
   });
 
   test("resumed codex column threads every execution setting before the session id", () => {
@@ -1423,6 +1428,7 @@ describe("cmdForOpenSession", () => {
           agent: "codex",
           resumeSessionId: "ses_42",
           codexModel: "gpt-5.6-luna",
+          codexResumeModel: "gpt-5.6-luna",
           codexEffort: "max",
           codexServiceTier: "priority",
           codexSandbox: "dangerFullAccess",

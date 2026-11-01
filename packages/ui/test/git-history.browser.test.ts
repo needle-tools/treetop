@@ -7,6 +7,57 @@ import { chromium } from "playwright-core";
 import { createServer } from "vite";
 import { svelte } from "@sveltejs/vite-plugin-svelte";
 
+test("changed-file preview renders streamed filenames while line counts are pending", { timeout: 60000 }, async () => {
+  const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+  const cacheRoot = resolve(root, "../../.cache");
+  await mkdir(cacheRoot, { recursive: true });
+  const fixture = await mkdtemp(join(cacheRoot, "git-summary-browser-"));
+  let server, browser;
+  let finishDetails: (() => void) | undefined;
+  try {
+    await writeFile(join(fixture, "index.html"), '<div id="app"></div><script type="module" src="./main.ts"></script>');
+    await writeFile(join(fixture, "main.ts"), "import {mount} from 'svelte';import Harness from './Harness.svelte';mount(Harness,{target:document.getElementById('app')});");
+    await writeFile(join(fixture, "Harness.svelte"), `<script>
+      import {onMount} from 'svelte';
+      import Body from '/src/ChangedFilesTooltipBody.svelte';
+      import {consumeWorktreeSummary} from '/src/status-summary';
+      let summary='loading';
+      onMount(()=>{ void fetch('/summary').then(response=>consumeWorktreeSummary(response,value=>{summary=value;window.summary=value;})); });
+    </script><Body {summary} refreshing={summary.detailsLoaded === false} />`);
+    const files = { staged: [], unstaged: ["pending-file.ts"], untracked: [], commitsLoaded: false, detailsLoaded: false };
+    server = await createServer({
+      root: fixture, configFile: false, cacheDir: join(fixture, ".vite"),
+      resolve: { alias: { "/src": resolve(root, "src"), "@treetop/nicifier": resolve(root, "../nicifier/src/index.ts") } },
+      plugins: [svelte(), { name: "stream-summary-fixture", configureServer(vite) {
+        vite.middlewares.use((request, response, next) => {
+          if (request.url !== "/summary") return next();
+          response.setHeader("Content-Type", "application/x-ndjson");
+          response.write(JSON.stringify(files) + "\n");
+          finishDetails = () => response.end(JSON.stringify({ ...files, detailsLoaded: true, commitsLoaded: true,
+            stats: { "pending-file.ts": { added: 17, removed: 3, binary: false } } }) + "\n");
+        });
+      } }],
+      server: { host: "127.0.0.1", port: 0, fs: { allow: [resolve(root, "../..")] } }, logLevel: "error",
+    });
+    await server.listen();
+    const address = server.httpServer!.address(); assert(address && typeof address !== "string");
+    browser = await chromium.launch({ channel: process.platform === "win32" ? "msedge" : "chrome", headless: true });
+    const page = await browser.newPage();
+    await page.goto(`http://127.0.0.1:${address.port}`);
+    await page.getByText("pending-file.ts", { exact: true }).waitFor();
+    assert.equal(await page.evaluate(() => (window as any).summary.detailsLoaded), false);
+    assert.equal(await page.getByText("Loading…", { exact: true }).count(), 0);
+    assert(finishDetails); finishDetails();
+    await page.waitForFunction(() => (window as any).summary.detailsLoaded === true);
+    await page.getByText("+17", { exact: true }).waitFor();
+  } finally {
+    finishDetails?.();
+    await browser?.close(); await server?.close();
+    assert.equal(dirname(fixture), cacheRoot);
+    await rm(fixture, { recursive: true, force: true });
+  }
+});
+
 test(
   "tag hover lazily opens the same commit rows and allows inspecting a commit",
   { timeout: 60_000 },

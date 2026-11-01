@@ -288,8 +288,8 @@ export interface PersistedSession {
   claudeEffort?: ClaudeEffort;
   /** Optional. For `agent === "codex"` terminal sessions, the model id
    *  picked from Codex app-server's model catalog. Passed as
-   *  `codex --model <id>` / `codex resume --model <id>`. Absence ⇒
-   *  codex's configured default. */
+   *  `codex --model <id>` for new sessions. Resumes let Codex restore
+   *  its own latest model; explicit menu changes are passed separately. */
   codexModel?: string;
   /** Optional. For `agent === "codex"` sessions, the reasoning effort
    *  picked from the app-server model catalog. Visual sessions pass it
@@ -1035,6 +1035,8 @@ export function cmdForOpenSession(
     claudeModel?: string;
     claudeEffort?: string;
     codexModel?: string;
+    /** One-shot menu choice, deliberately excluded from persisted state. */
+    codexResumeModel?: string;
     codexEffort?: string;
     codexServiceTier?: string;
     codexSandbox?: string;
@@ -1087,7 +1089,8 @@ export function cmdForOpenSession(
   }
   if (s.agent === "codex") {
     const codexFlags: string[] = [];
-    if (s.codexModel) codexFlags.push("--model", s.codexModel);
+    const model = sid ? s.codexResumeModel : s.codexModel;
+    if (model) codexFlags.push("--model", model);
     if (s.codexEffort) {
       codexFlags.push(
         "-c",

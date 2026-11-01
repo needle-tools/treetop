@@ -1,5 +1,5 @@
-// Starts the daemon (watch mode) and UI (Vite dev server) together
-// with hot reload. Ctrl-C kills both.
+// Starts Vite and reuses a same-workspace primary backend when available.
+// Otherwise starts an owned daemon with hot reload. Ctrl-C stops owned children.
 //
 // Pre-flight: any stale processes still holding ports 7777 (daemon) or
 // 7779 (Vite) from a previous run get killed first. Otherwise --watch
@@ -21,6 +21,7 @@ import {
 import {
   rewriteTempWorkspaceAttachmentRefs,
   shouldCopyTempWorkspaceRelativePath,
+  envFlag,
 } from "./packages/daemon/src/server-helpers";
 
 export interface DevWorkspaceOptions {
@@ -35,6 +36,19 @@ export interface DevWorkspaceOptions {
 /** Localhost cookies are shared across ports and can exceed Node's 16 KiB default. */
 export function devUiNodeOptions(existing = ""): string {
   return `${existing} --max-http-header-size=131072`.trim();
+}
+
+/** Reuse a healthy primary backend instead of scanning one workspace twice.
+ * Named/side workspaces and explicit backend development keep their own daemon. */
+export async function findSharedDevBackend(workspacePath: string, port = 27787): Promise<number | null> {
+  try {
+    const response = await fetch(`http://127.0.0.1:${port}/api/health`, { signal: AbortSignal.timeout(1500) });
+    if (!response.ok) return null;
+    const health = await response.json() as { status?: string; workspace?: string; readonly?: boolean; sideInstance?: boolean };
+    if (health.status !== "ok" || !health.workspace || health.readonly || health.sideInstance) return null;
+    const normalize = (path: string) => process.platform === "win32" ? resolve(path).toLowerCase() : resolve(path);
+    return normalize(health.workspace) === normalize(workspacePath) ? port : null;
+  } catch { return null; } // An absent primary backend is normal for backend development.
 }
 
 function defaultWorkspaceRoot(): string {
@@ -414,6 +428,12 @@ export async function runDev(
   const { DEV_DAEMON_PORT, DEV_UI_PORT, killDevPorts } =
     await import("./dev-ports");
 
+  const sharedPort = !argsRequestWorkspace(argv) && process.env.SUPERGIT_DEV_OWN_DAEMON !== "1"
+    && !envFlag(process.env.TREETOP_READONLY) && !envFlag(process.env.TREETOP_SIDE_INSTANCE)
+    && !process.env.TREETOP_TEMP_WORKSPACE_FROM
+    ? await findSharedDevBackend(process.env.SUPERGIT_WORKSPACE ?? defaultMainWorkspacePath(), Number(process.env.SUPERGIT_DEV_BACKEND_PORT ?? 27787))
+    : null;
+
   await killDevPorts();
 
   // Build the daemon child's environment explicitly so dev mode can't be
@@ -446,8 +466,9 @@ export async function runDev(
     ...process.env,
     NODE_OPTIONS: devUiNodeOptions(process.env.NODE_OPTIONS),
     PORT: String(DEV_UI_PORT),
-    SUPERGIT_PORT: String(DEV_DAEMON_PORT),
+    SUPERGIT_PORT: String(sharedPort ?? DEV_DAEMON_PORT),
   };
+  if (sharedPort) console.log(`dev: reusing backend :${sharedPort}; backend hot reload is off. Set SUPERGIT_DEV_OWN_DAEMON=1 for backend development, or use --workspace for an isolated workspace.`);
 
   // --watch (full process restart on file change), not --hot (in-place
   // module reload). --hot leaks timers, FS watchers, and the HTTP server
@@ -480,7 +501,7 @@ export async function runDev(
       env: daemonEnv,
       detached: process.platform !== "win32",
     });
-  let daemon = spawnDaemon();
+  let daemon = sharedPort ? undefined : spawnDaemon();
 
   const ui = Bun.spawn([process.execPath, "run", "dev"], {
     cwd: "packages/ui",
@@ -497,7 +518,7 @@ export async function runDev(
   const recovery = createDevDaemonRecovery({
     probe: () => probeDevDaemon(DEV_DAEMON_PORT, probeHost),
     restart: async () => {
-      await stopDevChild(daemon);
+      if (daemon) await stopDevChild(daemon);
       if (!stopping) daemon = spawnDaemon();
     },
     report: (state) =>
@@ -509,14 +530,14 @@ export async function runDev(
             : "dev: backend is reachable",
       ),
   });
-  const monitor = setInterval(() => {
+  const monitor = sharedPort ? undefined : setInterval(() => {
     if (!stopping) void recovery.check().catch(console.error);
   }, 2000);
   const cleanup = async () => {
     if (stopping) return;
     stopping = true;
-    clearInterval(monitor);
-    await Promise.all([stopDevChild(daemon), stopDevChild(ui, false)]);
+    if (monitor) clearInterval(monitor);
+    await Promise.all([daemon ? stopDevChild(daemon) : Promise.resolve(), stopDevChild(ui, false)]);
     process.exit(0);
   };
 
@@ -528,8 +549,8 @@ export async function runDev(
     throw new Error(`UI exited with code ${code}`);
   } finally {
     stopping = true;
-    clearInterval(monitor);
-    await stopDevChild(daemon);
+    if (monitor) clearInterval(monitor);
+    if (daemon) await stopDevChild(daemon);
   }
 }
 

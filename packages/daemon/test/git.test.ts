@@ -3,6 +3,63 @@ import { resolve } from "node:path";
 import { enableBackgroundGitWorker, readGitText, getDiffFileContent, listWorktrees, listRemotes, listCommits, shouldReadSelectedRemoteStatus, getWorktreeDetails, getDirtyLineCount } from "../src/git";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
+import { parseChangedFilesV2, readWorktreeStatus } from "../src/git";
+
+test("porcelain v2 paths preserve spaces, rename destinations, conflicts and untracked files", () => {
+  const ordinary = "1 MM N... 100644 100644 100644 abc abc folder/edited file.ts";
+  const rename = "2 R. N... 100644 100644 100644 abc abc R100 renamed file.ts\told file.ts";
+  const conflict = "u UU N... 100644 100644 100644 100644 abc abc abc conflict.ts";
+  expect(parseChangedFilesV2(["# branch.head main", ordinary, rename, conflict, "? new file.ts"].join("\n"))).toEqual({
+    staged: ["folder/edited file.ts", "renamed file.ts", "conflict.ts"],
+    unstaged: ["folder/edited file.ts", "conflict.ts"],
+    untracked: ["new file.ts"],
+  });
+});
+
+test("parent-first status retains recursive submodule dirt in the complete snapshot", async () => {
+  enableBackgroundGitWorker();
+  const fixture = await mkdtemp(resolve(tmpdir(), "treetop-status-submodule-"));
+  const parent = resolve(fixture, "parent"), child = resolve(parent, "module");
+  const git = async (cwd: string, ...args: string[]) => {
+    const proc = Bun.spawn(["git", "-c", "user.name=Status Test", "-c", "user.email=status@example.test", "-c", "commit.gpgsign=false", "-C", cwd, ...args], {
+      windowsHide: true, stdout: "ignore", stderr: "pipe",
+    });
+    const error = await new Response(proc.stderr).text();
+    expect(await proc.exited, error).toBe(0);
+  };
+  try {
+    await mkdir(parent); await mkdir(child);
+    await git(child, "init");
+    await writeFile(resolve(child, "tracked.txt"), "initial\n");
+    await git(child, "add", "tracked.txt"); await git(child, "commit", "-m", "initial");
+    await git(parent, "init");
+    // An old-form submodule keeps its .git directory inside the checkout.
+    // Build that valid layout directly, avoiding a redundant clone process tree.
+    await writeFile(resolve(parent, ".gitmodules"), '[submodule "module"]\n\tpath = module\n\turl = ./module\n');
+    await git(parent, "add", ".gitmodules", "module");
+    await git(parent, "commit", "-m", "submodule");
+    await writeFile(resolve(parent, "module/tracked.txt"), "changed\n");
+    await writeFile(resolve(parent, "parent-note.txt"), "new\n");
+    const [quick, full] = await Promise.all([readWorktreeStatus(parent, { parentOnly: true }), readWorktreeStatus(parent)]);
+    expect(parseChangedFilesV2(quick)).toEqual({ staged: [], unstaged: [], untracked: ["parent-note.txt"] });
+    expect(parseChangedFilesV2(full).unstaged).toContain("module");
+    expect(parseFileStatus(full).submodules).toBe(1);
+  } finally {
+    expect(fixture.startsWith(resolve(tmpdir(), "treetop-status-submodule-"))).toBe(true);
+    await rm(fixture, { recursive: true, force: true });
+  }
+}, 180_000);
+
+test("status readers share pending scans, while fresh reads replace the shared generation", async () => {
+  const first = readWorktreeStatus(resolve(import.meta.dir, "../../.."));
+  const joined = readWorktreeStatus(resolve(import.meta.dir, "../../.."));
+  expect(joined).toBe(first);
+  const fresh = readWorktreeStatus(resolve(import.meta.dir, "../../.."), { fresh: true });
+  expect(fresh).not.toBe(first);
+  expect(readWorktreeStatus(resolve(import.meta.dir, "../../.."))).toBe(fresh);
+  expect(await first).toContain("# branch.head");
+  expect(await fresh).toContain("# branch.head");
+}, 120_000);
 
 test("identical worker reads log one dedup join and the completed hit count", async () => {
   enableBackgroundGitWorker();
@@ -26,6 +83,19 @@ test("identical worker reads log one dedup join and the completed hit count", as
     expect(joins[0].match(/id=\d+/)?.[0]).toBe(completions[0].match(/id=\d+/)?.[0]);
     expect(joins[0]).toMatch(/id=\d+/);
   } finally { log.mockRestore(); }
+}, 120_000);
+
+test("fresh composite details invalidate the main-thread status join", async () => {
+  enableBackgroundGitWorker();
+  const root = resolve(import.meta.dir, "../../..");
+  const prior = readWorktreeStatus(root);
+  const details = getWorktreeDetails(root, { fresh: true, includeDirtyLines: false });
+  const afterMutation = readWorktreeStatus(root);
+  expect(afterMutation).not.toBe(prior);
+  const [before, after, snapshot] = await Promise.all([prior, afterMutation, details]);
+  expect(before).toContain("# branch.head");
+  expect(after).toContain("# branch.head");
+  expect(snapshot.fileStatus).toBeDefined();
 }, 120_000);
 
 test("read-only Git requests preserve output while the main event loop remains responsive", async () => {

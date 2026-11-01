@@ -413,6 +413,7 @@
   export let claudeModel: string | undefined = undefined;
   export let claudeEffort: string | undefined = undefined;
   export let codexModelOverride: string | undefined = undefined;
+  export let codexResumeModel: string | undefined = undefined;
   export let codexEffortOverride: string | undefined = undefined;
   export let codexServiceTierOverride: string | undefined = undefined;
   export let codexSandboxOverride: string | undefined = undefined;
@@ -2759,7 +2760,7 @@
   $: codexDetectedModel =
     agent === "codex" ? codexLiveDetectedModel || model || "" : "";
   let codexModel = resolveCodexSessionModel({
-    overrideModel: codexModelOverride,
+    overrideModel: mode === "terminal" ? codexResumeModel : codexModelOverride,
     detectedModel: model,
     savedModel: codexSavedSettings.model,
   });
@@ -2778,6 +2779,8 @@
 
   $: {
     const key = JSON.stringify([
+      mode,
+      codexResumeModel,
       codexModelOverride,
       codexDetectedModel,
       codexSavedSettings.model,
@@ -2785,7 +2788,7 @@
     if (key !== codexModelResolutionKey) {
       codexModelResolutionKey = key;
       codexModel = resolveCodexSessionModel({
-        overrideModel: codexModelOverride,
+        overrideModel: mode === "terminal" ? codexResumeModel : codexModelOverride,
         detectedModel: codexDetectedModel,
         savedModel: codexSavedSettings.model,
       });
@@ -6474,7 +6477,7 @@
             // approval policy to the user's codex config.
             "codex",
             "resume",
-            ...(codexModel ? ["--model", codexModel] : []),
+            ...(codexResumeModel ? ["--model", codexResumeModel] : []),
             ...codexTerminalConfigFlags(),
             effectiveSessionId,
           ]

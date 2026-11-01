@@ -2874,3 +2874,49 @@ Validation: the reproduced two-test pair passes, then the exact CI four-file
 browser command passes all 53 tests concurrently (zero skips, 177.5 seconds).
 The nine Git scheduler checks also pass. No app build, installation or daemon
 restart was performed.
+### 2026-10-31 status-first previews and shared dev backend
+
+Read-only Git Trace2 in needle-web-editor measured a 26.6s recursive status;
+the parent untracked traversal was 14ms and submodule inspection dominated.
+A separate parent-only status sample took 6.9s. These are individual samples
+under load, not a guaranteed latency improvement for every repository.
+
+Status reads now share an in-flight porcelain-v2 snapshot across tooltip and
+composite worktree-detail readers, including inside the worker. Fresh mutation
+reads invalidate the joinable generation in both threads; no TTL cache was
+added. Diagnostics distinguish actual scan versus dispatch time and report
+status join counts. Dedicated bounded status/parent-preview slots keep slow
+optional diff/history work from consuming all capacity for filenames.
+
+/api/wt-summary?stream=1 sends filenames, then commit lists, then complete
+line stats/mtimes. For repositories with .gitmodules, a parent-only status can
+publish filenames before the complete recursive scan; submodule dirt remains
+in the subsequent complete snapshot. Repositories without .gitmodules avoid
+that extra preview subprocess. Empty diff buckets and absent ahead/behind
+counts no longer launch unnecessary queries. JSON callers remain compatible,
+and the UI accepts older JSON daemons. Stream errors retain shown files, show
+an error and allow retry; blank keepalives preserve slow in-flight responses.
+
+Plain bun dev now reuses a healthy writable primary backend for the same
+workspace instead of starting another scanner. Named/read-only/temp workspaces
+retain their own backend. SUPERGIT_DEV_OWN_DAEMON=1 explicitly enables backend
+hot reload; SUPERGIT_DEV_BACKEND_PORT selects a nondefault primary port. A
+reused backend is never owned, stopped or restarted by the dev launcher. This
+changes the next launcher run, not an already-running dev/production pair.
+
+Validation: 180 stream/client/scheduler/dev tests, all 95 previous Git checks
+plus fresh-composite and real-submodule regressions, 51 refresh/server checks,
+and a browser regression that holds line counts pending while filenames stay
+visible pass. Compiled Git worker loading passes. The final real-submodule
+fixture exercises both worker lanes and retains dirty-submodule reporting.
+App.svelte compiles with its eight existing warnings; ChangedFilesTooltipBody
+compiles without warnings. No app build, installation or production restart
+was performed. Full recursive status may still be slow; these changes remove
+duplicate work and let parent previews arrive before that work completes.
+
+### 2026-11-01: preserve Codex session models on automatic resume
+
+- Confirmed stale persisted Treetop `codexModel` flags overrode newer CLI model changes during startup and broker snapshot restore.
+- Verified installed Codex CLI 0.166.0 in an isolated hidden terminal with a synthetic rollout: global default Sol plus recorded Astra resumed as Astra without a model flag. No turn was sent and no production sessions were touched.
+- Automatic UI/background/broker resumes now omit saved launch-model overrides. New sessions still receive the configured selection; explicit header model changes use an in-memory one-shot override consumed on successful spawn. Visual app-server settings remain separate.
+- Regression coverage checks stale-model omission, explicit menu choices, broker command normalization, and retained permissions/settings. Existing running sessions are not changed by this source fix.

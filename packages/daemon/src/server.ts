@@ -1,5 +1,5 @@
 import { BrokerCodexAdapter } from "./broker-codex";
-import { createReplayNDJSONStream } from "./server-helpers";
+import { createReplayNDJSONStream, progressiveJsonResponse } from "./server-helpers";
 import { updateInstallParent, watchForUpdate } from "../../../src/electrobun/update-handoff";
 import {
   join,
@@ -39,6 +39,9 @@ import {
 import {
   listWorktrees,
   readGitText,
+  readWorktreeStatus,
+  parseChangedFilesV2,
+  parseBranchStatus,
   enableBackgroundGitWorker,
   mainWorktreePathFor,
   getWorktreeDetails,
@@ -62,7 +65,6 @@ import {
   listRemotes,
   getUpstreamRemoteName,
   pickRemoteUrlForShare,
-  parseChangedFiles,
   parseNumstat,
   parseUnpushedCommits,
   type DiffKind,
@@ -8835,11 +8837,8 @@ const server = Bun.serve<TermWsData, never>({
       }
 
       if (url.pathname === "/api/wt-summary" && req.method === "GET") {
-        // Feeds the hover-tooltip on the worktree row's status + ahead
-        // badges. Two git calls, in parallel, both cheap: porcelain
-        // status for the file lists, log @{u}..HEAD for the commit
-        // subjects we haven't pushed yet. `nothrow()` on the log call
-        // because git errors on missing upstream — we just return [].
+        // Share status with background scans; stream filenames before optional
+        // history and line counts so a slow diff cannot blank the tooltip.
         const path = url.searchParams.get("path");
         if (!path) {
           return json(
@@ -8852,99 +8851,103 @@ const server = Bun.serve<TermWsData, never>({
         // ISO-8601 author date so the UI can format its own relative
         // timestamps with consistent thresholds (git's %ar uses odd
         // breakpoints, e.g. "29 hours ago" instead of "1d ago").
-        const fmt = "%H%x00%s%x00%an%x00%aI";
-        const [statusOut, aheadOut, behindOut, numstatUnstaged, numstatStaged] =
-          await Promise.all([
-            readGitText(path, ["status", "--porcelain"]),
-            readGitText(path, ["log", "@{u}..HEAD", `--pretty=format:${fmt}`, "-n", "20"]),
-            readGitText(path, ["log", "HEAD..@{u}", `--pretty=format:${fmt}`, "-n", "20"]),
-            // --no-renames so paths line up 1:1 with parseChangedFiles output;
-            // otherwise renames render as `{a => b}` and wouldn't match.
-            readGitText(path, ["diff", "--numstat", "--no-renames"]),
-            readGitText(path, ["diff", "--cached", "--numstat", "--no-renames"]),
+        const load = async (publish?: (value: unknown) => void) => {
+          // Parent filenames can be known long before recursive submodule
+          // inspection finishes. Keep the complete scan and publish it later.
+          const initial = publish && existsSync(join(path, ".gitmodules")) ? readWorktreeStatus(path, { parentOnly: true }).then(status => {
+            publish({ ...parseChangedFilesV2(status), unpushedCommits: [], unfetchedCommits: [], commitsLoaded: false, detailsLoaded: false });
+          }) : Promise.resolve();
+          const [statusOut] = await Promise.all([readWorktreeStatus(path), initial]);
+          const files = parseChangedFilesV2(statusOut);
+          publish?.({ ...files, unpushedCommits: [], unfetchedCommits: [], commitsLoaded: false, detailsLoaded: false });
+          const branch = parseBranchStatus(statusOut);
+          const fmt = "%H%x00%s%x00%an%x00%aI";
+          const history = (async () => {
+            const [aheadOut, behindOut] = await Promise.all([
+              branch && !branch.upstream
+                ? readGitText(path, ["log", "HEAD", "--not", "--remotes", `--pretty=format:${fmt}`, "-n", "20"])
+                : branch?.ahead ? readGitText(path, ["log", "@{u}..HEAD", `--pretty=format:${fmt}`, "-n", "20"]) : "",
+              branch?.behind ? readGitText(path, ["log", "HEAD..@{u}", `--pretty=format:${fmt}`, "-n", "20"]) : "",
+            ]);
+            const commits = { unpushedCommits: parseUnpushedCommits(aheadOut), unfetchedCommits: parseUnpushedCommits(behindOut) };
+            publish?.({ ...files, ...commits, commitsLoaded: true, detailsLoaded: false });
+            return commits;
+          })();
+          const [{ unpushedCommits, unfetchedCommits }, numstatUnstaged, numstatStaged] = await Promise.all([
+            history,
+            files.unstaged.length ? readGitText(path, ["diff", "--numstat", "--no-renames"]) : "",
+            files.staged.length ? readGitText(path, ["diff", "--cached", "--numstat", "--no-renames"]) : "",
           ]);
-        const files = parseChangedFiles(statusOut);
-        let unpushedCommits = parseUnpushedCommits(aheadOut);
-        const unfetchedCommits = parseUnpushedCommits(behindOut);
-        // No upstream → `@{u}..HEAD` above errored (nothrow → empty), so
-        // the list is empty even though the badge may show a count from
-        // `rev-list HEAD --not --remotes`. Fall back to that same
-        // definition — commits on HEAD but on no remote-tracking ref —
-        // so the tooltip list matches the badge. A branch in sync with
-        // its upstream is also empty here, but then the fallback is
-        // empty too (HEAD is on a remote ref), so it's harmless; and an
-        // upstream branch that's genuinely ahead never reaches this
-        // branch because `aheadOut` was non-empty.
-        if (unpushedCommits.length === 0) {
-          const orphanOut =
-            await readGitText(path, ["log", "HEAD", "--not", "--remotes", `--pretty=format:${fmt}`, "-n", "20"]);
-          unpushedCommits = parseUnpushedCommits(orphanOut);
-        }
-        // Per-path line stats. Two maps: one for the working tree (covers
-        // `unstaged` + we synthesise entries for `untracked` below), one
-        // for the index (`staged`). Looking up by path on the UI side is
-        // O(1) and tolerates the lists drifting from the stats (e.g. a
-        // file vanishing between status and diff — stats just come back
-        // undefined and the tooltip shows the path without a count).
-        const stats: Record<
-          string,
-          { added: number; removed: number; binary: boolean }
-        > = {
-          ...parseNumstat(numstatUnstaged),
+          // Per-path line stats. Two maps: one for the working tree (covers
+          // `unstaged` + we synthesise entries for `untracked` below), one
+          // for the index (`staged`). Looking up by path on the UI side is
+          // O(1) and tolerates the lists drifting from the stats (e.g. a
+          // file vanishing between status and diff — stats just come back
+          // undefined and the tooltip shows the path without a count).
+          const stats: Record<
+            string,
+            { added: number; removed: number; binary: boolean }
+          > = {
+            ...parseNumstat(numstatUnstaged),
+          };
+          const stagedStats = parseNumstat(numstatStaged);
+          // Untracked files don't appear in `git diff`. Use --no-index per
+          // file (parallel) so the tooltip can show "all new lines" instead
+          // of a bare filename. Cap to keep an accidental 10k-untracked-dir
+          // hover from spawning thousands of processes; rest fall back to
+          // no-stats display.
+          const UNTRACKED_STAT_CAP = 200;
+          const untrackedToStat = files.untracked.slice(0, UNTRACKED_STAT_CAP);
+          const untrackedResults = await Promise.all(
+            untrackedToStat.map(async (rel) => {
+              // --no-index always exits non-zero when files differ; nothrow
+              // and just read stdout.
+              const out =
+                await readGitText(path, ["diff", "--no-index", "--numstat", "/dev/null", rel]);
+              return { rel, parsed: parseNumstat(out) };
+            }),
+          );
+          for (const { rel, parsed } of untrackedResults) {
+            // `git diff --no-index /dev/null <file>` reports the path as
+            // `/dev/null => <file>` (a synthetic rename), so look up by
+            // value: there's at most one entry per call.
+            const entry = Object.values(parsed)[0];
+            if (entry) stats[rel] = entry;
+          }
+          // Per-path mtimes (epoch ms) so the UI can sort buckets by
+          // most-recently-touched. Stat every path across all three
+          // buckets in parallel; deleted files (e.g. staged removals)
+          // come back as undefined and the UI sorts them last. join()
+          // resolves to an absolute path; relative paths from
+          // parseChangedFiles are interpreted under the worktree.
+          const allPaths = Array.from(
+            new Set([...files.staged, ...files.unstaged, ...files.untracked]),
+          );
+          const mtimes: Record<string, number> = {};
+          await Promise.all(
+            allPaths.map(async (rel) => {
+              try {
+                const s = await fsStat(join(path, rel));
+                mtimes[rel] = s.mtimeMs;
+              } catch {
+                // Vanished between status and stat (race on a fast rm) —
+                // leave undefined; sort puts it at the bottom.
+              }
+            }),
+          );
+          return {
+            ...files,
+            unpushedCommits,
+            unfetchedCommits,
+            stats,
+            stagedStats,
+            mtimes,
+            commitsLoaded: true,
+            detailsLoaded: true,
+          };
         };
-        const stagedStats = parseNumstat(numstatStaged);
-        // Untracked files don't appear in `git diff`. Use --no-index per
-        // file (parallel) so the tooltip can show "all new lines" instead
-        // of a bare filename. Cap to keep an accidental 10k-untracked-dir
-        // hover from spawning thousands of processes; rest fall back to
-        // no-stats display.
-        const UNTRACKED_STAT_CAP = 200;
-        const untrackedToStat = files.untracked.slice(0, UNTRACKED_STAT_CAP);
-        const untrackedResults = await Promise.all(
-          untrackedToStat.map(async (rel) => {
-            // --no-index always exits non-zero when files differ; nothrow
-            // and just read stdout.
-            const out =
-              await readGitText(path, ["diff", "--no-index", "--numstat", "/dev/null", rel]);
-            return { rel, parsed: parseNumstat(out) };
-          }),
-        );
-        for (const { rel, parsed } of untrackedResults) {
-          // `git diff --no-index /dev/null <file>` reports the path as
-          // `/dev/null => <file>` (a synthetic rename), so look up by
-          // value: there's at most one entry per call.
-          const entry = Object.values(parsed)[0];
-          if (entry) stats[rel] = entry;
-        }
-        // Per-path mtimes (epoch ms) so the UI can sort buckets by
-        // most-recently-touched. Stat every path across all three
-        // buckets in parallel; deleted files (e.g. staged removals)
-        // come back as undefined and the UI sorts them last. join()
-        // resolves to an absolute path; relative paths from
-        // parseChangedFiles are interpreted under the worktree.
-        const allPaths = Array.from(
-          new Set([...files.staged, ...files.unstaged, ...files.untracked]),
-        );
-        const mtimes: Record<string, number> = {};
-        await Promise.all(
-          allPaths.map(async (rel) => {
-            try {
-              const s = await fsStat(join(path, rel));
-              mtimes[rel] = s.mtimeMs;
-            } catch {
-              // Vanished between status and stat (race on a fast rm) —
-              // leave undefined; sort puts it at the bottom.
-            }
-          }),
-        );
-        return json({
-          ...files,
-          unpushedCommits,
-          unfetchedCommits,
-          stats,
-          stagedStats,
-          mtimes,
-        });
+        if (url.searchParams.get("stream") === "1") return progressiveJsonResponse(load, CORS);
+        return json(await load());
       }
 
       if (url.pathname === "/api/diff" && req.method === "GET") {

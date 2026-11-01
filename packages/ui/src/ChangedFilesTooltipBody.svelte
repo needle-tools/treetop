@@ -49,6 +49,7 @@
   }
 
   export let summary: WtSummaryLike | "loading" | undefined;
+  export let error: string | undefined = undefined;
   /** Retain the last successfully-loaded summary so a re-fetch (which flips
    *  `summary` back to "loading" on hover) keeps showing the existing
    *  changed-files list with a small inline spinner, instead of blanking the
@@ -352,8 +353,11 @@
   }
 </script>
 
+{#if error && shownSummary}
+  <span class="muted small">{error}</span>
+{/if}
 {#if !shownSummary}
-  <span class="muted small">Loading…</span>
+  <span class="muted small">{error || "Loading…"}</span>
 {:else if shownSummary.staged.length === 0 && shownSummary.unstaged.length === 0 && shownSummary.untracked.length === 0}
   <span class="muted small">clean</span>
   {#if showRefreshSpinner}

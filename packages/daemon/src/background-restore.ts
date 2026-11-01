@@ -11,7 +11,7 @@ export interface RestoreCandidate {
 }
 
 export function resumeTerminalCommand(record: any): string[] {
-  const command = [...(record.resumeCmd ?? record.cmd)];
+  let command = [...(record.resumeCmd ?? record.cmd)];
   if (record.agent !== "codex" && record.agent !== "claude") return command;
   const binary = basename(command[0] ?? "").replace(/\.(exe|cmd)$/i, "");
   if (binary !== record.agent)
@@ -19,6 +19,25 @@ export function resumeTerminalCommand(record: any): string[] {
   const owner = record.ownerId;
   if (typeof owner !== "string" || !owner || owner.startsWith("__new__:"))
     throw new Error("No provider session ID; resume this session manually");
+  if (record.agent === "codex") {
+    // These are launch-time choices, not the latest model selected inside
+    // the CLI. Codex restores its session model when no override is supplied.
+    const restored: string[] = [];
+    for (let i = 0; i < command.length; i++) {
+      const arg = command[i]!;
+      if (arg === "--") { restored.push(...command.slice(i)); break; }
+      if (arg === "--model" || arg === "-m") { i++; continue; }
+      if (arg.startsWith("--model=") || /^-m.+/.test(arg)) continue;
+      if (arg === "-c" || arg === "--config") {
+        const value = command[++i]!;
+        if (!/^model\s*=/.test(value)) restored.push(arg, value);
+        continue;
+      }
+      if (/^(--config=|-c)model\s*=/.test(arg)) continue;
+      restored.push(arg);
+    }
+    command = restored;
+  }
   if (
     command.includes(owner) &&
     (command.includes("resume") || command.includes("--resume"))

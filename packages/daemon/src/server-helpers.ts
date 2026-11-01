@@ -15,6 +15,36 @@ import { basename } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import type { AttachmentKind, LinkTarget } from "./notes";
 
+/** Send usable summary data immediately while optional Git work continues.
+ * Blank heartbeats keep Bun's HTTP idle timeout from cutting off slow reads. */
+export function progressiveJsonResponse(
+  load: (publish: (value: unknown) => void) => Promise<unknown>,
+  headers: Record<string, string> = {},
+): Response {
+  const encoder = new TextEncoder();
+  let cancelled = false;
+  let heartbeat: ReturnType<typeof setInterval>;
+  const body = new ReadableStream<Uint8Array>({
+    start(controller) {
+      const publish = (value: unknown) => {
+        if (!cancelled) controller.enqueue(encoder.encode(JSON.stringify(value) + "\n"));
+      };
+      heartbeat = setInterval(() => {
+        if (!cancelled) controller.enqueue(encoder.encode("\n"));
+      }, 10_000);
+      heartbeat.unref?.();
+      void Promise.resolve().then(() => load(publish)).then(publish, error => {
+        publish({ error: error instanceof Error ? error.message : String(error) });
+      }).finally(() => {
+        clearInterval(heartbeat);
+        if (!cancelled) { controller.close(); cancelled = true; }
+      });
+    },
+    cancel() { cancelled = true; clearInterval(heartbeat); },
+  });
+  return new Response(body, { headers: { ...headers, "Content-Type": "application/x-ndjson", "Cache-Control": "no-store" } });
+}
+
 const READONLY_POST_ALLOWLIST = new Set([
   "/api/command/run",
   "/api/command/stop",

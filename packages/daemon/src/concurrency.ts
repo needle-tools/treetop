@@ -52,13 +52,15 @@ export function createGitWorkScheduler() {
     fetches = createLimiter(1),
     interactive = createLimiter(1),
     branches = createLimiter(2),
-    queries = createLimiter(2);
+    queries = createLimiter(2),
+    statuses = createLimiter(1),
+    parentStatuses = createLimiter(1);
   const onDemand = new Set([
     "readGitText", "listSubmoduleDetails", "mainWorktreePathFor", "listBranches",
     "getUpstreamRemoteName", "listCommits", "getDiffFileContent", "getFileDiff",
     "getCommitDiff", "listCommitFiles", "getCommitFileDiff", "getDiff",
   ]);
-  const lanes = { inventory, reads, lineCounts, fetches, interactive, branches, queries };
+  const lanes = { inventory, reads, lineCounts, fetches, interactive, branches, queries, statuses, parentStatuses };
   const counts = Object.fromEntries(Object.keys(lanes).map(lane => [lane, { active: 0, queued: 0 }]));
   const schedule = <T>(
     operation: string,
@@ -66,7 +68,11 @@ export function createGitWorkScheduler() {
     task: () => Promise<T>,
     onStart?: (state: { lane: string; active: number; queued: number }) => void,
   ): Promise<T> => {
-    const lane = operation === "getSelectedRemoteBranchStatus"
+    const lane = operation === "readParentWorktreeStatus"
+      ? "parentStatuses"
+      : operation === "readWorktreeStatus"
+      ? "statuses"
+      : operation === "getSelectedRemoteBranchStatus"
       ? "branches"
       : onDemand.has(operation)
       ? "queries"

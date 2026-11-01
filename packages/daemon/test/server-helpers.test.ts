@@ -6,7 +6,7 @@
 
 import { test, expect, describe, jest } from "bun:test";
 import { Buffer } from "node:buffer";
-import { pendingNDJSONStream, createReplayNDJSONStream } from "../src/server-helpers";
+import { pendingNDJSONStream, createReplayNDJSONStream, progressiveJsonResponse } from "../src/server-helpers";
 
 test("repo scan joiners replay current rows and receive new rows before scan completion", async () => {
   const feed=createReplayNDJSONStream();
@@ -1469,4 +1469,30 @@ describe("rewriteTempWorkspaceAttachmentRefs", () => {
       '{"path":"/tmp/treetop-temp-workspaces/default-987654-321/attachments/paste.txt"}',
     );
   });
+});
+
+test("summary stream publishes files before optional details finish", async () => {
+  let finish!: () => void;
+  const details = new Promise<void>(resolve => { finish = resolve; });
+  const response = progressiveJsonResponse(async publish => {
+    publish({ staged: ["file.ts"], commitsLoaded: false });
+    await details;
+    return { staged: ["file.ts"], commitsLoaded: true };
+  });
+  const reader = response.body!.getReader();
+  const partial = await reader.read();
+  expect(new TextDecoder().decode(partial.value)).toContain('"commitsLoaded":false');
+  finish();
+  const final = await reader.read();
+  expect(new TextDecoder().decode(final.value)).toContain('"commitsLoaded":true');
+  expect((await reader.read()).done).toBe(true);
+});
+
+test("summary stream reports failure after retaining its published files", async () => {
+  const response = progressiveJsonResponse(async publish => {
+    publish({ staged: ["file.ts"] });
+    throw Error("status failed");
+  });
+  const lines = (await response.text()).trim().split("\n").map(line => JSON.parse(line));
+  expect(lines).toEqual([{ staged: ["file.ts"] }, { error: "status failed" }]);
 });

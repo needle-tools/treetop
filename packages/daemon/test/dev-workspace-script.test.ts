@@ -19,7 +19,21 @@ import {
   createDevDaemonRecovery,
   probeDevDaemon,
   stopDevChild,
+  findSharedDevBackend,
 } from "../../../dev";
+
+test("dev reuses only a writable primary backend for the same workspace", async () => {
+  let health: Record<string, unknown> = { status: "ok", workspace: tmpdir(), readonly: false, sideInstance: false };
+  const server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => Response.json(health) });
+  try {
+    expect(await findSharedDevBackend(tmpdir(), server.port!)).toBe(server.port!);
+    expect(await findSharedDevBackend(join(tmpdir(), "other-workspace"), server.port!)).toBeNull();
+    health = { ...health, readonly: true };
+    expect(await findSharedDevBackend(tmpdir(), server.port!)).toBeNull();
+    health = { ...health, readonly: false, sideInstance: true };
+    expect(await findSharedDevBackend(tmpdir(), server.port!)).toBeNull();
+  } finally { await server.stop(true); }
+});
 
 test("dev recovery replaces a real stopped-listening Bun watch subtree", async () => {
   const root = await mkdtemp(join(tmpdir(), "treetop-dev-watch-recovery-"));

@@ -2,7 +2,7 @@ import { $ } from "bun";
 import { Worker, isMainThread, parentPort, workerData } from "node:worker_threads";
 import { createGitWorkScheduler } from "./concurrency";
 
-type BackgroundGitOperation = "listWorktrees" | "listRemotes" | "getWorktreeDetails" | "getSelectedRemoteBranchStatus" | "getDirtyLineCount" | "fetchAll"
+type BackgroundGitOperation = "listWorktrees" | "listRemotes" | "getWorktreeDetails" | "getSelectedRemoteBranchStatus" | "getDirtyLineCount" | "fetchAll" | "readWorktreeStatus"
   | "readGitText" | "listSubmoduleDetails" | "mainWorktreePathFor" | "listBranches"
   | "getUpstreamRemoteName" | "listCommits" | "getDiffFileContent" | "getFileDiff"
   | "getCommitDiff" | "listCommitFiles" | "getCommitFileDiff" | "getDiff";
@@ -86,10 +86,11 @@ if (!isMainThread && workerData?.backgroundGit) {
     }, 10_000);
     pendingWarning.unref();
     // Network fetches must not hold the slots needed to display sessions.
-    void scheduleGit(operation, operation === "getWorktreeDetails" && args[1]?.fresh === true, async () => {
+    const scheduledOperation = operation === "readWorktreeStatus" && args[1]?.parentOnly ? "readParentWorktreeStatus" : operation;
+    void scheduleGit(scheduledOperation, operation === "getWorktreeDetails" && args[1]?.fresh === true, async () => {
       startedAt = performance.now();
       try {
-        const operations = { listWorktrees, listRemotes, getWorktreeDetails, getSelectedRemoteBranchStatus, getDirtyLineCount, fetchAll,
+        const operations = { listWorktrees, listRemotes, getWorktreeDetails, getSelectedRemoteBranchStatus, getDirtyLineCount, fetchAll, readWorktreeStatus,
           readGitText, listSubmoduleDetails, mainWorktreePathFor, listBranches, getUpstreamRemoteName,
           listCommits, getDiffFileContent, getFileDiff, getCommitDiff, listCommitFiles, getCommitFileDiff, getDiff };
         const value = await (operations[operation as BackgroundGitOperation] as Function)(...args);
@@ -126,6 +127,34 @@ export async function readGitText(worktreePath: string, args: string[], allowFai
     return backgroundGit("readGitText", [worktreePath, args, allowFailure]);
   const command = $`git --no-optional-locks -C ${worktreePath} ${args}`.quiet();
   return allowFailure ? command.nothrow().text() : command.text();
+}
+
+const pendingStatuses = new Map<string, { promise: Promise<string>; joins: number }>();
+
+/** Share the actual status subprocess across callers, including composite
+ * detail reads inside the worker. A post-mutation scan replaces the joinable
+ * generation, so it can never reuse a pre-mutation snapshot. No TTL cache. */
+export function readWorktreeStatus(worktreePath: string, options: { fresh?: boolean; parentOnly?: boolean } = {}): Promise<string> {
+  const key = worktreePath + (options.parentOnly ? "\0parent" : "");
+  const running = pendingStatuses.get(key);
+  if (running && !options.fresh) { running.joins++; return running.promise; }
+  const startedAt = performance.now();
+  const args = ["status", "--porcelain=v2", "--branch", ...(options.parentOnly ? ["--ignore-submodules=dirty"] : [])];
+  const scan = backgroundGitEnabled && isMainThread
+    ? dispatchBackgroundGit<string>("readWorktreeStatus", [worktreePath, options])
+    : $`git --no-optional-locks -C ${worktreePath} ${args}`.quiet().text();
+  const entry = { promise: undefined as unknown as Promise<string>, joins: 0 };
+  const result = scan.finally(() => {
+    if (pendingStatuses.get(key) === entry) pendingStatuses.delete(key);
+    const elapsed = performance.now() - startedAt;
+    if (elapsed > 1000 || entry.joins) {
+      const diagnostic = `supergit daemon: git-status scope=${backgroundGitEnabled && isMainThread ? "dispatch" : "scan"} total=${elapsed.toFixed(0)}ms joins=${entry.joins} fresh=${!!options.fresh} path=${JSON.stringify(worktreePath)} command=${JSON.stringify(args)}`;
+      if (isMainThread) console.log(diagnostic); else parentPort!.postMessage({ diagnostic });
+    }
+  });
+  entry.promise = result;
+  pendingStatuses.set(key, entry);
+  return result;
 }
 
 /** Delay before retrying a git op that failed on a stale `*.lock` file.
@@ -1187,6 +1216,7 @@ export async function getWorktreeDetails(
   worktreePath: string,
   options: { remote?: string | null; fresh?: boolean; includeDirtyLines?: boolean } = {},
 ): Promise<WorktreeDetails> {
+  if (options.fresh) { pendingStatuses.delete(worktreePath); pendingStatuses.delete(worktreePath + "\0parent"); }
   if (backgroundGitEnabled && isMainThread) {
     // A post-mutation read must not join a status query started before the
     // mutation. The worker reserves a slot for this interactive refresh.
@@ -1194,7 +1224,7 @@ export async function getWorktreeDetails(
   }
   try {
     const [statusOut, logOut] = await Promise.all([
-      $`git --no-optional-locks -C ${worktreePath} status --porcelain=v2 --branch`.quiet().text(),
+      readWorktreeStatus(worktreePath, options),
       $`git -C ${worktreePath} log -1 --format=%H%x00%s%x00%an%x00%aI`
         .quiet()
         .text()
@@ -1498,11 +1528,26 @@ export function parseCommitList(logOut: string): LastCommit[] {
     .filter((c): c is LastCommit => c !== null);
 }
 
-/** Per-bucket list of changed file paths in a worktree. Feeds the
- *  "N unstaged" hover tooltip in the dashboard. Input is the output of
- *  `git status --porcelain` (v1 format). The path field there starts at
- *  column 3 and runs to end-of-line, so it tolerates spaces in paths
- *  without us having to switch to NUL-separated parsing. */
+/** Changed paths from the same porcelain v2 snapshot used by row badges. */
+export function parseChangedFilesV2(porcelain: string): { staged: string[]; unstaged: string[]; untracked: string[] } {
+  const staged: string[] = [], unstaged: string[] = [], untracked: string[] = [];
+  for (const line of porcelain.split("\n")) {
+    if (line.startsWith("? ")) { untracked.push(line.slice(2)); continue; }
+    const kind = line[0];
+    if (kind !== "1" && kind !== "2" && kind !== "u") continue;
+    // v2 uses fixed metadata fields followed by the path, which may contain
+    // spaces. Renames append the original path after a tab.
+    const fields = kind === "1" ? 8 : kind === "2" ? 9 : 10;
+    let offset = 0;
+    for (let i = 0; i < fields; i++) offset = line.indexOf(" ", offset) + 1;
+    const path = line.slice(offset).split("\t")[0]!;
+    if (kind === "u" || (line[2] !== "." && line[2] !== " ")) staged.push(path);
+    if (kind === "u" || (line[3] !== "." && line[3] !== " ")) unstaged.push(path);
+  }
+  return { staged, unstaged, untracked };
+}
+
+/** Legacy porcelain v1 parser, retained for callers that still request v1. */
 export function parseChangedFiles(porcelain: string): {
   staged: string[];
   unstaged: string[];

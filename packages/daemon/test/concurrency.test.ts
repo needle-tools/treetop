@@ -9,6 +9,33 @@
 import { test, expect, describe } from "bun:test";
 import { createLimiter, createGitWorkScheduler } from "../src/concurrency";
 
+test("status snapshots bypass optional diff and history queries", async () => {
+  const schedule = createGitWorkScheduler();
+  let release!: () => void;
+  const blocked = new Promise<void>(resolve => { release = resolve; });
+  const optional = [schedule("readGitText", false, () => blocked), schedule("getDiff", false, () => blocked)];
+  try {
+    expect(await Promise.race([
+      schedule("readWorktreeStatus", false, async () => "files"),
+      Bun.sleep(100).then(() => "blocked"),
+    ])).toBe("files");
+  } finally { release(); await Promise.all(optional); }
+});
+
+test("parent-file previews bypass recursive submodule status work", async () => {
+  const schedule = createGitWorkScheduler();
+  let release!: () => void;
+  const blocked = new Promise<void>(resolve => { release = resolve; });
+  const full = [schedule("readWorktreeStatus", false, () => blocked),
+    schedule("getWorktreeDetails", false, () => blocked), schedule("getWorktreeDetails", false, () => blocked)];
+  try {
+    expect(await Promise.race([
+      schedule("readParentWorktreeStatus", false, async () => "parent files"),
+      Bun.sleep(100).then(() => "blocked"),
+    ])).toBe("parent files");
+  } finally { release(); await Promise.all(full); }
+});
+
 test("Git scheduler reports lane depth and releases counts after failure", async () => {
   const schedule = createGitWorkScheduler();
   let release!: () => void;

@@ -1,5 +1,35 @@
 import { describe, expect, test } from "bun:test";
 import { statusSummary } from "../src/status-summary";
+import { consumeWorktreeSummary } from "../src/status-summary";
+
+test("summary client delivers fragmented file updates before the stream finishes", async () => {
+  let controller!: ReadableStreamDefaultController<Uint8Array>;
+  const response = new Response(new ReadableStream<Uint8Array>({ start(value) { controller = value; } }), {
+    headers: { "Content-Type": "application/x-ndjson" },
+  });
+  const updates: unknown[] = [];
+  let first!: () => void;
+  const firstUpdate = new Promise<void>(resolve => { first = resolve; });
+  const reading = consumeWorktreeSummary(response, value => { updates.push(value); first(); });
+  const encoder = new TextEncoder();
+  controller.enqueue(encoder.encode('\n{"staged":["file'));
+  controller.enqueue(encoder.encode('.ts"]}\n'));
+  await firstUpdate;
+  expect(updates).toEqual([{ staged: ["file.ts"] }]);
+  controller.enqueue(encoder.encode('{"commitsLoaded":true}\n'));
+  controller.close();
+  await reading;
+  expect(updates).toHaveLength(2);
+});
+
+test("summary client accepts older JSON daemons and surfaces stream failures", async () => {
+  const updates: unknown[] = [];
+  await consumeWorktreeSummary(Response.json({ staged: [] }), value => updates.push(value));
+  expect(updates).toEqual([{ staged: [] }]);
+  await expect(consumeWorktreeSummary(new Response('{"error":"Git unavailable"}\n', {
+    headers: { "Content-Type": "application/x-ndjson" },
+  }), () => {})).rejects.toThrow("Git unavailable");
+});
 
 const FS = (s: number, u: number, n: number, subs = 0) => ({
   staged: s,

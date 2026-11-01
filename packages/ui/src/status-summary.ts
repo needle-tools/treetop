@@ -31,6 +31,36 @@ export interface StatusSummarySource {
   untracked: string[];
 }
 
+/** Consume progressive summaries, with JSON fallback for older daemons. */
+export async function consumeWorktreeSummary<T>(response: Response, publish: (value: T) => void): Promise<void> {
+  if (!response.ok) throw Error(`Unable to load Git summary (${response.status})`);
+  if (!response.headers.get("Content-Type")?.includes("application/x-ndjson")) {
+    publish(await response.json() as T);
+    return;
+  }
+  const reader = response.body!.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  const line = (text: string) => {
+    if (!text.trim()) return;
+    const value = JSON.parse(text);
+    if (value.error) throw Error(value.error);
+    publish(value as T);
+  };
+  try {
+    while (true) {
+      const chunk = await reader.read();
+      buffer += decoder.decode(chunk.value, { stream: !chunk.done });
+      let newline: number;
+      while ((newline = buffer.indexOf("\n")) !== -1) {
+        line(buffer.slice(0, newline));
+        buffer = buffer.slice(newline + 1);
+      }
+      if (chunk.done) { line(buffer); break; }
+    }
+  } finally { await reader.cancel(); reader.releaseLock(); }
+}
+
 export interface StatusSummary {
   clean: boolean;
   text: string;

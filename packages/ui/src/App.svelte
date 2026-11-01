@@ -135,7 +135,7 @@
   import ProcessList from "./ProcessList.svelte";
   import StatusBadge from "./StatusBadge.svelte";
   import { aheadAged, BLINK_AHEAD_MINUTES } from "./ahead-age";
-  import { statusSummary, type FileStatus } from "./status-summary";
+  import { statusSummary, consumeWorktreeSummary, type FileStatus } from "./status-summary";
   import {
     dockEntryExistsInLoadedRepos,
     planReveal,
@@ -2946,6 +2946,9 @@
    *  uses (unmount closes the WS → daemon grace-reaps the old PTY → the
    *  remount resumes), so no extra PTY-kill plumbing is needed. */
   let agentColGen: Record<string, number> = {};
+  // Only an explicit menu action overrides a resumed CLI's remembered model.
+  // Consume on spawn; never persist this launch intent across app restarts.
+  let codexResumeModels: Record<string, string | undefined> = {};
 
   /** Persist an agent model/effort choice onto the open-session entry and
    *  remount the column so the change takes effect immediately. */
@@ -2968,6 +2971,9 @@
     if (!list) return;
     const idx = list.findIndex((s) => s.source === source);
     if (idx === -1) return;
+    if (patch.codexModel !== undefined) {
+      codexResumeModels = { ...codexResumeModels, [source]: patch.codexModel };
+    }
     if (patch.codexReviewer !== undefined) {
       let saved: Record<string, unknown> = {};
       try { saved = JSON.parse(getDaemonKV().getItem(CODEX_TURN_SETTINGS_KEY) ?? "{}"); }
@@ -3332,7 +3338,7 @@
           ? [
               "codex",
               "resume",
-              ...(c.codexModel ? ["--model", c.codexModel] : []),
+              ...(codexResumeModels[c.source] ? ["--model", codexResumeModels[c.source]!] : []),
               ...(c.codexEffort
                 ? [
                     "-c",
@@ -3376,6 +3382,7 @@
       } | null;
       const id = body?.id;
       if (typeof id !== "string") return;
+      codexResumeModels = { ...codexResumeModels, [c.source]: undefined };
       // Stamp the live PTY onto the session so (a) the dock dot reads active
       // via the liveTerminalIds path and (b) the mounted SessionView's hold
       // socket reattaches to this PTY instead of spawning a duplicate.
@@ -7176,6 +7183,8 @@
     binary: boolean;
   }
   interface WtSummary {
+    commitsLoaded?: boolean;
+    detailsLoaded?: boolean;
     staged: string[];
     unstaged: string[];
     untracked: string[];
@@ -7205,6 +7214,11 @@
   /** Worktrees with a refresh fetch in flight that already have data shown —
    *  drives a small inline spinner alongside the existing content. */
   let wtSummaryRefreshing: Record<string, boolean> = {};
+  let wtSummaryErrors: Record<string, string> = {};
+  function wtCommitsLoading(path: string): boolean {
+    const summary = wtSummaryByPath[path];
+    return !summary || summary === "loading" || summary.commitsLoaded === false;
+  }
 
   async function loadWtSummary(
     path: string,
@@ -7216,6 +7230,7 @@
     if (cur === "loading" || wtSummaryRefreshing[path]) return;
     // Fresh cached data and no reason to refetch → serve it instantly.
     if (!opts.force && cur && !stale) return;
+    wtSummaryErrors = { ...wtSummaryErrors, [path]: "" };
     if (!cur) {
       // First load, no prior data — the only time we show a bare "Loading…".
       wtSummaryByPath = { ...wtSummaryByPath, [path]: "loading" };
@@ -7225,32 +7240,28 @@
       wtSummaryRefreshing = { ...wtSummaryRefreshing, [path]: true };
     }
     try {
-      const qs = new URLSearchParams({ path });
+      const qs = new URLSearchParams({ path, stream: "1" });
       const res = await fetch(
         apiUrl(
           `/api/wt-summary?${qs.toString()}`,
           daemonIdForWorktreePath(repos, path),
         ),
       );
-      if (!res.ok) {
-        // Drop the "loading" sentinel so the next hover retries. Don't
-        // wipe real cached data on a transient failure — better to
-        // show slightly-stale numbers than nothing.
-        if (wtSummaryByPath[path] === "loading") {
-          const next = { ...wtSummaryByPath };
-          delete next[path];
-          wtSummaryByPath = next;
-        }
-        return;
-      }
-      const data = (await res.json()) as WtSummary;
-      wtSummaryByPath = { ...wtSummaryByPath, [path]: data };
+      let completed = false;
+      await consumeWorktreeSummary<WtSummary>(res, data => {
+        wtSummaryByPath = { ...wtSummaryByPath, [path]: data };
+        completed = data.detailsLoaded !== false && data.commitsLoaded !== false;
+        wtSummaryRefreshing = { ...wtSummaryRefreshing, [path]: !completed };
+      });
+      if (!completed) throw Error("Git summary ended before its details arrived. Hover again to retry.");
       if (wtSummaryStale[path]) {
         const next = { ...wtSummaryStale };
         delete next[path];
         wtSummaryStale = next;
       }
-    } catch {
+    } catch (error) {
+      wtSummaryErrors = { ...wtSummaryErrors, [path]: error instanceof Error ? error.message : String(error) };
+      wtSummaryStale = { ...wtSummaryStale, [path]: true };
       if (wtSummaryByPath[path] === "loading") {
         const next = { ...wtSummaryByPath };
         delete next[path];
@@ -10824,8 +10835,8 @@
                         <div class="wt-tt-section-head">
                           {aheadTooltip(wt.branchStatus)}
                         </div>
-                        {#if wtSummaryByPath[wt.path] === undefined || wtSummaryByPath[wt.path] === "loading"}
-                          <span class="muted small">Loading commits…</span>
+                        {#if wtCommitsLoading(wt.path)}
+                          <span class="muted small">{wtSummaryErrors[wt.path] || "Loading commits…"}</span>
                         {:else}
                           {@const s = wtSummaryByPath[wt.path]}
                           {#if s !== "loading" && s !== undefined && s.unpushedCommits.length > 0}
@@ -10883,8 +10894,8 @@
                           {fBehind} commit{fBehind === 1 ? "" : "s"} to pull from
                           {wt.branchStatus?.upstream ?? "upstream"}
                         </div>
-                        {#if wtSummaryByPath[wt.path] === undefined || wtSummaryByPath[wt.path] === "loading"}
-                          <span class="muted small">Loading commits…</span>
+                        {#if wtCommitsLoading(wt.path)}
+                          <span class="muted small">{wtSummaryErrors[wt.path] || "Loading commits…"}</span>
                         {:else}
                           {@const s = wtSummaryByPath[wt.path]}
                           {#if s !== "loading" && s !== undefined && s.unfetchedCommits && s.unfetchedCommits.length > 0}
@@ -10935,6 +10946,7 @@
                       <span slot="content" class="wt-tt-content">
                         <ChangedFilesTooltipBody
                           summary={wtSummaryByPath[wt.path]}
+                          error={wtSummaryErrors[wt.path]}
                           worktreePath={wt.path}
                           daemonId={daemonIdForWorktreePath(repos, wt.path)}
                           refreshing={!!wtSummaryRefreshing[wt.path]}
@@ -12605,7 +12617,7 @@
                                     wt.path,
                                   )}
                                   cmd={cmdForOpenSession(
-                                    s,
+                                    { ...s, codexResumeModel: codexResumeModels[s.source] },
                                     shellByDaemon[
                                       daemonIdForWorktreePath(repos, wt.path) ??
                                         "local"
@@ -12685,6 +12697,7 @@
                                       codexServiceTier: e.detail.serviceTier,
                                     })}
                                   on:spawn={(e) => {
+                                    codexResumeModels = { ...codexResumeModels, [s.source]: undefined };
                                     markTerminalLive(e.detail.id);
                                     const withAttach = setSessionAttachTermId(
                                       openSessionsByWt,
@@ -12963,6 +12976,7 @@
                                   claudeModel={s.claudeModel}
                                   claudeEffort={s.claudeEffort}
                                   codexModelOverride={s.codexModel}
+                                  codexResumeModel={codexResumeModels[s.source]}
                                   codexEffortOverride={s.codexEffort}
                                   codexServiceTierOverride={s.codexServiceTier}
                                   codexSandboxOverride={s.codexSandbox}
@@ -13013,6 +13027,7 @@
                                     openSessionsByWt = { ...next, [wt.path]: (next[wt.path] ?? []).map(entry => entry.source === s.source && entry.agent === "codex" ? { ...entry, visualAppStopped: true } : entry) };
                                   }}
                                   onSpawn={(id) => {
+                                    codexResumeModels = { ...codexResumeModels, [s.source]: undefined };
                                     markTerminalLive(id);
                                     // Keep this session's attachTermId on the
                                     // live PTY so a remount (model/effort
