@@ -2920,3 +2920,12 @@ duplicate work and let parent previews arrive before that work completes.
 - Verified installed Codex CLI 0.166.0 in an isolated hidden terminal with a synthetic rollout: global default Sol plus recorded Astra resumed as Astra without a model flag. No turn was sent and no production sessions were touched.
 - Automatic UI/background/broker resumes now omit saved launch-model overrides. New sessions still receive the configured selection; explicit header model changes use an in-memory one-shot override consumed on successful spawn. Visual app-server settings remain separate.
 - Regression coverage checks stale-model omission, explicit menu choices, broker command normalization, and retained permissions/settings. Existing running sessions are not changed by this source fix.
+
+
+### 2026-11-02: responsive reminder and command controls
+
+- Live diagnostics: reminder snooze succeeded after 30,985 ms; reminder GETs reached 87,376 ms. Command starts included 8,195 ms total / 87.366 ms daemon handler and 78,759 ms total / 437.909 ms handler. The dominant measured wait is outside the handler (browser/transport queue or callback scheduling); these logs do not distinguish those causes. A direct health probe completed in 62 ms.
+- Broker recorded command terminal t_mvxwtu0i_23_1fcb022c stopping at 09:14:44.764Z and exiting at 09:14:45.314Z. No production process was stopped during this investigation.
+- Reminder actions now replace the action buttons with an immediate pending notification, reject duplicate clicks, restore actions after failure, and finish on POST success rather than awaiting a follow-up GET.
+- New/command terminal Stop now uses the same acknowledged live WebSocket control path as agent sessions (HTTP fallback retained). Failed stops keep the attachment and render a retryable error instead of swallowing failure and clearing local state.
+- Verification: 65 unit tests, two headless browser tests including pending Stop/failure/retry, and compilation of all modified Svelte components passed. No build, installation, or restart performed.

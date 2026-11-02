@@ -181,6 +181,8 @@
    *  couldn't tell whether their click registered. */
   const DISPOSE_GRACE_MS = 1000;
   let disposing = false;
+  export let onDispose: (() => Promise<void>) | undefined = undefined;
+  let disposeError = "";
   let disposeGraceTimer: ReturnType<typeof setTimeout> | null = null;
   function handleEndSession(): void {
     if (disposeGraceTimer !== null) {
@@ -191,9 +193,18 @@
       return;
     }
     if (disposing) return;
+    disposeError = "";
     disposing = true;
-    disposeGraceTimer = setTimeout(() => {
+    disposeGraceTimer = setTimeout(async () => {
       disposeGraceTimer = null;
+      if (onDispose) {
+        try { await onDispose(); }
+        catch (error) {
+          disposeError = error instanceof Error ? error.message : String(error);
+          disposing = false;
+        }
+        return;
+      }
       // Fire the dispose event; the parent will DELETE the terminal.
       // Leave `disposing` true so the spinner stays visible until the
       // column either flips to a transcript view (which unmounts this
@@ -501,6 +512,7 @@
     }}
   />
 
+  {#if disposeError}<p class="error" role="alert">{disposeError}</p>{/if}
   {#if terminalMounted}
     <TerminalView
       {cmd}

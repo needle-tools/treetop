@@ -37,7 +37,7 @@ test("acknowledging from another window removes the toast without acknowledging 
   expect(requests).toBe(0);
 });
 
-test("snooze action waits for persistence, deduplicates clicks, and allows the next alert", async () => {
+test("snooze immediately shows pending feedback, deduplicates clicks, and allows the next alert", async () => {
   const manager = createToastManager({ onChange: () => {}, play: () => {} });
   const pending = Promise.withResolvers<void>();
   let snoozes = 0, dismisses = 0, opens = 0;
@@ -47,10 +47,15 @@ test("snooze action waits for persistence, deduplicates clicks, and allows the n
   const item: Reminder = { id: "one", title: "Review", message: "Logs", createdAt: "2026-10-07T00:00:00Z", dueAt: "2026-10-08T00:00:00Z", status: "due" };
   alerts.sync([item]);
   const action = manager.toasts()[0]!.actions![0]!;
+  const duplicate = manager.toasts()[0]!.actions![1]!;
   expect(action.label).toBe("Remind me later · 2 hours");
   const first = action.onClick();
-  await manager.toasts()[0]!.actions![1]!.onClick();
+  await duplicate.onClick();
   expect(snoozes).toBe(1);
+  expect(manager.toasts()).toHaveLength(1);
+  expect(manager.toasts()[0]!.message).toContain("Snoozing");
+  expect(manager.toasts()[0]!.actions).toBeUndefined();
+  alerts.sync([item]);
   expect(manager.toasts()).toHaveLength(1);
   pending.resolve(); await first;
   expect(manager.toasts()).toHaveLength(0);

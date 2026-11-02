@@ -50,7 +50,8 @@
       const body = await response.json();
       throw new Error(body.error ?? "Unable to update reminder");
     }
-    await refresh();
+    // Persistence is complete. Do not keep the action pending on another GET.
+    void refresh();
   }
   export function view(reminder: Reminder): void {
     showDetails(reminder);

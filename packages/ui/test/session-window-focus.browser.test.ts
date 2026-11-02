@@ -76,6 +76,24 @@ test("a visible new terminal starts despite stale ancestor animation hints", {ti
     assert.equal(spawns,2);
     assert.equal(await page.locator(".session-body-deferred").count(),1);
     await page.evaluate(()=>{(window as any).col.$destroy();});
+    await page.evaluate(() => {
+      const target = document.querySelector<HTMLElement>("#target")!;
+      target.parentElement!.style.display = "";
+      (window as any).stopCalls = 0;
+      (window as any).col = new (window as any).Col({ target, props: {
+        agent: "shell", source: "__new__:shell:stop-probe", wtPath: "C:/probe", cwd: "C:/probe", cmd: ["cmd.exe"], procName: "probe", spawnReady: false,
+        onDispose: () => { (window as any).stopCalls++; return new Promise((_resolve, reject) => { (window as any).rejectStop = reject; }); },
+      }});
+    });
+    await page.locator(".dispose-btn").first().click();
+    await page.getByText("Stopping…", {exact:true}).waitFor();
+    await page.waitForFunction(() => (window as any).stopCalls === 1, undefined, {timeout:3000});
+    await page.evaluate(() => (window as any).rejectStop(new Error("Connection lost; retry stop")));
+    await page.getByRole("alert").getByText("Connection lost; retry stop").waitFor();
+    assert.equal(await page.getByText("Stopping…", {exact:true}).count(), 0);
+    await page.locator(".dispose-btn").first().click();
+    await page.waitForFunction(() => (window as any).stopCalls === 2, undefined, {timeout:3000});
+    await page.evaluate(() => { (window as any).rejectStop(new Error("retry")); });
   } finally {
     await browser?.close();await server.close();
     assert.equal(dirname(cacheDir),resolve(tmpdir()));

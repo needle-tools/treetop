@@ -30,7 +30,7 @@
     READ_GRACE_MS,
     MIN_WORKING_FOR_PULSE_MS,
   } from "./unread-pulse-manager";
-  import { apiUrl, bindTerminalSessionOwner, startTerminalBootstrap } from "./api";
+  import { apiUrl, bindTerminalSessionOwner, startTerminalBootstrap, requestTerminalStop } from "./api";
   import {
     daemonRepoKey,
     upsertRepo,
@@ -1275,18 +1275,10 @@
       closeSessionInWt(wtPath, s);
       return;
     }
-    try {
-      play("session-stop");
-      await fetch(
-        apiUrl(
-          `/api/terminals/${encodeURIComponent(termId)}`,
-          daemonIdForWorktreePath(repos, wtPath),
-        ),
-        {
-          method: "DELETE",
-        },
-      ).catch(() => {});
-    } finally {
+    play("session-stop");
+    // Keep the attachment on failure; the column exposes a retryable error.
+    await requestTerminalStop(termId, daemonIdForWorktreePath(repos, wtPath));
+    {
       // Drop the now-stale termId mapping.
       const next = { ...newTermIds };
       delete next[s.source];
@@ -12668,7 +12660,7 @@
                                   onToggleStar={() =>
                                     toggleStarSession(titleSource)}
                                   on:close={() => closeSessionInWt(wt.path, s)}
-                                  on:dispose={() =>
+                                  onDispose={() =>
                                     disposeNewSessionColumn(
                                       wt.path,
                                       s,
