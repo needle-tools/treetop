@@ -244,6 +244,8 @@ export class BrokerBackend implements PtyBackend {
               );
               while (dead.length > 200) this.terminals.delete(dead.shift()![0]);
             }
+          } else if (message.event === "restoreProgress") {
+            for (const listener of this.changes) listener({ kind: "broker_restore_progress", restore: message.restore });
           } else if (message.event === "commands") {
             this.running = message.running;
             this.untracked = message.untracked;
@@ -315,7 +317,7 @@ export class BrokerBackend implements PtyBackend {
             new Error("Broker request timed out; verify state before retrying"),
           );
         },
-        method === "stopAll" || method === "shutdown" ? 120_000 : 15_000,
+        ["stopAll", "shutdown", "restart", "restore"].includes(method) ? 120_000 : 15_000,
       );
       this.pending.set(id, { resolve, reject, timer });
       this.socket!.send(JSON.stringify({ id, method, args }));

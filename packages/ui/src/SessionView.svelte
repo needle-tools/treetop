@@ -8,6 +8,7 @@
     type SessionTokenUsageSegment,
   } from "@treetop/nicifier";
   import { play } from "./sound";
+  import { backgroundRestorePending } from "./background-state";
   import { onMount, onDestroy, tick } from "svelte";
   import { flip } from "svelte/animate";
   import TerminalView from "./TerminalView.svelte";
@@ -1111,6 +1112,9 @@
   });
 
   function handleTerminalExit(): void {
+    // Replacement exits are not a user's Stop action. Canonical recovery will
+    // replace the terminal ID before lifting the startup gate.
+    if ($backgroundRestorePending) return;
     cliExited = true;
     working = false;
     awaitingInput = false;

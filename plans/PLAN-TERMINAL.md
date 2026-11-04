@@ -531,3 +531,21 @@ or add a dependency. Regression tests cover both fresh and resumed columns.
   (it's a local dashboard, not multi-tenant). CORS stays locked to
   `localhost:7779`. The WS endpoint validates terminal IDs against the
   in-memory manager before bridging bytes.
+
+
+### 2026-11-04: planned broker restart restores the exact live set
+
+The former full-restart procedure used the destructive shutdown RPC: it cleared the broker snapshot while exit notifications persisted UI sessions as stopped. Recovery also left unmatched historical terminal columns eligible for a background launch, which can resemble random old sessions returning on macOS or Windows.
+
+Added POST /api/background/restart and a restart RPC. The broker fences new launches, settles accepted operations, atomically saves its exact live manifest with planned-restart intent, and only then stops resources. The daemon detaches its old controller, waits for the old PID to exit, and launches the installed broker. The UI gates spawning during replacement and automatically replays only a planned restart selection; crash recovery still requires selection. Even an empty live manifest is reconciled before ungating startup. Restored sessions receive new terminal IDs and a remount key; stale exited/dormant flags are cleared. Historical unmatched terminals become read-only, and stale unstarted placeholders are discarded.
+
+Stop all and quit/shutdown intentionally remain destructive stop operations. Agent instructions now distinguish them from restart. Older brokers reject the new restart RPC before stopping anything; this source change needs deployment to the broker. No production restart was performed while implementing the fix.
+
+Validation: planned restart/restore idempotency and empty-manifest broker regressions, canonical UI selection regressions, and headless browser tests for opt-in crash recovery versus once-only planned recovery. Native macOS runtime validation remains outstanding; the selection path is shared.
+
+Validation result: 136 routing/restore unit tests passed; two targeted broker restart tests passed (14 assertions), and the headless recovery-dialog test passed. The full broker suite passed 17/18; its existing concurrent-owner cleanup assertion also fails against an isolated copy of HEAD, confirming it is independent of this change. Modified Svelte components compile and daemon files parse. Recovery also overrides stale read-surface preferences for manifest-selected CLI sessions so migration cannot silently drop their terminal mode.
+
+
+Resume deployment follow-up: recovery was waiting for a complete repository refresh before acknowledging the UI, which left its modal blocking input. Recovery now acknowledges once the attachment state is saved and refreshes repositories afterward. Resume progress uses a dismissible notification and a nonmodal details window, with a spinner, current item, counts and per-row waiting/resuming/resumed/failed states supplied by broker progress events. Command recovery recreates missing attached-terminal columns using the saved worktree path, registers command IDs and running state immediately, and restores their names. A headless stalled-request test verifies that users can hide/reopen details and interact with the app while restore is pending. 137 routing/restore tests and two broker restart/progress tests passed.
+
+A separately blocked Treetop conversation was traced with Windows Restart Manager to Codex app-server daemon PID 44416 (started Oct 30), outside the Treetop broker. Its writer lock was left intact; no external Codex process was terminated.

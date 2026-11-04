@@ -75,6 +75,23 @@ async function descriptor(
   return value;
 }
 
+/** Planned replacement preserves the exact live manifest. Stop/quit remains
+ * a different operation and must not be used as a restart shortcut. */
+export async function restartPersistentBroker(workspace: string, backend: BrokerBackend) {
+  const previous = await descriptor(resolve(workspace));
+  if (!previous) throw new Error("No live broker to restart");
+  // Older brokers reject this RPC before stopping anything.
+  await backend.request("restart");
+  await backend.shutdown();
+  const deadline = Date.now() + 30_000;
+  while (alive(previous.pid)) {
+    if (Date.now() >= deadline) throw new Error("Broker stopped its work but has not exited; the saved restart manifest is retained");
+    await Bun.sleep(100);
+  }
+  await connectPersistentBroker(workspace, backend);
+  return { ...(await backend.request("status")), enabled: true, connected: true };
+}
+
 export async function connectPersistentBroker(
   workspace = process.env.SUPERGIT_WORKSPACE ??
     join(homedir(), "supergit", "workspaces", "default"),

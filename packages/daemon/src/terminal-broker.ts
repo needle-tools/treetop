@@ -84,9 +84,10 @@ export async function startTerminalBroker(options: {
       log(`restore snapshot unreadable: ${error}`);
   }
   let restore = restoreCandidates(previousSnapshot);
-  const restoreId = restore.length ? crypto.randomUUID() : undefined;
-  let restorePending = restore.length > 0;
+  let restorePending = restore.length > 0 || previousSnapshot?.resumeOnRestart === true;
+  const restoreId = restorePending ? crypto.randomUUID() : undefined;
   let restoreDecision: Promise<any> | undefined;
+  let restoreProgress: { id: string; state: "waiting" | "resuming" | "resumed" | "failed"; termId?: string; error?: string }[] = [];
   const backend = new NodePtyBackend();
   const workspace = await Workspace.open(workspacePath);
   if (restore.length) {
@@ -123,11 +124,12 @@ export async function startTerminalBroker(options: {
   const resourceTimers = new Map<string, () => void>();
   let stopping = false;
   let snapshotFrozen = false;
+  let restartPreparing = false;
   let snapshotTimer: ReturnType<typeof setTimeout> | undefined;
   let snapshotWrite = Promise.resolve();
   const pendingOperations = new Set<Promise<unknown>>();
   function track<T>(operation: () => Promise<T>): Promise<T> {
-    if (stopping)
+    if (stopping || restartPreparing)
       throw new Error("Broker is stopping; no new operations accepted");
     const promise = Promise.resolve()
       .then(operation)
@@ -252,12 +254,7 @@ export async function startTerminalBroker(options: {
     terminals: backend.list().filter((record) => !record.exitedAt),
     commands: commands.list(),
   });
-  async function flushSnapshot(clear = false) {
-    const value = clear
-      ? { ...snapshotValue(), terminals: [], commands: [] }
-      : restorePending
-        ? previousSnapshot
-        : snapshotValue();
+  async function writeSnapshot(value: unknown) {
     snapshotWrite = snapshotWrite
       .catch((error) => log(`snapshot previous write failed: ${error}`))
       .then(async () => {
@@ -266,6 +263,11 @@ export async function startTerminalBroker(options: {
         await rename(path + ".tmp", path);
       });
     await snapshotWrite;
+  }
+  async function flushSnapshot(clear = false) {
+    await writeSnapshot(clear
+      ? { ...snapshotValue(), terminals: [], commands: [] }
+      : restorePending ? previousSnapshot : snapshotValue());
   }
   function saveSnapshot() {
     if (restorePending || snapshotFrozen || snapshotTimer) return;
@@ -386,10 +388,16 @@ export async function startTerminalBroker(options: {
       ? {
           id: restoreId,
           savedAt: previousSnapshot.savedAt,
+          automatic: previousSnapshot.resumeOnRestart === true,
+          progress: restoreProgress,
           candidates: restore.map(({ terminal, command, ...row }) => ({
             ...row,
             ownerId: terminal?.ownerId,
             terminalId: terminal?.id ?? command?.termId,
+            commandId: command?.linkId,
+            repoId: command?.repoId,
+            worktreePath: command?.repoPath ?? terminal?.cwd,
+            selected: previousSnapshot.resumeOnRestart === true || row.selected,
           })),
         }
       : null,
@@ -695,11 +703,15 @@ export async function startTerminalBroker(options: {
             )
               throw new Error("Restore selection is stale or invalid");
             if (!restoreDecision) {
+              restoreProgress = args.selected.map((id: string) => ({ id, state: "waiting" }));
               restoreDecision = track(async () => {
                 const results = [];
                 for (const row of restore.filter((row) =>
                   args.selected.includes(row.id),
                 )) {
+                  const progress = restoreProgress.find(item => item.id === row.id)!;
+                  progress.state = "resuming";
+                  publish({ event: "restoreProgress", restore: status().restore });
                   try {
                     let termId: string | undefined;
                     if (row.command) {
@@ -725,6 +737,7 @@ export async function startTerminalBroker(options: {
                       termId = handle.id;
                     }
                     results.push({ id: row.id, ok: true, termId });
+                    Object.assign(progress, { state: "resumed", termId });
                   } catch (error) {
                     results.push({
                       id: row.id,
@@ -732,7 +745,9 @@ export async function startTerminalBroker(options: {
                       error: String(error),
                     });
                     log(`restore failed id=${row.id}: ${error}`);
+                    Object.assign(progress, { state: "failed", error: String(error) });
                   }
+                  publish({ event: "restoreProgress", restore: status().restore });
                 }
                 await flushSnapshot();
                 log(
@@ -752,12 +767,26 @@ export async function startTerminalBroker(options: {
             );
             await flushSnapshot();
             value = { ok: true };
-          } else if (request.method === "shutdown") {
-            log("explicit stop and shutdown requested");
+          } else if (request.method === "shutdown" || request.method === "restart") {
+            const restarting = request.method === "restart";
+            if (restarting && restartPreparing) throw new Error("Broker restart is already in progress");
+            restartPreparing = restarting;
+            log(restarting ? "planned restart requested; preserving live manifest" : "explicit stop and shutdown requested");
             snapshotFrozen = true;
+            if (snapshotTimer) { clearTimeout(snapshotTimer); snapshotTimer = undefined; }
+            if (restarting) {
+              try {
+                await settlePendingOperations();
+                await writeSnapshot({ ...(restorePending ? previousSnapshot : snapshotValue()), resumeOnRestart: true });
+              } catch (error) {
+                restartPreparing = false;
+                snapshotFrozen = false;
+                throw error;
+              }
+            }
             await stopResources();
-            await flushSnapshot(true);
-            value = { stopped: true };
+            if (!restarting) await flushSnapshot(true);
+            value = restarting ? { stopped: true, restarting: true } : { stopped: true };
             send(ws, { reply: request.id, value });
             setTimeout(() => {
               void stop(false).then(() => {
@@ -774,6 +803,7 @@ export async function startTerminalBroker(options: {
               restorePending = false;
             } finally {
               snapshotFrozen = false;
+              restartPreparing = false;
             }
           } else if (request.method === "command") {
             if (stopping)

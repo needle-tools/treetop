@@ -10233,6 +10233,20 @@ const server = Bun.serve<TermWsData, never>({
         }
       }
 
+      if (url.pathname === "/api/background/restart" && req.method === "POST") {
+        srv.timeout(req, 130);
+        if (!backgroundBackend) return json({ error: "Persistent background sessions are unavailable" }, { status: 409 });
+        broadcast("change", { kind: "broker_restarting" });
+        try {
+          const { restartPersistentBroker } = await import("./terminals/broker-runtime");
+          const status = await restartPersistentBroker(workspace.path, backgroundBackend);
+          broadcast("change", { kind: "broker_restarted" });
+          return json(status);
+        } catch (error) {
+          broadcast("change", { kind: "broker_restart_failed", error: String(error) });
+          return json({ error: String(error) }, { status: 409 });
+        }
+      }
       if (url.pathname === "/api/background/reconnect" && req.method === "POST") {
         if (!backgroundBackend) return json({ enabled: false });
         if (!backgroundBackend.status().connected) {
@@ -10247,6 +10261,7 @@ const server = Bun.serve<TermWsData, never>({
         return json(await backgroundBackend.request("restoreAck", await req.json()));
       }
       if (url.pathname === "/api/background/restore" && req.method === "POST") {
+        srv.timeout(req, 130);
         if (!backgroundBackend) return json({ error: "Background sessions unavailable" }, { status: 409 });
         return json(await backgroundBackend.request("restore", await req.json()));
       }

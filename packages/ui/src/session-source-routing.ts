@@ -287,6 +287,9 @@ export function applyBackgroundRestoreDecision<T extends OpenSession>(
     cwd: string;
     ownerId?: string;
     terminalId?: string;
+      kind?: "terminal" | "command";
+      worktreePath?: string;
+      commandId?: string;
   }[],
   results: { id: string; ok: boolean; termId?: string }[],
   newTermIds: Record<string, string>,
@@ -297,6 +300,7 @@ export function applyBackgroundRestoreDecision<T extends OpenSession>(
   const nextTermIds = { ...newTermIds };
   const sourceChanges: Record<string, string> = {};
   const nextByWt: Record<string, T[]> = {};
+  const matched = new Set<string>();
   for (const [wtPath, sessions] of Object.entries(byWt)) {
     nextByWt[wtPath] = sessions.flatMap((session) => {
       const row = candidates.find(
@@ -309,7 +313,21 @@ export function applyBackgroundRestoreDecision<T extends OpenSession>(
             (row.ownerId === session.resumeSessionId ||
               row.ownerId === session.source)),
       );
-      if (!row) return [session];
+      if (!row) {
+        // The broker's live manifest is authoritative, including on macOS.
+        // Historical terminal columns must not launch beside its selection.
+        if (session.source.startsWith("__new__:") && (session.agent === "codex" || session.agent === "claude")) {
+          delete nextTermIds[session.source];
+          return [];
+        }
+        if ((session.agent === "codex" || session.agent === "claude") && session.mode === "terminal") {
+          delete nextTermIds[session.source];
+          return [{ ...session, mode: undefined, attachTermId: undefined, visualAppStopped: true }];
+        }
+        return [session];
+      }
+      matched.add(row.id);
+      delete nextTermIds[session.source];
       const result = restored.get(row.id);
       if (!result) return [];
       if (!result.termId) return [session];
@@ -321,8 +339,17 @@ export function applyBackgroundRestoreDecision<T extends OpenSession>(
       if (source !== session.source) sourceChanges[session.source] = source;
       if (session.source.startsWith("__new__:"))
         nextTermIds[session.source] = result.termId;
-      return [{ ...session, source, attachTermId: result.termId }];
+      return [{ ...session, source, attachTermId: result.termId,
+        ...(session.agent === "codex" || session.agent === "claude"
+          ? { mode: "terminal" as const, surface: "terminal" as const, visualAppStopped: undefined, renderKey: `restore:${result.termId}` } : {}),
+      }];
     });
+  }
+  for (const row of candidates) {
+    const result = restored.get(row.id);
+    if (row.kind !== "command" || matched.has(row.id) || !result?.termId) continue;
+    const wtPath = row.worktreePath ?? row.cwd;
+    (nextByWt[wtPath] ??= []).push({agent:"shell",source:`__attached__:shell:${result.termId}`,attachTermId:result.termId} as T);
   }
   return { byWt: nextByWt, newTermIds: nextTermIds, sourceChanges };
 }

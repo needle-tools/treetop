@@ -209,6 +209,13 @@ into every Vite/dev-server PTY supergit spawns, and Vite reads
 
 ### Debug endpoints
 
+For an explicitly user-authorized **full broker restart**, use
+`POST /api/background/restart` on the running daemon. It saves the exact live
+manifest, stops the broker, launches the installed broker, and resumes that
+selection through UI reconciliation. `/api/background/shutdown` and
+`/api/background/stop-all` mean **stop**, clear recovery intent, and must not be
+used as restart shortcuts. Never restart production without user authorization.
+
 `/api/debug/mem` returns `process.memoryUsage()`. `?gc=1` runs a sync
 full GC first and reports before+after — useful when triaging "is RSS
 high because of live data or V8 reservation?".

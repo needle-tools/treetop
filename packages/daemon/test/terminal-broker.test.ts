@@ -9,6 +9,69 @@ import { startTerminalBroker, replayBrokerTerminals } from "../src/terminal-brok
 import { BrokerBackend, TerminalReplayBuffer } from "../src/terminals/broker-backend";
 import { UpdateHandoff } from "../../../src/electrobun/update-handoff";
 
+test("planned broker restart retains exactly the live manifest for automatic recovery", async () => {
+  const workspace = await mkdtemp(join(tmpdir(), "treetop-broker-planned-restart-"));
+  const logs: string[] = [];
+  const broker = await startTerminalBroker({ workspace, token: "restart-test", log: line => logs.push(line) });
+  const client = await BrokerBackend.connect(broker.url, "restart-test");
+  let replacement: Awaited<ReturnType<typeof startTerminalBroker>> | undefined;
+  let restoredClient: BrokerBackend | undefined;
+  try {
+    const old = await broker.backend.spawn({ cmd: ["node", "-e", "setInterval(()=>{},1000)"], cwd: workspace, size: {cols:80,rows:24}, agent: "shell" });
+    const exited = Promise.withResolvers<void>();
+    const unsubscribe = old.subscribe({ onData() {}, onExit() { exited.resolve(); } });
+    await old.kill();
+    await exited.promise;
+    unsubscribe();
+    const active = await broker.backend.spawn({ cmd: ["node", "-e", "setInterval(()=>{},1000)"], cwd: workspace, size: {cols:80,rows:24}, agent: "shell" });
+    expect(await client.request("restart")).toEqual({ stopped: true, restarting: true });
+    await client.shutdown();
+    const saved = JSON.parse(await readFile(join(workspace, "background-snapshot.json"), "utf8"));
+    expect(saved.resumeOnRestart).toBe(true);
+    expect(saved.terminals.map((t: any) => t.id)).toEqual([active.id]);
+    const deadline = Date.now() + 10000;
+    while (!logs.includes("stopped; no child resources retained") && Date.now() < deadline) await Bun.sleep(20);
+    expect(logs).toContain("stopped; no child resources retained");
+    replacement = await startTerminalBroker({ workspace, token: "replacement-test", log: () => {} });
+    const status = replacement.status();
+    expect(status.restore.automatic).toBe(true);
+    expect(status.restore.candidates.map((row: any) => [row.terminalId, row.selected])).toEqual([[active.id, true]]);
+    expect(replacement.backend.list()).toHaveLength(0);
+    restoredClient = await BrokerBackend.connect(replacement.url, "replacement-test");
+    const progressStates: string[] = [];
+    restoredClient.onCommandChange(change => { if (change.kind === "broker_restore_progress") progressStates.push(change.restore.progress[0].state); });
+    const selection = { id: status.restore.id, selected: status.restore.candidates.map((row: any) => row.id) };
+    const first = await restoredClient.request("restore", selection);
+    expect(first.results[0].ok).toBe(true);
+    expect(progressStates).toEqual(["resuming", "resumed"]);
+    expect(replacement.status().restore.progress[0].state).toBe("resumed");
+    expect(await restoredClient.request("restore", selection)).toEqual(first);
+    expect(replacement.backend.list().filter(row => !row.exitedAt)).toHaveLength(1);
+    await restoredClient.request("restoreAck", { id: status.restore.id });
+    expect(replacement.status().restore).toBeNull();
+  } finally {
+    await restoredClient?.shutdown();
+    await client.shutdown();
+    await replacement?.stop();
+    await broker.stop();
+  }
+}, 60000);
+
+test("an empty planned restart still reconciles historical UI state before allowing spawns", async () => {
+  const workspace = await mkdtemp(join(tmpdir(), "treetop-broker-empty-restart-"));
+  await writeFile(join(workspace, "background-snapshot.json"), JSON.stringify({protocol:1,generation:"prior",savedAt:new Date().toISOString(),resumeOnRestart:true,terminals:[],commands:[]}));
+  const broker = await startTerminalBroker({ workspace, token: "empty-restart", log: () => {} });
+  const client = await BrokerBackend.connect(broker.url, "empty-restart");
+  try {
+    const status = broker.status();
+    expect(status.restore.automatic).toBe(true);
+    expect(status.restore.candidates).toEqual([]);
+    await client.request("restore", { id: status.restore.id, selected: [] });
+    await client.request("restoreAck", { id: status.restore.id });
+    expect(broker.status().restore).toBeNull();
+  } finally { await client.shutdown(); await broker.stop(); }
+});
+
 test("terminal replay retains exact newest bytes across wrap, oversized chunks and reset", () => {
   const replay = new TerminalReplayBuffer(8);
   const encode = (s: string) => new TextEncoder().encode(s);
@@ -409,6 +472,7 @@ test("native Codex turn ownership and events survive a daemon disconnect", async
   });
   let spawns = 0;
   let turnIndex = 0;
+  const externalRequests: any[] = [];
   const enqueue = (value: unknown) =>
     controller.enqueue(new TextEncoder().encode(JSON.stringify(value) + "\n"));
   const adapter = new CodexAppServerAdapter({
@@ -428,6 +492,7 @@ test("native Codex turn ownership and events survive a daemon disconnect", async
         stdin: {
           write(line: string) {
             const request = JSON.parse(line);
+            if (request.params?.toolOutput) externalRequests.push(request.params);
             if (request.method === "initialize")
               enqueue({ id: request.id, result: {} });
             if (request.method === "thread/resume")
@@ -481,6 +546,10 @@ test("native Codex turn ownership and events survive a daemon disconnect", async
     });
     await completed;
     expect(proxy.activeTurn("thread-owned")).toBeUndefined();
+    expect(await proxy.canReceiveExternalEvents("thread-owned")).toBe(true);
+    expect(await proxy.canReceiveExternalEvents("external-cli")).toBe(false);
+    await proxy.notifyExternalEvent("thread-owned", { method: "notifications/resources/updated" });
+    expect(externalRequests[0]).toMatchObject({ input: [], toolOutput: { namespace: "treetop", name: "resource_notification" } });
     const other = await client.spawn({
       cmd: ["node", "-e", "setInterval(()=>{},1000)"],
       cwd: workspace,

@@ -43,6 +43,7 @@ test(
         backgroundRestorePending.set(true);
       </script>
       <BackgroundSessions on:restored={event => event.detail.done()} />
+      <button on:click={() => { window.appClicks = (window.appClicks || 0) + 1; }}>Use app</button>
       <SessionHeader agent="codex" source="test" agentSettings={settings} mode="read" canEnd={false} />
     `,
       );
@@ -70,15 +71,19 @@ test(
         viewport: { width: 390, height: 700 },
       });
       const requests: any[] = [];
+      let holdRestore = false;
+      let finishRestore: (() => void) | undefined;
       await page.route("**/api/background/**", async (route) => {
         if (route.request().url().endsWith("restore-ack")) {
           await route.fulfill({ json: { ok: true } });
           return;
         }
         if (route.request().method() === "POST") {
-          requests.push(route.request().postDataJSON());
+          const selection = route.request().postDataJSON();
+          requests.push(selection);
+          if (holdRestore) await new Promise<void>(resolve => { finishRestore = resolve; });
           await route.fulfill({
-            json: { results: [{ id: "command:cloud:dev", ok: true }] },
+            json: { results: selection.selected.map((id: string) => ({id,ok:true})) },
           });
         } else
           await route.fulfill({
@@ -146,6 +151,48 @@ test(
       await page.screenshot({
         path: resolve(root, "../../output/approval-reviewer.png"),
       });
+      requests.length = 0;
+      await page.evaluate(async () => {
+        const module = "/src/background-state.ts";
+        const state = await import(/* @vite-ignore */ module);
+        const status = { enabled: true, connected: true, restore: { id: "planned-restart", automatic: true,
+          candidates: [{id:"terminal:active",title:"Current session",cwd:"/repo",kind:"terminal",selected:true}] } };
+        (window as any).__plannedRestart = () => state.backgroundStatus.set(status);
+        (window as any).__plannedRestart();
+      });
+      await page.waitForFunction(() => !document.querySelector("dialog.background-dialog"));
+      assert.deepEqual(requests, [{id:"planned-restart",selected:["terminal:active"]}]);
+      await page.evaluate(async () => {
+        (window as any).__plannedRestart();
+        await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+      });
+      assert.equal(requests.length, 1, "a repeated status must not replay automatic recovery");
+      holdRestore = true;
+      await page.evaluate(async () => {
+        const module = "/src/background-state.ts";
+        const state = await import(/* @vite-ignore */module);
+        state.backgroundRestorePending.set(true);
+        const status = {enabled:true,connected:true,restore:{id:"slow-restore",candidates:[
+          {id:"first",title:"First session",cwd:"/repo",kind:"terminal",selected:true},
+          {id:"second",title:"Second session",cwd:"/repo",kind:"terminal",selected:true},
+        ]}};
+        (window as any).__restoreProgress = () => state.backgroundStatus.set({...status,restore:{...status.restore,progress:[{id:"first",state:"resumed"},{id:"second",state:"resuming"}]}});
+        state.backgroundStatus.set(status);
+      });
+      await page.getByRole("button", {name:"Resume selected (2)"}).click();
+      await page.getByRole("dialog").waitFor({state:"hidden"});
+      await page.getByRole("button", {name:"Use app",exact:true}).click();
+      assert.equal(await page.evaluate(() => (window as any).appClicks), 1);
+      await page.getByRole("button", {name:"Show resume details"}).click();
+      await page.evaluate(() => (window as any).__restoreProgress());
+      await page.getByRole("dialog").getByText("Resumed",{exact:true}).waitFor();
+      await page.getByRole("dialog").getByText("Resuming",{exact:true}).waitFor();
+      await page.getByRole("button", {name:"Use app",exact:true}).click();
+      assert.equal(await page.evaluate(() => (window as any).appClicks), 2, "progress details must not lock the rest of the app");
+      await page.getByRole("button", {name:"Hide resume progress"}).click();
+      const acknowledged = page.waitForResponse(response => response.url().endsWith("restore-ack"));
+      assert(finishRestore); finishRestore(); holdRestore = false;
+      await acknowledged;
     } finally {
       await browser?.close();
       await server?.close();

@@ -12,6 +12,7 @@
  */
 
 import { test, expect, describe } from "bun:test";
+import { applySessionSurfacePreference } from "../src/storage";
 import {
   resolveTermId,
   applyBackgroundRestoreDecision,
@@ -1810,8 +1811,34 @@ test("background recovery matches real identities and replaces shell attachment 
   expect(decision.byWt["/repo"]).toEqual([
     {agent:"shell",source:"__attached__:shell:new-shell",attachTermId:"new-shell"},
     original["/repo"][1],
-    {...original["/repo"][2],attachTermId:"new-agent"}
+    {...original["/repo"][2],attachTermId:"new-agent",mode:"terminal",surface:"terminal",visualAppStopped:undefined,renderKey:"restore:new-agent"}
   ]);
   expect(resolveTermId(decision.byWt["/repo"]![0]!,decision.newTermIds)).toBe("new-shell");
   expect(decision.sourceChanges).toEqual({"__attached__:shell:old-shell":"__attached__:shell:new-shell"});
+});
+
+
+
+test("canonical recovery wakes exactly the saved running set, not older terminal columns", () => {
+  const old = { agent: "codex", source: "old.jsonl", resumeSessionId: "old", mode: "terminal", attachTermId: "stale" };
+  const active = { agent: "codex", source: "active.jsonl", resumeSessionId: "active", surface: "read", visualAppStopped: true };
+  const result = applyBackgroundRestoreDecision({ "/repo": [old, active, {agent:"codex",source:"__new__:codex:stale-placeholder"}] } as any,
+    [{ id: "terminal:active", cwd: "/repo", ownerId: "active" }],
+    [{ id: "terminal:active", ok: true, termId: "replacement" }], { "old.jsonl": "stale" });
+  const restored = result.byWt["/repo"]!.find(s => s.source === "active.jsonl")!;
+  expect(restored.mode).toBe("terminal");
+  expect(restored.visualAppStopped).not.toBe(true);
+  expect(applySessionSurfacePreference(restored, {"active.jsonl":"read"}).mode).toBe("terminal");
+  expect(result.byWt["/repo"]!.find(s => s.source === "old.jsonl")!.mode).toBeUndefined();
+  expect(result.newTermIds["old.jsonl"]).toBeUndefined();
+  expect(result.byWt["/repo"]!.some(s => s.source === "__new__:codex:stale-placeholder")).toBe(false);
+  expect(selectSessionsForBackgroundSpawn(result.byWt, { liveTerminalIds: new Set(["replacement"]), inFlight: new Set(), newTermIds: result.newTermIds })).toEqual([]);
+});
+
+test("restored commands recreate their columns after old process exits removed them", () => {
+  const restored = applyBackgroundRestoreDecision({"/repo":[]} as Record<string, OpenSession[]>,
+    [{id:"command:repo:dev",kind:"command",cwd:"/repo/package",worktreePath:"/repo",commandId:"dev"}],
+    [{id:"command:repo:dev",ok:true,termId:"new-command"}], {});
+  expect(restored.byWt["/repo"]).toEqual([{agent:"shell",source:"__attached__:shell:new-command",attachTermId:"new-command"}]);
+  expect(openSessionHasLiveTerminal(restored.byWt["/repo"]![0]!,{liveTerminalIds:new Set(["new-command"]),newTermIds:restored.newTermIds})).toBe(true);
 });

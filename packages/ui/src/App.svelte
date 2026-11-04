@@ -2,7 +2,7 @@
   import { applySessionInput } from "./mcp-session-input";
   export let onInitialLoad: () => void = () => {};
   import BackgroundSessions from "./BackgroundSessions.svelte";
-  import { backgroundRestorePending } from "./background-state";
+  import { backgroundRestorePending, backgroundStatus, refreshBackgroundStatus } from "./background-state";
   import { replaceCodexCliStates, codexCliStates, isCodexCliWorking, resolveTerminalWorking } from "./codex-event-stream";
   import {
     resolveTermId,
@@ -3790,18 +3790,35 @@
       const applied = applyBackgroundRestoreDecision(openSessionsByWt, candidates, results, newTermIds);
       openSessionsByWt = applied.byWt;
       newTermIds = applied.newTermIds;
+      const restoredIds = new Set(results.filter((result: any) => result.ok && result.termId).map((result: any) => result.termId));
+      for (const session of Object.values(openSessionsByWt).flat()) {
+        if (session.attachTermId && restoredIds.has(session.attachTermId)) {
+          markTerminalLive(session.attachTermId);
+          transientExited = { ...transientExited, [session.source]: false };
+          wakeDormantTui(session.source);
+        }
+      }
       const openSources = new Set(Object.values(openSessionsByWt).flat().map(session => session.source));
       for (const [commandId, entry] of commandTermSources) {
         const source = applied.sourceChanges[entry.source] ?? entry.source;
         if (!openSources.has(source)) commandTermSources.delete(commandId);
         else if (source !== entry.source) commandTermSources.set(commandId, {...entry, source});
       }
+      for (const row of candidates) {
+        if (row.kind !== "command" || !row.commandId) continue;
+        const result = results.find((result: any) => result.id === row.id && result.ok && result.termId);
+        if (!result) continue;
+        commandTermSources.set(row.commandId, {wtPath:row.worktreePath ?? row.cwd,source:`__attached__:shell:${result.termId}`});
+        runningCommandIds = new Set([...runningCommandIds, row.commandId]);
+        if (row.title) newSessionTitles = {...newSessionTitles,[`__attached__:shell:${result.termId}`]:row.title};
+      }
       persistCommandTermSources();
       openSessionsPersistence.save(openSessionsByWt);
       const persisted = await fetch(apiUrl("/api/prefs"), {method:"PATCH", headers:{"Content-Type":"application/json"}, body:JSON.stringify({"supergit:openSessions":JSON.stringify(openSessionsByWt)})});
       if (!persisted.ok) throw new Error("Could not save the restore selection; retry before resuming");
-      await load("mount");
       done();
+      // Repo discovery may take minutes; attachment recovery is already saved.
+      void load("resume");
     } catch (error) { done(error); }
   }
   function closeSessionInWt(wtPath: string, s: OpenSession): void {
@@ -6954,6 +6971,21 @@
               messageItalic: true,
             });
           }
+          return;
+        }
+        if (payload.kind === "broker_restarting") {
+          backgroundRestorePending.set(true);
+          return;
+        }
+        if (payload.kind === "broker_restore_progress") {
+          backgroundStatus.update(status => ({ ...status, restore: payload.restore }));
+          return;
+        }
+        if (payload.kind === "broker_restarted" || payload.kind === "broker_restart_failed") {
+          if (payload.kind === "broker_restart_failed") addToast({ kind: "error", message: payload.error ?? "Broker restart failed; retry reconnect to recover saved sessions" });
+          void refreshBackgroundStatus().then(status => {
+            if (payload.kind === "broker_restart_failed" && status?.connected && !status.restore) backgroundRestorePending.set(false);
+          });
           return;
         }
         if (payload.kind === "reminder_due" || payload.kind === "reminder_changed") {
@@ -12813,6 +12845,7 @@
                                     }
                                   }}
                                   on:exit={(event) => {
+                                    if ($backgroundRestorePending) return;
                                     const command = commandTerminalForSource(
                                       commandTermSources,
                                       s.source,
