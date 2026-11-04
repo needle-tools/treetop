@@ -4202,6 +4202,7 @@
     overflow-x: hidden;
     overflow-y: auto;
     contain: layout paint style;
+    container-type: size;
     display: flex;
     flex-direction: column;
     gap: 0.4rem;
@@ -4651,7 +4652,9 @@
     max-width: calc(100% - 1.7rem);
   }
   .work-foldout-live > .work-foldout-body {
-    max-height: clamp(8rem, 28vh, 16rem);
+    /* Use the transcript's allocated height, leaving room for the round
+       summary and thinking indicator while retaining nested tail-follow. */
+    max-height: max(4rem, calc(100cqh - 6rem));
     overflow-x: hidden;
     overflow-y: auto;
     padding-right: 0.35rem;

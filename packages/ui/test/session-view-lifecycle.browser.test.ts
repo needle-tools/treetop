@@ -1064,6 +1064,21 @@ describe("SessionView browser lifecycle", { concurrency: false }, () => {
     const liveBody = currentPage.locator(
       ".work-foldout-live > .work-foldout-body",
     );
+    await currentPage.locator(".session").evaluate(el => {
+      (el as HTMLElement).style.maxHeight = "none";
+    });
+    const compactHeight = await liveBody.evaluate(el => el.clientHeight);
+    await currentPage.locator(".session-lifecycle-stage").evaluate(el => {
+      (el as HTMLElement).style.height = "900px";
+    });
+    await currentPage.waitForTimeout(150);
+    const expandedHeight = await liveBody.evaluate(el => el.clientHeight);
+    assert(expandedHeight > compactHeight + 100,
+      `Live work should expand when the transcript gains available height (${compactHeight} → ${expandedHeight})`);
+    await currentPage.locator(".session-lifecycle-stage").evaluate(el => {
+      (el as HTMLElement).style.height = "320px";
+    });
+    await currentPage.waitForTimeout(150);
     assert((await liveBody.evaluate(
         (element) => element.scrollHeight - element.clientHeight,
       )) > 0);
