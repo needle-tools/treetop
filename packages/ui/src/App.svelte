@@ -6009,7 +6009,17 @@
       });
       openSessionsByWt = { ...openSessionsByWt, [entry.wtPath]: next };
     }
-    scrollNewColIntoView(entry.wtPath, entry.source);
+    const repo = repos.find(repo => repo.path === entry.wtPath || repo.worktrees.some(wt => wt.path === entry.wtPath));
+    if (repo) {
+      const rowKey = `${repo.id}|${entry.wtPath}`;
+      // A command can already be open behind a strip filter or folded/Zen
+      // row. Use the same complete reveal path as a sidebar session pick.
+      pinRowOpenAfterPick(rowKey);
+      closeStripSearch(rowKey, entry.wtPath);
+      await onDockPick({ rowKey, repoId: repo.id, wtPath: entry.wtPath, agent: "shell", source: entry.source });
+    } else {
+      scrollNewColIntoView(entry.wtPath, entry.source);
+    }
   }
 
   async function handleCommandClick(
