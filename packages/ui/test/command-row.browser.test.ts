@@ -143,6 +143,10 @@ test("command URL hover preserves horizontal scrolling and remains clickable", {
     }));
     assert(Math.abs(aligned.rowRight - aligned.actionsRight) < 1,
       "the complete action strip should remain right-aligned");
+    const buttonsRight = await screenshotRow.locator(".app-actions").evaluate(el =>
+      el.lastElementChild!.getBoundingClientRect().right);
+    assert(Math.abs(aligned.rowRight - buttonsRight) < 1,
+      "app buttons should end at the right edge of the available row");
     const smallScreenshotCommands = await page.locator(".row-status").nth(2).locator(".command-actions").evaluate((el) => ({
       scrollWidth: el.scrollWidth,
       clientWidth: el.clientWidth,
