@@ -78,6 +78,7 @@
 <script lang="ts">
   import { onMount, onDestroy } from "svelte";
   import Popover from "./Popover.svelte";
+  import { writeBrowserClipboard } from "./clipboard-write";
 
   /** Menu contents, top → bottom. */
   export let items: SessionMenuItem[];
@@ -91,6 +92,7 @@
   let triggerEl: HTMLButtonElement | null = null;
   /** Index of the item whose "Copied" flash is currently visible. */
   let copiedIndex: number | null = null;
+  let copyFailedIndex: number | null = null;
   let copiedTimer: ReturnType<typeof setTimeout> | null = null;
   /** Index of the submenu item whose flyout is visible. */
   let submenuIndex: number | null = null;
@@ -136,7 +138,7 @@
     child.onSelect(rect);
   }
 
-  function handleClick(item: SessionMenuItem, index: number) {
+  async function handleClick(item: SessionMenuItem, index: number) {
     if (item.disabled) return;
     if (item.kind === "submenu") return;
     if (item.kind === "action") {
@@ -154,7 +156,20 @@
     }
     // kind === "copy"
     const text = item.getText();
-    void navigator.clipboard.writeText(text).catch(() => {});
+    copyFailedIndex = null;
+    const success = await writeBrowserClipboard(text, {
+      asyncWrite: navigator.clipboard?.writeText ? value => navigator.clipboard.writeText(value) : null,
+      syncCopy: value => {
+        const textarea = document.createElement("textarea");
+        textarea.value = value;
+        textarea.style.cssText = "position:fixed;top:0;left:0;opacity:0";
+        document.body.appendChild(textarea);
+        const previous = document.activeElement as HTMLElement | null;
+        try { textarea.focus(); textarea.select(); return document.execCommand("copy"); }
+        finally { textarea.remove(); previous?.focus(); }
+      },
+    });
+    if (!success) { copyFailedIndex = index; return; }
     copiedIndex = index;
     if (copiedTimer) clearTimeout(copiedTimer);
     copiedTimer = setTimeout(() => {
@@ -238,7 +253,7 @@
                 {:else}
                   <span class="icon icon-empty" aria-hidden="true"></span>
                 {/if}
-                <span class="label">{item.label}</span>
+                <span class="label">{copyFailedIndex === i ? "Copy failed - try again" : item.label}</span>
                 {#if item.kind === "action" && item.selected}
                   <span class="trailing-check" aria-hidden="true">
                     <svg viewBox="0 0 24 24" width="13" height="13"

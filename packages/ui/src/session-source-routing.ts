@@ -198,6 +198,8 @@ export function shouldMountTerminalView(args: {
   spawnReady: boolean;
   /** Keep an opened terminal's xterm scrollback across visibility changes. */
   alreadyMounted?: boolean;
+  /** Explicit output sharing must survive offscreen/Zen deferral. */
+  outputShared?: boolean;
   /** Restored dormant (see `selectDormantTuiSources`). Scrolling such a
    *  column into view must NOT wake it: mounting TerminalView is what spawns
    *  `agent resume`, so a dormant session would come alive just by being
@@ -209,7 +211,7 @@ export function shouldMountTerminalView(args: {
     !args.dormant &&
     args.hasSessionId &&
     args.hasCwd &&
-    (args.nearViewport || args.alreadyMounted === true) &&
+    (args.nearViewport || args.alreadyMounted === true || args.outputShared === true) &&
     args.spawnReady
   );
 }
@@ -243,10 +245,12 @@ export function shouldMountNewSessionTerminal(args: {
   nearViewport: boolean;
   spawnReady: boolean;
   alreadyMounted?: boolean;
+  /** Explicit output sharing must survive offscreen/Zen deferral. */
+  outputShared?: boolean;
 }): boolean {
   return (
     args.hasCwd &&
-    (args.nearViewport || args.alreadyMounted === true) &&
+    (args.nearViewport || args.alreadyMounted === true || args.outputShared === true) &&
     args.spawnReady
   );
 }

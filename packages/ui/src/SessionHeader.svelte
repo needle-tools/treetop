@@ -125,6 +125,7 @@
   /** Placeholder for the message-count slot, same idea. */
   export let messageCountFallback: string | undefined = undefined;
   export let menuItems: SessionMenuItem[] = [];
+  export let outputShared = false;
   /** Extra line appended to ManualTitle's rest-state tooltip. The
    *  SessionView passes the cached Ollama summary here so a hover
    *  over the title surfaces the session's gist without expanding
@@ -745,6 +746,21 @@
         on:click={onFind}
       />
     {/if}
+    {#if outputShared && mode === "terminal"}
+      <Tooltip placement="bottom" escapeClip>
+      <span slot="trigger" class="terminal-sharing-indicator" role="img"
+        aria-label="Terminal output shared with agents (read-only)">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">
+          <path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12Z" />
+          <circle cx="12" cy="12" r="3" />
+        </svg>
+      </span>
+      <div slot="content">
+        <strong>Output shared with agents</strong><br />
+        Read-only access. Use the menu to stop sharing.
+      </div>
+      </Tooltip>
+    {/if}
     {#if effectiveMenuItems.length > 0}
       <SessionMenu items={effectiveMenuItems} />
     {/if}
@@ -758,6 +774,15 @@
 </header>
 
 <style>
+  .terminal-sharing-indicator {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex: 0 0 18px;
+    height: 18px;
+    color: #7ee787;
+  }
+
   header {
     display: flex;
     align-items: center;

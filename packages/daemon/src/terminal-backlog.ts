@@ -36,3 +36,61 @@ export function trimTerminalBacklog(
   }
   return bytes;
 }
+
+/** Explicit sharing lasts until revoked; snapshot freshness is reported separately. */
+export class SharedTerminalOutput {
+  constructor(private now: () => number = Date.now, private changed?: (id: string, listChanged: boolean) => void) {}
+  private snapshots = new Map<string, {
+    text: string; updatedAt: number; lastActivityAt: number;
+    pending: boolean; freshSnapshot: boolean;
+  }>();
+  /** Raw PTY output resets the quiet period without retaining its bytes. */
+  activity(id: string) {
+    const value = this.snapshots.get(id);
+    if (!value) return;
+    value.lastActivityAt = this.now();
+    value.pending = true;
+    value.freshSnapshot = false;
+  }
+  /** Called by the daemon timer; initial sharing and revocation stay immediate. */
+  flush() {
+    this.list();
+    for (const [id, value] of this.snapshots) {
+      if (value.pending && value.freshSnapshot && this.now() - value.lastActivityAt >= 1500) {
+        value.pending = false;
+        this.changed?.(id, false);
+      }
+    }
+  }
+  update(id: string, text: string, allowGrant = true): boolean {
+    this.list();
+    const previous = this.snapshots.get(id);
+    if (!previous && !allowGrant) return false;
+    const bounded = text.slice(-32000);
+    if (!previous) {
+      this.snapshots.set(id, { text: bounded, updatedAt: this.now(), lastActivityAt: this.now(), pending: false, freshSnapshot: true });
+      this.changed?.(id, true);
+      return true;
+    }
+    if (previous.text !== bounded && (!previous.pending || previous.freshSnapshot)) {
+      previous.pending = true;
+      previous.lastActivityAt = this.now();
+    }
+    previous.text = bounded;
+    previous.updatedAt = this.now();
+    previous.freshSnapshot = true;
+    return true;
+  }
+  revoke(id: string) { if (this.snapshots.delete(id)) this.changed?.(id, true); }
+  list() {
+    return [...this.snapshots].map(([terminal_id, value]) => ({ terminal_id, updated_at: value.updatedAt }));
+  }
+  prune(isAlive: (id: string) => boolean) {
+    for (const id of this.snapshots.keys()) if (!isAlive(id)) this.revoke(id);
+  }
+  read(id: string, maxChars: number) {
+    this.list();
+    const value = this.snapshots.get(id);
+    return value ? { terminal_id: id, text: value.text.slice(-maxChars), updated_at: value.updatedAt, snapshot_age_ms: Math.max(0, this.now() - value.updatedAt), snapshot_stale: this.now() - value.updatedAt > 15000, read_only: true } : undefined;
+  }
+}

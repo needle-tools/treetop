@@ -307,7 +307,11 @@
           })
       : [];
 
+  let terminalOutputMenuItems: SessionMenuItem[] = [];
+  let terminalOutputShared = false;
+  let terminalSharingEnabled = false;
   $: menuItems = [
+    ...terminalOutputMenuItems,
     ...claudeMenuItems,
     {
       kind: "copy",
@@ -386,6 +390,7 @@
       nearViewport,
       spawnReady,
       alreadyMounted: agent === "codex" && mountedTerminalSource === source,
+      outputShared: terminalSharingEnabled && mountedTerminalSource === source,
     });
     mountedTerminalSource = terminalMounted ? source : undefined;
   }
@@ -463,6 +468,7 @@
   bind:this={colEl}
 >
   <SessionHeader
+    outputShared={terminalOutputShared}
     {agent}
     agentLabel={pillLabel}
     agentIcon={agentEffortIcon}
@@ -515,6 +521,9 @@
   {#if disposeError}<p class="error" role="alert">{disposeError}</p>{/if}
   {#if terminalMounted}
     <TerminalView
+      bind:outputMenuItems={terminalOutputMenuItems}
+      bind:outputSharingActive={terminalOutputShared}
+      bind:outputSharingEnabled={terminalSharingEnabled}
       {cmd}
       {cwd}
       {agent}

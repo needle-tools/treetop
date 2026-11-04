@@ -147,6 +147,17 @@ test("command URL hover preserves horizontal scrolling and remains clickable", {
       el.lastElementChild!.getBoundingClientRect().right);
     assert(Math.abs(aligned.rowRight - buttonsRight) < 1,
       "app buttons should end at the right edge of the available row");
+    const available = await screenshotRow.evaluate(el => {
+      const style = getComputedStyle(el);
+      const leading = el.firstElementChild as HTMLElement;
+      const actions = el.querySelector(".row-actions")!;
+      return {
+        expectedLeft: leading.getBoundingClientRect().right + parseFloat(style.columnGap),
+        actualLeft: actions.getBoundingClientRect().left,
+      };
+    });
+    assert(Math.abs(available.actualLeft - available.expectedLeft) < 1,
+      "command actions must use all row space after the leading status, without a blank left margin");
     const smallScreenshotCommands = await page.locator(".row-status").nth(2).locator(".command-actions").evaluate((el) => ({
       scrollWidth: el.scrollWidth,
       clientWidth: el.clientWidth,

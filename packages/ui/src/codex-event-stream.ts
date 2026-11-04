@@ -1297,6 +1297,7 @@ export function codexLiveToolUseFromEvent(
 ): CodexLiveToolUse | null {
   const item = codexEventItem(event.params);
   if (
+    item?.type === "functionCallOutput" ||
     item?.type === "function_call_output" ||
     item?.type === "custom_tool_call_output"
   ) {
@@ -1380,6 +1381,7 @@ export function codexLiveToolResultFromEvent(
   if (
     item.type === "mcpToolCall" ||
     item.type === "dynamicToolCall" ||
+    item.type === "functionCallOutput" ||
     item.type === "function_call_output" ||
     item.type === "custom_tool_call_output"
   ) {
@@ -2329,6 +2331,7 @@ function codexAppMessagesFromThreadItem(
     ];
   }
   if (
+    itemType === "functionCallOutput" ||
     itemType === "function_call_output" ||
     itemType === "custom_tool_call_output"
   ) {
@@ -3262,7 +3265,8 @@ export function codexEventItemId(
   if (
     (item?.type === "function_call" ||
       item?.type === "custom_tool_call" ||
-      item?.type === "function_call_output" ||
+      item?.type === "functionCallOutput" ||
+    item?.type === "function_call_output" ||
       item?.type === "custom_tool_call_output") &&
     typeof item.call_id === "string"
   ) {
@@ -3320,6 +3324,7 @@ function codexEventToolName(
     return stringField(params, "tool") ?? "dynamicToolCall";
   }
   if (
+    item?.type === "functionCallOutput" ||
     item?.type === "function_call_output" ||
     item?.type === "custom_tool_call_output"
   ) {

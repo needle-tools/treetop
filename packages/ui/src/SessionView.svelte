@@ -1163,6 +1163,7 @@
       spawnReady,
       dormant,
       alreadyMounted: agent === "codex" && mountedTerminalSource === source,
+      outputShared: terminalSharingEnabled && mountedTerminalSource === source,
     });
     mountedTerminalSource = terminalMounted ? source : undefined;
   }
@@ -1684,6 +1685,9 @@
   /** Burger-menu items for the per-session header. SessionMenu owns the
    *  popover, click-outside handling, and "Copied to clipboard" flash
    *  for `kind: "copy"` items. */
+  let terminalOutputMenuItems: SessionMenuItem[] = [];
+  let terminalOutputShared = false;
+  let terminalSharingEnabled = false;
   $: menuItems = ((): SessionMenuItem[] => {
     if (renderOnly) return extraMenuItems;
     const sid = effectiveSessionId;
@@ -1698,6 +1702,7 @@
           })
         : [];
     const base: SessionMenuItem[] = [
+      ...(terminalMounted ? terminalOutputMenuItems : []),
       ...claudeItems,
       {
         kind: "action",
@@ -6141,6 +6146,7 @@
        (no layout impact); hover reveals the full text. -->
   <div class="session-head-stack">
     <SessionHeader
+    outputShared={terminalOutputShared}
       {agent}
       agentLabel={agent === "ollama"
         ? model || undefined
@@ -6469,6 +6475,9 @@
   {#if sendError && !showChatComposer}<p class="error" role="alert">{sendError}</p>{/if}
   {#if terminalMounted}
     <TerminalView
+      bind:outputMenuItems={terminalOutputMenuItems}
+      bind:outputSharingActive={terminalOutputShared}
+      bind:outputSharingEnabled={terminalSharingEnabled}
       bind:this={terminalInput}
       cmd={agent === "codex"
         ? [

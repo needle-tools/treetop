@@ -533,6 +533,99 @@ or add a dependency. Regression tests cover both fresh and resumed columns.
   in-memory manager before bridging bytes.
 
 
+### Read-only agent observation (2026-11-03)
+
+Terminal views can publish bounded rendered xterm text through an explicit
+"Share output with agents" toggle. MCP list_shared_terminals/read_terminal_output
+expose only these snapshots, including SSH output without another SSH login.
+Sharing applies to connected agents, not a single agent identity. Snapshots stay
+in memory, cap at 32,000 characters, and expire after 15 seconds without a UI
+refresh. Stop sharing revokes immediately. This grants no PTY input, resizing,
+signals, execution, or close capability. Existing command/session controls retain
+their separate authorization requirements. Output is untrusted data. Observation
+requires a mounted terminal view; it does not create a PTY subscriber or change
+terminal lifetime. Full-screen terminal programs expose their rendered buffer,
+not a command history. No production restart or build performed.
+
+While sharing, Copy agent prompt copies instructions containing the exact terminal
+ID and read_terminal_output tool name for pasting into a Treetop-connected agent.
+Copying does not submit a message or grant additional access.
+
+The sharing toggle and Copy agent prompt now live in the header menu for both
+fresh and resumed terminal columns. Menu clipboard writes prefer the modern
+browser API and show confirmation only after success; failures remain visible
+for retry. Installed logs showed snapshot requests but no clipboard error.
+All four changed Svelte components compile; 16 clipboard behavior tests pass.
+
+
+Quiet-period observation: this is available to every live internal terminal, not
+just SSH (local shells, internal project commands and agent TUIs all use the same
+TerminalView menu). Each terminal still requires explicit Share output with agents;
+external OS terminal windows and unrendered background command logs are not
+captured. No automatic sharing is enabled.
+
+Raw output on the existing PTY-to-UI path marks a shared terminal active without
+retaining extra bytes. Notifications are coalesced until at least 1.5 seconds of
+output silence, then emitted on a 250ms daemon sweep only after a fresh UI screen
+snapshot has arrived. The existing 2-second UI snapshot cadence can delay delivery
+beyond 1.5 seconds. A quiet period is not proof of command completion. Initial
+sharing/list changes and revocation remain immediate; revocation/expiry clears
+pending output events. Unchanged heartbeat snapshots do not produce notifications.
+The copied prompt explains resource watching and the quiet-period semantics.
+
+
+Header sharing visibility: fresh and resumed terminal headers show a small green
+eye beside the menu while sharing is live and snapshot publishing has no error.
+The enable action is now Share output and copy agent prompt: it starts publishing
+and copies the exact terminal ID/instructions directly from the same click, keeping
+clipboard access in the trusted gesture. Copy agent prompt remains available while
+sharing; Stop sharing revokes without copying. The menu's existing clipboard
+success/failure feedback applies to the combined enable/copy action.
+Validation: all four changed Svelte components compile; clipboard behavior tests
+pass. Source-only update, no rebuild/reinstall.
+
+
+Zen navigation regression: shell/Claude terminal renderers were unmounted when
+offscreen, losing their component-local sharing choice and ceasing snapshot
+refreshes (daemon access expired after 15 seconds). Explicit sharing now keeps
+that existing renderer mounted across visibility changes for the same source.
+The mount hold uses sharing intent, independently of the header's current-health
+indicator, so a transient publish error cannot unmount and lose the choice.
+Shared hidden terminals continue parsing output; hidden backlog is flushed in byte
+order before new bytes and snapshots. Unshared terminals retain existing deferral.
+Closing/stopping/changing the source still follows its existing lifecycle.
+Regression test verifies fresh/resumed shared terminals survive offscreen gating,
+while unshared, read, dormant and unready views still release/defer. All 133 routing
+tests pass and the four affected components compile. Not rebuilt/installed.
+
+
+Sharing lifetime correction (supersedes the 15-second expiry above): explicit
+permission now lasts until Stop sharing or terminal closure, with no idle timeout.
+Snapshot freshness is independent: reads return snapshot_age_ms and snapshot_stale
+(after 15 seconds without a refresh) instead of revoking access. The daemon prunes
+grants for closed terminals. Recreated terminal views query their existing sharing
+state from the daemon; heartbeat refreshes cannot create a grant and therefore
+cannot undo another view's Stop sharing. Grants remain scoped to the running daemon.
+The green header eye uses the shared Tooltip component and explains read-only
+access and stopping. Share/Stop sharing menu entries have share icons.
+Validation: 27 relevant backend tests pass; four affected Svelte components compile.
+Changes are not rebuilt/installed yet.
+
+Live subscription test: a read-only background client subscribed to terminal
+ t_mw0r7cal_70_89533712 on the installed daemon at :27788. Resource update events
+at 2026-11-03T14:15:35Z and 14:16:04Z delivered snapshots showing the user's
+helloooooo test and the subsequent Ah, got it :) response. MCP notification
+transport works; the shell listener's output is only shown to this agent when
+polled. It does not automatically interrupt or wake an agent turn.
+
+
+The copied reference now also names watch_terminal_output on one short line,
+qualified as native Codex observer only. The live test after broker replacement
+returned the native-session eligibility error promptly; this observing CLI/external
+session cannot receive automatic native tool-output events. No watch was claimed
+active. Prompt text compiles; not rebuilt/installed as part of this copy change.
+
+
 ### 2026-11-04: planned broker restart restores the exact live set
 
 The former full-restart procedure used the destructive shutdown RPC: it cleared the broker snapshot while exit notifications persisted UI sessions as stopped. Recovery also left unmatched historical terminal columns eligible for a background launch, which can resemble random old sessions returning on macOS or Windows.
@@ -544,6 +637,63 @@ Stop all and quit/shutdown intentionally remain destructive stop operations. Age
 Validation: planned restart/restore idempotency and empty-manifest broker regressions, canonical UI selection regressions, and headless browser tests for opt-in crash recovery versus once-only planned recovery. Native macOS runtime validation remains outstanding; the selection path is shared.
 
 Validation result: 136 routing/restore unit tests passed; two targeted broker restart tests passed (14 assertions), and the headless recovery-dialog test passed. The full broker suite passed 17/18; its existing concurrent-owner cleanup assertion also fails against an isolated copy of HEAD, confirming it is independent of this change. Modified Svelte components compile and daemon files parse. Recovery also overrides stale read-surface preferences for manifest-selected CLI sessions so migration cannot silently drop their terminal mode.
+
+### 2026-11-04: CLI observers and explicit sharing labels
+
+The earlier watcher implementation only addressed Treetop's native Codex
+app-server. Owning a Codex PTY did not make its conversation a native thread.
+Codex CLI launches now use the user's local Codex daemon (`--remote unix://`),
+starting that daemon only when its control socket is absent. Explicit remote
+endpoints and `--no-daemon` are preserved. Native app-server/headless commands
+are not redirected. Existing embedded CLI conversations need reopening through
+the updated launcher; they are never resumed into a parallel runtime by watching.
+
+CLI event delivery connects to the daemon's WebSocket control socket using a
+private one-use loopback bridge, checks `thread/loaded/list`, then sends the same
+`turn/start` external `toolOutput` used by native Codex. No PTY writes, user text,
+or turn steering are used. Closing the observer terminal stops delivery; closing
+the connector closes only its connection, not Codex's shared daemon.
+
+Interactive Claude Code launches use a session-local stdio MCP bridge and its
+documented `claude/channel` capability and `notifications/claude/channel` events.
+The bridge forwards existing Treetop tools, scopes watches to its HTTP MCP session,
+deduplicates bounded snapshots, marks output as untrusted, and removes watches on
+revocation/disconnection. Channel consent and organization policy still apply;
+Claude displays its development-channel consent prompt. Headless `-p` retains
+HTTP tools because Claude does not activate development channels in print mode.
+Other TUIs retain read-only tools/resources; no universal model-wakeup mechanism
+is claimed. Reference: https://code.claude.com/docs/en/channels-reference.
+
+Menu text now says Share/Stop sharing terminal output with agents and Copy terminal
+reference for an agent. The short copied reference names read_terminal_output and
+watch_terminal_output for Codex or Claude.
+
+Validation includes real WebSocket transport exchanges, external-output RPC shape,
+loaded-thread refusal without resuming, stdio-to-HTTP channel integration, scoped
+watches, deduplication/revocation, and preservation of existing Claude channels.
+A live read-only probe reached the installed Codex daemon; a blank real Codex TUI
+opened with the new remote launch flags. No model event has yet been delivered to
+the existing embedded observer, and no Claude executable was available for a live
+Claude session test. Deployment and reopening the observer are still required.
+
+Deployment completed with installer build 2026-11-04T06:51:53.381Z. The packaged
+stdio entry passed a clean JSON-only initialize handshake declaring claude/channel.
+The installer confirmed WebView readiness and preserved broker PID 126312 and its
+generation. All 11 live terminal IDs/PIDs were retained; the other two pre-update
+records had already exited at 06:00 and 06:04, before the 06:56 installation.
+Per the user's explicit instruction, no broker or session restart was issued.
+Direct MCP reads of the newly shared terminal succeeded; watching the existing
+embedded observer correctly reports that it needs reopening with the new launcher.
+Live model delivery remains unverified until the user chooses to reopen an observer.
+
+Live CLI delivery subsequently confirmed at 07:08 UTC: watch_terminal_output
+accepted this observer after reopening, and terminal.output.settled notifications
+arrived as treetop.resource_notification external tool output without polling or
+user-message injection. The observer received the `test 123` exchange and later
+solved the other terminal's word-removal riddle from its pushed snapshot. Cosmetic
+terminal repaint/whitespace changes can still produce redundant notifications;
+deduplicating those is follow-up work. Claude remains protocol/integration-tested,
+with no live Claude client validation on this machine.
 
 
 Resume deployment follow-up: recovery was waiting for a complete repository refresh before acknowledging the UI, which left its modal blocking input. Recovery now acknowledges once the attachment state is saved and refreshes repositories afterward. Resume progress uses a dismissible notification and a nonmodal details window, with a spinner, current item, counts and per-row waiting/resuming/resumed/failed states supplied by broker progress events. Command recovery recreates missing attached-terminal columns using the saved worktree path, registers command IDs and running state immediately, and restores their names. A headless stalled-request test verifies that users can hide/reopen details and interact with the app while restore is pending. 137 routing/restore tests and two broker restart/progress tests passed.

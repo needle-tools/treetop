@@ -17,6 +17,155 @@ import {
 } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { createServer, createConnection, type Socket } from "node:net";
+
+let cliDaemonStartup: Promise<void> | undefined;
+/** Start only Codex's own local daemon when a new event-capable CLI needs it. */
+export async function ensureCodexCliEventDaemon(cmd: string[]): Promise<void> {
+  if (!/^codex(?:\.exe|\.cmd|\.bat)?$/i.test((cmd[0] ?? "").split(/[/\\]/).pop()!)) return;
+  const remote = cmd.indexOf("--remote");
+  if (remote < 0 || cmd[remote + 1] !== "unix://") return;
+  const socketPath = join(process.env.CODEX_HOME || join(homedir(), ".codex"), "app-server-control", "app-server-control.sock");
+  if (existsSync(socketPath)) return;
+  if (!cliDaemonStartup) {
+    cliDaemonStartup = (async () => {
+      const proc = Bun.spawn({ cmd: [cmd[0]!, "app-server", "daemon", "start"], windowsHide: true,
+        stdin: "ignore", stdout: "ignore", stderr: "ignore" });
+      const timer = setTimeout(() => proc.kill(), 8000);
+      try {
+        if (await proc.exited !== 0) throw new Error("Could not start Codex's local daemon for CLI events; update Codex or use --no-daemon without live watching");
+      } finally { clearTimeout(timer); }
+    })().finally(() => { cliDaemonStartup = undefined; });
+  }
+  await cliDaemonStartup;
+}
+
+/** Connect to the CLI's existing daemon. Never start/resume a second copy of a thread. */
+export class CodexCliEventAdapter {
+  private connection?: Promise<{ proc: CodexAppServerProcess; rpc: CodexAppServerRpc }>;
+  constructor(private readonly options: {
+    connect?: () => Promise<CodexAppServerProcess>;
+    requestTimeoutMs?: number;
+  } = {}) {}
+
+  private connect() {
+    if (!this.connection) {
+      const pending = (async () => {
+        const proc = await (this.options.connect ?? connectCodexCliEventProcess)();
+        const rpc = new CodexAppServerRpc(proc, undefined, this.options.requestTimeoutMs ?? 5000);
+        void proc.exited.then(() => { if (this.connection === pending) this.connection = undefined; });
+        try {
+          await rpc.request("initialize", {
+            clientInfo: { name: "treetop_terminal_events", title: "Treetop terminal events", version: "0.0.0" },
+            capabilities: { experimentalApi: true },
+          });
+          rpc.notify("initialized", {});
+          return { proc, rpc };
+        } catch (error) { rpc.close(); proc.kill(); throw error; }
+      })();
+      this.connection = pending;
+      void pending.catch(() => { if (this.connection === pending) this.connection = undefined; });
+    }
+    return this.connection;
+  }
+
+  async canReceiveExternalEvents(threadId: string): Promise<boolean> {
+    const { rpc } = await this.connect();
+    let cursor: unknown;
+    do {
+      const page = await rpc.request("thread/loaded/list", cursor ? { cursor } : {});
+      if (Array.isArray(page.data) && page.data.includes(threadId)) return true;
+      cursor = page.nextCursor;
+    } while (typeof cursor === "string" && cursor);
+    return false;
+  }
+
+  async notifyExternalEvent(threadId: string, notification: Record<string, unknown>): Promise<void> {
+    if (!await this.canReceiveExternalEvents(threadId))
+      throw new Error("Codex CLI thread is not loaded in its shared daemon; reopen it with CLI event support enabled");
+    const { rpc } = await this.connect();
+    await rpc.request("turn/start", {
+      threadId, input: [],
+      toolOutput: { namespace: "treetop", name: "resource_notification", output: JSON.stringify(notification) },
+    });
+  }
+
+  async close(): Promise<void> {
+    const connection = this.connection;
+    this.connection = undefined;
+    await connection?.then(({ proc, rpc }) => { rpc.close(); proc.kill(); }, () => {});
+  }
+}
+
+/** Bun's WebSocket client has no UDS option. A private one-use loopback bridge
+ * preserves the standard WebSocket framing used by Codex's control socket. */
+export async function connectCodexCliEventProcess(options: {
+  socketPath?: string;
+  upstream?: () => Socket;
+  timeoutMs?: number;
+} = {}): Promise<CodexAppServerProcess> {
+  const sockets = new Set<Socket>();
+  const token = crypto.randomUUID();
+  const timeoutMs = options.timeoutMs ?? 5000;
+  const server = createServer(client => {
+    sockets.add(client);
+    client.on("error", () => {});
+    client.setTimeout(timeoutMs, () => client.destroy());
+    let header = Buffer.alloc(0);
+    const receive = (chunk: Buffer) => {
+      header = Buffer.concat([header, chunk]);
+      if (header.length > 8192) { client.destroy(); return; }
+      if (!header.includes("\r\n\r\n")) return;
+      client.off("data", receive);
+      // No protocol access for another loopback client guessing the ephemeral port.
+      if (!header.toString().startsWith(`GET /${token} HTTP/1.1\r\n`)) { client.destroy(); return; }
+      server.close();
+      const upstream = options.upstream?.() ?? createConnection({
+        path: options.socketPath ?? join(process.env.CODEX_HOME || join(homedir(), ".codex"), "app-server-control", "app-server-control.sock"),
+      });
+      sockets.add(upstream);
+      upstream.on("error", () => client.destroy());
+      client.on("close", () => upstream.destroy());
+      upstream.on("close", () => client.destroy());
+      upstream.write(header);
+      client.pipe(upstream).pipe(client);
+    };
+    client.on("data", receive);
+  });
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", () => { server.off("error", reject); resolve(); });
+  });
+  const address = server.address() as { port: number };
+  const ws = new WebSocket(`ws://127.0.0.1:${address.port}/${token}`);
+  let controller!: ReadableStreamDefaultController<Uint8Array>;
+  const exited = Promise.withResolvers<void>();
+  const stdout = new ReadableStream<Uint8Array>({ start(c) { controller = c; } });
+  let closed = false;
+  const close = () => {
+    if (closed) return;
+    closed = true;
+    ws.terminate();
+    sockets.forEach(socket => socket.destroy());
+    server.close();
+    controller.close();
+    exited.resolve();
+  };
+  ws.onmessage = event => controller.enqueue(new TextEncoder().encode(`${String(event.data)}\n`));
+  ws.onclose = close;
+  try {
+    await new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error("Codex CLI control socket connection timed out")), timeoutMs);
+      ws.onopen = () => {
+        clearTimeout(timer);
+        sockets.forEach(socket => socket.setTimeout(0));
+        resolve();
+      };
+      ws.onerror = () => { clearTimeout(timer); reject(new Error("Cannot connect to Codex CLI's shared daemon")); close(); };
+    });
+  } catch (error) { close(); throw error; }
+  return { pid: 0, stdin: { write: chunk => ws.send(chunk.trimEnd()) }, stdout, exited: exited.promise, kill: close };
+}
 
 export interface CodexAppServerProcess {
   pid: number;
@@ -721,6 +870,21 @@ export class CodexAppServerAdapter implements NativeAgentAdapter {
       }
     });
     return { threadId, turnId, completed };
+  }
+
+  canReceiveExternalEvents(threadId: string): boolean {
+    return !!this.rpc && this.loadedThreads.has(threadId);
+  }
+
+  /** External context stays functionCallOutput, never text/user input or turn/steer. */
+  async notifyExternalEvent(threadId: string, notification: Record<string, unknown>): Promise<void> {
+    if (!this.rpc || !this.loadedThreads.has(threadId))
+      throw new Error("Event delivery requires a loaded native Codex session; CLI terminals are unsupported");
+    await this.rpc.request("turn/start", {
+      threadId,
+      input: [],
+      toolOutput: { namespace: "treetop", name: "resource_notification", output: JSON.stringify(notification) },
+    });
   }
 
   async steerTurn(req: {

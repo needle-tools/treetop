@@ -268,7 +268,7 @@ describe("MCP dashboard tools", () => {
     ).toEqual({ jsonrpc: "2.0", id: 3, result: {} });
   });
 
-  test("HTTP accepts initialization notifications and rejects unsupported SSE", async () => {
+  test("HTTP accepts initialization notifications and requires a session for SSE", async () => {
     const ctx = await setup();
     const post = (body: unknown) =>
       handleMcpHttp(
@@ -296,7 +296,7 @@ describe("MCP dashboard tools", () => {
           ctx,
         )
       ).status,
-    ).toBe(405);
+    ).toBe(400);
     const ping = await post({ jsonrpc: "2.0", id: "ping", method: "ping" });
     expect(await ping.json()).toEqual({
       jsonrpc: "2.0",
@@ -310,6 +310,11 @@ describe("MCP dashboard tools", () => {
     const cwd = "C:\\project with spaces";
     const codex = withTreetopMcp(["codex", "resume", "thread"], endpoint, cwd);
     expect(codex.slice(-2)).toEqual(["resume", "thread"]);
+    expect(codex.slice(1, 3)).toEqual(["--remote", "unix://"]);
+    const native = withTreetopMcp(["codex", "app-server"], endpoint, cwd);
+    expect(native).not.toContain("--remote");
+    const embedded = withTreetopMcp(["codex", "--no-daemon", "resume", "thread"], endpoint, cwd);
+    expect(embedded).not.toContain("--remote");
     const config = codex[codex.indexOf("-c") + 1]!;
     const url = new URL(JSON.parse(config.slice(config.indexOf("=") + 1)));
     expect(url.searchParams.get("cwd")).toBe(cwd);
@@ -319,10 +324,19 @@ describe("MCP dashboard tools", () => {
       cwd,
     );
     expect(claude.slice(-2)).toEqual(["--resume", "session"]);
-    expect(
-      JSON.parse(claude[claude.indexOf("--mcp-config") + 1]!).mcpServers
-        .treetop,
-    ).toEqual({ type: "http", url: url.toString() });
+    const claudeMcp = JSON.parse(claude[claude.indexOf("--mcp-config") + 1]!).mcpServers.treetop;
+    expect(claudeMcp.type).toBe("stdio");
+    expect(claudeMcp.command).toBeTruthy();
+    expect(claudeMcp.args.at(-1)).toBe(url.toString());
+    expect(claude).toContain("--dangerously-load-development-channels");
+    expect(claude).toContain("server:treetop");
+    const existingChannels = withTreetopMcp(["claude", "--dangerously-load-development-channels", "server:existing"], endpoint, cwd);
+    expect(existingChannels.filter(arg => arg === "--dangerously-load-development-channels")).toHaveLength(1);
+    expect(existingChannels).toContain("server:existing");
+    expect(existingChannels).toContain("server:treetop");
+    const headless = withTreetopMcp(["claude", "-p", "test"], endpoint, cwd);
+    expect(headless).not.toContain("--dangerously-load-development-channels");
+    expect(JSON.parse(headless[headless.indexOf("--mcp-config") + 1]!).mcpServers.treetop.type).toBe("http");
     expect(claude[claude.indexOf("--append-system-prompt") + 1]).toContain(
       "add_command",
     );
@@ -950,4 +964,312 @@ describe("create_note / remove_note → undo → redo round-trips", () => {
     await undoAction(ws, events, createEv.id, notes);
     expect(await notes.list()).toHaveLength(0);
   });
+});
+
+
+test("MCP terminal observation reads only user-published snapshots and rejects revoked access", async () => {
+  const { SharedTerminalOutput } = await import("../src/terminal-backlog");
+  const sharedTerminals = new SharedTerminalOutput();
+  const workspace = await Workspace.open(await mkdtemp(join(tmpdir(), "terminal-observation-")));
+  const events = await EventLog.open(workspace.path);
+  const ctx = { workspace, events, sharedTerminals };
+  const call = (name: string, args: Record<string, unknown> = {}) => handleMcp({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name, arguments: args } }, ctx) as Promise<any>;
+  expect((await call("read_terminal_output", { terminal_id: "ssh" })).error).toBeDefined();
+  sharedTerminals.update("ssh", "remote prompt");
+  expect(JSON.parse((await call("list_shared_terminals")).result.content[0].text)[0].terminal_id).toBe("ssh");
+  expect(JSON.parse((await call("read_terminal_output", { terminal_id: "ssh" })).result.content[0].text)).toMatchObject({ text: "remote prompt", read_only: true });
+  expect((await call("read_terminal_output", { terminal_id: "ssh", max_chars: -1 })).error).toBeDefined();
+  sharedTerminals.revoke("ssh");
+  expect((await call("read_terminal_output", { terminal_id: "ssh" })).error).toBeDefined();
+});
+
+
+test("MCP HTTP streams resource updates only to subscribed sessions and revocation removes access", async () => {
+  const { notifyMcpResource } = await import("../src/mcp");
+  const { SharedTerminalOutput } = await import("../src/terminal-backlog");
+  const workspace = await Workspace.open(await mkdtemp(join(tmpdir(), "mcp-stream-")));
+  const events = await EventLog.open(workspace.path);
+  const sharedTerminals = new SharedTerminalOutput();
+  sharedTerminals.update("ssh", "first output");
+  const ctx = { workspace, events, sharedTerminals };
+  const post = (method: string, params = {}, session?: string) => handleMcpHttp(new Request("http://localhost/mcp", {
+    method: "POST", headers: session ? { "Mcp-Session-Id": session } : {},
+    body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }),
+  }), ctx);
+  const initialized = await post("initialize", { protocolVersion: "2025-11-25" });
+  const session = initialized.headers.get("Mcp-Session-Id")!;
+  expect(session).toBeTruthy();
+  expect((await initialized.json() as any).result.capabilities.resources.subscribe).toBe(true);
+  const uri = "treetop://terminals/ssh/output";
+  expect((await (await post("resources/list", {}, session)).json() as any).result.resources).toContainEqual(expect.objectContaining({ uri }));
+  const response = await handleMcpHttp(new Request("http://localhost/mcp", { headers: { Accept: "text/event-stream", "Mcp-Session-Id": session } }), ctx);
+  expect(response.headers.get("Content-Type")).toBe("text/event-stream");
+  const reader = response.body!.getReader();
+  await reader.read(); // opening comment
+  await post("resources/subscribe", { uri }, session);
+  sharedTerminals.update("ssh", "second output");
+  notifyMcpResource(workspace, uri);
+  const frame = new TextDecoder().decode((await reader.read()).value);
+  expect(frame).toContain('"method":"notifications/resources/updated"');
+  expect(frame).toContain(uri);
+  expect(frame).not.toContain("second output");
+  const read = await (await post("resources/read", { uri }, session)).json() as any;
+  expect(read.result.contents[0].text).toContain("second output");
+  await post("resources/unsubscribe", { uri }, session);
+  notifyMcpResource(workspace, uri);
+  notifyMcpResource(workspace, "treetop://events", true);
+  expect(new TextDecoder().decode((await reader.read()).value)).toContain("notifications/resources/list_changed");
+  sharedTerminals.revoke("ssh");
+  expect((await (await post("resources/read", { uri }, session)).json() as any).error).toBeDefined();
+  expect((await (await post("resources/subscribe", { uri }, session)).json() as any).error).toBeDefined();
+  await reader.cancel();
+  expect((await handleMcpHttp(new Request("http://localhost/mcp", { method: "DELETE", headers: { "Mcp-Session-Id": session } }), ctx)).status).toBe(204);
+  expect((await post("ping", {}, session)).status).toBe(404);
+});
+
+test("Claude channel watches send bounded external events only after explicit watch and stop on revoke", async () => {
+  const { notifyTerminalMcpChannels, notifyMcpResource } = await import("../src/mcp");
+  const { SharedTerminalOutput } = await import("../src/terminal-backlog");
+  const workspace = await Workspace.open(await mkdtemp(join(tmpdir(), "mcp-claude-channel-")));
+  const events = await EventLog.open(workspace.path);
+  const sharedTerminals = new SharedTerminalOutput();
+  sharedTerminals.update("remote", "before watching");
+  const ctx = { workspace, events, sharedTerminals };
+  const post = (method: string, params = {}, session?: string) => handleMcpHttp(new Request("http://localhost/mcp", {
+    method: "POST", headers: session ? { "Mcp-Session-Id": session } : {}, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }),
+  }), ctx);
+  const initialized = await post("initialize", { _meta: { "treetop/channel": "claude" } });
+  const session = initialized.headers.get("Mcp-Session-Id")!;
+  const response = await handleMcpHttp(new Request("http://localhost/mcp", { headers: { Accept: "text/event-stream", "Mcp-Session-Id": session } }), ctx);
+  const reader = response.body!.getReader(); await reader.read();
+  const watch = await (await post("tools/call", { name: "watch_terminal_output", arguments: { terminal_id: "remote" } }, session)).json() as any;
+  expect(JSON.parse(watch.result.content[0].text)).toMatchObject({ watching: true, delivery: "claude_channel" });
+  sharedTerminals.update("remote", "settled remote output");
+  notifyTerminalMcpChannels(workspace, "remote", sharedTerminals);
+  const message = new TextDecoder().decode((await reader.read()).value);
+  expect(message).toContain('"method":"notifications/claude/channel"');
+  expect(message).toContain("settled remote output");
+  expect(message).toContain("untrusted_external_data");
+  expect(message).not.toContain('"role":"user"');
+  // Duplicate snapshots and revocation must produce no more terminal events.
+  notifyTerminalMcpChannels(workspace, "remote", sharedTerminals);
+  sharedTerminals.revoke("remote");
+  notifyTerminalMcpChannels(workspace, "remote", sharedTerminals);
+  sharedTerminals.update("remote", "new grant does not restore the old watch");
+  notifyTerminalMcpChannels(workspace, "remote", sharedTerminals);
+  const stopped = await (await post("tools/call", { name: "watch_terminal_output", arguments: { terminal_id: "remote", enabled: false } }, session)).json() as any;
+  expect(JSON.parse(stopped.result.content[0].text).watching).toBe(false);
+  notifyMcpResource(workspace, "treetop://events", true);
+  expect(new TextDecoder().decode((await reader.read()).value)).toContain("notifications/resources/list_changed");
+  await reader.cancel();
+});
+
+test("Claude stdio bridge forwards tools and separate channel notifications with no user-message injection", async () => {
+  const { runTreetopMcpStdioBridge, notifyTerminalMcpChannels } = await import("../src/mcp");
+  const { SharedTerminalOutput } = await import("../src/terminal-backlog");
+  const workspace = await Workspace.open(await mkdtemp(join(tmpdir(), "mcp-stdio-")));
+  const events = await EventLog.open(workspace.path);
+  const sharedTerminals = new SharedTerminalOutput(); sharedTerminals.update("ssh", "initial");
+  const daemon = Bun.serve({ port: 0, hostname: "127.0.0.1", idleTimeout: 0,
+    fetch: req => handleMcpHttp(req, { workspace, events, sharedTerminals }),
+  });
+  const input = new TransformStream<Uint8Array, Uint8Array>();
+  const writer = input.writable.getWriter();
+  const messages: any[] = [];
+  const running = runTreetopMcpStdioBridge(`http://127.0.0.1:${daemon.port}/mcp`, input.readable,
+    line => { messages.push(JSON.parse(line)); });
+  const send = (message: object) => writer.write(new TextEncoder().encode(`${JSON.stringify({ jsonrpc: "2.0", ...message })}\n`));
+  const wait = async (predicate: (message: any) => boolean) => {
+    const deadline = Date.now() + 2000;
+    while (Date.now() < deadline) { const found = messages.find(predicate); if (found) return found; await Bun.sleep(5); }
+    throw new Error("stdio response did not arrive");
+  };
+  try {
+    await send({ id: 1, method: "initialize", params: {} });
+    const initialized = await wait(message => message.id === 1);
+    expect(initialized.result.capabilities.experimental["claude/channel"]).toEqual({});
+    expect(initialized.result.instructions).toContain("untrusted");
+    await send({ method: "notifications/initialized" });
+    await send({ id: 2, method: "tools/call", params: { name: "watch_terminal_output", arguments: { terminal_id: "ssh" } } });
+    const watch = await wait(message => message.id === 2);
+    expect(JSON.parse(watch.result.content[0].text).delivery).toBe("claude_channel");
+    sharedTerminals.update("ssh", "fresh read-only text");
+    notifyTerminalMcpChannels(workspace, "ssh", sharedTerminals);
+    const event = await wait(message => message.method === "notifications/claude/channel");
+    expect(JSON.parse(event.params.content).snapshot.text).toBe("fresh read-only text");
+    expect(messages.some(message => message.role === "user" || message.method === "send_session_message")).toBe(false);
+    await send({ id: 3, method: "tools/call", params: { name: "read_terminal_output", arguments: { terminal_id: "ssh" } } });
+    expect((await wait(message => message.id === 3)).result.content[0].text).toContain("fresh read-only text");
+  } finally { await writer.close(); await running; await daemon.stop(true); }
+});
+
+
+test("MCP SSE isolates subscriptions, refreshes on reconnect, and rejects unknown sessions and foreign origins", async () => {
+  const { notifyMcpResource } = await import("../src/mcp");
+  const { SharedTerminalOutput } = await import("../src/terminal-backlog");
+  const workspace = await Workspace.open(await mkdtemp(join(tmpdir(), "mcp-isolation-")));
+  const events = await EventLog.open(workspace.path);
+  const sharedTerminals = new SharedTerminalOutput();
+  sharedTerminals.update("ssh", "remote output");
+  const ctx = { workspace, events, sharedTerminals };
+  const post = (method: string, params = {}, session?: string) => handleMcpHttp(new Request("http://localhost/mcp", {
+    method: "POST", headers: session ? { "Mcp-Session-Id": session } : {}, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }),
+  }), ctx);
+  const a = (await post("initialize")).headers.get("Mcp-Session-Id")!;
+  const b = (await post("initialize")).headers.get("Mcp-Session-Id")!;
+  const open = async (id: string) => {
+    const response = await handleMcpHttp(new Request("http://localhost/mcp", { headers: { Accept: "text/event-stream", "Mcp-Session-Id": id } }), ctx);
+    const reader = response.body!.getReader(); await reader.read(); return reader;
+  };
+  const uri = "treetop://terminals/ssh/output";
+  const first = await open(a), second = await open(b);
+  await post("resources/subscribe", { uri }, a);
+  notifyMcpResource(workspace, uri);
+  notifyMcpResource(workspace, "treetop://events", true);
+  const decode = (value: Uint8Array | undefined) => new TextDecoder().decode(value);
+  expect(decode((await first.read()).value)).toContain("notifications/resources/updated");
+  expect(decode((await second.read()).value)).toContain("notifications/resources/list_changed");
+  await first.cancel();
+  const reconnected = await open(a);
+  expect(decode((await reconnected.read()).value)).toContain(uri);
+  await reconnected.cancel(); await second.cancel();
+  expect((await post("ping", {}, "unknown-session")).status).toBe(404);
+  expect((await handleMcpHttp(new Request("http://localhost/mcp", { headers: { Origin: "https://untrusted.example" } }), ctx)).status).toBe(403);
+  expect((await handleMcpHttp(new Request("http://localhost/mcp", { headers: { "MCP-Protocol-Version": "unsupported" } }), ctx)).status).toBe(400);
+  expect((await handleMcpHttp(new Request("http://localhost/mcp", { headers: { Origin: "https://trusted.example" } }), { ...ctx, allowedOrigins: ["https://trusted.example"] })).status).toBe(200);
+  // A disconnected or slow client cannot create an unbounded notification queue.
+  const slow = await open(a);
+  for (let i = 0; i < 100; i++) notifyMcpResource(workspace, uri);
+  let count = 0;
+  while (!(await slow.read()).done) count++;
+  expect(count).toBeLessThanOrEqual(64);
+  const event = await events.append({ type: "test_event", actor: "user", payload: { privatePayload: "not included in summaries" } });
+  const recent = await (await post("resources/read", { uri: "treetop://events" }, a)).json() as any;
+  expect(JSON.parse(recent.result.contents[0].text)).toContainEqual(expect.objectContaining({ id: event.id, type: "test_event" }));
+  expect(recent.result.contents[0].text).not.toContain("privatePayload");
+});
+
+
+test("native terminal observers pass typed external events, deduplicate output, and stop after revocation", async () => {
+  const { TerminalEventObservers } = await import("../src/mcp");
+  const { SharedTerminalOutput } = await import("../src/terminal-backlog");
+  const shared = new SharedTerminalOutput();
+  const delivered: unknown[] = [];
+  const errors: unknown[] = [];
+  const observers = new TerminalEventObservers(shared, async (threadId, notification) => { delivered.push({ threadId, notification }); }, error => errors.push(error));
+  expect(() => observers.watch("ssh", "native", true)).toThrow("not shared");
+  shared.update("ssh", "old");
+  observers.watch("ssh", "native", true);
+  await observers.notify("ssh");
+  expect(delivered).toEqual([]);
+  shared.update("ssh", "new");
+  await observers.notify("ssh");
+  expect(delivered).toMatchObject([{ threadId: "native", notification: { jsonrpc: "2.0", method: "notifications/resources/updated", params: { uri: "treetop://terminals/ssh/output", _meta: { "treetop/event": { origin: "treetop", terminal_id: "ssh", kind: "terminal.output.settled", snapshot: { text: "new", read_only: true } } } } } }]);
+  await observers.notify("ssh");
+  expect(delivered).toHaveLength(1);
+  observers.watch("ssh", "native", false);
+  shared.update("ssh", "unwatched"); await observers.notify("ssh");
+  expect(delivered).toHaveLength(1);
+  observers.watch("ssh", "native", true);
+  shared.revoke("ssh"); await observers.notify("ssh");
+  shared.update("ssh", "reshared"); await observers.notify("ssh");
+  expect(delivered).toHaveLength(1);
+  expect(errors).toEqual([]);
+});
+
+
+test("native observers coalesce pending changes and stop on uncertain delivery without retrying", async () => {
+  const { TerminalEventObservers } = await import("../src/mcp");
+  const { SharedTerminalOutput } = await import("../src/terminal-backlog");
+  const shared = new SharedTerminalOutput();
+  const delivered: any[] = [], errors: unknown[] = [];
+  let release!: () => void;
+  const blocked = new Promise<void>(resolve => { release = resolve; });
+  const observers = new TerminalEventObservers(shared, async (_thread, notification) => {
+    delivered.push(notification);
+    if (delivered.length === 1) await blocked;
+  }, error => errors.push(error));
+  shared.update("terminal", "initial"); observers.watch("terminal", "observer", true);
+  shared.update("terminal", "one"); const running = observers.notify("terminal");
+  shared.update("terminal", "two"); const second = observers.notify("terminal");
+  shared.update("terminal", "three"); const third = observers.notify("terminal");
+  release(); await Promise.all([running, second, third]);
+  expect(delivered.map(value => value.params._meta["treetop/event"].snapshot.text)).toEqual(["one", "three"]);
+  const failed = new TerminalEventObservers(shared, async () => { throw new Error("uncertain acceptance"); }, error => errors.push(error));
+  failed.watch("terminal", "observer", true);
+  shared.update("terminal", "four"); await failed.notify("terminal");
+  shared.update("terminal", "five"); await failed.notify("terminal");
+  expect(errors).toHaveLength(1);
+});
+
+test("watch setup checks the shared terminal and native observer without project discovery", async () => {
+  const { SharedTerminalOutput } = await import("../src/terminal-backlog");
+  const workspace = await Workspace.open(await mkdtemp(join(tmpdir(), "watch-tool-")));
+  const events = await EventLog.open(workspace.path);
+  const sharedTerminals = new SharedTerminalOutput();
+  sharedTerminals.update("terminal", "output");
+  const observer = "01a1a136-249e-76a0-a91d-d2564a4c5c72";
+  const source = `/sessions/rollout-2026-11-03T18-40-47-${observer}.jsonl`;
+  const watched: unknown[] = [];
+  let discovered = 0, messages = 0;
+  const ctx = { workspace, events, sharedTerminals,
+    sessions: async () => { discovered++; throw new Error("Watch setup must not discover projects or transcripts"); },
+    watchTerminalOutput: async (sessionId: string, terminalId: string, enabled: boolean) => {
+      if (sessionId !== observer) throw new Error("Observer must be a loaded native Codex chat");
+      watched.push({ sessionId, terminalId, enabled }); return { watching: enabled };
+    },
+    sendSessionMessage: async () => { messages++; return {}; },
+  };
+  const call = (args: Record<string, unknown>) => handleMcp({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "watch_terminal_output", arguments: args } }, ctx) as Promise<any>;
+  expect((await call({ terminal_id: "terminal", session_id: "missing" })).result.isError).toBe(true);
+  expect((await call({ terminal_id: "terminal", session_id: observer, enabled: "yes" })).error).toBeDefined();
+  expect((await call({ terminal_id: "unshared", session_id: observer })).error).toBeDefined();
+  expect((await call({ terminal_id: "terminal", session_id: observer })).result.isError).toBeUndefined();
+  expect((await call({ terminal_id: "terminal", source, enabled: false })).result.isError).toBeUndefined();
+  expect((await call({ terminal_id: "terminal", source, session_id: "different" })).error).toBeDefined();
+  expect(watched).toEqual([{ sessionId: observer, terminalId: "terminal", enabled: true }, { sessionId: observer, terminalId: "terminal", enabled: false }]);
+  expect(discovered).toBe(0);
+  expect(messages).toBe(0);
+});
+
+test("watch setup does not wait behind unrelated MCP work", async () => {
+  const { SharedTerminalOutput } = await import("../src/terminal-backlog");
+  const workspace = await Workspace.open(await mkdtemp(join(tmpdir(), "watch-queue-")));
+  const events = await EventLog.open(workspace.path);
+  const sharedTerminals = new SharedTerminalOutput(); sharedTerminals.update("terminal", "output");
+  const started = Promise.withResolvers<void>(), release = Promise.withResolvers<void>();
+  let attached = false;
+  const ctx = { workspace, events, sharedTerminals,
+    uiAction: async () => { started.resolve(); await release.promise; return {}; },
+    watchTerminalOutput: async () => { attached = true; return { watching: true }; },
+  };
+  const call = (name: string, args: Record<string, unknown>) => handleMcp({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name, arguments: args } }, ctx);
+  const blocked = call("speak_message", { text: "Fixture only; no real UI" });
+  await started.promise;
+  const watch = call("watch_terminal_output", { terminal_id: "terminal", session_id: "native" });
+  try {
+    await new Promise(resolve => setTimeout(resolve, 0));
+    expect(attached).toBe(true);
+  } finally { release.resolve(); await Promise.all([blocked, watch]); }
+});
+
+
+test("watch enable and disable retain order without using the project mutation queue", async () => {
+  const { SharedTerminalOutput } = await import("../src/terminal-backlog");
+  const workspace = await Workspace.open(await mkdtemp(join(tmpdir(), "watch-order-")));
+  const events = await EventLog.open(workspace.path);
+  const sharedTerminals = new SharedTerminalOutput(); sharedTerminals.update("terminal", "output");
+  const started = Promise.withResolvers<void>(), release = Promise.withResolvers<void>();
+  const changes: boolean[] = [];
+  const ctx = { workspace, events, sharedTerminals,
+    watchTerminalOutput: async (_id: string, _terminal: string, enabled: boolean) => {
+      if (enabled) { started.resolve(); await release.promise; }
+      changes.push(enabled); return { watching: enabled };
+    },
+  };
+  const call = (enabled: boolean) => handleMcp({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "watch_terminal_output", arguments: { terminal_id: "terminal", session_id: "native", enabled } } }, ctx);
+  const enabling = call(true); await started.promise;
+  const disabling = call(false);
+  release.resolve(); await Promise.all([enabling, disabling]);
+  expect(changes).toEqual([true, false]);
 });

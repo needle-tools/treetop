@@ -118,3 +118,64 @@ test("concurrent scheduling and ticking preserve all reminders; cancelled remind
  const result=await response.json();expect(Date.parse(result.dueAt)).toBeGreaterThanOrEqual(before+8*3600000);
  expect(Date.parse(result.dueAt)).toBeLessThanOrEqual(Date.now()+8*3600000);
  });
+
+
+test("MCP reminder subscribers receive creation, cancellation, due delivery and dismissal updates", async () => {
+  const { Workspace } = await import("../src/workspace");
+  const { EventLog } = await import("../src/events");
+  const { handleMcpHttp, notifyMcpChange } = await import("../src/mcp");
+  const { remindersForWorkspace } = await import("../src/reminders");
+  const workspace = await Workspace.open(await mkdtemp(join(tmpdir(), "reminder-events-")));
+  const events = await EventLog.open(workspace.path);
+  const store = remindersForWorkspace(workspace.path);
+  const changed = (change: Record<string, unknown>) => notifyMcpChange(workspace, change);
+  const ctx = { workspace, events, changed };
+  let session: string | undefined;
+  const call = async (method: string, params: Record<string, unknown> = {}) => {
+    const response = await handleMcpHttp(new Request("http://localhost/mcp", {
+      method: "POST", headers: session ? { "Mcp-Session-Id": session } : {},
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }),
+    }), ctx);
+    session ??= response.headers.get("Mcp-Session-Id") ?? undefined;
+    return await response.json() as any;
+  };
+  await call("initialize", { protocolVersion: "2025-11-25" });
+  const uri = "treetop://reminders";
+  expect((await call("resources/list")).result.resources).toContainEqual(expect.objectContaining({ uri }));
+  expect((await call("resources/subscribe", { uri })).error).toBeUndefined();
+  const response = await handleMcpHttp(new Request("http://localhost/mcp", { headers: { Accept: "text/event-stream", "Mcp-Session-Id": session! } }), ctx);
+  const reader = response.body!.getReader();
+  await reader.read(); await reader.read(); // opening comment and reconnect invalidation
+  const notification = async () => {
+    const frame = new TextDecoder().decode((await reader.read()).value);
+    expect(frame).toContain('"method":"notifications/resources/updated"');
+    expect(frame).toContain(uri);
+    expect(frame).not.toContain("private reminder message");
+  };
+  const read = async () => JSON.parse((await call("resources/read", { uri })).result.contents[0].text);
+  let stop = () => {};
+  try {
+    const scheduled = await call("tools/call", { name: "schedule_reminder", arguments: { title: "Review", message: "private reminder message", delay_seconds: 60 } });
+    const item = JSON.parse(scheduled.result.content[0].text);
+    await notification();
+    expect(await read()).toContainEqual(expect.objectContaining({ id: item.id, status: "scheduled" }));
+    await call("tools/call", { name: "cancel_reminder", arguments: { id: item.id } });
+    await notification();
+    expect(await read()).toContainEqual(expect.objectContaining({ id: item.id, status: "cancelled" }));
+    const now = Date.now();
+    const overdue = await store.schedule({ title: "Due", message: "private reminder message", dueAt: new Date(now - 1000).toISOString() }, now - 2000);
+    stop = startReminderScheduler(store, reminder => changed({ kind: "reminder_due", reminder }), error => { throw error; });
+    await notification();
+    expect(await read()).toContainEqual(expect.objectContaining({ id: overdue.id, status: "due" }));
+    expect((await handleRemindersHttp(new Request(`http://localhost/api/reminders/${overdue.id}/dismiss`, { method: "POST" }), store, changed)).status).toBe(200);
+    await notification();
+    expect(await read()).toContainEqual(expect.objectContaining({ id: overdue.id, status: "dismissed" }));
+    stop();
+    const snoozable = await store.schedule({ title: "Snooze", message: "private reminder message", dueAt: new Date(now - 1000).toISOString() }, now - 2000);
+    stop = startReminderScheduler(store, reminder => changed({ kind: "reminder_due", reminder }), error => { throw error; });
+    await notification();
+    expect((await handleRemindersHttp(new Request(`http://localhost/api/reminders/${snoozable.id}/snooze`, { method: "POST" }), store, changed)).status).toBe(200);
+    await notification();
+    expect(await read()).toContainEqual(expect.objectContaining({ id: snoozable.id, status: "scheduled" }));
+  } finally { stop(); await reader.cancel(); }
+});

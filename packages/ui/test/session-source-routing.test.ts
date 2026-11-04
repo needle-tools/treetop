@@ -1818,6 +1818,17 @@ test("background recovery matches real identities and replaces shell attachment 
 });
 
 
+test("explicitly shared terminals stay mounted across Zen navigation while unshared shells defer", () => {
+  const fresh = { hasCwd: true, nearViewport: false, spawnReady: true, outputShared: true };
+  expect(shouldMountNewSessionTerminal(fresh)).toBe(true);
+  expect(shouldMountNewSessionTerminal({ ...fresh, outputShared: false })).toBe(false);
+  expect(shouldMountNewSessionTerminal({ ...fresh, spawnReady: false })).toBe(false);
+  const resumed = { ...fresh, mode: "terminal" as const, hasSessionId: true };
+  expect(shouldMountTerminalView(resumed)).toBe(true);
+  expect(shouldMountTerminalView({ ...resumed, outputShared: false })).toBe(false);
+  expect(shouldMountTerminalView({ ...resumed, dormant: true })).toBe(false);
+  expect(shouldMountTerminalView({ ...resumed, mode: "read" })).toBe(false);
+});
 
 test("canonical recovery wakes exactly the saved running set, not older terminal columns", () => {
   const old = { agent: "codex", source: "old.jsonl", resumeSessionId: "old", mode: "terminal", attachTermId: "stale" };

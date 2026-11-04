@@ -71,6 +71,11 @@ export class BrokerCodexAdapter {
   ) => this.invoke("appendRealtimeSpeech", args);
   stopRealtimeVoice: CodexAppServerAdapter["stopRealtimeVoice"] = (...args) =>
     this.invoke("stopRealtimeVoice", args);
+  canReceiveExternalEvents(threadId: string): Promise<boolean> {
+    return this.invoke("canReceiveExternalEvents", [threadId]);
+  }
+  notifyExternalEvent: CodexAppServerAdapter["notifyExternalEvent"] = (...args) =>
+    this.invoke("notifyExternalEvent", args);
   steerTurn: CodexAppServerAdapter["steerTurn"] = (...args) =>
     this.invoke("steerTurn", args);
   listModels: CodexAppServerAdapter["listModels"] = (...args) =>

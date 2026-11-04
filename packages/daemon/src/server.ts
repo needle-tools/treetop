@@ -118,7 +118,7 @@ import {
   type OllamaImageAttachment,
 } from "./ollama-sessions";
 import { feedShellInput, clearShellInputBuffer } from "./shell-input";
-import { handleMcpHttp, withTreetopMcp } from "./mcp";
+import { handleMcpHttp, withTreetopMcp, notifyMcpResource, notifyMcpChange, notifyTerminalMcpChannels, terminalOutputUri, TerminalEventObservers, runTreetopMcpStdioBridge } from "./mcp";
 import { TerminalMessageDrafts } from "./session-tools";
 import { UiContextRegistry, UiActionRequests } from "./ui-context";
 import { voiceMessageAllowed } from "./voice-message";
@@ -142,7 +142,7 @@ import {
 } from "./ssh-detect";
 import { OrphanCleaner, scheduleReconnectCleanup } from "./orphan-cleanup";
 import { IdleReaper, selectStaleUnattachedSpawns } from "./idle-reaper";
-import { trimTerminalBacklog } from "./terminal-backlog";
+import { SharedTerminalOutput, trimTerminalBacklog } from "./terminal-backlog";
 import { TerminalPersist } from "./terminal-persist";
 import { SshPool } from "./ssh-pool";
 import {
@@ -269,6 +269,8 @@ import { buildProvisionPlan } from "./provision";
 import { ClaudeCliAdapter } from "./claude-cli-adapter";
 import {
   CodexAppServerAdapter,
+  CodexCliEventAdapter,
+  ensureCodexCliEventDaemon,
   CodexAppEventTransportBatcher,
   classifyRealtimeVoiceError,
   listCodexModelsFresh,
@@ -277,6 +279,12 @@ import {
   type CodexAppServerEvent,
 } from "./codex-app-server";
 import { createNativeAgentRegistry } from "./native-agent-adapters";
+
+// Channel subprocesses must not open a workspace, start a daemon or log to stdout.
+if (process.argv[2] === "--mcp-stdio") {
+  try { await runTreetopMcpStdioBridge(process.argv[3]!); process.exit(0); }
+  catch (error) { console.error("Treetop MCP channel:", error); process.exit(1); }
+}
 
 const REQUESTED_WORKSPACE_PATH =
   process.env.SUPERGIT_WORKSPACE ??
@@ -864,6 +872,32 @@ const provisionManager = new ProvisionManager({
 });
 
 /** Per-terminal SSH session state. Updated by the 5s CWD sampling cycle. */
+const sharedTerminalOutput = new SharedTerminalOutput(Date.now, (id, listChanged) => {
+  notifyMcpResource(workspace, terminalOutputUri(id), listChanged);
+  notifyTerminalMcpChannels(workspace, id, sharedTerminalOutput);
+  void terminalEventObservers.notify(id).catch(error => console.warn("Terminal event delivery failed", error));
+});
+const codexCliEvents = new CodexCliEventAdapter();
+const terminalEventObservers = new TerminalEventObservers(
+  sharedTerminalOutput,
+  async (threadId, notification) => {
+    if (await codexAgent.canReceiveExternalEvents(threadId))
+      await codexAgent.notifyExternalEvent(threadId, notification);
+    else {
+      if (!terminalBackend.list().some(record => record.ownerId === threadId && record.agent === "codex" && terminalBackend.get(record.id)?.isAlive()))
+        throw new Error("The observing Codex CLI terminal is closed");
+      await codexCliEvents.notifyExternalEvent(threadId, notification);
+    }
+  },
+  error => {
+    console.warn("Terminal observation paused after delivery failure", error);
+    broadcast("change", { kind: "terminal_observer_error", error: String(error) });
+  },
+);
+setInterval(() => {
+  sharedTerminalOutput.prune(id => terminalBackend.get(id)?.isAlive() === true);
+  sharedTerminalOutput.flush();
+}, 250).unref();
 const termSshSessions = new Map<string, SshSession>();
 const terminalPersist = new TerminalPersist(
   READONLY_MODE ? INSTANCE_RUNTIME_PATH : WORKSPACE_PATH,
@@ -1415,7 +1449,8 @@ function corsHeaders(req: Request): Record<string, string> {
     return {
       "Access-Control-Allow-Origin": origin,
       "Access-Control-Allow-Methods": "GET, POST, DELETE, OPTIONS",
-      "Access-Control-Allow-Headers": "Content-Type",
+      "Access-Control-Allow-Headers": "Content-Type, Mcp-Session-Id, MCP-Protocol-Version, Last-Event-ID",
+      "Access-Control-Expose-Headers": "Mcp-Session-Id",
       Vary: "Origin",
     };
   }
@@ -1536,6 +1571,7 @@ function broadcast(event: string, data: unknown): void {
   if (event === "change") {
     const kind = (data as { kind?: unknown } | null)?.kind;
     if (changeKindInvalidatesRepos(kind)) invalidateReposCache();
+    notifyMcpChange(workspace, data);
   }
   const payload = sseEncoder.encode(
     `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`,
@@ -5282,6 +5318,7 @@ const server = Bun.serve<TermWsData, never>({
               : await resolveAgentBinary(head0);
           if (abs) resolvedCmd[0] = abs;
         }
+        await ensureCodexCliEventDaemon(resolvedCmd);
         // Optional argv[0] rename via `bash -c 'exec -a NAME …'` so the PTY
         // shows up in `ps`/`top`/`htop` (and macOS Activity Monitor's
         // command column) as e.g. "supergit-tui-abc12345-claude" instead
@@ -10302,9 +10339,47 @@ const server = Bun.serve<TermWsData, never>({
         }
         catch (error) { return json({ error: error instanceof Error ? error.message : String(error) }, { status: 400 }); }
       }
+      if (url.pathname === "/api/terminal-output-sharing" && req.method === "GET") {
+        const id = url.searchParams.get("terminal_id");
+        if (!id) return json({ error: "terminal_id required" }, { status: 400 });
+        if (!terminalBackend.get(id)?.isAlive()) sharedTerminalOutput.revoke(id);
+        return json({ enabled: !!sharedTerminalOutput.read(id, 1) });
+      }
+      if (url.pathname === "/api/terminal-output-sharing" && req.method === "POST") {
+        const body = await req.json() as { terminal_id: string; text?: string; enabled: boolean; refresh?: boolean };
+        if (typeof body.terminal_id !== "string" || typeof body.enabled !== "boolean" ||
+            (body.refresh !== undefined && typeof body.refresh !== "boolean") ||
+            (body.enabled && (typeof body.text !== "string" || body.text.length > 32000)))
+          return json({ error: "Invalid terminal output snapshot" }, { status: 400 });
+        if (!body.enabled) sharedTerminalOutput.revoke(body.terminal_id);
+        else {
+          if (!terminalBackend.get(body.terminal_id)?.isAlive()) return json({ error: "Terminal is not alive" }, { status: 404 });
+          if (!sharedTerminalOutput.update(body.terminal_id, body.text!, body.refresh !== true))
+            return json({ error: "Sharing was stopped" }, { status: 409 });
+        }
+        return json({ ok: true });
+      }
       if (url.pathname === "/mcp") {
         const response = await handleMcpHttp(req, {
           workspace, events,
+          sharedTerminals: sharedTerminalOutput,
+          watchTerminalOutput: async (sessionId, terminalId, enabled) => {
+            if (enabled) {
+              if (terminalBackend.list().some(record => record.id === terminalId && record.ownerId === sessionId))
+                throw new Error("A session cannot watch its own terminal output");
+              let supported: boolean;
+              try { supported = await codexAgent.canReceiveExternalEvents(sessionId); }
+              catch (error) { throw new Error(`Native event delivery is unavailable in the current broker: ${error}. No user message was sent.`); }
+              if (!supported) {
+                const cli = terminalBackend.list().some(record => record.ownerId === sessionId && record.agent === "codex" && terminalBackend.get(record.id)?.isAlive());
+                if (!cli) throw new Error("Observer must be a running Codex session in Treetop. No user message was sent.");
+                if (!await codexCliEvents.canReceiveExternalEvents(sessionId))
+                  throw new Error("This Codex CLI was launched without the shared event connection. Reopen it using the updated Treetop launcher. No watch is active and no user message was sent.");
+              }
+            }
+            return terminalEventObservers.watch(terminalId, sessionId, enabled);
+          },
+          allowedOrigins: [...ALLOWED_ORIGINS],
           uiContext: windowId => uiContexts.read(windowId),
           uiAction: async (action, windowId) => {
             const context = uiContexts.read(windowId);
@@ -10624,6 +10699,7 @@ const server = Bun.serve<TermWsData, never>({
             broadcast("change", { kind: "sound_play", tag, termId });
           }
           if (output.length > 0) {
+            sharedTerminalOutput.activity(termId);
             const now = performance.now();
             const spawnFinishedAt = terminalSpawnFinishedAt.get(termId);
             const wsOpenedAt = terminalWsOpenedAt.get(termId);
@@ -10893,6 +10969,7 @@ const shutdown = async (signal: string) => {
   try {
     if (fetchTimer) clearInterval(fetchTimer);
     stopReminders?.();
+    await codexCliEvents.close();
     stopActivity();
     // Soft-kill PTYs first (SIGTERM / ConPTY close), wait out the grace,
     // then force-kill stragglers — before we tear anything else down.

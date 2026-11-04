@@ -1,5 +1,5 @@
 import { withTreetopMcp } from "./mcp";
-import { CodexAppServerAdapter } from "./codex-app-server";
+import { CodexAppServerAdapter, ensureCodexCliEventDaemon } from "./codex-app-server";
 import { ClaudeCliAdapter } from "./claude-cli-adapter";
 import { join, resolve } from "node:path";
 import { mkdir, readFile, writeFile, rename, unlink } from "node:fs/promises";
@@ -630,6 +630,8 @@ export async function startTerminalBroker(options: {
               "stopRealtimeVoice",
               "startTurn",
               "steerTurn",
+              "canReceiveExternalEvents",
+              "notifyExternalEvent",
               "listModels",
               "interruptTurn",
               "getGoal",
@@ -725,8 +727,10 @@ export async function startTerminalBroker(options: {
                     } else {
                       const record = row.terminal;
                       const resumeCmd = resumeTerminalCommand(record);
+                      const cmd = withTreetopMcp(resumeCmd, mcpUrl, record.cwd);
+                      await ensureCodexCliEventDaemon(cmd);
                       const handle = await backend.spawn({
-                        cmd: withTreetopMcp(resumeCmd, mcpUrl, record.cwd),
+                        cmd,
                         resumeCmd,
                         cwd: record.cwd,
                         size: record.size,

@@ -4846,3 +4846,17 @@ function visualContract(
     };
   });
 }
+
+
+test("external MCP notification output stays a tool result in native Codex live and history views", () => {
+  const notification = JSON.stringify({ jsonrpc: "2.0", method: "notifications/resources/updated", params: { uri: "treetop://terminals/ssh/output" } });
+  const item = { type: "functionCallOutput", id: "external-event", namespace: "treetop", name: "resource_notification", output: notification };
+  const event: CodexAppEvent = { kind: "notification", method: "item/completed", params: { item }, threadId: "native", turnId: "event-turn", receivedAt: "2026-11-03T12:00:00Z" };
+  const result = codexLiveToolResultFromEvent(event);
+  expect(result).toMatchObject({ toolName: "resource_notification", text: notification });
+  expect(codexLiveToolUseFromEvent(event)).toBeNull();
+  const history = codexAppHistoryMessagesFromThread({ id: "native", turns: [{ id: "event-turn", items: [item] }] });
+  expect(history).toHaveLength(1);
+  expect(history[0]?.role).not.toBe("user");
+  expect(JSON.stringify(history)).toContain("notifications/resources/updated");
+});

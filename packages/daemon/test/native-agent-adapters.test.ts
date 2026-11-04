@@ -11,10 +11,13 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { createConnection } from "node:net";
 import {
   CodexAppServerAdapter,
   CodexAppEventTransportBatcher,
   CodexAppServerRpc,
+  CodexCliEventAdapter,
+  connectCodexCliEventProcess,
   classifyRealtimeVoiceError,
   codexAppServerCommand,
   listCodexModelsFresh,
@@ -1867,4 +1870,87 @@ describe("createNativeAgentRegistry", () => {
       registry.startSession({ agent: "ollama", cwd: "/repo" }),
     ).rejects.toThrow(/starting ollama not supported/);
   });
+});
+
+
+test("native Codex external notifications use toolOutput with empty user input", async () => {
+  const fake = fakeCodexProcess();
+  const adapter = new CodexAppServerAdapter({ spawn: () => fake.proc });
+  expect(adapter.canReceiveExternalEvents("thr_watch")).toBe(false);
+  await expect(adapter.notifyExternalEvent("thr_watch", { method: "notifications/resources/updated" })).rejects.toThrow("loaded native");
+  const started = adapter.startSession({ agent: "codex", cwd: "/repo" });
+  await waitFor(() => fake.writes[0], "initialize");
+  fake.enqueue({ id: 0, result: {} });
+  await waitFor(() => fake.writes[2], "start thread");
+  fake.enqueue({ id: 1, result: { thread: { id: "thr_watch", cwd: "/repo" } } });
+  await started;
+  expect(adapter.canReceiveExternalEvents("thr_watch")).toBe(true);
+  const notification = { jsonrpc: "2.0", method: "notifications/resources/updated", params: { uri: "treetop://terminals/test/output" } };
+  const delivered = adapter.notifyExternalEvent("thr_watch", notification);
+  await waitFor(() => fake.writes[3], "external event delivery");
+  const frame = parseWrite(fake.writes, 3);
+  expect(frame.method).toBe("turn/start");
+  const params = frame.params as Record<string, unknown>;
+  expect(params.input).toEqual([]);
+  expect(params.toolOutput).toEqual({ namespace: "treetop", name: "resource_notification", output: JSON.stringify(notification) });
+  expect(params.text).toBeUndefined();
+  fake.enqueue({ id: frame.id, result: { turn: { id: "turn_event" } } });
+  await delivered;
+  await adapter.close();
+});
+
+test("CLI events attach only to an already loaded thread and use external tool output", async () => {
+  const fake = fakeCodexProcess();
+  const adapter = new CodexCliEventAdapter({ connect: async () => fake.proc });
+  const eligible = adapter.canReceiveExternalEvents("cli-thread");
+  await waitFor(() => fake.writes[0], "CLI initialize");
+  fake.enqueue({ id: 0, result: {} });
+  await waitFor(() => fake.writes[2], "CLI loaded threads");
+  expect(parseWrite(fake.writes, 2).method).toBe("thread/loaded/list");
+  fake.enqueue({ id: 1, result: { data: ["cli-thread"], nextCursor: null } });
+  expect(await eligible).toBe(true);
+  const notification = { method: "notifications/resources/updated", params: { uri: "treetop://terminals/test/output" } };
+  const delivery = adapter.notifyExternalEvent("cli-thread", notification);
+  await waitFor(() => fake.writes[3], "CLI delivery eligibility");
+  fake.enqueue({ id: 2, result: { data: ["cli-thread"], nextCursor: null } });
+  await waitFor(() => fake.writes[4], "CLI event");
+  expect(parseWrite(fake.writes, 4)).toMatchObject({ method: "turn/start", params: {
+    threadId: "cli-thread", input: [], toolOutput: { namespace: "treetop", name: "resource_notification", output: JSON.stringify(notification) },
+  } });
+  fake.enqueue({ id: 3, result: { turn: { id: "external-turn" } } });
+  await delivery;
+  const missing = adapter.notifyExternalEvent("closed-thread", notification);
+  await waitFor(() => fake.writes[5], "closed CLI thread check");
+  fake.enqueue({ id: 4, result: { data: [], nextCursor: null } });
+  await expect(missing).rejects.toThrow("not loaded");
+  expect(fake.writes).toHaveLength(6);
+  expect(fake.writes.some(raw => /thread\/resume|turn\/steer/.test(raw))).toBe(false);
+  await adapter.close();
+  expect(fake.killed).toEqual(["SIGTERM"]);
+});
+
+test("CLI event connector negotiates WebSocket and closes only its own connection", async () => {
+  const frames: Record<string, any>[] = [];
+  const daemon = Bun.serve({ port: 0, hostname: "127.0.0.1",
+    fetch(req, server) { if (server.upgrade(req)) return; return new Response(null, { status: 400 }); },
+    websocket: { message(ws, raw) {
+      const frame = JSON.parse(String(raw)); frames.push(frame);
+      if (frame.id === undefined) return;
+      const result = frame.method === "thread/loaded/list" ? { data: ["cli-live"], nextCursor: null } : {};
+      ws.send(JSON.stringify({ id: frame.id, result }));
+    } },
+  });
+  const adapter = new CodexCliEventAdapter({ connect: () => connectCodexCliEventProcess({
+    upstream: () => createConnection({ port: daemon.port!, host: "127.0.0.1" }), timeoutMs: 1000,
+  }) });
+  try {
+    expect(await adapter.canReceiveExternalEvents("cli-live")).toBe(true);
+    await adapter.notifyExternalEvent("cli-live", { method: "notifications/resources/updated" });
+    expect(frames.filter(frame => frame.method === "turn/start")).toHaveLength(1);
+    expect(frames.at(-1)?.params.input).toEqual([]);
+    expect(frames.at(-1)?.params.toolOutput.namespace).toBe("treetop");
+    await adapter.close();
+    const response = await fetch(`http://127.0.0.1:${daemon.port}/`);
+    expect(response.status).toBe(400);
+  } finally { await adapter.close(); await daemon.stop(true); }
 });

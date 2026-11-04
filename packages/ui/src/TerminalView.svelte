@@ -1,6 +1,10 @@
 <script lang="ts">
   import { apiUrl, apiWsUrl, bindTerminalSessionOwner, attachTerminalStopChannel, terminalRequestTiming, attachTerminalInputProbe } from "./api";
   import { onMount, onDestroy } from "svelte";
+  import type { SessionMenuItem } from "./SessionMenu.svelte";
+  export let outputMenuItems: SessionMenuItem[] = [];
+  export let outputSharingActive = false;
+  export let outputSharingEnabled = false;
   import { fetchSshSessions, type SshSessionInfo } from "./file-browser-utils";
   import {
     Terminal,
@@ -587,6 +591,67 @@
   });
   let hiddenFlushes = 0;
   let terminalId = "";
+  let sharingOutput = false;
+  let sharingBusy = false;
+  let sharingRevision = 0;
+  let sharingRestoredId = "";
+  let sharingDestroyed = false;
+  async function restoreOutputSharing(id: string) {
+    const revision = sharingRevision;
+    try {
+      const response = await fetch(apiUrl(`/api/terminal-output-sharing?terminal_id=${encodeURIComponent(id)}`, daemonId));
+      if (!response.ok) throw new Error(`Sharing status failed (${response.status})`);
+      const state = await response.json();
+      if (!sharingDestroyed && terminalId === id && sharingRevision === revision) sharingOutput = state.enabled === true;
+    } catch (error) {
+      recordBrowserDiagnostic("terminal sharing restore failed", { terminalId: id, error: String(error) });
+    }
+  }
+  $: if (terminalId && sharingRestoredId !== terminalId) {
+    sharingRestoredId = terminalId;
+    void restoreOutputSharing(terminalId);
+  }
+  let sharingError = "";
+  let sharingTimer: ReturnType<typeof setInterval> | undefined;
+  function terminalAgentPrompt() {
+    return `Shared Treetop terminal: ${terminalId}\nRead-only output: read_terminal_output.\nLive updates: watch_terminal_output (Codex or Claude).`;
+  }
+  async function publishOutput(enabled: boolean, refresh = false) {
+    if (!terminalId || sharingBusy) return;
+    sharingRevision++;
+    sharingBusy = true;
+    try {
+      // Parse any hidden backlog before publishing; sharing keeps future output parsed.
+      if (enabled) paintBufferedTerminalOutput();
+      const lines: string[] = [];
+      if (enabled && xterm) {
+        const buffer = xterm.buffer.active;
+        let chars = 0;
+        for (let y = buffer.length - 1; y >= 0 && chars < 32000; y--) {
+          const line = buffer.getLine(y)?.translateToString(true) ?? "";
+          lines.push(line); chars += line.length + 1;
+        }
+      }
+      const response = await fetch(apiUrl("/api/terminal-output-sharing", daemonId), {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ terminal_id: terminalId, enabled, refresh, text: lines.reverse().join("\n").slice(-32000) }),
+      });
+      if (response.status === 409 && refresh) {
+        sharingOutput = false;
+        sharingError = "";
+        return;
+      }
+      if (!response.ok) throw new Error(`Sharing failed (${response.status})`);
+      sharingOutput = enabled;
+      sharingError = "";
+    } catch (error) {
+      sharingError = String(error);
+    } finally { sharingBusy = false; }
+  }
+  onMount(() => {
+    sharingTimer = setInterval(() => { if (sharingOutput) void publishOutput(true, true); }, 2000);
+    return () => { clearInterval(sharingTimer); };
+  });
   let boundSessionOwner = "";
   $: if (terminalId && ownerId && !ownerId.startsWith("__") &&
     ["codex", "claude"].includes(agent ?? "") && boundSessionOwner !== `${terminalId}:${ownerId}`) {
@@ -595,6 +660,30 @@
       .catch(error => recordBrowserDiagnostic("terminal session ownership update failed", { terminalId, ownerId, error: String(error) }));
   }
   let phase: "starting" | "live" | "exited" | "error" = "starting";
+  $: outputSharingEnabled = sharingOutput;
+  $: outputSharingActive = sharingOutput && phase === "live" && !sharingError;
+  $: outputMenuItems = terminalId && phase === "live" ? [
+    sharingOutput ? {
+      kind: "action", label: "Stop sharing terminal output with agents",
+      iconSvg: ["M18 8a3 3 0 1 0 0-6 3 3 0 0 0 0 6Z", "M6 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6Z", "M18 22a3 3 0 1 0 0-6 3 3 0 0 0 0 6Z", "M8.6 10.5l6.8-4M8.6 13.5l6.8 4"],
+      selected: true, disabled: sharingBusy, keepOpen: true,
+      title: sharingError || "Revoke read-only terminal output sharing",
+      onSelect: () => { void publishOutput(false); },
+    } : {
+      kind: "copy", label: "Share terminal output with agents", disabled: sharingBusy,
+      iconSvg: ["M18 8a3 3 0 1 0 0-6 3 3 0 0 0 0 6Z", "M6 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6Z", "M18 22a3 3 0 1 0 0-6 3 3 0 0 0 0 6Z", "M8.6 10.5l6.8-4M8.6 13.5l6.8 4"],
+      title: "Allow read-only access and copy a terminal reference to paste into an agent",
+      getText: () => {
+        // Start sharing without awaiting so clipboard access keeps the click gesture.
+        void publishOutput(true);
+        return terminalAgentPrompt();
+      },
+    },
+    ...(sharingOutput ? [{ kind: "copy" as const, label: "Copy terminal reference for an agent", getText: terminalAgentPrompt,
+      title: `Copy the terminal ID and read/watch instructions to paste into an agent: ${terminalId}` }] : []),
+    ...(sharingError ? [{ kind: "action" as const, label: sharingError, disabled: true, onSelect: () => {} }] : []),
+  ] : [];
+
   let error = "";
   const startupTraceId = `term_${Date.now().toString(36)}_${Math.random()
     .toString(36)
@@ -1176,7 +1265,10 @@
         }
         const newlyObservedBytes = ioAccounting.countRawBytes(bytes.byteLength);
         if (newlyObservedBytes > 0) recordRx(newlyObservedBytes);
-        if (isTerminalVisible) {
+        if (isTerminalVisible || sharingOutput) {
+          // Preserve byte order if sharing was enabled while output was buffered.
+          const pending = flushBufferedTerminalOutput();
+          if (pending) writeTerminalOutput(pending);
           writeTerminalOutput(bytes);
         } else if (writeBuffer.push(bytes)) {
           const batch = flushBufferedTerminalOutput();
@@ -1724,6 +1816,10 @@
   }
 
   onDestroy(() => {
+    sharingDestroyed = true;
+    outputMenuItems = [];
+    outputSharingActive = false;
+    outputSharingEnabled = false;
     reconnect.dispose();
     window.removeEventListener("online", wakeReconnect);
     window.removeEventListener("focus", wakeReconnect);

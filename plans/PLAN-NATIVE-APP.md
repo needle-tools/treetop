@@ -723,3 +723,116 @@ Removed that client-only deadline: it cannot undo a stop the server has already
 accepted. Keep the session attached until a response, accept 404 as already
 stopped, and surface server/transport failures. A real delayed HTTP test verifies
 confirmation after 5.1 seconds; no production session was stopped in testing.
+
+
+### MCP resource events (2026-11-03)
+
+The existing 2025-11-25 Streamable HTTP endpoint now issues Mcp-Session-Id on
+initialization and supports session GET SSE and DELETE. Existing stateless tool
+POSTs still work. Resources list/read exposes treetop://events (25 recent event
+summaries) and only user-shared treetop://terminals/<id>/output snapshots.
+resources/subscribe and resources/unsubscribe scope update notifications to one
+session. Resource-list changes notify connected sessions. Revocation/expiry sends
+invalidation only; output is never streamed, and reads always recheck sharing.
+Unchanged UI snapshot refreshes produce no notification. The original tools
+remain available for clients without resource support.
+
+Streams have 15-second heartbeats, bounded queues, disconnect cleanup, and refresh
+subscribed resources on reconnect instead of claiming durable event replay.
+Disconnected sessions expire after 30 minutes; the registry caps at 256 sessions.
+Origins are validated for MCP requests. The implementation targets the existing
+2025 protocol, not the distinct 2026 subscriptions/listen transport. Client hosts
+must actually subscribe and decide how to surface resource updates; this does not
+promise an idle Claude/Codex agent will wake or start a turn. No production restart
+or build is part of this source change.
+
+Protocol references:
+https://modelcontextprotocol.io/specification/2025-11-25/basic/transports
+https://modelcontextprotocol.io/specification/2025-11-25/server/resources
+
+Validation: targeted lifecycle/resource/stream tests and terminal notification tests
+pass. Broader integration + terminal-backlog run: 35 pass, one existing session
+search test times out (also observed before this transport change). Daemon tsc
+reports repository errors outside mcp.ts/terminal-backlog.ts and the changed
+integration test; no errors reported in those files. CORS exposes the session
+header and accepts the MCP protocol/session headers for allowlisted origins.
+
+
+Reminder resource events: treetop://reminders lists the persisted reminder state.
+Its subscribers receive resources/updated on reminder_changed (schedule, cancel,
+dismiss, snooze) and reminder_due (the daemon scheduler, including overdue startup
+delivery). The daemon routes its existing dashboard broadcasts through
+notifyMcpChange, so HTTP UI mutations, MCP tools, and the scheduler share one
+notification path. Only resource invalidations travel over SSE; reminder message
+content is fetched with resources/read or the existing list_reminders tool.
+The resource remains available even when the reminder list is empty. Due state
+persists, so reconnecting clients can reread it after missed notifications. This
+is client notification support, not automatic agent wake-up or task execution.
+Behavior tests cover schedule/cancel, scheduler due delivery, HTTP dismiss/snooze,
+resource reads, and content-free notification frames.
+
+
+### Native protocol event delivery (2026-11-03)
+
+MCP resource updates remain separate JSON-RPC notifications. An explicit
+watch_terminal_output tool now binds a user-shared terminal to a verified loaded
+native Codex observer session. TerminalEventObservers consumes settled-output
+notifications, deduplicates unchanged rendered text, coalesces pending updates,
+and includes terminal/resource identity, event ID, timestamp, origin and untrusted
+data provenance. Revocation clears watches; delivery failure pauses a watch without
+blind retries. Self-observation is rejected to avoid feedback loops.
+
+The native Codex adapter delivers the structured protocol notification with
+turn/start input:[] plus toolOutput {namespace:treetop,name:resource_notification}.
+It never calls turn/steer or sends typed terminal input. The installed CLI schema
+(generated read-only into the system temp directory) and official App Server docs
+both confirm toolOutput support. It persists as functionCallOutput, and the UI now
+renders that native item as a tool result in live/history views, not a user bubble.
+An event may start a response or queue external context on an active turn under
+the user's explicit monitoring request. Standard external MCP clients still need
+host support; plain CLI observers cannot be made to wake through Treetop alone.
+
+Broker RPC forwards canReceiveExternalEvents/notifyExternalEvent. An already-running
+older persistent broker does not acquire these new methods just by installing a
+new daemon. It returns an explicit unsupported-broker error and never falls back
+to a user message. Activating these methods requires a subsequent normal broker
+start; the agent must not restart the live broker and interrupt hosted sessions.
+
+Tests cover typed RPC payloads with empty user input, broker forwarding, registered
+observer validation, no session-message delivery, revocation, deduplication,
+coalescing and uncertain-delivery failure. Existing MCP reminder notifications and
+resource SSE transport remain available.
+
+References:
+https://learn.chatgpt.com/docs/app-server (toolOutput and functionCallOutput)
+https://developers.openai.com/plugins/build/mcp-events (ChatGPT cloud webhook events
+are a separate integration; they are not implemented by this local native bridge).
+
+
+Command toolbar width: the expanded worktree status row's .row-actions used an
+intrinsic flex basis plus auto left margin, leaving unused row space before the
+command buttons and constraining fitActionGroups measurements. Its direct-child
+rule now uses flex:1 1 0 to claim the remaining row width. Compact folded-header
+actions retain intrinsic sizing. The existing browser test now checks that actions
+start immediately after the leading status indicator; it failed before the change
+and passes afterward, along with scrolling, app space, hover and alignment checks.
+
+The copied terminal reference is now two neutral lines: Shared Treetop terminal:
+<id> and Read-only output via read_terminal_output. Connection, subscription,
+implementation instructions and requests for help are removed from the copied
+text. TerminalView compiles. These changes are not rebuilt/installed yet.
+
+
+Watch startup latency fix (2026-11-04): watch_terminal_output no longer goes
+through generic AgentSession discovery, registered-project checks or Git worktree
+inventory. It resolves the explicit observer session ID (or UUID suffix of a Codex
+rollout source) and asks the runtime whether that native thread is loaded. Sharing
+is checked from the live in-memory grant. Mismatched IDs/paths and malformed inputs
+are rejected directly. Unsupported observers return the runtime error immediately.
+No new session or user message is created.
+
+Watch mutations use their own serialized queue so unrelated MCP project queries
+and mutations cannot delay them. Enable/disable order is retained. Tests prove
+watch setup never invokes session discovery, succeeds with no registered projects,
+rejects unshared terminals, bypasses unrelated blocked work, and preserves stop
+ordering. The native runtime remains authoritative for observer eligibility.
