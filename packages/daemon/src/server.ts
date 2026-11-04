@@ -5672,8 +5672,13 @@ const server = Bun.serve<TermWsData, never>({
         console.log(
           `supergit daemon: terminal delete id=${termId} pid=${handle.pid}`,
         );
-        void handle.kill();
-        return json({ ok: true });
+        const record = terminalBackend.list().find(record => record.id === termId)!;
+        try {
+          await codexCliEvents.stopTerminal(record, () => handle.kill());
+          return json({ ok: true });
+        } catch (error) {
+          return json({ error: String(error) }, { status: 502 });
+        }
       }
 
       if (
@@ -10859,7 +10864,8 @@ const server = Bun.serve<TermWsData, never>({
             const requestId=parsed.requestId;
             cancelGrace(ws.data.termId);
             console.log(`supergit daemon: terminal socket stop id=${ws.data.termId} pid=${handle.pid}`);
-            void handle.kill().then(() => {
+            const record = terminalBackend.list().find(record => record.id === ws.data.termId)!;
+            void codexCliEvents.stopTerminal(record, () => handle.kill()).then(() => {
               if(ws.readyState===1)ws.send(JSON.stringify({type:"stop-accepted",requestId}));
             }).catch(error => {
               if(ws.readyState===1)ws.send(JSON.stringify({type:"stop-error",requestId,error:String(error)}));

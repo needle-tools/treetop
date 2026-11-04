@@ -90,6 +90,33 @@ export class CodexCliEventAdapter {
     });
   }
 
+  /** A remote TUI is only a client: closing its PTY does not stop the turn. */
+  async interruptActiveTurn(threadId: string): Promise<void> {
+    if (!await this.canReceiveExternalEvents(threadId)) return;
+    const { rpc } = await this.connect();
+    const page = await rpc.request("thread/turns/list", {
+      threadId, limit: 1, sortDirection: "desc", itemsView: "notLoaded",
+    });
+    const turn = Array.isArray(page.data) ? page.data[0] : undefined;
+    if (turn?.status === "inProgress" && typeof turn.id === "string") {
+      await rpc.request("turn/interrupt", { threadId, turnId: turn.id });
+    }
+  }
+
+  async stopTerminal(
+    record: { agent?: string; ownerId?: string; cmd: string[] },
+    kill: () => Promise<void>,
+  ): Promise<void> {
+    const remote = record.cmd.indexOf("--remote");
+    if (record.agent === "codex" && remote >= 0 && record.cmd[remote + 1] === "unix://") {
+      if (!record.ownerId || record.ownerId.startsWith("__")) {
+        throw new Error("Cannot confirm Stop: this Codex terminal has no resolved conversation ID. Interrupt its turn in the terminal first.");
+      }
+      await this.interruptActiveTurn(record.ownerId);
+    }
+    await kill();
+  }
+
   async close(): Promise<void> {
     const connection = this.connection;
     this.connection = undefined;

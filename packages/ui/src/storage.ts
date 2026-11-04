@@ -306,9 +306,9 @@ export interface PersistedSession {
   codexApproval?: string;
   codexReviewer?: string;
   codexSummary?: string;
-  /** Optional. Stamped onto `__new__:claude:` / `__new__:codex:` entries
-   *  the first time the daemon's activity-tail surfaces a real agent-side
-   *  session id for that (cwd, agent). On a subsequent mount (notably
+  /** Optional. Provider session identity, assigned only with an exact
+   *  identity match. Activity in the same cwd is not proof of ownership.
+   *  On a subsequent mount (notably
    *  after a hard reload that outlives the daemon's PTY-grace window) we
    *  spawn `claude --resume <sid>` instead of bare `claude`, so the
    *  conversation continues instead of starting over. */
@@ -1139,18 +1139,6 @@ export function cmdForOpenSession(
   return [s.agent];
 }
 
-/** Attach the real agent-side session id to the first matching
- *  `__new__:<agent>:` column in the given worktree that doesn't have one
- *  yet. The match key is `(cwd, agent)`. Returns a new map only when
- *  something actually changed — same reference otherwise, so reactive
- *  consumers can `if (next !== prev)` to skip work.
- *
- *  Why "first unstamped wins": if the user has two simultaneous
- *  `__new__:claude:` columns in the same worktree (opened sequentially),
- *  the activity tail will surface each new sessionId as its JSONL
- *  appears. Each event lands on the next column that hasn't been
- *  stamped yet. Concurrent opens (rare) may attribute incorrectly;
- *  acceptable until we plumb the sessionId back from the spawning side. */
 /** Update the persisted `mode` for one (wtPath, source) entry without
  *  disturbing anything else. `"terminal"` adds the field; `"read"` drops
  *  it (absence is the default and we don't want to leave dead state
@@ -1247,6 +1235,12 @@ export function stampDiscoveredSessionId(
  *  `stampedSource` is `null` when nothing matched (no churn), so the
  *  caller can short-circuit the migrate POST.
  *
+ *  Requires the exact identity assigned when the column was created.
+ *  Activity from an external CLI can share both cwd and agent, so choosing
+ *  the first unstamped column can silently resume an unrelated conversation.
+ *  Codex CLI columns without a preassigned identity keep their live terminal
+ *  attachment; they must not acquire a resume ID from global activity.
+ *
  *  Skips stamping when the sid is already claimed by another column in
  *  the same worktree — either as a sibling's `resumeSessionId` or as
  *  the JSONL path (`ev.source`) of an already-listed entry. Without
@@ -1275,22 +1269,13 @@ export function stampDiscoveredSessionIdWithDetail(
   );
   if (alreadyClaimed) return { byWt, stampedSource: null };
   const prefix = `__new__:${ev.agent}:`;
-  const idxByPreassigned = list.findIndex(
+  const idx = list.findIndex(
     (s) =>
       s.agent === ev.agent &&
       s.source.startsWith(prefix) &&
       !s.resumeSessionId &&
       s.preassignedSessionId === ev.sessionId,
   );
-  const idx =
-    idxByPreassigned >= 0
-      ? idxByPreassigned
-      : list.findIndex(
-          (s) =>
-            s.agent === ev.agent &&
-            s.source.startsWith(prefix) &&
-            !s.resumeSessionId,
-        );
   if (idx === -1) return { byWt, stampedSource: null };
   const target = list[idx]!;
   const next = list.slice();

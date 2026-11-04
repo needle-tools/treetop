@@ -1582,9 +1582,9 @@ describe("claudeModelAlias", () => {
 describe("stampDiscoveredSessionId", () => {
   const SID = "discovered-session-id";
 
-  test("stamps the first matching __new__: column without a sid", () => {
+  test("stamps the column with the exact preassigned identity", () => {
     const before: Record<string, PersistedSession[]> = {
-      "/wt": [{ agent: "claude", source: "__new__:claude:t_abc" }],
+      "/wt": [{ agent: "claude", source: "__new__:claude:t_abc", preassignedSessionId: SID }],
     };
     const after = stampDiscoveredSessionId(before, {
       agent: "claude",
@@ -1596,6 +1596,7 @@ describe("stampDiscoveredSessionId", () => {
         {
           agent: "claude",
           source: "__new__:claude:t_abc",
+          preassignedSessionId: SID,
           resumeSessionId: SID,
         },
       ],
@@ -1654,7 +1655,7 @@ describe("stampDiscoveredSessionId", () => {
 
   test("returns same reference when the cwd has no open sessions at all", () => {
     const before: Record<string, PersistedSession[]> = {
-      "/other-wt": [{ agent: "claude", source: "__new__:claude:t_abc" }],
+      "/other-wt": [{ agent: "claude", source: "__new__:claude:t_abc", preassignedSessionId: SID }],
     };
     const after = stampDiscoveredSessionId(before, {
       agent: "claude",
@@ -1674,7 +1675,7 @@ describe("stampDiscoveredSessionId", () => {
           source: "__new__:claude:t_1",
           resumeSessionId: "first-sid",
         },
-        { agent: "claude", source: "__new__:claude:t_2" },
+        { agent: "claude", source: "__new__:claude:t_2", preassignedSessionId: SID },
       ],
     };
     const after = stampDiscoveredSessionId(before, {
@@ -1691,6 +1692,7 @@ describe("stampDiscoveredSessionId", () => {
       {
         agent: "claude",
         source: "__new__:claude:t_2",
+        preassignedSessionId: SID,
         resumeSessionId: SID,
       },
     ]);
@@ -1698,7 +1700,7 @@ describe("stampDiscoveredSessionId", () => {
 
   test("only matches the same agent — codex events don't stamp claude columns", () => {
     const before: Record<string, PersistedSession[]> = {
-      "/wt": [{ agent: "claude", source: "__new__:claude:t_abc" }],
+      "/wt": [{ agent: "claude", source: "__new__:claude:t_abc", preassignedSessionId: SID }],
     };
     const after = stampDiscoveredSessionId(before, {
       agent: "codex",
@@ -1729,7 +1731,7 @@ describe("stampDiscoveredSessionId", () => {
 
   test("ignores empty sessionId (defensive)", () => {
     const before: Record<string, PersistedSession[]> = {
-      "/wt": [{ agent: "claude", source: "__new__:claude:t_abc" }],
+      "/wt": [{ agent: "claude", source: "__new__:claude:t_abc", preassignedSessionId: SID }],
     };
     const after = stampDiscoveredSessionId(before, {
       agent: "claude",
@@ -1741,6 +1743,43 @@ describe("stampDiscoveredSessionId", () => {
 });
 
 describe("stampDiscoveredSessionIdWithDetail", () => {
+  test.each(["codex", "claude"] as const)("does not adopt an external %s conversation that was never opened in Treetop", (agent) => {
+    const before: Record<string, PersistedSession[]> = {
+      "/wt": [{ agent, source: `__new__:${agent}:fresh` }],
+    };
+    const result = stampDiscoveredSessionIdWithDetail(before, {
+      agent, cwd: "/wt", sessionId: "external-running-session", source: "/external/session.jsonl",
+    });
+    expect(result.byWt).toBe(before);
+    expect(result.stampedSource).toBeNull();
+    expect(cmdForOpenSession(before["/wt"]![0]!, "/bin/zsh")).not.toContain("external-running-session");
+  });
+
+  test("does not replace a preassigned identity with unrelated activity", () => {
+    const before: Record<string, PersistedSession[]> = {
+      "/wt": [{ agent: "claude", source: "__new__:claude:fresh", preassignedSessionId: "expected-session" }],
+    };
+    const result = stampDiscoveredSessionIdWithDetail(before, {
+      agent: "claude", cwd: "/wt", sessionId: "external-session",
+    });
+    expect(result.byWt).toBe(before);
+    expect(result.stampedSource).toBeNull();
+  });
+
+  test("external activity leaves a fresh Codex terminal attached across save and reload", () => {
+    const store = new OpenSessionsStore(new MemStore(), "fresh-codex");
+    const before: Record<string, PersistedSession[]> = {
+      "/wt": [{ agent: "codex", source: "__new__:codex:fresh", attachTermId: "actual-fresh-terminal", mode: "terminal" }],
+    };
+    const result = stampDiscoveredSessionIdWithDetail(before, {
+      agent: "codex", cwd: "/wt", sessionId: "external-session",
+    });
+    store.save(result.byWt);
+    const reloaded = store.load()["/wt"]![0]!;
+    expect(reloaded.attachTermId).toBe("actual-fresh-terminal");
+    expect(reloaded.resumeSessionId).toBeUndefined();
+    expect(cmdForOpenSession(reloaded, "/bin/zsh")).toEqual(["codex"]);
+  });
   // The detail-returning variant exists so the activity-SSE handler in
   // App.svelte can migrate the user-typed manual title from the
   // disposable synthetic source (`__new__:claude:<rnd>`) onto the real
@@ -1752,7 +1791,7 @@ describe("stampDiscoveredSessionIdWithDetail", () => {
 
   test("returns the synthetic source whose entry got the sid stamped onto it", () => {
     const before: Record<string, PersistedSession[]> = {
-      "/wt": [{ agent: "claude", source: "__new__:claude:t_abc" }],
+      "/wt": [{ agent: "claude", source: "__new__:claude:t_abc", preassignedSessionId: SID }],
     };
     const result = stampDiscoveredSessionIdWithDetail(before, {
       agent: "claude",
@@ -1764,6 +1803,7 @@ describe("stampDiscoveredSessionIdWithDetail", () => {
       {
         agent: "claude",
         source: "__new__:claude:t_abc",
+        preassignedSessionId: SID,
         resumeSessionId: SID,
       },
     ]);
@@ -1788,33 +1828,23 @@ describe("stampDiscoveredSessionIdWithDetail", () => {
     expect(result.byWt).toBe(before);
   });
 
-  test("when two `__new__:` columns share a cwd, returns the FIRST unstamped (race-known behaviour)", () => {
-    // Pins the existing "first unstamped wins" race that the title-
-    // migration fix actually depends on: the SSE handler migrates the
-    // returned `stampedSource`, not whichever column the user typed
-    // their title into. The bug the migration fixes is "title visible
-    // on column A but resumed conversation came from column B" —
-    // migrating to ev.source lets the next reload look up the title
-    // via the matched agent's JSONL path so the title travels with the
-    // conversation regardless of which synthetic key originally
-    // received it.
+  test("does not guess between two fresh columns sharing a cwd", () => {
     const before: Record<string, PersistedSession[]> = {
       "/wt": [
-        { agent: "claude", source: "__new__:claude:t_first" },
-        { agent: "claude", source: "__new__:claude:t_second" },
+        { agent: "codex", source: "__new__:codex:first" },
+        { agent: "codex", source: "__new__:codex:second" },
       ],
     };
     const result = stampDiscoveredSessionIdWithDetail(before, {
-      agent: "claude",
-      cwd: "/wt",
-      sessionId: SID,
+      agent: "codex", cwd: "/wt", sessionId: SID,
     });
-    expect(result.stampedSource).toBe("__new__:claude:t_first");
+    expect(result.byWt).toBe(before);
+    expect(result.stampedSource).toBeNull();
   });
 
   test("ignores empty sessionId — no churn, no spurious migration trigger", () => {
     const before: Record<string, PersistedSession[]> = {
-      "/wt": [{ agent: "claude", source: "__new__:claude:t_abc" }],
+      "/wt": [{ agent: "claude", source: "__new__:claude:t_abc", preassignedSessionId: SID }],
     };
     const result = stampDiscoveredSessionIdWithDetail(before, {
       agent: "claude",
@@ -2812,7 +2842,7 @@ describe("reload-resume round-trip (stamp → persist → load → cmd)", () => 
     //    in App.svelte).
     let byWt: Record<string, PersistedSession[]> = {
       "/Users/me/wt/feature": [
-        { agent: "claude", source: "__new__:claude:t_xyz" },
+        { agent: "claude", source: "__new__:claude:t_xyz", preassignedSessionId: "claude-sid-abcdef" },
       ],
     };
     store.save(byWt);

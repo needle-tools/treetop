@@ -1929,6 +1929,65 @@ test("CLI events attach only to an already loaded thread and use external tool o
   expect(fake.killed).toEqual(["SIGTERM"]);
 });
 
+test.each(["inProgress", "completed"])("CLI Stop interrupts only its loaded active turn (%s)", async (status) => {
+  const fake = fakeCodexProcess();
+  const adapter = new CodexCliEventAdapter({ connect: async () => fake.proc });
+  const stopping = adapter.interruptActiveTurn("cli-stop");
+  await waitFor(() => fake.writes[0], "CLI initialize");
+  fake.enqueue({ id: 0, result: {} });
+  await waitFor(() => fake.writes[2], "loaded thread check");
+  fake.enqueue({ id: 1, result: { data: ["cli-stop", "another-cli"], nextCursor: null } });
+  await waitFor(() => fake.writes[3], "latest turn");
+  expect(parseWrite(fake.writes, 3)).toMatchObject({ method: "thread/turns/list", params: {
+    threadId: "cli-stop", limit: 1, sortDirection: "desc", itemsView: "notLoaded",
+  } });
+  fake.enqueue({ id: 2, result: { data: [{ id: "owned-turn", status }], nextCursor: null } });
+  if (status === "inProgress") {
+    await waitFor(() => fake.writes[4], "interrupt active CLI turn");
+    expect(parseWrite(fake.writes, 4)).toMatchObject({ method: "turn/interrupt", params: { threadId: "cli-stop", turnId: "owned-turn" } });
+    fake.enqueue({ id: 3, result: {} });
+  }
+  await stopping;
+  expect(fake.writes).toHaveLength(status === "inProgress" ? 5 : 4);
+  await adapter.close();
+});
+
+test("CLI Stop does not resume an unloaded conversation", async () => {
+  const fake = fakeCodexProcess();
+  const adapter = new CodexCliEventAdapter({ connect: async () => fake.proc });
+  const stopping = adapter.interruptActiveTurn("unloaded");
+  await waitFor(() => fake.writes[0], "CLI initialize");
+  fake.enqueue({ id: 0, result: {} });
+  await waitFor(() => fake.writes[2], "loaded thread check");
+  fake.enqueue({ id: 1, result: { data: [], nextCursor: null } });
+  await stopping;
+  expect(fake.writes).toHaveLength(3);
+  await adapter.close();
+});
+
+test("terminal Stop waits for the Codex interrupt before killing its client and preserves it on failure", async () => {
+  const adapter = new CodexCliEventAdapter();
+  const calls: string[] = [];
+  let release!: () => void;
+  adapter.interruptActiveTurn = async (id) => {
+    calls.push(id);
+    await new Promise<void>(resolve => { release = resolve; });
+  };
+  const record = { agent: "codex", ownerId: "owned-cli", cmd: ["codex", "--remote", "unix://"] };
+  const stopping = adapter.stopTerminal(record, async () => { calls.push("kill"); });
+  expect(calls).toEqual(["owned-cli"]);
+  release();
+  await stopping;
+  expect(calls).toEqual(["owned-cli", "kill"]);
+  adapter.interruptActiveTurn = async () => { throw new Error("interrupt failed"); };
+  await expect(adapter.stopTerminal(record, async () => { calls.push("bad-kill"); })).rejects.toThrow("interrupt failed");
+  expect(calls).toEqual(["owned-cli", "kill"]);
+  await adapter.stopTerminal({ agent: "shell", cmd: ["pwsh"] }, async () => { calls.push("shell-kill"); });
+  expect(calls.at(-1)).toBe("shell-kill");
+  await expect(adapter.stopTerminal({ ...record, ownerId: "__new__:codex:fresh" }, async () => { calls.push("guessed-kill"); })).rejects.toThrow("no resolved conversation ID");
+  expect(calls).not.toContain("guessed-kill");
+});
+
 test("CLI event connector negotiates WebSocket and closes only its own connection", async () => {
   const frames: Record<string, any>[] = [];
   const daemon = Bun.serve({ port: 0, hostname: "127.0.0.1",
