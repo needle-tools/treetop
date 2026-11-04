@@ -46,6 +46,20 @@ export function createLimiter(
 
 /** Background reads and network fetches must not consume interactive slots. */
 export function createGitWorkScheduler() {
+  let foregroundRequests = 0;
+  let resumeBackground: (() => void) | undefined;
+  let backgroundReady = Promise.resolve();
+  function holdBackground() {
+    if (foregroundRequests++ === 0) {
+      backgroundReady = new Promise<void>(resolve => { resumeBackground = resolve; });
+    }
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      if (--foregroundRequests === 0) resumeBackground?.();
+    };
+  }
   const inventory = createLimiter(2),
     reads = createLimiter(2),
     lineCounts = createLimiter(1),
@@ -68,7 +82,9 @@ export function createGitWorkScheduler() {
     task: () => Promise<T>,
     onStart?: (state: { lane: string; active: number; queued: number }) => void,
   ): Promise<T> => {
-    const lane = operation === "readParentWorktreeStatus"
+    const lane = fresh && (operation === "listWorktrees" || operation === "listRemotes")
+      ? "interactive"
+      : operation === "readParentWorktreeStatus"
       ? "parentStatuses"
       : operation === "readWorktreeStatus"
       ? "statuses"
@@ -88,6 +104,11 @@ export function createGitWorkScheduler() {
     const state = counts[lane];
     state.queued++;
     return lanes[lane](async () => {
+      // Yield new speculative processes to explicit launches. Existing Git
+      // processes and interactive reads keep running; no sessions are reaped.
+      if (["inventory", "reads", "lineCounts", "fetches"].includes(lane)) {
+        while (foregroundRequests > 0) await backgroundReady;
+      }
       state.queued--;
       state.active++;
       try {
@@ -99,6 +120,7 @@ export function createGitWorkScheduler() {
     });
   };
   return Object.assign(schedule, {
+    holdBackground,
     snapshot: () => Object.fromEntries(Object.entries(counts).map(([lane, state]) => [lane, { ...state }])),
   });
 }

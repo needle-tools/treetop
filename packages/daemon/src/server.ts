@@ -43,6 +43,7 @@ import {
   parseChangedFilesV2,
   parseBranchStatus,
   enableBackgroundGitWorker,
+  beginForegroundAction,
   mainWorktreePathFor,
   getWorktreeDetails,
   getDirtyLineCount,
@@ -2964,6 +2965,11 @@ const server = Bun.serve<TermWsData, never>({
       });
     };
 
+    const foregroundAction = req.method === "POST" && [
+      "/api/command/run", "/api/command/restart", "/api/terminals",
+      "/api/open", "/api/open-default",
+    ].includes(url.pathname);
+    const finishForegroundAction = foregroundAction ? beginForegroundAction() : undefined;
     try {
       if (req.method === "OPTIONS") {
         return new Response(null, { headers: CORS });
@@ -10673,6 +10679,9 @@ const server = Bun.serve<TermWsData, never>({
       await recordServerError(req, 500, err).catch(() => {});
       const msg = err instanceof Error ? err.message : String(err);
       return json({ error: msg }, { status: 500 });
+    } finally {
+      finishForegroundAction?.();
+      if (foregroundAction) console.log(`supergit daemon: foreground action path=${url.pathname} totalMs=${Math.round(performance.now() - requestStartedAt)}`);
     }
   },
 

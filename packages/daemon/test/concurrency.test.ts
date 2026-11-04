@@ -9,6 +9,29 @@
 import { test, expect, describe } from "bun:test";
 import { createLimiter, createGitWorkScheduler } from "../src/concurrency";
 
+test("foreground launches pause new background Git work until every launch finishes", async () => {
+  const schedule = createGitWorkScheduler();
+  const releaseFirst = schedule.holdBackground();
+  const releaseSecond = schedule.holdBackground();
+  const started: string[] = [];
+  const background = ["listWorktrees", "getWorktreeDetails", "getDirtyLineCount", "fetchAll"]
+    .map(operation => schedule(operation, false, async () => { started.push(operation); }));
+  try {
+    expect(await schedule("listWorktrees", true, async () => "foreground inventory")).toBe("foreground inventory");
+    await Bun.sleep(0);
+    expect(started).toEqual([]);
+    releaseFirst();
+    releaseFirst(); // Releasing a completed request twice must not release another request.
+    await Bun.sleep(0);
+    expect(started).toEqual([]);
+  } finally {
+    releaseFirst();
+    releaseSecond();
+  }
+  await Promise.all(background);
+  expect(started.sort()).toEqual(["fetchAll", "getDirtyLineCount", "getWorktreeDetails", "listWorktrees"]);
+});
+
 test("status snapshots bypass optional diff and history queries", async () => {
   const schedule = createGitWorkScheduler();
   let release!: () => void;

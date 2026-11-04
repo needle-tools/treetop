@@ -119,7 +119,7 @@ export class ProjectCommands {
       if (
         repoPath &&
         !samePath(repoPath, repo.path) &&
-        !(await listWorktrees(repo.path)).some(
+        !(await listWorktrees(repo.path, { fresh: true })).some(
           (wt) => !wt.bare && samePath(wt.path, repoPath),
         )
       )

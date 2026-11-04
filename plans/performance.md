@@ -2647,6 +2647,21 @@ Windows allowance was increased after measured process-start delays exceeded
 native installer build was performed for these changes.
 
 
+### 2026-11-04 explicit launch priority
+
+Command, terminal and app-open POST requests now hold new background Git
+inventory, worktree scans, line counts and fetches until the request settles.
+The worker receives the foreground request count, including when it starts
+during an active request. Overlapping launches keep the hold until all finish;
+errors release it through the route's finally block. Existing processes and
+interactive read lanes continue running. Command worktree validation uses the
+interactive lane so it cannot deadlock behind the background hold.
+
+Launch route completion logs now include path and totalMs. Scheduler and real
+worker regressions cover overlapping holds, release and foreground validation.
+This does not preempt an already-running Git process or establish a bound on
+OS process creation, browser request admission or terminal rendering time.
+
 ### 2026-10-30 visible terminal restore priority
 
 Read-only logs showed WebView readiness in 7.139s after installation and 3.737s

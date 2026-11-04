@@ -8,6 +8,20 @@ type BackgroundGitOperation = "listWorktrees" | "listRemotes" | "getWorktreeDeta
   | "getCommitDiff" | "listCommitFiles" | "getCommitFileDiff" | "getDiff";
 let backgroundGitWorker: Worker | undefined;
 let backgroundGitEnabled = false;
+let foregroundActions = 0;
+
+/** Stop admitting speculative Git spawns while an explicit launch is active. */
+export function beginForegroundAction(): () => void {
+  foregroundActions++;
+  backgroundGitWorker?.postMessage({ foregroundActions });
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    foregroundActions--;
+    backgroundGitWorker?.postMessage({ foregroundActions });
+  };
+}
 let backgroundGitSequence = 0;
 const backgroundGitPending = new Map<number, { resolve: (value: any) => void; reject: (error: Error) => void }>();
 const backgroundGitReads = new Map<string, { id: number; promise: Promise<unknown>; hits: number; startedAt: number }>();
@@ -46,6 +60,7 @@ function dispatchBackgroundGit<T>(operation: BackgroundGitOperation, args: unkno
       : new URL("./git.ts", import.meta.url);
     const worker = new Worker(entry, { workerData: { backgroundGit: true } });
     backgroundGitWorker = worker;
+    if (foregroundActions) worker.postMessage({ foregroundActions });
     worker.on("message", ({ id, value, error, diagnostic }) => {
       // Tee worker diagnostics through the daemon logger as well as stdout.
       if (diagnostic) { console.log(diagnostic); return; }
@@ -74,7 +89,13 @@ function dispatchBackgroundGit<T>(operation: BackgroundGitOperation, args: unkno
 
 if (!isMainThread && workerData?.backgroundGit) {
   const scheduleGit = createGitWorkScheduler();
-  parentPort!.on("message", ({ id, operation, args }) => {
+  let releaseBackground: (() => void) | undefined;
+  parentPort!.on("message", ({ id, operation, args, foregroundActions }) => {
+    if (foregroundActions !== undefined) {
+      if (foregroundActions > 0) releaseBackground ??= scheduleGit.holdBackground();
+      else { releaseBackground?.(); releaseBackground = undefined; }
+      return;
+    }
     const queuedAt = performance.now();
     let startedAt: number | undefined;
     let laneState: { lane: string; active: number; queued: number } | undefined;
@@ -87,7 +108,7 @@ if (!isMainThread && workerData?.backgroundGit) {
     pendingWarning.unref();
     // Network fetches must not hold the slots needed to display sessions.
     const scheduledOperation = operation === "readWorktreeStatus" && args[1]?.parentOnly ? "readParentWorktreeStatus" : operation;
-    void scheduleGit(scheduledOperation, operation === "getWorktreeDetails" && args[1]?.fresh === true, async () => {
+    void scheduleGit(scheduledOperation, (operation === "getWorktreeDetails" || operation === "listWorktrees") && args[1]?.fresh === true, async () => {
       startedAt = performance.now();
       try {
         const operations = { listWorktrees, listRemotes, getWorktreeDetails, getSelectedRemoteBranchStatus, getDirtyLineCount, fetchAll, readWorktreeStatus,
@@ -366,8 +387,8 @@ export async function listSubmoduleDetails(
   );
 }
 
-export async function listWorktrees(repoPath: string): Promise<Worktree[]> {
-  if (backgroundGitEnabled && isMainThread) return backgroundGit("listWorktrees", [repoPath]);
+export async function listWorktrees(repoPath: string, options?: { fresh?: boolean }): Promise<Worktree[]> {
+  if (backgroundGitEnabled && isMainThread) return backgroundGit("listWorktrees", options ? [repoPath, options] : [repoPath]);
   const normalRepo = resolvePath(repoPath);
   try {
     const result = await $`git -C ${repoPath} worktree list --porcelain`

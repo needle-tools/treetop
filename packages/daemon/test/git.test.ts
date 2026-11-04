@@ -1,6 +1,21 @@
 import { test, expect, describe, spyOn } from "bun:test";
 import { resolve } from "node:path";
-import { enableBackgroundGitWorker, readGitText, getDiffFileContent, listWorktrees, listRemotes, listCommits, shouldReadSelectedRemoteStatus, getWorktreeDetails, getDirtyLineCount } from "../src/git";
+import { beginForegroundAction, enableBackgroundGitWorker, readGitText, getDiffFileContent, listWorktrees, listRemotes, listCommits, shouldReadSelectedRemoteStatus, getWorktreeDetails, getDirtyLineCount } from "../src/git";
+
+test("foreground launch holds worker inventory while its own validation bypasses the backlog", async () => {
+  enableBackgroundGitWorker();
+  const finish = beginForegroundAction();
+  const root = resolve(import.meta.dir, "../../..");
+  let backgroundFinished = false;
+  const background = listWorktrees(root).then(value => { backgroundFinished = true; return value; });
+  let foreground;
+  try {
+    foreground = await listWorktrees(root, { fresh: true });
+    expect(foreground.length).toBeGreaterThan(0);
+    expect(backgroundFinished).toBe(false);
+  } finally { finish(); }
+  expect(await background).toEqual(foreground);
+}, 30_000);
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { parseChangedFilesV2, readWorktreeStatus } from "../src/git";
