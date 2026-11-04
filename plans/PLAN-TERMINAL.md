@@ -695,6 +695,15 @@ terminal repaint/whitespace changes can still produce redundant notifications;
 deduplicating those is follow-up work. Claude remains protocol/integration-tested,
 with no live Claude client validation on this machine.
 
+2026-11-05 endpoint mismatch: a shared SSH terminal was visible/readable on the
+installed daemon at :27787 while another agent manually called the dev MCP server
+at :7777 and received "not shared". The agent transcript confirmed the wrong URL;
+the green sharing indicator was accurate. Copied terminal references now include
+their exact owning UI/proxy MCP endpoint. An /api/mcp alias uses the same MCP
+handler as /mcp so Vite's API proxy and remote-daemon API routes also work without
+guessing backend ports. Routing/reference tests cover native, dev and remote URLs.
+This is a source-only fix; no daemon, broker or active terminal was restarted.
+
 
 Resume deployment follow-up: recovery was waiting for a complete repository refresh before acknowledging the UI, which left its modal blocking input. Recovery now acknowledges once the attachment state is saved and refreshes repositories afterward. Resume progress uses a dismissible notification and a nonmodal details window, with a spinner, current item, counts and per-row waiting/resuming/resumed/failed states supplied by broker progress events. Command recovery recreates missing attached-terminal columns using the saved worktree path, registers command IDs and running state immediately, and restores their names. A headless stalled-request test verifies that users can hide/reopen details and interact with the app while restore is pending. 137 routing/restore tests and two broker restart/progress tests passed.
 

@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { apiUrl, apiWsUrl, bindTerminalSessionOwner, attachTerminalStopChannel, terminalRequestTiming, attachTerminalInputProbe } from "./api";
+  import { apiUrl, apiWsUrl, terminalOutputReference, bindTerminalSessionOwner, attachTerminalStopChannel, terminalRequestTiming, attachTerminalInputProbe } from "./api";
   import { onMount, onDestroy } from "svelte";
   import type { SessionMenuItem } from "./SessionMenu.svelte";
   export let outputMenuItems: SessionMenuItem[] = [];
@@ -614,7 +614,7 @@
   let sharingError = "";
   let sharingTimer: ReturnType<typeof setInterval> | undefined;
   function terminalAgentPrompt() {
-    return `Shared Treetop terminal: ${terminalId}\nRead-only output: read_terminal_output.\nLive updates: watch_terminal_output (Codex or Claude).`;
+    return terminalOutputReference(terminalId, location.href, daemonId);
   }
   async function publishOutput(enabled: boolean, refresh = false) {
     if (!terminalId || sharingBusy) return;

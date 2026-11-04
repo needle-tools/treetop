@@ -10417,7 +10417,7 @@ const server = Bun.serve<TermWsData, never>({
         }
         return json({ ok: true });
       }
-      if (url.pathname === "/mcp") {
+      if (url.pathname === "/mcp" || url.pathname === "/api/mcp") {
         const response = await handleMcpHttp(req, {
           workspace, events,
           sharedTerminals: sharedTerminalOutput,

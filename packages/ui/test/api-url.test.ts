@@ -1,5 +1,18 @@
 import { test, expect, describe } from "bun:test";
-import { apiUrl, apiWsUrl, withRequestDeadline, requestTerminalStop, attachTerminalStopChannel, startTerminalBootstrap, terminalRequestTiming, attachTerminalInputProbe } from "../src/api";
+import { apiUrl, apiWsUrl, terminalOutputReference, withRequestDeadline, requestTerminalStop, attachTerminalStopChannel, startTerminalBootstrap, terminalRequestTiming, attachTerminalInputProbe } from "../src/api";
+
+test("terminal references identify their owning MCP endpoint instead of guessing a default instance", () => {
+  const text = terminalOutputReference("ssh-active", "http://localhost:27787/workspace?view=zen");
+  expect(text).toContain("Shared Treetop terminal: ssh-active");
+  expect(text).toContain("MCP endpoint: http://localhost:27787/api/mcp");
+  expect(text).toContain("read_terminal_output");
+  expect(text).toContain("watch_terminal_output");
+  expect(text).not.toContain(":7777");
+  const remote = terminalOutputReference("remote-ssh", "http://localhost:27787", "remote-box");
+  expect(remote).toContain("MCP endpoint: http://localhost:27787/api/daemons/remote-box/mcp");
+  const dev = terminalOutputReference("dev-shell", "http://localhost:7779");
+  expect(dev).toContain("MCP endpoint: http://localhost:7779/api/mcp");
+});
 
 test("sampled input probes follow binary input, measure acknowledgement and do not flood the socket", async () => {
   const received:string[] = [];

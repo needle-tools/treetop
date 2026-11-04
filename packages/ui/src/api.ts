@@ -36,6 +36,13 @@ export function apiUrl(path: string, daemonId?: string | null): string {
   return path.replace(/^\/api/, `/api/daemons/${daemonId}`);
 }
 
+/** A terminal ID is scoped to its daemon; include the exact UI/proxy route so
+ * an observer never substitutes another running Treetop instance's MCP server. */
+export function terminalOutputReference(terminalId: string, uiUrl: string, daemonId?: string | null): string {
+  const endpoint = new URL(apiUrl("/api/mcp", daemonId), uiUrl).href;
+  return `Shared Treetop terminal: ${terminalId}\nMCP endpoint: ${endpoint}\nRead-only output: read_terminal_output.\nLive updates: watch_terminal_output (Codex or Claude).`;
+}
+
 const terminalStopChannels = new Map<string, {socket:WebSocket;stop:()=>Promise<void>}>();
 
 /** Browser Resource Timing separates network scheduling from JS delivery. */
