@@ -26,6 +26,11 @@
 
 export const ACTIVITY_IDLE_MS = 10_000;
 
+/** Only actual input or a visible return updates the persisted recap clock. */
+export function shouldOfferActivityRecap(lastActivity: number, now: number, starting: boolean): boolean {
+  return lastActivity > 0 && now - lastActivity >= (starting ? 8 : 4) * 60 * 60 * 1000;
+}
+
 /** Injected clock; tests override to control "now". */
 type Clock = () => number;
 

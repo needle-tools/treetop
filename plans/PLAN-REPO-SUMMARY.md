@@ -34,6 +34,29 @@ Contrast with the rejected "summarize every git state change" idea:
 that would fire dozens of times per workday at 3–8 s of CPU each,
 for marginal value over the existing badge.
 
+## Activity recap first version (2026-11-04)
+
+Session summary writes retain changed cumulative snapshots in workspace-owned
+`summary-history.sqlite`, indexed by activity time and project. Existing Markdown
+caches import lazily on the first recap request; historical overwritten versions
+cannot be recovered. Old records without project metadata remain clearly unknown
+until a fresh summary records the session cwd.
+
+Settings > Activity recap generates immediately for the last 24 hours. Return offers
+use persisted actual UI activity (eight hours on startup, four hours while open).
+Offers never generate. Opening the recap submits at most 20 sessions / 8,000 characters
+in one prompt to a small Codex model, requests three topical highlights under
+60 words total, and caches by selected input and model. No transcript parsing or
+Git scans occur for recaps. The UI has no model/range selectors or session list.
+The footer shows the model and actual CLI-reported input/output tokens, preserved
+in cached results; missing usage is shown as unavailable, not estimated.
+Saved recaps retain their requested from/to timestamps in SQLite. The footer
+shows that interval; subtle transparent side chevrons browse the newest 50 saved
+results without model calls, preserving each result's model and token counts.
+Coverage explicitly describes cumulative summaries, omitted sessions and missing
+summaries; this is not an exact commit or time-window change ledger. Recaps have
+no background generation queue and do not launch models at startup.
+
 ## Scope
 
 In:

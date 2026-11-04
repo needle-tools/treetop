@@ -1,4 +1,16 @@
 import { test, expect, describe } from "bun:test";
+import { parseRecapOutput } from "../src/agent-summary";
+
+test("recap CLI output retains actual token usage alongside the summary", () => {
+  const codex = parseRecapOutput("codex", [
+    JSON.stringify({ type: "item.completed", item: { type: "agent_message", text: "TITLE: Recap\nSUMMARY: Three highlights." } }),
+    JSON.stringify({ type: "turn.completed", usage: { input_tokens: 120, cached_input_tokens: 20, output_tokens: 30 } }),
+  ].join("\n"));
+  expect(codex).toEqual({ text: "TITLE: Recap\nSUMMARY: Three highlights.", inputTokens: 120, outputTokens: 30 });
+  expect(parseRecapOutput("claude", JSON.stringify({ result: "recap", usage: { input_tokens: 10, cache_read_input_tokens: 20, cache_creation_input_tokens: 5, output_tokens: 6 } })))
+    .toEqual({ text: "recap", inputTokens: 35, outputTokens: 6 });
+  expect(parseRecapOutput("codex", JSON.stringify({ type: "item.completed", item: { type: "agent_message", text: "recap" } })).inputTokens).toBeNull();
+});
 import { mkdtemp, readFile, writeFile, readdir, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -7,7 +19,39 @@ import {
   RepoSummariesStore,
   keyForSource,
   keyForRepo,
+  SummaryHistory,
 } from "../src/summaries";
+
+test("recap history survives reopening, deduplicates snapshots and selects by activity date", async () => {
+  const ws = await tempWorkspace();
+  const history = new SummaryHistory(ws);
+  const record = { frontmatter: { source: "/a", agent: "claude" as const, model: "small", projectPath: "/project",
+    sourceMtimeMs: 100, generatedAt: new Date(1000).toISOString(), includedMessages: 1, totalMessages: 1,
+    truncatedMessages: 0, estimatedTokens: 20, elapsedMs: 1 }, body: "first" };
+  history.save(record);
+  history.save({ ...record, frontmatter: { ...record.frontmatter, generatedAt: new Date(2000).toISOString() } });
+  history.save({ ...record, frontmatter: { ...record.frontmatter, sourceMtimeMs: 200 }, body: "second" });
+  expect(history.range(0, 150).entries.map(e => e.body)).toEqual(["first"]);
+  expect(history.range(0, 300).entries.map(e => e.body)).toEqual(["second"]);
+  const key = history.range(0, 300).key;
+  history.cache(key, "brief recap", "small", 120, 30);
+  expect(history.cached(history.range(0, 301).key)?.body).toBe("brief recap");
+  history.close();
+  const reopened = new SummaryHistory(ws);
+  expect(reopened.range(0, 300).entries[0].projectPath).toBe("/project");
+  expect(reopened.cached(key)?.model).toBe("small");
+  expect(reopened.cached(key)?.inputTokens).toBe(120);
+  expect(reopened.cached(key)?.outputTokens).toBe(30);
+  reopened.cache("older", "Old highlights", "small", 10, 5, { since: 10, until: 20 });
+  reopened.cache("newer", "New highlights", "small", 20, 6, { since: 20, until: 30 });
+  expect(reopened.recaps().map(r => [r.key, r.since, r.until])).toEqual([["newer", 20, 30], ["older", 10, 20]]);
+  for (let i = 0; i < 40; i++) reopened.save({ ...record, frontmatter: { ...record.frontmatter, source: `/s${i}` }, body: "x".repeat(1000) });
+  const bounded = reopened.range(0, 300);
+  expect(bounded.entries.length).toBeLessThanOrEqual(20);
+  expect(bounded.prompt.length).toBeLessThanOrEqual(8000);
+  expect(bounded.omitted).toBeGreaterThan(0);
+  reopened.close();
+});
 
 async function tempWorkspace(): Promise<string> {
   return mkdtemp(join(tmpdir(), "supergit-summaries-"));

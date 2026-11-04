@@ -30,7 +30,8 @@
  * mid-stream leaves no half-summary on disk.
  */
 
-import { join } from "node:path";
+import { join, dirname } from "node:path";
+import { Database } from "bun:sqlite";
 import { createHash } from "node:crypto";
 import {
   access,
@@ -45,8 +46,72 @@ import {
 
 const SUMMARIES_DIR = "summaries";
 
+export interface RecapEntry {
+  source: string; projectPath: string; agent: string; title: string; body: string; activityAt: number;
+}
+export interface SavedRecap {
+  key: string; body: string; model: string; inputTokens: number | null; outputTokens: number | null;
+  since: number | null; until: number | null;
+}
+
+/** Append-only cumulative snapshots; a generation date is never a work date. */
+export class SummaryHistory {
+  private db: Database;
+  constructor(workspacePath: string) {
+    this.db = new Database(join(workspacePath, "summary-history.sqlite"));
+    this.db.exec(`CREATE TABLE IF NOT EXISTS snapshots (
+      id INTEGER PRIMARY KEY, source TEXT NOT NULL, projectPath TEXT NOT NULL,
+      agent TEXT NOT NULL, title TEXT NOT NULL, body TEXT NOT NULL,
+      activityAt INTEGER NOT NULL, generatedAt TEXT NOT NULL, fingerprint TEXT NOT NULL);
+      CREATE INDEX IF NOT EXISTS snapshot_dates ON snapshots(activityAt, projectPath);
+      CREATE INDEX IF NOT EXISTS snapshot_sources ON snapshots(source, id);
+      CREATE TABLE IF NOT EXISTS recaps_brief (key TEXT PRIMARY KEY, body TEXT NOT NULL, model TEXT NOT NULL, inputTokens INTEGER, outputTokens INTEGER);`);
+    const columns = this.db.query("PRAGMA table_info(recaps_brief)").all() as { name: string }[];
+    for (const column of ["since", "until"]) {
+      if (!columns.some(c => c.name === column)) this.db.exec(`ALTER TABLE recaps_brief ADD COLUMN ${column} INTEGER`);
+    }
+  }
+  save(record: SummaryRecord) {
+    const f = record.frontmatter;
+    if (!isCurrentSummary(record) || !record.body.trim() || !(f.sourceMtimeMs > 0)) return;
+    const source = f.source;
+    const fingerprint = createHash("sha256").update(record.body).digest("hex");
+    const previous = this.db.query("SELECT fingerprint FROM snapshots WHERE source=? ORDER BY id DESC LIMIT 1").get(source) as { fingerprint: string } | null;
+    if (f.projectPath) this.db.query("UPDATE snapshots SET projectPath=? WHERE source=? AND projectPath=''").run(f.projectPath, source);
+    if (previous?.fingerprint === fingerprint) return;
+    this.db.query("INSERT INTO snapshots(source,projectPath,agent,title,body,activityAt,generatedAt,fingerprint) VALUES(?,?,?,?,?,?,?,?)")
+      .run(source, f.projectPath ?? "", f.agent, f.title ?? "Session", record.body, f.sourceMtimeMs, f.generatedAt, fingerprint);
+  }
+  range(since: number, until: number) {
+    const condition = `activityAt>? AND activityAt<=?`;
+    const rows = this.db.query(`SELECT source,projectPath,agent,title,body,activityAt FROM snapshots
+      WHERE id IN (SELECT MAX(id) FROM snapshots WHERE ${condition} GROUP BY source)
+      ORDER BY activityAt DESC LIMIT 20`).all(since, until) as RecapEntry[];
+    const total = (this.db.query(`SELECT COUNT(DISTINCT source) AS n FROM snapshots WHERE ${condition}`).get(since, until) as { n: number }).n;
+    let prompt = "";
+    const entries: RecapEntry[] = [];
+    for (const row of rows) {
+      const text = JSON.stringify({ project: row.projectPath || "Unknown project", title: row.title.slice(0, 100),
+        activityAt: new Date(row.activityAt).toISOString(), summary: row.body.slice(0, 1200) }) + "\n";
+      if (prompt.length + text.length > 8000) break;
+      prompt += text;
+      entries.push({ ...row, body: row.body.slice(0, 1200) });
+    }
+    const key = createHash("sha256").update(prompt).digest("hex");
+    return { entries, prompt, key, omitted: total - entries.length };
+  }
+  cached(key: string) { return this.db.query("SELECT * FROM recaps_brief WHERE key=?").get(key) as SavedRecap | null; }
+  recaps() { return this.db.query("SELECT * FROM recaps_brief WHERE since IS NOT NULL AND until IS NOT NULL ORDER BY until DESC, key DESC LIMIT 50").all() as SavedRecap[]; }
+  cache(key: string, body: string, model: string, inputTokens: number | null = null, outputTokens: number | null = null, range?: { since: number; until: number }) {
+    this.db.query("INSERT OR REPLACE INTO recaps_brief(key,body,model,inputTokens,outputTokens,since,until) VALUES(?,?,?,?,?,?,?)")
+      .run(key, body, model, inputTokens, outputTokens, range?.since ?? null, range?.until ?? null);
+  }
+  close() { this.db.close(); }
+}
+
 export interface SummaryFrontmatter {
   source: string;
+  projectPath?: string;
   agent: "claude" | "codex" | "ollama";
   sessionId?: string;
   /** Short AI-generated label for the session, produced alongside the
@@ -121,6 +186,7 @@ export class SummariesStore {
   async write(sourcePath: string, input: SummaryWriteInput): Promise<void> {
     const frontmatter: SummaryFrontmatter = {
       source: sourcePath,
+      projectPath: input.projectPath,
       agent: input.agent,
       sessionId: input.sessionId,
       title: input.title,
@@ -137,6 +203,12 @@ export class SummariesStore {
     const file = this.pathFor(sourcePath);
     const tmp = file + ".tmp";
     const content = renderFile(frontmatter, input.body);
+    const history = new SummaryHistory(dirname(this.dir));
+    try {
+      const previous = await this.read(sourcePath);
+      if (previous) history.save(previous);
+      history.save({ frontmatter, body: input.body });
+    } finally { history.close(); }
     await writeFile(tmp, content, "utf-8");
     await rename(tmp, file);
   }
@@ -409,6 +481,7 @@ export function renderFile(fm: SummaryFrontmatter, body: string): string {
   // Order matches the file-doc block at the top so a hand-read of
   // any summary looks consistent.
   lines.push(`source: ${quoteYaml(fm.source)}`);
+  if (fm.projectPath) lines.push(`projectPath: ${quoteYaml(fm.projectPath)}`);
   lines.push(`agent: ${fm.agent}`);
   if (fm.sessionId) lines.push(`sessionId: ${quoteYaml(fm.sessionId)}`);
   if (fm.title) lines.push(`title: ${quoteYaml(fm.title)}`);
@@ -486,6 +559,7 @@ function parseFrontmatter(text: string): SummaryFrontmatter | null {
     return null;
   return {
     source: String(out.source),
+    ...(typeof out.projectPath === "string" ? { projectPath: out.projectPath } : {}),
     agent,
     sessionId: typeof out.sessionId === "string" ? out.sessionId : undefined,
     title: typeof out.title === "string" ? out.title : undefined,

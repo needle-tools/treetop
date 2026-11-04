@@ -8,6 +8,16 @@
  */
 
 import { test, expect, describe } from "bun:test";
+import { shouldOfferActivityRecap } from "../src/ui-idle";
+
+test("recap offers require eight hours on startup or four hours away while open", () => {
+  const hour = 3600_000, last = hour;
+  expect(shouldOfferActivityRecap(0, 20 * hour, true)).toBe(false);
+  expect(shouldOfferActivityRecap(last, 8 * hour, true)).toBe(false);
+  expect(shouldOfferActivityRecap(last, 9 * hour, true)).toBe(true);
+  expect(shouldOfferActivityRecap(last, 4 * hour, false)).toBe(false);
+  expect(shouldOfferActivityRecap(last, 5 * hour, false)).toBe(true);
+});
 import {
   ACTIVITY_IDLE_MS,
   bumpActivityWith,

@@ -161,6 +161,8 @@
   import ConfirmDialog from "./ConfirmDialog.svelte";
   import { choiceDialog, confirmDialog } from "./confirm-dialog";
   import SummarizeDialog from "./SummarizeDialog.svelte";
+  import ActivityRecap from "./ActivityRecap.svelte";
+  let activityRecap: ActivityRecap;
   import ShareSessionDialog from "./ShareSessionDialog.svelte";
   import ReceiveInviteDialog from "./ReceiveInviteDialog.svelte";
   import CopySessionDialog from "./CopySessionDialog.svelte";
@@ -718,6 +720,29 @@
         },
       },
     ],
+  });
+  registerSettings({
+    id: "activity-recap",
+    title: "Activity recap",
+    order: 16,
+    settings: [{
+      key: "activityRecap.enabled",
+      label: "Offer activity recaps",
+      description: "Show a welcome-back notification after a long break. You can still open a recap manually when this is off.",
+      type: "boolean",
+      default: true,
+    }, {
+      key: "activityRecap.open",
+      label: "Review recent activity",
+      description: "Generate a few brief highlights from recent session summaries.",
+      type: "action",
+      buttonLabel: "Open activity recap",
+      onInvoke: async () => {
+        settingsDialogOpen = false;
+        await tick();
+        activityRecap.show();
+      },
+    }],
   });
   const showGreeting = settingValue("appearance.showGreeting");
   const showTerminalIoDebug = settingValue("terminal.showIoDebug");
@@ -13554,6 +13579,7 @@
 <BackgroundSessions on:restored={reconcileBackgroundRestore} />
 <SettingsDialog bind:open={settingsDialogOpen} />
 <SummarizeDialog />
+<ActivityRecap bind:this={activityRecap} notify={addToast} />
 <ShareSessionDialog />
 <ReceiveInviteDialog />
 <CopySessionDialog />

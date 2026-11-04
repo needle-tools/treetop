@@ -181,6 +181,7 @@ import { fetchClaudeOAuthUsage } from "./claude-oauth-usage";
 import { fetchCodexOAuthUsage } from "./codex-oauth-usage";
 import {
   SummariesStore,
+  SummaryHistory,
   RepoSummariesStore,
   isCurrentSummary,
 } from "./summaries";
@@ -678,6 +679,8 @@ async function ollamaAttachmentImagesForApi(
 }
 
 const summaries = await SummariesStore.open(WORKSPACE_PATH);
+let recapHistoryImported = false;
+let recapGenerating = false;
 const repoSummaries = await RepoSummariesStore.open(WORKSPACE_PATH);
 /** In-memory `source.toLowerCase()` → AI title map, mirroring the
  *  `title` field of the on-disk summaries. Seeded once at startup and
@@ -6293,6 +6296,49 @@ const server = Bun.serve<TermWsData, never>({
         return new Response(null, { status: 204, headers: CORS });
       }
 
+      if (url.pathname === "/api/activity-recaps" && req.method === "GET") {
+        const history = new SummaryHistory(WORKSPACE_PATH);
+        try { return json({ recaps: history.recaps() }); }
+        finally { history.close(); }
+      }
+
+      if (url.pathname === "/api/activity-recap" && (req.method === "GET" || req.method === "POST")) {
+        const since = Number(url.searchParams.get("since"));
+        const until = Number(url.searchParams.get("until"));
+        if (!Number.isFinite(since) || !Number.isFinite(until) || since < 0 || until <= since || until > Date.now() + 60_000)
+          return json({ error: "A valid since/until activity interval is required" }, { status: 400 });
+        const history = new SummaryHistory(WORKSPACE_PATH);
+        try {
+          if (!recapHistoryImported) {
+            for (const record of await summaries.listAll()) history.save(record);
+            recapHistoryImported = true;
+          }
+          const selected = history.range(since, until);
+          const request = req.method === "POST" ? await req.json().catch(() => null) : null;
+          const agent = request?.agent ?? url.searchParams.get("agent") ?? "codex";
+          if (agent !== "codex" && agent !== "claude") return json({ error: "Choose Codex small or Claude Haiku" }, { status: 400 });
+          const cacheKey = `${selected.key}:${agent}`;
+          let recap = history.cached(cacheKey);
+          if (req.method === "POST" && selected.entries.length && !recap) {
+            if (recapGenerating) return json({ error: "Another recap is generating. Try again shortly." }, { status: 409 });
+            recapGenerating = true;
+            try {
+              const result = await runAgentSummary(agent, selected.prompt, workspace.path, req.signal, { recap: true });
+              const words = result.body.split(/\s+/);
+              recap = { key: cacheKey, since, until, body: words.length > 80 ? words.slice(0, 80).join(" ") + "…" : result.body,
+                model: result.model, inputTokens: result.inputTokens ?? null, outputTokens: result.outputTokens ?? null };
+              history.cache(cacheKey, recap.body, recap.model, recap.inputTokens, recap.outputTokens, { since, until });
+            } finally { recapGenerating = false; }
+          }
+          if (recap && recap.since === null) {
+            history.cache(cacheKey, recap.body, recap.model, recap.inputTokens, recap.outputTokens, { since, until });
+            recap = history.cached(cacheKey);
+          }
+          return json({ entries: selected.entries, omitted: selected.omitted, recap, recaps: history.recaps(),
+            coverage: "Cached cumulative session summaries only. Earlier work may be included; sessions without summaries are missing." });
+        } finally { history.close(); }
+      }
+
       if (url.pathname === "/api/sessions/summarize" && req.method === "POST") {
         // Sample the session, then generate with Ollama or the session's
         // agent CLI. Forward the resulting text as SSE `chunk` events.
@@ -6548,6 +6594,7 @@ const server = Bun.serve<TermWsData, never>({
             try {
               await summaries.write(source, {
                 agent: resolved.agent,
+                projectPath: parsed.cwd,
                 sessionId: parsed.sessionId || undefined,
                 title: aiTitle,
                 ...(resolved.agent === "codex" ? { parserVersion: 2 } : {}),
