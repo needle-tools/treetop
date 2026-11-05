@@ -33,6 +33,8 @@
 import { join, dirname } from "node:path";
 import { Database } from "bun:sqlite";
 import { createHash } from "node:crypto";
+import type { Note } from "./notes";
+import type { Reminder } from "./reminders";
 import {
   access,
   mkdir,
@@ -45,6 +47,29 @@ import {
 } from "node:fs/promises";
 
 const SUMMARIES_DIR = "summaries";
+
+export function buildRecapContext(sessionPrompt: string,
+  notes: ReadonlyArray<Pick<Note, "id" | "createdAt" | "body" | "kind">>,
+  reminders: ReadonlyArray<Pick<Reminder, "id" | "title" | "message" | "dueAt" | "status">>,
+  range: { since: number; until: number; dayStart: number; dayEnd: number }) {
+  const recentNotes = notes.filter(n => (!n.kind || n.kind === "note") && Date.parse(n.createdAt) > range.since && Date.parse(n.createdAt) <= range.until)
+    .sort((a, b) => b.createdAt.localeCompare(a.createdAt) || a.id.localeCompare(b.id));
+  const todayReminders = reminders.filter(r => (r.status === "scheduled" || r.status === "due") && Date.parse(r.dueAt) >= range.dayStart && Date.parse(r.dueAt) < range.dayEnd)
+    .sort((a, b) => a.dueAt.localeCompare(b.dueAt) || a.id.localeCompare(b.id));
+  function bounded(records: object[]) {
+    let text = "";
+    for (const record of records.slice(0, 10)) {
+      const line = JSON.stringify(record) + "\n";
+      if (text.length + line.length > 1400) break;
+      text += line;
+    }
+    return text;
+  }
+  const noteText = bounded(recentNotes.map(n => ({ createdAt: n.createdAt, note: n.body.slice(0, 600) })));
+  const reminderText = bounded(todayReminders.map(r => ({ title: r.title.slice(0, 160), dueAt: r.dueAt, status: r.status, reminder: r.message.slice(0, 600) })));
+  const prompt = `Cumulative session summaries:\n${sessionPrompt.slice(0, 5000)}\nNotes CREATED during the recap period (plans are not completed work):\n${noteText}\nPending reminders due on the user's recap day, ${new Date(range.dayStart).toISOString()} to ${new Date(range.dayEnd).toISOString()} (not completed tasks):\n${reminderText}`;
+  return { prompt, available: !!(sessionPrompt || noteText || reminderText), key: createHash("sha256").update(prompt).digest("hex") };
+}
 
 export interface RecapEntry {
   source: string; projectPath: string; agent: string; title: string; body: string; activityAt: number;

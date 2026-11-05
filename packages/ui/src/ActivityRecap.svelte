@@ -14,6 +14,7 @@
   let since = 0, until = 0, busy = false, error = "", text = "", model = "";
   let inputTokens: number | null = null, outputTokens: number | null = null;
   let request: AbortController | undefined;
+  let availabilityRequest: AbortController | undefined;
   let elapsed = 0;
   type SavedRecap = { key: string; body: string; model: string; inputTokens: number | null; outputTokens: number | null; since: number; until: number };
   let savedRecaps: SavedRecap[] = [], currentKey = "";
@@ -30,6 +31,11 @@
     if (!busy && savedRecaps[index]) displaySaved(savedRecaps[index]);
   }
   function formatTime(value: number) { return new Date(value).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" }); }
+  function recapUrl(from: number, to: number) {
+    const start = new Date(to); start.setHours(0, 0, 0, 0);
+    const end = new Date(start); end.setDate(end.getDate() + 1);
+    return apiUrl(`/api/activity-recap?since=${from}&until=${to}&dayStart=${start.getTime()}&dayEnd=${end.getTime()}`);
+  }
 
   function reveal() { if (!dialog.open) dialog.showModal(); }
 
@@ -48,21 +54,21 @@
     const timer = setInterval(() => { elapsed = Math.floor((Date.now() - started) / 1000); }, 1000);
     inputTokens = outputTokens = null;
     try {
-      const res = await fetch(apiUrl(`/api/activity-recap?since=${since}&until=${until}`), {
+      const res = await fetch(recapUrl(since, until), {
         method: "POST", signal: current.signal,
         headers: { "Content-Type": "application/json" }, body: JSON.stringify({ agent: "codex" }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? `HTTP ${res.status}`);
       if (current !== request) return;
-      text = data.recap?.body ?? "No recent summaries to recap yet.";
+      text = data.recap?.body ?? "No saved summaries, new notes, or reminders cover this period.";
       model = data.recap?.model ?? "";
       inputTokens = data.recap?.inputTokens ?? null;
       outputTokens = data.recap?.outputTokens ?? null;
       savedRecaps = data.recaps ?? [];
       currentKey = data.recap?.key ?? "";
       if (data.recap?.since != null) { since = data.recap.since; until = data.recap.until; }
-      if (!dialog.open) notify({ kind: "success", title: "Activity recap ready", message: "Your highlights are ready to read.",
+      if (data.recap && !dialog.open) notify({ kind: "success", title: "Activity recap ready", message: "Your highlights are ready to read.",
         persist: true, action: { label: "View recap", onClick: reveal } });
     } catch (e) {
       if (!current.signal.aborted) {
@@ -72,6 +78,20 @@
       }
     } finally { clearInterval(timer); if (current === request) busy = false; }
   }
+  async function offerRecap(from: number, to: number) {
+    availabilityRequest?.abort();
+    const current = availabilityRequest = new AbortController();
+    try {
+      const res = await fetch(recapUrl(from, to), { signal: current.signal });
+      if (!res.ok) throw new Error(`Recap availability: HTTP ${res.status}`);
+      const data = await res.json();
+      if (current.signal.aborted || getSetting("activityRecap.enabled") === false || !data.available) return;
+      notify({ kind: "info", title: "Welcome back", message: "Review activity since your last visit?",
+        persist: true, silent: true, action: { label: "Activity recap", onClick: () => show(from) } });
+    } catch (e) {
+      if (!current.signal.aborted) console.warn("Could not check recap availability", e);
+    }
+  }
   onMount(() => {
     const kv = getDaemonKV(), key = "supergit:recapLastActivity";
     let last = Number(kv.getItem(key)) || 0, saved = last, starting = true;
@@ -79,8 +99,7 @@
       if (document.hidden || !document.hasFocus()) return;
       const now = Date.now(), previous = last;
       if (getSetting("activityRecap.enabled") !== false && shouldOfferActivityRecap(previous, now, starting)) {
-        notify({ kind: "info", title: "Welcome back", message: "Review activity since your last visit?",
-          persist: true, silent: true, action: { label: "Activity recap", onClick: () => show(previous) } });
+        void offerRecap(previous, now);
       }
       last = now;
       if (now - saved >= 60_000 || starting) { kv.setItem(key, String(now)); saved = now; }
@@ -92,6 +111,7 @@
     for (const event of events) window.addEventListener(event, activity, { capture: true, passive: true });
     return () => {
       request?.abort();
+      availabilityRequest?.abort();
       for (const event of events) window.removeEventListener(event, activity, true);
     };
   });
@@ -112,7 +132,7 @@
   {#if busy}<div class="loading" aria-busy="true"><LoadingSpinner size="1rem" label="Generating recap" /><div><p role="status">{elapsed < 20 ? "Generating highlights..." : "Still generating highlights..."}</p><small>{elapsed}s elapsed. You can close this window; we'll notify you when it's ready.</small></div></div>{/if}
   {#if error}<p role="alert">{error}</p><button on:click={generate}>Try again</button>{/if}
   {#if text}<div class="recap-text">{@html rendered}</div>{/if}
-  {#if model}<footer><div>From {formatTime(since)} to {formatTime(until)}</div>{model} | {inputTokens === null ? "Input tokens unavailable" : `${inputTokens.toLocaleString()} input tokens`} | {outputTokens === null ? "Output tokens unavailable" : `${outputTokens.toLocaleString()} output tokens`}</footer>{/if}
+  {#if !busy && text}<footer><div>From {formatTime(since)} to {formatTime(until)}</div>{#if model}{model} | {inputTokens === null ? "Input tokens unavailable" : `${inputTokens.toLocaleString()} input tokens`} | {outputTokens === null ? "Output tokens unavailable" : `${outputTokens.toLocaleString()} output tokens`}{/if}</footer>{/if}
 </dialog>
 
 <style>
@@ -130,6 +150,7 @@
   .recap-text :global(ul), .recap-text :global(ol) { padding-left: 1.3rem; margin: 0; }
   .recap-text :global(li + li) { margin-top: .7rem; }
   .recap-text :global(p) { margin: .5rem 0; }
+  .recap-text :global(h1), .recap-text :global(h2), .recap-text :global(h3) { font-size: 1rem; margin: 1rem 0 .35rem; text-wrap: balance; }
   footer { margin-top: 1rem; color: var(--text-muted); font-size: .75rem; }
   footer div { margin-bottom: .3rem; }
   .history-arrow { position: absolute; top: 50%; transform: translateY(-50%); background: none; border: 0; padding: .5rem .15rem; color: var(--text-muted); opacity: .55; }

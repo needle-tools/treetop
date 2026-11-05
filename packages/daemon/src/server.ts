@@ -183,6 +183,7 @@ import { fetchCodexOAuthUsage } from "./codex-oauth-usage";
 import {
   SummariesStore,
   SummaryHistory,
+  buildRecapContext,
   RepoSummariesStore,
   isCurrentSummary,
 } from "./summaries";
@@ -6318,6 +6319,10 @@ const server = Bun.serve<TermWsData, never>({
         const until = Number(url.searchParams.get("until"));
         if (!Number.isFinite(since) || !Number.isFinite(until) || since < 0 || until <= since || until > Date.now() + 60_000)
           return json({ error: "A valid since/until activity interval is required" }, { status: 400 });
+        const dayStart = Number(url.searchParams.get("dayStart") ?? new Date(until).setUTCHours(0, 0, 0, 0));
+        const dayEnd = Number(url.searchParams.get("dayEnd") ?? dayStart + 86400_000);
+        if (!Number.isFinite(dayStart) || !Number.isFinite(dayEnd) || dayStart > until || dayEnd <= until || dayEnd - dayStart > 26 * 3600_000 || dayEnd - dayStart < 22 * 3600_000)
+          return json({ error: "A valid local calendar day is required" }, { status: 400 });
         const history = new SummaryHistory(WORKSPACE_PATH);
         try {
           if (!recapHistoryImported) {
@@ -6325,18 +6330,19 @@ const server = Bun.serve<TermWsData, never>({
             recapHistoryImported = true;
           }
           const selected = history.range(since, until);
+          const [recapNotes, recapReminders] = await Promise.all([notes.list(), reminderStore.list()]);
+          const context = buildRecapContext(selected.prompt, recapNotes, recapReminders, { since, until, dayStart, dayEnd });
           const request = req.method === "POST" ? await req.json().catch(() => null) : null;
           const agent = request?.agent ?? url.searchParams.get("agent") ?? "codex";
           if (agent !== "codex" && agent !== "claude") return json({ error: "Choose Codex small or Claude Haiku" }, { status: 400 });
-          const cacheKey = `${selected.key}:${agent}`;
+          const cacheKey = `topics-v5:${context.key}:${agent}`;
           let recap = history.cached(cacheKey);
-          if (req.method === "POST" && selected.entries.length && !recap) {
+          if (req.method === "POST" && context.available && !recap) {
             if (recapGenerating) return json({ error: "Another recap is generating. Try again shortly." }, { status: 409 });
             recapGenerating = true;
             try {
-              const result = await runAgentSummary(agent, selected.prompt, workspace.path, req.signal, { recap: true });
-              const words = result.body.split(/\s+/);
-              recap = { key: cacheKey, since, until, body: words.length > 80 ? words.slice(0, 80).join(" ") + "…" : result.body,
+              const result = await runAgentSummary(agent, context.prompt, workspace.path, req.signal, { recap: true });
+              recap = { key: cacheKey, since, until, body: result.body.slice(0, 6000),
                 model: result.model, inputTokens: result.inputTokens ?? null, outputTokens: result.outputTokens ?? null };
               history.cache(cacheKey, recap.body, recap.model, recap.inputTokens, recap.outputTokens, { since, until });
             } finally { recapGenerating = false; }
@@ -6345,7 +6351,7 @@ const server = Bun.serve<TermWsData, never>({
             history.cache(cacheKey, recap.body, recap.model, recap.inputTokens, recap.outputTokens, { since, until });
             recap = history.cached(cacheKey);
           }
-          return json({ entries: selected.entries, omitted: selected.omitted, recap, recaps: history.recaps(),
+          return json({ entries: selected.entries, omitted: selected.omitted, available: context.available, recap, recaps: history.recaps(),
             coverage: "Cached cumulative session summaries only. Earlier work may be included; sessions without summaries are missing." });
         } finally { history.close(); }
       }

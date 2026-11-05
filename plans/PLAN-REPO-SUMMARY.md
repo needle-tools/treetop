@@ -44,9 +44,14 @@ until a fresh summary records the session cwd.
 
 Settings > Activity recap generates immediately for the last 24 hours. Return offers
 use persisted actual UI activity (eight hours on startup, four hours while open).
-Offers never generate. Opening the recap submits at most 20 sessions / 8,000 characters
-in one prompt to a small Codex model, requests three topical highlights under
-60 words total, and caches by selected input and model. No transcript parsing or
+Return offers first check saved-summary, new-note and daily-reminder coverage and stay
+silent when it is empty; an empty generation result never sends a ready notice.
+Offers never generate. Opening the recap submits at most 20 sessions, notes created
+within the recap interval, and pending reminders due on the user's local calendar
+day. These share one 8,000-character prompt to a small Codex model, with a concise
+Done / In progress / Next structure under 180 words and natural Markdown formatting
+(including emphasis, strikethrough, sanitized underline and emoji). There is no
+fixed bullet count. Cache keys include notes and reminders. No transcript parsing or
 Git scans occur for recaps. The UI has no model/range selectors or session list.
 The footer shows the model and actual CLI-reported input/output tokens, preserved
 in cached results; missing usage is shown as unavailable, not estimated.

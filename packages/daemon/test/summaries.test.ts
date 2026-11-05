@@ -20,7 +20,34 @@ import {
   keyForSource,
   keyForRepo,
   SummaryHistory,
+  buildRecapContext,
 } from "../src/summaries";
+
+test("recap prompt includes interval notes and pending reminders for the user's day within one budget", () => {
+  const since = Date.parse("2026-11-04T10:00:00Z"), until = Date.parse("2026-11-05T05:00:00Z");
+  const dayStart = Date.parse("2026-11-04T17:00:00Z"), dayEnd = Date.parse("2026-11-05T17:00:00Z");
+  const notes = [
+    { id: "new", createdAt: "2026-11-05T02:00:00Z", body: "NEW_NOTE" },
+    { id: "old", createdAt: "2026-11-04T09:00:00Z", body: "OLD_NOTE" },
+  ];
+  const reminders = [
+    { id: "today", dueAt: "2026-11-05T10:00:00Z", title: "TODAY_REMINDER", message: "Pending", status: "scheduled" as const },
+    { id: "yesterday", dueAt: "2026-11-04T16:59:59Z", title: "YESTERDAY_REMINDER", message: "", status: "due" as const },
+    { id: "cancelled", dueAt: "2026-11-05T10:00:00Z", title: "CANCELLED_REMINDER", message: "", status: "cancelled" as const },
+  ];
+  const context = buildRecapContext("SESSION_SUMMARY\n", notes, reminders, { since, until, dayStart, dayEnd });
+  expect(context.prompt).toContain("SESSION_SUMMARY");
+  expect(context.prompt).toContain("NEW_NOTE");
+  expect(context.prompt).toContain("TODAY_REMINDER");
+  expect(context.prompt).not.toContain("OLD_NOTE");
+  expect(context.prompt).not.toContain("YESTERDAY_REMINDER");
+  expect(context.prompt).not.toContain("CANCELLED_REMINDER");
+  expect(buildRecapContext("", notes, [], { since, until, dayStart, dayEnd }).available).toBe(true);
+  expect(buildRecapContext("", [], [], { since, until, dayStart, dayEnd }).available).toBe(false);
+  expect(buildRecapContext("SESSION_SUMMARY\n", notes, [{ ...reminders[0], message: "Changed" }], { since, until, dayStart, dayEnd }).key).not.toBe(context.key);
+  const large = buildRecapContext("x".repeat(8000), Array.from({ length: 50 }, (_, i) => ({ ...notes[0], id: String(i), body: "n".repeat(10000) })), reminders, { since, until, dayStart, dayEnd });
+  expect(large.prompt.length).toBeLessThanOrEqual(8000);
+});
 
 test("recap history survives reopening, deduplicates snapshots and selects by activity date", async () => {
   const ws = await tempWorkspace();
