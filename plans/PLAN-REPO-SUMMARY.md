@@ -64,6 +64,11 @@ scrollbar. Canonical Needle typography comes from Marketer's brand catalog:
 locally bundled Nunito Sans for copy and IBM Plex Serif Italic for the editorial
 headline. The header keeps its prickly-pear SVG; the divider has no leaf sprig.
 Section headings have no emoji, and prose uses short paragraphs rather than lists.
+Project and session links use exact, typed references supplied with the prompt;
+the saved recap retains that reference map. Project names in bold also link to
+matching current workspace projects. Unknown links are rendered as plain text.
+Clicks reuse the existing project-row and session-focus paths, including Zen
+navigation, and do not run another model request.
 Coverage explicitly describes cumulative summaries, omitted sessions and missing
 summaries; this is not an exact commit or time-window change ledger. Recaps have
 no background generation queue and do not launch models at startup.

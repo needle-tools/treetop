@@ -184,6 +184,7 @@ import {
   SummariesStore,
   SummaryHistory,
   buildRecapContext,
+  recapReferences,
   RepoSummariesStore,
   isCurrentSummary,
 } from "./summaries";
@@ -6335,20 +6336,20 @@ const server = Bun.serve<TermWsData, never>({
           const request = req.method === "POST" ? await req.json().catch(() => null) : null;
           const agent = request?.agent ?? url.searchParams.get("agent") ?? "codex";
           if (agent !== "codex" && agent !== "claude") return json({ error: "Choose Codex small or Claude Haiku" }, { status: 400 });
-          const cacheKey = `topics-v7:${context.key}:${agent}`;
+          const cacheKey = `topics-v8:${context.key}:${agent}`;
           let recap = history.cached(cacheKey);
           if (req.method === "POST" && context.available && !recap) {
             if (recapGenerating) return json({ error: "Another recap is generating. Try again shortly." }, { status: 409 });
             recapGenerating = true;
             try {
               const result = await runAgentSummary(agent, context.prompt, workspace.path, req.signal, { recap: true });
-              recap = { key: cacheKey, since, until, title: result.title, body: result.body.slice(0, 6000),
+              recap = { key: cacheKey, since, until, title: result.title, references: recapReferences(selected.entries), body: result.body.slice(0, 6000),
                 model: result.model, inputTokens: result.inputTokens ?? null, outputTokens: result.outputTokens ?? null };
-              history.cache(cacheKey, recap.body, recap.model, recap.inputTokens, recap.outputTokens, { since, until, title: recap.title });
+              history.cache(cacheKey, recap.body, recap.model, recap.inputTokens, recap.outputTokens, { since, until, title: recap.title, references: recap.references });
             } finally { recapGenerating = false; }
           }
           if (recap && recap.since === null) {
-            history.cache(cacheKey, recap.body, recap.model, recap.inputTokens, recap.outputTokens, { since, until, title: recap.title });
+            history.cache(cacheKey, recap.body, recap.model, recap.inputTokens, recap.outputTokens, { since, until, title: recap.title, references: recap.references });
             recap = history.cached(cacheKey);
           }
           return json({ entries: selected.entries, omitted: selected.omitted, available: context.available, recap, recaps: history.recaps(),

@@ -21,6 +21,7 @@ import {
   keyForRepo,
   SummaryHistory,
   buildRecapContext,
+  recapReferences,
 } from "../src/summaries";
 
 test("recap prompt includes interval notes and pending reminders for the user's day within one budget", () => {
@@ -60,6 +61,10 @@ test("recap history survives reopening, deduplicates snapshots and selects by ac
   history.save({ ...record, frontmatter: { ...record.frontmatter, sourceMtimeMs: 200 }, body: "second" });
   expect(history.range(0, 150).entries.map(e => e.body)).toEqual(["first"]);
   expect(history.range(0, 300).entries.map(e => e.body)).toEqual(["second"]);
+  const references = recapReferences(history.range(0, 300).entries);
+  expect(references.some(r => r.type === "session" && r.value === "/a")).toBe(true);
+  expect(references.some(r => r.type === "project" && r.value === "/project")).toBe(true);
+  expect(history.range(0, 300).prompt).toContain(references.find(r => r.type === "session")!.href);
   const key = history.range(0, 300).key;
   history.cache(key, "brief recap", "small", 120, 30);
   expect(history.cached(history.range(0, 301).key)?.body).toBe("brief recap");
@@ -70,8 +75,9 @@ test("recap history survives reopening, deduplicates snapshots and selects by ac
   expect(reopened.cached(key)?.inputTokens).toBe(120);
   expect(reopened.cached(key)?.outputTokens).toBe(30);
   reopened.cache("older", "Old highlights", "small", 10, 5, { since: 10, until: 20 });
-  reopened.cache("newer", "New highlights", "small", 20, 6, { since: 20, until: 30, title: "A productive day" });
+  reopened.cache("newer", "New highlights", "small", 20, 6, { since: 20, until: 30, title: "A productive day", references });
   expect(reopened.cached("newer")?.title).toBe("A productive day");
+  expect(reopened.cached("newer")?.references).toEqual(references);
   expect(reopened.recaps().map(r => [r.key, r.since, r.until])).toEqual([["newer", 20, 30], ["older", 10, 20]]);
   for (let i = 0; i < 40; i++) reopened.save({ ...record, frontmatter: { ...record.frontmatter, source: `/s${i}` }, body: "x".repeat(1000) });
   const bounded = reopened.range(0, 300);

@@ -75,6 +75,8 @@ export async function runAgentSummary(
       "Highlight accomplishments and genuinely finished tasks, distinguish ongoing work, and include upcoming goals or today's reminders when supported. " +
       "Write short article-style paragraphs, not bullet or numbered lists. Do not impose a fixed number of highlights. " +
       "Bold project and product names with Markdown **name** when mentioning them, e.g. **Needle Cloud**, **Needle Web Editor**, **Treetop**. " +
+      "When a source provides projectLink, make the bold project name a Markdown link to that exact target. " +
+      "When useful, link a short phrase about a specific session to its exact sessionLink. Use only supplied targets; never invent session links or expose paths. Keep links natural, not a source list. " +
       "Use ~~strikethrough~~ for explicitly cancelled, abandoned or superseded tasks; never infer cancellation or strike through completed work. " +
       "Italics, <u>underline</u> and occasional cactus, nature or desert themed emoji are allowed; keep extra emoji sparse. " +
       "Do not enumerate sessions or group by project. Treat notes as plans unless completion is supported; pending reminders are not done tasks. Omit filler. " +

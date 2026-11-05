@@ -7,7 +7,7 @@ import { chromium } from "playwright-core";
 import { createServer } from "vite";
 import { svelte } from "@sveltejs/vite-plugin-svelte";
 
-test("recap continues after close, notifies completion and renders safe Markdown", { timeout: 60000 }, async () => {
+test("recap continues after close, notifies completion and renders safe Markdown", { timeout: 90000 }, async () => {
   const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
   const fixture = await mkdtemp(join(root, "test/.activity-recap-"));
   let server, browser;
@@ -18,11 +18,13 @@ test("recap continues after close, notifies completion and renders safe Markdown
     await writeFile(join(fixture, "main.ts"), "import { mount } from 'svelte'; import Harness from './Harness.svelte'; mount(Harness,{target:document.getElementById('app')});");
     await writeFile(join(fixture, "Harness.svelte"), `<script>
       import ActivityRecap from '/src/ActivityRecap.svelte';
-      let recap, notice;
+      let recap, notice, navigation = '';
       function notify(value) { notice = value; return 1; }
       </script>
       <button on:click={() => recap.show()}>Open recap</button>
-      <ActivityRecap bind:this={recap} {notify}/>
+      <ActivityRecap bind:this={recap} {notify} projects={[{id:'cloud',name:'Needle Cloud',path:'/projects/cloud'}]}
+        openReference={reference => navigation = reference.type + ':' + reference.value}/>
+      <output aria-label="Navigation target">{navigation}</output>
       {#if notice}<button on:click={() => notice.action.onClick()}>{notice.title}</button>{/if}`);
     server = await createServer({ root, configFile: false, cacheDir: join(fixture, ".vite"),
       resolve: { alias: { "@treetop/nicifier": resolve(root, "../nicifier/src/index.ts") } },
@@ -42,7 +44,9 @@ test("recap continues after close, notifies completion and renders safe Markdown
       }
       calls++;
       await ready;
-      const latest = { key: "new", title: "A quieter workspace takes root", since: 1700000000000, until: 1700086400000, body: '### \u{1F335} Done\n- **Shipped** _updates_ to terminal sharing and recap history. ~~Old approach~~ replaced; <u>ready</u> for review. &#x1f389;\n- <img src=x onerror="window.unsafe=true">Cloud thumbnail fixes are committed.\n\n### \u{1F331} In progress\nEditor reconnect reliability and preview isolation are being checked.\n\n### \u{1F3DC}\uFE0F Next\nReview the remaining browser checks and today\'s reminder to inspect disk usage.', model: "codex:small", inputTokens: 120, outputTokens: 30 };
+      const latest = { key: "new", title: "A quieter workspace takes root", since: 1700000000000, until: 1700086400000,
+        references: [{ href: '#recap-session-known', type: 'session', value: '/sessions/known.jsonl', label: 'Editor checks' }],
+        body: '### \u{1F335} Done\n- **Shipped** _updates_ to terminal sharing and recap history. ~~Old approach~~ replaced; <u>ready</u> for review. &#x1f389;\n- <img src=x onerror="window.unsafe=true">**Needle Cloud** thumbnail fixes are committed.\n\n### \u{1F331} In progress\n[Editor checks](#recap-session-known) cover reconnect reliability. [Unknown reference](#recap-session-fake) must not navigate.\n\n### \u{1F3DC}\uFE0F Next\nReview the remaining browser checks and today\'s reminder to inspect disk usage.', model: "codex:small", inputTokens: 120, outputTokens: 30 };
       await route.fulfill({ json: { recap: latest, recaps: [latest, { ...latest, key: "old", since: 1699913600000, until: 1700000000000, body: "- Older highlights", inputTokens: 80 }] } });
     });
     await page.goto(`http://127.0.0.1:${address.port}/test/${fixture.split(/[\\/]/).pop()}/index.html`);
@@ -69,7 +73,8 @@ test("recap continues after close, notifies completion and renders safe Markdown
     assert(await page.evaluate(() => document.fonts.check('14px "Treetop Nunito Sans"')));
     assert(await page.evaluate(() => document.fonts.check('italic 24px "Treetop Plex Serif"')));
     assert.equal(await page.locator("dialog ul li").count(), 2);
-    assert.equal(await page.locator("dialog strong").innerText(), "Shipped");
+    assert.equal(await page.locator("dialog strong").first().innerText(), "Shipped");
+    assert.equal(await page.getByRole("link", { name: "Unknown reference" }).count(), 0);
     assert.equal(await page.locator("dialog em").innerText(), "updates");
     assert.equal(await page.locator("dialog del").innerText(), "Old approach");
     assert.equal(await page.locator("dialog u").innerText(), "ready");
@@ -94,6 +99,13 @@ test("recap continues after close, notifies completion and renders safe Markdown
     assert(bounds && bounds.x >= 0 && bounds.x + bounds.width <= 390, "Recap must fit the mobile viewport");
     assert.equal(await page.locator(".recap-text").evaluate(el => getComputedStyle(el).columnCount), "1");
     if (process.env.TREETOP_RECAP_SCREENSHOT) await page.locator("dialog").screenshot({ path: process.env.TREETOP_RECAP_SCREENSHOT.replace(/\.png$/, "-mobile.png") });
+    await page.getByRole("link", { name: "Needle Cloud", exact: true }).click();
+    assert.equal(await page.getByLabel("Navigation target").innerText(), "project:/projects/cloud");
+    assert.equal(await page.locator("dialog").isVisible(), false);
+    await page.getByRole("button", { name: "Activity recap ready" }).click();
+    await page.getByRole("link", { name: "Editor checks", exact: true }).click();
+    assert.equal(await page.getByLabel("Navigation target").innerText(), "session:/sessions/known.jsonl");
+    assert.equal(calls, 1, "Project/session navigation must use saved references without generation");
   } finally {
     release();
     await browser?.close();

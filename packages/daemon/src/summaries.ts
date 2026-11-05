@@ -74,10 +74,24 @@ export function buildRecapContext(sessionPrompt: string,
 export interface RecapEntry {
   source: string; projectPath: string; agent: string; title: string; body: string; activityAt: number;
 }
+export interface RecapReference { href: string; type: "project" | "session"; value: string; label: string; }
+export function recapReferences(entries: RecapEntry[]): RecapReference[] {
+  const references = new Map<string, RecapReference>();
+  for (const entry of entries) {
+    const href = `#recap-session-${keyForSource(entry.source)}`;
+    references.set(href, { href, type: "session", value: entry.source, label: entry.title });
+    if (entry.projectPath) {
+      const projectHref = `#recap-project-${keyForSource(entry.projectPath)}`;
+      references.set(projectHref, { href: projectHref, type: "project", value: entry.projectPath, label: entry.projectPath.split(/[/\\]/).pop() || entry.projectPath });
+    }
+  }
+  return [...references.values()];
+}
 export interface SavedRecap {
   key: string; body: string; model: string; inputTokens: number | null; outputTokens: number | null;
   since: number | null; until: number | null;
   title?: string | null;
+  references?: RecapReference[];
 }
 
 /** Append-only cumulative snapshots; a generation date is never a work date. */
@@ -93,7 +107,7 @@ export class SummaryHistory {
       CREATE INDEX IF NOT EXISTS snapshot_sources ON snapshots(source, id);
       CREATE TABLE IF NOT EXISTS recaps_brief (key TEXT PRIMARY KEY, body TEXT NOT NULL, model TEXT NOT NULL, inputTokens INTEGER, outputTokens INTEGER);`);
     const columns = this.db.query("PRAGMA table_info(recaps_brief)").all() as { name: string }[];
-    for (const [column, type] of [["since", "INTEGER"], ["until", "INTEGER"], ["title", "TEXT"]]) {
+    for (const [column, type] of [["since", "INTEGER"], ["until", "INTEGER"], ["title", "TEXT"], ["referencesJson", "TEXT"]]) {
       if (!columns.some(c => c.name === column)) this.db.exec(`ALTER TABLE recaps_brief ADD COLUMN ${column} ${type}`);
     }
   }
@@ -118,6 +132,8 @@ export class SummaryHistory {
     const entries: RecapEntry[] = [];
     for (const row of rows) {
       const text = JSON.stringify({ project: row.projectPath || "Unknown project", title: row.title.slice(0, 100),
+        sessionLink: `#recap-session-${keyForSource(row.source)}`,
+        ...(row.projectPath ? { projectLink: `#recap-project-${keyForSource(row.projectPath)}` } : {}),
         activityAt: new Date(row.activityAt).toISOString(), summary: row.body.slice(0, 1200) }) + "\n";
       if (prompt.length + text.length > 8000) break;
       prompt += text;
@@ -126,11 +142,16 @@ export class SummaryHistory {
     const key = createHash("sha256").update(prompt).digest("hex");
     return { entries, prompt, key, omitted: total - entries.length };
   }
-  cached(key: string) { return this.db.query("SELECT * FROM recaps_brief WHERE key=?").get(key) as SavedRecap | null; }
-  recaps() { return this.db.query("SELECT * FROM recaps_brief WHERE since IS NOT NULL AND until IS NOT NULL ORDER BY until DESC, key DESC LIMIT 50").all() as SavedRecap[]; }
-  cache(key: string, body: string, model: string, inputTokens: number | null = null, outputTokens: number | null = null, range?: { since: number; until: number; title?: string | null }) {
-    this.db.query("INSERT OR REPLACE INTO recaps_brief(key,body,model,inputTokens,outputTokens,since,until,title) VALUES(?,?,?,?,?,?,?,?)")
-      .run(key, body, model, inputTokens, outputTokens, range?.since ?? null, range?.until ?? null, range?.title ?? null);
+  private readRecap(row: unknown): SavedRecap | null {
+    if (!row) return null;
+    const { referencesJson, ...recap } = row as SavedRecap & { referencesJson: string | null };
+    return { ...recap, references: referencesJson ? JSON.parse(referencesJson) : [] };
+  }
+  cached(key: string) { return this.readRecap(this.db.query("SELECT * FROM recaps_brief WHERE key=?").get(key)); }
+  recaps() { return this.db.query("SELECT * FROM recaps_brief WHERE since IS NOT NULL AND until IS NOT NULL ORDER BY until DESC, key DESC LIMIT 50").all().map(row => this.readRecap(row)!); }
+  cache(key: string, body: string, model: string, inputTokens: number | null = null, outputTokens: number | null = null, range?: { since: number; until: number; title?: string | null; references?: RecapReference[] }) {
+    this.db.query("INSERT OR REPLACE INTO recaps_brief(key,body,model,inputTokens,outputTokens,since,until,title,referencesJson) VALUES(?,?,?,?,?,?,?,?,?)")
+      .run(key, body, model, inputTokens, outputTokens, range?.since ?? null, range?.until ?? null, range?.title ?? null, JSON.stringify(range?.references ?? []));
   }
   close() { this.db.close(); }
 }

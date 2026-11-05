@@ -10,6 +10,10 @@
   import DOMPurify from "dompurify";
 
   export let notify: (toast: AddToastOpts) => number;
+  type RecapReference = { href: string; type: "project" | "session"; value: string; label: string };
+  export let projects: Array<{ id: string; name: string; path: string }> = [];
+  export let openReference: (reference: RecapReference) => void | Promise<void>;
+  let references: RecapReference[] = [];
   let dialog: HTMLDialogElement;
   let since = 0, until = 0, busy = false, error = "", text = "", model = "";
   let inputTokens: number | null = null, outputTokens: number | null = null;
@@ -18,14 +22,45 @@
   let elapsed = 0;
   const loadingTitles = ["The latest", "A quick recap", "Recent progress", "Your latest updates", "The short version", "Work in review", "What changed", "A look back"];
   let headline = "Activity recap";
-  type SavedRecap = { key: string; title?: string | null; body: string; model: string; inputTokens: number | null; outputTokens: number | null; since: number; until: number };
+  type SavedRecap = { key: string; title?: string | null; references?: RecapReference[]; body: string; model: string; inputTokens: number | null; outputTokens: number | null; since: number; until: number };
   let savedRecaps: SavedRecap[] = [], currentKey = "";
   $: currentIndex = savedRecaps.findIndex(recap => recap.key === currentKey);
-  $: rendered = DOMPurify.sanitize(marked.parse(text.replace(/^(#{1,6}\s+)[\p{Extended_Pictographic}\uFE0F\u200D]+\s*/gmu, "$1"), { async: false }) as string);
+  $: allowedReferences = [...references, ...projects.map(p => ({ href: `#recap-project-ui-${encodeURIComponent(p.id)}`, type: "project" as const, value: p.path, label: p.name }))];
+  $: rendered = renderRecap(text, allowedReferences);
+
+  function renderRecap(markdown: string, targets: RecapReference[]) {
+    const template = document.createElement("template");
+    template.innerHTML = DOMPurify.sanitize(marked.parse(markdown.replace(/^(#{1,6}\s+)[\p{Extended_Pictographic}\uFE0F\u200D]+\s*/gmu, "$1"), { async: false }) as string);
+    for (const link of template.content.querySelectorAll("a")) {
+      if (!targets.some(t => t.href === link.getAttribute("href"))) link.replaceWith(...link.childNodes);
+    }
+    const normalized = (name: string) => name.toLowerCase().replace(/[^\p{L}\p{N}]/gu, "");
+    for (const strong of template.content.querySelectorAll("strong")) {
+      if (strong.closest("a")) continue;
+      const matches = targets.filter(t => t.type === "project" && normalized(t.label) === normalized(strong.textContent ?? ""));
+      if (new Set(matches.map(t => t.value)).size !== 1) continue;
+      const link = document.createElement("a");
+      link.href = matches[0].href;
+      strong.replaceWith(link); link.append(strong);
+    }
+    return template.innerHTML;
+  }
+  function recapNavigation(node: HTMLElement) {
+    const click = (event: MouseEvent) => {
+      const link = (event.target as Element | null)?.closest("a");
+      if (!link) return;
+      event.preventDefault();
+      const reference = allowedReferences.find(t => t.href === link.getAttribute("href"));
+      if (reference) { dialog.close(); void openReference(reference); }
+    };
+    node.addEventListener("click", click);
+    return { destroy: () => node.removeEventListener("click", click) };
+  }
 
   function displaySaved(recap: SavedRecap) {
     currentKey = recap.key; text = recap.body; model = recap.model;
     headline = recap.title || "Activity recap";
+    references = recap.references ?? [];
     inputTokens = recap.inputTokens; outputTokens = recap.outputTokens;
     since = recap.since; until = recap.until; error = "";
   }
@@ -52,6 +87,7 @@
     request?.abort();
     const current = request = new AbortController();
     busy = true; error = ""; text = ""; model = "";
+    references = [];
     headline = loadingTitles[Math.floor(Math.random() * loadingTitles.length)];
     elapsed = 0;
     const started = Date.now();
@@ -67,6 +103,7 @@
       if (current !== request) return;
       text = data.recap?.body ?? "No saved summaries, new notes, or reminders cover this period.";
       headline = data.recap?.title || "Activity recap";
+      references = data.recap?.references ?? [];
       model = data.recap?.model ?? "";
       inputTokens = data.recap?.inputTokens ?? null;
       outputTokens = data.recap?.outputTokens ?? null;
@@ -149,7 +186,7 @@
   {/if}
   {#if busy}<div class="loading" aria-busy="true"><LoadingSpinner size="1rem" label="Generating recap" /><div><p role="status">{elapsed < 20 ? "Generating highlights..." : "Still generating highlights..."}</p><small>{elapsed}s elapsed. You can close this window; we'll notify you when it's ready.</small></div></div>{/if}
   {#if error}<p role="alert">{error}</p><button on:click={generate}>Try again</button>{/if}
-  {#if text}<div class="recap-text">{@html rendered}</div>{/if}
+  {#if text}<div class="recap-text" use:recapNavigation>{@html rendered}</div>{/if}
   {#if !busy && text}<footer><div>From {formatTime(since)} to {formatTime(until)}</div>{#if model}{model} | {inputTokens === null ? "Input tokens unavailable" : `${inputTokens.toLocaleString()} input tokens`} | {outputTokens === null ? "Output tokens unavailable" : `${outputTokens.toLocaleString()} output tokens`}{/if}</footer>{/if}
   <svg class="corner-plant" width="76" height="108" viewBox="0 0 76 108" fill="none" aria-hidden="true">
     <path d="M41 103V32c0-12-13-12-13 0v41M28 74H17c-9 0-12-5-12-13V49M41 65h13c10 0 15-7 15-16V35M9 103h59" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
@@ -197,6 +234,9 @@
   .recap-text :global(h1:first-child), .recap-text :global(h2:first-child), .recap-text :global(h3:first-child) { margin-top: 0; }
   .recap-text :global(strong) { color: #f4efdf; font-weight: 650; }
   .recap-text :global(a) { color: var(--journal-sage); text-underline-offset: .15em; }
+  .recap-text :global(a strong) { color: inherit; }
+  .recap-text :global(a:hover) { color: var(--journal-ink); }
+  .recap-text :global(a:focus-visible) { outline: 2px solid var(--journal-sage); outline-offset: 3px; }
   .recap-text :global(del) { color: var(--journal-muted); }
   footer { position: relative; margin-top: 1.5rem; padding: .85rem 3rem 0 0; border-top: 1px solid var(--journal-rule); color: var(--journal-muted); font-size: .68rem; line-height: 1.6; }
   footer div { margin-bottom: .3rem; }
