@@ -58,6 +58,12 @@ in cached results; missing usage is shown as unavailable, not estimated.
 Saved recaps retain their requested from/to timestamps in SQLite. The footer
 shows that interval; subtle transparent side chevrons browse the newest 50 saved
 results without model calls, preserving each result's model and token counts.
+The recap uses a compact field-newspaper treatment: generated and persisted
+article headline, two columns on wide screens, one column on mobile, and a muted
+scrollbar. Canonical Needle typography comes from Marketer's brand catalog:
+locally bundled Nunito Sans for copy and IBM Plex Serif Italic for the editorial
+headline. The header keeps its prickly-pear SVG; the divider has no leaf sprig.
+Section headings have no emoji, and prose uses short paragraphs rather than lists.
 Coverage explicitly describes cumulative summaries, omitted sessions and missing
 summaries; this is not an exact commit or time-window change ledger. Recaps have
 no background generation queue and do not launch models at startup.

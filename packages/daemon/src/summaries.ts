@@ -77,6 +77,7 @@ export interface RecapEntry {
 export interface SavedRecap {
   key: string; body: string; model: string; inputTokens: number | null; outputTokens: number | null;
   since: number | null; until: number | null;
+  title?: string | null;
 }
 
 /** Append-only cumulative snapshots; a generation date is never a work date. */
@@ -92,8 +93,8 @@ export class SummaryHistory {
       CREATE INDEX IF NOT EXISTS snapshot_sources ON snapshots(source, id);
       CREATE TABLE IF NOT EXISTS recaps_brief (key TEXT PRIMARY KEY, body TEXT NOT NULL, model TEXT NOT NULL, inputTokens INTEGER, outputTokens INTEGER);`);
     const columns = this.db.query("PRAGMA table_info(recaps_brief)").all() as { name: string }[];
-    for (const column of ["since", "until"]) {
-      if (!columns.some(c => c.name === column)) this.db.exec(`ALTER TABLE recaps_brief ADD COLUMN ${column} INTEGER`);
+    for (const [column, type] of [["since", "INTEGER"], ["until", "INTEGER"], ["title", "TEXT"]]) {
+      if (!columns.some(c => c.name === column)) this.db.exec(`ALTER TABLE recaps_brief ADD COLUMN ${column} ${type}`);
     }
   }
   save(record: SummaryRecord) {
@@ -127,9 +128,9 @@ export class SummaryHistory {
   }
   cached(key: string) { return this.db.query("SELECT * FROM recaps_brief WHERE key=?").get(key) as SavedRecap | null; }
   recaps() { return this.db.query("SELECT * FROM recaps_brief WHERE since IS NOT NULL AND until IS NOT NULL ORDER BY until DESC, key DESC LIMIT 50").all() as SavedRecap[]; }
-  cache(key: string, body: string, model: string, inputTokens: number | null = null, outputTokens: number | null = null, range?: { since: number; until: number }) {
-    this.db.query("INSERT OR REPLACE INTO recaps_brief(key,body,model,inputTokens,outputTokens,since,until) VALUES(?,?,?,?,?,?,?)")
-      .run(key, body, model, inputTokens, outputTokens, range?.since ?? null, range?.until ?? null);
+  cache(key: string, body: string, model: string, inputTokens: number | null = null, outputTokens: number | null = null, range?: { since: number; until: number; title?: string | null }) {
+    this.db.query("INSERT OR REPLACE INTO recaps_brief(key,body,model,inputTokens,outputTokens,since,until,title) VALUES(?,?,?,?,?,?,?,?)")
+      .run(key, body, model, inputTokens, outputTokens, range?.since ?? null, range?.until ?? null, range?.title ?? null);
   }
   close() { this.db.close(); }
 }

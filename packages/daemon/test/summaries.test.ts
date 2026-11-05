@@ -70,7 +70,8 @@ test("recap history survives reopening, deduplicates snapshots and selects by ac
   expect(reopened.cached(key)?.inputTokens).toBe(120);
   expect(reopened.cached(key)?.outputTokens).toBe(30);
   reopened.cache("older", "Old highlights", "small", 10, 5, { since: 10, until: 20 });
-  reopened.cache("newer", "New highlights", "small", 20, 6, { since: 20, until: 30 });
+  reopened.cache("newer", "New highlights", "small", 20, 6, { since: 20, until: 30, title: "A productive day" });
+  expect(reopened.cached("newer")?.title).toBe("A productive day");
   expect(reopened.recaps().map(r => [r.key, r.since, r.until])).toEqual([["newer", 20, 30], ["older", 10, 20]]);
   for (let i = 0; i < 40; i++) reopened.save({ ...record, frontmatter: { ...record.frontmatter, source: `/s${i}` }, body: "x".repeat(1000) });
   const bounded = reopened.range(0, 300);
