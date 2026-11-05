@@ -628,6 +628,16 @@ active. Prompt text compiles; not rebuilt/installed as part of this copy change.
 
 ### 2026-11-04: planned broker restart restores the exact live set
 
+2026-11-06 recovery labels: the daemon's background status/reconnect responses
+now add display-only titles from the existing cached AI title index when no
+explicit title exists. Exact session IDs or saved terminal/source links resolve
+titles; cwd and short ID prefixes never select another session's title. Explicit
+names and command names retain precedence, with existing agent/ID labels as the
+last fallback. The dialog retains these labels through progress updates without
+renaming saved sessions or generating summaries. Unit and headless browser checks
+cover title precedence, selection and progress behavior. This needs a UI/daemon
+update, not a broker restart; no build or production restart was performed.
+
 The former full-restart procedure used the destructive shutdown RPC: it cleared the broker snapshot while exit notifications persisted UI sessions as stopped. Recovery also left unmatched historical terminal columns eligible for a background launch, which can resemble random old sessions returning on macOS or Windows.
 
 Added POST /api/background/restart and a restart RPC. The broker fences new launches, settles accepted operations, atomically saves its exact live manifest with planned-restart intent, and only then stops resources. The daemon detaches its old controller, waits for the old PID to exit, and launches the installed broker. The UI gates spawning during replacement and automatically replays only a planned restart selection; crash recovery still requires selection. Even an empty live manifest is reconciled before ungating startup. Restored sessions receive new terminal IDs and a remount key; stale exited/dormant flags are cleared. Historical unmatched terminals become read-only, and stale unstarted placeholders are discarded.

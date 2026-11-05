@@ -20,6 +20,8 @@
   let complete = false;
   let phase = "Starting processes";
   let results: Record<string, any> = {};
+  let restoreTitles: Record<string, string> = {};
+  $: if ($backgroundStatus.restoreTitles) restoreTitles = $backgroundStatus.restoreTitles;
   $: if ($backgroundStatus.restore) lastRestore = $backgroundStatus.restore;
   $: restore =
     $backgroundStatus.restore ??
@@ -27,7 +29,8 @@
   $: restoredElsewhere = !!restore && !$backgroundStatus.restore && !complete;
   $: progress = { ...Object.fromEntries((restore?.progress ?? []).map((row: any) => [row.id, row])), ...results };
   $: finished = Object.values(progress).filter((row: any) => row.state === "resumed" || row.state === "failed").length;
-  $: current = restore?.candidates.find((row: any) => progress[row.id]?.state === "resuming")?.title;
+  $: currentRow = restore?.candidates.find((row: any) => progress[row.id]?.state === "resuming");
+  $: current = currentRow ? restoreTitles[currentRow.id] ?? currentRow.title : undefined;
   $: if (restore && selectionId !== restore.id) {
     selectionId = restore.id;
     hidden = false;
@@ -137,7 +140,7 @@
                 value={row.id}
                 bind:group={selected}
                 disabled={busy || complete || restoredElsewhere}
-              /><span><strong>{row.title}</strong><small>{row.cwd}</small></span
+              /><span><strong>{restoreTitles[row.id] ?? row.title}</strong><small>{row.cwd}</small></span
               ><small class="row-progress">{#if progress[row.id]?.state === "resuming"}<LoadingSpinner label="Resuming" />{/if}{progress[row.id]?.state === "resumed" ? "Resumed" : progress[row.id]?.state === "failed" ? "Failed" : progress[row.id]?.state === "resuming" ? "Resuming" : busy && selected.includes(row.id) ? "Waiting" : row.kind === "command" ? "command" : "session"}{#if progress[row.id]?.error}<small class="error">{progress[row.id].error}</small>{/if}</small></label
             >
           {/each}

@@ -10,6 +10,36 @@ export interface RestoreCandidate {
   command?: any;
 }
 
+/** Display-only recovery names: preserve explicit titles without promoting AI
+ * suggestions into saved names or matching another session merely by its cwd. */
+export function restoreCandidateTitles(
+  candidates: RestoreCandidate[],
+  explicitTitles: Record<string, string>,
+  openSessions: { source?: string; transcriptSource?: string; attachTermId?: string; resumeSessionId?: string }[],
+  aiTitles: ReadonlyMap<string, string>,
+): Record<string, string> {
+  const knownSources = [...Object.keys(explicitTitles), ...aiTitles.keys()];
+  return Object.fromEntries(candidates.map(row => {
+    const terminal = row.terminal;
+    if (!terminal) return [row.id, row.title];
+    const owner = terminal.ownerId as string | undefined;
+    const session = openSessions.find(session => session.attachTermId === terminal.id ||
+      (!!owner && (session.source === owner || session.resumeSessionId === owner)));
+    const source = owner ? knownSources.find(source => {
+      const stem = source.replace(/\\/g, "/").split("/").pop()!.replace(/\.jsonl$/i, "").toLowerCase();
+      const id = owner.toLowerCase();
+      return stem === id || (/^[0-9a-f-]{36}$/i.test(id) && stem.endsWith(`-${id}`));
+    }) : undefined;
+    const keys = [session?.source, session?.transcriptSource, source, owner, `shell:${terminal.id}`]
+      .filter((key): key is string => !!key);
+    const explicit = keys.map(key => explicitTitles[key]?.trim()).find(Boolean);
+    const suggested = keys.map(key => aiTitles.get(key.toLowerCase())?.trim()).find(Boolean);
+    const generic = terminal.agent === "shell" ? "Terminal" : terminal.agent ?? "Terminal";
+    const alreadyNamed = row.title !== generic && row.title !== `${generic}${owner ? ` (${owner.slice(0, 8)})` : ""}`;
+    return [row.id, explicit || (alreadyNamed ? row.title : suggested || row.title)];
+  }));
+}
+
 export function resumeTerminalCommand(record: any): string[] {
   let command = [...(record.resumeCmd ?? record.cmd)];
   if (record.agent !== "codex" && record.agent !== "claude") return command;

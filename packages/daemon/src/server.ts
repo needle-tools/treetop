@@ -1,4 +1,5 @@
 import { BrokerCodexAdapter } from "./broker-codex";
+import { restoreCandidateTitles } from "./background-restore";
 import { createReplayNDJSONStream, progressiveJsonResponse } from "./server-helpers";
 import { updateInstallParent, watchForUpdate } from "../../../src/electrobun/update-handoff";
 import {
@@ -711,6 +712,15 @@ function withSessionTitles<T extends { source: string }>(
     ...(manualTitle ? { manualTitle } : {}),
     ...(aiTitle ? { aiTitle } : {}),
   };
+}
+
+async function withBackgroundRestoreTitles(status: any) {
+  if (!status.restore?.candidates?.length) return status;
+  const [titles, prefs] = await Promise.all([workspace.listSessionTitles(), workspace.getPrefs()]);
+  let sessions: any[] = [];
+  try { sessions = Object.values(JSON.parse(prefs["supergit:openSessions"] ?? "{}")).flat(); }
+  catch (error) { console.warn("Recovery session title links unavailable", error); }
+  return { ...status, restoreTitles: restoreCandidateTitles(status.restore.candidates, titles, sessions, aiTitles) };
 }
 
 async function syncCodexThreadTitleIndex(
@@ -10356,7 +10366,7 @@ const server = Bun.serve<TermWsData, never>({
           await connectPersistentBroker(workspace.path, backgroundBackend);
         }
         const acquired = await backgroundBackend.request("acquire", { windowId: `bootstrap:${crypto.randomUUID()}`, sequence: 0 });
-        return json({ ...acquired, enabled: true, connected: true });
+        return json(await withBackgroundRestoreTitles({ ...acquired, enabled: true, connected: true }));
       }
       if (url.pathname === "/api/background/restore-ack" && req.method === "POST") {
         if (!backgroundBackend) return json({ error: "Background sessions unavailable" }, { status: 409 });
@@ -10373,7 +10383,8 @@ const server = Bun.serve<TermWsData, never>({
         return json(await backgroundBackend.request("shutdown"));
       }
       if (url.pathname === "/api/background/status" && req.method === "GET") {
-        return json(backgroundBackend ? await backgroundBackend.request("status").then(status => ({ ...status, enabled: true, connected: true })).catch(() => backgroundBackend.status()) : { enabled: false });
+        const status = backgroundBackend ? await backgroundBackend.request("status").then(status => ({ ...status, enabled: true, connected: true })).catch(() => backgroundBackend.status()) : { enabled: false };
+        return json(await withBackgroundRestoreTitles(status));
       }
       if (url.pathname === "/api/background/lease" && req.method === "POST") {
         if (!backgroundBackend) return json({ enabled: false });

@@ -2,7 +2,37 @@ import { expect, test } from "bun:test";
 import {
   restoreCandidates,
   resumeTerminalCommand,
+  restoreCandidateTitles,
 } from "../src/background-restore";
+
+test("recovery labels prefer explicit names, then cached AI titles, then existing fallbacks", () => {
+  const owner = "01a16c86-aaaa-bbbb-cccc-000000000001";
+  const other = "01a16c86-aaaa-bbbb-cccc-000000000002";
+  const source = `C:\\sessions\\rollout-2026-11-05-${owner}.jsonl`;
+  const otherSource = `C:\\sessions\\${other}.jsonl`;
+  const rows = restoreCandidates({ terminals: [
+    { id: "ai", agent: "codex", ownerId: owner, cwd: "/repo" },
+    { id: "unknown", agent: "codex", ownerId: "different", cwd: "/repo" },
+    { id: "shell", agent: "shell", cwd: "/repo" },
+  ], commands: [{ repoId: "r", linkId: "dev", name: "Worker launcher", cwd: "/repo" }] });
+  rows[0]!.title = `codex (${owner.slice(0, 8)})`;
+  const ai = new Map([[source.toLowerCase(), "Editor performance fixes"], [otherSource.toLowerCase(), "Other session"]]);
+  const before = JSON.stringify(rows);
+  expect(restoreCandidateTitles(rows, {}, [], ai)).toEqual({
+    "terminal:ai": "Editor performance fixes", "terminal:unknown": "codex", "terminal:shell": "Terminal", "command:r:dev": "Worker launcher",
+  });
+  // An explicitly chosen generic-looking title must still override AI.
+  const explicit = restoreCandidateTitles(rows, { [source]: "codex" }, [], ai);
+  expect(explicit["terminal:ai"]).toBe("codex");
+  expect(restoreCandidateTitles([{ ...rows[0]!, title: "Previously named session" }], {}, [], ai)["terminal:ai"])
+    .toBe("Previously named session");
+  const linked = restoreCandidateTitles(rows, { "custom-source": "My chosen title", "shell:shell": "SSH forum" },
+    [{ source: "custom-source", attachTermId: "ai" }], ai);
+  expect(linked["terminal:ai"]).toBe("My chosen title");
+  expect(linked["terminal:shell"]).toBe("SSH forum");
+  expect(JSON.stringify(rows)).toBe(before);
+  expect(restoreCandidateTitles(rows, {}, [], new Map([[source.toLowerCase(), "  "]]))["terminal:ai"]).toBe(rows[0]!.title);
+});
 
 test("restore lists saved commands once and keeps process restarts opt-in", () => {
   const terminal = {

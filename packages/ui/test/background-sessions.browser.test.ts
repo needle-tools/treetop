@@ -9,7 +9,8 @@ import { svelte } from "@sveltejs/vite-plugin-svelte";
 
 test(
   "restore stays opt-in, submits only selected rows and fits a compact window",
-  { timeout: 30_000 },
+  // Includes cold Vite compilation plus selection, settings and progress flows.
+  { timeout: 120_000 },
   async () => {
     const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
     const fixture = await mkdtemp(join(root, "test/.background-sessions-"));
@@ -36,8 +37,8 @@ test(
         import { backgroundStatus, backgroundRestorePending } from '/src/background-state';
         import '/src/styles/tokens.css';
         import '/src/styles/base.css';
-        backgroundStatus.set({enabled:true,connected:true,sessions:0,commands:0,restore:{id:'snapshot',candidates:[
-          {id:'terminal:codex',title:'Codex: editor fixes',cwd:'C:/git/needle-web-editor',kind:'terminal',selected:true},
+        backgroundStatus.set({enabled:true,connected:true,sessions:0,commands:0,restoreTitles:{'terminal:codex':'Codex: editor fixes'},restore:{id:'snapshot',candidates:[
+          {id:'terminal:codex',title:'codex (01a16c86)',cwd:'C:/git/needle-web-editor',kind:'terminal',selected:true},
           {id:'command:cloud:dev',title:'Cloud dev',cwd:'C:/git/needle-cloud',kind:'command',selected:false}
         ]}});
         backgroundRestorePending.set(true);
@@ -100,6 +101,15 @@ test(
       await page.goto(url);
       const dialog = page.getByRole("dialog");
       await dialog.waitFor();
+      await dialog.getByText("Codex: editor fixes", { exact: true }).waitFor();
+      assert.equal(await dialog.getByText("codex (01a16c86)", { exact: true }).count(), 0);
+      assert.equal(await dialog.getByText("Cloud dev", { exact: true }).count(), 1);
+      await page.evaluate(async () => {
+        const module = "/src/background-state.ts";
+        const state = await import(/* @vite-ignore */ module);
+        state.backgroundStatus.update(status => ({ ...status, restore: { ...status.restore, progress: [] } }));
+      });
+      await dialog.getByText("Codex: editor fixes", { exact: true }).waitFor();
       assert.equal(await page.getByRole("button", { name: /sessions.*terminals.*commands/ }).count(), 0, "background process counts do not belong in the application toolbar");
       assert.equal(
         requests.length,
