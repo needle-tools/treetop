@@ -1846,6 +1846,18 @@ test("canonical recovery wakes exactly the saved running set, not older terminal
   expect(selectSessionsForBackgroundSpawn(result.byWt, { liveTerminalIds: new Set(["replacement"]), inFlight: new Set(), newTermIds: result.newTermIds })).toEqual([]);
 });
 
+test("recovery preserves unrelated running columns and their terminal mappings", () => {
+  const running = [
+    {agent:"codex",source:"__new__:codex:running",mode:"terminal"},
+    {agent:"claude",source:"running.jsonl",mode:"terminal",attachTermId:"live-claude"},
+  ] as OpenSession[];
+  const decision = applyBackgroundRestoreDecision({"/repo":running},
+    [{id:"terminal:old",cwd:"/repo",ownerId:"old"}], [],
+    {"__new__:codex:running":"live-codex"}, new Set(["live-codex","live-claude"]));
+  expect(decision.byWt["/repo"]).toEqual(running);
+  expect(decision.newTermIds).toEqual({"__new__:codex:running":"live-codex"});
+});
+
 test("restored commands recreate their columns after old process exits removed them", () => {
   const restored = applyBackgroundRestoreDecision({"/repo":[]} as Record<string, OpenSession[]>,
     [{id:"command:repo:dev",kind:"command",cwd:"/repo/package",worktreePath:"/repo",commandId:"dev"}],

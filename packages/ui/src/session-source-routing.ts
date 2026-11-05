@@ -297,6 +297,7 @@ export function applyBackgroundRestoreDecision<T extends OpenSession>(
   }[],
   results: { id: string; ok: boolean; termId?: string }[],
   newTermIds: Record<string, string>,
+  liveTerminalIds: ReadonlySet<string> = new Set(),
 ) {
   const restored = new Map(
     results.filter((result) => result.ok).map((result) => [result.id, result]),
@@ -318,6 +319,8 @@ export function applyBackgroundRestoreDecision<T extends OpenSession>(
               row.ownerId === session.source)),
       );
       if (!row) {
+        const terminalId = session.attachTermId ?? resolveTermId(session, newTermIds);
+        if (terminalId && liveTerminalIds.has(terminalId)) return [session];
         // The broker's live manifest is authoritative, including on macOS.
         // Historical terminal columns must not launch beside its selection.
         if (session.source.startsWith("__new__:") && (session.agent === "codex" || session.agent === "claude")) {

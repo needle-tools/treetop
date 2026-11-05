@@ -628,6 +628,8 @@ active. Prompt text compiles; not rebuilt/installed as part of this copy change.
 
 ### 2026-11-04: planned broker restart restores the exact live set
 
+2026-11-06 recovery reconciliation: preserve unrelated columns and synthetic-source mappings when their terminal IDs are confirmed live. The recovery manifest describes stopped processes; it must not demote or remove sessions already running outside that manifest. Regression coverage includes fresh Codex and attached Claude columns alongside the existing stale-column cleanup tests. No broker restart required.
+
 2026-11-06 recovery labels: the daemon's background status/reconnect responses
 now add display-only titles from the existing cached AI title index when no
 explicit title exists. Exact session IDs or saved terminal/source links resolve

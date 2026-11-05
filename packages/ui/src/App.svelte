@@ -3812,7 +3812,7 @@
   async function reconcileBackgroundRestore(event: any) {
     const { candidates, results, done } = event.detail;
     try {
-      const applied = applyBackgroundRestoreDecision(openSessionsByWt, candidates, results, newTermIds);
+      const applied = applyBackgroundRestoreDecision(openSessionsByWt, candidates, results, newTermIds, liveTerminalIds);
       openSessionsByWt = applied.byWt;
       newTermIds = applied.newTermIds;
       const restoredIds = new Set(results.filter((result: any) => result.ok && result.termId).map((result: any) => result.termId));
