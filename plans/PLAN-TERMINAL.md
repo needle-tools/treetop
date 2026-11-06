@@ -628,6 +628,8 @@ active. Prompt text compiles; not rebuilt/installed as part of this copy change.
 
 ### 2026-11-04: planned broker restart restores the exact live set
 
+2026-11-06 column drag ordering: rendered session columns are filtered, so their indices cannot address the saved open-session array. Drag source, preview and drop now use session source identities; insertion resolves against the current saved array and uses the pointer's actual drop side. Regression coverage checks moves in both directions with hidden entries and missing endpoints. No broker change required.
+
 2026-11-06 recovery reconciliation: preserve unrelated columns and synthetic-source mappings when their terminal IDs are confirmed live. The recovery manifest describes stopped processes; it must not demote or remove sessions already running outside that manifest. Regression coverage includes fresh Codex and attached Claude columns alongside the existing stale-column cleanup tests. No broker restart required.
 
 2026-11-06 recovery labels: the daemon's background status/reconnect responses

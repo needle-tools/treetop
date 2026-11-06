@@ -16,6 +16,7 @@ import { applySessionSurfacePreference } from "../src/storage";
 import {
   resolveTermId,
   applyBackgroundRestoreDecision,
+  reorderSessionColumns,
   isOpenInWt,
   isInspectorSessionSource,
   normalizeSessionForOpen,
@@ -1844,6 +1845,15 @@ test("canonical recovery wakes exactly the saved running set, not older terminal
   expect(result.newTermIds["old.jsonl"]).toBeUndefined();
   expect(result.byWt["/repo"]!.some(s => s.source === "__new__:codex:stale-placeholder")).toBe(false);
   expect(selectSessionsForBackgroundSpawn(result.byWt, { liveTerminalIds: new Set(["replacement"]), inFlight: new Set(), newTermIds: result.newTermIds })).toEqual([]);
+});
+
+test("column drops use identities despite hidden columns and intervening changes", () => {
+  const rows = ["hidden", "a", "b", "c"].map(source => ({source}));
+  expect(reorderSessionColumns(rows, "a", "c", "right").map(s => s.source)).toEqual(["hidden","b","c","a"]);
+  expect(reorderSessionColumns(rows, "c", "a", "left").map(s => s.source)).toEqual(["hidden","c","a","b"]);
+  expect(reorderSessionColumns(rows, "b", "c", "left")).toEqual(rows);
+  expect(reorderSessionColumns(rows, "missing", "c", "right")).toBe(rows);
+  expect(reorderSessionColumns(rows, "a", "missing", "right")).toBe(rows);
 });
 
 test("recovery preserves unrelated running columns and their terminal mappings", () => {

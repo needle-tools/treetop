@@ -7,6 +7,7 @@
   import {
     resolveTermId,
     applyBackgroundRestoreDecision,
+    reorderSessionColumns,
     normalizeSessionForOpen,
     shellToSession,
     shellSourceToDismiss,
@@ -3889,14 +3890,14 @@
 
   // Drag-to-reorder for sessions inside one worktree's strip. We don't
   // (yet) move sessions between worktrees — that's a bigger UX choice.
-  let dragSource: { wtPath: string; index: number } | null = null;
+  let dragSource: { wtPath: string; source: string } | null = null;
   /** Live drop preview — drives the dashed insertion-line on the
    *  hovered column. `side: "left"` means the dragged column will
    *  land BEFORE this column; `"right"` means AFTER. Cleared on
    *  drop, dragend, and dragleave-from-strip. */
   let dragOverTarget: {
     wtPath: string;
-    index: number;
+    source: string;
     side: "left" | "right";
   } | null = null;
 
@@ -3950,14 +3951,14 @@
   function handleSessionDragStart(
     e: DragEvent,
     wtPath: string,
-    index: number,
+    source: string,
   ): void {
-    dragSource = { wtPath, index };
+    dragSource = { wtPath, source };
     if (e.dataTransfer) {
       e.dataTransfer.effectAllowed = "copyMove";
       // Must set some data for Firefox to honour the drag.
-      e.dataTransfer.setData("text/plain", `${wtPath}|${index}`);
-      const target = sessionDragLinkTarget(wtPath, index);
+      e.dataTransfer.setData("text/plain", `${wtPath}|${source}`);
+      const target = sessionDragLinkTarget(wtPath, (openSessionsByWt[wtPath] ?? []).findIndex(session => session.source === source));
       if (target) {
         e.dataTransfer.setData(
           LINK_TARGET_DRAG_MIME,
@@ -3978,7 +3979,7 @@
   function handleSessionDragOver(
     e: DragEvent,
     wtPath: string,
-    index: number,
+    source: string,
   ): void {
     if (!dragSource || dragSource.wtPath !== wtPath) return;
     e.preventDefault();
@@ -3991,10 +3992,10 @@
     if (
       !dragOverTarget ||
       dragOverTarget.wtPath !== wtPath ||
-      dragOverTarget.index !== index ||
+      dragOverTarget.source !== source ||
       dragOverTarget.side !== side
     ) {
-      dragOverTarget = { wtPath, index, side };
+      dragOverTarget = { wtPath, source, side };
     }
   }
 
@@ -4018,32 +4019,19 @@
   function handleSessionDrop(
     e: DragEvent,
     wtPath: string,
-    targetIndex: number,
+    targetSource: string,
   ): void {
     e.preventDefault();
     const src = dragSource;
-    const hover = dragOverTarget;
     dragSource = null;
     dragOverTarget = null;
     if (!src || src.wtPath !== wtPath) return;
-    // Translate "drop on column N, left/right half" into an
-    // insertion index. Without this the drop always lands AT the
-    // target column's index — surprising when the user aimed for
-    // the gap on the other side.
-    let insertAt = targetIndex;
-    if (hover && hover.wtPath === wtPath && hover.index === targetIndex) {
-      insertAt = hover.side === "right" ? targetIndex + 1 : targetIndex;
-    }
-    // Splicing the source out shifts everything after src.index down
-    // by one, so adjust the post-source insertion index accordingly.
-    if (insertAt > src.index) insertAt--;
-    if (insertAt === src.index) return;
+    const el = e.currentTarget as HTMLElement;
+    const rect = el.getBoundingClientRect();
+    const side = e.clientX < rect.left + rect.width / 2 ? "left" : "right";
     const list = openSessionsByWt[wtPath] ?? [];
-    const item = list[src.index];
-    if (!item) return;
-    const next = [...list];
-    next.splice(src.index, 1);
-    next.splice(insertAt, 0, item);
+    const next = reorderSessionColumns(list, src.source, targetSource, side);
+    if (next === list) return;
     openSessionsByWt = { ...openSessionsByWt, [wtPath]: next };
   }
 
@@ -12418,20 +12406,20 @@
                               stripFilter.matched.has(s.source)}
                             class:drop-before={dragOverTarget?.wtPath ===
                               wt.path &&
-                              dragOverTarget.index === i &&
+                              dragOverTarget.source === s.source &&
                               dragOverTarget.side === "left" &&
-                              dragSource?.index !== i}
+                              dragSource?.source !== s.source}
                             class:drop-after={dragOverTarget?.wtPath ===
                               wt.path &&
-                              dragOverTarget.index === i &&
+                              dragOverTarget.source === s.source &&
                               dragOverTarget.side === "right" &&
-                              dragSource?.index !== i}
+                              dragSource?.source !== s.source}
                             data-session-source={s.source}
                             use:colVisibility
                             animate:flip={{ duration: COLUMN_CLOSE_MS }}
                             on:dragover={(e) =>
-                              handleSessionDragOver(e, wt.path, i)}
-                            on:drop={(e) => handleSessionDrop(e, wt.path, i)}
+                              handleSessionDragOver(e, wt.path, s.source)}
+                            on:drop={(e) => handleSessionDrop(e, wt.path, s.source)}
                             on:dragend={handleSessionDragEnd}
                             on:click={() => {
                               commitStripSearch(row.key, wt.path, s.source);
@@ -12504,7 +12492,7 @@
                                   });
                                 }}
                                 onDragStart={(e) =>
-                                  handleSessionDragStart(e, wt.path, i)}
+                                  handleSessionDragStart(e, wt.path, s.source)}
                               />
                             {:else if s.source.startsWith("__artifacts__:")}
                               {@const artifactOwner = artifactMapOwnerSource(
@@ -12522,7 +12510,7 @@
                                 )}
                                 onClose={() => closeSessionInWt(wt.path, s)}
                                 onDragStart={(e) =>
-                                  handleSessionDragStart(e, wt.path, i)}
+                                  handleSessionDragStart(e, wt.path, s.source)}
                               />
                             {:else if s.source.startsWith("__context_view__:")}
                               <SessionContextView
@@ -12533,7 +12521,7 @@
                                 )}
                                 onClose={() => closeSessionInWt(wt.path, s)}
                                 onDragStart={(e) =>
-                                  handleSessionDragStart(e, wt.path, i)}
+                                  handleSessionDragStart(e, wt.path, s.source)}
                               />
                             {:else if s.source.startsWith("__files__:")}
                               <FileBrowser
@@ -12547,7 +12535,7 @@
                                 onToast={(m) =>
                                   addToast({ kind: "warning", message: m })}
                                 onDragStart={(e) =>
-                                  handleSessionDragStart(e, wt.path, i)}
+                                  handleSessionDragStart(e, wt.path, s.source)}
                               />
                             {:else if s.source.startsWith("__history__:")}
                               <GitHistory
@@ -12555,7 +12543,7 @@
                                 source={s.source}
                                 onClose={() => closeSessionInWt(wt.path, s)}
                                 onDragStart={(e) =>
-                                  handleSessionDragStart(e, wt.path, i)}
+                                  handleSessionDragStart(e, wt.path, s.source)}
                                 fsChangeKey={fsChangeKey[wt.path] ?? 0}
                                 daemonId={daemonIdForWorktreePath(
                                   repos,
@@ -12954,7 +12942,7 @@
                                     }
                                   }}
                                   onDragStart={(e) =>
-                                    handleSessionDragStart(e, wt.path, i)}
+                                    handleSessionDragStart(e, wt.path, s.source)}
                                 />
                               {/key}
                             {:else}
@@ -13233,7 +13221,7 @@
                                     )}
                                   onClose={() => closeSessionInWt(wt.path, s)}
                                   onDragStart={(e) =>
-                                    handleSessionDragStart(e, wt.path, i)}
+                                    handleSessionDragStart(e, wt.path, s.source)}
                                   onTitleChange={() => void load()}
                                 />
                               {/key}

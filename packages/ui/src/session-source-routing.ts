@@ -273,6 +273,22 @@ export function shouldHoldOffscreenAttachedTerminal(args: {
 // Closed-over `newTermIds` is now an explicit parameter.
 // ---------------------------------------------------------------------------
 
+/** Resolve both ends at drop time; rendered columns may omit saved entries. */
+export function reorderSessionColumns<T extends { source: string }>(
+  sessions: T[], source: string, target: string, side: "left" | "right",
+): T[] {
+  const from = sessions.findIndex(session => session.source === source);
+  const to = sessions.findIndex(session => session.source === target);
+  if (from < 0 || to < 0 || from === to) return sessions;
+  let insertAt = to + (side === "right" ? 1 : 0);
+  if (insertAt > from) insertAt--;
+  if (insertAt === from) return sessions;
+  const next = [...sessions];
+  const [item] = next.splice(from, 1);
+  next.splice(insertAt, 0, item!);
+  return next;
+}
+
 export function resolveTermId(
   s: { source: string },
   newTermIds: Record<string, string>,
