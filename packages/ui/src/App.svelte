@@ -13567,7 +13567,7 @@
 <BackgroundSessions on:restored={reconcileBackgroundRestore} />
 <SettingsDialog bind:open={settingsDialogOpen} />
 <SummarizeDialog />
-<ActivityRecap bind:this={activityRecap} notify={addToast} projects={repos} openReference={async reference => {
+<ActivityRecap dismissNotification={dismissToast} bind:this={activityRecap} notify={addToast} projects={repos} openReference={async reference => {
   if (reference.type === "session") { await focusSessionBySource(reference.value); return; }
   const repo = repos.find(r => r.path === reference.value || r.worktrees.some(w => w.path === reference.value));
   if (repo) await focusRepoRow(repo.id);

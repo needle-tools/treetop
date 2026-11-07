@@ -46,7 +46,14 @@ Settings > Activity recap generates immediately for the last 24 hours. Return of
 use persisted actual UI activity (eight hours on startup, four hours while open).
 Return offers first check saved-summary, new-note and daily-reminder coverage and stay
 silent when it is empty; an empty generation result never sends a ready notice.
-Offers never generate. Opening the recap submits at most 20 sessions, notes created
+Offers never generate.
+Return notifications now say "Catch up..." and offer "Remind me in one hour".
+The reminder persists through daemon preferences, retains the original pre-break
+start time across reloads, and reoffers while the app is focused after its due time.
+Clicking the notification or Catch up generates through the same activity recap UI;
+snoozing never generates. The generation end time advances to the actual click.
+
+Opening the recap submits at most 20 sessions, notes created
 within the recap interval, and pending reminders due on the user's local calendar
 day. These share one 8,000-character prompt to a small Codex model, with a concise
 Done / In progress / Next structure under 180 words and natural Markdown formatting

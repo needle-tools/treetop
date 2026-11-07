@@ -10,6 +10,7 @@
   import DOMPurify from "dompurify";
 
   export let notify: (toast: AddToastOpts) => number;
+  export let dismissNotification: (id: number) => void = () => {};
   type RecapReference = { href: string; type: "project" | "session"; value: string; label: string };
   export let projects: Array<{ id: string; name: string; path: string }> = [];
   export let openReference: (reference: RecapReference) => void | Promise<void>;
@@ -19,6 +20,14 @@
   let inputTokens: number | null = null, outputTokens: number | null = null;
   let request: AbortController | undefined;
   let availabilityRequest: AbortController | undefined;
+  const catchUpKey = "supergit:recapCatchUp";
+  type CatchUp = { since: number; remindAt: number };
+  let catchUp: CatchUp | null = null;
+  let catchUpOffered = false;
+  function saveCatchUp(value: CatchUp | null) {
+    catchUp = value;
+    getDaemonKV().setItem(catchUpKey, JSON.stringify(value));
+  }
   let elapsed = 0;
   const loadingTitles = ["The latest", "A quick recap", "Recent progress", "Your latest updates", "The short version", "Work in review", "What changed", "A look back"];
   let headline = "Activity recap";
@@ -127,33 +136,59 @@
       const res = await fetch(recapUrl(from, to), { signal: current.signal });
       if (!res.ok) throw new Error(`Recap availability: HTTP ${res.status}`);
       const data = await res.json();
-      if (current.signal.aborted || getSetting("activityRecap.enabled") === false || !data.available) return;
-      notify({ kind: "info", title: "Welcome back", message: "Review activity since your last visit?",
-        persist: true, silent: true, action: { label: "Activity recap", onClick: () => show(from) } });
+      if (current.signal.aborted || getSetting("activityRecap.enabled") === false) return;
+      if (!data.available) { saveCatchUp(null); catchUpOffered = false; return; }
+      const offer = catchUp;
+      let notificationId: number;
+      const open = () => { saveCatchUp(null); dismissNotification(notificationId); show(from); };
+      notificationId = notify({ kind: "info", title: "Catch up...", message: `Review work since ${formatTime(from)}.`,
+        persist: true, silent: true, onClick: open,
+        action: { label: "Catch up", onClick: open },
+        actions: [{ label: "Remind me in one hour", onClick: () => {
+          saveCatchUp({ since: from, remindAt: Date.now() + 3600_000 });
+          catchUpOffered = false;
+          dismissNotification(notificationId);
+        } }],
+        onDismiss: () => { if (catchUp === offer) saveCatchUp(null); },
+      });
     } catch (e) {
-      if (!current.signal.aborted) console.warn("Could not check recap availability", e);
+      if (!current.signal.aborted) {
+        catchUpOffered = false;
+        console.warn("Could not check recap availability", e);
+      }
     }
   }
   onMount(() => {
     const kv = getDaemonKV(), key = "supergit:recapLastActivity";
     let last = Number(kv.getItem(key)) || 0, saved = last, starting = true;
+    try { catchUp = JSON.parse(kv.getItem(catchUpKey) ?? "null"); }
+    catch (error) { console.warn("Could not read catch-up reminder", error); }
+    const checkCatchUp = () => {
+      if (!catchUp || catchUpOffered || document.hidden || !document.hasFocus() ||
+          getSetting("activityRecap.enabled") === false || Date.now() < catchUp.remindAt) return;
+      catchUpOffered = true;
+      void offerRecap(catchUp.since, Date.now());
+    };
     const record = () => {
       if (document.hidden || !document.hasFocus()) return;
       const now = Date.now(), previous = last;
-      if (getSetting("activityRecap.enabled") !== false && shouldOfferActivityRecap(previous, now, starting)) {
-        void offerRecap(previous, now);
+      if (!catchUp && getSetting("activityRecap.enabled") !== false && shouldOfferActivityRecap(previous, now, starting)) {
+        saveCatchUp({ since: previous, remindAt: now });
       }
+      checkCatchUp();
       last = now;
       if (now - saved >= 60_000 || starting) { kv.setItem(key, String(now)); saved = now; }
       starting = false;
     };
     record();
+    const reminderTimer = setInterval(checkCatchUp, 30_000);
     const activity = () => record();
     const events = ["pointerdown", "keydown", "wheel", "focus", "visibilitychange"];
     for (const event of events) window.addEventListener(event, activity, { capture: true, passive: true });
     return () => {
       request?.abort();
       availabilityRequest?.abort();
+      clearInterval(reminderTimer);
       for (const event of events) window.removeEventListener(event, activity, true);
     };
   });

@@ -18,6 +18,13 @@ test("recap offers require eight hours on startup or four hours away while open"
   expect(shouldOfferActivityRecap(last, 4 * hour, false)).toBe(false);
   expect(shouldOfferActivityRecap(last, 5 * hour, false)).toBe(true);
 });
+
+test("returning Monday offers catch-up from Friday, while first-ever startup does not", () => {
+  const friday = new Date(2026, 10, 6, 17).getTime();
+  const monday = new Date(2026, 10, 9, 9).getTime();
+  expect(shouldOfferActivityRecap(friday, monday, true)).toBe(true);
+  expect(shouldOfferActivityRecap(0, monday, true)).toBe(false);
+});
 import {
   ACTIVITY_IDLE_MS,
   bumpActivityWith,

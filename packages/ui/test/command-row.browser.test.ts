@@ -30,14 +30,16 @@ test("command URL hover preserves horizontal scrolling and remains clickable", {
       <script>
         import Actions from '${component}';
         import '/src/styles/tokens.css';
+        import '/src/styles/base.css';
         import '/src/styles/worktree-row.css';
+        let active = new Set(["0"]);
         const links = [
           ...Array.from({length: 18}, (_, i) => ({id: String(i), kind: 'command', name: 'Server command ' + i, cmd: 'npm run dev'})),
           ...Array.from({length: 12}, (_, i) => ({id: 'app-' + i, kind: 'url', name: 'App ' + i, url: 'https://example.com/app/' + i})),
         ];
       </script>
       <div style="width:500px; margin:40px">
-        <Actions path="/test/project" customLinks={links}
+        <Actions path="/test/project" customLinks={links} runningCommandIds={new Set(links.map(link => link.id))}
           commandUrls={{'12':['http://localhost:3000', 'http://localhost:3001'], '13':['http://localhost:4000']}}
           onEditCustomLink={() => {}}
           openIn={() => {}} openRemote={() => {}} />
@@ -69,6 +71,11 @@ test("command URL hover preserves horizontal scrolling and remains clickable", {
       <div class="pending-command-fixture" style="width:500px; margin:40px">
         <Actions path="/test/project" customLinks={[{id:'build-pending',kind:'command',name:'Build pending',cmd:'bun run build'}]}
           onCommandClick={() => { window.commandClicks = (window.commandClicks || 0) + 1; return new Promise(resolve => { window.finishCommand = resolve; }); }}
+          openIn={() => {}} openRemote={() => {}} />
+      </div>
+      <div class="overflow-command-fixture" style="width:500px; margin:40px">
+        <Actions path="/test/project" customLinks={links.slice(0,18)} runningCommandIds={active}
+          onCommandClick={link => { active = new Set([...active,link.id]); }}
           openIn={() => {}} openRemote={() => {}} />
       </div>
       <style>:global(.custom-link-wrap) {flex-shrink:0} :global(.custom-link-btn) {white-space:nowrap}</style>
@@ -269,6 +276,78 @@ test("command URL hover preserves horizontal scrolling and remains clickable", {
       }));
       assert(size.scrollWidth <= size.clientWidth, "fitting actions should have no scrollbar");
     }
+    const overflow = page.locator(".overflow-command-fixture");
+    const more = overflow.getByRole("button", {name:"Commands",exact:true});
+    await more.waitFor();
+    const gaps = await overflow.evaluate(el => ({
+      row: getComputedStyle(el.querySelector('.row-actions')!).columnGap,
+      chips: getComputedStyle(el.querySelector('.command-actions')!).columnGap,
+    }));
+    assert.equal(gaps.row,gaps.chips,'Add, running commands and Commands must use the same chip spacing');
+    assert.equal(await overflow.locator(".command-actions .custom-link-animate:visible").count(),1);
+    assert(await overflow.getByRole("button",{name:"Server command 0",exact:true}).isVisible());
+    const placement = await overflow.evaluate(el => ({
+      commandsRight: el.querySelector('.command-actions')!.getBoundingClientRect().right,
+      menuLeft: el.querySelector('.command-overflow-anchor')!.getBoundingClientRect().left,
+      appsLeft: el.querySelector('.app-actions')!.getBoundingClientRect().left,
+      commandTop: el.querySelector('.command-actions .custom-link-btn')!.getBoundingClientRect().top,
+      triggerTop: el.querySelector('.command-overflow-anchor button')!.getBoundingClientRect().top,
+      appTop: el.querySelector('.app-actions button')!.getBoundingClientRect().top,
+      triggerHeight: el.querySelector('.command-overflow-anchor button')!.getBoundingClientRect().height,
+      appHeight: el.querySelector('.app-actions button')!.getBoundingClientRect().height,
+    }));
+    assert(placement.menuLeft >= placement.commandsRight && placement.menuLeft < placement.appsLeft,
+      'More commands belongs between the command chips and app buttons');
+    assert(Math.abs(placement.triggerTop-placement.commandTop)<1 && Math.abs(placement.triggerTop-placement.appTop)<1,
+      'More commands must share the top alignment of the command and app chips');
+    assert(Math.abs(placement.triggerHeight-placement.appHeight)<.5,
+      'Commands trigger height must match neighboring app chips');
+    await more.hover();
+    const menu = page.getByRole("menu",{name:"Project commands",exact:true});
+    await menu.waitFor();
+    assert.equal(await menu.getByRole("menuitem").count(),17);
+    assert.equal(await menu.locator('.custom-link-wrap .custom-link-btn').count(),17,
+      'The dropdown must reuse actual command chips');
+    assert.equal(await menu.getByRole('menuitem',{name:'Server command 0',exact:true}).count(),0,
+      'Running commands are already inline and must not be duplicated in the dropdown');
+    const grid = await menu.evaluate(el => ({columns:getComputedStyle(el).gridTemplateColumns.split(' ').length,
+      widths:[el.scrollWidth,el.clientWidth]}));
+    assert.equal(grid.columns,3,'Wide dropdowns should arrange idle chips in three columns');
+    assert(grid.widths[0]<=grid.widths[1],'Grid chips must not introduce horizontal scrolling');
+    assert(grid.widths[1]<600,'Short command chips should produce compact content-sized columns');
+    const centered = await more.evaluate(trigger => {
+      const button = trigger.getBoundingClientRect();
+      const menu = document.querySelector('.command-overflow-menu')!.getBoundingClientRect();
+      return Math.abs(menu.left - Math.max(8,Math.min((button.left+button.right-menu.width)/2,innerWidth-menu.width-8)))<1;
+    });
+    assert(centered,'Dropdown should center under its trigger and clamp to the viewport');
+    const chipStyle = await menu.getByRole('menuitem',{name:'Server command 1',exact:true}).evaluate(el => {
+      const inline = document.querySelector('.overflow-command-fixture .custom-link-btn')!;
+      const a = getComputedStyle(el), b = getComputedStyle(inline);
+      return {same:a.backgroundColor === b.backgroundColor && a.borderRadius === b.borderRadius && a.padding === b.padding,
+        hasIcon:!!el.querySelector('.open-in-icon')};
+    });
+    assert(chipStyle.same && chipStyle.hasIcon,'Menu chips must retain inline styling and icons');
+    if (process.env.TREETOP_COMMAND_OVERFLOW_SCREENSHOT) await page.screenshot({path:process.env.TREETOP_COMMAND_OVERFLOW_SCREENSHOT});
+    await menu.getByRole("menuitem",{name:"Server command 3",exact:true}).click();
+    await overflow.getByRole("button",{name:"Server command 3",exact:true}).waitFor();
+    assert.equal(await menu.count(),0);
+    await more.focus();
+    await more.press("ArrowDown");
+    await menu.waitFor();
+    assert.equal(await menu.getByRole('menuitem',{name:'Server command 3',exact:true}).count(),0);
+    await page.setViewportSize({width:700,height:800});
+    assert.equal(await menu.evaluate(el => getComputedStyle(el).gridTemplateColumns.split(' ').length),2);
+    await page.setViewportSize({width:390,height:800});
+    assert.equal(await menu.evaluate(el => getComputedStyle(el).gridTemplateColumns.split(' ').length),1);
+    const mobileBounds = await menu.boundingBox();
+    assert(mobileBounds && mobileBounds.x>=7 && mobileBounds.x+mobileBounds.width<=383,'Mobile popover must stay on screen');
+    await page.setViewportSize({width:1280,height:720});
+    await page.keyboard.press("Escape");
+    assert.equal(await menu.count(),0);
+    await overflow.evaluate(el => (el as HTMLElement).style.width="6000px");
+    await more.waitFor({state:"hidden"});
+    assert.equal(await overflow.locator(".command-actions .custom-link-animate:visible").count(),18);
   } finally {
     await browser?.close();
     await server?.close();

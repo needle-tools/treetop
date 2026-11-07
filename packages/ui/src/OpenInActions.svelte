@@ -153,6 +153,58 @@
   export let iconOnly: boolean = false;
   export let daemonId: string | undefined = undefined;
 
+  let commandsOverflow = false;
+  let commandMenuOpen = false;
+  let commandMenuAnchor: HTMLElement;
+  let commandMenu: HTMLElement;
+  let commandHideTimer: ReturnType<typeof setTimeout>;
+  function keepCommandMenu() { clearTimeout(commandHideTimer); }
+  function hideCommandMenu() {
+    keepCommandMenu();
+    if (editingLinkId && commandMenuOpen) return;
+    commandHideTimer = setTimeout(() => { commandMenuOpen = false; }, 180);
+  }
+  function closeCommandMenu() { keepCommandMenu(); commandMenuOpen = false; }
+  function commandMenuKeys(event: KeyboardEvent) {
+    if (event.key === "Escape") {
+      event.preventDefault(); closeCommandMenu(); commandMenuAnchor?.querySelector("button")?.focus();
+      // Focusing the trigger opens the list; Escape must leave it closed.
+      commandMenuOpen = false;
+    } else if (["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) {
+      event.preventDefault();
+      commandMenuOpen = true;
+      requestAnimationFrame(() => {
+        const items = [...(commandMenu?.querySelectorAll<HTMLButtonElement>('[role="menuitem"]:not(:disabled)') ?? [])];
+        const current = items.indexOf(document.activeElement as HTMLButtonElement);
+        const index = event.key === "Home" ? 0 : event.key === "End" ? items.length-1
+          : current < 0 ? (event.key === "ArrowDown" ? 0 : items.length-1)
+          : (current + (event.key === "ArrowDown" ? 1 : -1) + items.length) % items.length;
+        items[index]?.focus();
+      });
+    }
+  }
+  function positionCommandMenu(node: HTMLElement) {
+    commandMenu = node;
+    document.body.appendChild(node);
+    const position = () => {
+      const rect = commandMenuAnchor.getBoundingClientRect();
+      node.style.left = `${Math.max(8, Math.min((rect.left+rect.right-node.offsetWidth)/2, innerWidth-node.offsetWidth-8))}px`;
+      node.style.top = `${Math.max(8, Math.min(rect.bottom+4, innerHeight-node.offsetHeight-8))}px`;
+    };
+    position();
+    const resize = new ResizeObserver(position);
+    resize.observe(node);
+    window.addEventListener("resize", position);
+    window.addEventListener("scroll", position, true);
+    return {destroy() {
+      keepCommandMenu();
+      resize.disconnect();
+      window.removeEventListener("resize", position);
+      window.removeEventListener("scroll", position, true);
+      node.remove();
+    }};
+  }
+
   /** Reserve the measured width of one app button before letting commands
    * scroll. This keeps both strips usable without a fixed width split. */
   function fitActionGroups(node: HTMLElement) {
@@ -161,20 +213,27 @@
       const commands = node.querySelector<HTMLElement>(".command-actions");
       const apps = node.querySelector<HTMLElement>(".app-actions");
       if (!commands || !apps) return;
+      // Measure the full list in the same frame, then restore its compact layout.
+      commands.classList.remove("commands-overflow");
+      const naturalWidth = commands.scrollWidth;
+      commands.classList.toggle("commands-overflow", commandsOverflow);
       const add = node.querySelector<HTMLElement>(".add-link-anchor");
       const firstApp = apps.firstElementChild as HTMLElement | null;
       const groups = 2 + (add ? 1 : 0);
       const gap = parseFloat(getComputedStyle(node).columnGap) || 0;
       const fixedWidth = (add?.offsetWidth ?? 0) + gap * (groups - 1);
       const firstAppWidth = firstApp?.offsetWidth ?? 0;
-      const appWidth = commands.scrollWidth > node.clientWidth - fixedWidth - firstAppWidth
+      const appWidth = naturalWidth > node.clientWidth - fixedWidth - firstAppWidth
         ? Math.min(apps.scrollWidth, Math.max(firstAppWidth, node.clientWidth / 3))
         : firstAppWidth;
       const width = Math.max(
         0,
         node.clientWidth - fixedWidth - appWidth,
       );
-      commands.style.maxWidth = `${width}px`;
+      commandsOverflow = !iconOnly && naturalWidth > width + 1 && commandLinks.some(link => !runningCommandIds.has(link.id) && !pendingCommandIds.has(link.id));
+      const more = node.querySelector<HTMLElement>(".command-overflow-anchor");
+      commands.style.maxWidth = `${Math.max(0,width - (commandsOverflow && more ? more.offsetWidth + gap : 0))}px`;
+      if (!commandsOverflow) commandMenuOpen = false;
     };
     const schedule = () => {
       cancelAnimationFrame(frame);
@@ -191,6 +250,7 @@
         cancelAnimationFrame(frame);
         resize.disconnect();
         mutations.disconnect();
+        keepCommandMenu();
       },
     };
   }
@@ -879,6 +939,7 @@
 
   $: displayLinks = localOrder ?? customLinks;
   $: commandLinks = displayLinks.filter((link) => customLinkKind(link) === "command");
+  $: idleCommandLinks = commandLinks.filter(link => !runningCommandIds.has(link.id) && !pendingCommandIds.has(link.id));
   $: appLinks = displayLinks.filter((link) => customLinkKind(link) !== "command");
 
   function canReorder(): boolean {
@@ -994,12 +1055,13 @@
   function onWindowMouseDown(ev: MouseEvent) {
     const target = ev.target;
     if (!(target instanceof Node)) return;
+    if (commandMenuOpen && !commandMenuAnchor?.contains(target) && !commandMenu?.contains(target)) closeCommandMenu();
     if (target instanceof Element && target.closest(".confirm-overlay")) return;
     if (addOpen && anchorEl && !anchorEl.contains(target)) {
       addOpen = false;
     }
     if (editingLinkId) {
-      const anchor = editAnchorEls.get(editingLinkId);
+      const anchor = editAnchorEls.get(commandMenuOpen ? `menu:${editingLinkId}` : editingLinkId);
       if (anchor && !anchor.contains(target)) closeEdit();
     }
   }
@@ -1355,7 +1417,7 @@
       {/if}
     </span>
   {/if}
-  {#snippet customLinkChip(link: CustomLink)}
+  {#snippet customLinkChip(link: CustomLink, inMenu = false)}
     {@const label = linkLabel(link)}
     {@const failed = failedFavicons.has(link.id)}
     {@const kind = customLinkKind(link)}
@@ -1376,7 +1438,7 @@
       class:draggable={canDragLink(link)}
       class:dragging={dragId === link.id}
       class:editing={editingLinkId === link.id}
-      use:bindEditAnchor={link.id}
+      use:bindEditAnchor={inMenu ? `menu:${link.id}` : link.id}
       role="group"
       draggable={canDragLink(link)}
       on:dragstart={(ev) => startDrag(link, ev)}
@@ -1387,12 +1449,14 @@
       <button
         type="button"
         class="tiny open-in-btn custom-link-btn"
+        role={inMenu ? "menuitem" : undefined}
         class:icon-only={iconOnly}
         title={cmdPending ? `Opening: ${target}` : cmdRunning ? `Running: ${target}` : linkTooltip(link)}
         aria-busy={cmdPending}
         disabled={cmdPending}
         on:click={(ev) => {
           if (ev.shiftKey) return quickRemoveLink(link, ev);
+          if (inMenu) closeCommandMenu();
           openLink(link);
         }}
         on:contextmenu={(ev) => quickRemoveLink(link, ev)}
@@ -1472,7 +1536,7 @@
           </svg>
         {/if}
         {#if !iconOnly}
-          <span>{label}</span>
+          <span class="command-chip-label">{label}</span>
         {/if}
         {#if cmdUrl}
           <Tooltip escapeClip hideDelayMs={300}>
@@ -1577,7 +1641,7 @@
           </svg>
         </button>
       {/if}
-      {#if editingLinkId === link.id}
+      {#if editingLinkId === link.id && (!commandMenuOpen || inMenu)}
         <Popover variant="agents" extraClass="custom-link-popover">
           <div
             class="custom-link-form"
@@ -1900,13 +1964,31 @@
     </span>
   {/snippet}
   {#if commandLinks.length > 0}
-    <div class="command-actions" class:overlay-open={editingLinkId !== null}>
+    <div class="command-actions" class:commands-overflow={commandsOverflow} class:overlay-open={editingLinkId !== null}>
       {#each commandLinks as link (link.id)}
-        <span class="custom-link-animate" animate:flip={{ duration: 220 }}>
+        <span class="custom-link-animate" class:command-idle={!runningCommandIds.has(link.id) && !pendingCommandIds.has(link.id) && editingLinkId !== link.id} animate:flip={{ duration: 220 }}>
           {@render customLinkChip(link)}
         </span>
       {/each}
     </div>
+  {/if}
+  {#if commandsOverflow}
+    <div class="command-overflow-anchor" bind:this={commandMenuAnchor}
+      on:mouseenter={() => { keepCommandMenu(); commandMenuOpen = true; }} on:mouseleave={hideCommandMenu}
+      on:focusin={() => { keepCommandMenu(); commandMenuOpen = true; }}
+      on:focusout={hideCommandMenu} on:keydown={commandMenuKeys}>
+      <button type="button" class="tiny open-in-btn" aria-label="Commands" aria-haspopup="menu"
+        aria-expanded={commandMenuOpen} on:click={() => { keepCommandMenu(); commandMenuOpen = true; }}>Commands <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8"><path d="m7 10 5 5 5-5" /></svg></button>
+    </div>
+    {#if commandMenuOpen}
+      <div class="command-overflow-menu" role="menu" tabindex="-1" aria-label="Project commands" use:positionCommandMenu
+        on:mouseenter={keepCommandMenu} on:mouseleave={hideCommandMenu}
+        on:focusin={keepCommandMenu} on:focusout={hideCommandMenu} on:keydown={commandMenuKeys}>
+        {#each idleCommandLinks as link (link.id)}
+          {@render customLinkChip(link, true)}
+        {/each}
+      </div>
+    {/if}
   {/if}
   <div class="app-actions" class:overlay-open={editingLinkId !== null}>
     {#each appLinks as link (link.id)}
@@ -1956,9 +2038,22 @@
     />
   {/each}
   </div>
+
 </div>
 
 <style>
+  .row-actions { column-gap: .3rem; }
+  .command-actions.commands-overflow .command-idle { display: none; }
+  .command-overflow-anchor { display: inline-flex; align-items: center; flex: 0 0 auto; line-height: 1; }
+  .command-overflow-anchor > button { display: inline-flex; align-items: center; gap: .3rem; line-height: 1; white-space: nowrap; }
+  .command-overflow-menu { position: fixed; z-index: 10050; width: max-content; max-width: calc(100vw - 16px); box-sizing: border-box; min-width: 0; max-height: min(420px, calc(100vh - 16px)); overflow-y: auto; padding: .35rem; border: 1px solid var(--surface-2); border-radius: var(--radius-md); background: var(--surface-1); color: var(--text-1); box-shadow: 0 8px 24px #0005; }
+  .command-overflow-menu { display: grid; grid-template-columns: repeat(3, minmax(0, max-content)); align-items: start; gap: .35rem; }
+  .command-overflow-menu .custom-link-wrap { min-width: 0; max-width: 100%; justify-self: start; }
+  .command-overflow-menu .custom-link-btn { min-width: 0; max-width: 100%; }
+  .command-overflow-menu .command-chip-label { overflow: hidden; text-overflow: ellipsis; }
+  @media (max-width: 760px) { .command-overflow-menu { grid-template-columns: repeat(2, minmax(0, max-content)); } }
+  @media (max-width: 460px) { .command-overflow-menu { grid-template-columns: minmax(0, 1fr); } }
+
   .custom-link-animate {
     display: inline-flex;
     align-items: center;
