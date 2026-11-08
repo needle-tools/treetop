@@ -578,8 +578,6 @@
   }
   const writeBuffer = new TerminalWriteBuffer();
   const terminalWrites = createTerminalWriteQueue({
-    schedule: callback => requestAnimationFrame(callback),
-    cancel: handle => cancelAnimationFrame(handle as number),
     write: (bytes, done) => {
       if (!xterm) {done();return;}
       const startedAt = performance.now();

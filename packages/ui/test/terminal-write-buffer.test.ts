@@ -64,6 +64,49 @@ test("small terminal echo starts immediately and old parser callbacks cannot rev
 
 const bytes = (...n: number[]) => new Uint8Array(n);
 
+test("fragmented output is batched before a typed echo instead of taking one yield per packet", () => {
+  const scheduled: (() => void)[] = [], completions: (() => void)[] = [];
+  const writes: Uint8Array[] = [];
+  const queue = createTerminalWriteQueue({ chunkBytes: 16,
+    schedule: callback => { scheduled.push(callback); return callback; }, cancel: () => {},
+    write: (data, done) => { writes.push(data); completions.push(done); },
+  });
+  queue.push(bytes(0));
+  for (let i = 1; i <= 30; i++) queue.push(bytes(i));
+  queue.push(bytes(99)); // The echo must follow all prior terminal bytes.
+  completions.shift()!();
+  let yields = 0;
+  while (scheduled.length) {
+    scheduled.shift()!();
+    yields++;
+    completions.shift()!();
+  }
+  expect(writes.flatMap(data => Array.from(data))).toEqual([0, ...Array.from({ length: 30 }, (_, i) => i + 1), 99]);
+  expect(writes.every(data => data.length <= 16)).toBe(true);
+  expect(yields).toBe(2);
+  expect(queue.queuedBytes()).toBe(0);
+});
+
+test("output catch-up yields to input tasks without waiting for animation frames", async () => {
+  const events: string[] = [];
+  let completeFirst!: () => void;
+  let finish!: () => void;
+  const finished = new Promise<void>(resolve => { finish = resolve; });
+  const queue = createTerminalWriteQueue({ chunkBytes: 2,
+    write: (data, done) => {
+      events.push(Array.from(data).join(","));
+      if (data[0] === 1) completeFirst = done;
+      else { done(); finish(); }
+    },
+  });
+  queue.push(bytes(1, 2, 3, 4));
+  setTimeout(() => events.push("input"), 0);
+  completeFirst();
+  await finished;
+  expect(events).toEqual(["1,2", "input", "3,4"]);
+  queue.dispose();
+});
+
 test("input timing measures the earliest pending input once and expires unrelated output", () => {
   const timing = new TerminalInputTiming();
   expect(timing.output(5)).toBeNull();

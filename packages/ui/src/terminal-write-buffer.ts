@@ -300,48 +300,77 @@ export function splitTerminalWrite(
   return chunks;
 }
 
-/** xterm.write queues parsing asynchronously. Keep at most one parser write
- * in flight, then yield a frame before the next replay chunk. Measuring only
- * the enqueue call lets a large reveal backlog flood xterm in one turn. */
+/** Keep one bounded parser write in flight and yield between batches so
+ * keyboard tasks can run. Coalesce transport packets: one frame per packet
+ * makes a busy terminal's echo fall seconds behind when rendering is slow.
+ * Continuation must not depend on animation frames (or display refresh rate). */
 export function createTerminalWriteQueue(options: {
   write: (bytes: Uint8Array, done: () => void) => void;
-  schedule: (callback: () => void) => unknown;
-  cancel: (handle: unknown) => void;
+  schedule?: (callback: () => void) => unknown;
+  cancel?: (handle: unknown) => void;
   chunkBytes?: number;
 }) {
   let chunks: Uint8Array[] = [];
+  let head = 0, offset = 0;
   let size = 0, generation = 0;
   let writing = false, disposed = false;
-  let frame: unknown = null;
+  let task: unknown = null;
+  const chunkBytes = Math.max(1, Math.floor(options.chunkBytes ?? 16 * 1024));
+  const schedule = options.schedule ?? (callback => setTimeout(callback, 0));
+  const cancel = options.cancel ?? (handle => clearTimeout(handle as ReturnType<typeof setTimeout>));
   function drain() {
-    if (disposed || writing || !chunks.length) return;
-    const bytes = chunks.shift()!;
+    if (disposed || writing || !size) return;
+    const length = Math.min(size, chunkBytes);
+    const first = chunks[head]!;
+    let bytes: Uint8Array;
+    if (first.byteLength - offset >= length) {
+      bytes = first.subarray(offset, offset + length);
+      offset += length;
+      if (offset === first.byteLength) { head++; offset = 0; }
+    } else {
+      bytes = new Uint8Array(length);
+      let written = 0;
+      while (written < length) {
+        const chunk = chunks[head]!;
+        const count = Math.min(length - written, chunk.byteLength - offset);
+        bytes.set(chunk.subarray(offset, offset + count), written);
+        written += count;
+        offset += count;
+        if (offset === chunk.byteLength) { head++; offset = 0; }
+      }
+    }
     size -= bytes.byteLength;
+    if (head === chunks.length || (head >= 256 && head * 2 >= chunks.length)) {
+      chunks = chunks.slice(head);
+      head = 0;
+    }
     writing = true;
     const currentGeneration = generation;
     options.write(bytes, () => {
       if (disposed || currentGeneration !== generation) return;
       writing = false;
-      if (chunks.length && frame === null) {
-        frame = options.schedule(() => {frame=null;drain();});
+      if (size && task === null) {
+        task = schedule(() => {task=null;drain();});
       }
     });
   }
   function clear() {
     generation++;
-    if (frame !== null) options.cancel(frame);
-    frame = null;
+    if (task !== null) cancel(task);
+    task = null;
     chunks = [];
+    head = 0;
+    offset = 0;
     size = 0;
     writing = false;
   }
   return {
     push(bytes: Uint8Array) {
       if (disposed || bytes.byteLength === 0) return;
-      chunks.push(...splitTerminalWrite(bytes, options.chunkBytes ?? 16 * 1024));
+      chunks.push(bytes);
       size += bytes.byteLength;
-      // A small live echo never waits for a frame when there is no backlog.
-      if (!writing && frame === null) drain();
+      // An idle terminal's live echo starts immediately.
+      if (!writing && task === null) drain();
     },
     queuedBytes: () => size,
     clear,

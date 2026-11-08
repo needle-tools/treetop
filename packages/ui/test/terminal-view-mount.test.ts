@@ -36,7 +36,7 @@ import { join } from "node:path";
 const SOURCE = readFileSync(
   join(import.meta.dir, "../src/TerminalView.svelte"),
   "utf-8",
-);
+).replace(/\r\n/g, "\n");
 
 describe("TerminalView ws.onopen post-mount fixups", () => {
   /** Slice of SOURCE starting at the first `ws.onopen` line and ending

@@ -427,6 +427,36 @@ function emitCodexEvents(events: readonly unknown[]): void {
 }
 
 describe("SessionView browser lifecycle", { concurrency: false }, () => {
+  test("typed terminal echo catches up through fragmented output at low display FPS", async () => {
+    const currentPage = await browser.newPage();
+    try {
+      await currentPage.goto(`${origin}/test/browser/session-view-lifecycle.html`, { waitUntil: "networkidle" });
+      await currentPage.evaluate(async (xtermUrl) => {
+        const { Terminal } = await import(xtermUrl);
+        const { createTerminalWriteQueue } = await import("/src/terminal-write-buffer.ts");
+        // Simulate the measured low-FPS renderer without slowing input tasks.
+        window.requestAnimationFrame = callback => window.setTimeout(() => callback(performance.now()), 80);
+        window.cancelAnimationFrame = handle => clearTimeout(handle);
+        const host = document.createElement("div");
+        host.style.cssText = "position:fixed;inset:0;background:black;z-index:999999";
+        document.body.append(host);
+        const terminal = new Terminal({ cols: 80, rows: 24 });
+        terminal.open(host);
+        const queue = createTerminalWriteQueue({ write: (bytes, done) => terminal.write(bytes, done) });
+        const encoder = new TextEncoder();
+        terminal.onData(data => queue.push(encoder.encode(data)));
+        terminal.onRender(() => {
+          const line = terminal.buffer.active.getLine(terminal.buffer.active.cursorY);
+          if (line?.translateToString(true).includes("Z")) host.dataset.echoPainted = "true";
+        });
+        for (let index = 0; index < 400; index++) queue.push(encoder.encode("x"));
+        terminal.focus();
+        (window as any).typingTerminalHost = host;
+      }, `/@fs/${resolve(uiRoot, "../../node_modules/@xterm/xterm/lib/xterm.mjs").replace(/\\/g, "/")}`);
+      await currentPage.keyboard.type("Z");
+      await currentPage.waitForFunction(() => (window as any).typingTerminalHost.dataset.echoPainted === "true", undefined, { timeout: 1500 });
+    } finally { await currentPage.close(); }
+  }, 30000);
   test("keeps queued work owned by its session when the view switches sessions", async () => {
     const currentPage = await openHarness();
     const requestsBefore = turnRequestInputs.length;
