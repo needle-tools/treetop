@@ -33,6 +33,7 @@ test("command URL hover preserves horizontal scrolling and remains clickable", {
         import '/src/styles/base.css';
         import '/src/styles/worktree-row.css';
         let active = new Set(["0"]);
+        window.exitCommand = id => { active = new Set([...active].filter(value => value !== id)); };
         const links = [
           ...Array.from({length: 18}, (_, i) => ({id: String(i), kind: 'command', name: 'Server command ' + i, cmd: 'npm run dev'})),
           ...Array.from({length: 12}, (_, i) => ({id: 'app-' + i, kind: 'url', name: 'App ' + i, url: 'https://example.com/app/' + i})),
@@ -100,6 +101,7 @@ test("command URL hover preserves horizontal scrolling and remains clickable", {
       headless: true,
     });
     const page = await browser.newPage();
+    await page.clock.install();
     await page.route("**/api/**", (route) => route.fulfill({ json: {} }));
     await page.goto(
       `http://127.0.0.1:${address.port}/test/${fixture.split(/[\\/]/).pop()}/index.html`,
@@ -345,6 +347,20 @@ test("command URL hover preserves horizontal scrolling and remains clickable", {
     await page.setViewportSize({width:1280,height:720});
     await page.keyboard.press("Escape");
     assert.equal(await menu.count(),0);
+    const recentlyExited = overflow.getByRole('button',{name:'Server command 3',exact:true});
+    await page.evaluate(() => (window as any).exitCommand('3'));
+    await page.clock.fastForward(4 * 60_000);
+    assert(await recentlyExited.isVisible(),'Exited commands should remain inline for five minutes');
+    assert.equal(await recentlyExited.locator('.cmd-spinner').count(),0,'Retention must not pretend the exited command is still running');
+    await recentlyExited.click();
+    await page.clock.fastForward(2 * 60_000);
+    assert(await recentlyExited.isVisible(),'Restarting must cancel the previous exit expiry');
+    await page.evaluate(() => (window as any).exitCommand('3'));
+    await page.clock.fastForward(5 * 60_000 + 100);
+    await recentlyExited.waitFor({state:'hidden'});
+    await more.hover();
+    await menu.getByRole('menuitem',{name:'Server command 3',exact:true}).waitFor();
+    await page.keyboard.press('Escape');
     await overflow.evaluate(el => (el as HTMLElement).style.width="6000px");
     await more.waitFor({state:"hidden"});
     assert.equal(await overflow.locator(".command-actions .custom-link-animate:visible").count(),18);

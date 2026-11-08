@@ -66,6 +66,7 @@
    * from Popover.svelte) for entering the URL + optional label.
    */
   import { apiUrl } from "./api";
+  import { onDestroy } from "svelte";
   import OpenInButton from "./OpenInButton.svelte";
   import Popover from "./Popover.svelte";
   import { iconFor } from "./icons";
@@ -102,6 +103,31 @@
   } | null = null;
   export let onCommandClick: ((link: CustomLink) => void | Promise<void>) | null = null;
   let pendingCommandIds = new Set<string>();
+  let previousRunningIds = new Set<string>();
+  let recentlyExitedIds = new Set<string>();
+  const exitTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  function trackCommandExits(running: ReadonlySet<string>) {
+    const retained = new Set(recentlyExitedIds);
+    for (const id of previousRunningIds) {
+      if (running.has(id)) continue;
+      retained.add(id);
+      clearTimeout(exitTimers.get(id));
+      exitTimers.set(id, setTimeout(() => {
+        exitTimers.delete(id);
+        recentlyExitedIds = new Set([...recentlyExitedIds].filter(value => value !== id));
+      }, 5 * 60_000));
+    }
+    for (const id of running) {
+      clearTimeout(exitTimers.get(id));
+      exitTimers.delete(id);
+      retained.delete(id);
+    }
+    recentlyExitedIds = retained;
+    previousRunningIds = new Set(running);
+  }
+  $: trackCommandExits(runningCommandIds);
+  $: inlineCommandIds = new Set([...runningCommandIds, ...pendingCommandIds, ...recentlyExitedIds]);
+  onDestroy(() => { for (const timer of exitTimers.values()) clearTimeout(timer); });
   export let openIn: (path: string, app: string) => void;
   export let openRemote: (remote: RemoteRef) => void;
   /** Add-link handler, supplied by the parent which owns the fetch.
@@ -207,7 +233,7 @@
 
   /** Reserve the measured width of one app button before letting commands
    * scroll. This keeps both strips usable without a fixed width split. */
-  function fitActionGroups(node: HTMLElement) {
+  function fitActionGroups(node: HTMLElement, _inlineIds: ReadonlySet<string>) {
     let frame = 0;
     const measure = () => {
       const commands = node.querySelector<HTMLElement>(".command-actions");
@@ -230,7 +256,7 @@
         0,
         node.clientWidth - fixedWidth - appWidth,
       );
-      commandsOverflow = !iconOnly && naturalWidth > width + 1 && commandLinks.some(link => !runningCommandIds.has(link.id) && !pendingCommandIds.has(link.id));
+      commandsOverflow = !iconOnly && naturalWidth > width + 1 && commandLinks.some(link => !inlineCommandIds.has(link.id));
       const more = node.querySelector<HTMLElement>(".command-overflow-anchor");
       commands.style.maxWidth = `${Math.max(0,width - (commandsOverflow && more ? more.offsetWidth + gap : 0))}px`;
       if (!commandsOverflow) commandMenuOpen = false;
@@ -246,6 +272,7 @@
     mutations.observe(node, { childList: true, characterData: true, subtree: true });
     schedule();
     return {
+      update: schedule,
       destroy() {
         cancelAnimationFrame(frame);
         resize.disconnect();
@@ -939,7 +966,7 @@
 
   $: displayLinks = localOrder ?? customLinks;
   $: commandLinks = displayLinks.filter((link) => customLinkKind(link) === "command");
-  $: idleCommandLinks = commandLinks.filter(link => !runningCommandIds.has(link.id) && !pendingCommandIds.has(link.id));
+  $: idleCommandLinks = commandLinks.filter(link => !inlineCommandIds.has(link.id));
   $: appLinks = displayLinks.filter((link) => customLinkKind(link) !== "command");
 
   function canReorder(): boolean {
@@ -1071,7 +1098,7 @@
 
 <div
   class="row-actions"
-  use:fitActionGroups
+  use:fitActionGroups={inlineCommandIds}
   class:icon-only={iconOnly}
   class:overlay-open={addOpen || editingLinkId !== null}
   on:dragover={onDragOverStrip}
@@ -1966,7 +1993,7 @@
   {#if commandLinks.length > 0}
     <div class="command-actions" class:commands-overflow={commandsOverflow} class:overlay-open={editingLinkId !== null}>
       {#each commandLinks as link (link.id)}
-        <span class="custom-link-animate" class:command-idle={!runningCommandIds.has(link.id) && !pendingCommandIds.has(link.id) && editingLinkId !== link.id} animate:flip={{ duration: 220 }}>
+        <span class="custom-link-animate" class:command-idle={!inlineCommandIds.has(link.id) && editingLinkId !== link.id} animate:flip={{ duration: 220 }}>
           {@render customLinkChip(link)}
         </span>
       {/each}
