@@ -123,6 +123,34 @@ export interface AgentSession {
   pricingUsageExact?: boolean;
 }
 
+/** Recover only exact Codex process/session evidence; never guess by newest cwd. */
+export async function resolveCodexTerminalOwners(
+  terminals: readonly {id:string;agent?:string;ownerId?:string;pid:number;cwd:string;createdAt:string;exitedAt?:string}[],
+  sessions: readonly AgentSession[],
+  databasePath = join(process.env.CODEX_HOME || join(homedir(), ".codex"), "logs_2.sqlite"),
+): Promise<Map<string,string>> {
+  const owners = new Map<string,string>();
+  const unresolved = terminals.filter(t => t.agent === "codex" && !t.exitedAt && t.ownerId?.startsWith("__new__:codex:") && Number.isSafeInteger(t.pid) && t.pid > 0);
+  if (!unresolved.length) return owners;
+  try { await stat(databasePath); }
+  catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return owners; throw error; }
+  const database = new Database(databasePath, {readonly:true,create:false});
+  try {
+    const cwdKey = (cwd:string) => process.platform === "win32" ? resolve(cwd).toLowerCase() : resolve(cwd);
+    for (const terminal of unresolved) {
+      const ids = [...new Set(sessions.filter(s => s.agent === "codex" && s.sessionId).map(s => s.sessionId!))];
+      const since = Math.floor(Date.parse(terminal.createdAt)/1000);
+      if (!ids.length || !Number.isFinite(since)) continue;
+      // thread_id is indexed. Read only matching session IDs, not log bodies.
+      const rows = database.query(`SELECT DISTINCT thread_id,process_uuid FROM logs WHERE thread_id IN (${ids.map(()=>"?").join(",")}) AND process_uuid GLOB ? AND ts >= ? LIMIT 2`)
+        .all(...ids, `pid:${terminal.pid}:*`, since) as {thread_id:string;process_uuid:string}[];
+      if (rows.length === 1 && sessions.some(s => s.agent === "codex" && s.sessionId === rows[0]!.thread_id && cwdKey(s.cwd) === cwdKey(terminal.cwd)))
+        owners.set(terminal.id,rows[0]!.thread_id);
+    }
+  } finally { database.close(); }
+  return owners;
+}
+
 export const CLAUDE_ROOT = () => join(homedir(), ".claude", "projects");
 
 /** Claude Code encodes a session's cwd into a flat dir name under

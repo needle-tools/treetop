@@ -554,17 +554,21 @@ export function reconcileLiveAgentTerminals(
         s.source.startsWith("__new__:") ? s.source : undefined,
       ].filter((id): id is string => typeof id === "string" && id.length > 0);
       const attached = s.attachTermId ? liveById.get(s.attachTermId) : undefined;
+      const discoveredOwner = attached && s.source.startsWith(`__new__:${s.agent}:`) &&
+        !s.resumeSessionId && !s.preassignedSessionId && !attached.ownerId?.startsWith("__")
+        ? attached.ownerId : undefined;
       const verifiedAttachment = attached && attached.cwd === wtPath && attached.agent === s.agent &&
-        (ownerIds.includes(attached.ownerId!) || attached.ownerId?.startsWith(`__new__:${s.agent}:`));
+        (ownerIds.includes(attached.ownerId!) || attached.ownerId?.startsWith(`__new__:${s.agent}:`) || !!discoveredOwner);
       const live = verifiedAttachment ? attached : ownerIds.map((id) => liveByOwner.get(id)).find(Boolean);
       if (!live || live.cwd !== wtPath) return;
       if (live.agent !== s.agent) return;
-      if (s.attachTermId === live.id && s.mode === "terminal") return;
+      if (s.attachTermId === live.id && s.mode === "terminal" && !discoveredOwner) return;
       if (!nextSessions) nextSessions = sessions.slice();
       nextSessions[index] = {
         ...s,
         mode: "terminal",
         attachTermId: live.id,
+        ...(discoveredOwner ? {resumeSessionId:discoveredOwner} : {}),
       };
       changed = true;
     });

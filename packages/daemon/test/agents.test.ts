@@ -11,6 +11,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import {
   agentsForWorktree,
+  resolveCodexTerminalOwners,
   claudeProjectDirForCwd,
   readJsonlField,
   readClaudeSessionMeta,
@@ -34,6 +35,26 @@ import {
 async function tempDir(prefix = "supergit-agents-"): Promise<string> {
   return mkdtemp(join(tmpdir(), prefix));
 }
+
+test("Codex terminal ownership requires exact process, lifetime and unambiguous session evidence", async () => {
+  const root = await tempDir();
+  const path = join(root, "logs_2.sqlite");
+  const db = new Database(path, {create:true});
+  db.exec("create table logs (ts integer, thread_id text, process_uuid text)");
+  const insert = db.query("insert into logs values (?,?,?)");
+  insert.run(110,"right","pid:42:current");
+  insert.run(90,"old","pid:42:previous");
+  insert.run(110,"other","pid:420:unrelated");
+  const terminal = {id:"t",agent:"codex",ownerId:"__new__:codex:t",pid:42,cwd:"/repo",createdAt:new Date(100_000).toISOString()};
+  const sessions = ["right","old","other"].map(sessionId => ({agent:"codex",cwd:"/repo",sessionId}) as AgentSession);
+  expect(await resolveCodexTerminalOwners([terminal],sessions,path)).toEqual(new Map([["t","right"]]));
+  expect(await resolveCodexTerminalOwners([{...terminal,cwd:"/elsewhere"}],sessions,path)).toEqual(new Map());
+  expect(await resolveCodexTerminalOwners([{...terminal,ownerId:"already-linked"}],sessions,path)).toEqual(new Map());
+  insert.run(120,"other","pid:42:current");
+  expect(await resolveCodexTerminalOwners([terminal],sessions,path)).toEqual(new Map());
+  db.close();
+  expect(await resolveCodexTerminalOwners([terminal],sessions,join(root,"missing.sqlite"))).toEqual(new Map());
+});
 
 describe("readJsonlField", () => {
   test("returns null when file is missing", async () => {

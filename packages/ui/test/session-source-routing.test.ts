@@ -364,6 +364,14 @@ describe("moveSessionStateKey", () => {
 });
 
 describe("reconcileLiveAgentTerminals", () => {
+  test("adopts a resolved identity on the exact already-mounted transient attachment", () => {
+    const before = {"/repo":[{agent:"codex",source:"__new__:codex:client",attachTermId:"terminal",mode:"terminal"}]} as Record<string,OpenSession[]>;
+    const after = reconcileLiveAgentTerminals(before,[],[
+      {id:"terminal",agent:"codex",cwd:"/repo",ownerId:"real-session"},
+    ]);
+    expect(after["/repo"]![0]).toMatchObject({source:"__new__:codex:client",attachTermId:"terminal",mode:"terminal",resumeSessionId:"real-session"});
+    expect(reconcileLiveAgentTerminals(after,[],[{id:"terminal",agent:"codex",cwd:"/repo",ownerId:"real-session"}])).toBe(after);
+  });
   test("preserves a verified broker attachment when its owner is still synthetic", () => {
     const before: Record<string, OpenSession[]> = { "/fastvid": [{ agent: "codex", source: "/session.jsonl", resumeSessionId: "session", mode: "terminal", attachTermId: "original" }] };
     const after = reconcileLiveAgentTerminals(before, [], [

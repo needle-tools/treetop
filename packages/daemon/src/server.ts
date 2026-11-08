@@ -84,6 +84,7 @@ import {
 import { type ServerWebSocket } from "bun";
 import {
   detectAgents,
+  resolveCodexTerminalOwners,
   agentsForWorktree,
   groupSessionsByFolder,
   findCodexSessionSourceById,
@@ -1668,7 +1669,18 @@ import type { AgentSession } from "./agents";
 const AGENTS_CACHE_MS = Number(process.env.SUPERGIT_AGENTS_CACHE_MS ?? 10_000);
 const agentsCache = createStaleWhileRevalidateCache<AgentSession[]>({
   ttlMs: AGENTS_CACHE_MS,
-  load: () => detectAgents(WORKSPACE_PATH),
+  load: async () => {
+    const agents = await detectAgents(WORKSPACE_PATH);
+    try {
+      const terminals = terminalBackend.list();
+      const owners = await resolveCodexTerminalOwners(terminals, agents);
+      for (const [terminalId, sessionId] of owners) {
+        await terminalBackend.get(terminalId)?.bindSessionOwner?.(sessionId);
+        console.info(`supergit daemon: recovered Codex terminal owner terminal=${terminalId} session=${sessionId}`);
+      }
+    } catch (error) { console.warn("Codex terminal identity recovery failed", error); }
+    return agents;
+  },
   onRefreshError: (err) => {
     console.warn(
       "supergit daemon: background detectAgents refresh failed",
