@@ -7,7 +7,7 @@ import { chromium } from "playwright-core";
 import { createServer } from "vite";
 import { svelte } from "@sveltejs/vite-plugin-svelte";
 
-test("command URL hover preserves horizontal scrolling and remains clickable", { timeout: 30000 }, async () => {
+test("command URL hover preserves horizontal scrolling and remains clickable", { timeout: 60000 }, async () => {
   const uiRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
   const fixture = await mkdtemp(join(uiRoot, "test/.command-row-"));
   const component =
@@ -83,7 +83,7 @@ test("command URL hover preserves horizontal scrolling and remains clickable", {
           openIn={() => {}} openRemote={() => {}} />
       </div>
       <div class="duplicate-command-fixture" style="width:900px; margin:40px">
-        <Actions path="/test/project" customLinks={duplicateLinks}
+        <Actions path="/test/project" repoId="project-test" customLinks={duplicateLinks}
           onAddCustomLink={input => { window.duplicateInput=input; duplicateLinks=[...duplicateLinks,{...input,id:'copy'}]; return Promise.resolve(true); }}
           onEditCustomLink={() => Promise.resolve(true)}
           openIn={() => {}} openRemote={() => {}} />
@@ -376,10 +376,21 @@ test("command URL hover preserves horizontal scrolling and remains clickable", {
     assert.equal(await overflow.locator(".command-actions .custom-link-animate:visible").count(),18);
     const duplicateFixture = page.locator('.duplicate-command-fixture');
     await duplicateFixture.getByRole('button',{name:'Build',exact:true}).hover();
+    assert.equal(await duplicateFixture.getByRole('button',{name:'Build',exact:true}).evaluate(el => el.closest('.custom-link-wrap')!.getAttribute('draggable')),'true');
     await duplicateFixture.getByRole('button',{name:'Edit Build',exact:true}).click();
     const duplicate = duplicateFixture.getByRole('button',{name:'Duplicate',exact:true});
     await duplicate.waitFor();
     const commandInput = duplicateFixture.getByLabel('Command',{exact:true});
+    assert.equal(await commandInput.evaluate(el => el.closest('.custom-link-wrap')!.getAttribute('draggable')),'false',
+      'An open editor must disable command dragging on its ancestor');
+    const inputBounds=await commandInput.boundingBox();
+    assert(inputBounds);
+    await page.mouse.move(inputBounds.x+10,inputBounds.y+inputBounds.height/2);
+    await page.mouse.down();
+    await page.mouse.move(inputBounds.x+90,inputBounds.y+inputBounds.height/2,{steps:10});
+    await page.mouse.up();
+    assert(await commandInput.evaluate((el:HTMLInputElement) => (el.selectionEnd??0)>(el.selectionStart??0)),
+      'Dragging inside the command field must select text');
     await commandInput.fill('   ');
     assert(await duplicate.isDisabled(),'Blank command drafts cannot be duplicated');
     await commandInput.fill('npm run build:prod');
@@ -389,6 +400,7 @@ test("command URL hover preserves horizontal scrolling and remains clickable", {
       'Duplicate should be immediately left of Cancel');
     await duplicate.click();
     await duplicateFixture.getByRole('button',{name:'Build (copy)',exact:true}).waitFor();
+    assert.equal(await duplicateFixture.getByRole('button',{name:'Build',exact:true}).evaluate(el => el.closest('.custom-link-wrap')!.getAttribute('draggable')),'true');
     assert.deepEqual(await page.evaluate(() => (window as any).duplicateInput),{
       kind:'command',cmd:'npm run build:prod',cwd:'packages/ui',runMode:'external',name:'Build (copy)',
     });

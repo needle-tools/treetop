@@ -996,10 +996,11 @@
   }
 
   function canDragLink(link: CustomLink): boolean {
-    return canReorder() || canDragOut(link);
+    return editingLinkId !== link.id && (canReorder() || canDragOut(link));
   }
 
   function startDrag(link: CustomLink, ev: DragEvent) {
+    if (ev.target instanceof Element && ev.target.closest(".custom-link-form")) return;
     if (!ev.dataTransfer || !canDragLink(link)) return;
     const reorder = canReorder();
     if (reorder) {
@@ -1480,12 +1481,12 @@
       class="custom-link-wrap"
       class:editable={!!onEditCustomLink && !iconOnly}
       class:icon-only={iconOnly}
-      class:draggable={canDragLink(link)}
+      class:draggable={editingLinkId !== link.id && canDragLink(link)}
       class:dragging={dragId === link.id}
       class:editing={editingLinkId === link.id}
       use:bindEditAnchor={inMenu ? `menu:${link.id}` : link.id}
       role="group"
-      draggable={canDragLink(link)}
+      draggable={editingLinkId !== link.id && canDragLink(link)}
       on:dragstart={(ev) => startDrag(link, ev)}
       on:dragover={(ev) => onDragOverLink(link, ev)}
       on:dragend={onDragEnd}
