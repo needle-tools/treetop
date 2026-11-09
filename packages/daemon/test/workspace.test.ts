@@ -950,3 +950,17 @@ describe("Workspace", () => {
     expect(await ws.getPrefs()).toEqual({});
   });
 });
+
+
+test("command updates distinguish omitted cwd from explicitly clearing its override", async () => {
+  const root = await tempDir();
+  const ws = await Workspace.open(root);
+  const repo = await ws.addRepo('/tmp/cwd-clear');
+  const command = await ws.addCustomLink(repo.id,{kind:'command',cmd:'npm run dev',cwd:'packages/ui',runMode:'internal'});
+  const kept = await ws.updateCustomLink(repo.id,command.id,{kind:'command',cmd:'npm run dev:2'});
+  expect((kept as any).cwd).toBe('packages/ui');
+  const cleared = await ws.updateCustomLink(repo.id,command.id,{kind:'command',cwd:''});
+  expect((cleared as any).cwd).toBeUndefined();
+  const reopened = await Workspace.open(root);
+  expect((await reopened.listRepos())[0]!.customLinks!.find(link=>link.id===command.id)).toEqual(cleared!);
+});

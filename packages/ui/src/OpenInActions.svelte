@@ -181,14 +181,15 @@
 
   let commandsOverflow = false;
   let commandMenuOpen = false;
+  let commandDragActive = false;
   let commandMenuAnchor: HTMLElement;
   let commandMenu: HTMLElement;
   let commandHideTimer: ReturnType<typeof setTimeout>;
   function keepCommandMenu() { clearTimeout(commandHideTimer); }
   function hideCommandMenu() {
     keepCommandMenu();
-    if (editingLinkId && commandMenuOpen) return;
-    commandHideTimer = setTimeout(() => { commandMenuOpen = false; }, 180);
+    if (commandDragActive || (editingLinkId && commandMenuOpen)) return;
+    commandHideTimer = setTimeout(() => { if (!commandDragActive) commandMenuOpen = false; }, 180);
   }
   function closeCommandMenu() { keepCommandMenu(); commandMenuOpen = false; }
   function commandMenuKeys(event: KeyboardEvent) {
@@ -523,7 +524,7 @@
       try {
         const ok = await onEditCustomLink(id, {
           cmd: c,
-          cwd: editCwd.trim() || undefined,
+          cwd: editCwd.trim(),
           runMode: editRunMode,
           kind: "command",
           name: editName,
@@ -1002,6 +1003,8 @@
   function startDrag(link: CustomLink, ev: DragEvent) {
     if (ev.target instanceof Element && ev.target.closest(".custom-link-form")) return;
     if (!ev.dataTransfer || !canDragLink(link)) return;
+    commandDragActive = true;
+    keepCommandMenu();
     const reorder = canReorder();
     if (reorder) {
       dragId = link.id;
@@ -1065,6 +1068,8 @@
   }
 
   async function onDragEnd() {
+    commandDragActive = false;
+    if (commandMenuOpen && !commandMenu?.matches(":hover") && !commandMenuAnchor?.matches(":hover")) hideCommandMenu();
     const id = dragId;
     const order = localOrder;
     dragId = null;
@@ -1113,7 +1118,7 @@
   }
 </script>
 
-<svelte:window on:mousedown={onWindowMouseDown} />
+<svelte:window on:mousedown={onWindowMouseDown} on:dragend={onDragEnd} />
 
 <div
   class="row-actions"

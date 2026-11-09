@@ -78,14 +78,16 @@ test("command URL hover preserves horizontal scrolling and remains clickable", {
           openIn={() => {}} openRemote={() => {}} />
       </div>
       <div class="overflow-command-fixture" style="width:500px; margin:40px">
-        <Actions path="/test/project" customLinks={links.slice(0,18)} runningCommandIds={active}
+        <Actions path="/test/project" repoId="overflow-project" customLinks={links.slice(0,18)} runningCommandIds={active}
           onCommandClick={link => { active = new Set([...active,link.id]); }}
           openIn={() => {}} openRemote={() => {}} />
       </div>
+      <div class="command-drop-target" style="position:fixed;right:10px;top:10px;width:80px;height:25px;z-index:20000"
+        on:dragover|preventDefault on:drop|preventDefault={event => {window.droppedCommand=event.dataTransfer.getData('application/x-supergit-link-target+json');}}>Drop command</div>
       <div class="duplicate-command-fixture" style="width:900px; margin:40px">
         <Actions path="/test/project" repoId="project-test" customLinks={duplicateLinks}
           onAddCustomLink={input => { window.duplicateInput=input; duplicateLinks=[...duplicateLinks,{...input,id:'copy'}]; return Promise.resolve(true); }}
-          onEditCustomLink={() => Promise.resolve(true)}
+          onEditCustomLink={(id,input) => { window.editedCommand=JSON.parse(JSON.stringify(input)); duplicateLinks=duplicateLinks.map(link => link.id===id ? {...link,...window.editedCommand} : link); return Promise.resolve(true); }}
           openIn={() => {}} openRemote={() => {}} />
       </div>
       <style>:global(.custom-link-wrap) {flex-shrink:0} :global(.custom-link-btn) {white-space:nowrap}</style>
@@ -341,6 +343,23 @@ test("command URL hover preserves horizontal scrolling and remains clickable", {
     });
     assert(chipStyle.same && chipStyle.hasIcon,'Menu chips must retain inline styling and icons');
     if (process.env.TREETOP_COMMAND_OVERFLOW_SCREENSHOT) await page.screenshot({path:process.env.TREETOP_COMMAND_OVERFLOW_SCREENSHOT});
+    const dragSource=await menu.getByRole('menuitem',{name:'Server command 1',exact:true}).boundingBox();
+    const dropTarget=await page.locator('.command-drop-target').boundingBox();
+    assert(dragSource && dropTarget);
+    await page.mouse.move(dragSource.x+dragSource.width/2,dragSource.y+dragSource.height/2);
+    await page.mouse.down();
+    await page.mouse.move(dragSource.x+dragSource.width/2+10,dragSource.y+dragSource.height/2,{steps:3});
+    await page.mouse.move(dropTarget.x+dropTarget.width/2,dropTarget.y+dropTarget.height/2,{steps:10});
+    await menu.dispatchEvent('mouseleave');
+    await page.clock.fastForward(500);
+    assert(await menu.isVisible(),'Moving a dragged command outside the popup must not close it mid-drag');
+    await page.mouse.up();
+    assert.equal(await page.evaluate(()=>JSON.parse((window as any).droppedCommand).target.value),'1',
+      'The original command drag payload must reach the external drop target');
+    await page.mouse.move(0,0);
+    await page.clock.fastForward(500);
+    assert.equal(await menu.count(),0,'Normal hover dismissal should resume after dropping');
+    await more.hover();
     await menu.getByRole("menuitem",{name:"Server command 3",exact:true}).click();
     await overflow.getByRole("button",{name:"Server command 3",exact:true}).waitFor();
     assert.equal(await menu.count(),0);
@@ -406,6 +425,18 @@ test("command URL hover preserves horizontal scrolling and remains clickable", {
     });
     assert.equal(await page.evaluate(() => (window as any).originalCommand.cmd),'npm run build',
       'Duplicating current fields must not change the saved original');
+    await duplicateFixture.getByRole('button',{name:'Build',exact:true}).hover();
+    await duplicateFixture.getByRole('button',{name:'Edit Build',exact:true}).click();
+    const cwdInput = duplicateFixture.getByLabel(/Working directory \(optional\)/);
+    assert.equal(await cwdInput.inputValue(),'packages/ui');
+    await cwdInput.fill('');
+    await duplicateFixture.getByRole('button',{name:'Save',exact:true}).click();
+    assert.equal(await page.evaluate(() => (window as any).editedCommand.cwd),'',
+      'Clearing cwd must send an explicit empty string, not omit the update');
+    await duplicateFixture.getByRole('button',{name:'Build',exact:true}).hover();
+    await duplicateFixture.getByRole('button',{name:'Edit Build',exact:true}).click();
+    assert.equal(await cwdInput.inputValue(),'','Reopening a saved command must keep the cleared directory');
+    await duplicateFixture.getByRole('button',{name:'Cancel',exact:true}).click();
     await duplicateFixture.getByRole('button',{name:'Add custom link',exact:true}).click();
     await duplicateFixture.getByRole('tab',{name:'Cmd',exact:true}).click();
     await duplicateFixture.getByLabel('Command',{exact:true}).fill('npm run another');
