@@ -277,6 +277,7 @@ import {
   CodexAppServerAdapter,
   CodexCliEventAdapter,
   ensureCodexCliEventDaemon,
+  spawnCodexTerminalWithIdentity,
   CodexAppEventTransportBatcher,
   classifyRealtimeVoiceError,
   listCodexModelsFresh,
@@ -5397,7 +5398,10 @@ const server = Bun.serve<TermWsData, never>({
           agentHint === "claude" ? await repoColorForCwd(body.cwd) : undefined;
         try {
           const terminalSpawnBackendStarted = performance.now();
-          const handle = await terminalBackend.spawn({
+          const spawn = terminalBackend instanceof BrokerBackend
+            ? terminalBackend.spawn.bind(terminalBackend)
+            : (options: import("./terminals/types").SpawnOptions) => spawnCodexTerminalWithIdentity(terminalBackend,options);
+          const handle = await spawn({
             cmd,
             resumeCmd: body.cmd.slice(),
             cwd: body.cwd,

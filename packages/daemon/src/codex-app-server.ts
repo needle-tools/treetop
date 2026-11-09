@@ -18,6 +18,104 @@ import {
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { createServer, createConnection, type Socket } from "node:net";
+import type { PtyBackend, SpawnOptions, TerminalHandle } from "./terminals/types";
+
+/** Private transport for one CLI. Observe its startup replies, never start a second thread. */
+export async function createCodexCliIdentityProxy(options: {
+  connect?: () => Promise<CodexAppServerProcess>;
+  onSession: (id:string) => void | Promise<void>;
+}) {
+  const upstream = await (options.connect ?? connectCodexCliEventProcess)();
+  const token = crypto.randomUUID();
+  const startup = new Set<string | number>();
+  let client: import("bun").ServerWebSocket<null> | undefined;
+  let accepted = false, closed = false;
+  const reader = upstream.stdout.getReader();
+  const close = () => {
+    if (closed) return;
+    closed = true;
+    client?.close();
+    upstream.kill();
+    void reader.cancel().catch(() => {});
+    server.stop(true);
+  };
+  const server = Bun.serve<null>({
+    hostname:"127.0.0.1", port:0,
+    fetch(request,server) {
+      if (new URL(request.url).pathname !== `/treetop-cli-${token}` || accepted) return new Response(null,{status:404});
+      if (server.upgrade(request,{data:null})) { accepted = true; return; }
+      return new Response(null,{status:400});
+    },
+    websocket: {
+      open(ws) { client = ws; },
+      message(_ws,data) {
+        const text = String(data);
+        try {
+          const message = JSON.parse(text);
+          if (["thread/start","thread/resume","thread/fork"].includes(message.method) &&
+              (typeof message.id === "string" || typeof message.id === "number")) startup.add(message.id);
+        } catch { /* Pass opaque frames through; Codex owns protocol validation. */ }
+        upstream.stdin.write(`${text}\n`);
+      },
+      close() { close(); },
+    },
+  });
+  void (async () => {
+    const decoder = new TextDecoder();
+    let pending = "";
+    try {
+      while (!closed) {
+        const chunk = await reader.read();
+        if (chunk.done) break;
+        pending += decoder.decode(chunk.value,{stream:true});
+        let end: number;
+        while ((end = pending.indexOf("\n")) >= 0) {
+          const line = pending.slice(0,end); pending = pending.slice(end+1);
+          if (!line.trim()) continue;
+          try {
+            const message = JSON.parse(line);
+            if (startup.delete(message.id)) {
+              const id = message.result?.thread?.id;
+              if (typeof id === "string" && id.length > 0 && id.length <= 256)
+                void Promise.resolve(options.onSession(id)).catch(error => console.warn("Codex CLI identity binding failed",error));
+            }
+          } catch { /* Preserve transport frames even if they are not JSON. */ }
+          client?.send(line);
+        }
+      }
+    } catch (error) { if (!closed) console.warn("Codex CLI identity transport failed",error); }
+    finally { close(); }
+  })();
+  void upstream.exited.then(close,close);
+  return {url:`ws://127.0.0.1:${server.port}/treetop-cli-${token}`,close};
+}
+
+/** Keep the private connection with the terminal owner (the persistent broker in production). */
+export async function spawnCodexTerminalWithIdentity(
+  backend: Pick<PtyBackend,"spawn">, options: SpawnOptions,
+  onBound: (handle:TerminalHandle,id:string) => void = () => {},
+  connect?: () => Promise<CodexAppServerProcess>,
+): Promise<TerminalHandle> {
+  const remote = options.cmd.indexOf("--remote");
+  if (options.agent !== "codex" || !options.ownerId?.startsWith("__new__:codex:") || remote < 0 || options.cmd[remote+1] !== "unix://")
+    return backend.spawn(options);
+  const ready = Promise.withResolvers<TerminalHandle | undefined>();
+  const proxy = await createCodexCliIdentityProxy({connect,onSession: async id => {
+    const handle = await ready.promise;
+    if (!handle?.isAlive()) return;
+    await handle.bindSessionOwner?.(id);
+    onBound(handle,id);
+  }});
+  try {
+    const cmd = options.cmd.slice(); cmd[remote+1] = proxy.url;
+    const handle = await backend.spawn({...options,cmd,resumeCmd:options.resumeCmd ?? options.cmd});
+    ready.resolve(handle);
+    let unsubscribe: (()=>void) | undefined;
+    unsubscribe = handle.subscribe({onData() {},onExit() {proxy.close();unsubscribe?.();}});
+    if (!handle.isAlive()) { proxy.close(); unsubscribe(); }
+    return handle;
+  } catch (error) { ready.resolve(undefined); proxy.close(); throw error; }
+}
 
 let cliDaemonStartup: Promise<void> | undefined;
 /** Start only Codex's own local daemon when a new event-capable CLI needs it. */
@@ -108,7 +206,8 @@ export class CodexCliEventAdapter {
     kill: () => Promise<void>,
   ): Promise<void> {
     const remote = record.cmd.indexOf("--remote");
-    if (record.agent === "codex" && remote >= 0 && record.cmd[remote + 1] === "unix://") {
+    const endpoint = record.cmd[remote + 1] ?? "";
+    if (record.agent === "codex" && remote >= 0 && (endpoint === "unix://" || /^ws:\/\/127\.0\.0\.1:\d+\/treetop-cli-[0-9a-f-]+$/.test(endpoint))) {
       if (!record.ownerId || record.ownerId.startsWith("__")) {
         throw new Error("Cannot confirm Stop: this Codex terminal has no resolved conversation ID. Interrupt its turn in the terminal first.");
       }

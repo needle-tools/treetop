@@ -18,6 +18,8 @@ import {
   CodexAppServerRpc,
   CodexCliEventAdapter,
   connectCodexCliEventProcess,
+  createCodexCliIdentityProxy,
+  spawnCodexTerminalWithIdentity,
   classifyRealtimeVoiceError,
   codexAppServerCommand,
   listCodexModelsFresh,
@@ -2012,4 +2014,83 @@ test("CLI event connector negotiates WebSocket and closes only its own connectio
     const response = await fetch(`http://127.0.0.1:${daemon.port}/`);
     expect(response.status).toBe(400);
   } finally { await adapter.close(); await daemon.stop(true); }
+});
+
+
+test("CLI identity proxy links only its own startup response without relying on log records", async () => {
+  const fake = fakeCodexProcess();
+  const identities: string[] = [];
+  const proxy = await createCodexCliIdentityProxy({connect:async()=>fake.proc,onSession:id=>{identities.push(id);}});
+  const ws = new WebSocket(proxy.url);
+  const opened = new Promise<void>((resolve,reject)=>{ws.onopen=()=>resolve();ws.onerror=()=>reject(new Error('proxy connection failed'));});
+  const received: Record<string,any>[] = [];
+  ws.onmessage = event => received.push(JSON.parse(String(event.data)));
+  try {
+    expect((await fetch(proxy.url.replace('ws:', 'http:').replace(/\/[^/]+$/, '/wrong'))).status).toBe(404);
+    await opened;
+    const init = {id:0,method:'initialize',params:{clientInfo:{name:'codex_cli'}}};
+    ws.send(JSON.stringify(init));
+    await waitFor(()=>fake.writes[0],'forward initialize');
+    expect(parseWrite(fake.writes,0)).toEqual(init);
+    fake.enqueue({id:0,result:{}});
+    await waitFor(()=>received[0],'initialize reply');
+    fake.enqueue({method:'thread/started',params:{thread:{id:'unrelated-thread'}}});
+    fake.enqueue({id:77,result:{thread:{id:'not-requested'}}});
+    ws.send(JSON.stringify({id:'start',method:'thread/start',params:{cwd:'/repo'}}));
+    await waitFor(()=>fake.writes[1],'forward startup');
+    fake.enqueue({id:'start',result:{thread:{id:'exact-cli-thread',cwd:'/repo'}}});
+    await waitFor(()=>identities[0],'exact identity');
+    expect(identities).toEqual(['exact-cli-thread']);
+    await waitFor(()=>received.find(row=>row.id==='start'),'unchanged startup reply');
+    expect(received.find(row=>row.id==='start')).toEqual({id:'start',result:{thread:{id:'exact-cli-thread',cwd:'/repo'}}});
+    expect(fake.writes).toHaveLength(2);
+  } finally { proxy.close(); ws.close(); }
+  expect(fake.killed).toHaveLength(1);
+});
+
+
+test("Stop on a private CLI identity transport still interrupts the real turn before closing the terminal", async () => {
+  const adapter = new CodexCliEventAdapter();
+  const calls: string[] = [];
+  adapter.interruptActiveTurn = async id => {calls.push(id);};
+  await adapter.stopTerminal({agent:'codex',ownerId:'owned-thread',cmd:['codex','--remote','ws://127.0.0.1:12345/treetop-cli-01234567-89ab-cdef-0123-456789abcdef']},async()=>{calls.push('kill');});
+  expect(calls).toEqual(['owned-thread','kill']);
+});
+
+
+test("new CLI spawn keeps the same terminal and binds its exact startup identity, closing only its transport on exit", async () => {
+  const fake = fakeCodexProcess();
+  let spawned: import('../src/terminals/types').SpawnOptions | undefined;
+  let exit!: () => void;
+  const bound: string[] = [];
+  const handle = {id:'same-terminal',isAlive:()=>true,bindSessionOwner:(id:string)=>{bound.push(id);},
+    subscribe:(subscriber:any)=>{exit=()=>subscriber.onExit({code:0});return ()=>{};}} as unknown as import('../src/terminals/types').TerminalHandle;
+  const options = {cmd:['codex','--remote','unix://','-c','model="chosen"'],cwd:'/repo',size:{cols:80,rows:24},agent:'codex',ownerId:'__new__:codex:client'};
+  const result = await spawnCodexTerminalWithIdentity({spawn:async value=>{spawned=value;return handle;}},options,()=>{},async()=>fake.proc);
+  expect(result).toBe(handle);
+  expect(spawned!.resumeCmd).toEqual(options.cmd);
+  expect(options.cmd[2]).toBe('unix://');
+  expect(spawned!.cmd.slice(3)).toEqual(options.cmd.slice(3));
+  const ws = new WebSocket(spawned!.cmd[2]!);
+  try {
+    await new Promise<void>((resolve,reject)=>{ws.onopen=()=>resolve();ws.onerror=()=>reject(new Error('proxy connection failed'));});
+    ws.send(JSON.stringify({id:1,method:'thread/start',params:{cwd:'/repo'}}));
+    await waitFor(()=>fake.writes[0],'CLI startup');
+    fake.enqueue({id:1,result:{thread:{id:'real-session'}}});
+    await waitFor(()=>bound[0],'bind terminal');
+    expect(bound).toEqual(['real-session']);
+    exit();
+    await waitFor(()=>fake.killed.length ? true : undefined,'terminal exit transport cleanup');
+    expect(fake.killed).toHaveLength(1);
+  } finally {exit();ws.close();}
+});
+
+
+test("failed CLI spawn releases its private transport without starting a conversation", async () => {
+  const fake = fakeCodexProcess();
+  await expect(spawnCodexTerminalWithIdentity({spawn:async()=>{throw new Error('PTY failed');}},
+    {cmd:['codex','--remote','unix://'],agent:'codex',ownerId:'__new__:codex:new',cwd:'/repo',size:{cols:80,rows:24}},
+    ()=>{},async()=>fake.proc)).rejects.toThrow('PTY failed');
+  expect(fake.killed).toHaveLength(1);
+  expect(fake.writes).toHaveLength(0);
 });

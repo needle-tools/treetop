@@ -31,9 +31,12 @@ test("command URL hover preserves horizontal scrolling and remains clickable", {
         import Actions from '${component}';
         import '/src/styles/tokens.css';
         import '/src/styles/base.css';
+        import '/src/styles/popover.css';
         import '/src/styles/worktree-row.css';
         let active = new Set(["0"]);
         window.exitCommand = id => { active = new Set([...active].filter(value => value !== id)); };
+        let duplicateLinks = [{id:'original',kind:'command',name:'Build',cmd:'npm run build',cwd:'packages/ui',runMode:'external'}];
+        window.originalCommand = duplicateLinks[0];
         const links = [
           ...Array.from({length: 18}, (_, i) => ({id: String(i), kind: 'command', name: 'Server command ' + i, cmd: 'npm run dev'})),
           ...Array.from({length: 12}, (_, i) => ({id: 'app-' + i, kind: 'url', name: 'App ' + i, url: 'https://example.com/app/' + i})),
@@ -79,6 +82,12 @@ test("command URL hover preserves horizontal scrolling and remains clickable", {
           onCommandClick={link => { active = new Set([...active,link.id]); }}
           openIn={() => {}} openRemote={() => {}} />
       </div>
+      <div class="duplicate-command-fixture" style="width:900px; margin:40px">
+        <Actions path="/test/project" customLinks={duplicateLinks}
+          onAddCustomLink={input => { window.duplicateInput=input; duplicateLinks=[...duplicateLinks,{...input,id:'copy'}]; return Promise.resolve(true); }}
+          onEditCustomLink={() => Promise.resolve(true)}
+          openIn={() => {}} openRemote={() => {}} />
+      </div>
       <style>:global(.custom-link-wrap) {flex-shrink:0} :global(.custom-link-btn) {white-space:nowrap}</style>
     `,
     );
@@ -101,6 +110,7 @@ test("command URL hover preserves horizontal scrolling and remains clickable", {
       headless: true,
     });
     const page = await browser.newPage();
+    page.setDefaultTimeout(8000);
     await page.clock.install();
     await page.route("**/api/**", (route) => route.fulfill({ json: {} }));
     await page.goto(
@@ -364,6 +374,31 @@ test("command URL hover preserves horizontal scrolling and remains clickable", {
     await overflow.evaluate(el => (el as HTMLElement).style.width="6000px");
     await more.waitFor({state:"hidden"});
     assert.equal(await overflow.locator(".command-actions .custom-link-animate:visible").count(),18);
+    const duplicateFixture = page.locator('.duplicate-command-fixture');
+    await duplicateFixture.getByRole('button',{name:'Build',exact:true}).hover();
+    await duplicateFixture.getByRole('button',{name:'Edit Build',exact:true}).click();
+    const duplicate = duplicateFixture.getByRole('button',{name:'Duplicate',exact:true});
+    await duplicate.waitFor();
+    const commandInput = duplicateFixture.getByLabel('Command',{exact:true});
+    await commandInput.fill('   ');
+    assert(await duplicate.isDisabled(),'Blank command drafts cannot be duplicated');
+    await commandInput.fill('npm run build:prod');
+    const duplicateBounds=await duplicate.boundingBox();
+    const cancelBounds=await duplicateFixture.getByRole('button',{name:'Cancel',exact:true}).boundingBox();
+    assert(duplicateBounds && cancelBounds && duplicateBounds.x+duplicateBounds.width<=cancelBounds.x,
+      'Duplicate should be immediately left of Cancel');
+    await duplicate.click();
+    await duplicateFixture.getByRole('button',{name:'Build (copy)',exact:true}).waitFor();
+    assert.deepEqual(await page.evaluate(() => (window as any).duplicateInput),{
+      kind:'command',cmd:'npm run build:prod',cwd:'packages/ui',runMode:'external',name:'Build (copy)',
+    });
+    assert.equal(await page.evaluate(() => (window as any).originalCommand.cmd),'npm run build',
+      'Duplicating current fields must not change the saved original');
+    await duplicateFixture.getByRole('button',{name:'Add custom link',exact:true}).click();
+    await duplicateFixture.getByRole('tab',{name:'Cmd',exact:true}).click();
+    await duplicateFixture.getByLabel('Command',{exact:true}).fill('npm run another');
+    assert.equal(await duplicateFixture.getByRole('button',{name:'Duplicate',exact:true}).count(),0,
+      'A command must have been saved before Duplicate is offered');
   } finally {
     await browser?.close();
     await server?.close();

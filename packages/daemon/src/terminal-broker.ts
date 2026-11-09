@@ -1,5 +1,5 @@
 import { withTreetopMcp } from "./mcp";
-import { CodexAppServerAdapter, ensureCodexCliEventDaemon } from "./codex-app-server";
+import { CodexAppServerAdapter, ensureCodexCliEventDaemon, spawnCodexTerminalWithIdentity } from "./codex-app-server";
 import { ClaudeCliAdapter } from "./claude-cli-adapter";
 import { join, resolve } from "node:path";
 import { mkdir, readFile, writeFile, rename, unlink } from "node:fs/promises";
@@ -837,7 +837,11 @@ export async function startTerminalBroker(options: {
                       !record.exitedAt,
                   );
               if (existing) return existing;
-              const handle = await backend.spawn(args);
+              const handle = await spawnCodexTerminalWithIdentity(backend,args,(terminal,sessionId) => {
+                log(`Codex startup identity terminal=${terminal.id} session=${sessionId}`);
+                publish({event:"record",record:backend.list().find(record=>record.id===terminal.id),revision:terminal.inputRevision?.() ?? 0});
+                saveSnapshot();
+              });
               announce(handle.id);
               return backend.list().find((record) => record.id === handle.id);
             };

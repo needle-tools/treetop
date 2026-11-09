@@ -491,6 +491,24 @@
     editError = "";
   }
 
+  async function duplicateCommand() {
+    if (editing || !onAddCustomLink || editKind !== "command" || !editCmd.trim()) return;
+    const saved = customLinks.find(link => link.id === editingLinkId && link.kind === "command");
+    if (!saved) return;
+    editing = true;
+    editError = "";
+    try {
+      const ok = await onAddCustomLink({
+        kind: "command", cmd: editCmd.trim(), cwd: editCwd.trim() || undefined,
+        runMode: editRunMode, name: `${editName.trim() || linkLabel(saved)} (copy)`,
+      });
+      if (ok) closeEdit();
+      else editError = "Couldn't duplicate the command — server rejected the change.";
+    } catch (error) {
+      editError = error instanceof Error ? error.message : String(error);
+    } finally { editing = false; }
+  }
+
   async function submitEdit() {
     if (!onEditCustomLink || !editingLinkId) return;
     const id = editingLinkId;
@@ -1967,6 +1985,10 @@
                 >
               {/if}
               <span class="custom-link-buttons-spacer"></span>
+              {#if onAddCustomLink && editKind === "command" && link.kind === "command"}
+                <button type="button" class="tiny custom-link-duplicate"
+                  on:click={duplicateCommand} disabled={editing || !editCmd.trim()}>Duplicate</button>
+              {/if}
               <button
                 type="button"
                 class="tiny custom-link-cancel"
