@@ -9190,25 +9190,9 @@
     const uninstallUiContextPublisher = installUiContextPublisher(currentUiContext);
     void hydrateFromServer();
     document.addEventListener("click", handleDocClick);
-    // Esc exits zen mode. We don't preventDefault — the browser's own
-    // fullscreen-exit-on-Esc still works independently because the API
-    // fires Esc against fullscreen before document keydown ever sees it.
+    // Escape belongs to dialogs, filters and terminals; Zen is toggled explicitly.
     const handleKey = (e: KeyboardEvent) => {
       const mod = e.metaKey || e.ctrlKey;
-      if (e.key === "Escape" && zenRowKey && !document.fullscreenElement) {
-        const el = document.activeElement as HTMLElement | null;
-        const inInput =
-          el?.tagName === "INPUT" ||
-          el?.tagName === "TEXTAREA" ||
-          el?.isContentEditable ||
-          !!el?.closest(".xterm");
-        if (inInput) return;
-        const wtPath = zenRowKey.split("|").slice(1).join("|");
-        zenRowKey = null;
-        notesShownInZen = false;
-        resetZenMenu();
-        if (wtPath) tick().then(() => jumpToWorktreeRow(wtPath));
-      }
       if (isContextFindShortcut(e)) {
         e.preventDefault();
         e.stopPropagation();
