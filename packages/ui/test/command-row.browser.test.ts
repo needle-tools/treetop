@@ -79,6 +79,7 @@ test("command URL hover preserves horizontal scrolling and remains clickable", {
       </div>
       <div class="overflow-command-fixture" style="width:500px; margin:40px">
         <Actions path="/test/project" repoId="overflow-project" customLinks={links.slice(0,18)} runningCommandIds={active}
+          onEditCustomLink={() => Promise.resolve(true)}
           onCommandClick={link => { active = new Set([...active,link.id]); }}
           openIn={() => {}} openRemote={() => {}} />
       </div>
@@ -359,6 +360,28 @@ test("command URL hover preserves horizontal scrolling and remains clickable", {
     await page.mouse.move(0,0);
     await page.clock.fastForward(500);
     assert.equal(await menu.count(),0,'Normal hover dismissal should resume after dropping');
+    await more.hover();
+    await overflow.evaluate(el=>{Object.assign((el as HTMLElement).style,{position:'fixed',left:'40px',top:'30px',margin:'0',zIndex:'1000'});});
+    await menu.getByRole('menuitem',{name:'Server command 1',exact:true}).hover();
+    await menu.getByRole('button',{name:'Edit Server command 1',exact:true}).click();
+    assert.equal(await menu.count(),1,'The command dropdown must stay open while its editor uses a separate layer');
+    assert.equal(await overflow.locator('.command-actions .custom-link-animate:visible').count(),1,'Editing must not move the idle command into the inline row');
+    const editor=page.locator('.command-editor-layer .custom-link-form');
+    assert(await editor.evaluate(el=>!el.closest('.command-overflow-menu')),'The editor layer must escape the dropdown scrollport');
+    await editor.getByLabel('Command',{exact:true}).click();
+    assert.equal(await menu.count(),1,'Clicking inside the editor overlay must not dismiss the dropdown');
+    await editor.getByLabel('Command',{exact:true}).fill('npm run edited');
+    const saveEditor=editor.getByRole('button',{name:'Save',exact:true});
+    assert(await saveEditor.evaluate(el=>{const r=el.getBoundingClientRect();return document.elementFromPoint(r.x+r.width/2,r.y+r.height/2)?.closest('button')===el;}),
+      'The full editor including its footer must remain visible and clickable');
+    if (process.env.TREETOP_COMMAND_EDITOR_SCREENSHOT) await page.screenshot({path:process.env.TREETOP_COMMAND_EDITOR_SCREENSHOT});
+    await page.setViewportSize({width:390,height:600});
+    const editorBounds=await editor.boundingBox();
+    assert(editorBounds && editorBounds.x>=8 && editorBounds.x+editorBounds.width<=382 && editorBounds.y>=8 && editorBounds.y+editorBounds.height<=592,
+      'The separate editor layer must stay within a narrow viewport');
+    await page.setViewportSize({width:1280,height:720});
+    await editor.getByRole('button',{name:'Cancel',exact:true}).click();
+    await overflow.evaluate(el=>{Object.assign((el as HTMLElement).style,{position:'',left:'',top:'',margin:'40px',zIndex:''});});
     await more.hover();
     await menu.getByRole("menuitem",{name:"Server command 3",exact:true}).click();
     await overflow.getByRole("button",{name:"Server command 3",exact:true}).waitFor();

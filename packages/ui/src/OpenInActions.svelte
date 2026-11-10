@@ -408,6 +408,34 @@
   );
   let cmdUrlOverride: Record<string, string> = cmdUrlPicks.load();
   let editingLinkId: string | null = null;
+  let editingInMenu = false;
+  let editorLayer: HTMLElement | undefined;
+  function layerCommandEditor(node: HTMLElement, separateLayer: boolean) {
+    if (!separateLayer) return {};
+    const anchor = node.parentElement!;
+    const popup = node.querySelector<HTMLElement>(".custom-link-popover")!;
+    editorLayer = node;
+    document.body.appendChild(node);
+    Object.assign(node.style, {display:"block",position:"fixed",width:"max-content",zIndex:"10060"});
+    Object.assign(popup.style, {position:"relative",left:"0",top:"0",minWidth:"0",maxWidth:"calc(100vw - 16px)",maxHeight:"calc(100vh - 16px)",overflowY:"auto"});
+    const position = () => {
+      const rect = anchor.getBoundingClientRect();
+      node.style.left = `${Math.max(8,Math.min(rect.left,innerWidth-node.offsetWidth-8))}px`;
+      node.style.top = `${Math.max(8,Math.min(rect.bottom+4,innerHeight-node.offsetHeight-8))}px`;
+    };
+    position();
+    const resize = new ResizeObserver(position);
+    resize.observe(popup);
+    window.addEventListener("resize",position);
+    window.addEventListener("scroll",position,true);
+    return {destroy() {
+      resize.disconnect();
+      window.removeEventListener("resize",position);
+      window.removeEventListener("scroll",position,true);
+      if (editorLayer === node) editorLayer = undefined;
+      node.remove();
+    }};
+  }
   let editKind: "url" | "file" | "folder" | "command" = "url";
   let editUrl = "";
   let editPath = "";
@@ -449,9 +477,10 @@
     };
   }
 
-  function openEdit(link: CustomLink) {
+  function openEdit(link: CustomLink, fromMenu = false) {
     if (!onEditCustomLink) return;
     addOpen = false;
+    editingInMenu = fromMenu;
     editingLinkId = link.id;
     editKind = customLinkKind(link);
     editUrl = editKind === "url" ? (link as { url: string }).url : "";
@@ -489,6 +518,7 @@
 
   function closeEdit() {
     editingLinkId = null;
+    editingInMenu = false;
     editError = "";
   }
 
@@ -1106,14 +1136,15 @@
   function onWindowMouseDown(ev: MouseEvent) {
     const target = ev.target;
     if (!(target instanceof Node)) return;
-    if (commandMenuOpen && !commandMenuAnchor?.contains(target) && !commandMenu?.contains(target)) closeCommandMenu();
     if (target instanceof Element && target.closest(".confirm-overlay")) return;
+    const insideEditor = editorLayer?.contains(target);
+    if (commandMenuOpen && !insideEditor && !commandMenuAnchor?.contains(target) && !commandMenu?.contains(target)) closeCommandMenu();
     if (addOpen && anchorEl && !anchorEl.contains(target)) {
       addOpen = false;
     }
     if (editingLinkId) {
-      const anchor = editAnchorEls.get(commandMenuOpen ? `menu:${editingLinkId}` : editingLinkId);
-      if (anchor && !anchor.contains(target)) closeEdit();
+      const anchor = editAnchorEls.get(editingInMenu ? `menu:${editingLinkId}` : editingLinkId);
+      if (anchor && !insideEditor && !anchor.contains(target)) closeEdit();
     }
   }
 </script>
@@ -1681,7 +1712,7 @@
           class="custom-link-edit"
           title={`Edit this link`}
           aria-label={`Edit ${label}`}
-          on:click|stopPropagation={() => openEdit(link)}
+          on:click|stopPropagation={() => openEdit(link,inMenu)}
         >
           <!-- Solid pencil — single filled path so the glyph stays
                legible at 10px without stroke artifacts. -->
@@ -1692,8 +1723,9 @@
           </svg>
         </button>
       {/if}
-      {#if editingLinkId === link.id && (!commandMenuOpen || inMenu)}
-        <Popover variant="agents" extraClass="custom-link-popover">
+      {#if editingLinkId === link.id && inMenu === editingInMenu}
+        <div class="command-editor-layer" use:layerCommandEditor={inMenu}>
+        <Popover variant="agents" extraClass="custom-link-popover" unclamped={inMenu}>
           <div
             class="custom-link-form"
             on:keydown={onEditPopoverKeydown}
@@ -2015,13 +2047,14 @@
             </div>
           </div>
         </Popover>
+        </div>
       {/if}
     </span>
   {/snippet}
   {#if commandLinks.length > 0}
     <div class="command-actions" class:commands-overflow={commandsOverflow} class:overlay-open={editingLinkId !== null}>
       {#each commandLinks as link (link.id)}
-        <span class="custom-link-animate" class:command-idle={!inlineCommandIds.has(link.id) && editingLinkId !== link.id} animate:flip={{ duration: 220 }}>
+        <span class="custom-link-animate" class:command-idle={!inlineCommandIds.has(link.id) && (editingLinkId !== link.id || editingInMenu)} animate:flip={{ duration: 220 }}>
           {@render customLinkChip(link)}
         </span>
       {/each}
@@ -2097,6 +2130,7 @@
 </div>
 
 <style>
+  .command-editor-layer { display: contents; }
   .row-actions { column-gap: .3rem; }
   .command-actions.commands-overflow .command-idle { display: none; }
   .command-overflow-anchor { display: inline-flex; align-items: center; flex: 0 0 auto; line-height: 1; }
