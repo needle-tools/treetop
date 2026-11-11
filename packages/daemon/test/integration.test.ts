@@ -325,15 +325,10 @@ describe("MCP dashboard tools", () => {
     );
     expect(claude.slice(-2)).toEqual(["--resume", "session"]);
     const claudeMcp = JSON.parse(claude[claude.indexOf("--mcp-config") + 1]!).mcpServers.treetop;
-    expect(claudeMcp.type).toBe("stdio");
-    expect(claudeMcp.command).toBeTruthy();
-    expect(claudeMcp.args.at(-1)).toBe(url.toString());
-    expect(claude).toContain("--dangerously-load-development-channels");
-    expect(claude).toContain("server:treetop");
-    const existingChannels = withTreetopMcp(["claude", "--dangerously-load-development-channels", "server:existing"], endpoint, cwd);
-    expect(existingChannels.filter(arg => arg === "--dangerously-load-development-channels")).toHaveLength(1);
-    expect(existingChannels).toContain("server:existing");
-    expect(existingChannels).toContain("server:treetop");
+    expect(claudeMcp).toEqual({ type: "http", url: url.toString() });
+    expect(claude).not.toContain("--dangerously-load-development-channels");
+    expect(claude).not.toContain("--channels");
+    expect(claude).not.toContain("server:treetop");
     const headless = withTreetopMcp(["claude", "-p", "test"], endpoint, cwd);
     expect(headless).not.toContain("--dangerously-load-development-channels");
     expect(JSON.parse(headless[headless.indexOf("--mcp-config") + 1]!).mcpServers.treetop.type).toBe("http");
@@ -352,6 +347,40 @@ describe("MCP dashboard tools", () => {
     expect(copilot.slice(-2)).toEqual(["--resume", "session"]);
     const shell = ["powershell.exe"];
     expect(withTreetopMcp(shell, endpoint, cwd)).toBe(shell);
+  });
+
+  test("Claude startup never enables channels when connecting MCP tools", () => {
+    const endpoint = "http://127.0.0.1:50001/mcp";
+    for (const cmd of [
+      ["claude"],
+      ["claude", "--continue"],
+      ["/usr/local/bin/claude", "--resume", "session"],
+      ["C:\\tools\\claude.exe"],
+      ["claude", "-p", "test"],
+      ["claude", "--print", "test"],
+      ["claude", "--print=test"],
+    ]) {
+      const original = [...cmd];
+      const connected = withTreetopMcp(cmd, endpoint);
+      expect(connected).not.toContain("--dangerously-load-development-channels");
+      expect(connected).not.toContain("--channels");
+      expect(connected).not.toContain("server:treetop");
+      expect(JSON.parse(connected[connected.indexOf("--mcp-config") + 1]!).mcpServers.treetop)
+        .toEqual({ type: "http", url: endpoint });
+      expect(connected.slice(connected.length - original.length + 1)).toEqual(original.slice(1));
+      expect(cmd).toEqual(original);
+    }
+  });
+
+  test("Claude startup preserves explicit channel lists without adding Treetop", () => {
+    for (const flag of ["--channels", "--dangerously-load-development-channels"]) {
+      const cmd = ["claude", flag, "server:existing", "server:other", "--resume", "session"];
+      const connected = withTreetopMcp(cmd, "http://127.0.0.1:50001/mcp");
+      expect(connected.slice(-cmd.length + 1)).toEqual(cmd.slice(1));
+      expect(connected.filter(arg => arg === flag)).toHaveLength(1);
+      expect(connected).not.toContain("server:treetop");
+      if (flag === "--channels") expect(connected).not.toContain("--dangerously-load-development-channels");
+    }
   });
 
   test("adds a command to the caller's project via the session MCP URL", async () => {

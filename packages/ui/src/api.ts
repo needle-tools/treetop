@@ -40,7 +40,7 @@ export function apiUrl(path: string, daemonId?: string | null): string {
  * an observer never substitutes another running Treetop instance's MCP server. */
 export function terminalOutputReference(terminalId: string, uiUrl: string, daemonId?: string | null): string {
   const endpoint = new URL(apiUrl("/api/mcp", daemonId), uiUrl).href;
-  return `Shared Treetop terminal: ${terminalId}\nMCP endpoint: ${endpoint}\nRead-only output: read_terminal_output.\nLive updates: watch_terminal_output (Codex or Claude).`;
+  return `Shared Treetop terminal: ${terminalId}\nMCP endpoint: ${endpoint}\nRead-only output: read_terminal_output.\nLive updates: watch_terminal_output (Codex, or an explicitly configured Claude channel).`;
 }
 
 const terminalStopChannels = new Map<string, {socket:WebSocket;stop:()=>Promise<void>}>();

@@ -22,7 +22,7 @@ import type { EventLog } from "./events";
 import { listWorktrees } from "./git";
 import { randomUUID } from "node:crypto";
 import { realpath } from "node:fs/promises";
-import { isAbsolute, resolve, relative, basename, dirname, join } from "node:path";
+import { isAbsolute, resolve, relative } from "node:path";
 import { NotesStore } from "./notes";
 import { detectEditors, findWindowsFork } from "./open";
 import { detectAgents, agentsForWorktree, type AgentSession } from "./agents";
@@ -386,14 +386,8 @@ export function withTreetopMcp(
   const url = new URL(endpoint);
   if (cwd) url.searchParams.set("cwd", cwd);
   const server = { type: "http", url: url.toString() };
-  const claudeChannel = agent === "claude" && !cmd.some(arg => arg === "-p" || arg === "--print" || arg.startsWith("--print="));
-  const channelFlagIndex = cmd.indexOf("--dangerously-load-development-channels");
-  if (claudeChannel && channelFlagIndex >= 0 && !cmd.includes("server:treetop"))
-    cmd = [...cmd.slice(0, channelFlagIndex + 1), "server:treetop", ...cmd.slice(channelFlagIndex + 1)];
-  const runtime = process.execPath;
-  const sourceRuntime = /^bun(?:\.exe)?$/i.test(basename(runtime));
-  const channelServer = { type: "stdio", command: sourceRuntime ? runtime : join(dirname(runtime), process.platform === "win32" ? "supergit.exe" : "supergit"),
-    args: sourceRuntime ? [resolve(import.meta.dir, "mcp.ts"), "--stdio", url.toString()] : ["--mcp-stdio", url.toString()] };
+  // Connecting tools must not opt the user into Claude channels.
+  // Channel setup is a separate user choice.
   const flags =
     agent === "codex"
       ? [
@@ -406,9 +400,8 @@ export function withTreetopMcp(
         ]
       : agent === "claude"
         ? [
-            ...(claudeChannel && channelFlagIndex < 0 ? ["--dangerously-load-development-channels", "server:treetop"] : []),
             "--mcp-config",
-            JSON.stringify({ mcpServers: { treetop: claudeChannel ? channelServer : server } }),
+            JSON.stringify({ mcpServers: { treetop: server } }),
             "--append-system-prompt",
             `${SERVER_INSTRUCTIONS}${cwd ? ` Session working directory: ${JSON.stringify(cwd)}.` : ""}`,
           ]
