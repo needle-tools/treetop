@@ -44,11 +44,16 @@ until a fresh summary records the session cwd.
 
 Settings > Activity recap generates immediately for the last 24 hours. Return offers
 use persisted actual UI activity (eight hours on startup, four hours while open).
-Return offers first check saved-summary, new-note and daily-reminder coverage and stay
-silent when it is empty; an empty generation result never sends a ready notice.
+Return offers cover the previous local workday through the actual generation click,
+including work before sleep and overnight activity. Monday reaches back to Friday;
+a longer break starts at the beginning of the last activity day if earlier. Existing
+snoozed ranges are widened to this rule on reload and retain their start afterward.
+Offers require saved session summaries or new notes. Daily reminders remain supporting
+context but cannot alone trigger generation; reminder-only cached results are not
+returned for an empty-work interval. An empty result never sends a ready notice.
 Offers never generate.
 Return notifications now say "Catch up..." and offer "Remind me in one hour".
-The reminder persists through daemon preferences, retains the original pre-break
+The reminder persists through daemon preferences, retains the original catch-up
 start time across reloads, and reoffers while the app is focused after its due time.
 Clicking the notification or Catch up generates through the same activity recap UI;
 snoozing never generates. The generation end time advances to the actual click.

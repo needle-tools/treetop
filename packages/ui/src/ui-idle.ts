@@ -31,6 +31,17 @@ export function shouldOfferActivityRecap(lastActivity: number, now: number, star
   return lastActivity > 0 && now - lastActivity >= (starting ? 8 : 4) * 60 * 60 * 1000;
 }
 
+/** Include recent work before sleep, plus the whole break after a longer absence. */
+export function activityRecapStart(lastActivity: number, now: number): number {
+  const previousWorkday = new Date(now);
+  previousWorkday.setHours(0,0,0,0);
+  do { previousWorkday.setDate(previousWorkday.getDate()-1); }
+  while (previousWorkday.getDay() === 0 || previousWorkday.getDay() === 6);
+  const lastWorkday = new Date(lastActivity);
+  lastWorkday.setHours(0,0,0,0);
+  return lastActivity > 0 ? Math.min(previousWorkday.getTime(),lastWorkday.getTime()) : previousWorkday.getTime();
+}
+
 /** Injected clock; tests override to control "now". */
 type Clock = () => number;
 

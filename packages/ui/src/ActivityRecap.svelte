@@ -3,7 +3,7 @@
   import { apiUrl } from "./api";
   import { getDaemonKV } from "./daemon-kv";
   import { getSetting } from "./settings-registry";
-  import { shouldOfferActivityRecap } from "./ui-idle";
+  import { shouldOfferActivityRecap, activityRecapStart } from "./ui-idle";
   import type { AddToastOpts } from "./toast-manager";
   import LoadingSpinner from "./LoadingSpinner.svelte";
   import { marked } from "marked";
@@ -110,7 +110,7 @@
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? `HTTP ${res.status}`);
       if (current !== request) return;
-      text = data.recap?.body ?? "No saved summaries, new notes, or reminders cover this period.";
+      text = data.recap?.body ?? "No saved work summaries or new notes cover this period.";
       headline = data.recap?.title || "Activity recap";
       references = data.recap?.references ?? [];
       model = data.recap?.model ?? "";
@@ -163,6 +163,7 @@
     let last = Number(kv.getItem(key)) || 0, saved = last, starting = true;
     try { catchUp = JSON.parse(kv.getItem(catchUpKey) ?? "null"); }
     catch (error) { console.warn("Could not read catch-up reminder", error); }
+    if (catchUp) saveCatchUp({...catchUp,since:activityRecapStart(catchUp.since,Date.now())});
     const checkCatchUp = () => {
       if (!catchUp || catchUpOffered || document.hidden || !document.hasFocus() ||
           getSetting("activityRecap.enabled") === false || Date.now() < catchUp.remindAt) return;
@@ -173,7 +174,7 @@
       if (document.hidden || !document.hasFocus()) return;
       const now = Date.now(), previous = last;
       if (!catchUp && getSetting("activityRecap.enabled") !== false && shouldOfferActivityRecap(previous, now, starting)) {
-        saveCatchUp({ since: previous, remindAt: now });
+        saveCatchUp({ since: activityRecapStart(previous,now), remindAt: now });
       }
       checkCatchUp();
       last = now;

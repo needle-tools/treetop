@@ -68,7 +68,7 @@ export function buildRecapContext(sessionPrompt: string,
   const noteText = bounded(recentNotes.map(n => ({ createdAt: n.createdAt, note: n.body.slice(0, 600) })));
   const reminderText = bounded(todayReminders.map(r => ({ title: r.title.slice(0, 160), dueAt: r.dueAt, status: r.status, reminder: r.message.slice(0, 600) })));
   const prompt = `Cumulative session summaries:\n${sessionPrompt.slice(0, 5000)}\nNotes CREATED during the recap period (plans are not completed work):\n${noteText}\nPending reminders due on the user's recap day, ${new Date(range.dayStart).toISOString()} to ${new Date(range.dayEnd).toISOString()} (not completed tasks):\n${reminderText}`;
-  return { prompt, available: !!(sessionPrompt || noteText || reminderText), key: createHash("sha256").update(prompt).digest("hex") };
+  return { prompt, available: !!(sessionPrompt.trim() || noteText), key: createHash("sha256").update(prompt).digest("hex") };
 }
 
 export interface RecapEntry {

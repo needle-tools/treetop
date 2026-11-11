@@ -45,6 +45,8 @@ test("recap prompt includes interval notes and pending reminders for the user's 
   expect(context.prompt).not.toContain("CANCELLED_REMINDER");
   expect(buildRecapContext("", notes, [], { since, until, dayStart, dayEnd }).available).toBe(true);
   expect(buildRecapContext("", [], [], { since, until, dayStart, dayEnd }).available).toBe(false);
+  expect(buildRecapContext("", [], reminders, { since, until, dayStart, dayEnd }).available).toBe(false);
+  expect(buildRecapContext("  ", [], reminders, { since, until, dayStart, dayEnd }).available).toBe(false);
   expect(buildRecapContext("SESSION_SUMMARY\n", notes, [{ ...reminders[0], message: "Changed" }], { since, until, dayStart, dayEnd }).key).not.toBe(context.key);
   const large = buildRecapContext("x".repeat(8000), Array.from({ length: 50 }, (_, i) => ({ ...notes[0], id: String(i), body: "n".repeat(10000) })), reminders, { since, until, dayStart, dayEnd });
   expect(large.prompt.length).toBeLessThanOrEqual(8000);

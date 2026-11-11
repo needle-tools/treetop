@@ -38,7 +38,7 @@ test("recap continues after close, notifies completion and renders safe Markdown
     let calls = 0;
     let summariesAvailable = false;
     let generatedSince = 0;
-    await page.clock.install();
+    await page.clock.install({time:new Date(2026,10,11,9,40)});
     await page.addInitScript(() => localStorage.setItem("supergit:recapLastActivity", String(Date.now() - 9 * 3600_000)));
     await page.route("**/api/activity-recap?**", async route => {
       if (route.request().method() === "GET") {
@@ -65,6 +65,7 @@ test("recap continues after close, notifies completion and renders safe Markdown
     await page.getByRole("button", { name: "Remind me in one hour", exact: true }).click();
     assert.equal(calls, 0, "Snoozing must not generate a recap");
     const originalSince = await page.evaluate(() => JSON.parse(localStorage.getItem("supergit:recapCatchUp")!).since);
+    assert.equal(originalSince,new Date(2026,10,10).getTime(),"Morning catch-up should include yesterday's work, not just the sleeping interval");
     await page.reload();
     await page.getByRole("button", { name: "Open recap", exact: true }).waitFor();
     await page.clock.fastForward(59 * 60_000);

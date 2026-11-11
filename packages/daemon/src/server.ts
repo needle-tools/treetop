@@ -6363,7 +6363,7 @@ const server = Bun.serve<TermWsData, never>({
           const agent = request?.agent ?? url.searchParams.get("agent") ?? "codex";
           if (agent !== "codex" && agent !== "claude") return json({ error: "Choose Codex small or Claude Haiku" }, { status: 400 });
           const cacheKey = `topics-v8:${context.key}:${agent}`;
-          let recap = history.cached(cacheKey);
+          let recap = context.available ? history.cached(cacheKey) : null;
           if (req.method === "POST" && context.available && !recap) {
             if (recapGenerating) return json({ error: "Another recap is generating. Try again shortly." }, { status: 409 });
             recapGenerating = true;

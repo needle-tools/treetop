@@ -8,7 +8,14 @@
  */
 
 import { test, expect, describe } from "bun:test";
-import { shouldOfferActivityRecap } from "../src/ui-idle";
+import { shouldOfferActivityRecap, activityRecapStart } from "../src/ui-idle";
+
+test("morning catch-up includes the previous workday even after working past midnight", () => {
+  const now = new Date(2026,10,11,9,40).getTime();
+  expect(activityRecapStart(new Date(2026,10,11,0,44).getTime(),now)).toBe(new Date(2026,10,10).getTime());
+  expect(activityRecapStart(new Date(2026,10,6,18).getTime(),new Date(2026,10,9,9).getTime())).toBe(new Date(2026,10,6).getTime());
+  expect(activityRecapStart(new Date(2026,10,2,18).getTime(),now)).toBe(new Date(2026,10,2).getTime());
+});
 
 test("recap offers require eight hours on startup or four hours away while open", () => {
   const hour = 3600_000, last = hour;
