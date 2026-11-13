@@ -53,6 +53,7 @@
     visibleSessionRequestKey,
   } from "./col-visibility";
   import { getDaemonKV } from "./daemon-kv";
+  import { codexResumeCommand, rememberCodexStandalone } from "./terminal-reconnect";
   import { openSummarize, activeSummarize } from "./summarize-dialog";
   import {
     invalidateCachedSessionSummary,
@@ -1536,7 +1537,7 @@
    *  string that survives an AppleScript `do script` round-trip. */
   function resumeShellCommand(sid: string): string {
     if (agent === "codex") {
-      return `codex resume ${sid}`;
+      return codexResumeCommand(["codex","resume",sid],getDaemonKV(),sid,daemonId).join(" ");
     }
     return `claude --resume ${sid} --allow-dangerously-skip-permissions`;
   }
@@ -1704,6 +1705,15 @@
     const base: SessionMenuItem[] = [
       ...(terminalMounted ? terminalOutputMenuItems : []),
       ...claudeItems,
+      ...(agent === "codex" && sid && mode === "read" && !terminalMounted && !codexVisualAppSurface ? [{
+        kind: "action" as const,
+        label: "Resume without shared server",
+        title: "Resume separately and remember this choice for this session",
+        onSelect: () => {
+          rememberCodexStandalone(getDaemonKV(),sid,daemonId);
+          resumeInTerminalSurface();
+        },
+      }] : []),
       {
         kind: "action",
         label: "Resume in external terminal",

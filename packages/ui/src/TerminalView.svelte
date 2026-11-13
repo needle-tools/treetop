@@ -68,7 +68,9 @@
   import { msSinceScroll, SCROLL_QUIET_MS } from "./scroll-activity";
   import { record as recordTiming } from "./timings";
   import { shouldAutofocusOnWsOpen } from "./terminal-autofocus";
-  import { createTerminalReconnect } from "./terminal-reconnect";
+  import { createTerminalReconnect, codexResumeCommand, rememberCodexStandalone, createSlowResumeWatch, retryCodexStandalone } from "./terminal-reconnect";
+  import { getDaemonKV } from "./daemon-kv";
+  import { requestTerminalStop } from "./api";
 
   type PasteDebugExtra = Record<string, string | number | boolean | null>;
 
@@ -658,9 +660,56 @@
       .catch(error => recordBrowserDiagnostic("terminal session ownership update failed", { terminalId, ownerId, error: String(error) }));
   }
   let phase: "starting" | "live" | "exited" | "error" = "starting";
+  let standaloneRetryBusy = false;
+  let standaloneResumeSelected = false;
+  let standaloneRetryError = "";
+  let slowResume = false;
+  let resumeWarningDismissed = false;
+  const slowResumeWatch = createSlowResumeWatch();
+  $: canRetryStandalone = !standaloneResumeSelected && agent === "codex" && cmd.includes("resume") &&
+    !codexResumeCommand(cmd,getDaemonKV(),ownerId ?? "",daemonId).includes("--no-daemon");
+
+  export async function resumeWithoutSharedServer(): Promise<void> {
+    if (standaloneRetryBusy || !canRetryStandalone || !terminalId) return;
+    standaloneRetryBusy = true;
+    standaloneRetryError = "";
+    try {
+      await retryCodexStandalone({
+        stop: () => requestTerminalStop(terminalId,daemonId),
+        remember: () => {
+          rememberCodexStandalone(getDaemonKV(),ownerId ?? "",daemonId);
+          standaloneResumeSelected = true;
+        },
+        start: async () => {
+          if (sharingDestroyed) return;
+          // Retire the old socket before creating its replacement. Ignore its
+          // late close/exit callbacks so the parent retains this column.
+          if (ws) {
+            detachSocket(ws);
+            ws.close(1000,"standalone resume retry"); ws = null;
+          }
+          reconnect.reset();
+          triedAttachFallback = true;
+          terminalId = "";
+          slowResume = false;
+          slowResumeWatch.reset();
+          writeBuffer.flush();
+          terminalWrites.clear();
+          xterm?.reset();
+          phase = "starting";
+          await spawnPtyAndConnect();
+        },
+      });
+    } catch (e) {
+      standaloneRetryError = e instanceof Error ? e.message : String(e);
+    } finally { standaloneRetryBusy = false; }
+  }
   $: outputSharingEnabled = sharingOutput;
   $: outputSharingActive = sharingOutput && phase === "live" && !sharingError;
   $: outputMenuItems = terminalId && phase === "live" ? [
+    ...(canRetryStandalone ? [{kind:"action" as const,label:"Resume without shared server",
+      disabled:standaloneRetryBusy,title:"Stop this terminal attempt and resume separately; remember for this session",
+      onSelect:()=>{void resumeWithoutSharedServer();}}] : []),
     sharingOutput ? {
       kind: "action", label: "Stop sharing terminal output with agents",
       iconSvg: ["M18 8a3 3 0 1 0 0-6 3 3 0 0 0 0 6Z", "M6 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6Z", "M18 22a3 3 0 1 0 0-6 3 3 0 0 0 0 6Z", "M8.6 10.5l6.8-4M8.6 13.5l6.8 4"],
@@ -1086,7 +1135,7 @@
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
-            cmd,
+            cmd: agent === "codex" ? codexResumeCommand(cmd,getDaemonKV(),ownerId ?? "",daemonId) : cmd,
             cwd,
             cols,
             rows,
@@ -1210,6 +1259,7 @@
           try {
             const obj = JSON.parse(ev.data);
             if (obj?.type === "exit") {
+              if (standaloneRetryBusy) return;
               reconnect.reset();
               sawExitFrame = true;
               exitInfo = { code: obj.code, signal: obj.signal };
@@ -1285,6 +1335,7 @@
         flushTerminalStartupLog("ws-error");
       };
       ws.onclose = (ev) => {
+        if (standaloneRetryBusy) return;
         logTerminalStartup("ws-close", {
           code: ev.code,
           reason: ev.reason || null,
@@ -1779,6 +1830,16 @@
     // missed daemon false-edge cannot leave the dock stuck in "working" while
     // the terminal I/O chip has already dropped to 0/s.
     workingTicker = setInterval(() => {
+      if (canRetryStandalone && !standaloneRetryBusy && phase === "live" && xterm && isTerminalVisible) {
+        const buffer = xterm.buffer.active;
+        const rows: string[] = [];
+        for (let y = buffer.baseY; y < buffer.baseY+xterm.rows; y++)
+          rows.push(buffer.getLine(y)?.translateToString(true) ?? "");
+        slowResume = slowResumeWatch.observe(rows.join("\n"),Date.now());
+      } else {
+        slowResumeWatch.reset();
+        slowResume = false;
+      }
       if (currentWorking && Date.now() - lastActivityTs > WORKING_IDLE_MS) {
         setCurrentWorking(false);
       }
@@ -2354,6 +2415,13 @@
   on:wheel|capture={onTuiWrapWheel}
   role="presentation"
 >
+  {#if (slowResume && !resumeWarningDismissed) || standaloneRetryBusy || standaloneRetryError}
+    <div class="resume-warning" role="status">
+      <span>{standaloneRetryError || (standaloneRetryBusy ? "Stopping this attempt before retrying…" : "Resume is taking longer than expected.")}</span>
+      <button type="button" disabled={standaloneRetryBusy} on:click={() => void resumeWithoutSharedServer()}>Retry without shared server</button>
+      <button type="button" disabled={standaloneRetryBusy} aria-label="Dismiss resume warning" on:click={() => {resumeWarningDismissed = true; standaloneRetryError = "";}}>×</button>
+    </div>
+  {/if}
   {#if phase === "starting"}
     <LoadingOverlay
       text={reconnecting ? "reconnecting terminal…" : "starting terminal…"}
@@ -2620,6 +2688,24 @@
      nudged up one line) but with its own background so the warning
      reads as a chip rather than inline text. The loading-state pill
      lives in `./LoadingOverlay.svelte`. */
+  .resume-warning {
+    position: absolute;
+    top: 0.5rem;
+    left: 0.5rem;
+    right: 0.5rem;
+    z-index: 5;
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+    padding: 0.6rem;
+    border: 1px solid #b89548;
+    border-radius: 6px;
+    background: #29251c;
+    color: #eee1bd;
+  }
+  .resume-warning span { flex: 1; }
+  .resume-warning button { cursor: pointer; }
   .overlay.error {
     position: absolute;
     top: 50%;

@@ -427,6 +427,64 @@ function emitCodexEvents(events: readonly unknown[]): void {
 }
 
 describe("SessionView browser lifecycle", { concurrency: false }, () => {
+  test("stalled CLI resume offers an explicit standalone retry and remembers it", async () => {
+    const page = await browser.newPage();
+    const commands: string[][] = [];
+    const actions: string[] = [];
+    const prefs: Record<string,string> = {};
+    let rejectStop = true;
+    try {
+      await page.route("**/api/prefs", async route => {
+        if (route.request().method() === "PATCH") Object.assign(prefs,route.request().postDataJSON());
+        await route.fulfill({json:prefs});
+      });
+      await page.route("**/api/terminals", async route => {
+        if (route.request().method() !== "POST") return route.fulfill({json:[]});
+        commands.push(route.request().postDataJSON().cmd);
+        actions.push("spawn");
+        await route.fulfill({json:{id:"replacement-terminal",pid:123}});
+      });
+      await page.route("**/api/terminals/test-terminal", async route => {
+        actions.push("stop");
+        await route.fulfill(rejectStop ? {status:409,json:{error:"Stop could not be confirmed"}} : {json:{ok:true}});
+      });
+      await page.routeWebSocket("**/api/terminals/*/io", socket => {
+        socket.send(Buffer.from(socket.url().includes("test-terminal") ? "Resuming session…\r\n" : "› Ask Codex to do anything\r\n"));
+      });
+      await page.goto(`${origin}/test/browser/session-view-lifecycle.html?terminal&recovery`,{waitUntil:"networkidle"});
+      await page.locator(".xterm-screen").waitFor();
+      await page.waitForTimeout(800);
+      await page.clock.install();
+      await page.clock.runFor(21_000);
+      await page.getByText("Resume is taking longer than expected.",{exact:true}).waitFor();
+      assert.equal(commands.length,0,"warning must not automatically retry");
+      await page.getByRole("button",{name:"Session menu",exact:true}).click();
+      await page.getByRole("button",{name:"Resume without shared server",exact:true}).waitFor();
+      await page.getByRole("button",{name:"Session menu",exact:true}).click();
+      await page.getByRole("button",{name:"Retry without shared server",exact:true}).click();
+      await page.getByText("Stop could not be confirmed",{exact:true}).waitFor();
+      assert.equal(commands.length,0,"failed Stop must retain the existing attempt");
+      rejectStop = false;
+      await page.getByRole("button",{name:"Session menu",exact:true}).click();
+      await page.getByRole("button",{name:"Resume without shared server",exact:true}).click();
+      await waitForCondition(async()=>commands.length===1,"replacement did not spawn");
+      assert.deepEqual(actions,["stop","stop","spawn"]);
+      assert.ok(commands[0].includes("--no-daemon"));
+      assert.ok(commands[0].includes(threadId));
+      await page.clock.runFor(1000);
+      await waitForCondition(async()=>Object.keys(prefs).some(key=>key.startsWith("supergit:codexStandalone:")),"session preference was not persisted");
+      await page.reload({waitUntil:"networkidle"});
+      await page.locator(".xterm-screen").waitFor();
+      // Reload reattaches the fixture's original ID; preference still applies
+      // to the next ordinary Resume command, without a global setting change.
+      const remembered = await page.evaluate(async () => {
+        const {codexResumeCommand} = await import("/src/terminal-reconnect.ts");
+        const {getDaemonKV} = await import("/src/daemon-kv.ts");
+        return codexResumeCommand(["codex","resume","lifecycle-thread"],getDaemonKV(),"lifecycle-thread");
+      });
+      assert.ok(remembered.includes("--no-daemon"));
+    } finally {await page.close();}
+  },60_000);
   test("typed terminal echo catches up through fragmented output at low display FPS", async () => {
     const currentPage = await browser.newPage();
     try {

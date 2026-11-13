@@ -739,6 +739,20 @@ Resume deployment follow-up: recovery was waiting for a complete repository refr
 
 A separately blocked Treetop conversation was traced with Windows Restart Manager to Codex app-server daemon PID 44416 (started Oct 30), outside the Treetop broker. Its writer lock was left intact; no external Codex process was terminated.
 
+2026-11-13: Codex CLI resume recovery. A conversation repeatedly stalled through
+the shared Codex app server but resumed successfully with `--no-daemon`. The CLI
+surface now offers a dismissible warning after its visible Resuming status remains
+for 20 seconds, plus a “Resume without shared server” menu action. Neither performs
+an automatic retry. Explicit retry waits for Stop confirmation for that terminal
+before starting a replacement; rejected Stop retains the original attempt. The
+standalone choice is stored in daemon preferences per daemon/session and applies
+to future inline and external-terminal resumes. Detection reads the live viewport,
+not output silence or old scrollback; hidden terminals defer the warning. No
+production daemon, broker, or user session was restarted while implementing this.
+Validation: 48 terminal/reconnect/write-buffer tests passed; the focused browser
+test verifies the delayed warning, no automatic restart, failed Stop preservation,
+menu retry, stop-before-spawn ordering, and preference persistence after reload.
+
 
 2026-11-04: Fresh CLI identity correction. Global activity was assigning the first unstamped column in a cwd to any active conversation, including external conversations never opened in Treetop. Removed that fallback: only the exact preassigned provider ID may stamp a fresh column. Codex CLI has no preassigned ID here, so it retains its live terminal attachment and is not automatically promoted from global activity. Reliable Codex transcript association/full-stop resume remains dependent on adding an authoritative per-terminal identity channel; timestamps/cwd are insufficient. Regression tests reproduce external Codex/Claude adoption, reject mismatched preassigned IDs and concurrent-column guessing, and retain the explicit Claude reload/resume round trip. Storage tests: 221 passed; routing tests: 135 passed.
 

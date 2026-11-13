@@ -43,7 +43,7 @@
       onWorkingChange={(value) => (working = value)}
       onStopVisualApp={() => (stopped = true)}
       onVisualResume={() => (stopped = false)}
-      spawnReady={false}
+      spawnReady={new URLSearchParams(location.search).has("recovery")}
       {parentTaskContext}
       onOpenSubagent={(subagentId, _surface, context) => { openedSubagentId = subagentId; openedSubagentContext = context; }}
     />
