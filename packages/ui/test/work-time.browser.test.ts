@@ -13,7 +13,7 @@ import {
 } from "../../daemon/src/work-time.ts";
 
 test(
-  "work clock records projects, trims idle tails, pauses and adjusts daily totals",
+  "work clock records projects, retains time through the idle cutoff, pauses and adjusts daily totals",
   { timeout: 90_000 },
   async () => {
     const dir = await mkdtemp(resolve(tmpdir(), "treetop-work-clock-browser-"));
@@ -184,7 +184,10 @@ test(
       await page.getByLabel("Project B input", { exact: true }).click();
       await page.clock.runFor(10_000);
       await page.keyboard.type("c");
-      await page.clock.runFor(121_000);
+      await page.clock.runFor(299_000);
+      // The one-second display timer may be just before its next tick.
+      assert.match(await clock.innerText(), /00:06:0[89]/);
+      await page.clock.runFor(62_000);
       await until(
         async () => store.summary().length === 2,
         `Project totals were not saved ${JSON.stringify(requests)} ${await clock.getAttribute("title")} ${await page.evaluate(() => ({ focus: document.hasFocus(), hidden: document.hidden })).then(JSON.stringify)}`,
@@ -195,9 +198,9 @@ test(
       );
       assert.equal(
         Math.round(store.summary().find((r) => r.repoId === "b")!.ms / 1000),
-        10,
+        310,
       );
-      assert.match(await clock.innerText(), /00:01:10/);
+      assert.match(await clock.innerText(), /00:06:10/);
       // A short sleep is below the idle cutoff, but must still break the span.
       await page.getByLabel("Project A input", { exact: true }).click();
       await page.keyboard.type("before sleep");
@@ -206,14 +209,14 @@ test(
       await page.clock.runFor(60_000);
       assert.equal(
         Math.round(store.summary().reduce((n, r) => n + r.ms, 0) / 1000),
-        70,
+        430,
       );
       await page.evaluate(() => window.dispatchEvent(new Event("blur")));
       await page.clock.fastForward(60_000);
       await page.keyboard.type("back from another app");
       assert.equal(
         Math.round(store.summary().reduce((n, r) => n + r.ms, 0) / 1000),
-        70,
+        430,
       );
       await clock.click();
       await page
@@ -230,7 +233,7 @@ test(
           store.summary().find((r) => r.repoId === "a")!.ms >= 960_000,
         "Manual adjustment failed",
       );
-      assert.match(await clock.innerText(), /00:16:10/);
+      assert.match(await clock.innerText(), /00:22:10/);
       await page
         .getByRole("button", { name: "Close work time", exact: true })
         .click();
@@ -239,7 +242,7 @@ test(
       await page.clock.runFor(60_000);
       assert.equal(
         Math.round(store.summary().reduce((n, r) => n + r.ms, 0) / 1000),
-        970,
+        1330,
       );
       assert.deepEqual(errors, []);
       assert.equal(captures, 0, "timelapse must be off by default");
@@ -265,7 +268,7 @@ test(
         const { setSetting } = await import("/src/settings-registry.ts");
         setSetting("timelapse.enabled", true);
       });
-      await page.clock.runFor(11_000);
+      await page.clock.runFor(6_000);
       await until(
         async () => captures > 0,
         "Enabled timelapse did not capture active work",

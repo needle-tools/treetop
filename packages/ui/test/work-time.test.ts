@@ -1,38 +1,39 @@
 import { test, expect } from "bun:test";
 import { WorkActivity, splitWorkDays } from "../src/work-time";
 
-test("mouse requires sustained movement; deliberate input starts immediately", () => {
+test("one second of movement qualifies; deliberate input starts immediately", () => {
   const a = new WorkActivity();
   a.move("a", 1000);
+  a.move("a", 1500);
   a.move("a", 2000);
-  a.move("a", 6000);
-  expect(a.preview(6000)).toBe(0); // a long gap resets the movement qualification
-  for (let t = 6500; t <= 11000; t += 500) a.move("a", t);
-  expect(a.active(11000)).toBe(true);
-  expect(a.drain()).toEqual([]);
-  a.input("a", 12000);
-  expect(a.drain()).toEqual([{ repoId: "a", start: 11000, end: 12000 }]);
+  expect(a.active(2000)).toBe(true);
+  a.input("b", 3000);
+  expect(a.drain()).toEqual([{ repoId: "a", start: 2000, end: 3000 }]);
 });
 
-test("idle, pause, blur and sleep never credit their gap; switches credit the previous project", () => {
+test("idle cutoff retains credited time, caps the gap and never double-counts", () => {
   const a = new WorkActivity();
   a.input("a", 1000);
-  a.input("a", 31000);
-  a.input("b", 61000);
-  a.input("b", 71000);
-  expect(a.drain()).toEqual([
-    { repoId: "a", start: 1000, end: 61000 },
-    { repoId: "b", start: 61000, end: 71000 },
+  expect(a.drain(61000)).toEqual([{ repoId: "a", start: 1000, end: 61000 }]);
+  expect(a.preview(61000)).toBe(0);
+  expect(a.drain(601000)).toEqual([{ repoId: "a", start: 61000, end: 301000 }]);
+  expect(a.active(601000)).toBe(false);
+  expect(a.drain(602000)).toEqual([]);
+  a.input("b", 700000);
+  expect(a.drain()).toEqual([]);
+  expect(a.drain(710000)).toEqual([
+    { repoId: "b", start: 700000, end: 710000 },
   ]);
-  expect(a.preview(72000)).toBe(1000);
-  expect(a.preview(200000)).toBe(0);
-  a.input("b", 210000);
-  expect(a.drain()).toEqual([]);
   a.reset();
-  a.input("a", 300000);
+  a.input("a", 900000);
   expect(a.drain()).toEqual([]);
-  a.reset();
-  expect(a.active(310000)).toBe(false);
+});
+
+test("input following a long gap retains the cutoff even without a timer flush", () => {
+  const a = new WorkActivity();
+  a.input("a", 1000);
+  a.input("b", 601000);
+  expect(a.drain()).toEqual([{ repoId: "a", start: 1000, end: 301000 }]);
 });
 
 test("day attribution splits at local midnight without rounding durations", () => {

@@ -65,8 +65,8 @@
     }))
     .sort((a, b) => b.ms - a.ms);
 
-  function collect() {
-    const added = splitWorkDays(activity.drain());
+  function collect(at = Date.now()) {
+    const added = splitWorkDays(activity.drain(at));
     for (const row of added) {
       const prev = pending.at(-1);
       if (
@@ -80,8 +80,8 @@
     }
     if (added.length) pending = [...pending];
   }
-  function reset() {
-    collect();
+  function reset(at = Date.now()) {
+    collect(at);
     activity.reset();
     running = false;
     liveTail = 0;
@@ -137,7 +137,7 @@
   }
   function awake() {
     const t = Date.now();
-    if (t - lastTick > 5000 || t < lastTick) reset();
+    if (t - lastTick > 5000 || t < lastTick) reset(lastTick);
     lastTick = t;
     return t;
   }
@@ -397,7 +397,7 @@
         ? "Tracking is paused."
         : running
           ? "Tracking active work."
-          : "Waiting for activity."} Stops after 2 minutes without interaction.</small
+          : "Waiting for activity."} Stops after 5 minutes without interaction; counted time is kept.</small
     >
   </dialog>
 </div>

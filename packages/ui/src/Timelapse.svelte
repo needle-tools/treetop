@@ -36,7 +36,7 @@
         type: "boolean",
         default: false,
         description:
-          "Off by default. Save a JPEG of the foreground Treetop window every 10 seconds during active work. Visible terminal text and secrets are included. Export completed days 8 hours after their last screenshot, then remove JPEGs only after both MP4 variants succeed. Downloads an optional encoder on first use (about 20-30 MB). Windows native app required for capture.",
+          "Off by default. Save a JPEG of the foreground Treetop window every 5 seconds during active work. Visible terminal text and secrets are included. Export completed days 8 hours after their last screenshot, then remove JPEGs only after both MP4 variants succeed. Downloads an optional encoder on first use (about 20-30 MB). Windows native app required for capture.",
       },
       {
         key: "timelapse.folder",
@@ -174,7 +174,7 @@
   }
   onMount(() => {
     mounted = true;
-    const timer = setInterval(() => void capture(), 10_000);
+    const timer = setInterval(() => void capture(), 5_000);
     const progressTimer = setInterval(() => {
       if (installing) void refresh();
     }, 1000);

@@ -1276,3 +1276,12 @@ PowerShell literal via EncodedCommand so all query parameters survive. A behavio
 test executes the generated script with only the final OS launch intercepted,
 including ampersands, apostrophes and percent escapes; gallery tests check both
 variant URLs explicitly. Local file/default-app handling is unchanged.
+
+2026-11-17 activity tuning: A five-minute idle allowance now credits time as it
+passes and retains it at cutoff, rather than retracting an unconfirmed tail.
+Timer flushes and later input share a credited-through timestamp, avoiding double
+counts and preserving the capped interval even after a long input gap. Mouse
+qualification is one second instead of five. Blur/pause still end the interval;
+sleep detection credits only through the last awake tick. Timelapse capture now
+runs every five seconds, with the same daemon throttle. Tests verify retained idle
+time, capped gaps, repeated flushes, faster capture and UI sleep/blur/pause totals.

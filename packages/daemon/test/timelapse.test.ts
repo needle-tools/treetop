@@ -51,8 +51,10 @@ test("recording is opt-in, throttled across windows, and survives reopening", as
     enabled = true;
     expect((await store.capture()).captured).toBe(true);
     expect((await store.capture()).captured).toBe(false);
-    now += 10_000;
-    await store.capture();
+    now += 4_999;
+    expect((await store.capture()).captured).toBe(false);
+    now += 1;
+    expect((await store.capture()).captured).toBe(true);
     const reopened = new TimelapseStore(root, options);
     const days = await reopened.list();
     expect(days).toHaveLength(1);

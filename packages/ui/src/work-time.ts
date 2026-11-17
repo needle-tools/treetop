@@ -6,7 +6,7 @@ export interface WorkInterval {
 export interface WorkDayInterval extends WorkInterval {
   day: string;
 }
-export const WORK_IDLE_MS = 120_000;
+export const WORK_IDLE_MS = 300_000;
 
 export function workDay(time = Date.now()): string {
   const d = new Date(time);
@@ -27,20 +27,25 @@ export function splitWorkDays(intervals: WorkInterval[]): WorkDayInterval[] {
   return result;
 }
 
-/** Only intervals bounded by real input become durable. The live tail is provisional. */
+/** Keep eligible time through the idle cutoff; flushes never retract credited work. */
 export class WorkActivity {
-  private last: { repoId: string; at: number } | undefined;
+  private last: { repoId: string; at: number; credited: number } | undefined;
   private movement: { repoId: string; since: number; at: number } | undefined;
   private pending: WorkInterval[] = [];
+  private credit(now: number): void {
+    if (!this.last) return;
+    const end = Math.min(now, this.last.at + WORK_IDLE_MS);
+    if (end <= this.last.credited) return;
+    const row = { repoId: this.last.repoId, start: this.last.credited, end };
+    const previous = this.pending.at(-1);
+    if (previous?.repoId === row.repoId && previous.end === row.start)
+      previous.end = end;
+    else this.pending.push(row);
+    this.last.credited = end;
+  }
   input(repoId: string, now: number): void {
-    if (this.last && now > this.last.at && now - this.last.at < WORK_IDLE_MS) {
-      const row = { repoId: this.last.repoId, start: this.last.at, end: now };
-      const previous = this.pending.at(-1);
-      if (previous?.repoId === row.repoId && previous.end === row.start)
-        previous.end = row.end;
-      else this.pending.push(row);
-    }
-    this.last = { repoId, at: now };
+    this.credit(now);
+    this.last = { repoId, at: now, credited: now };
     this.movement = undefined;
   }
   move(repoId: string, now: number): void {
@@ -50,7 +55,7 @@ export class WorkActivity {
         ? previous.since
         : now;
     this.movement = { repoId, since, at: now };
-    if (now - since >= 5000) {
+    if (now - since >= 1000) {
       this.input(repoId, now);
       this.movement = { repoId, since, at: now };
     }
@@ -61,12 +66,18 @@ export class WorkActivity {
     );
   }
   preview(now: number): number {
-    return this.active(now) ? now - this.last!.at : 0;
+    return this.last
+      ? Math.max(
+          0,
+          Math.min(now, this.last.at + WORK_IDLE_MS) - this.last.credited,
+        )
+      : 0;
   }
   project(): string {
     return this.last?.repoId ?? "";
   }
-  drain(): WorkInterval[] {
+  drain(now?: number): WorkInterval[] {
+    if (now !== undefined) this.credit(now);
     const result = this.pending;
     this.pending = [];
     return result;

@@ -345,7 +345,7 @@ export class TimelapseStore {
     const now = this.now();
     if (this.exporting)
       return { captured: false, reason: "Generating timelapse" };
-    if (this.capturing || now - this.lastCapture < 10_000)
+    if (this.capturing || now - this.lastCapture < 5_000)
       return { captured: false, reason: "interval" };
     this.capturing = true;
     this.lastCapture = now;
