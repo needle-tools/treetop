@@ -170,6 +170,8 @@
   import RepoReorderDialog from "./RepoReorderDialog.svelte";
   import RepairSessionDialog from "./RepairSessionDialog.svelte";
   import SettingsDialog from "./SettingsDialog.svelte";
+  import TimeTracker from "./TimeTracker.svelte";
+  import { orderProcessProjects } from "./process-store";
   import { registerSettings, settingValue } from "./settings-registry";
   import {
     BACKGROUND_SESSION_SUMMARIES_KEY,
@@ -787,6 +789,7 @@
 
   let actionsOpen = false;
   let eventsOpen = false;
+  $: if (!settingsDialogOpen) { actionsOpen = false; eventsOpen = false; }
   let daemonsMenuOpen = false;
   let projectsMenuOpen = false;
   let workspaceSearch: { open: (kinds?: SearchKind[] | null) => void } | null =
@@ -7151,6 +7154,8 @@
     return false;
   });
 
+  $: if (orphanNotes.length === 0) notesTrayOpen = false;
+
   async function reassignOrphan(noteId: string, anchor: string): Promise<void> {
     const note = $notesAll.find((n) => n.id === noteId);
     if (!note) return;
@@ -7759,6 +7764,18 @@
     if (!row) throw new Error("Zen target row not found");
     if (zenRowKey !== row.key) toggleZenRow(row.key);
     await tick();
+  }
+
+  function processProjectOrder(): string[] {
+    const center = window.innerHeight / 2;
+    const nearby = Array.from(document.querySelectorAll<HTMLElement>(".row[data-repo-id]")).flatMap(element => {
+      const rect = element.getBoundingClientRect();
+      const id = element.dataset.repoId;
+      return id && rect.width > 0 && rect.height > 0
+        ? [{id,distance:Math.max(rect.top-center,center-rect.bottom,0)}] : [];
+    });
+    const zenProject = rows.find(row => row.key === zenRowKey)?.repo.id;
+    return orderProcessProjects(repos,nearby,zenProject).map(repo=>repo.id);
   }
 
   function currentUiContext(): UiContextSnapshot {
@@ -9551,6 +9568,7 @@
         <button
           bind:this={voiceButtonEl}
           class="actions-btn voice-btn"
+          aria-label="Voice"
           class:active={voiceState.phase === "listening" ||
             voiceState.phase === "speaking"}
           class:error={voiceState.phase === "error"}
@@ -9578,7 +9596,6 @@
             <path d="M12 17v5" />
             <path d="M8 22h8" />
           </svg>
-          Voice
           {#if voiceState.phase !== "off" && voiceState.phase !== "error"}
             <span class="voice-live-dot" aria-hidden="true"></span>
           {/if}
@@ -9761,6 +9778,7 @@
       {/if}
 
       <ProcessList
+        getProjectOrder={processProjectOrder}
         bind:this={processListRef}
         {repos}
         {activityByCwd}
@@ -9769,12 +9787,7 @@
         on:focusSession={(e) => void focusSessionBySource(e.detail.source)}
       />
 
-      <!-- Notes tray. Pinned in the menubar (no longer conditional on
-         `orphanNotes.length > 0`) so the affordance stays put across
-         the initial-load race where notes finish loading before
-         repos do — that gap used to make the button flash in and
-         out. Count badge only renders when there are orphans to
-         action, but the button is always reachable. -->
+      {#if orphanNotes.length > 0}
       <div class="actions-anchor notes-tray-anchor">
         <button
           class="actions-btn"
@@ -9841,6 +9854,8 @@
           </Popover>
         {/if}
       </div>
+
+      {/if}
 
       <div class="btn-group">
         <Tooltip placement="bottom">
@@ -10084,75 +10099,6 @@
         <MessagesInbox openReminder={(reminder) => reminderPanel?.view(reminder)} />
       </div>
 
-      <div class="actions-anchor">
-        <button
-          class="actions-btn"
-          class:open={actionsOpen}
-          on:click={() => (actionsOpen = !actionsOpen)}
-          title="Reversible workspace actions (undo / redo)"
-        >
-          Undo
-          {#if visibleEvents.length > 0}
-            <span class="count">{visibleEvents.length}</span>
-          {/if}
-        </button>
-        {#if actionsOpen}
-          <Popover variant="actions" unclamped>
-            <span slot="head">Recent actions</span>
-            {#if visibleEvents.length === 0}
-              <p class="muted small nopad">No actions yet.</p>
-            {:else}
-              <ul class="events">
-                {#each visibleEvents.slice(0, 50) as ev (ev.id)}
-                  <li class:undone={ev.undone}>
-                    <div class="ev-row">
-                      <span class="ev-type">{eventLabel(ev, repos)}</span>
-                      <span class="muted ev-time">{relTime(ev.timestamp)}</span>
-                    </div>
-                    <div class="ev-meta">
-                      <span class="actor actor-{ev.actor}">{ev.actor}</span>
-                      {#if ev.reversible}
-                        {#if ev.undone}
-                          <button
-                            class="undo"
-                            on:click={() => toggleEvent(ev.id, "redo")}
-                            >Redo</button
-                          >
-                        {:else}
-                          <button
-                            class="undo"
-                            on:click={() => toggleEvent(ev.id, "undo")}
-                            >Undo</button
-                          >
-                        {/if}
-                      {/if}
-                    </div>
-                  </li>
-                {/each}
-              </ul>
-            {/if}
-          </Popover>
-        {/if}
-      </div>
-
-      <div class="actions-anchor events-anchor">
-        <button
-          class="actions-btn"
-          class:open={eventsOpen}
-          class:has-errors={errorEntries.length > 0}
-          on:click={() => (eventsOpen = !eventsOpen)}
-          title="Diagnostics — daemon 5xx, fetch failures, uncaught browser errors"
-        >
-          Events
-          {#if errorEntries.length > 0}
-            <span class="count">{errorEntries.length}</span>
-          {/if}
-        </button>
-        {#if eventsOpen}
-          <EventsPopover {errorEntries} on:clear={clearAllErrors} />
-        {/if}
-      </div>
-
       <div class="actions-anchor daemons-anchor">
         <button
           class="actions-btn daemons-btn"
@@ -10246,6 +10192,7 @@
         {/if}
       </div>
 
+      <TimeTracker projects={repos} />
       <button
         class="actions-btn settings-menu-btn"
         class:open={settingsDialogOpen}
@@ -13549,7 +13496,79 @@
 
 <ConfirmDialog />
 <BackgroundSessions on:restored={reconcileBackgroundRestore} />
-<SettingsDialog bind:open={settingsDialogOpen} />
+<SettingsDialog bind:open={settingsDialogOpen}>
+  <div slot="tools" class="settings-tools">
+      <div class="actions-anchor">
+        <button
+          class="actions-btn"
+          class:open={actionsOpen}
+          on:click={() => (actionsOpen = !actionsOpen)}
+          title="Reversible workspace actions (undo / redo)"
+        >
+          Undo
+          {#if visibleEvents.length > 0}
+            <span class="count">{visibleEvents.length}</span>
+          {/if}
+        </button>
+        {#if actionsOpen}
+          <Popover variant="actions">
+            <span slot="head">Recent actions</span>
+            {#if visibleEvents.length === 0}
+              <p class="muted small nopad">No actions yet.</p>
+            {:else}
+              <ul class="events">
+                {#each visibleEvents.slice(0, 50) as ev (ev.id)}
+                  <li class:undone={ev.undone}>
+                    <div class="ev-row">
+                      <span class="ev-type">{eventLabel(ev, repos)}</span>
+                      <span class="muted ev-time">{relTime(ev.timestamp)}</span>
+                    </div>
+                    <div class="ev-meta">
+                      <span class="actor actor-{ev.actor}">{ev.actor}</span>
+                      {#if ev.reversible}
+                        {#if ev.undone}
+                          <button
+                            class="undo"
+                            on:click={() => toggleEvent(ev.id, "redo")}
+                            >Redo</button
+                          >
+                        {:else}
+                          <button
+                            class="undo"
+                            on:click={() => toggleEvent(ev.id, "undo")}
+                            >Undo</button
+                          >
+                        {/if}
+                      {/if}
+                    </div>
+                  </li>
+                {/each}
+              </ul>
+            {/if}
+          </Popover>
+        {/if}
+      </div>
+
+      <div class="actions-anchor events-anchor">
+        <button
+          class="actions-btn"
+          class:open={eventsOpen}
+          class:has-errors={errorEntries.length > 0}
+          on:click={() => (eventsOpen = !eventsOpen)}
+          title="Diagnostics — daemon 5xx, fetch failures, uncaught browser errors"
+        >
+          Events
+          {#if errorEntries.length > 0}
+            <span class="count">{errorEntries.length}</span>
+          {/if}
+        </button>
+        {#if eventsOpen}
+          <EventsPopover {errorEntries} on:clear={clearAllErrors} />
+        {/if}
+      </div>
+
+  </div>
+</SettingsDialog>
 <SummarizeDialog />
 <ActivityRecap dismissNotification={dismissToast} bind:this={activityRecap} notify={addToast} projects={repos} openReference={async reference => {
   if (reference.type === "session") { await focusSessionBySource(reference.value); return; }

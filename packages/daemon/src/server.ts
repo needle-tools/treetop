@@ -1,4 +1,5 @@
 import { BrokerCodexAdapter } from "./broker-codex";
+import { WorkTimeStore, handleWorkTimeRequest } from "./work-time";
 import { restoreCandidateTitles } from "./background-restore";
 import { createReplayNDJSONStream, progressiveJsonResponse } from "./server-helpers";
 import { updateInstallParent, watchForUpdate } from "../../../src/electrobun/update-handoff";
@@ -685,6 +686,7 @@ async function ollamaAttachmentImagesForApi(
 }
 
 const summaries = await SummariesStore.open(WORKSPACE_PATH);
+const workTime = await WorkTimeStore.open(WORKSPACE_PATH);
 let recapHistoryImported = false;
 let recapGenerating = false;
 const repoSummaries = await RepoSummariesStore.open(WORKSPACE_PATH);
@@ -9810,6 +9812,11 @@ const server = Bun.serve<TermWsData, never>({
 
       if (url.pathname === "/api/prefs" && req.method === "GET") {
         return json(await workspace.getPrefs());
+      }
+      if (url.pathname === "/api/work-time") {
+        const response = await handleWorkTimeRequest(req,workTime);
+        for (const [key,value] of Object.entries(CORS)) response.headers.set(key,value);
+        return response;
       }
 
       // ── Remote daemons (Phase 4b: a remote box as a folder row) ──────

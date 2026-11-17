@@ -2026,7 +2026,9 @@ test("CLI identity proxy links only its own startup response without relying on 
   const received: Record<string,any>[] = [];
   ws.onmessage = event => received.push(JSON.parse(String(event.data)));
   try {
-    expect((await fetch(proxy.url.replace('ws:', 'http:').replace(/\/[^/]+$/, '/wrong'))).status).toBe(404);
+    // Codex validates --remote before connecting and rejects non-root URL paths.
+    expect(new URL(proxy.url).pathname).toBe("/");
+    expect((await fetch(new URL('/wrong',proxy.url.replace('ws:', 'http:')))).status).toBe(404);
     await opened;
     const init = {id:0,method:'initialize',params:{clientInfo:{name:'codex_cli'}}};
     ws.send(JSON.stringify(init));
@@ -2053,7 +2055,7 @@ test("Stop on a private CLI identity transport still interrupts the real turn be
   const adapter = new CodexCliEventAdapter();
   const calls: string[] = [];
   adapter.interruptActiveTurn = async id => {calls.push(id);};
-  await adapter.stopTerminal({agent:'codex',ownerId:'owned-thread',cmd:['codex','--remote','ws://127.0.0.1:12345/treetop-cli-01234567-89ab-cdef-0123-456789abcdef']},async()=>{calls.push('kill');});
+  await adapter.stopTerminal({agent:'codex',ownerId:'owned-thread',cmd:['codex','--remote','ws://127.0.0.1:12345']},async()=>{calls.push('kill');});
   expect(calls).toEqual(['owned-thread','kill']);
 });
 

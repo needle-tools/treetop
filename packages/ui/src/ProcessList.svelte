@@ -13,6 +13,7 @@
     procHistory,
     averagedCpuFromHistory,
     sortProcsByUsage,
+    orderProcessProjects,
     CPU_AVG_WINDOW_MS,
   } from "./process-store";
 
@@ -76,6 +77,8 @@
   }
 
   export let repos: Repo[] = [];
+  export let getProjectOrder: () => string[] = () => [];
+  let preferredProjects: string[] = [];
   export let daemonsOnline: Map<string, boolean> = new Map();
   export let activityByCwd: Record<string, ActivityEvent[]> = {};
   export let systemMemBytes: number | null = null;
@@ -91,6 +94,30 @@
   }
 
   let open = false;
+  let pinnedOpen = false;
+  let hoverOpenTimer: ReturnType<typeof setTimeout> | undefined;
+  let hoverCloseTimer: ReturnType<typeof setTimeout> | undefined;
+  function clearHoverTimers() {
+    clearTimeout(hoverOpenTimer); clearTimeout(hoverCloseTimer);
+    hoverOpenTimer = undefined; hoverCloseTimer = undefined;
+  }
+  function setOpen(value: boolean) {
+    if (value === open) return;
+    if (value) preferredProjects = getProjectOrder();
+    open = value;
+    startPolling(open ? FAST_MS : SLOW_MS, open);
+  }
+  function hoverEnter() {
+    clearHoverTimers();
+    if (!open) hoverOpenTimer = setTimeout(() => setOpen(true), 250);
+  }
+  function hoverLeave(event: MouseEvent) {
+    clearHoverTimers();
+    const anchor = event.currentTarget as HTMLElement;
+    if (open && !pinnedOpen) hoverCloseTimer = setTimeout(() => {
+      if (!anchor.contains(document.activeElement)) setOpen(false);
+    }, 180);
+  }
   export let procs: TuiProc[] = [];
   let pollTimer: ReturnType<typeof setInterval> | null = null;
   let refreshInFlight = false;
@@ -210,6 +237,7 @@
     avgCpuById,
     daemonsOnline,
     !procSearchResultIds,
+    preferredProjects,
   );
 
   // Apply the per-group sort: hovered group keeps its frozen order;
@@ -261,6 +289,7 @@
     avg: Map<string, number>,
     online: Map<string, boolean>,
     includeEmptyRepos = true,
+    projectOrder: string[] = [],
   ): RepoGroup[] {
     const map = new Map<string, RepoGroup>();
     for (const p of list) {
@@ -309,15 +338,12 @@
         group.daemonStatus = repoDaemonStatus(repo.daemonId, online);
       }
     }
-    // Emit groups in the same vertical order the repos appear on the
-    // board. The dashboard renders rows as `repos.flatMap(...)` (see
-    // App.svelte), so `repos` order *is* the on-screen order; follow it
-    // here instead of process-first-seen order. Any group not tied to a
-    // known repo (the "Other" bucket for processes whose cwd matches no
-    // repo) sorts last, in first-seen order.
+    // Context is captured on open: Zen first, otherwise nearest projects.
+    // Keep that order steady while the user interacts with the popup.
+    // Unranked projects retain board order; unrelated processes come last.
     const ordered: RepoGroup[] = [];
     const placed = new Set<string>();
-    for (const repo of repos) {
+    for (const repo of orderProcessProjects(repos,projectOrder.map((id,distance)=>({id,distance})))) {
       const name =
         repo.name ?? repo.path.split("/").filter(Boolean).pop() ?? repo.path;
       const group = map.get(name);
@@ -394,8 +420,10 @@
     refreshAbort?.abort();
   }
   function toggle() {
-    open = !open;
-    startPolling(open ? FAST_MS : SLOW_MS, open);
+    clearHoverTimers();
+    if (open && !pinnedOpen) { pinnedOpen = true; return; }
+    pinnedOpen = !open;
+    setOpen(!open);
   }
   async function sendTerm(p: TuiProc) {
     if (p.kind !== "external") {
@@ -554,23 +582,21 @@
   async function focusProc(p: TuiProc): Promise<void> {
     const source = procSource(p);
     if (!source) return;
-    open = false;
-    startPolling(SLOW_MS, false);
+    closeIfOpen();
     dispatch("focusSession", { source });
   }
 
   export function closeIfOpen() {
-    if (open) {
-      open = false;
-      startPolling(SLOW_MS, false);
-    }
+    clearHoverTimers();
+    pinnedOpen = false;
+    setOpen(false);
   }
 
   onMount(() => startPolling(SLOW_MS, false));
-  onDestroy(() => stopPolling());
+  onDestroy(() => { clearHoverTimers(); stopPolling(); });
 </script>
 
-<div class="actions-anchor tuis-anchor">
+<div class="actions-anchor tuis-anchor" on:mouseenter={hoverEnter} on:mouseleave={hoverLeave} role="presentation">
   <button
     class="actions-btn tuis-btn"
     class:open

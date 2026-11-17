@@ -172,6 +172,7 @@
         >
       </div>
 
+      <slot name="tools" />
       <div class="settings-body">
         {#key version}
           {#if visible.length === 0}

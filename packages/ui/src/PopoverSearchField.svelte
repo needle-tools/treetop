@@ -88,14 +88,16 @@
 
 <style>
   .popover-search-field {
+    box-sizing: border-box;
     min-width: 9rem;
     width: min(15rem, 42vw);
     display: inline-grid;
     grid-template-columns: auto minmax(0, 1fr) auto;
     align-items: center;
     gap: 0.35rem;
-    min-height: 1.55rem;
-    padding: 0.08rem 0.12rem 0.08rem 0.4rem;
+    height: 1.55rem;
+    min-height: 0;
+    padding: 0 0.12rem 0 0.4rem;
     border: 1px solid var(--surface-2);
     border-radius: var(--radius-sm);
     background: var(--surface-0);
@@ -103,6 +105,7 @@
   }
 
   .popover-search-toggle {
+    box-sizing: border-box;
     width: 2.25rem;
     height: 1.55rem;
     display: inline-grid;
@@ -157,7 +160,12 @@
   }
 
   input {
+    box-sizing: border-box;
     min-width: 0;
+    min-height: 0;
+    height: 100%;
+    padding: 0;
+    margin: 0;
     border: 0;
     outline: 0;
     background: transparent;

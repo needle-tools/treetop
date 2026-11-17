@@ -106,6 +106,13 @@ export function sortProcsByUsage<
 }
 
 export const processStore = writable<ProcEntry[]>([]);
+/** Snapshot the project context when opening the process list; leave ties stable. */
+export function orderProcessProjects<T extends {id:string}>(projects:T[],nearby:Array<{id:string;distance:number}>,zenId?:string|null):T[]{
+  const distances=new Map<string,number>();
+  for(const row of nearby)distances.set(row.id,Math.min(distances.get(row.id)??Infinity,row.distance));
+  const rank=(id:string)=>id===zenId?-1:distances.get(id)??Infinity;
+  return [...projects].sort((a,b)=>{const left=rank(a.id),right=rank(b.id);return left===right?0:left<right?-1:1;});
+}
 export const procHistory = writable<Map<string, ProcSample[]>>(new Map());
 
 export const procByOwnerId = derived(processStore, ($procs) => {

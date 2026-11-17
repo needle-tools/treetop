@@ -757,3 +757,11 @@ menu retry, stop-before-spawn ordering, and preference persistence after reload.
 2026-11-04: Fresh CLI identity correction. Global activity was assigning the first unstamped column in a cwd to any active conversation, including external conversations never opened in Treetop. Removed that fallback: only the exact preassigned provider ID may stamp a fresh column. Codex CLI has no preassigned ID here, so it retains its live terminal attachment and is not automatically promoted from global activity. Reliable Codex transcript association/full-stop resume remains dependent on adding an authoritative per-terminal identity channel; timestamps/cwd are insufficient. Regression tests reproduce external Codex/Claude adoption, reject mismatched preassigned IDs and concurrent-column guessing, and retain the explicit Claude reload/resume round trip. Storage tests: 221 passed; routing tests: 135 passed.
 
 Stop follow-up: broker logs show an explicit terminal stop at 08:02:57 UTC followed by CLI resume at 08:03:08 in needle-haystack. The CLI uses --remote unix://, so killing its PTY does not interrupt work hosted by the shared Codex daemon. Both HTTP DELETE and WebSocket Stop now check the exact owned loaded thread, fetch only its newest turn metadata, interrupt an in-progress turn, and only then kill the terminal. No thread/resume or external daemon termination is used. An unidentified remote CLI reports that Stop cannot be confirmed rather than guessing a conversation. 49 adapter tests pass, covering interrupt/kill ordering, failure preservation, idle/unloaded sessions, ordinary shells, and unidentified terminals.
+
+2026-11-17: Codex rejects private --remote WebSocket URLs containing a path before
+connecting. Each CLI identity proxy now exposes the root URL of its dedicated
+ephemeral loopback port, retaining the single-client restriction. Stop recognizes
+both the new root endpoints and existing legacy proxy paths. The 53 adapter tests
+pass, including root URL shape, exact startup identity and stop ordering. The
+production broker was left untouched; its transport fix needs a planned broker
+update before new CLI launches use it.

@@ -25,6 +25,7 @@ import {
   getHistory,
   averagedCpuFromHistory,
   sortProcsByUsage,
+  orderProcessProjects,
   processStore,
   procHistory,
   procByOwnerId,
@@ -32,6 +33,15 @@ import {
   type ProcEntry,
   type ProcSample,
 } from "../src/process-store";
+
+test("process projects prioritize Zen, then viewport distance, with stable fallback order", () => {
+  const projects=[{id:"a"},{id:"b"},{id:"c"},{id:"d"}];
+  const distances=[{id:"a",distance:500},{id:"b",distance:0},{id:"c",distance:100}];
+  expect(orderProcessProjects(projects,distances).map(p=>p.id)).toEqual(["b","c","a","d"]);
+  expect(orderProcessProjects(projects,distances,"c").map(p=>p.id)).toEqual(["c","b","a","d"]);
+  expect(orderProcessProjects(projects,[])).toEqual(projects);
+  expect(projects.map(p=>p.id)).toEqual(["a","b","c","d"]);
+});
 
 function proc(
   over: Partial<ProcEntry> & { id: string; pid: number },

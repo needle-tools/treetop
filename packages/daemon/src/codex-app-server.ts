@@ -26,7 +26,6 @@ export async function createCodexCliIdentityProxy(options: {
   onSession: (id:string) => void | Promise<void>;
 }) {
   const upstream = await (options.connect ?? connectCodexCliEventProcess)();
-  const token = crypto.randomUUID();
   const startup = new Set<string | number>();
   let client: import("bun").ServerWebSocket<null> | undefined;
   let accepted = false, closed = false;
@@ -42,7 +41,7 @@ export async function createCodexCliIdentityProxy(options: {
   const server = Bun.serve<null>({
     hostname:"127.0.0.1", port:0,
     fetch(request,server) {
-      if (new URL(request.url).pathname !== `/treetop-cli-${token}` || accepted) return new Response(null,{status:404});
+      if (new URL(request.url).pathname !== "/" || accepted) return new Response(null,{status:404});
       if (server.upgrade(request,{data:null})) { accepted = true; return; }
       return new Response(null,{status:400});
     },
@@ -87,7 +86,7 @@ export async function createCodexCliIdentityProxy(options: {
     finally { close(); }
   })();
   void upstream.exited.then(close,close);
-  return {url:`ws://127.0.0.1:${server.port}/treetop-cli-${token}`,close};
+  return {url:`ws://127.0.0.1:${server.port}`,close};
 }
 
 /** Keep the private connection with the terminal owner (the persistent broker in production). */
@@ -207,7 +206,7 @@ export class CodexCliEventAdapter {
   ): Promise<void> {
     const remote = record.cmd.indexOf("--remote");
     const endpoint = record.cmd[remote + 1] ?? "";
-    if (record.agent === "codex" && remote >= 0 && (endpoint === "unix://" || /^ws:\/\/127\.0\.0\.1:\d+\/treetop-cli-[0-9a-f-]+$/.test(endpoint))) {
+    if (record.agent === "codex" && remote >= 0 && (endpoint === "unix://" || /^ws:\/\/127\.0\.0\.1:\d+(?:\/?|\/treetop-cli-[0-9a-f-]+)$/.test(endpoint))) {
       if (!record.ownerId || record.ownerId.startsWith("__")) {
         throw new Error("Cannot confirm Stop: this Codex terminal has no resolved conversation ID. Interrupt its turn in the terminal first.");
       }

@@ -231,6 +231,27 @@ body.platform-windows .toast-stack {
   padding: 0.4rem 1rem 0.9rem;
 }
 
+.settings-tools {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.5rem 1rem;
+  border-bottom: 1px solid var(--surface-2);
+  flex-shrink: 0;
+}
+
+.settings-tools .actions-btn {
+  border: none;
+  background: transparent;
+  padding: 0.3rem 0.5rem;
+  font-size: 0.8rem;
+}
+
+.settings-tools .actions-btn:hover,
+.settings-tools .actions-btn.open {
+  background: var(--surface-2);
+}
+
 .settings-empty {
   margin: 0.8rem 0;
   font-size: 0.82rem;

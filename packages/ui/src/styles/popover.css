@@ -243,8 +243,8 @@
      explicitly here, the subgrid rows render with cells flush
      against each other (right-aligned uptime jams into the
      left-edge of the idle cell). */
-  row-gap: 0.25rem;
-  column-gap: 0.6rem;
+  row-gap: 0.1rem;
+  column-gap: 0.45rem;
 }
 /* Dissolve the group/list wrappers so their children participate in
    the single `.proc-groups` grid above (subgrid needs the row to be a
@@ -262,7 +262,7 @@
    groups have rows, so empty groups stay tight — exactly where we want
    the space (after a list) vs. not (under a bare header). */
 .tuis-popover .agents-list > li:last-child > .tui-row-static {
-  margin-bottom: 0.7rem;
+  margin-bottom: 0.4rem;
 }
 .tuis-popover .proc-col-header {
   display: grid;
@@ -272,8 +272,8 @@
   text-transform: uppercase;
   letter-spacing: 0.06em;
   color: var(--text-muted);
-  padding-top: 0.5rem;
-  padding-bottom: 0.2rem;
+  padding-top: 0.3rem;
+  padding-bottom: 0.1rem;
   /* Match the rows' horizontal padding (`.agent-row` 0.45rem) so the
      "CPU"/"Mem" labels line up with the values — and with the repo
      header totals — across all three subgrids. */
@@ -299,6 +299,11 @@
    `.tuis-popover` prefix on these rules. */
 .tuis-popover .tui-row-static {
   cursor: default;
+  box-sizing: border-box;
+  height: 1.5rem;
+  min-height: 0;
+  padding: 0 0.45rem;
+  line-height: 1.2;
   /* Columns (defined on the parent ul):
        1. icon            16px
        2. name            minmax(6ch, 10ch)
@@ -320,6 +325,7 @@
   place-self: center;
 }
 .tuis-popover .tui-row-static > .agent-row-name {
+  font-size: 0.75rem;
   grid-column: 2;
   overflow: hidden;
   text-overflow: ellipsis;

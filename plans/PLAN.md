@@ -1185,3 +1185,30 @@ over all-branches mode. Headless browser coverage verifies lazy fetch, remote
 routing, shared commit rows, diff expansion, keyboard opening, Escape, viewport
 bounds and fetch-error presentation. No native app window or production process
 was launched or restarted for these checks.
+
+2026-11-17: Active work clock in the app header, immediately left of Settings.
+It measures only deliberate interaction in Treetop, with five seconds of sustained
+pointer movement required before movement alone starts a span. Keyboard, paste,
+click and wheel input start immediately. The two-minute idle threshold discards
+the speculative tail back to the last actual interaction; blur, hidden windows,
+sleep and manual pause break spans. Background agent output never counts.
+Confirmed spans save every minute to workspace `work-time.json`; daily attribution
+uses the client's local midnight, including DST. Overlapping windows and replayed
+saves are unioned, so the same time is credited once. The clock opens a daily
+project breakdown with persisted pause and signed minute adjustments. External
+editor/browser work is intentionally outside scope. This requires updated UI and
+daemon code; it does not require changing or restarting the terminal broker.
+Validation: 78 unit/adapter tests and the isolated clock browser test pass. The
+browser test exercises real input, project switching, idle trimming, short sleep,
+blur, persisted pause and manual time correction against a temporary workspace.
+
+Header cleanup: Undo/recent actions and Events/diagnostics now live in the Settings
+panel, retaining their counts and existing popovers. Voice is an icon-only control
+with its start/stop tooltip, accessible name and live-state indicator preserved.
+Process groups capture project proximity when opened: the Zen project comes
+first, followed by distance to the viewport center. Multiple worktrees use the
+nearest row for their project. Ordering stays fixed while the popup is open;
+per-process CPU/memory sorting is unchanged. All 23 process-store tests pass.
+The process popup also opens after a short hover, bridges the trigger gap before
+closing, and can be pinned by clicking. Focused popup controls retain it while
+typing. Process rows, column gaps and group spacing are more compact.
