@@ -179,6 +179,7 @@ export interface TimelapseDay {
   lastAt?: number;
   frames: string[];
   complete?: boolean;
+  generatedAt?: number;
   error?: string;
   retryAt?: number;
 }
@@ -342,6 +343,8 @@ export class TimelapseStore {
     if (!(await this.options.enabled()))
       return { captured: false, reason: "disabled" };
     const now = this.now();
+    if (this.exporting)
+      return { captured: false, reason: "Generating timelapse" };
     if (this.capturing || now - this.lastCapture < 10_000)
       return { captured: false, reason: "interval" };
     this.capturing = true;
@@ -384,8 +387,34 @@ export class TimelapseStore {
     for (const name of await readdir(folder))
       if (/^frame-\d+\.jpg$/.test(name)) await unlink(join(folder, name));
   }
+  async generate(dayKey: string, deleteFrames: boolean): Promise<void> {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(dayKey))
+      throw new Error("Invalid timelapse day");
+    if (this.exporting || this.capturing)
+      throw new Error("Timelapse is busy; try again shortly");
+    this.exporting = true;
+    try {
+      const day = (await this.list()).find((d) => d.day === dayKey);
+      if (!day || day.complete || !day.frames.length)
+        throw new Error("No frames available to generate");
+      await (this.options.encode ?? encodeTimelapse)(
+        join(this.root, day.day),
+        day.frames,
+      );
+      day.generatedAt = this.now();
+      delete day.error;
+      delete day.retryAt;
+      if (deleteFrames) {
+        await this.cleanup(day.day);
+        day.frames = [];
+      }
+      await this.save(day);
+    } finally {
+      this.exporting = false;
+    }
+  }
   async finalize(): Promise<void> {
-    if (this.exporting) return;
+    if (this.exporting || this.capturing) return;
     this.exporting = true;
     try {
       for (const day of await this.list()) {
@@ -406,6 +435,7 @@ export class TimelapseStore {
             day.frames,
           );
           day.complete = true;
+          day.generatedAt = this.now();
           delete day.error;
           delete day.retryAt;
           await this.save(day);

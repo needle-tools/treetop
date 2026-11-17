@@ -255,3 +255,20 @@ describe("detectEditors caching", () => {
     expect(b).toEqual(a);
   });
 });
+
+test("Windows URL opening passes query separators and apostrophes literally", async () => {
+  const url = "http://localhost:27787/api/timelapse/video?day=2026-11-17&variant=motion-blur&name=O'Brien%20!";
+  const cmd = windowsOpenCommand(url,false);
+  expect(cmd).not.toContain("/c");
+  const encoded=cmd[cmd.indexOf("-EncodedCommand")+1];
+  const script=Buffer.from(encoded,"base64").toString("utf16le");
+  expect(script).toBe("Start-Process -FilePath '"+url.replaceAll("'","''")+"'");
+  if(process.platform === "win32") {
+    // Intercept only the OS launch; execute the real generated PowerShell command.
+    const harness="function Start-Process { param([string]$FilePath) ConvertTo-Json -Compress -InputObject $FilePath }; "+script;
+    const child=Bun.spawn([cmd[0],"-NoProfile","-NonInteractive","-EncodedCommand",Buffer.from(harness,"utf16le").toString("base64")],{windowsHide:true,stdout:"pipe",stderr:"pipe"});
+    const output=await new Response(child.stdout).text();
+    expect(await child.exited,await new Response(child.stderr).text()).toBe(0);
+    expect(JSON.parse(output.trim())).toBe(url);
+  }
+});

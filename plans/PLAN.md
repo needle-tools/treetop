@@ -1260,3 +1260,19 @@ network transfers, removes partial executable files and permits a later retry.
 Progress is polled while downloading, and reopening the dialog shows the same job.
 Browser coverage exercises close, reopen, explicit cancellation, retry and background
 completion while Settings remains open. Daemon coverage verifies abort and cleanup.
+
+Daily recordings offer Generate preview (encode both MP4s, retain JPEGs) and
+Generate and delete (encode both successfully before deleting source frames).
+Manual generation bypasses the idle/day cutoff and leaves the day open to further
+recording. Previews expose both video links without marking a day complete; the
+normal eight-hour scheduler still finalizes completed days. Capture pauses during
+manual encoding to avoid concurrent manifest/source edits. Browser coverage checks
+both actions and preview links; daemon coverage checks retention on success/failure
+and continued recording after explicit frame cleanup.
+
+Fixed Windows default-browser URL opening: cmd/start truncated query strings at
+ampersands, dropping the timelapse variant parameter. URL launches now use a
+PowerShell literal via EncodedCommand so all query parameters survive. A behavioral
+test executes the generated script with only the final OS launch intercepted,
+including ampersands, apostrophes and percent escapes; gallery tests check both
+variant URLs explicitly. Local file/default-app handling is unchanged.

@@ -26,6 +26,12 @@ test(
     let finishInstall: (() => void) | undefined,
       downloading = false,
       cancellations = 0;
+    const generationModes: boolean[] = [];
+    const recordingDay = {
+      day: "2026-11-17",
+      frames: 3,
+      generatedAt: undefined as number | undefined,
+    };
     const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
     const fixture: Plugin = {
       name: "work-clock-test",
@@ -59,13 +65,22 @@ test(
               cancellations++;
               downloading = false;
               res.end(JSON.stringify({ ok: true }));
+            } else if (req.url === "/api/timelapse/generate") {
+              const parts: Buffer[] = [];
+              for await (const chunk of req) parts.push(Buffer.from(chunk));
+              const body = JSON.parse(Buffer.concat(parts).toString());
+              assert.equal(body.day, recordingDay.day);
+              generationModes.push(body.deleteFrames);
+              recordingDay.generatedAt = Date.now();
+              if (body.deleteFrames) recordingDay.frames = 0;
+              res.end(JSON.stringify({ ok: true }));
             } else if (req.url === "/api/timelapse/open-folder") {
               folderOpens++;
               res.end(JSON.stringify({ ok: true }));
             } else
               res.end(
                 JSON.stringify({
-                  days: [],
+                  days: [recordingDay],
                   folder: "test-timelapses",
                   encoder: encoderAvailable,
                   installation: {
@@ -370,6 +385,36 @@ test(
       assert.equal(downloading, true);
       finishInstall!();
       await page.clock.runFor(1100);
+      await page
+        .getByRole("button", { name: "Generate preview", exact: true })
+        .click();
+      await until(
+        async () => generationModes.length === 1,
+        "Preview generation did not run",
+      );
+      assert.deepEqual(generationModes, [false]);
+      assert.equal(recordingDay.frames, 3);
+      await page
+        .getByRole("link", { name: "Crisp MP4", exact: true })
+        .waitFor();
+      await page
+        .getByRole("link", { name: "Motion blur MP4", exact: true })
+        .waitFor();
+      for(const [label,variant] of [["Crisp MP4","crisp"],["Motion blur MP4","motion-blur"]]) {
+        const href = await page.getByRole("link",{name:label,exact:true}).getAttribute("href");
+        const url = new URL(href!, "http://test");
+        assert.equal(url.searchParams.get("day"),recordingDay.day);
+        assert.equal(url.searchParams.get("variant"),variant);
+      }
+      await page
+        .getByRole("button", { name: "Generate and delete", exact: true })
+        .click();
+      await until(
+        async () => generationModes.length === 2,
+        "Generate and delete did not run",
+      );
+      assert.deepEqual(generationModes, [false, true]);
+      assert.equal(recordingDay.frames, 0);
       await page
         .getByRole("button", { name: "Close timelapses", exact: true })
         .click();

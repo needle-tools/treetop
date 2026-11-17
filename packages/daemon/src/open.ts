@@ -193,7 +193,7 @@ export async function detectEditors(): Promise<EditorDescriptor[]> {
  *          .claude.json config-error "Open" button). The notepad path is
  *          deliberately narrow: URLs (the terminal link handler posts
  *          here too), directories (folder links), and extensionless
- *          paths all still go through `start` so the browser / Explorer
+ *          paths use the default-app launcher so the browser / Explorer
  *          / the OS picker handle them as before.
  *
  * Returns the same `{ via }` shape `openIn()` uses so the route
@@ -304,6 +304,7 @@ async function hasFileAssociation(ext: string): Promise<boolean> {
 
 /**
  * Build the argv for opening a path on Windows. The default route is
+ * PowerShell Start-Process for literal URLs; local paths use
  * `cmd /c start` (the empty "" is the window title `start` swallows, so a
  * path with spaces still opens); `useNotepad` switches to `notepad` for
  * the narrow unassociated-local-file case. Pure so it's unit-testable.
@@ -313,6 +314,12 @@ export function windowsOpenCommand(
   useNotepad: boolean,
 ): string[] {
   if (useNotepad) return ["notepad", path];
+  if (isUrlLike(path)) {
+    // cmd/start reinterprets URL ampersands as command separators. A PowerShell
+    // literal preserves the entire URL, including quotes and percent escapes.
+    const script = "Start-Process -FilePath '" + path.replaceAll("'", "''") + "'";
+    return ["powershell.exe", "-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(script,"utf16le").toString("base64")];
+  }
   return [CMD_EXE, "/c", "start", "", path];
 }
 

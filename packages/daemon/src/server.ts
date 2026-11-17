@@ -9851,13 +9851,20 @@ const server = Bun.serve<TermWsData, never>({
         if(workTime.paused())return json({captured:false,reason:"Work tracking is paused"});
         return json(await timelapse.capture());
       }
+      if (url.pathname === "/api/timelapse/generate" && req.method === "POST") {
+        const body = await req.json().catch(()=>null);
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(body?.day ?? "") || typeof body?.deleteFrames !== "boolean") return json({error:"Invalid generation request"},{status:400});
+        srv.timeout(req,0);
+        try { await timelapse.generate(body.day,body.deleteFrames); return json({ok:true}); }
+        catch(error) { return json({error:String(error)},{status:409}); }
+      }
       if (url.pathname === "/api/timelapse/open-folder" && req.method === "POST") {
         await fsMkdir(timelapse.root,{recursive:true});await openDefault(timelapse.root);return json({ok:true});
       }
       if (url.pathname === "/api/timelapse/video" && req.method === "GET") {
         const day=url.searchParams.get("day")??"",variant=url.searchParams.get("variant");
         if(!/^\d{4}-\d{2}-\d{2}$/.test(day)||!["crisp","motion-blur"].includes(variant??""))return json({error:"Invalid timelapse"},{status:400});
-        if(!(await timelapse.list()).some(d=>d.day===day&&d.complete))return json({error:"Timelapse is not exported yet"},{status:404});
+        if(!(await timelapse.list()).some(d=>d.day===day&&(d.complete||d.generatedAt)))return json({error:"Timelapse is not exported yet"},{status:404});
         const file=Bun.file(join(timelapse.root,day,`${variant}.mp4`));
         const headers={...CORS,"Content-Type":"video/mp4","Accept-Ranges":"bytes"};
         const range=req.headers.get("range");

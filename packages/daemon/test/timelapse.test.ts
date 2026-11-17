@@ -139,6 +139,10 @@ test("real encoder creates crisp and blended MP4s before removing JPEG sources",
       await store.capture();
       now += 10_000;
     }
+    const previewDay = (await store.list())[0].day;
+    await store.generate(previewDay,false);
+    expect((await readdir(join(root,previewDay))).filter(f=>f.endsWith(".jpg"))).toHaveLength(3);
+    expect((await stat(join(root,previewDay,"crisp.mp4"))).size).toBeGreaterThan(100);
     now += 8 * 3600_000;
     await store.finalize();
     const [day] = await store.list();
@@ -247,6 +251,44 @@ test("explicit cancellation aborts an encoder download and leaves no usable part
     expect(installer.status().state).toBe("cancelled");
     expect(await Bun.file(installer.path).exists()).toBe(false);
     expect(await readdir(root)).toEqual([]);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("manual previews retain frames; generate-and-delete cleans only after success and permits more recording", async () => {
+  const root = await mkdtemp(join(tmpdir(), "treetop-manual-video-"));
+  let now = new Date(2026, 10, 17, 12).getTime(),
+    fail = false;
+  const store = new TimelapseStore(root, {
+    enabled: async () => true,
+    now: () => now,
+    capture: async () => new Uint8Array([255, 216, 255, 217]),
+    encode: async () => {
+      if (fail) throw new Error("encode failed");
+    },
+  });
+  try {
+    await store.capture();
+    const day = (await store.list())[0].day;
+    await store.generate(day, false);
+    expect((await store.list())[0].generatedAt).toBe(now);
+    expect(
+      (await readdir(join(root, day))).filter((f) => f.endsWith(".jpg")),
+    ).toHaveLength(1);
+    fail = true;
+    await expect(store.generate(day, true)).rejects.toThrow("encode failed");
+    expect(
+      (await readdir(join(root, day))).filter((f) => f.endsWith(".jpg")),
+    ).toHaveLength(1);
+    fail = false;
+    await store.generate(day, true);
+    expect(
+      (await readdir(join(root, day))).filter((f) => f.endsWith(".jpg")),
+    ).toHaveLength(0);
+    now += 10000;
+    expect((await store.capture()).captured).toBe(true);
+    expect((await store.list())[0].frames).toHaveLength(1);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

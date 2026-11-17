@@ -14,10 +14,12 @@
     error = "",
     reason = "Waiting for active work",
     lastCapture = 0;
+  let generating = "";
   let days: Array<{
     day: string;
     frames: number;
     complete?: boolean;
+    generatedAt?: number;
     error?: string;
   }> = [];
   let folder = "",
@@ -111,6 +113,24 @@
       installError = "";
     } catch (e) {
       installError = String(e);
+    }
+  }
+  async function generate(day: string, deleteFrames: boolean) {
+    generating = day;
+    error = "";
+    try {
+      const r = await fetch(apiUrl("/api/timelapse/generate"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ day, deleteFrames }),
+      });
+      const body = await r.json();
+      if (!r.ok) throw new Error(body.error ?? "Timelapse generation failed");
+      await refresh();
+    } catch (e) {
+      error = String(e);
+    } finally {
+      generating = "";
     }
   }
   async function openFolder() {
@@ -224,7 +244,7 @@
   {#each days as day}
     <section>
       <strong>{day.day}</strong><span>{day.frames} frames</span>
-      {#if day.complete}<a
+      {#if day.complete || day.generatedAt}<a
           href={video(day.day, "crisp")}
           target="_blank"
           rel="noreferrer">Crisp MP4</a
@@ -234,6 +254,22 @@
           rel="noreferrer">Motion blur MP4</a
         >
       {:else}<span>Export 8 hours after last screenshot</span>{/if}
+      {#if !day.complete && day.frames > 0}
+        <div class="generate-actions">
+          <button
+            disabled={!encoder || !!generating}
+            title="Create both MP4s and keep all screenshots"
+            on:click={() => generate(day.day, false)}>Generate preview</button
+          >
+          <button
+            disabled={!encoder || !!generating}
+            title="Create both MP4s, then delete their screenshots only after both succeed"
+            on:click={() => generate(day.day, true)}>Generate and delete</button
+          >
+          {#if generating === day.day}<span role="status">Generating...</span
+            >{/if}
+        </div>
+      {/if}
       {#if day.error}<p class="warning">
           {day.error} · JPEGs retained for retry.
         </p>{/if}
@@ -299,6 +335,13 @@
 </dialog>
 
 <style>
+  .generate-actions {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.5rem;
+    width: 100%;
+  }
   footer {
     display: flex;
     justify-content: flex-end;
