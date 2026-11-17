@@ -611,7 +611,13 @@ async function updateTray() {
   if (quitting || updatingTray) return;
   updatingTray = true;
   try {
-    if (activeWindow) await backgroundRequest("lease", { windowId: nativeWindowId, sequence: ++heartbeatSequence });
+    if (activeWindow) {
+      await backgroundRequest("lease", { windowId: nativeWindowId, sequence: ++heartbeatSequence });
+      if (isWin && activeWindow.ptr) void fetch(`${DAEMON_URL}/api/timelapse/window`, {
+        method:"POST",headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({hwnd:String(activeWindow.ptr),pid:process.pid}),signal:AbortSignal.timeout(3000),
+      }).catch(error=>llog(`Timelapse window registration failed: ${error}`));
+    }
     const status = await backgroundRequest("status");
     backgroundWasConnected ||= status.connected === true;
     const sessions = status.sessions ?? 0, commands = status.commands ?? 0, terminals = status.shells ?? 0;

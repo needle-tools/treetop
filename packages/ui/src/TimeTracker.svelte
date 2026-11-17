@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import { apiUrl } from "./api";
+  import Timelapse from "./Timelapse.svelte";
   import {
     WorkActivity,
     splitWorkDays,
@@ -305,6 +306,7 @@
 </script>
 
 <div class="work-time" data-time-tracker>
+  <Timelapse active={running}/>
   <button
     class="clock-button"
     class:tracking={running}

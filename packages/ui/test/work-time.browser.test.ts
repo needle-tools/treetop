@@ -19,18 +19,70 @@ test(
     const dir = await mkdtemp(resolve(tmpdir(), "treetop-work-clock-browser-"));
     const store = await WorkTimeStore.open(dir);
     const requests: Array<{ status: number; body: string }> = [];
+    let captures = 0,
+      folderOpens = 0,
+      installs = 0,
+      encoderAvailable = true;
+    let finishInstall: (() => void) | undefined,
+      downloading = false,
+      cancellations = 0;
     const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
     const fixture: Plugin = {
       name: "work-clock-test",
       resolveId(id) {
         if (id === "/time-entry.ts") return "\0time-entry";
+        if (id === "/settings-entry.ts") return "\0settings-entry";
       },
       load(id) {
+        if (id === "\0settings-entry")
+          return "        await import('/src/styles/tokens.css');\n        await import('/src/styles/base.css');\n        await import('/src/styles/overlays.css');\n        const { mount } = await import('svelte');\n        const { default: SettingsDialog } = await import('/src/SettingsDialog.svelte');\n        const { registerSettings } = await import('/src/settings-registry.ts');\n        registerSettings({id:'scroll-test',title:'Scroll test',order:999,settings:Array.from({length:40},(_,i)=>({key:`scroll.option${i}`,label:`Option ${i}`,type:'boolean',default:false}))});\n        mount(SettingsDialog,{target:document.body,props:{open:true}});";
         if (id === "\0time-entry")
           return `import {mount} from 'svelte';import TimeTracker from '/src/TimeTracker.svelte';mount(TimeTracker,{target:document.querySelector('#tracker'),props:{projects:[{id:'a',name:'Project A'},{id:'b',name:'Project B'}]}});`;
       },
       configureServer(server) {
         server.middlewares.use(async (req, res, next) => {
+          if (req.url?.startsWith("/api/timelapse")) {
+            res.setHeader("Content-Type", "application/json");
+            if (req.url === "/api/timelapse/capture") {
+              captures++;
+              res.end(JSON.stringify({ captured: true }));
+            } else if (req.url === "/api/timelapse/install") {
+              installs++;
+              downloading = true;
+              finishInstall = () => {
+                encoderAvailable = true;
+                downloading = false;
+              };
+              res.statusCode = 202;
+              res.end(JSON.stringify({ ok: true }));
+            } else if (req.url === "/api/timelapse/install/cancel") {
+              cancellations++;
+              downloading = false;
+              res.end(JSON.stringify({ ok: true }));
+            } else if (req.url === "/api/timelapse/open-folder") {
+              folderOpens++;
+              res.end(JSON.stringify({ ok: true }));
+            } else
+              res.end(
+                JSON.stringify({
+                  days: [],
+                  folder: "test-timelapses",
+                  encoder: encoderAvailable,
+                  installation: {
+                    state: downloading
+                      ? "downloading"
+                      : encoderAvailable
+                        ? "ready"
+                        : "idle",
+                    supported: true,
+                    total: 29581307,
+                    received: 0,
+                  },
+                  supported: true,
+                }),
+              );
+            return;
+          }
           if (req.url === "/time-test.html") {
             res.setHeader("Content-Type", "text/html");
             res.end(
@@ -79,11 +131,13 @@ test(
     let browser: Awaited<ReturnType<typeof chromium.launch>> | undefined;
     try {
       await server.listen();
+      console.log("work clock: test server ready");
       browser = await chromium.launch({
         channel: process.platform === "win32" ? "msedge" : "chrome",
         headless: true,
       });
       const page = await browser.newPage();
+      page.setDefaultTimeout(8000);
       await page.clock.install();
       const errors: string[] = [];
       page.on("pageerror", (e) => errors.push(e.message));
@@ -97,6 +151,7 @@ test(
         exact: true,
       });
       await clock.waitFor();
+      console.log("work clock: component mounted");
       async function until(condition: () => Promise<boolean>, message: string) {
         const deadline = Date.now() + 5000;
         while (Date.now() < deadline) {
@@ -172,6 +227,187 @@ test(
         970,
       );
       assert.deepEqual(errors, []);
+      assert.equal(captures, 0, "timelapse must be off by default");
+      console.log("work clock: tracking and default-off recording verified");
+      assert.equal(
+        await page.evaluate(async () => {
+          const { getSetting } = await import("/src/settings-registry.ts");
+          return getSetting("timelapse.enabled");
+        }),
+        false,
+      );
+      await clock.click();
+      await page
+        .getByRole("button", { name: "Resume tracking", exact: true })
+        .click();
+      await until(async () => !store.paused(), "Resume was not persisted");
+      await page
+        .getByRole("button", { name: "Close work time", exact: true })
+        .click();
+      await page.getByLabel("Project A input", { exact: true }).click();
+      await page.keyboard.type("active work");
+      await page.evaluate(async () => {
+        const { setSetting } = await import("/src/settings-registry.ts");
+        setSetting("timelapse.enabled", true);
+      });
+      await page.clock.runFor(11_000);
+      await until(
+        async () => captures > 0,
+        "Enabled timelapse did not capture active work",
+      );
+      console.log("work clock: opt-in capture verified");
+      const beforeOff = captures;
+      await page.evaluate(async () => {
+        const { setSetting } = await import("/src/settings-registry.ts");
+        setSetting("timelapse.enabled", false);
+      });
+      await page.clock.runFor(30_000);
+      assert.equal(
+        captures,
+        beforeOff,
+        "disabled timelapse must stop captures",
+      );
+      await page.evaluate(async () => {
+        const { settingsSections } = await import("/src/settings-registry.ts");
+        let sections: any[] = [];
+        const stop = settingsSections.subscribe((value) => (sections = value));
+        stop();
+        await sections
+          .find((s) => s.id === "timelapse")
+          .settings.find((s: any) => s.key === "timelapse.history")
+          .onInvoke();
+      });
+      await page
+        .getByRole("button", { name: "Open timelapse folder", exact: true })
+        .click();
+      await until(async () => folderOpens === 1, "Folder action did not run");
+      assert.deepEqual(errors, []);
+      // Settings writes must retain the controls and the user's scroll position.
+      await page.evaluate(async () => {
+        document
+          .querySelectorAll("dialog[open]")
+          .forEach((d: any) => d.close());
+        await import("/settings-entry.ts");
+      });
+      encoderAvailable = false;
+      await page.evaluate(async () => {
+        const { setSetting } = await import("/src/settings-registry.ts");
+        setSetting("timelapse.enabled", true);
+      });
+      const installDialog = page.getByRole("dialog", {
+        name: "Install timelapse encoder",
+      });
+      await installDialog.waitFor();
+      assert.equal(
+        await installDialog.evaluate((el) => el.matches(":modal")),
+        true,
+        "installer must use the top layer above Settings",
+      );
+      assert.equal(
+        await page
+          .getByRole("dialog", { name: "Settings", exact: true })
+          .isVisible(),
+        true,
+      );
+      assert.equal(
+        installs,
+        0,
+        "enabling recording must not download without a click",
+      );
+      await installDialog
+        .getByRole("button", { name: "Install encoder", exact: true })
+        .click();
+      await until(
+        async () => installs === 1,
+        "one-click encoder install did not run",
+      );
+      await installDialog
+        .getByRole("button", { name: "Close encoder installer", exact: true })
+        .click();
+      await installDialog.waitFor({ state: "hidden" });
+      assert.equal(
+        downloading,
+        true,
+        "closing the dialog must keep the daemon download running",
+      );
+      assert.equal(cancellations, 0, "closing must not call Cancel");
+      assert.equal(
+        await page
+          .getByRole("dialog", { name: "Settings", exact: true })
+          .isVisible(),
+        true,
+      );
+      await page.evaluate(async () => {
+        const { settingsSections } = await import("/src/settings-registry.ts");
+        let sections: any[] = [];
+        const stop = settingsSections.subscribe((value) => (sections = value));
+        stop();
+        await sections
+          .find((s) => s.id === "timelapse")
+          .settings.find((s: any) => s.key === "timelapse.history")
+          .onInvoke();
+      });
+      await page
+        .getByRole("button", { name: "View download", exact: true })
+        .click();
+      await installDialog
+        .getByRole("button", { name: "Cancel download", exact: true })
+        .click();
+      await until(
+        async () => cancellations === 1 && !downloading,
+        "Cancel did not stop the daemon download",
+      );
+      await installDialog
+        .getByRole("button", { name: "Install encoder", exact: true })
+        .click();
+      await until(
+        async () => installs === 2,
+        "Cancelled download could not be restarted",
+      );
+      await installDialog
+        .getByRole("button", { name: "Run in background", exact: true })
+        .click();
+      assert.equal(downloading, true);
+      finishInstall!();
+      await page.clock.runFor(1100);
+      await page
+        .getByRole("button", { name: "Close timelapses", exact: true })
+        .click();
+
+      await page.clock.runFor(100);
+      const lastToggle = page
+        .locator(".settings-body input[type=checkbox]")
+        .last();
+      await lastToggle.scrollIntoViewIfNeeded();
+      await lastToggle.focus();
+      await page.locator(".settings-body").evaluate((body) => {
+        body.scrollTop = body.scrollHeight;
+      });
+      const scrollBefore = await page
+        .locator(".settings-body")
+        .evaluate((body) => body.scrollTop);
+      assert.ok(scrollBefore > 100);
+      await lastToggle.evaluate(
+        (input) => ((window as any).originalSettingsInput = input),
+      );
+      await lastToggle.click();
+      await page.clock.runFor(50);
+      assert.equal(await lastToggle.isChecked(), true);
+      assert.equal(
+        await lastToggle.evaluate(
+          (input) => input === (window as any).originalSettingsInput,
+        ),
+        true,
+        "setting changes must preserve the input node",
+      );
+      assert.ok(
+        Math.abs(
+          (await page
+            .locator(".settings-body")
+            .evaluate((body) => body.scrollTop)) - scrollBefore,
+        ) < 2,
+        `setting changes must preserve scroll: ${scrollBefore} -> ${await page.locator(".settings-body").evaluate((body) => body.scrollTop)}`,
+      );
     } finally {
       await browser?.close();
       server.httpServer?.closeAllConnections();

@@ -28,24 +28,31 @@
   export let open = false;
 
   let query = "";
-  // Bumped on every write so the {#key} below re-reads values — keeps
-  // the template on plain getSetting()/isModified() calls instead of
-  // one derived store per setting.
+  // Refresh values without replacing controls (preserves scroll, focus and drags).
   let version = 0;
-  // Live slider read-outs while dragging. We can't bump `version` on
-  // every `input` event — the {#key version} rebuild would destroy the
-  // range input mid-drag — so the label reads from here until the drag
-  // commits (`change`), at which point getSetting() is authoritative.
   let liveSlider: Record<string, number> = {};
 
   $: visible = filterSections($settingsSections, query);
-  // Re-evaluates on each write (version dep) — drives the Reset-all
-  // button's enabled state.
-  $: anyModified =
-    version >= 0 &&
-    $settingsSections.some((s) =>
-      s.settings.some((d) => !isActionSetting(d) && isModified(d.key)),
-    );
+  $: values =
+    version >= 0
+      ? Object.fromEntries(
+          $settingsSections.flatMap((section) =>
+            section.settings
+              .filter((def) => !isActionSetting(def))
+              .map((def) => [def.key, getSetting(def.key)]),
+          ),
+        )
+      : {};
+  $: modifiedKeys = new Set(
+    version >= 0
+      ? $settingsSections.flatMap((section) =>
+          section.settings
+            .filter((def) => !isActionSetting(def) && isModified(def.key))
+            .map((def) => def.key),
+        )
+      : [],
+  );
+  $: anyModified = modifiedKeys.size > 0;
 
   function close() {
     open = false;
@@ -98,7 +105,7 @@
     liveSlider = { ...liveSlider, [def.key]: v };
   }
 
-  // On release: rebuild once so the modified bar + reset affordance
+  // On release: refresh so the modified bar + reset affordance
   // catch up, and drop the live read-out (getSetting is now truth).
   function onSliderCommit(def: SliderSettingDef) {
     const { [def.key]: _drop, ...rest } = liveSlider;
@@ -106,16 +113,20 @@
     version += 1;
   }
 
-  function sliderValue(def: SliderSettingDef): number {
-    return liveSlider[def.key] ?? (getSetting(def.key) as number);
+  function sliderValue(
+    def: SliderSettingDef,
+    live: Record<string, number>,
+    current: Record<string, unknown>,
+  ): number {
+    return live[def.key] ?? (current[def.key] as number);
   }
 
   // Fill fraction (0–100) for the track gradient. Driven off the live
   // value so the green fill tracks the thumb during a drag — and is
   // exactly 100% at max (the native accent-color fill left a gap there).
-  function sliderPct(def: SliderSettingDef): number {
+  function sliderPct(def: SliderSettingDef, value: number): number {
     const span = def.max - def.min || 1;
-    return ((sliderValue(def) - def.min) / span) * 100;
+    return ((value - def.min) / span) * 100;
   }
 
   function onNumberChange(def: NumberSettingDef, ev: Event) {
@@ -167,138 +178,137 @@
           disabled={!anyModified}
           on:click={resetAll}>Reset all</button
         >
-        <button class="settings-close" title="Close" on:click={close}
-          >✕</button
-        >
+        <button class="settings-close" title="Close" on:click={close}>✕</button>
       </div>
 
       <slot name="tools" />
       <div class="settings-body">
-        {#key version}
-          {#if visible.length === 0}
-            <p class="settings-empty">
-              {#if $settingsSections.length === 0}
-                No settings registered yet. Contribute some with
-                <code>registerSettings()</code> from
-                <code>settings-registry.ts</code>.
-              {:else}
-                No settings match “{query}”.
-              {/if}
-            </p>
-          {/if}
-          {#each visible as section (section.id)}
-            <section class="settings-section">
-              <h3>{section.title}</h3>
-              {#each section.settings as def (def.key)}
-                <div
-                  class="setting-row"
-                  class:modified={!isActionSetting(def) && isModified(def.key)}
-                >
-                  <div class="setting-text">
-                    <span class="setting-label">{def.label}</span>
-                    {#if def.description}
-                      <span class="setting-desc">{def.description}</span>
-                    {/if}
-                  </div>
-                  <div class="setting-control">
-                    {#if isActionSetting(def)}
-                      <button
-                        class="setting-action"
-                        class:danger={def.danger}
-                        on:click={() => invoke(def)}>{def.buttonLabel}</button
-                      >
-                    {:else}
-                      {#if isModified(def.key)}
-                        <button
-                          class="setting-reset"
-                          title="Reset to default"
-                          on:click={() => reset(def)}>↺</button
-                        >
-                      {/if}
-                      {#if def.type === "boolean"}
-                        <input
-                          type="checkbox"
-                          checked={getSetting(def.key) === true}
-                          on:change={(ev) =>
-                            write(def, ev.currentTarget.checked)}
-                        />
-                      {:else if def.type === "enum"}
-                        <select
-                          value={getSetting(def.key)}
-                          on:change={(ev) =>
-                            write(def, ev.currentTarget.value)}
-                        >
-                          {#each def.options as opt (opt.value)}
-                            <option value={opt.value}
-                              >{opt.label ?? opt.value}</option
-                            >
-                          {/each}
-                        </select>
-                      {:else if def.type === "slider"}
-                        <span class="setting-slider-val"
-                          >{sliderValue(def)}{def.unit ?? ""}</span
-                        >
-                        <input
-                          class="setting-slider"
-                          type="range"
-                          style="--pct: {sliderPct(def)}%"
-                          value={getSetting(def.key)}
-                          min={def.min}
-                          max={def.max}
-                          step={def.step}
-                          on:input={(ev) => onSliderInput(def, ev)}
-                          on:change={() => onSliderCommit(def)}
-                        />
-                      {:else if def.type === "number"}
-                        <input
-                          type="number"
-                          value={getSetting(def.key)}
-                          min={def.min}
-                          max={def.max}
-                          step={def.step}
-                          on:change={(ev) => onNumberChange(def, ev)}
-                        />
-                      {:else}
-                        <input
-                          type="text"
-                          value={getSetting(def.key) ?? ""}
-                          placeholder={def.placeholder}
-                          on:change={(ev) =>
-                            write(def, ev.currentTarget.value)}
-                        />
-                      {/if}
-                    {/if}
-                  </div>
+        {#if visible.length === 0}
+          <p class="settings-empty">
+            {#if $settingsSections.length === 0}
+              No settings registered yet. Contribute some with
+              <code>registerSettings()</code> from
+              <code>settings-registry.ts</code>.
+            {:else}
+              No settings match “{query}”.
+            {/if}
+          </p>
+        {/if}
+        {#each visible as section (section.id)}
+          <section class="settings-section">
+            <h3>{section.title}</h3>
+            {#each section.settings as def (def.key)}
+              <div
+                class="setting-row"
+                class:modified={!isActionSetting(def) &&
+                  modifiedKeys.has(def.key)}
+              >
+                <div class="setting-text">
+                  <span class="setting-label">{def.label}</span>
+                  {#if def.description}
+                    <span class="setting-desc">{def.description}</span>
+                  {/if}
                 </div>
-                {#if def.key === "terminal.showIoDebug" && getSetting(def.key) === true}
-                  <div class="setting-extra terminal-io-stats">
-                    {#if $terminalIoStats.terminals === 0}
-                      <span>No mounted terminals.</span>
-                    {:else}
-                      <span
-                        >terminals {$terminalIoStats.terminals} · visible
-                        {$terminalIoStats.visible} · paused {$terminalIoStats.paused}</span
-                      >
-                      <span
-                        >rate in {formatBytes($terminalIoStats.rxBytesPerSec)}/s · out
-                        {formatBytes($terminalIoStats.txBytesPerSec)}/s</span
-                      >
-                      <span
-                        >total in {formatBytes($terminalIoStats.rxBytesTotal)} · out
-                        {formatBytes($terminalIoStats.txBytesTotal)}</span
-                      >
-                      <span
-                        >hidden buffered
-                        {formatBytes($terminalIoStats.hiddenBufferedBytes)} · flushes
-                        {$terminalIoStats.hiddenFlushes}</span
+                <div class="setting-control">
+                  {#if isActionSetting(def)}
+                    <button
+                      class="setting-action"
+                      class:danger={def.danger}
+                      on:click={() => invoke(def)}>{def.buttonLabel}</button
+                    >
+                  {:else}
+                    {#if modifiedKeys.has(def.key)}
+                      <button
+                        class="setting-reset"
+                        title="Reset to default"
+                        on:click={() => reset(def)}>↺</button
                       >
                     {/if}
-                  </div>
-                {/if}
-              {/each}
-            </section>
-          {/each}
-        {/key}
+                    {#if def.type === "boolean"}
+                      <input
+                        type="checkbox"
+                        checked={values[def.key] === true}
+                        on:change={(ev) => write(def, ev.currentTarget.checked)}
+                      />
+                    {:else if def.type === "enum"}
+                      <select
+                        value={values[def.key]}
+                        on:change={(ev) => write(def, ev.currentTarget.value)}
+                      >
+                        {#each def.options as opt (opt.value)}
+                          <option value={opt.value}
+                            >{opt.label ?? opt.value}</option
+                          >
+                        {/each}
+                      </select>
+                    {:else if def.type === "slider"}
+                      <span class="setting-slider-val"
+                        >{sliderValue(def, liveSlider, values)}{def.unit ??
+                          ""}</span
+                      >
+                      <input
+                        class="setting-slider"
+                        type="range"
+                        style="--pct: {sliderPct(
+                          def,
+                          sliderValue(def, liveSlider, values),
+                        )}%"
+                        value={values[def.key]}
+                        min={def.min}
+                        max={def.max}
+                        step={def.step}
+                        on:input={(ev) => onSliderInput(def, ev)}
+                        on:change={() => onSliderCommit(def)}
+                      />
+                    {:else if def.type === "number"}
+                      <input
+                        type="number"
+                        value={values[def.key]}
+                        min={def.min}
+                        max={def.max}
+                        step={def.step}
+                        on:change={(ev) => onNumberChange(def, ev)}
+                      />
+                    {:else}
+                      <input
+                        type="text"
+                        value={values[def.key] ?? ""}
+                        placeholder={def.placeholder}
+                        on:change={(ev) => write(def, ev.currentTarget.value)}
+                      />
+                    {/if}
+                  {/if}
+                </div>
+              </div>
+              {#if def.key === "terminal.showIoDebug" && values[def.key] === true}
+                <div class="setting-extra terminal-io-stats">
+                  {#if $terminalIoStats.terminals === 0}
+                    <span>No mounted terminals.</span>
+                  {:else}
+                    <span
+                      >terminals {$terminalIoStats.terminals} · visible
+                      {$terminalIoStats.visible} · paused {$terminalIoStats.paused}</span
+                    >
+                    <span
+                      >rate in {formatBytes($terminalIoStats.rxBytesPerSec)}/s ·
+                      out
+                      {formatBytes($terminalIoStats.txBytesPerSec)}/s</span
+                    >
+                    <span
+                      >total in {formatBytes($terminalIoStats.rxBytesTotal)} · out
+                      {formatBytes($terminalIoStats.txBytesTotal)}</span
+                    >
+                    <span
+                      >hidden buffered
+                      {formatBytes($terminalIoStats.hiddenBufferedBytes)} · flushes
+                      {$terminalIoStats.hiddenFlushes}</span
+                    >
+                  {/if}
+                </div>
+              {/if}
+            {/each}
+          </section>
+        {/each}
       </div>
     </div>
   </div>
@@ -491,7 +501,8 @@
   .setting-extra {
     margin: -0.2rem 0 0.35rem 1.25rem;
     padding: 0.3rem 0.55rem;
-    border-left: 1px solid color-mix(in srgb, var(--text-muted) 28%, transparent);
+    border-left: 1px solid
+      color-mix(in srgb, var(--text-muted) 28%, transparent);
     color: var(--text-muted);
     font:
       0.72rem/1.45 "SF Mono",

@@ -33,11 +33,13 @@
     "build:bun": "cd packages/ui && bun run build",
     "icons": "node scripts/generate-icons.mjs",
     "snapshot:ui": "node scripts/ui-snapshot.mjs",
-    "notify:test": "bun run scripts/notify-discord.ts --title \"Webhook test\" --status info --details \"Test notification from supergit\" --context \"local test\""
+    "notify:test": "bun run scripts/notify-discord.ts --title \"Webhook test\" --status info --details \"Test notification from supergit\" --context \"local test\"",
+    "postinstall": "node -e \"if(require('node:fs').existsSync('node_modules/ffmpeg-static/install.js'))require('./node_modules/ffmpeg-static/install.js')\""
   },
   "devDependencies": {
     "@types/bun": "latest",
     "electrobun": "1.18.4-beta.3",
+    "ffmpeg-static": "^5.3.0",
     "playwright-core": "^1.63.0",
     "prettier": "^3.8.3",
     "prettier-plugin-svelte": "^4.0.1",

@@ -1212,3 +1212,51 @@ per-process CPU/memory sorting is unchanged. All 23 process-store tests pass.
 The process popup also opens after a short hover, bridges the trigger gap before
 closing, and can be pinned by clicking. Focused popup controls retain it while
 typing. Process rows, column gaps and group spacing are more compact.
+
+2026-11-17: Opt-in daily timelapse recording. Settings contributes an off-by-default
+recording toggle, Open folder and View recordings actions. The work clock hosts a
+recording indicator and gates capture on focused, visible active work. The Windows
+native shell registers its exact HWND/PID; native GDI capture verifies foreground
+ownership and unchanged visible bounds, releases all graphics resources, then uses
+local FFmpeg to encode one JPEG every ten seconds. No screen/window picker or
+desktop-wide recording is used. Non-native/unsupported windows do not capture.
+
+Media lives under `<workspace>/timelapses/YYYY-MM-DD/`, with atomic daily manifests.
+Completed days export eight hours after their last screenshot as 1080p/30fps
+`crisp.mp4` and weighted-frame-blended `motion-blur.mp4`. Both outputs must succeed
+before JPEG cleanup. A minute scheduler catches up after restart and retries failed
+exports while retaining their sources. FFmpeg is an optional download, never copied
+into native installers. When recording is enabled without an encoder, a native
+modal offers a one-click install above Settings (and other popovers), with progress,
+retry and Not now. Windows x64 and macOS Intel/Apple Silicon use pinned b6.1.1
+release assets with SHA-256 verification before atomic executable promotion; license
+and source notices stay beside it in `<workspace>/tools/timelapse`. Installs are
+serialized and cached across restarts. Existing PATH/TREETOP_FFMPEG installations
+are reused. Capture itself remains Windows-only. ffmpeg-static stays dev-only for
+synthetic MP4 tests; the root setup hook preserves Bun's default trust policy.
+Recording stays off until enabled; enabling alone never starts a download.
+
+Validation: 39 targeted tests and the isolated work-clock/timelapse browser test
+pass. Tests use synthetic frames to create both real MP4 variants, verify retention,
+failure preservation and restart recovery, and exercise native API bindings only
+against a nonexistent window. No real app screenshot was taken, native app built,
+or production process restarted; live native capture awaits a rebuilt-app check.
+
+2026-11-17 follow-up: Replaced the proposed bundled encoder with the optional
+one-click installer above. Mediabunny's server extension also uses FFmpeg/NodeAV;
+keeping the downloaded encoder in the daemon supports exports without an open UI.
+Installer tests cover checksum rejection, retries, concurrent install deduplication,
+license retention and cache reuse; browser coverage verifies the prompt is in the
+native top layer above an open Settings panel and downloading requires a click.
+Settings updates now refresh value snapshots without destroying the controls;
+a browser regression verifies a bottom-of-list toggle retains its node, value
+and scroll position.
+
+Encoder installation runs as a daemon-owned job: POST starts it and returns 202,
+so dismissing the installer, closing its window or losing the client connection
+does not abort it. The top-layer dialog has Close and Run in background controls;
+only Cancel download calls an explicit cancellation endpoint. Cancellation aborts
+network transfers, removes partial executable files and permits a later retry.
+Progress is polled while downloading, and reopening the dialog shows the same job.
+Browser coverage exercises close, reopen, explicit cancellation, retry and background
+completion while Settings remains open. Daemon coverage verifies abort and cleanup.

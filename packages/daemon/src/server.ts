@@ -1,5 +1,7 @@
 import { BrokerCodexAdapter } from "./broker-codex";
 import { WorkTimeStore, handleWorkTimeRequest } from "./work-time";
+import { TimelapseStore,findTimelapseEncoder,stopTimelapseEncoders,TimelapseEncoderInstaller,configureTimelapseEncoder } from "./timelapse";
+import { TimelapseWindows } from "./timelapse-capture";
 import { restoreCandidateTitles } from "./background-restore";
 import { createReplayNDJSONStream, progressiveJsonResponse } from "./server-helpers";
 import { updateInstallParent, watchForUpdate } from "../../../src/electrobun/update-handoff";
@@ -687,6 +689,17 @@ async function ollamaAttachmentImagesForApi(
 
 const summaries = await SummariesStore.open(WORKSPACE_PATH);
 const workTime = await WorkTimeStore.open(WORKSPACE_PATH);
+const timelapseWindows = new TimelapseWindows();
+const timelapseEncoder = new TimelapseEncoderInstaller(join(WORKSPACE_PATH,"tools","timelapse"));
+configureTimelapseEncoder(timelapseEncoder.path);
+async function timelapseEnabled(){
+  const prefs=await workspace.getPrefs();
+  return JSON.parse(prefs["supergit:settings"]??"{}")["timelapse.enabled"]===true;
+}
+const timelapse = new TimelapseStore(join(WORKSPACE_PATH,"timelapses"),{
+  enabled:timelapseEnabled,
+  capture:()=>timelapseWindows.capture(),
+});
 let recapHistoryImported = false;
 let recapGenerating = false;
 const repoSummaries = await RepoSummariesStore.open(WORKSPACE_PATH);
@@ -9818,6 +9831,42 @@ const server = Bun.serve<TermWsData, never>({
         for (const [key,value] of Object.entries(CORS)) response.headers.set(key,value);
         return response;
       }
+      if (url.pathname === "/api/timelapse/window" && req.method === "POST") {
+        const body=await req.json().catch(()=>null);
+        return timelapseWindows.register(body?.hwnd,body?.pid)?json({ok:true}):json({error:"Invalid native window"},{status:400});
+      }
+      if (url.pathname === "/api/timelapse" && req.method === "GET") {
+        return json({enabled:await timelapseEnabled(),supported:process.platform==="win32",encoder:!!findTimelapseEncoder(),folder:timelapse.root,installation:timelapseEncoder.status(),
+          days:(await timelapse.list()).map(day=>({...day,frames:day.frames.length}))});
+      }
+      if (url.pathname === "/api/timelapse/install" && req.method === "POST") {
+        // The daemon owns the job; closing a dialog or disconnecting a client does not cancel it.
+        void timelapseEncoder.install().catch(error=>console.error("supergit daemon: timelapse encoder install",error));
+        return json({ok:true},{status:202});
+      }
+      if (url.pathname === "/api/timelapse/install/cancel" && req.method === "POST") {
+        await timelapseEncoder.cancel(); return json({ok:true});
+      }
+      if (url.pathname === "/api/timelapse/capture" && req.method === "POST") {
+        if(workTime.paused())return json({captured:false,reason:"Work tracking is paused"});
+        return json(await timelapse.capture());
+      }
+      if (url.pathname === "/api/timelapse/open-folder" && req.method === "POST") {
+        await fsMkdir(timelapse.root,{recursive:true});await openDefault(timelapse.root);return json({ok:true});
+      }
+      if (url.pathname === "/api/timelapse/video" && req.method === "GET") {
+        const day=url.searchParams.get("day")??"",variant=url.searchParams.get("variant");
+        if(!/^\d{4}-\d{2}-\d{2}$/.test(day)||!["crisp","motion-blur"].includes(variant??""))return json({error:"Invalid timelapse"},{status:400});
+        if(!(await timelapse.list()).some(d=>d.day===day&&d.complete))return json({error:"Timelapse is not exported yet"},{status:404});
+        const file=Bun.file(join(timelapse.root,day,`${variant}.mp4`));
+        const headers={...CORS,"Content-Type":"video/mp4","Accept-Ranges":"bytes"};
+        const range=req.headers.get("range");
+        if(range){const match=/^bytes=(\d+)-(\d*)$/.exec(range);const start=Number(match?.[1]),end=match?.[2]?Math.min(Number(match[2]),file.size-1):file.size-1;
+          if(!match||!Number.isSafeInteger(start)||start>end||start>=file.size)return new Response(null,{status:416,headers:{...headers,"Content-Range":`bytes */${file.size}`}});
+          return new Response(file.slice(start,end+1),{status:206,headers:{...headers,"Content-Range":`bytes ${start}-${end}/${file.size}`,"Content-Length":String(end-start+1)}});
+        }
+        return new Response(file,{headers});
+      }
 
       // ── Remote daemons (Phase 4b: a remote box as a folder row) ──────
       // CRUD on the registry + a reverse proxy. The proxy forwards
@@ -11042,6 +11091,9 @@ if (backgroundBackend) {
 if (!READONLY_MODE) stopReminders = startReminderScheduler(reminderStore,
   reminder => broadcast("change", { kind: "reminder_due", reminder }),
   error => console.error("supergit daemon: reminder delivery failed", error));
+const finalizeTimelapses=()=>void timelapse.finalize().catch(error=>console.error("supergit daemon: timelapse export failed",error));
+const timelapseExportTimer=READONLY_MODE?undefined:setInterval(finalizeTimelapses,60_000);
+if(!READONLY_MODE)finalizeTimelapses();
 
 // Two failure modes we have to defend against:
 //   1) Re-entry: SIGINT (from terminal) and SIGTERM (from parent
@@ -11072,6 +11124,8 @@ const shutdown = async (signal: string) => {
   try {
     if (fetchTimer) clearInterval(fetchTimer);
     stopReminders?.();
+    clearInterval(timelapseExportTimer);
+    stopTimelapseEncoders();
     await codexCliEvents.close();
     stopActivity();
     // Soft-kill PTYs first (SIGTERM / ConPTY close), wait out the grace,
