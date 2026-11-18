@@ -1,5 +1,5 @@
 import { test, expect } from "bun:test";
-import { WorkActivity, splitWorkDays } from "../src/work-time";
+import { WorkActivity, splitWorkDays, workHistory } from "../src/work-time";
 
 test("one second of movement qualifies; deliberate input starts immediately", () => {
   const a = new WorkActivity();
@@ -43,4 +43,26 @@ test("day attribution splits at local midnight without rounding durations", () =
     ["2026-11-16", 20000],
     ["2026-11-17", 20000],
   ]);
+});
+
+test("history totals use inclusive local calendar windows and sum projects per day", () => {
+  const h = workHistory(
+    [
+      { day: "2026-11-18", ms: 3600000 },
+      { day: "2026-11-18", ms: 1800000 },
+      { day: "2026-11-12", ms: 7200000 },
+      { day: "2026-11-11", ms: 14400000 },
+      { day: "2026-10-19", ms: 3600000 },
+      { day: "2026-10-18", ms: 28800000 },
+      { day: "2026-11-19", ms: 99999999 },
+    ],
+    "2026-11-18",
+  );
+  expect(h.last7Ms).toBe(3.5 * 3600000);
+  expect(h.last31Ms).toBe(8.5 * 3600000);
+  expect(h.days).toHaveLength(182);
+  expect(h.days.find((d) => d.day === "2026-11-18")?.ms).toBe(5400000);
+  expect(h.days.find((d) => d.day === "2026-11-19")?.future).toBe(true);
+  expect(h.weekdays.reduce((sum, d) => sum + d.ms, 0)).toBe(h.last31Ms);
+  expect(h.weekdays[2].ms).toBe(5.5 * 3600000);
 });

@@ -87,3 +87,45 @@ export class WorkActivity {
     this.movement = undefined;
   }
 }
+
+/** Calendar-day history shared by the heatmap, rolling totals and weekday chart. */
+export function workHistory(
+  rows: Array<{ day: string; ms: number }>,
+  today: string,
+) {
+  const [year, month, date] = today.split("-").map(Number);
+  const anchor = new Date(year, month - 1, date, 12);
+  const offset = (days: number) =>
+    workDay(new Date(year, month - 1, date + days, 12).getTime());
+  const daily = new Map<string, number>();
+  for (const row of rows)
+    daily.set(row.day, (daily.get(row.day) ?? 0) + row.ms);
+  const weekdays = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"].map(
+    (label) => ({ label, ms: 0 }),
+  );
+  let last7Ms = 0,
+    last31Ms = 0;
+  for (let i = 0; i < 31; i++) {
+    const ms = Math.max(0, daily.get(offset(-i)) ?? 0);
+    last31Ms += ms;
+    if (i < 7) last7Ms += ms;
+    weekdays[(new Date(year, month - 1, date - i, 12).getDay() + 6) % 7].ms +=
+      ms;
+  }
+  const start = -((anchor.getDay() + 6) % 7) - 25 * 7;
+  const days = Array.from({ length: 182 }, (_, i) => {
+    const day = offset(start + i);
+    return { day, ms: Math.max(0, daily.get(day) ?? 0), future: day > today };
+  });
+  return {
+    days,
+    weekdays,
+    last7Ms,
+    last31Ms,
+    maxDayMs: Math.max(
+      3600000,
+      ...days.filter((d) => !d.future).map((d) => d.ms),
+    ),
+    maxWeekdayMs: Math.max(3600000, ...weekdays.map((d) => d.ms)),
+  };
+}

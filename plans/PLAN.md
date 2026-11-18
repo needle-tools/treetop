@@ -1285,3 +1285,23 @@ qualification is one second instead of five. Blur/pause still end the interval;
 sleep detection credits only through the last awake tick. Timelapse capture now
 runs every five seconds, with the same daemon throttle. Tests verify retained idle
 time, capped gaps, repeated flushes, faster capture and UI sleep/blur/pause totals.
+
+2026-11-18: Compact work-time history replaces the manual adjustment form.
+The modal shows rolling 7-/31-calendar-day totals, a 26-week Monday-first activity
+heatmap (hover for date/hours; click to select a day's project breakdown), and seven
+weekday bars summing the last 31 days. Future cells are disabled. Local calendar
+arithmetic avoids fixed-24-hour/DST drift; multiple projects aggregate into each
+square and zero-work days remain visible. Existing saved adjustments still count,
+but the UI no longer offers manual edits. Project rows scroll within a compact
+area. Unit coverage checks inclusive window boundaries, future exclusion and
+weekday/project aggregation; browser coverage checks all 182 squares, day selection,
+weekday bars, removed controls and compact modal dimensions.
+
+Work-time follow-up: Focus loss/hidden state no longer ends a work interval.
+The existing five-minute allowance continues against the last selected project
+while using other apps; return focus or visibility counts as fresh activity and
+resumes immediately without typing. Background timer throttling does not get
+mistaken for sleep. This remains an estimate based on Treetop interactions, without
+system-wide keyboard/mouse monitoring. Timelapse screenshots retain their separate
+foreground-window gate. The selected day is now plain text instead of a date input;
+selected heatmap cells no longer have a white outline (keyboard focus stays green).

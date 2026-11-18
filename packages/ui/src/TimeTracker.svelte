@@ -4,6 +4,7 @@
   import Timelapse from "./Timelapse.svelte";
   import {
     WorkActivity,
+    workHistory,
     splitWorkDays,
     workDay,
     type WorkDayInterval,
@@ -22,8 +23,6 @@
     today = workDay();
   let dialog: HTMLDialogElement;
   let date = today,
-    adjustProject = "",
-    adjustMinutes = "",
     error = "",
     busy = false;
   let selectedProject = "",
@@ -31,6 +30,7 @@
     lastPointer: { x: number; y: number } | undefined;
   let flushing: Promise<void> | undefined;
   let liveTail = 0;
+  let away = false;
   const format = (ms: number) => {
     const s = Math.floor(Math.max(0, ms) / 1000);
     return `${String(Math.floor(s / 3600)).padStart(2, "0")}:${String(Math.floor(s / 60) % 60).padStart(2, "0")}:${String(s % 60).padStart(2, "0")}`;
@@ -65,6 +65,22 @@
     }))
     .sort((a, b) => b.ms - a.ms);
 
+  $: history = workHistory(
+    [
+      ...rows,
+      ...optimistic.map((row) => ({ day: row.day, ms: row.end - row.start })),
+      { day: today, ms: liveTail },
+    ],
+    today,
+  );
+  const hours = (ms: number) =>
+    `${(ms / 3600000).toLocaleString(undefined, { maximumFractionDigits: 1 })}h`;
+  const dayLabel = (day: string) =>
+    new Date(day + "T12:00:00").toLocaleDateString(undefined, {
+      day: "numeric",
+      month: "short",
+      year: "numeric",
+    });
   function collect(at = Date.now()) {
     const added = splitWorkDays(activity.drain(at));
     for (const row of added) {
@@ -137,7 +153,7 @@
   }
   function awake() {
     const t = Date.now();
-    if (t - lastTick > 5000 || t < lastTick) reset(lastTick);
+    if ((t - lastTick > 5000 || t < lastTick) && !away) reset(lastTick);
     lastTick = t;
     return t;
   }
@@ -183,35 +199,6 @@
       busy = false;
     }
   }
-  async function adjust() {
-    const minutes = Number(adjustMinutes);
-    if (!adjustMinutes.trim() || !Number.isFinite(minutes) || minutes === 0)
-      return;
-    busy = true;
-    await flush();
-    try {
-      const r = await fetch(apiUrl("/api/work-time"), {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          action: "adjust",
-          id: crypto.randomUUID(),
-          day: date,
-          repoId: adjustProject,
-          deltaMs: Math.round(minutes * 60_000),
-        }),
-      });
-      const body = await r.json();
-      if (!r.ok) throw new Error(body.error ?? "Could not adjust work time");
-      apply(body);
-      adjustMinutes = "";
-      error = "";
-    } catch (e) {
-      error = String(e);
-    } finally {
-      busy = false;
-    }
-  }
   onMount(() => {
     void load().catch((e) => {
       error = String(e);
@@ -230,25 +217,22 @@
         passive: true,
       });
     const leave = () => {
-      reset();
+      away = true;
+      // Switching to an editor/browser is still work; retain the idle allowance.
       void flush();
     };
     const focus = () => {
-      reset();
-      lastTick = Date.now();
+      const t = Date.now();
+      away = false;
+      lastTick = t;
+      if (loaded && !paused) activity.input(selectedProject, t);
       void load().catch((e) => {
         error = String(e);
       });
     };
     const visibility = () => {
       if (document.hidden) leave();
-      else {
-        reset();
-        lastTick = Date.now();
-        void load().catch((e) => {
-          error = String(e);
-        });
-      }
+      else focus();
     };
     window.addEventListener("blur", leave);
     window.addEventListener("focus", focus);
@@ -257,12 +241,7 @@
       now = awake();
       today = workDay(now);
       collect();
-      running =
-        loaded &&
-        !paused &&
-        !document.hidden &&
-        document.hasFocus() &&
-        activity.active(now);
+      running = loaded && !paused && activity.active(now);
       liveTail = running
         ? splitWorkDays([
             {
@@ -306,7 +285,7 @@
 </script>
 
 <div class="work-time" data-time-tracker>
-  <Timelapse active={running}/>
+  <Timelapse active={running} />
   <button
     class="clock-button"
     class:tracking={running}
@@ -314,7 +293,7 @@
     disabled={!loaded}
     aria-label="Work time"
     title={error ||
-      `${paused ? "Paused" : running ? "Tracking" : "Idle"} · Today's active time in Treetop`}
+      `${paused ? "Paused" : running ? "Tracking" : "Idle"} · Today's work time`}
     on:click={() => {
       date = today;
       dialog.showModal();
@@ -348,56 +327,75 @@
         >×</button
       >
     </div>
-    <p>
-      Active time in Treetop. Idle gaps and background agent work are excluded.
-    </p>
-    <div class="time-controls">
-      <label
-        >Day <input
-          aria-label="Work day"
-          type="date"
-          bind:value={date}
-        /></label
-      ><button disabled={busy} on:click={changePause}
+    <div class="history-totals">
+      <div>
+        <span>Last 7 days</span><strong>{hours(history.last7Ms)}</strong>
+      </div>
+      <div>
+        <span>Last 31 days</span><strong>{hours(history.last31Ms)}</strong>
+      </div>
+      <button class="pause-tracking" disabled={busy} on:click={changePause}
         >{paused ? "Resume tracking" : "Pause tracking"}</button
       >
     </div>
-    <strong class="day-total"
-      >{format(projectRows.reduce((n, r) => n + r.ms, 0))}</strong
+    <div class="history-label">
+      <span>Daily activity</span><span>Last 6 months</span>
+    </div>
+    <div class="activity-grid" role="group" aria-label="Daily work activity">
+      {#each history.days as day}
+        <button
+          class="activity-day"
+          class:selected={date === day.day}
+          disabled={day.future}
+          style={`--activity:${day.ms ? 0.25 + (0.75 * day.ms) / history.maxDayMs : 0}`}
+          title={`${dayLabel(day.day)}: ${hours(day.ms)}`}
+          aria-label={`${day.day}: ${hours(day.ms)}`}
+          aria-pressed={date === day.day}
+          on:click={() => (date = day.day)}
+        ></button>
+      {/each}
+    </div>
+    <div class="history-label">
+      <span>Hours by weekday</span><span>Last 31 days</span>
+    </div>
+    <div
+      class="weekday-chart"
+      role="group"
+      aria-label="Work hours by weekday, last 31 days"
     >
+      {#each history.weekdays as day}
+        <div class="weekday" title={`${day.label}: ${hours(day.ms)}`}>
+          <span>{hours(day.ms)}</span>
+          <div class="bar-track">
+            <div
+              class="weekday-bar"
+              style={`height:${(day.ms / history.maxWeekdayMs) * 100}%`}
+            ></div>
+          </div>
+          <span>{day.label}</span>
+        </div>
+      {/each}
+    </div>
+    <div class="time-controls">
+      <time class="selected-date" aria-label="Work day" datetime={date}
+        >{dayLabel(date)}</time
+      >
+      <strong class="day-total"
+        >{format(projectRows.reduce((n, r) => n + r.ms, 0))}</strong
+      >
+    </div>
     <div class="time-projects">
       {#each projectRows as project}<div>
           <span>{project.name}</span><time>{format(project.ms)}</time>
         </div>{:else}<p>No work recorded for this day.</p>{/each}
     </div>
-    <form on:submit|preventDefault={adjust}>
-      <h3>Adjust time</h3>
-      <label
-        >Project <select
-          aria-label="Adjustment project"
-          bind:value={adjustProject}
-          ><option value="">Treetop</option>{#each projects as project}<option
-              value={project.id}>{project.name}</option
-            >{/each}</select
-        ></label
-      >
-      <label
-        >Minutes <input
-          type="text"
-          inputmode="decimal"
-          placeholder="e.g. 15 or -5"
-          bind:value={adjustMinutes}
-        /></label
-      >
-      <button type="submit" disabled={busy || !adjustMinutes}>Apply</button>
-    </form>
     {#if error}<p class="time-error" role="alert">{error}</p>{/if}
     <small
       >{paused
         ? "Tracking is paused."
         : running
-          ? "Tracking active work."
-          : "Waiting for activity."} Stops after 5 minutes without interaction; counted time is kept.</small
+          ? "Tracking work."
+          : "Waiting for activity."} 5-minute allowance between interactions. Counted time is kept.</small
     >
   </dialog>
 </div>
@@ -435,10 +433,10 @@
     color: var(--fg, #ddd);
     border: 1px solid #555;
     border-radius: 10px;
-    width: min(460px, calc(100vw - 40px));
+    width: min(480px, calc(100vw - 40px));
     max-height: 80vh;
     overflow: auto;
-    padding: 1.25rem;
+    padding: 0.85rem 1rem;
   }
   dialog::backdrop {
     background: #0008;
@@ -450,7 +448,7 @@
   }
   .time-heading h2 {
     margin: 0;
-    font-size: 1.1rem;
+    font-size: 1rem;
   }
   .time-heading button {
     background: none;
@@ -469,73 +467,129 @@
     display: flex;
     justify-content: space-between;
     gap: 0.7rem;
-    align-items: end;
-    margin: 1rem 0;
-  }
-  label {
-    display: flex;
-    gap: 0.3rem;
-    flex-direction: column;
-    font-size: 0.75rem;
+    align-items: center;
+    margin: 0.65rem 0;
   }
   .day-total {
-    font-size: 1.5rem;
+    font-size: 1rem;
     font-variant-numeric: tabular-nums;
   }
   .time-projects {
-    margin: 1rem 0;
+    margin: 0.4rem 0;
+    max-height: 130px;
+    overflow: auto;
   }
   .time-projects div {
     display: flex;
     gap: 1rem;
     justify-content: space-between;
-    padding: 0.45rem 0;
+    padding: 0.3rem 0;
     border-bottom: 1px solid #ffffff12;
-    font-size: 0.85rem;
+    font-size: 0.75rem;
   }
   .time-projects time {
     font-variant-numeric: tabular-nums;
     white-space: nowrap;
   }
-  form {
+  .selected-date {
+    font-size: 0.75rem;
+    color: var(--muted, #aaa);
+  }
+  .history-totals {
     display: flex;
-    flex-wrap: wrap;
-    gap: 0.6rem;
-    align-items: end;
-    border-top: 1px solid #ffffff20;
-    padding-top: 0.75rem;
-    margin-bottom: 1rem;
+    align-items: center;
+    gap: 1.5rem;
+    margin: 0.8rem 0;
   }
-  h3 {
-    width: 100%;
-    margin: 0;
-    font-size: 0.85rem;
+  .history-totals > div {
+    display: flex;
+    flex-direction: column;
+    gap: 0.15rem;
   }
-  select {
-    max-width: 210px;
+  .history-totals span,
+  .history-label,
+  .weekday {
+    font-size: 0.68rem;
+    color: var(--muted, #aaa);
   }
-  input[inputmode="decimal"] {
-    width: 110px;
+  .history-totals strong {
+    font-size: 1.2rem;
+    font-variant-numeric: tabular-nums;
+    font-weight: 600;
   }
-  input,
-  select {
+  .pause-tracking {
+    margin-left: auto;
     background: #ffffff08;
-    color: inherit;
-    border: 1px solid #555;
+    border: 1px solid #ffffff20;
     border-radius: 4px;
-    padding: 0.35rem;
-  }
-  select option {
-    background: #222;
-  }
-  form button,
-  .time-controls button {
-    padding: 0.4rem 0.6rem;
-    border: 1px solid #555;
-    border-radius: 4px;
-    background: #ffffff0c;
     color: inherit;
+    padding: 0.25rem 0.45rem;
+    font: inherit;
+    font-size: 0.72rem;
     cursor: pointer;
+  }
+  .history-label {
+    display: flex;
+    justify-content: space-between;
+    margin: 0.8rem 0 0.4rem;
+  }
+  .activity-grid {
+    display: grid;
+    grid-auto-flow: column;
+    grid-template-rows: repeat(7, 1fr);
+    grid-template-columns: repeat(26, minmax(0, 1fr));
+    gap: 3px;
+  }
+  .activity-day {
+    padding: 0;
+    min-width: 0;
+    width: 100%;
+    aspect-ratio: 1;
+    border: 0;
+    border-radius: 2px;
+    background: color-mix(
+      in srgb,
+      #83bc72 calc(var(--activity) * 100%),
+      #ffffff0a
+    );
+    cursor: pointer;
+  }
+  .activity-day:disabled {
+    opacity: 0.2;
+    cursor: default;
+  }
+  .activity-day.selected {
+    filter: brightness(1.12);
+  }
+  .activity-day:focus-visible {
+    outline: 1px solid #83bc72;
+    outline-offset: 1px;
+  }
+  .weekday-chart {
+    display: grid;
+    grid-template-columns: repeat(7, 1fr);
+    gap: 0.65rem;
+    padding-bottom: 0.6rem;
+    border-bottom: 1px solid #ffffff12;
+  }
+  .weekday {
+    display: flex;
+    flex-direction: column;
+    gap: 0.2rem;
+    align-items: center;
+    font-variant-numeric: tabular-nums;
+  }
+  .bar-track {
+    height: 42px;
+    width: 100%;
+    display: flex;
+    align-items: flex-end;
+  }
+  .weekday-bar {
+    background: #83bc7280;
+    width: 100%;
+    min-height: 2px;
+    border-radius: 2px 2px 0 0;
   }
   .time-error {
     color: #ed9999;

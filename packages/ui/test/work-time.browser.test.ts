@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, mkdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -13,7 +13,7 @@ import {
 } from "../../daemon/src/work-time.ts";
 
 test(
-  "work clock records projects, retains time through the idle cutoff, pauses and adjusts daily totals",
+  "work clock records projects, retains time through idle cutoff and displays compact history",
   { timeout: 90_000 },
   async () => {
     const dir = await mkdtemp(resolve(tmpdir(), "treetop-work-clock-browser-"));
@@ -116,7 +116,7 @@ test(
                   : {}),
               }),
               store,
-              Date.now() + 600_000,
+              Date.now() + 3_600_000,
             );
             const body = await response.text();
             requests.push({ status: response.status, body });
@@ -211,29 +211,88 @@ test(
         Math.round(store.summary().reduce((n, r) => n + r.ms, 0) / 1000),
         430,
       );
+      await page.keyboard.type("switching to another app");
       await page.evaluate(() => window.dispatchEvent(new Event("blur")));
-      await page.clock.fastForward(60_000);
-      await page.keyboard.type("back from another app");
-      assert.equal(
-        Math.round(store.summary().reduce((n, r) => n + r.ms, 0) / 1000),
-        430,
+      await page.clock.runFor(360_000);
+      assert.match(
+        await clock.innerText(),
+        /00:12:10/,
+        "switching apps retains the five-minute work allowance",
+      );
+      await page.evaluate(() => window.dispatchEvent(new Event("focus")));
+      await page.clock.runFor(2_000);
+      assert.match(
+        await clock.innerText(),
+        /00:12:1[12]/,
+        "returning focus resumes without typing",
       );
       await clock.click();
       await page
         .getByRole("button", { name: "Pause tracking", exact: true })
         .click();
       await until(async () => store.paused(), "Pause was not persisted");
-      await page
-        .getByLabel("Adjustment project", { exact: true })
-        .selectOption("a");
-      await page.getByLabel("Minutes", { exact: true }).fill("15");
-      await page.getByRole("button", { name: "Apply", exact: true }).click();
-      await until(
-        async () =>
-          store.summary().find((r) => r.repoId === "a")!.ms >= 960_000,
-        "Manual adjustment failed",
+      assert.equal(
+        await page
+          .getByRole("group", { name: "Daily work activity", exact: true })
+          .locator("button")
+          .count(),
+        182,
       );
-      assert.match(await clock.innerText(), /00:22:10/);
+      assert.equal(
+        await page
+          .getByRole("group", {
+            name: "Work hours by weekday, last 31 days",
+            exact: true,
+          })
+          .locator(".weekday")
+          .count(),
+        7,
+      );
+      assert.equal(
+        await page.getByText("Last 7 days", { exact: true }).count(),
+        1,
+      );
+      assert.equal(
+        await page.getByText("Last 31 days", { exact: true }).count(),
+        2,
+      );
+      assert.equal(
+        await page.getByText("Adjust time", { exact: true }).count(),
+        0,
+      );
+      const selectedDay = await page
+        .getByLabel("Work day", { exact: true })
+        .getAttribute("datetime");
+      const activeSquare = page.locator(
+        `.activity-day[aria-label^="${selectedDay}:"]`,
+      );
+      assert.match((await activeSquare.getAttribute("title"))!, /h$/);
+      await page.locator(".activity-day:not(:disabled)").first().click();
+      assert.notEqual(
+        await page
+          .getByLabel("Work day", { exact: true })
+          .getAttribute("datetime"),
+        selectedDay,
+      );
+      await activeSquare.click();
+      assert.equal(
+        await page
+          .getByLabel("Work day", { exact: true })
+          .getAttribute("datetime"),
+        selectedDay,
+      );
+      assert.match(await clock.innerText(), /00:12:12/);
+      const workDialog = page.locator("dialog").filter({
+        has: page.getByRole("heading", { name: "Work time", exact: true }),
+      });
+      const bounds = await workDialog.boundingBox();
+      assert.ok(
+        bounds && bounds.height < 560 && bounds.width < 560,
+        "work history must stay compact",
+      );
+      const screenshot = resolve(root, "../../.cache/work-time-history.png");
+      await mkdir(dirname(screenshot), { recursive: true });
+      await workDialog.screenshot({ path: screenshot });
       await page
         .getByRole("button", { name: "Close work time", exact: true })
         .click();
@@ -242,7 +301,7 @@ test(
       await page.clock.runFor(60_000);
       assert.equal(
         Math.round(store.summary().reduce((n, r) => n + r.ms, 0) / 1000),
-        1330,
+        732,
       );
       assert.deepEqual(errors, []);
       assert.equal(captures, 0, "timelapse must be off by default");
@@ -403,11 +462,16 @@ test(
       await page
         .getByRole("link", { name: "Motion blur MP4", exact: true })
         .waitFor();
-      for(const [label,variant] of [["Crisp MP4","crisp"],["Motion blur MP4","motion-blur"]]) {
-        const href = await page.getByRole("link",{name:label,exact:true}).getAttribute("href");
+      for (const [label, variant] of [
+        ["Crisp MP4", "crisp"],
+        ["Motion blur MP4", "motion-blur"],
+      ]) {
+        const href = await page
+          .getByRole("link", { name: label, exact: true })
+          .getAttribute("href");
         const url = new URL(href!, "http://test");
-        assert.equal(url.searchParams.get("day"),recordingDay.day);
-        assert.equal(url.searchParams.get("variant"),variant);
+        assert.equal(url.searchParams.get("day"), recordingDay.day);
+        assert.equal(url.searchParams.get("variant"), variant);
       }
       await page
         .getByRole("button", { name: "Generate and delete", exact: true })
